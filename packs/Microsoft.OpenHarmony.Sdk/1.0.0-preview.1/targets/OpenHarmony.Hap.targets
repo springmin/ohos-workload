@@ -84,9 +84,11 @@
       <_OpenHarmonyStringsJson>$([System.IO.File]::ReadAllText('$(_OpenHarmonyTemplatesDir)resources/base/element/string.json').Replace('@APP_NAME@', '$(OpenHarmonyAppName)'))</_OpenHarmonyStringsJson>
     </PropertyGroup>
     <WriteLinesToFile File="$(_OpenHarmonyHapStageDir)resources/base/element/string.json" Lines="$(_OpenHarmonyStringsJson)" Overwrite="true" />
-    <WriteLinesToFile File="$(_OpenHarmonyHapStageDir)resources/rawfile/app.json"
-                      Lines="{&quot;assembly&quot;:&quot;$(TargetFileName)&quot;,&quot;args&quot;:[&quot;$(OpenHarmonyAppArgs)&quot;]}"
-                      Overwrite="true" />
+    <PropertyGroup>
+      <_OpenHarmonyAppJson>{&quot;assembly&quot;:&quot;$(TargetFileName)&quot;}</_OpenHarmonyAppJson>
+      <_OpenHarmonyAppJson Condition=" '$(OpenHarmonyAppArgs)' != '' ">{&quot;assembly&quot;:&quot;$(TargetFileName)&quot;,&quot;args&quot;:[&quot;$(OpenHarmonyAppArgs)&quot;]}</_OpenHarmonyAppJson>
+    </PropertyGroup>
+    <WriteLinesToFile File="$(_OpenHarmonyHapStageDir)resources/rawfile/app.json" Lines="$(_OpenHarmonyAppJson)" Overwrite="true" />
 
     <!-- The published .NET app becomes the hap payload -->
     <ZipDirectory SourceDirectory="$(PublishDir)" DestinationFile="$(_OpenHarmonyHapStageDir)resources/rawfile/dotnet.zip" Overwrite="true" />
