@@ -182,12 +182,25 @@ struct OhosHostAppHandle {
     void* node_content;
     void (*bridge_lifecycle)(int);
     void (*bridge_node)(void*);
+    void (*bridge_surface)(void*, int, int, int);
+    void* surface_window;
+    int surface_width;
+    int surface_height;
+    int surface_state;
     int pending_lifecycle[OHOS_MAX_PENDING_LIFECYCLE];
     int pending_count;
 };
 
 // One bridged application per process, matching the ArkTS one-ability model.
 static OhosHostAppHandle* g_app = NULL;
+
+// The XComponent may be created before the application handle exists, so keep the latest
+// surface state here and forward it when the bridge registers.
+static void* g_surface_window = NULL;
+static int g_surface_width = 0;
+static int g_surface_height = 0;
+static int g_surface_state = -1;
+static int g_surface_valid = 0;
 
 static void* OhosAppThread(void* arg) {
     OhosHostAppHandle* handle = (OhosHostAppHandle*)arg;
@@ -295,15 +308,19 @@ const char* ohos_host_get_app_context(void) {
     return g_app != NULL ? g_app->context_json : NULL;
 }
 
-void ohos_host_register_bridge(void* lifecycle, void* node) {
-    fprintf(stderr, "[openharmony-host] register_bridge lifecycle=%p node=%p g_app=%p pending=%d\n",
-            lifecycle, node, (void*)g_app, g_app ? g_app->pending_count : -1);
+void ohos_host_register_bridge(void* lifecycle, void* node, void* surface) {
+    fprintf(stderr, "[openharmony-host] register_bridge lifecycle=%p node=%p surface=%p g_app=%p\n",
+            lifecycle, node, surface, (void*)g_app);
     fflush(stderr);
     if (g_app == NULL) {
         return;
     }
     g_app->bridge_lifecycle = (void (*)(int))lifecycle;
     g_app->bridge_node = (void (*)(void*))node;
+    g_app->bridge_surface = (void (*)(void*, int, int, int))surface;
+    if (g_app->bridge_surface != NULL && g_surface_valid) {
+        g_app->bridge_surface(g_surface_window, g_surface_width, g_surface_height, g_surface_state);
+    }
     for (int i = 0; i < g_app->pending_count; i++) {
         if (g_app->bridge_lifecycle != NULL) {
             g_app->bridge_lifecycle(g_app->pending_lifecycle[i]);
@@ -312,6 +329,26 @@ void ohos_host_register_bridge(void* lifecycle, void* node) {
     g_app->pending_count = 0;
     if (g_app->bridge_node != NULL && g_app->node_content != NULL) {
         g_app->bridge_node(g_app->node_content);
+    }
+}
+
+void ohos_host_set_native_window(void* window, int width, int height, ohos_surface_state state) {
+    fprintf(stderr, "[openharmony-host] surface state=%d window=%p %dx%d\n",
+            (int)state, window, width, height);
+    fflush(stderr);
+    g_surface_window = window;
+    g_surface_width = width;
+    g_surface_height = height;
+    g_surface_state = (int)state;
+    g_surface_valid = 1;
+    if (g_app != NULL) {
+        g_app->surface_window = window;
+        g_app->surface_width = width;
+        g_app->surface_height = height;
+        g_app->surface_state = (int)state;
+        if (g_app->bridge_surface != NULL) {
+            g_app->bridge_surface(window, width, height, (int)state);
+        }
     }
 }
 

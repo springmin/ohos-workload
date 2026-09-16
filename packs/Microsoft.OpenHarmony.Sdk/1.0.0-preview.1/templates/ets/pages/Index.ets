@@ -1,10 +1,13 @@
 // ArkUI page hosting native (.NET-rendered) content.
 //
-// Compiled by the ArkTS toolchain (see integration/arkts-shell in the workload repo or
-// the packaging properties OpenHarmonyArktsModulesAbc / OpenHarmonyUIPage).
-// The page hands its NodeContent to the native host, which forwards it to the managed app
-// (Microsoft.OpenHarmony.Hosting.OpenHarmonyBridge.NodeContent) so managed code can attach
-// native ArkUI nodes (e.g. an XComponent/canvas for MAUI rendering).
+// Compiled by the ArkTS toolchain (scripts/build-arkts-shell.sh -> dist/ets/modules.abc)
+// and packaged with -p:OpenHarmonyUIPage=pages/Index -p:OpenHarmonyArktsModulesAbc=...
+//
+// The XComponent (surface type) is bound to libopenharmonyhost.so: the framework delivers
+// its OHNativeWindow* through the native XComponent callbacks, which the host forwards to
+// the managed app (Microsoft.OpenHarmony.Hosting.OpenHarmonyBridge.SurfaceChanged) as the
+// rendering target for Skia/MAUI. The ContentSlot next to it hosts native ArkUI nodes that
+// managed code attaches through OpenHarmonyBridge.NodeContent.
 import { NodeContent } from '@ohos.arkui.node';
 import host from 'libopenharmonyhost.so';
 
@@ -20,8 +23,19 @@ struct Index {
   }
 
   build() {
-    // ContentSlot has no size attributes of its own; the container carries the layout.
-    Column() {
+    Stack() {
+      XComponent({
+        id: 'ohos_dotnet_surface',
+        type: XComponentType.SURFACE,
+        libraryname: 'openharmonyhost',
+      })
+        .onLoad(() => {
+          // Binds the native XComponent so libopenharmonyhost receives surface callbacks.
+          host.registerXComponent();
+        })
+        .width('100%')
+        .height('100%')
+
       ContentSlot(this.content)
     }
     .width('100%')

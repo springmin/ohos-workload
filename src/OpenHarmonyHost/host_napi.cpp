@@ -6,6 +6,7 @@
 //   host.setNodeContent(nodeContentHandle);              // ArkUI NodeContent
 //   host.stopApp();                                      // sends destroy
 //   host.runApp(appDir, assemblyFile);                   // sync one-shot, returns exit code
+#include <ace/xcomponent/native_interface_xcomponent.h>
 #include <arkui/native_node_napi.h>
 #include <napi/native_api.h>
 #include <hilog/log.h>
@@ -23,6 +24,80 @@
 namespace {
 
 OhosHostAppHandle* g_handle = nullptr;
+
+// XComponent (surface) support -------------------------------------------------
+napi_env g_env = nullptr;
+napi_ref g_exports_ref = nullptr;
+OH_NativeXComponent* g_xcomponent = nullptr;
+
+void OnSurfaceCreated(OH_NativeXComponent* component, void* window) {
+    uint64_t width = 0;
+    uint64_t height = 0;
+    OH_NativeXComponent_GetXComponentSize(component, window, &width, &height);
+    ohos_host_set_native_window(window, static_cast<int>(width), static_cast<int>(height),
+                                OHOS_SURFACE_CREATED);
+}
+
+void OnSurfaceChanged(OH_NativeXComponent* component, void* window) {
+    uint64_t width = 0;
+    uint64_t height = 0;
+    OH_NativeXComponent_GetXComponentSize(component, window, &width, &height);
+    ohos_host_set_native_window(window, static_cast<int>(width), static_cast<int>(height),
+                                OHOS_SURFACE_CHANGED);
+}
+
+void OnSurfaceDestroyed(OH_NativeXComponent* component, void* window) {
+    (void)component;
+    ohos_host_set_native_window(window, 0, 0, OHOS_SURFACE_DESTROYED);
+}
+
+// The framework exposes the native XComponent through the module exports
+// (OH_NATIVE_XCOMPONENT_OBJ) when the page uses <XComponent libraryname="...">.
+void TryRegisterXComponent() {
+    if (g_env == nullptr || g_exports_ref == nullptr || g_xcomponent != nullptr) {
+        return;
+    }
+    napi_value exports = nullptr;
+    if (napi_get_reference_value(g_env, g_exports_ref, &exports) != napi_ok || exports == nullptr) {
+        return;
+    }
+    napi_value exportInstance = nullptr;
+    if (napi_get_named_property(g_env, exports, OH_NATIVE_XCOMPONENT_OBJ, &exportInstance) != napi_ok) {
+        return;
+    }
+    void* native = nullptr;
+    if (napi_unwrap(g_env, exportInstance, &native) != napi_ok || native == nullptr) {
+        return;
+    }
+    g_xcomponent = reinterpret_cast<OH_NativeXComponent*>(native);
+    static OH_NativeXComponent_Callback callback = {
+        .OnSurfaceCreated = OnSurfaceCreated,
+        .OnSurfaceChanged = OnSurfaceChanged,
+        .OnSurfaceDestroyed = OnSurfaceDestroyed,
+        .DispatchTouchEvent = nullptr,
+    };
+    if (OH_NativeXComponent_RegisterCallback(g_xcomponent, &callback) != 0) {
+        OH_LOG_WARN(LOG_APP, "[openharmony-host] RegisterCallback failed");
+        g_xcomponent = nullptr;
+        return;
+    }
+    char id[128] = {0};
+    uint64_t size = sizeof(id);
+    if (OH_NativeXComponent_GetXComponentId(g_xcomponent, id, &size) == 0) {
+        OH_LOG_INFO(LOG_APP, "[openharmony-host] xcomponent '%{public}s' registered", id);
+    }
+}
+
+napi_value RegisterXComponent(napi_env env, napi_callback_info info) {
+    (void)info;
+    if (g_env == nullptr) {
+        g_env = env;
+    }
+    TryRegisterXComponent();
+    napi_value undefined = nullptr;
+    napi_get_undefined(env, &undefined);
+    return undefined;
+}
 
 struct LaunchRequest {
     char* app_dir;
@@ -167,7 +242,11 @@ napi_value RunApp(napi_env env, napi_callback_info info) {
 }
 
 napi_value Init(napi_env env, napi_value exports) {
+    g_env = env;
+    napi_create_reference(env, exports, 1, &g_exports_ref);
+    TryRegisterXComponent();
     napi_property_descriptor properties[] = {
+        {"registerXComponent", nullptr, RegisterXComponent, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"startApp", nullptr, StartApp, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"notifyLifecycle", nullptr, NotifyLifecycle, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"setNodeContent", nullptr, SetNodeContent, nullptr, nullptr, nullptr, napi_default, nullptr},

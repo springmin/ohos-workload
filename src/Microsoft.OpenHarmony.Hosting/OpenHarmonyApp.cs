@@ -10,6 +10,31 @@ using System.Text.Json.Serialization;
 
 namespace Microsoft.OpenHarmony.Hosting;
 
+public enum OpenHarmonySurfaceState
+{
+    Created = 0,
+    Changed = 1,
+    Destroyed = 2,
+}
+
+/// <summary>ArkUI XComponent surface handed to managed code.</summary>
+public sealed class OpenHarmonySurfaceInfo
+{
+    public OpenHarmonySurfaceInfo(IntPtr window, int width, int height, OpenHarmonySurfaceState state)
+    {
+        Window = window;
+        Width = width;
+        Height = height;
+        State = state;
+    }
+
+    /// <summary>OHNativeWindow* (native pointer) to render into.</summary>
+    public IntPtr Window { get; }
+    public int Width { get; }
+    public int Height { get; }
+    public OpenHarmonySurfaceState State { get; }
+}
+
 public enum OpenHarmonyLifecycleEvent
 {
     Create = 0,
@@ -37,10 +62,11 @@ public static class OpenHarmonyBridge
     private static extern IntPtr GetAppContextNative();
 
     [DllImport(HostLibrary, EntryPoint = "ohos_host_register_bridge")]
-    private static extern void RegisterBridgeNative(IntPtr lifecycle, IntPtr node);
+    private static extern void RegisterBridgeNative(IntPtr lifecycle, IntPtr node, IntPtr surface);
 
     private delegate void NativeLifecycleDelegate(int evt);
     private delegate void NativeNodeDelegate(IntPtr node);
+    private delegate void NativeSurfaceDelegate(IntPtr window, int width, int height, int state);
 
     private static readonly object s_sync = new();
     private static OpenHarmonyAppContext? s_context;
@@ -48,7 +74,10 @@ public static class OpenHarmonyBridge
     private static bool s_attached;
     private static NativeLifecycleDelegate? s_lifecycleThunk;
     private static NativeNodeDelegate? s_nodeThunk;
+    private static NativeSurfaceDelegate? s_surfaceThunk;
     private static readonly List<OpenHarmonyLifecycleEvent> s_pending = new();
+    private static Action<OpenHarmonySurfaceInfo>? s_surfaceHandlers;
+    private static OpenHarmonySurfaceInfo? s_surface;
     private static Action<OpenHarmonyAppContext>? s_initializedHandlers;
     private static Action<OpenHarmonyLifecycleEvent>? s_lifecycleHandlers;
 
@@ -75,6 +104,39 @@ public static class OpenHarmonyBridge
                 s_initializedHandlers -= value;
             }
         }
+    }
+
+    /// <summary>Raised when the ArkUI XComponent surface is created/changed/destroyed.
+    /// <c>Window</c> is the OHNativeWindow* the renderer (e.g. Skia) should target.</summary>
+    public static event Action<OpenHarmonySurfaceInfo>? SurfaceChanged
+
+    {
+        add
+        {
+            List<OpenHarmonySurfaceInfo> replay;
+            lock (s_sync)
+            {
+                s_surfaceHandlers += value;
+                replay = s_surface is null ? new List<OpenHarmonySurfaceInfo>() : new List<OpenHarmonySurfaceInfo> { s_surface };
+            }
+            foreach (OpenHarmonySurfaceInfo info in replay)
+            {
+                value(info);
+            }
+        }
+        remove
+        {
+            lock (s_sync)
+            {
+                s_surfaceHandlers -= value;
+            }
+        }
+    }
+
+    /// <summary>Last reported surface (null until the XComponent reports one).</summary>
+    public static OpenHarmonySurfaceInfo? Surface
+    {
+        get { lock (s_sync) { return s_surface; } }
     }
 
     public static event Action<OpenHarmonyLifecycleEvent>? LifecycleChanged
@@ -212,9 +274,11 @@ public static class OpenHarmonyBridge
         {
             s_lifecycleThunk = OnLifecycleNative;
             s_nodeThunk = OnNodeNative;
+            s_surfaceThunk = OnSurfaceNative;
             RegisterBridgeNative(
                 Marshal.GetFunctionPointerForDelegate(s_lifecycleThunk),
-                Marshal.GetFunctionPointerForDelegate(s_nodeThunk));
+                Marshal.GetFunctionPointerForDelegate(s_nodeThunk),
+                Marshal.GetFunctionPointerForDelegate(s_surfaceThunk));
             registered = true;
         }
         catch (Exception ex)
@@ -246,6 +310,19 @@ public static class OpenHarmonyBridge
         }
         WriteStatus($"lifecycle: {lifecycleEvent}");
         handlers(lifecycleEvent);
+    }
+
+    private static void OnSurfaceNative(IntPtr window, int width, int height, int state)
+    {
+        var info = new OpenHarmonySurfaceInfo(window, width, height, (OpenHarmonySurfaceState)state);
+        Action<OpenHarmonySurfaceInfo>? handlers;
+        lock (s_sync)
+        {
+            s_surface = info;
+            handlers = s_surfaceHandlers;
+        }
+        WriteStatus($"surface: state={info.State} window=0x{window.ToInt64():x} {width}x{height}");
+        handlers?.Invoke(info);
     }
 
     private static void OnNodeNative(IntPtr node)

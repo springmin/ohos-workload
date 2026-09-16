@@ -38,8 +38,20 @@ int ohos_host_start_app(const char* app_dir, const char* app_assembly_file,
 const char* ohos_host_get_app_context(void);
 
 /// Called by the managed side (Microsoft.OpenHarmony.Hosting) once it is ready.
-/// lifecycle: void (*)(int), node: void (*)(void*). Both may be NULL.
-void ohos_host_register_bridge(void* lifecycle, void* node);
+/// lifecycle: void (*)(int), node: void (*)(void*), surface: void (*)(void*, int, int, int).
+/// Any of them may be NULL.
+void ohos_host_register_bridge(void* lifecycle, void* node, void* surface);
+
+/// Surface state pushed to the managed bridge (see ohos_host_set_native_window).
+typedef enum {
+    OHOS_SURFACE_CREATED = 0,
+    OHOS_SURFACE_CHANGED = 1,
+    OHOS_SURFACE_DESTROYED = 2,
+} ohos_surface_state;
+
+/// Stores the XComponent surface (OHNativeWindow*) and notifies the managed bridge.
+/// width/height are the surface size in pixels (may be 0 when unknown).
+void ohos_host_set_native_window(void* window, int width, int height, ohos_surface_state state);
 
 /// Pushes a lifecycle event into the managed bridge (queued until registered).
 void ohos_host_notify_lifecycle(OhosHostAppHandle* handle, ohos_lifecycle_event event);
