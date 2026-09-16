@@ -3,6 +3,8 @@
     <MicrosoftOpenHarmonySdkTargetsImported>true</MicrosoftOpenHarmonySdkTargetsImported>
     <TargetPlatformSupported>true</TargetPlatformSupported>
     <TargetPlatformDisplayName>OpenHarmony</TargetPlatformDisplayName>
+    <!-- Platform symbols, matching the convention of the other platform SDKs (ANDROID, ...). -->
+    <DefineConstants Condition=" '$(DisableImplicitFrameworkDefines)' != 'true' ">$(DefineConstants);OPENHARMONY;__OPENHARMONY__</DefineConstants>
     <SupportedOSPlatformVersion Condition=" '$(SupportedOSPlatformVersion)' == '' ">20.0</SupportedOSPlatformVersion>
     <SupportedOSPlatformVersion Condition=" '$(SupportedOSPlatformVersion)' != '' and !$(SupportedOSPlatformVersion.Contains('.')) ">$(SupportedOSPlatformVersion).0</SupportedOSPlatformVersion>
     <_OpenHarmonySdkTargetsDir>$(MSBuildThisFileDirectory)../targets/</_OpenHarmonySdkTargetsDir>
@@ -40,10 +42,10 @@
     <KnownFrameworkReference Include="Microsoft.OpenHarmony"
                               TargetFramework="net11.0"
                               RuntimeFrameworkName="Microsoft.OpenHarmony"
-                              DefaultRuntimeFrameworkVersion="1.0.0-preview.1"
-                              LatestRuntimeFrameworkVersion="1.0.0-preview.1"
+                              DefaultRuntimeFrameworkVersion="1.0.0-preview.2"
+                              LatestRuntimeFrameworkVersion="1.0.0-preview.2"
                               TargetingPackName="Microsoft.OpenHarmony.Ref.$(TargetPlatformVersion)"
-                              TargetingPackVersion="1.0.0-preview.1"
+                              TargetingPackVersion="1.0.0-preview.2"
                               RuntimePackNamePatterns="Microsoft.OpenHarmony.Runtime.$(TargetPlatformVersion).**RID**"
                               RuntimePackRuntimeIdentifiers="openharmony-arm64"
                               />

@@ -22,8 +22,11 @@
          toolchain (ets-loader/hvigor or DevEco Studio, which compiles both the ability and
          the ArkUI pages), and set OpenHarmonyUIPage to the page record (e.g. pages/Index).
          The headless shell (this pack's template) is used when the property is empty. -->
-    <OpenHarmonyArktsModulesAbc Condition=" '$(OpenHarmonyArktsModulesAbc)' == '' ">$(MSBuildThisFileDirectory)../templates/ets/modules.abc</OpenHarmonyArktsModulesAbc>
     <OpenHarmonyUIPage Condition=" '$(OpenHarmonyUIPage)' == '' "></OpenHarmonyUIPage>
+    <!-- Default ArkTS shell: the prebuilt UI shell (official toolchain, ability + page) when a
+         page is requested, otherwise the headless shell compiled from the same sources. -->
+    <OpenHarmonyArktsModulesAbc Condition=" '$(OpenHarmonyArktsModulesAbc)' == '' and '$(OpenHarmonyUIPage)' != '' ">$(MSBuildThisFileDirectory)../templates/ets/modules.ui.abc</OpenHarmonyArktsModulesAbc>
+    <OpenHarmonyArktsModulesAbc Condition=" '$(OpenHarmonyArktsModulesAbc)' == '' ">$(MSBuildThisFileDirectory)../templates/ets/modules.abc</OpenHarmonyArktsModulesAbc>
     <!-- Toolchain: the OpenHarmony SDK's toolchains/lib (packing + signing tools). -->
     <OpenHarmonySdkRoot Condition=" '$(OpenHarmonySdkRoot)' == '' ">$(OHOS_SDK_ROOT)</OpenHarmonySdkRoot>
     <OpenHarmonyToolchainDir Condition=" '$(OpenHarmonyToolchainDir)' == '' and '$(OpenHarmonySdkRoot)' != '' ">$(OpenHarmonySdkRoot)/toolchains/lib</OpenHarmonyToolchainDir>
@@ -121,7 +124,11 @@
   <Target Name="_OpenHarmonySignHap"
           AfterTargets="_OpenHarmonyPackHap"
           Condition=" '$(OpenHarmonyHapPackage)' == 'true' and '$(OpenHarmonyHapSigning)' == 'true' and '$(TargetPlatformIdentifier)' == 'openharmony' ">
-    <Exec Command="sh &quot;$(_OpenHarmonyTemplatesDir)scripts/sign-hap.sh&quot; &quot;$(OpenHarmonyToolchainDir)&quot; &quot;$(_OpenHarmonyHapUnsigned)&quot; &quot;$(_OpenHarmonyHapFile)&quot; &quot;$(OpenHarmonyBundleName)&quot; &quot;$(OpenHarmonyProfileUdid)&quot;" />
+    <!-- POSIX hosts use the sh script; Windows uses the PowerShell equivalent. -->
+    <Exec Condition=" !$([MSBuild]::IsOSPlatform('Windows')) "
+          Command="sh &quot;$(_OpenHarmonyTemplatesDir)scripts/sign-hap.sh&quot; &quot;$(OpenHarmonyToolchainDir)&quot; &quot;$(_OpenHarmonyHapUnsigned)&quot; &quot;$(_OpenHarmonyHapFile)&quot; &quot;$(OpenHarmonyBundleName)&quot; &quot;$(OpenHarmonyProfileUdid)&quot;" />
+    <Exec Condition=" $([MSBuild]::IsOSPlatform('Windows')) "
+          Command="powershell -NoProfile -ExecutionPolicy Bypass -File &quot;$(_OpenHarmonyTemplatesDir)scripts/sign-hap.ps1&quot; -Toolchain &quot;$(OpenHarmonyToolchainDir)&quot; -In &quot;$(_OpenHarmonyHapUnsigned)&quot; -Out &quot;$(_OpenHarmonyHapFile)&quot; -Bundle &quot;$(OpenHarmonyBundleName)&quot; -Udid &quot;$(OpenHarmonyProfileUdid)&quot;" />
     <Message Importance="high" Text="OpenHarmony: signed $(_OpenHarmonyHapFile)" />
   </Target>
 </Project>

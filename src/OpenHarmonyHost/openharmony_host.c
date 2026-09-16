@@ -1,7 +1,11 @@
 #include "openharmony_host.h"
 
 #include <dlfcn.h>
+#include <native_buffer/buffer_common.h>
+#include <native_buffer/native_buffer.h>
+#include <native_window/external_window.h>
 #include <pthread.h>
+#include <sys/mman.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -332,6 +336,66 @@ void ohos_host_register_bridge(void* lifecycle, void* node, void* surface) {
     }
 }
 
+// Draws a frame into the XComponent surface. mode 0 = RGBA gradient (first frame proof),
+// mode 1 = solid colour (managed request). Returns 0 on success.
+static int OhosDrawFrame(void* window, int width, int height, int mode, unsigned int argb) {
+    if (window == NULL || width <= 0 || height <= 0) {
+        return -1;
+    }
+    OHNativeWindow* native_window = (OHNativeWindow*)window;
+    uint64_t usage = NATIVEBUFFER_USAGE_CPU_WRITE | NATIVEBUFFER_USAGE_MEM_DMA;
+    if (OH_NativeWindow_NativeWindowHandleOpt(native_window, SET_BUFFER_GEOMETRY, width, height) != 0 ||
+        OH_NativeWindow_NativeWindowHandleOpt(native_window, SET_FORMAT, NATIVEBUFFER_PIXEL_FMT_RGBA_8888) != 0 ||
+        OH_NativeWindow_NativeWindowHandleOpt(native_window, SET_USAGE, usage) != 0) {
+        fprintf(stderr, "[openharmony-host] surface: buffer options failed\n");
+        return -1;
+    }
+
+    int fence = -1;
+    OHNativeWindowBuffer* buffer = NULL;
+    if (OH_NativeWindow_NativeWindowRequestBuffer(native_window, &buffer, &fence) != 0 || buffer == NULL) {
+        fprintf(stderr, "[openharmony-host] surface: request buffer failed\n");
+        return -1;
+    }
+    BufferHandle* handle = OH_NativeWindow_GetBufferHandleFromNative(buffer);
+    if (handle != NULL) {
+        void* addr = mmap(handle->virAddr, handle->size, PROT_READ | PROT_WRITE, MAP_SHARED, handle->fd, 0);
+        if (addr != MAP_FAILED) {
+            uint8_t* base = (uint8_t*)addr;
+            for (int y = 0; y < height; y++) {
+                uint32_t* row = (uint32_t*)(base + (size_t)y * handle->stride);
+                for (int x = 0; x < width; x++) {
+                    if (mode == 1) {
+                        row[x] = argb;
+                    } else {
+                        uint8_t r = (uint8_t)(255 * x / (width > 1 ? width - 1 : 1));
+                        uint8_t g = (uint8_t)(255 * y / (height > 1 ? height - 1 : 1));
+                        row[x] = (uint32_t)r | ((uint32_t)g << 8) | ((uint32_t)0x80 << 16) | ((uint32_t)0xff << 24);
+                    }
+                }
+            }
+            munmap(addr, handle->size);
+        }
+    }
+    Region region = { NULL, 0 };
+    OH_NativeWindow_NativeWindowFlushBuffer(native_window, buffer, fence, region);
+    fprintf(stderr, "[openharmony-host] surface: frame drawn (mode=%d %dx%d)\n", mode, width, height);
+    fflush(stderr);
+    return 0;
+}
+
+static void OhosDrawFirstFrame(void* window, int width, int height) {
+    OhosDrawFrame(window, width, height, 0, 0);
+}
+
+int ohos_host_fill_surface(unsigned int argb) {
+    if (!g_surface_valid || g_surface_state == (int)OHOS_SURFACE_DESTROYED) {
+        fprintf(stderr, "[openharmony-host] fill_surface: no surface yet\n");
+        return -1;
+    }
+    return OhosDrawFrame(g_surface_window, g_surface_width, g_surface_height, 1, argb);
+}
+
 void ohos_host_set_native_window(void* window, int width, int height, ohos_surface_state state) {
     fprintf(stderr, "[openharmony-host] surface state=%d window=%p %dx%d\n",
             (int)state, window, width, height);
@@ -341,6 +405,9 @@ void ohos_host_set_native_window(void* window, int width, int height, ohos_surfa
     g_surface_height = height;
     g_surface_state = (int)state;
     g_surface_valid = 1;
+    if (state == OHOS_SURFACE_CREATED || state == OHOS_SURFACE_CHANGED) {
+        OhosDrawFirstFrame(window, width, height);
+    }
     if (g_app != NULL) {
         g_app->surface_window = window;
         g_app->surface_width = width;

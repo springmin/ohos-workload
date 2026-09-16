@@ -59,6 +59,11 @@ void ohos_host_notify_lifecycle(OhosHostAppHandle* handle, ohos_lifecycle_event 
 /// Stores the ArkUI NodeContent handle for the managed app (0 clears it).
 void ohos_host_set_node_content(OhosHostAppHandle* handle, void* node_content);
 
+/// Fills the current XComponent surface with a solid colour (0xAARRGGBB).
+/// Returns 0 when the surface accepted the frame, -1 when there is no surface yet.
+/// Managed code uses this to drive the surface before a real renderer is attached.
+int ohos_host_fill_surface(unsigned int argb);
+
 /// The ArkUI NodeContent handle previously stored (may be NULL).
 void* ohos_host_get_node_content(OhosHostAppHandle* handle);
 

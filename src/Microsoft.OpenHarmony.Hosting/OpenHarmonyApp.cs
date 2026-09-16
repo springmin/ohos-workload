@@ -61,6 +61,9 @@ public static class OpenHarmonyBridge
     [DllImport(HostLibrary, EntryPoint = "ohos_host_get_app_context")]
     private static extern IntPtr GetAppContextNative();
 
+    [DllImport(HostLibrary, EntryPoint = "ohos_host_fill_surface")]
+    private static extern int FillSurfaceNative(uint argb);
+
     [DllImport(HostLibrary, EntryPoint = "ohos_host_register_bridge")]
     private static extern void RegisterBridgeNative(IntPtr lifecycle, IntPtr node, IntPtr surface);
 
@@ -103,6 +106,23 @@ public static class OpenHarmonyBridge
             {
                 s_initializedHandlers -= value;
             }
+        }
+    }
+
+    /// <summary>
+    /// Fills the current surface with a solid colour (0xAARRGGBB). Returns true when the
+    /// surface accepted the frame. This is the managed entry point that a renderer
+    /// (Skia/MAUI) replaces with real drawing once it is attached.
+    /// </summary>
+    public static bool FillSurface(uint argb)
+    {
+        try
+        {
+            return FillSurfaceNative(argb) == 0;
+        }
+        catch
+        {
+            return false;
         }
     }
 
