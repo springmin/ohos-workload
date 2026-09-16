@@ -1,0 +1,12 @@
+{
+  "microsoft.net.sdk.openharmony": {
+    "workload": {
+      "alias": [ "openharmony" ],
+      "version": "1.0.0-preview.1"
+    },
+    "ohossdk": {
+      "description": "OpenHarmony SDK (native toolchain + hap packing/signing tools)",
+      "recommendedVersion": "6.0.0.1"
+    }
+  }
+}

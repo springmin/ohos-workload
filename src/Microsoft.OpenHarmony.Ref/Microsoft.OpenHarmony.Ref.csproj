@@ -1,0 +1,10 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net11.0</TargetFramework>
+    <AssemblyName>Microsoft.OpenHarmony</AssemblyName>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <!-- The platform is not a known analyzer platform yet in this SDK build. -->
+    <NoWarn>$(NoWarn);CA1418</NoWarn>
+  </PropertyGroup>
+</Project>

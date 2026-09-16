@@ -1,0 +1,10 @@
+<Project>
+  <!-- A platform SDK pack must declare the platform as supported to avoid NETSDK1139. -->
+  <PropertyGroup>
+    <TargetPlatformSupported>true</TargetPlatformSupported>
+    <!-- Minimum API level we support (OpenHarmony API level). -->
+    <SupportedOSPlatformVersion Condition=" '$(SupportedOSPlatformVersion)' == '' ">20.0</SupportedOSPlatformVersion>
+    <SupportedOSPlatformVersion Condition=" '$(SupportedOSPlatformVersion)' != '' and !$(SupportedOSPlatformVersion.Contains('.')) ">$(SupportedOSPlatformVersion).0</SupportedOSPlatformVersion>
+    <OpenHarmonyMinimumSupportedApiLevel Condition=" '$(OpenHarmonyMinimumSupportedApiLevel)' == '' ">20.0</OpenHarmonyMinimumSupportedApiLevel>
+  </PropertyGroup>
+</Project>

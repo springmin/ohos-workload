@@ -1,0 +1,36 @@
+<Project>
+  <PropertyGroup Condition=" '$(TargetPlatformIdentifier)' == 'openharmony' ">
+    <MicrosoftOpenHarmonySdkTargetsImported>true</MicrosoftOpenHarmonySdkTargetsImported>
+    <TargetPlatformSupported>true</TargetPlatformSupported>
+    <TargetPlatformDisplayName>OpenHarmony</TargetPlatformDisplayName>
+    <SupportedOSPlatformVersion Condition=" '$(SupportedOSPlatformVersion)' == '' ">20.0</SupportedOSPlatformVersion>
+    <SupportedOSPlatformVersion Condition=" '$(SupportedOSPlatformVersion)' != '' and !$(SupportedOSPlatformVersion.Contains('.')) ">$(SupportedOSPlatformVersion).0</SupportedOSPlatformVersion>
+    <_OpenHarmonySdkTargetsDir>$(MSBuildThisFileDirectory)../targets/</_OpenHarmonySdkTargetsDir>
+    <!-- Host model: the .hap host, not a classic apphost. -->
+    <UseAppHost Condition=" '$(UseAppHost)' == '' ">false</UseAppHost>
+    <SelfContained Condition=" '$(SelfContained)' == '' ">true</SelfContained>
+    <AllowSelfContainedWithoutRuntimeIdentifier Condition=" '$(AllowSelfContainedWithoutRuntimeIdentifier)' == '' ">true</AllowSelfContainedWithoutRuntimeIdentifier>
+    <GenerateDependencyFile Condition=" '$(GenerateDependencyFile)' == '' ">false</GenerateDependencyFile>
+    <CopyLocalLockFileAssemblies Condition=" '$(CopyLocalLockFileAssemblies)' == '' ">true</CopyLocalLockFileAssemblies>
+  </PropertyGroup>
+
+  <ItemGroup Condition=" '$(TargetPlatformIdentifier)' == 'openharmony' ">
+    <SdkSupportedTargetPlatformIdentifier Include="openharmony" DisplayName="OpenHarmony" />
+    <!-- Valid TargetPlatformVersions (OpenHarmony API levels): CI public SDK = 20, device SDK = 26. -->
+    <SdkSupportedTargetPlatformVersion Include="20.0" MinimumNETVersion="10.0" />
+    <SdkSupportedTargetPlatformVersion Include="26.0" MinimumNETVersion="10.0" />
+    <FrameworkReference Condition=" '$(DisableImplicitFrameworkReferences)' != 'true' "
+                        Include="Microsoft.OpenHarmony" IsImplicitlyDefined="true" Pack="false" PrivateAssets="All" />
+    <!-- Version-only TargetFramework: this item only exists for openharmony projects. -->
+    <KnownFrameworkReference Include="Microsoft.OpenHarmony"
+                              TargetFramework="net11.0"
+                              RuntimeFrameworkName="Microsoft.OpenHarmony"
+                              DefaultRuntimeFrameworkVersion="1.0.0-preview.1"
+                              LatestRuntimeFrameworkVersion="1.0.0-preview.1"
+                              TargetingPackName="Microsoft.OpenHarmony.Ref.$(TargetPlatformVersion)"
+                              TargetingPackVersion="1.0.0-preview.1"
+                              RuntimePackNamePatterns="Microsoft.OpenHarmony.Runtime.$(TargetPlatformVersion).**RID**"
+                              RuntimePackRuntimeIdentifiers="openharmony-arm64"
+                              />
+  </ItemGroup>
+</Project>
