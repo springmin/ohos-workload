@@ -8,3 +8,7 @@ packs/**/ref/**/*.dll
 packs/**/runtimes/**/*.dll
 packs/**/runtimes/**/*.so
 packs/**/hosts/**/*.so
+# Generated artifacts: workload packs, bundles and signing material
+.feed/
+dist/
+.signing/
