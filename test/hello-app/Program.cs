@@ -3,6 +3,7 @@ using System.Runtime.InteropServices;
 var lines = new List<string>
 {
     $"[hello-app] RID={RuntimeInformation.RuntimeIdentifier}",
+    $"[hello-app] args=[{string.Join(",", args)}]",
     $"[hello-app] OSDescription={RuntimeInformation.OSDescription}",
     $"[hello-app] OSArchitecture={RuntimeInformation.OSArchitecture}",
     $"[hello-app] IsOpenHarmony={Microsoft.OpenHarmony.OpenHarmonyRuntime.IsOpenHarmony}",

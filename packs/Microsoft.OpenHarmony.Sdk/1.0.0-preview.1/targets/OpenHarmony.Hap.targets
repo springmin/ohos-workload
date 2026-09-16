@@ -1,0 +1,109 @@
+<Project>
+  <!-- publish -> .hap packaging for OpenHarmony.
+       Stage layout (packed by the OpenHarmony SDK's ohos_packing_tool):
+           module.json, ets/modules.abc, libs/<abi>/libopenharmonyhost.so,
+           resources/base/..., resources/rawfile/{app.json,dotnet.zip} -->
+  <PropertyGroup>
+    <OpenHarmonyHapPackage Condition=" '$(OpenHarmonyHapPackage)' == '' ">false</OpenHarmonyHapPackage>
+    <OpenHarmonyHapSigning Condition=" '$(OpenHarmonyHapSigning)' == '' ">true</OpenHarmonyHapSigning>
+    <OpenHarmonyBundleName Condition=" '$(OpenHarmonyBundleName)' == '' ">com.example.$(AssemblyName)</OpenHarmonyBundleName>
+    <OpenHarmonyAppName Condition=" '$(OpenHarmonyAppName)' == '' ">$(AssemblyName)</OpenHarmonyAppName>
+    <OpenHarmonyVendor Condition=" '$(OpenHarmonyVendor)' == '' ">openharmony</OpenHarmonyVendor>
+    <OpenHarmonyAbilityName Condition=" '$(OpenHarmonyAbilityName)' == '' ">EntryAbility</OpenHarmonyAbilityName>
+    <OpenHarmonyVersionName Condition=" '$(OpenHarmonyVersionName)' == '' ">$(Version)</OpenHarmonyVersionName>
+    <OpenHarmonyVersionName Condition=" '$(OpenHarmonyVersionName)' == '' ">1.0.0</OpenHarmonyVersionName>
+    <OpenHarmonyVersionCode Condition=" '$(OpenHarmonyVersionCode)' == '' ">1</OpenHarmonyVersionCode>
+    <OpenHarmonyMinApiVersion Condition=" '$(OpenHarmonyMinApiVersion)' == '' ">60001021</OpenHarmonyMinApiVersion>
+    <OpenHarmonyTargetApiVersion Condition=" '$(OpenHarmonyTargetApiVersion)' == '' ">60101024</OpenHarmonyTargetApiVersion>
+    <OpenHarmonyApiReleaseType Condition=" '$(OpenHarmonyApiReleaseType)' == '' ">Beta1</OpenHarmonyApiReleaseType>
+    <OpenHarmonyHapDebug Condition=" '$(OpenHarmonyHapDebug)' == '' ">true</OpenHarmonyHapDebug>
+    <OpenHarmonyAbi Condition=" '$(OpenHarmonyAbi)' == '' ">arm64-v8a</OpenHarmonyAbi>
+    <!-- Toolchain: the OpenHarmony SDK's toolchains/lib (packing + signing tools). -->
+    <OpenHarmonySdkRoot Condition=" '$(OpenHarmonySdkRoot)' == '' ">$(OHOS_SDK_ROOT)</OpenHarmonySdkRoot>
+    <OpenHarmonyToolchainDir Condition=" '$(OpenHarmonyToolchainDir)' == '' and '$(OpenHarmonySdkRoot)' != '' ">$(OpenHarmonySdkRoot)/toolchains/lib</OpenHarmonyToolchainDir>
+    <_OpenHarmonyHapStageDir Condition=" '$(PublishDir)' != '' ">$(OutputPath)$(RuntimeIdentifier)/hap/</_OpenHarmonyHapStageDir>
+    <_OpenHarmonyHapUnsigned>$(OutputPath)$(RuntimeIdentifier)/$(AssemblyName)-unsigned.hap</_OpenHarmonyHapUnsigned>
+    <_OpenHarmonyHapFile>$(OutputPath)$(RuntimeIdentifier)/$(AssemblyName).hap</_OpenHarmonyHapFile>
+  </PropertyGroup>
+
+  <Target Name="_OpenHarmonyDetectToolchain"
+          Condition=" '$(OpenHarmonyHapPackage)' == 'true' and ('$(OpenHarmonyToolchainDir)' == '' or !Exists('$(OpenHarmonyToolchainDir)/ohos_packing_tool')) ">
+    <ItemGroup>
+      <_OpenHarmonyToolchainCandidate Include="$([System.Environment]::GetEnvironmentVariable('HOME'))/.harmonybrew/Cellar/ohos-sdk/*/toolchains/lib" />
+    </ItemGroup>
+    <PropertyGroup>
+      <OpenHarmonyToolchainDir>@(_OpenHarmonyToolchainCandidate->Reverse()->FirstOrDefault())</OpenHarmonyToolchainDir>
+    </PropertyGroup>
+    <Error Condition=" '$(OpenHarmonyToolchainDir)' == '' or !Exists('$(OpenHarmonyToolchainDir)/ohos_packing_tool') "
+           Text="OpenHarmony packaging requires the OpenHarmony SDK toolchain. Set OpenHarmonySdkRoot (or OHOS_SDK_ROOT) to the SDK root that contains toolchains/lib." />
+  </Target>
+
+  <Target Name="_OpenHarmonyStageHap"
+          AfterTargets="Publish"
+          DependsOnTargets="_OpenHarmonyDetectToolchain"
+          Condition=" '$(OpenHarmonyHapPackage)' == 'true' and '$(TargetPlatformIdentifier)' == 'openharmony' ">
+    <PropertyGroup>
+      <_OpenHarmonyTemplatesDir>$(_OpenHarmonySdkPackDir)templates/</_OpenHarmonyTemplatesDir>
+      <_OpenHarmonyHostDir>$(_OpenHarmonySdkPackDir)hosts/$(OpenHarmonyAbi)/</_OpenHarmonyHostDir>
+    </PropertyGroup>
+
+    <Error Condition=" !Exists('$(_OpenHarmonyTemplatesDir)ets/modules.abc') " Text="Missing the ArkTS shell in the platform SDK pack ($(_OpenHarmonyTemplatesDir)ets/modules.abc)." />
+    <Error Condition=" !Exists('$(_OpenHarmonyHostDir)libopenharmonyhost.so') " Text="Missing libopenharmonyhost.so in the platform SDK pack (run scripts/build-host.sh)." />
+
+    <RemoveDir Directories="$(_OpenHarmonyHapStageDir)" />
+    <MakeDir Directories="$(_OpenHarmonyHapStageDir)ets;$(_OpenHarmonyHapStageDir)resources/base/element;$(_OpenHarmonyHapStageDir)resources/base/media;$(_OpenHarmonyHapStageDir)resources/base/profile;$(_OpenHarmonyHapStageDir)resources/rawfile;$(_OpenHarmonyHapStageDir)libs/$(OpenHarmonyAbi)" />
+
+    <!-- module.json from the single-line template -->
+    <ReadLinesFromFile File="$(_OpenHarmonyTemplatesDir)module.json.template">
+      <Output TaskParameter="Lines" ItemName="_OpenHarmonyModuleJsonLine" />
+    </ReadLinesFromFile>
+    <PropertyGroup>
+      <_OpenHarmonyModuleJson>@(_OpenHarmonyModuleJsonLine)</_OpenHarmonyModuleJson>
+      <_OpenHarmonyModuleJson>$(_OpenHarmonyModuleJson.Replace('@BUNDLE_NAME@', '$(OpenHarmonyBundleName)'))</_OpenHarmonyModuleJson>
+      <_OpenHarmonyModuleJson>$(_OpenHarmonyModuleJson.Replace('@VENDOR@', '$(OpenHarmonyVendor)'))</_OpenHarmonyModuleJson>
+      <_OpenHarmonyModuleJson>$(_OpenHarmonyModuleJson.Replace('@VERSION_CODE@', '$(OpenHarmonyVersionCode)'))</_OpenHarmonyModuleJson>
+      <_OpenHarmonyModuleJson>$(_OpenHarmonyModuleJson.Replace('@VERSION_NAME@', '$(OpenHarmonyVersionName)'))</_OpenHarmonyModuleJson>
+      <_OpenHarmonyModuleJson>$(_OpenHarmonyModuleJson.Replace('@MIN_API@', '$(OpenHarmonyMinApiVersion)'))</_OpenHarmonyModuleJson>
+      <_OpenHarmonyModuleJson>$(_OpenHarmonyModuleJson.Replace('@TARGET_API@', '$(OpenHarmonyTargetApiVersion)'))</_OpenHarmonyModuleJson>
+      <_OpenHarmonyModuleJson>$(_OpenHarmonyModuleJson.Replace('@API_RELEASE_TYPE@', '$(OpenHarmonyApiReleaseType)'))</_OpenHarmonyModuleJson>
+      <_OpenHarmonyModuleJson>$(_OpenHarmonyModuleJson.Replace('@DEBUG@', '$(OpenHarmonyHapDebug)'))</_OpenHarmonyModuleJson>
+      <_OpenHarmonyModuleJson>$(_OpenHarmonyModuleJson.Replace('@ABILITY_NAME@', '$(OpenHarmonyAbilityName)'))</_OpenHarmonyModuleJson>
+    </PropertyGroup>
+    <WriteLinesToFile File="$(_OpenHarmonyHapStageDir)module.json" Lines="$(_OpenHarmonyModuleJson)" Overwrite="true" WriteOnlyWhenDifferent="true" />
+
+    <!-- ArkTS shell (compiled), resources and the native host -->
+    <Copy SourceFiles="$(_OpenHarmonyTemplatesDir)ets/modules.abc" DestinationFolder="$(_OpenHarmonyHapStageDir)ets/" />
+    <ItemGroup>
+      <_OpenHarmonyHapResource Include="$(_OpenHarmonyTemplatesDir)resources/base/**/*" />
+    </ItemGroup>
+    <Copy SourceFiles="@(_OpenHarmonyHapResource)" DestinationFiles="@(_OpenHarmonyHapResource->'$(_OpenHarmonyHapStageDir)resources/base/%(RecursiveDir)%(Filename)%(Extension)')" />
+    <Copy SourceFiles="$(_OpenHarmonyHostDir)libopenharmonyhost.so" DestinationFolder="$(_OpenHarmonyHapStageDir)libs/$(OpenHarmonyAbi)/" />
+
+    <!-- app name substitution + the app descriptor read by the ArkTS shell -->
+    <PropertyGroup>
+      <_OpenHarmonyStringsJson>$([System.IO.File]::ReadAllText('$(_OpenHarmonyTemplatesDir)resources/base/element/string.json').Replace('@APP_NAME@', '$(OpenHarmonyAppName)'))</_OpenHarmonyStringsJson>
+    </PropertyGroup>
+    <WriteLinesToFile File="$(_OpenHarmonyHapStageDir)resources/base/element/string.json" Lines="$(_OpenHarmonyStringsJson)" Overwrite="true" />
+    <WriteLinesToFile File="$(_OpenHarmonyHapStageDir)resources/rawfile/app.json"
+                      Lines="{&quot;assembly&quot;:&quot;$(TargetFileName)&quot;,&quot;args&quot;:[&quot;$(OpenHarmonyAppArgs)&quot;]}"
+                      Overwrite="true" />
+
+    <!-- The published .NET app becomes the hap payload -->
+    <ZipDirectory SourceDirectory="$(PublishDir)" DestinationFile="$(_OpenHarmonyHapStageDir)resources/rawfile/dotnet.zip" Overwrite="true" />
+    <Message Importance="high" Text="OpenHarmony: staged .hap payload at $(_OpenHarmonyHapStageDir)" />
+  </Target>
+
+  <Target Name="_OpenHarmonyPackHap"
+          AfterTargets="_OpenHarmonyStageHap"
+          Condition=" '$(OpenHarmonyHapPackage)' == 'true' and '$(TargetPlatformIdentifier)' == 'openharmony' ">
+    <Exec Command="&quot;$(OpenHarmonyToolchainDir)/ohos_packing_tool&quot; pack --mode hap --json-path &quot;$(_OpenHarmonyHapStageDir)module.json&quot; --ets-path &quot;$(_OpenHarmonyHapStageDir)ets&quot; --resources-path &quot;$(_OpenHarmonyHapStageDir)resources&quot; --lib-path &quot;$(_OpenHarmonyHapStageDir)libs&quot; --out-path &quot;$(_OpenHarmonyHapUnsigned)&quot; --force true" />
+    <Message Importance="high" Text="OpenHarmony: packed $(_OpenHarmonyHapUnsigned)" />
+  </Target>
+
+  <Target Name="_OpenHarmonySignHap"
+          AfterTargets="_OpenHarmonyPackHap"
+          Condition=" '$(OpenHarmonyHapPackage)' == 'true' and '$(OpenHarmonyHapSigning)' == 'true' and '$(TargetPlatformIdentifier)' == 'openharmony' ">
+    <Exec Command="sh &quot;$(_OpenHarmonyTemplatesDir)scripts/sign-hap.sh&quot; &quot;$(OpenHarmonyToolchainDir)&quot; &quot;$(_OpenHarmonyHapUnsigned)&quot; &quot;$(_OpenHarmonyHapFile)&quot; &quot;$(OpenHarmonyBundleName)&quot; &quot;$(OpenHarmonyProfileUdid)&quot;" />
+    <Message Importance="high" Text="OpenHarmony: signed $(_OpenHarmonyHapFile)" />
+  </Target>
+</Project>

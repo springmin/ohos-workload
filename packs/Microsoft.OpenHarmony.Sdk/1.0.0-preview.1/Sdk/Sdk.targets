@@ -19,6 +19,12 @@
     <RuntimeIdentifierGraphPath Condition=" '$(RuntimeIdentifierGraphPath)' == '' ">$(MSBuildThisFileDirectory)../ridgraph/PortableRuntimeIdentifierGraph.openharmony.json</RuntimeIdentifierGraphPath>
   </PropertyGroup>
 
+  <PropertyGroup Condition=" '$(TargetPlatformIdentifier)' == 'openharmony' ">
+    <_OpenHarmonySdkPackDir>$(MSBuildThisFileDirectory)..\</_OpenHarmonySdkPackDir>
+  </PropertyGroup>
+
+  <Import Project="$(MSBuildThisFileDirectory)../targets/OpenHarmony.Hap.targets" Condition=" '$(TargetPlatformIdentifier)' == 'openharmony' " />
+
   <ItemGroup Condition=" '$(TargetPlatformIdentifier)' == 'openharmony' ">
     <SdkSupportedTargetPlatformIdentifier Include="openharmony" DisplayName="OpenHarmony" />
     <!-- The installed SDK's bundled RID list predates the openharmony rename; the platform

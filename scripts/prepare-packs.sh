@@ -23,6 +23,22 @@ for API in 20.0 26.0; do
 done
 echo "   placed into Ref.20.0 / Ref.26.0 and the two platform runtime packs"
 
+echo "== 1b/2 managed hosting bootstrap =="
+"$DOTNET" build "$W/src/Microsoft.OpenHarmony.Hosting/Microsoft.OpenHarmony.Hosting.csproj" -c Release -v:q --nologo
+HOSTING="$W/src/Microsoft.OpenHarmony.Hosting/bin/Release/net11.0/Microsoft.OpenHarmony.Hosting.dll"
+for API in 20.0 26.0; do
+  P="$W/packs/Microsoft.OpenHarmony.Runtime.$API.openharmony-arm64/$VER"
+  mkdir -p "$P/runtimes/openharmony-arm64/lib/net11.0"
+  cp "$HOSTING" "$P/runtimes/openharmony-arm64/lib/net11.0/"
+  cat > "$P/data/RuntimeList.xml" <<'XML'
+<FileList TargetFrameworkIdentifier=".NETCoreApp" TargetFrameworkVersion="11.0" FrameworkName="Microsoft.OpenHarmony" Name="Microsoft OpenHarmony">
+  <File Type="Managed" Path="runtimes/openharmony-arm64/lib/net11.0/Microsoft.OpenHarmony.dll" AssemblyName="Microsoft.OpenHarmony" PublicKeyToken="" AssemblyVersion="1.0.0.0" FileVersion="1.0.0.0" />
+  <File Type="Managed" Path="runtimes/openharmony-arm64/lib/net11.0/Microsoft.OpenHarmony.Hosting.dll" AssemblyName="Microsoft.OpenHarmony.Hosting" PublicKeyToken="" AssemblyVersion="1.0.0.0" FileVersion="1.0.0.0" />
+</FileList>
+XML
+done
+echo "   hosting bootstrap placed into the two platform runtime packs"
+
 echo "== 2/2 BCL runtime pack =="
 if [ -f "$BCL/data/RuntimeList.xml" ]; then echo "   already laid out"; exit 0; fi
 NPKG="$1"

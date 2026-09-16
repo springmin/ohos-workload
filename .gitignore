@@ -7,3 +7,4 @@ packs/Microsoft.NETCore.App.Runtime.openharmony-arm64/
 packs/**/ref/**/*.dll
 packs/**/runtimes/**/*.dll
 packs/**/runtimes/**/*.so
+packs/**/hosts/**/*.so
