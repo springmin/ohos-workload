@@ -6,7 +6,10 @@
       "packs": [
         "Microsoft.OpenHarmony.Sdk",
         "Microsoft.OpenHarmony.Ref.20.0",
-        "Microsoft.OpenHarmony.Runtime.20.0.openharmony-arm64"
+        "Microsoft.OpenHarmony.Runtime.20.0.openharmony-arm64",
+        "Microsoft.NETCore.App.Runtime.openharmony-arm64",
+        "Microsoft.OpenHarmony.Ref.26.0",
+        "Microsoft.OpenHarmony.Runtime.26.0.openharmony-arm64"
       ]
     }
   },
@@ -20,6 +23,18 @@
       "version": "1.0.0-preview.1"
     },
     "Microsoft.OpenHarmony.Runtime.20.0.openharmony-arm64": {
+      "kind": "framework",
+      "version": "1.0.0-preview.1"
+    },
+    "Microsoft.NETCore.App.Runtime.openharmony-arm64": {
+      "kind": "framework",
+      "version": "11.0.0-rc.1.26451.109"
+    },
+    "Microsoft.OpenHarmony.Ref.26.0": {
+      "kind": "framework",
+      "version": "1.0.0-preview.1"
+    },
+    "Microsoft.OpenHarmony.Runtime.26.0.openharmony-arm64": {
       "kind": "framework",
       "version": "1.0.0-preview.1"
     }

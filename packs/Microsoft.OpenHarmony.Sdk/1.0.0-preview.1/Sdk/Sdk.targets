@@ -12,10 +12,19 @@
     <AllowSelfContainedWithoutRuntimeIdentifier Condition=" '$(AllowSelfContainedWithoutRuntimeIdentifier)' == '' ">true</AllowSelfContainedWithoutRuntimeIdentifier>
     <GenerateDependencyFile Condition=" '$(GenerateDependencyFile)' == '' ">false</GenerateDependencyFile>
     <CopyLocalLockFileAssemblies Condition=" '$(CopyLocalLockFileAssemblies)' == '' ">true</CopyLocalLockFileAssemblies>
+    <!-- No classic apphost: the .hap host (NAPI) loads hostfxr. The SDK's built-in
+         apphost-less RID list does not know openharmony yet. -->
+    <_RuntimeIdentifierUsesAppHost Condition=" '$(RuntimeIdentifier)' != '' and $(RuntimeIdentifier.StartsWith('openharmony')) ">false</_RuntimeIdentifierUsesAppHost>
+    <!-- The openharmony RIDs are not in the SDK's bundled RID graph yet; the workload carries one. -->
+    <RuntimeIdentifierGraphPath Condition=" '$(RuntimeIdentifierGraphPath)' == '' ">$(MSBuildThisFileDirectory)../ridgraph/PortableRuntimeIdentifierGraph.openharmony.json</RuntimeIdentifierGraphPath>
   </PropertyGroup>
 
   <ItemGroup Condition=" '$(TargetPlatformIdentifier)' == 'openharmony' ">
     <SdkSupportedTargetPlatformIdentifier Include="openharmony" DisplayName="OpenHarmony" />
+    <!-- The installed SDK's bundled RID list predates the openharmony rename; the platform
+         workload owns the RID until it ships in Microsoft.NETCore.Platforms. -->
+    <KnownFrameworkReference Update="Microsoft.NETCore.App"
+                              RuntimePackRuntimeIdentifiers="%(RuntimePackRuntimeIdentifiers);openharmony-arm64" />
     <!-- Valid TargetPlatformVersions (OpenHarmony API levels): CI public SDK = 20, device SDK = 26. -->
     <SdkSupportedTargetPlatformVersion Include="20.0" MinimumNETVersion="10.0" />
     <SdkSupportedTargetPlatformVersion Include="26.0" MinimumNETVersion="10.0" />

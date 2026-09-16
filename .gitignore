@@ -2,3 +2,8 @@ bin/
 obj/
 src/**/bin/
 src/**/obj/
+# Packs with binary content are laid out on demand by scripts/prepare-packs.sh
+packs/Microsoft.NETCore.App.Runtime.openharmony-arm64/
+packs/**/ref/**/*.dll
+packs/**/runtimes/**/*.dll
+packs/**/runtimes/**/*.so
