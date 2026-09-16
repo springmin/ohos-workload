@@ -6,6 +6,7 @@
 //   host.setNodeContent(nodeContentHandle);              // ArkUI NodeContent
 //   host.stopApp();                                      // sends destroy
 //   host.runApp(appDir, assemblyFile);                   // sync one-shot, returns exit code
+#include <arkui/native_node_napi.h>
 #include <napi/native_api.h>
 #include <hilog/log.h>
 #include <pthread.h>
@@ -51,6 +52,7 @@ void* LaunchThread(void* arg) {
     LaunchRequest* request = static_cast<LaunchRequest*>(arg);
     OhosHostAppHandle* handle = nullptr;
     int rc = ohos_host_start_app(request->app_dir, request->assembly, nullptr, request->context_json, &handle);
+    g_handle = handle;
     if (rc != 0) {
         OH_LOG_ERROR(LOG_APP, "[openharmony-host] start_app failed rc=%{public}d", rc);
     } else {
@@ -125,11 +127,16 @@ napi_value SetNodeContent(napi_env env, napi_callback_info info) {
     size_t argc = 1;
     napi_value argv[1] = {nullptr};
     napi_get_cb_info(env, info, &argc, argv, nullptr, nullptr);
-    int64_t value = 0;
     if (argc >= 1) {
-        napi_get_value_int64(env, argv[0], &value);
+        // The ArkTS side passes a NodeContent (from @ohos.arkui.node); convert it to
+        // the native handle the managed app can attach ArkUI nodes to.
+        ArkUI_NodeContentHandle content = nullptr;
+        if (OH_ArkUI_GetNodeContentFromNapiValue(env, argv[0], &content) == 0) {
+            ohos_host_set_node_content(g_handle, content);
+        } else {
+            OH_LOG_WARN(LOG_APP, "[openharmony-host] setNodeContent: not a NodeContent value");
+        }
     }
-    ohos_host_set_node_content(g_handle, reinterpret_cast<void*>(static_cast<intptr_t>(value)));
     napi_value undefined = nullptr;
     napi_get_undefined(env, &undefined);
     return undefined;

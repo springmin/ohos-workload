@@ -26,7 +26,7 @@ mkdir -p "$OUT"
     -Wl,-soname,libopenharmonyhost.so \
     -o "$OUT/libopenharmonyhost.so" \
     "$SRC/host_napi.cpp" "$SRC/openharmony_host.c" \
-    -lace_napi.z -lhilog_ndk.z -ldl
+    -lace_napi.z -lace_ndk.z -lhilog_ndk.z -ldl
 ls -l "$OUT/libopenharmonyhost.so"
 
 if [ "${SKIP_SIGN:-0}" = "1" ]; then
