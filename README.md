@@ -39,6 +39,27 @@ dotnet publish -r openharmony-arm64
 The manifest band directory must match the SDK feature band
 (`11.0.100` for release SDKs, `11.0.100-rc.1` for the current preview SDK).
 
+## Install as a workload (no env vars needed)
+
+```sh
+./scripts/pack-local-workload.sh                     # packs/* -> .feed/*.nupkg
+cp -r manifests/11.0.100-rc.1/microsoft.net.sdk.openharmony \
+      ~/.dotnet/sdk-manifests/11.0.100-rc.1/          # the manifest must be visible first
+dotnet workload install openharmony --skip-manifest-update --source .feed
+dotnet workload list                                  # -> openharmony
+```
+
+`dotnet build` / `dotnet publish -r openharmony-arm64` for `net11.0-openharmony<api>`
+then work without `DOTNETSDK_WORKLOAD_*` environment variables. To uninstall:
+
+```sh
+dotnet workload uninstall openharmony
+rm -rf ~/.dotnet/sdk-manifests/11.0.100-rc.1/microsoft.net.sdk.openharmony
+```
+
+(Symlinked dotnet roots do not work for this: the muxer resolves the SDK through the
+real path, so the workload must be installed into the root that owns the SDK.)
+
 ## Prepare the packs
 
 ```sh
