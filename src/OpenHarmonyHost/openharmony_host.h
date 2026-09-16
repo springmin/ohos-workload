@@ -64,6 +64,16 @@ void ohos_host_set_node_content(OhosHostAppHandle* handle, void* node_content);
 /// Managed code uses this to drive the surface before a real renderer is attached.
 int ohos_host_fill_surface(unsigned int argb);
 
+// --- drawing bridge (native_drawing, the Skia-backed platform 2D API) --------------
+// A minimal immediate-mode canvas over the current surface, used by managed code until a
+// full renderer (Microsoft.Maui.Graphics/Skia) is attached. All calls are no-ops when there
+// is no surface.
+int  ohos_host_draw_begin(int width, int height);
+void ohos_host_draw_clear(unsigned int argb);
+void ohos_host_draw_rect(int x, int y, int width, int height, unsigned int argb, int filled);
+int  ohos_host_draw_text(int x, int y, const char* utf8, float size, unsigned int argb);
+int  ohos_host_draw_present(void);
+
 /// The ArkUI NodeContent handle previously stored (may be NULL).
 void* ohos_host_get_node_content(OhosHostAppHandle* handle);
 

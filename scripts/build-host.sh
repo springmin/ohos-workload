@@ -5,7 +5,7 @@
 # unsigned ELF files). Set SKIP_SIGN=1 to keep it unsigned.
 set -e
 W="$(cd "$(dirname "$0")/.." && pwd)"
-VER=1.0.0-preview.2
+VER=1.0.0-preview.3
 NATIVE="${OHOS_NDK:-}"
 if [ -z "$NATIVE" ]; then
     ROOT="${OHOS_SDK:-$HOME/.harmonybrew/Cellar/ohos-sdk/26.0.0.18_2}"
@@ -26,7 +26,7 @@ mkdir -p "$OUT"
     -Wl,-soname,libopenharmonyhost.so \
     -o "$OUT/libopenharmonyhost.so" \
     "$SRC/host_napi.cpp" "$SRC/openharmony_host.c" \
-    -lace_napi.z -lace_ndk.z -lhilog_ndk.z -lnative_window -ldl
+    -lace_napi.z -lace_ndk.z -lhilog_ndk.z -lnative_window -lnative_drawing -ldl
 ls -l "$OUT/libopenharmonyhost.so"
 
 if [ "${SKIP_SIGN:-0}" = "1" ]; then

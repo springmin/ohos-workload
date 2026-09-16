@@ -2,6 +2,14 @@
 
 #include <dlfcn.h>
 #include <native_buffer/buffer_common.h>
+#include <native_drawing/drawing_bitmap.h>
+#include <native_drawing/drawing_brush.h>
+#include <native_drawing/drawing_canvas.h>
+#include <native_drawing/drawing_font.h>
+#include <native_drawing/drawing_pen.h>
+#include <native_drawing/drawing_rect.h>
+#include <native_drawing/drawing_text_blob.h>
+#include <native_drawing/drawing_types.h>
 #include <native_buffer/native_buffer.h>
 #include <native_window/external_window.h>
 #include <pthread.h>
@@ -466,4 +474,146 @@ int ohos_host_join_app(OhosHostAppHandle* handle) {
     free(handle->context_json);
     free(handle);
     return exit_code;
+}
+
+// ---------------------------------------------------------------------------
+// Drawing bridge: an immediate-mode canvas over the current XComponent surface,
+// implemented with native_drawing (the Skia-backed platform 2D API).
+// ---------------------------------------------------------------------------
+
+static OH_Drawing_Bitmap* g_canvas_bitmap = NULL;
+static OH_Drawing_Canvas* g_canvas = NULL;
+static int g_canvas_width = 0;
+static int g_canvas_height = 0;
+
+int ohos_host_draw_begin(int width, int height) {
+    if (width <= 0 || height <= 0) {
+        return -1;
+    }
+    if (g_canvas != NULL && g_canvas_width == width && g_canvas_height == height) {
+        return 0;
+    }
+    if (g_canvas != NULL) {
+        OH_Drawing_CanvasDestroy(g_canvas);
+        g_canvas = NULL;
+    }
+    if (g_canvas_bitmap != NULL) {
+        OH_Drawing_BitmapDestroy(g_canvas_bitmap);
+        g_canvas_bitmap = NULL;
+    }
+    g_canvas_bitmap = OH_Drawing_BitmapCreate();
+    if (g_canvas_bitmap == NULL) {
+        return -1;
+    }
+    OH_Drawing_BitmapFormat format = { COLOR_FORMAT_RGBA_8888, ALPHA_FORMAT_OPAQUE };
+    OH_Drawing_BitmapBuild(g_canvas_bitmap, (uint32_t)width, (uint32_t)height, &format);
+    g_canvas = OH_Drawing_CanvasCreate();
+    if (g_canvas == NULL) {
+        return -1;
+    }
+    OH_Drawing_CanvasBind(g_canvas, g_canvas_bitmap);
+    g_canvas_width = width;
+    g_canvas_height = height;
+    fprintf(stderr, "[openharmony-host] canvas %dx%d ready\n", width, height);
+    return 0;
+}
+
+void ohos_host_draw_clear(unsigned int argb) {
+    if (g_canvas != NULL) {
+        OH_Drawing_CanvasClear(g_canvas, (uint32_t)argb);
+    }
+}
+
+void ohos_host_draw_rect(int x, int y, int width, int height, unsigned int argb, int filled) {
+    if (g_canvas == NULL) {
+        return;
+    }
+    OH_Drawing_Rect* rect = OH_Drawing_RectCreate((float)x, (float)y, (float)(x + width), (float)(y + height));
+    if (rect == NULL) {
+        return;
+    }
+    if (filled) {
+        OH_Drawing_Brush* brush = OH_Drawing_BrushCreate();
+        OH_Drawing_BrushSetColor(brush, (uint32_t)argb);
+        OH_Drawing_CanvasAttachBrush(g_canvas, brush);
+        OH_Drawing_CanvasDrawRect(g_canvas, rect);
+        OH_Drawing_CanvasDetachBrush(g_canvas);
+        OH_Drawing_BrushDestroy(brush);
+    } else {
+        OH_Drawing_Pen* pen = OH_Drawing_PenCreate();
+        OH_Drawing_PenSetColor(pen, (uint32_t)argb);
+        OH_Drawing_PenSetWidth(pen, 2.0f);
+        OH_Drawing_CanvasAttachPen(g_canvas, pen);
+        OH_Drawing_CanvasDrawRect(g_canvas, rect);
+        OH_Drawing_CanvasDetachPen(g_canvas);
+        OH_Drawing_PenDestroy(pen);
+    }
+    OH_Drawing_RectDestroy(rect);
+}
+
+int ohos_host_draw_text(int x, int y, const char* utf8, float size, unsigned int argb) {
+    if (g_canvas == NULL || utf8 == NULL || *utf8 == '\0') {
+        return -1;
+    }
+    OH_Drawing_Font* font = OH_Drawing_FontCreate();
+    if (font == NULL) {
+        return -1;
+    }
+    OH_Drawing_FontSetTextSize(font, size);
+    OH_Drawing_TextBlob* blob = OH_Drawing_TextBlobCreateFromString(utf8, font, TEXT_ENCODING_UTF8);
+    int rc = -1;
+    if (blob != NULL) {
+        OH_Drawing_Brush* brush = OH_Drawing_BrushCreate();
+        OH_Drawing_BrushSetColor(brush, (uint32_t)argb);
+        OH_Drawing_CanvasAttachBrush(g_canvas, brush);
+        OH_Drawing_CanvasDrawTextBlob(g_canvas, blob, (float)x, (float)y);
+        OH_Drawing_CanvasDetachBrush(g_canvas);
+        OH_Drawing_BrushDestroy(brush);
+        OH_Drawing_TextBlobDestroy(blob);
+        rc = 0;
+    }
+    OH_Drawing_FontDestroy(font);
+    return rc;
+}
+
+int ohos_host_draw_present(void) {
+    if (g_canvas == NULL || !g_surface_valid || g_surface_state == (int)OHOS_SURFACE_DESTROYED) {
+        return -1;
+    }
+    OHNativeWindow* native_window = (OHNativeWindow*)g_surface_window;
+    int width = g_canvas_width;
+    int height = g_canvas_height;
+    void* pixels = OH_Drawing_BitmapGetPixels(g_canvas_bitmap);
+    if (native_window == NULL || pixels == NULL) {
+        return -1;
+    }
+    uint64_t usage = NATIVEBUFFER_USAGE_CPU_WRITE | NATIVEBUFFER_USAGE_MEM_DMA;
+    if (OH_NativeWindow_NativeWindowHandleOpt(native_window, SET_BUFFER_GEOMETRY, width, height) != 0 ||
+        OH_NativeWindow_NativeWindowHandleOpt(native_window, SET_FORMAT, NATIVEBUFFER_PIXEL_FMT_RGBA_8888) != 0 ||
+        OH_NativeWindow_NativeWindowHandleOpt(native_window, SET_USAGE, usage) != 0) {
+        return -1;
+    }
+    int fence = -1;
+    OHNativeWindowBuffer* buffer = NULL;
+    if (OH_NativeWindow_NativeWindowRequestBuffer(native_window, &buffer, &fence) != 0 || buffer == NULL) {
+        return -1;
+    }
+    BufferHandle* handle = OH_NativeWindow_GetBufferHandleFromNative(buffer);
+    if (handle != NULL) {
+        void* addr = mmap(handle->virAddr, handle->size, PROT_READ | PROT_WRITE, MAP_SHARED, handle->fd, 0);
+        if (addr != MAP_FAILED) {
+            uint8_t* dst = (uint8_t*)addr;
+            const uint8_t* src = (const uint8_t*)pixels;
+            size_t row_bytes = (size_t)width * 4;
+            for (int y = 0; y < height; y++) {
+                size_t copy = row_bytes <= handle->stride ? row_bytes : handle->stride;
+                memcpy(dst + (size_t)y * handle->stride, src + (size_t)y * row_bytes, copy);
+            }
+            munmap(addr, handle->size);
+        }
+    }
+    Region region = { NULL, 0 };
+    OH_NativeWindow_NativeWindowFlushBuffer(native_window, buffer, fence, region);
+    fprintf(stderr, "[openharmony-host] canvas presented (%dx%d)\n", width, height);
+    return 0;
 }

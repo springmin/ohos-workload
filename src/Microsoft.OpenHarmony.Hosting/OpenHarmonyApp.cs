@@ -365,6 +365,101 @@ public static class OpenHarmonyBridge
     }
 }
 
+/// <summary>
+/// Immediate-mode drawing over the ArkUI XComponent surface, backed by the platform's
+/// Skia-based 2D API (native_drawing). This is the rendering entry point managed code uses
+/// today; a Microsoft.Maui.Graphics backend maps its canvas onto the same calls.
+/// </summary>
+public static class OpenHarmonyCanvas
+{
+    private const string HostLibrary = "libopenharmonyhost.so";
+
+    [DllImport(HostLibrary, EntryPoint = "ohos_host_draw_begin")]
+    private static extern int BeginNative(int width, int height);
+
+    [DllImport(HostLibrary, EntryPoint = "ohos_host_draw_clear")]
+    private static extern void ClearNative(uint argb);
+
+    [DllImport(HostLibrary, EntryPoint = "ohos_host_draw_rect")]
+    private static extern void RectNative(int x, int y, int width, int height, uint argb, int filled);
+
+    [DllImport(HostLibrary, EntryPoint = "ohos_host_draw_text", CharSet = CharSet.Ansi)]
+    private static extern int TextNative(int x, int y, string utf8, float size, uint argb);
+
+    [DllImport(HostLibrary, EntryPoint = "ohos_host_draw_present")]
+    private static extern int PresentNative();
+
+    /// <summary>Creates/resizes the canvas for the current surface. Safe to call repeatedly.</summary>
+    public static bool Begin(int width, int height)
+    {
+        try
+        {
+            return BeginNative(width, height) == 0;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    public static void Clear(uint argb)
+    {
+        try { ClearNative(argb); } catch { }
+    }
+
+    public static void FillRect(int x, int y, int width, int height, uint argb)
+    {
+        try { RectNative(x, y, width, height, argb, 1); } catch { }
+    }
+
+    public static void StrokeRect(int x, int y, int width, int height, uint argb)
+    {
+        try { RectNative(x, y, width, height, argb, 0); } catch { }
+    }
+
+    public static bool DrawText(int x, int y, string text, float size, uint argb)
+    {
+        try
+        {
+            return TextNative(x, y, text, size, argb) == 0;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    /// <summary>Blits the canvas into the surface and flushes it.</summary>
+    public static bool Present()
+    {
+        try
+        {
+            return PresentNative() == 0;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    /// <summary>Draws a demo frame (background, bars, box and a label) and presents it.</summary>
+    public static bool DrawDemoFrame(int width, int height)
+    {
+        if (!Begin(width, height))
+        {
+            return false;
+        }
+        Clear(0xff102030);                                     // ARGB background
+        FillRect(0, 0, width, height / 6, 0xff2080ff);          // blue header
+        FillRect(0, height - height / 6, width, height / 6, 0xff20c070);
+        StrokeRect(width / 8, height / 3, width / 4, height / 4, 0xffffd040);
+        FillRect(width / 8 + 4, height / 3 + 4, width / 4 - 8, height / 4 - 8, 0x40ffd040);
+        DrawText(width / 2, height / 2, "OpenHarmony .NET", 48f, 0xffe0e0ff);
+        DrawText(width / 2, height / 2 + 64, "native_drawing frame", 28f, 0xffa0c0ff);
+        return Present();
+    }
+}
+
 internal static class BridgeModuleInitializer
 {
     [System.Runtime.CompilerServices.ModuleInitializer]
