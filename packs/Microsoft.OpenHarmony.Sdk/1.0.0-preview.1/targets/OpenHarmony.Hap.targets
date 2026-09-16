@@ -18,6 +18,12 @@
     <OpenHarmonyApiReleaseType Condition=" '$(OpenHarmonyApiReleaseType)' == '' ">Beta1</OpenHarmonyApiReleaseType>
     <OpenHarmonyHapDebug Condition=" '$(OpenHarmonyHapDebug)' == '' ">true</OpenHarmonyHapDebug>
     <OpenHarmonyAbi Condition=" '$(OpenHarmonyAbi)' == '' ">arm64-v8a</OpenHarmonyAbi>
+    <!-- UI builds: point OpenHarmonyArktsModulesAbc at a modules.abc produced by the ArkTS
+         toolchain (ets-loader/hvigor or DevEco Studio, which compiles both the ability and
+         the ArkUI pages), and set OpenHarmonyUIPage to the page record (e.g. pages/Index).
+         The headless shell (this pack's template) is used when the property is empty. -->
+    <OpenHarmonyArktsModulesAbc Condition=" '$(OpenHarmonyArktsModulesAbc)' == '' ">$(MSBuildThisFileDirectory)../templates/ets/modules.abc</OpenHarmonyArktsModulesAbc>
+    <OpenHarmonyUIPage Condition=" '$(OpenHarmonyUIPage)' == '' "></OpenHarmonyUIPage>
     <!-- Toolchain: the OpenHarmony SDK's toolchains/lib (packing + signing tools). -->
     <OpenHarmonySdkRoot Condition=" '$(OpenHarmonySdkRoot)' == '' ">$(OHOS_SDK_ROOT)</OpenHarmonySdkRoot>
     <OpenHarmonyToolchainDir Condition=" '$(OpenHarmonyToolchainDir)' == '' and '$(OpenHarmonySdkRoot)' != '' ">$(OpenHarmonySdkRoot)/toolchains/lib</OpenHarmonyToolchainDir>
@@ -72,7 +78,8 @@
     <WriteLinesToFile File="$(_OpenHarmonyHapStageDir)module.json" Lines="$(_OpenHarmonyModuleJson)" Overwrite="true" WriteOnlyWhenDifferent="true" />
 
     <!-- ArkTS shell (compiled), resources and the native host -->
-    <Copy SourceFiles="$(_OpenHarmonyTemplatesDir)ets/modules.abc" DestinationFolder="$(_OpenHarmonyHapStageDir)ets/" />
+    <Error Condition=" !Exists('$(OpenHarmonyArktsModulesAbc)') " Text="OpenHarmonyArktsModulesAbc does not exist: $(OpenHarmonyArktsModulesAbc)" />
+    <Copy SourceFiles="$(OpenHarmonyArktsModulesAbc)" DestinationFiles="$(_OpenHarmonyHapStageDir)ets/modules.abc" />
     <ItemGroup>
       <_OpenHarmonyHapResource Include="$(_OpenHarmonyTemplatesDir)resources/base/**/*" />
     </ItemGroup>
@@ -84,6 +91,15 @@
       <_OpenHarmonyStringsJson>$([System.IO.File]::ReadAllText('$(_OpenHarmonyTemplatesDir)resources/base/element/string.json').Replace('@APP_NAME@', '$(OpenHarmonyAppName)'))</_OpenHarmonyStringsJson>
     </PropertyGroup>
     <WriteLinesToFile File="$(_OpenHarmonyHapStageDir)resources/base/element/string.json" Lines="$(_OpenHarmonyStringsJson)" Overwrite="true" />
+    <PropertyGroup>
+      <_OpenHarmonyMainPages>{
+  &quot;src&quot;: []
+}</_OpenHarmonyMainPages>
+      <_OpenHarmonyMainPages Condition=" '$(OpenHarmonyUIPage)' != '' ">{
+  &quot;src&quot;: [&quot;$(OpenHarmonyUIPage)&quot;]
+}</_OpenHarmonyMainPages>
+    </PropertyGroup>
+    <WriteLinesToFile File="$(_OpenHarmonyHapStageDir)resources/base/profile/main_pages.json" Lines="$(_OpenHarmonyMainPages)" Overwrite="true" />
     <PropertyGroup>
       <_OpenHarmonyAppJson>{&quot;assembly&quot;:&quot;$(TargetFileName)&quot;}</_OpenHarmonyAppJson>
       <_OpenHarmonyAppJson Condition=" '$(OpenHarmonyAppArgs)' != '' ">{&quot;assembly&quot;:&quot;$(TargetFileName)&quot;,&quot;args&quot;:[&quot;$(OpenHarmonyAppArgs)&quot;]}</_OpenHarmonyAppJson>
