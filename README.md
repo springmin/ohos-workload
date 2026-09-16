@@ -66,6 +66,18 @@ real path, so the workload must be installed into the root that owns the SDK.)
 ./scripts/pack-workload-bundle.sh          # dist/openharmony-workload-<ver>.tar.gz
 ```
 
+Lookup order used by `install-dotnet-ohos.sh` (A and B releases coexist):
+
+1. `WORKLOAD_BUNDLE=<dir|tar.gz>` — explicit local input
+2. a bundle next to the SDK (`<dotnet-root>/workload/openharmony-workload-*.tar.gz`) or
+   next to the script (legacy `ohos-workload-*.tar.gz` is still accepted)
+3. `WORKLOAD_RELEASE_TAG=<tag>` — explicit pin (an SDK release tag for the frozen
+   SDK+workload snapshot, or `workload-<version>` for the workload's own line)
+4. the newest `workload-*` release (B: the workload's own version line)
+5. the release the SDK tarball came from (A: a build-time snapshot attached to the SDK release)
+
+Downloaded bundles are cached in `<dotnet-root>/workload/` and reused.
+
 The bundle (manifest + `feed/*.nupkg` + `install-ohos-workload.sh`) is what the fork's SDK
 installer consumes: `install-dotnet-ohos.sh` (in `sdk-ohos/eng/ohos-install`) installs it
 automatically when the tarball sits next to the SDK, is published in the same release
