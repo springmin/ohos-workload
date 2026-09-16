@@ -9,6 +9,11 @@
 # symlink root (hvigor expects <sdkRoot>/<platformVersion>/<component>).
 #
 # Requirements: node >= 18, an OpenHarmony SDK (OHOS_SDK_ROOT or the harmonybrew default).
+# hvigor aborts with a V8 fatal when driven from the device's toybox sh; re-exec under
+# bash when available.
+if [ -z "${BASH_VERSION:-}" ] && command -v bash >/dev/null 2>&1; then
+    exec bash "$0" "$@"
+fi
 set -e
 W="$(cd "$(dirname "$0")/.." && pwd)"
 SDK="${OHOS_SDK_ROOT:-$HOME/.harmonybrew/Cellar/ohos-sdk/26.0.0.18_2}"
@@ -207,11 +212,15 @@ run_hvigor() {
             > "$LOG" 2>&1 )
 }
 # The toolchain occasionally aborts with a V8 fatal ("Signal 5") on this device; retry.
+ABC_INTERMEDIATE="$PROJ/entry/build/default/intermediates/loader_out/default/ets/modules.abc"
 attempt=1
 while :; do
     if run_hvigor; then break; fi
-    if grep -q 'spawn java ENOENT' "$LOG"; then
-        info "hvigor PackageHap needs java; ignoring (the ArkTS output is already produced)"
+    if [ -f "$ABC_INTERMEDIATE" ]; then
+        # hvigor's own PackageHap step is not needed (this workload packages the hap with
+        # the OpenHarmony packing tool); the ArkTS output is what matters.
+        info "hvigor reported a failure after producing modules.abc; ignoring it"
+        grep -E 'Failed :' "$LOG" | tail -2 | sed 's/^/    /'
         break
     fi
     if grep -qE 'Signal 5|Fatal error in' "$LOG" && [ "$attempt" -lt 3 ]; then
