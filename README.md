@@ -39,9 +39,20 @@ dotnet publish -r openharmony-arm64
 The manifest band directory must match the SDK feature band
 (`11.0.100` for release SDKs, `11.0.100-rc.1` for the current preview SDK).
 
+## Prepare the packs
+
+```sh
+. ./scripts/env.sh
+./scripts/prepare-packs.sh            # builds the thin ref assembly; downloads the
+                                      # released runtime pack (sha256-verified) and lays
+                                      # it out as a workload pack
+```
+
 ## Status (2026-09-16)
 
-- ✅ `dotnet build` for `net11.0-openharmony20.0` succeeds.
-- ⏳ `dotnet publish -r openharmony-arm64` — runtime pack layout prepared from the
-  release `Microsoft.NETCore.App.Runtime.openharmony-arm64` package.
-- ⏳ `.hap` packaging (W2).
+- ✅ `dotnet build` and `dotnet publish -r openharmony-arm64` succeed for both
+  `net11.0-openharmony20.0` (CI public SDK API level) and `net11.0-openharmony26.0`
+  (device SDK API level).
+- ✅ The published self-contained app **runs on device** (CoreCLR starts, BCL works;
+  `System.Console` remains unsupported on OpenHarmony, so tests write to a file).
+- ⏳ `.hap` packaging (W2) — NAPI host + ArkTS shell + `publish -> .hap` target.
