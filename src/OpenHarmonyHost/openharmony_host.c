@@ -1,6 +1,7 @@
 #include "openharmony_host.h"
 
 #include <dlfcn.h>
+#include <pthread.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -153,5 +154,212 @@ int ohos_host_run_app(const char* app_dir, const char* app_assembly_file, int ar
     int exit_code = ((int (*)(const char*))entry)(payload);
     free(payload);
     close_ctx(ctx);
+    return exit_code;
+}
+
+// ---------------------------------------------------------------------------
+// Bridged mode: the managed application is started through the command-line
+// hostfxr entry point (self-contained friendly) and registers its callbacks
+// back into this library; the shell pushes lifecycle/node events into them.
+// ---------------------------------------------------------------------------
+
+typedef int (*ohos_initialize_for_dotnet_command_line_fn)(int, const char* const*,
+                                                          const ohos_hostfxr_initialize_parameters*,
+                                                          void**);
+typedef int (*ohos_run_app_fn)(void*);
+
+#define OHOS_MAX_PENDING_LIFECYCLE 32
+
+struct OhosHostAppHandle {
+    void* hostfxr;
+    void* ctx;
+    int (*run_app)(void*);
+    int (*close_ctx)(void*);
+    pthread_t thread;
+    int exit_code;
+    int joined;
+    char* context_json;
+    void* node_content;
+    void (*bridge_lifecycle)(int);
+    void (*bridge_node)(void*);
+    int pending_lifecycle[OHOS_MAX_PENDING_LIFECYCLE];
+    int pending_count;
+};
+
+// One bridged application per process, matching the ArkTS one-ability model.
+static OhosHostAppHandle* g_app = NULL;
+
+static void* OhosAppThread(void* arg) {
+    OhosHostAppHandle* handle = (OhosHostAppHandle*)arg;
+    fprintf(stderr, "[openharmony-host] run_app entering\n");
+    fflush(stderr);
+    handle->exit_code = handle->run_app(handle->ctx);
+    fprintf(stderr, "[openharmony-host] run_app exited: %d\n", handle->exit_code);
+    fflush(stderr);
+    return NULL;
+}
+
+int ohos_host_start_app(const char* app_dir, const char* app_assembly_file,
+                        const char* args_json, const char* context_json,
+                        OhosHostAppHandle** out_handle) {
+    char hostfxr_path[4096];
+    char app_assembly_path[4096];
+    if (path_join(hostfxr_path, sizeof(hostfxr_path), app_dir, "libhostfxr.so") != 0 ||
+        path_join(app_assembly_path, sizeof(app_assembly_path), app_dir, app_assembly_file) != 0) {
+        return -1;
+    }
+
+    void* hostfxr = dlopen(hostfxr_path, RTLD_NOW | RTLD_LOCAL);
+    if (hostfxr == NULL) {
+        fprintf(stderr, "[openharmony-host] dlopen(%s) failed: %s\n", hostfxr_path, dlerror());
+        return -1;
+    }
+
+    ohos_set_error_writer_fn set_error_writer = (ohos_set_error_writer_fn)dlsym(hostfxr, "hostfxr_set_error_writer");
+    if (set_error_writer != NULL) {
+        set_error_writer(ohos_error_writer);
+    }
+
+    ohos_initialize_for_dotnet_command_line_fn initialize =
+        (ohos_initialize_for_dotnet_command_line_fn)dlsym(hostfxr, "hostfxr_initialize_for_dotnet_command_line");
+    ohos_close_fn close_ctx = (ohos_close_fn)dlsym(hostfxr, "hostfxr_close");
+    ohos_run_app_fn run_app = (ohos_run_app_fn)dlsym(hostfxr, "hostfxr_run_app");
+    if (initialize == NULL || close_ctx == NULL || run_app == NULL) {
+        fprintf(stderr, "[openharmony-host] hostfxr symbols missing\n");
+        return -1;
+    }
+
+    if (context_json != NULL) {
+        setenv("OHOS_HOST_APP_CONTEXT", context_json, 1);
+    }
+
+    const char* argv[1] = {app_assembly_path};
+    ohos_hostfxr_initialize_parameters params;
+    params.size = sizeof(params);
+    params.host_path = app_dir;
+    params.dotnet_root = getenv("DOTNET_ROOT");
+
+    void* ctx = NULL;
+    int rc = initialize(1, argv, &params, &ctx);
+    if (rc != 0 || ctx == NULL) {
+        fprintf(stderr, "[openharmony-host] initialize_for_dotnet_command_line rc=0x%x\n", rc);
+        return -1;
+    }
+
+    OhosHostAppHandle* handle = (OhosHostAppHandle*)calloc(1, sizeof(OhosHostAppHandle));
+    if (handle == NULL) {
+        close_ctx(ctx);
+        return -1;
+    }
+    handle->hostfxr = hostfxr;
+    handle->ctx = ctx;
+    handle->run_app = run_app;
+    handle->close_ctx = close_ctx;
+    (void)args_json;
+    if (context_json != NULL) {
+        handle->context_json = strdup(context_json);
+    }
+    g_app = handle;
+
+    pthread_attr_t attr;
+    pthread_attr_init(&attr);
+    pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_JOINABLE);
+    const char* run_sync = getenv("OHOS_HOST_RUN_SYNC");
+    if (run_sync != NULL && run_sync[0] == '1') {
+        fprintf(stderr, "[openharmony-host] start_app: running the app on the calling thread\n");
+        fflush(stderr);
+        // Hand the handle out first so the shell can push events while the app runs.
+        *out_handle = handle;
+        handle->exit_code = run_app(ctx);
+        handle->joined = 1;
+        return 0;
+    }
+    fprintf(stderr, "[openharmony-host] start_app: launching app thread\n");
+    fflush(stderr);
+    int thread_rc = pthread_create(&handle->thread, &attr, OhosAppThread, handle);
+    pthread_attr_destroy(&attr);
+    if (thread_rc != 0) {
+        fprintf(stderr, "[openharmony-host] pthread_create failed: %d\n", thread_rc);
+        g_app = NULL;
+        close_ctx(ctx);
+        free(handle->context_json);
+        free(handle);
+        return -1;
+    }
+
+    *out_handle = handle;
+    return 0;
+}
+
+const char* ohos_host_get_app_context(void) {
+    return g_app != NULL ? g_app->context_json : NULL;
+}
+
+void ohos_host_register_bridge(void* lifecycle, void* node) {
+    fprintf(stderr, "[openharmony-host] register_bridge lifecycle=%p node=%p g_app=%p pending=%d\n",
+            lifecycle, node, (void*)g_app, g_app ? g_app->pending_count : -1);
+    fflush(stderr);
+    if (g_app == NULL) {
+        return;
+    }
+    g_app->bridge_lifecycle = (void (*)(int))lifecycle;
+    g_app->bridge_node = (void (*)(void*))node;
+    for (int i = 0; i < g_app->pending_count; i++) {
+        if (g_app->bridge_lifecycle != NULL) {
+            g_app->bridge_lifecycle(g_app->pending_lifecycle[i]);
+        }
+    }
+    g_app->pending_count = 0;
+    if (g_app->bridge_node != NULL && g_app->node_content != NULL) {
+        g_app->bridge_node(g_app->node_content);
+    }
+}
+
+void ohos_host_notify_lifecycle(OhosHostAppHandle* handle, ohos_lifecycle_event event) {
+    fprintf(stderr, "[openharmony-host] notify evt=%d handle=%p registered=%d\n",
+            (int)event, (void*)handle, handle ? (handle->bridge_lifecycle != NULL) : -1);
+    fflush(stderr);
+    if (handle == NULL) {
+        return;
+    }
+    if (handle->bridge_lifecycle != NULL) {
+        handle->bridge_lifecycle((int)event);
+        return;
+    }
+    if (handle->pending_count < OHOS_MAX_PENDING_LIFECYCLE) {
+        handle->pending_lifecycle[handle->pending_count++] = (int)event;
+    }
+}
+
+void ohos_host_set_node_content(OhosHostAppHandle* handle, void* node_content) {
+    if (handle == NULL) {
+        return;
+    }
+    handle->node_content = node_content;
+    if (handle->bridge_node != NULL) {
+        handle->bridge_node(node_content);
+    }
+}
+
+void* ohos_host_get_node_content(OhosHostAppHandle* handle) {
+    return handle != NULL ? handle->node_content : NULL;
+}
+
+int ohos_host_join_app(OhosHostAppHandle* handle) {
+    if (handle == NULL) {
+        return -1;
+    }
+    if (!handle->joined) {
+        pthread_join(handle->thread, NULL);
+        handle->joined = 1;
+    }
+    int exit_code = handle->exit_code;
+    // The runtime is intentionally not closed here: managed worker threads may still be
+    // running and the application process owns the runtime until it exits.
+    if (g_app == handle) {
+        g_app = NULL;
+    }
+    free(handle->context_json);
+    free(handle);
     return exit_code;
 }

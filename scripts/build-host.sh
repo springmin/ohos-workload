@@ -1,11 +1,11 @@
 #!/bin/sh
 # Builds libopenharmonyhost.so (arm64-v8a) with the OpenHarmony NDK and places it
-# into the SDK pack. Run on a device/host that has the OpenHarmony SDK, or point
-# OHOS_SDK at one.
+# into the SDK pack. The library is signed with the OpenHarmony test material
+# because the device refuses to dlopen unsigned libraries (and refuses to exec
+# unsigned ELF files). Set SKIP_SIGN=1 to keep it unsigned.
 set -e
 W="$(cd "$(dirname "$0")/.." && pwd)"
 VER=1.0.0-preview.1
-# Accept either an SDK root or its native/ dir (the environment may already set OHOS_SDK).
 NATIVE="${OHOS_NDK:-}"
 if [ -z "$NATIVE" ]; then
     ROOT="${OHOS_SDK:-$HOME/.harmonybrew/Cellar/ohos-sdk/26.0.0.18_2}"
@@ -23,7 +23,17 @@ mkdir -p "$OUT"
     -fPIC -shared -O2 -std=c++17 -Wall \
     -I"$NATIVE/sysroot/usr/include" \
     --ld-path="$LLD" \
+    -Wl,-soname,libopenharmonyhost.so \
     -o "$OUT/libopenharmonyhost.so" \
     "$SRC/host_napi.cpp" "$SRC/openharmony_host.c" \
     -lace_napi.z -lhilog_ndk.z -ldl
+ls -l "$OUT/libopenharmonyhost.so"
+
+if [ "${SKIP_SIGN:-0}" = "1" ]; then
+    echo "== signing skipped (SKIP_SIGN=1) =="
+    exit 0
+fi
+
+echo "== signing libopenharmonyhost.so (SDK selfsign algorithm) =="
+sh "$W/scripts/selfsign.sh" "$OUT/libopenharmonyhost.so"
 ls -l "$OUT/libopenharmonyhost.so"

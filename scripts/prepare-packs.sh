@@ -30,6 +30,16 @@ for API in 20.0 26.0; do
   P="$W/packs/Microsoft.OpenHarmony.Runtime.$API.openharmony-arm64/$VER"
   mkdir -p "$P/runtimes/openharmony-arm64/lib/net11.0"
   cp "$HOSTING" "$P/runtimes/openharmony-arm64/lib/net11.0/"
+  # Compile-time surface: the bridge API ships in the ref pack too.
+  R="$W/packs/Microsoft.OpenHarmony.Ref.$API/$VER/ref/net11.0"
+  mkdir -p "$R"
+  cp "$HOSTING" "$R/"
+  cat > "$W/packs/Microsoft.OpenHarmony.Ref.$API/$VER/data/FrameworkList.xml" <<'XML'
+<FileList TargetFrameworkIdentifier=".NETCoreApp" TargetFrameworkVersion="11.0" FrameworkName="Microsoft.OpenHarmony" Name="Microsoft OpenHarmony">
+  <File Type="Managed" Path="ref/net11.0/Microsoft.OpenHarmony.dll" AssemblyName="Microsoft.OpenHarmony" PublicKeyToken="" AssemblyVersion="1.0.0.0" FileVersion="1.0.0.0" />
+  <File Type="Managed" Path="ref/net11.0/Microsoft.OpenHarmony.Hosting.dll" AssemblyName="Microsoft.OpenHarmony.Hosting" PublicKeyToken="" AssemblyVersion="1.0.0.0" FileVersion="1.0.0.0" />
+</FileList>
+XML
   cat > "$P/data/RuntimeList.xml" <<'XML'
 <FileList TargetFrameworkIdentifier=".NETCoreApp" TargetFrameworkVersion="11.0" FrameworkName="Microsoft.OpenHarmony" Name="Microsoft OpenHarmony">
   <File Type="Managed" Path="runtimes/openharmony-arm64/lib/net11.0/Microsoft.OpenHarmony.dll" AssemblyName="Microsoft.OpenHarmony" PublicKeyToken="" AssemblyVersion="1.0.0.0" FileVersion="1.0.0.0" />
