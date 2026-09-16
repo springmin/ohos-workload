@@ -1,6 +1,6 @@
 #!/bin/sh
 # Produces a self-contained OpenHarmony workload bundle:
-#   dist/ohos-workload-<version>.tar.gz
+#   dist/openharmony-workload-<version>.tar.gz
 #     manifests/microsoft.net.sdk.openharmony/...
 #     feed/*.nupkg
 #     install-ohos-workload.sh
@@ -11,7 +11,7 @@ W="$(cd "$(dirname "$0")/.." && pwd)"
 OUT="${1:-$W/dist}"
 BAND="${SDK_BAND:-11.0.100-rc.1}"
 VER="$(python3 -c "import json;print(json.load(open('$W/manifests/$BAND/microsoft.net.sdk.openharmony/WorkloadManifest.json'))['version'])")"
-NAME="ohos-workload-$VER"
+NAME="openharmony-workload-$VER"
 STAGE="$OUT/$NAME"
 
 echo "== packing the workload feed =="

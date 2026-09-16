@@ -63,13 +63,13 @@ real path, so the workload must be installed into the root that owns the SDK.)
 ## Ship it as a bundle
 
 ```sh
-./scripts/pack-workload-bundle.sh          # dist/ohos-workload-<ver>.tar.gz
+./scripts/pack-workload-bundle.sh          # dist/openharmony-workload-<ver>.tar.gz
 ```
 
 The bundle (manifest + `feed/*.nupkg` + `install-ohos-workload.sh`) is what the fork's SDK
 installer consumes: `install-dotnet-ohos.sh` (in `sdk-ohos/eng/ohos-install`) installs it
 automatically when the tarball sits next to the SDK, is published in the same release
-(asset `ohos-workload-*.tar.gz`), or is pointed at with `WORKLOAD_BUNDLE=<dir|tar.gz>`.
+(asset `openharmony-workload-*.tar.gz` (legacy `ohos-workload-*.tar.gz` is still accepted)), or is pointed at with `WORKLOAD_BUNDLE=<dir|tar.gz>`.
 `ohos-install.sh workload` installs it into an existing SDK; `WORKLOAD_DRY_RUN=1` shows the
 plan. `build-ohos-all.sh` collects the bundle into its release outputs
 (`OHOS_WORKLOAD_BUNDLE`, or `~/springsources/ohos-workload/dist/` by default).
