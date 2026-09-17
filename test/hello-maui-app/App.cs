@@ -8,8 +8,34 @@ namespace HelloMauiApp;
 public sealed class App : Application
 {
     protected override Window CreateWindow(IActivationState? activationState)
-        // The page is hosted in a navigation page: the slice draws the bar and its back button.
-        => new Window(new NavigationPage(BuildPage()) { Title = "Home", BarBackgroundColor = Colors.DarkSlateBlue });
+        // The main page lives in a navigation page; a second tab shows animations.
+        => new Window(new TabbedPage
+        {
+            Children =
+            {
+                new NavigationPage(BuildPage()) { Title = "Home", BarBackgroundColor = Colors.DarkSlateBlue },
+                new ContentPage { Title = "Animations", Content = BuildAnimationPage() },
+            },
+        });
+
+    private static View BuildAnimationPage()
+    {
+        var fadeTarget = new Label { Text = "animate me", FontSize = 36, HorizontalOptions = LayoutOptions.Center };
+        var status = new Label { Text = "tap the button", FontSize = 26, HorizontalOptions = LayoutOptions.Center };
+        var run = new Button { Text = "Run animations", FontSize = 32 };
+        run.Clicked += async (_, _) =>
+        {
+            status.Text = "fading out...";
+            await fadeTarget.FadeTo(0.1, 600, Easing.CubicInOut);
+            await fadeTarget.FadeTo(1.0, 400, Easing.CubicInOut);
+            await fadeTarget.TranslateTo(60, 0, 300, Easing.CubicOut);
+            await fadeTarget.TranslateTo(0, 0, 300, Easing.CubicOut);
+            await fadeTarget.RotateTo(360, 600, Easing.Linear);
+            fadeTarget.Rotation = 0;
+            status.Text = "animations done";
+        };
+        return new VerticalStackLayout { Padding = 32, Spacing = 24, Children = { fadeTarget, run, status } };
+    }
 
     private static ContentPage BuildPage()
     {
