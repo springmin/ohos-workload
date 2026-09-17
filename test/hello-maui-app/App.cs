@@ -47,6 +47,19 @@ public sealed class App : Application
         valueControls.Add(slider);
         valueControls.Add(spinner);
 
+        // W22-4: collection view (items materialized from a template, drag-scrollable).
+        var collection = new CollectionView
+        {
+            ItemsSource = Enumerable.Range(0, 30).Select(i => $"collection item {i}").ToList(),
+            ItemTemplate = new DataTemplate(() =>
+            {
+                var itemLabel = new Label { FontSize = 26 };
+                itemLabel.SetBinding(Label.TextProperty, ".");
+                return itemLabel;
+            }),
+            HeightRequest = 260,
+        };
+
         // W21: clip + translate scrolling, driven by touch drags.
         var rows = new VerticalStackLayout { Spacing = 8 };
         for (int i = 0; i < 12; i++)
@@ -70,6 +83,7 @@ public sealed class App : Application
         layout.Add(entry);
         layout.Add(valueControls);
         layout.Add(progress);
+        layout.Add(collection);
         layout.Add(scroll);
         layout.Add(reset);
         layout.Add(status);
