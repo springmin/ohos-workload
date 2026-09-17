@@ -72,6 +72,15 @@ int  ohos_host_draw_begin(int width, int height);
 void ohos_host_draw_clear(unsigned int argb);
 void ohos_host_draw_rect(int x, int y, int width, int height, unsigned int argb, int filled);
 int  ohos_host_draw_text(int x, int y, const char* utf8, float size, unsigned int argb);
+// --- canvas state / metrics / images ----------------------------------------------
+int  ohos_host_measure_text(const char* utf8, float size, int* width, int* height);
+void ohos_host_draw_save(void);
+void ohos_host_draw_restore(void);
+void ohos_host_draw_clip_rect(float x, float y, float width, float height, int subtract);
+void ohos_host_draw_clip_polyline(const float* xy, int count);
+/// Decodes PNG/JPEG bytes and draws them into the destination rectangle.
+int  ohos_host_draw_image_bytes(const void* data, int length, float x, float y, float width, float height);
+
 /// Draws a polyline/polygon from packed coordinates [x0,y0,x1,y1,...]. Curves are
 /// flattened by the caller. filled = 1 fills (closed), otherwise strokes with stroke_width.
 void ohos_host_draw_polyline(const float* xy, int count, int closed, unsigned int argb, int filled, float stroke_width);

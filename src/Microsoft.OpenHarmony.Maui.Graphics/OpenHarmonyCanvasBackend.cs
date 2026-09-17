@@ -88,9 +88,32 @@ public sealed class OpenHarmonyCanvas : ICanvas
     public void FillPath(PathF path, WindingMode windingMode) => Fill(Flatten(path));
 
     // ---------------------------------------------------------------- state
-    public void SaveState() { _savedStates.Push(_transform); }
-    public bool RestoreState() => _savedStates.Count > 0 && (_transform = _savedStates.Pop()) == _transform;
-    public void ResetState() { _savedStates.Clear(); _transform = Matrix3x2.Identity; }
+    public void SaveState()
+    {
+        _savedStates.Push(_transform);
+        HostCanvas.Save();
+    }
+
+    public bool RestoreState()
+    {
+        if (_savedStates.Count == 0)
+        {
+            return false;
+        }
+        _transform = _savedStates.Pop();
+        HostCanvas.Restore();
+        return true;
+    }
+
+    public void ResetState()
+    {
+        while (_savedStates.Count > 0)
+        {
+            _savedStates.Pop();
+            HostCanvas.Restore();
+        }
+        _transform = Matrix3x2.Identity;
+    }
 
     public void Rotate(float degrees, float x, float y)
     {
@@ -105,10 +128,23 @@ public sealed class OpenHarmonyCanvas : ICanvas
     public void Translate(float tx, float ty) => _transform = Matrix3x2.CreateTranslation(tx, ty) * _transform;
     public void ConcatenateTransform(Matrix3x2 transform) => _transform = transform * _transform;
 
-    // ---------------------------------------------------------------- clipping (not exposed by the bridge yet)
-    public void SubtractFromClip(float x, float y, float width, float height) { }
-    public void ClipPath(PathF path, WindingMode windingMode = WindingMode.NonZero) { }
-    public void ClipRectangle(float x, float y, float width, float height) { }
+    // ---------------------------------------------------------------- clipping
+    public void SubtractFromClip(float x, float y, float width, float height)
+    {
+        Vector2 topLeft = P(x, y);
+        Vector2 bottomRight = P(x + width, y + height);
+        HostCanvas.ClipRect(topLeft.X, topLeft.Y, bottomRight.X - topLeft.X, bottomRight.Y - topLeft.Y, subtract: true);
+    }
+
+    public void ClipPath(PathF path, WindingMode windingMode = WindingMode.NonZero)
+        => HostCanvas.ClipPolyline(Flatten(path));
+
+    public void ClipRectangle(float x, float y, float width, float height)
+    {
+        Vector2 topLeft = P(x, y);
+        Vector2 bottomRight = P(x + width, y + height);
+        HostCanvas.ClipRect(topLeft.X, topLeft.Y, bottomRight.X - topLeft.X, bottomRight.Y - topLeft.Y);
+    }
 
     // ---------------------------------------------------------------- primitives
     public void DrawLine(float x1, float y1, float x2, float y2)
@@ -225,9 +261,19 @@ public sealed class OpenHarmonyCanvas : ICanvas
         DrawString(value.Text, x, y, width, height, HorizontalAlignment.Left, VerticalAlignment.Top);
     }
 
-    // Approximate metrics until the platform text APIs are wired in.
+    // Platform metrics when available, otherwise an estimate.
     public SizeF GetStringSize(string value, IFont font, float fontSize)
-        => new(value.Length * fontSize * 0.55f, fontSize * 1.25f);
+    {
+        if (string.IsNullOrEmpty(value))
+        {
+            return SizeF.Zero;
+        }
+        if (HostCanvas.MeasureText(value, fontSize * DisplayScale, out int width, out int height) && width > 0)
+        {
+            return new SizeF(width / DisplayScale, height / DisplayScale);
+        }
+        return new SizeF(value.Length * fontSize * 0.55f, fontSize * 1.25f);
+    }
 
     public SizeF GetStringSize(string value, IFont font, float fontSize,
         HorizontalAlignment horizontalAlignment, VerticalAlignment verticalAlignment)
@@ -236,5 +282,24 @@ public sealed class OpenHarmonyCanvas : ICanvas
     // ---------------------------------------------------------------- not mapped yet
     public void SetShadow(SizeF offset, float blur, Color color) { }
     public void SetFillPaint(Paint paint, RectF rectangle) { }
-    public void DrawImage(IImage image, float x, float y, float width, float height) { }
+    public void DrawImage(IImage image, float x, float y, float width, float height)
+    {
+        if (image is null)
+        {
+            return;
+        }
+        try
+        {
+            using var stream = new MemoryStream();
+            image.Save(stream, ImageFormat.Png);
+            Vector2 topLeft = P(x, y);
+            Vector2 bottomRight = P(x + width, y + height);
+            HostCanvas.DrawImageBytes(stream.ToArray(), (int)topLeft.X, (int)topLeft.Y,
+                (int)(bottomRight.X - topLeft.X), (int)(bottomRight.Y - topLeft.Y));
+        }
+        catch
+        {
+            // Decoding failures must not take the frame down.
+        }
+    }
 }

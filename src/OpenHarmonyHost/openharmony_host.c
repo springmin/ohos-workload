@@ -1,12 +1,15 @@
 #include "openharmony_host.h"
 
 #include <dlfcn.h>
+#include <multimedia/image_framework/image/image_source_native.h>
+#include <multimedia/image_framework/image/pixelmap_native.h>
 #include <native_buffer/buffer_common.h>
 #include <native_drawing/drawing_bitmap.h>
 #include <native_drawing/drawing_brush.h>
 #include <native_drawing/drawing_canvas.h>
 #include <native_drawing/drawing_font.h>
 #include <native_drawing/drawing_path.h>
+#include <native_drawing/drawing_pixel_map.h>
 #include <native_drawing/drawing_pen.h>
 #include <native_drawing/drawing_rect.h>
 #include <native_drawing/drawing_text_blob.h>
@@ -609,6 +612,100 @@ void ohos_host_draw_polyline(const float* xy, int count, int closed, unsigned in
         OH_Drawing_PenDestroy(pen);
     }
     OH_Drawing_PathDestroy(path);
+}
+
+int ohos_host_measure_text(const char* utf8, float size, int* width, int* height) {
+    if (utf8 == NULL || *utf8 == '\0') {
+        if (width != NULL) *width = 0;
+        if (height != NULL) *height = 0;
+        return -1;
+    }
+    OH_Drawing_Font* font = OH_Drawing_FontCreate();
+    if (font == NULL) {
+        return -1;
+    }
+    OH_Drawing_FontSetTextSize(font, size > 0 ? size : 14.0f);
+    float textWidth = 0.0f;
+    float textHeight = 0.0f;
+    OH_Drawing_Font_Metrics metrics;
+    float ascent = OH_Drawing_FontGetMetrics(font, &metrics);
+    (void)ascent;
+    textHeight = metrics.ascent * -1.0f + metrics.descent;
+    OH_Drawing_FontMeasureText(font, utf8, strlen(utf8), TEXT_ENCODING_UTF8, NULL, &textWidth);
+    if (width != NULL) *width = (int)(textWidth + 0.5f);
+    if (height != NULL) *height = (int)(textHeight + 0.5f);
+    OH_Drawing_FontDestroy(font);
+    return 0;
+}
+
+void ohos_host_draw_save(void) {
+    if (g_canvas != NULL) {
+        OH_Drawing_CanvasSave(g_canvas);
+    }
+}
+
+void ohos_host_draw_restore(void) {
+    if (g_canvas != NULL) {
+        OH_Drawing_CanvasRestore(g_canvas);
+    }
+}
+
+void ohos_host_draw_clip_rect(float x, float y, float width, float height, int subtract) {
+    if (g_canvas == NULL) {
+        return;
+    }
+    OH_Drawing_Rect* rect = OH_Drawing_RectCreate(x, y, x + width, y + height);
+    if (rect == NULL) {
+        return;
+    }
+    OH_Drawing_CanvasClipRect(g_canvas, rect,
+        subtract ? DIFFERENCE : INTERSECT, true);
+    OH_Drawing_RectDestroy(rect);
+}
+
+void ohos_host_draw_clip_polyline(const float* xy, int count) {
+    if (g_canvas == NULL || xy == NULL || count < 2) {
+        return;
+    }
+    OH_Drawing_Path* path = OH_Drawing_PathCreate();
+    if (path == NULL) {
+        return;
+    }
+    OH_Drawing_PathMoveTo(path, xy[0], xy[1]);
+    for (int i = 1; i < count; i++) {
+        OH_Drawing_PathLineTo(path, xy[i * 2], xy[i * 2 + 1]);
+    }
+    OH_Drawing_PathClose(path);
+    OH_Drawing_CanvasClipPath(g_canvas, path, INTERSECT, true);
+    OH_Drawing_PathDestroy(path);
+}
+
+int ohos_host_draw_image_bytes(const void* data, int length, float x, float y, float width, float height) {
+    if (g_canvas == NULL || data == NULL || length <= 0) {
+        return -1;
+    }
+    OH_ImageSourceNative* source = NULL;
+    if (OH_ImageSourceNative_CreateFromData((uint8_t*)data, (size_t)length, &source) != IMAGE_SUCCESS || source == NULL) {
+        return -1;
+    }
+    OH_PixelmapNative* pixelmap = NULL;
+    int rc = -1;
+    if (OH_ImageSourceNative_CreatePixelmap(source, NULL, &pixelmap) == IMAGE_SUCCESS && pixelmap != NULL) {
+        OH_Drawing_PixelMap* drawingPixelMap = OH_Drawing_PixelMapGetFromOhPixelMapNative(pixelmap);
+        if (drawingPixelMap != NULL) {
+            OH_Drawing_Rect* src = OH_Drawing_RectCreate(0, 0, (float)(int)width, (float)(int)height);
+            OH_Drawing_Rect* dst = OH_Drawing_RectCreate(x, y, x + width, y + height);
+            OH_Drawing_SamplingOptions* sampling = OH_Drawing_SamplingOptionsCreate(FILTER_MODE_LINEAR, MIPMAP_MODE_LINEAR);
+            OH_Drawing_CanvasDrawPixelMapRect(g_canvas, drawingPixelMap, src, dst, sampling);
+            OH_Drawing_SamplingOptionsDestroy(sampling);
+            OH_Drawing_RectDestroy(src);
+            OH_Drawing_RectDestroy(dst);
+            rc = 0;
+        }
+        OH_PixelmapNative_Release(pixelmap);
+    }
+    OH_ImageSourceNative_Release(source);
+    return rc;
 }
 
 int ohos_host_draw_present(void) {

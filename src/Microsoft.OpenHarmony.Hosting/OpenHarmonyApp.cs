@@ -389,6 +389,24 @@ public static class OpenHarmonyCanvas
     [DllImport(HostLibrary, EntryPoint = "ohos_host_draw_polyline")]
     private static extern void PolylineNative(float[] xy, int count, int closed, uint argb, int filled, float strokeWidth);
 
+    [DllImport(HostLibrary, EntryPoint = "ohos_host_measure_text", CharSet = CharSet.Ansi)]
+    private static extern int MeasureTextNative(string utf8, float size, out int width, out int height);
+
+    [DllImport(HostLibrary, EntryPoint = "ohos_host_draw_save")]
+    private static extern void SaveNative();
+
+    [DllImport(HostLibrary, EntryPoint = "ohos_host_draw_restore")]
+    private static extern void RestoreNative();
+
+    [DllImport(HostLibrary, EntryPoint = "ohos_host_draw_clip_rect")]
+    private static extern void ClipRectNative(float x, float y, float width, float height, int subtract);
+
+    [DllImport(HostLibrary, EntryPoint = "ohos_host_draw_clip_polyline")]
+    private static extern void ClipPolylineNative(float[] xy, int count);
+
+    [DllImport(HostLibrary, EntryPoint = "ohos_host_draw_image_bytes")]
+    private static extern int DrawImageBytesNative(byte[] data, int length, float x, float y, float width, float height);
+
     [DllImport(HostLibrary, EntryPoint = "ohos_host_draw_present")]
     private static extern int PresentNative();
 
@@ -438,6 +456,47 @@ public static class OpenHarmonyCanvas
             pts[i * 2 + 1] = cy + (float)(ry * Math.Sin(a));
         }
         Polyline(pts, closed: true, argb, filled, strokeWidth);
+    }
+
+    /// <summary>Measures text with the platform font. Returns false when unavailable.</summary>
+    public static bool MeasureText(string text, float size, out int width, out int height)
+    {
+        width = 0;
+        height = 0;
+        try
+        {
+            return MeasureTextNative(text, size, out width, out height) == 0;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    public static void Save() { try { SaveNative(); } catch { } }
+    public static void Restore() { try { RestoreNative(); } catch { } }
+
+    public static void ClipRect(float x, float y, float width, float height, bool subtract = false)
+    {
+        try { ClipRectNative(x, y, width, height, subtract ? 1 : 0); } catch { }
+    }
+
+    public static void ClipPolyline(float[] xy)
+    {
+        try { ClipPolylineNative(xy, xy.Length / 2); } catch { }
+    }
+
+    /// <summary>Decodes PNG/JPEG bytes and draws them into the destination rectangle.</summary>
+    public static bool DrawImageBytes(byte[] data, int x, int y, int width, int height)
+    {
+        try
+        {
+            return DrawImageBytesNative(data, data.Length, x, y, width, height) == 0;
+        }
+        catch
+        {
+            return false;
+        }
     }
 
     public static bool DrawText(int x, int y, string text, float size, uint argb)
