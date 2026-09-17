@@ -1,6 +1,7 @@
 // A real MAUI application running on the OpenHarmony platform slice.
 using Microsoft.Maui;
 using Microsoft.Maui.Controls;
+using Microsoft.Maui.Controls.Shapes;
 
 namespace HelloMauiApp;
 
@@ -77,12 +78,32 @@ public sealed class App : Application
         };
 
         var layout = new VerticalStackLayout { Padding = 32, Spacing = 20 };
+        // W22-5: shapes, border, stepper, radio button, search bar.
+        var shapeRow = new HorizontalStackLayout { Spacing = 12 };
+        shapeRow.Add(new Rectangle { WidthRequest = 48, HeightRequest = 48, Fill = Colors.OrangeRed, Stroke = Colors.White, StrokeThickness = 2 });
+        shapeRow.Add(new Ellipse { WidthRequest = 48, HeightRequest = 48, Fill = Colors.MediumSeaGreen });
+        shapeRow.Add(new Line { X1 = 0, Y1 = 0, X2 = 48, Y2 = 48, Stroke = Colors.Gold, StrokeThickness = 3 });
+        var borderBox = new Border
+        {
+            Stroke = Colors.DodgerBlue,
+            StrokeThickness = 3,
+            Padding = 10,
+            Content = new Label { Text = "inside border", FontSize = 24 },
+        };
+        var valueRow2 = new HorizontalStackLayout { Spacing = 16 };
+        valueRow2.Add(new Stepper { Minimum = 0, Maximum = 10, Increment = 1, Value = 1 });
+        valueRow2.Add(new RadioButton { Content = "radio choice" });
+        valueRow2.Add(new SearchBar { Placeholder = "search...", HeightRequest = 48 });
+
         layout.Add(title);
         layout.Add(subtitle);
         layout.Add(counter);
         layout.Add(entry);
         layout.Add(valueControls);
         layout.Add(progress);
+        layout.Add(shapeRow);
+        layout.Add(borderBox);
+        layout.Add(valueRow2);
         layout.Add(collection);
         layout.Add(scroll);
         layout.Add(reset);

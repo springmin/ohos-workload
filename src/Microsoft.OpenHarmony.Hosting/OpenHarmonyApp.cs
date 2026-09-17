@@ -551,6 +551,8 @@ public static class OpenHarmonyCanvas
     [DllImport(HostLibrary, EntryPoint = "ohos_host_measure_text", CharSet = CharSet.Ansi)]
     private static extern int MeasureTextNative(string utf8, float size, out int width, out int height);
 
+    private static bool s_textMetricsUnavailable;
+
     [DllImport(HostLibrary, EntryPoint = "ohos_host_draw_save")]
     private static extern void SaveNative();
 
@@ -637,12 +639,18 @@ public static class OpenHarmonyCanvas
     {
         width = 0;
         height = 0;
+        if (s_textMetricsUnavailable)
+        {
+            return false;
+        }
         try
         {
             return MeasureTextNative(text, size, out width, out height) == 0;
         }
         catch
         {
+            // No native host (tests/tools): remember it so the hot layout path never throws again.
+            s_textMetricsUnavailable = true;
             return false;
         }
     }
