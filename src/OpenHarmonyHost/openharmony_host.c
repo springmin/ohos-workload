@@ -8,6 +8,7 @@
 #include <native_drawing/drawing_brush.h>
 #include <native_drawing/drawing_canvas.h>
 #include <native_drawing/drawing_font.h>
+#include <native_drawing/drawing_matrix.h>
 #include <native_drawing/drawing_path.h>
 #include <native_drawing/drawing_pixel_map.h>
 #include <native_drawing/drawing_point.h>
@@ -578,6 +579,45 @@ void ohos_host_draw_set_radial_gradient(float cx, float cy, float radius,
     g_brush_shader = OH_Drawing_ShaderEffectCreateRadialGradient(center, radius, (const uint32_t*)colors,
                                                                 stops, (uint32_t)count, CLAMP);
     OH_Drawing_PointDestroy(center);
+}
+
+int ohos_host_draw_set_image_pattern(const void* data, int length, int tileModeX, int tileModeY,
+                                     float scaleX, float scaleY) {
+    if (data == NULL || length <= 0) {
+        return -1;
+    }
+    OH_ImageSourceNative* source = NULL;
+    if (OH_ImageSourceNative_CreateFromData((uint8_t*)data, (size_t)length, &source) != IMAGE_SUCCESS || source == NULL) {
+        return -1;
+    }
+    OH_PixelmapNative* pixelmap = NULL;
+    int rc = -1;
+    if (OH_ImageSourceNative_CreatePixelmap(source, NULL, &pixelmap) == IMAGE_SUCCESS && pixelmap != NULL) {
+        OH_Drawing_PixelMap* drawingPixelMap = OH_Drawing_PixelMapGetFromOhPixelMapNative(pixelmap);
+        if (drawingPixelMap != NULL) {
+            OH_Drawing_SamplingOptions* sampling = OH_Drawing_SamplingOptionsCreate(FILTER_MODE_LINEAR, MIPMAP_MODE_LINEAR);
+            OH_Drawing_Matrix* matrix = NULL;
+            if (scaleX != 1.0f || scaleY != 1.0f) {
+                matrix = OH_Drawing_MatrixCreateScale(scaleX, scaleY, 0, 0);
+            }
+            OH_Drawing_ShaderEffect* shader = OH_Drawing_ShaderEffectCreatePixelMapShader(
+                drawingPixelMap, (OH_Drawing_TileMode)tileModeX, (OH_Drawing_TileMode)tileModeY, sampling, matrix);
+            if (shader != NULL) {
+                if (g_brush_shader != NULL) {
+                    OH_Drawing_ShaderEffectDestroy(g_brush_shader);
+                }
+                g_brush_shader = shader;
+                rc = 0;
+            }
+            if (matrix != NULL) {
+                OH_Drawing_MatrixDestroy(matrix);
+            }
+            OH_Drawing_SamplingOptionsDestroy(sampling);
+        }
+        OH_PixelmapNative_Release(pixelmap);
+    }
+    OH_ImageSourceNative_Release(source);
+    return rc;
 }
 
 void ohos_host_draw_set_shadow(float dx, float dy, float blur, unsigned int argb) {

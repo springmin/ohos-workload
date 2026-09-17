@@ -21,6 +21,8 @@ public sealed class OpenHarmonyCanvas : ICanvas
     private Color _fillColor = Colors.Black;
     private Color _fontColor = Colors.Black;
     private float _alpha = 1f;
+    private IPattern? _proceduralPattern;
+    private RectF _patternRect;
 
     public float DisplayScale { get; set; } = 1f;
     public float StrokeSize { get; set; } = 1f;
@@ -161,7 +163,13 @@ public sealed class OpenHarmonyCanvas : ICanvas
         => Stroke(Points((x, y), (x + width, y), (x + width, y + height), (x, y + height)), closed: true);
 
     public void FillRectangle(float x, float y, float width, float height)
-        => Fill(Points((x, y), (x + width, y), (x + width, y + height), (x, y + height)));
+    {
+        if (TryFillWithPattern(x, y, width, height))
+        {
+            return;
+        }
+        Fill(Points((x, y), (x + width, y), (x + width, y + height), (x, y + height)));
+    }
 
     public void DrawRoundedRectangle(float x, float y, float width, float height, float cornerRadius)
         => Stroke(RoundedPoints(x, y, width, height, cornerRadius), closed: true);
@@ -292,25 +300,80 @@ public sealed class OpenHarmonyCanvas : ICanvas
 
     public void SetFillPaint(Paint paint, RectF rectangle)
     {
+        _patternRect = rectangle;
+        ApplyPaint(paint);
+    }
+
+    private void ApplyPaint(Paint paint)
+    {
         switch (paint)
         {
             case SolidPaint solid when solid.Color is not null:
+                _proceduralPattern = null;
                 _fillColor = solid.Color;
                 HostCanvas.ClearEffects();
                 break;
             case LinearGradientPaint linear:
+                _proceduralPattern = null;
                 SetGradient(linear.GradientStops, linear.StartColor, linear.EndColor,
                     (float)linear.StartPoint.X, (float)linear.StartPoint.Y,
                     (float)linear.EndPoint.X, (float)linear.EndPoint.Y, isRadial: false);
                 break;
             case RadialGradientPaint radial:
+                _proceduralPattern = null;
                 SetGradient(radial.GradientStops, radial.StartColor, radial.EndColor,
                     (float)radial.Center.X, (float)radial.Center.Y, (float)radial.Radius, 0f, isRadial: true);
                 break;
+            case ImagePaint imagePaint when imagePaint.Image is not null:
+                _proceduralPattern = null;
+                using (var stream = new MemoryStream())
+                {
+                    imagePaint.Image.Save(stream, ImageFormat.Png);
+                    HostCanvas.SetImagePattern(stream.ToArray());
+                }
+                break;
+            case PatternPaint patternPaint:
+                // A pattern wrapping a paint recurses; anything else is a procedural pattern
+                // that the fill operations tile themselves.
+                if (patternPaint.Pattern is PaintPattern wrapper)
+                {
+                    ApplyPaint(wrapper.Paint);
+                }
+                else
+                {
+                    _proceduralPattern = patternPaint.Pattern;
+                }
+                break;
             default:
-                // PatternPaint and other paints are not mapped yet; the current fill colour stays.
                 break;
         }
+    }
+
+    /// <summary>Tiles a procedural pattern (IPattern.Draw) over a rectangle by clipping and
+    /// translating the canvas, which is how a thin backend can honour PatternPaint.</summary>
+    private bool TryFillWithPattern(float x, float y, float width, float height)
+    {
+        IPattern? pattern = _proceduralPattern;
+        if (pattern is null)
+        {
+            return false;
+        }
+        float stepX = MathF.Max(pattern.StepX, 1f);
+        float stepY = MathF.Max(pattern.StepY, 1f);
+        SaveState();
+        ClipRectangle(x, y, width, height);
+        for (float ty = _patternRect.Y; ty < _patternRect.Bottom + stepY; ty += stepY)
+        {
+            for (float tx = _patternRect.X; tx < _patternRect.Right + stepX; tx += stepX)
+            {
+                SaveState();
+                Translate(tx, ty);
+                pattern.Draw(this);
+                RestoreState();
+            }
+        }
+        RestoreState();
+        return true;
     }
 
     private void SetGradient(PaintGradientStop[]? stops, Color? startColor, Color? endColor,

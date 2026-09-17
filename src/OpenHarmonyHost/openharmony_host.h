@@ -94,6 +94,11 @@ void ohos_host_draw_set_linear_gradient(float x0, float y0, float x1, float y1,
                                         const unsigned int* colors, const float* stops, int count);
 void ohos_host_draw_set_radial_gradient(float cx, float cy, float radius,
                                         const unsigned int* colors, const float* stops, int count);
+/// Tile-image pattern shader (PNG/JPEG bytes), applied to subsequent fills.
+/// tileModeX/Y: 0=clamp, 1=repeat, 2=mirror. Returns 0 on success.
+int  ohos_host_draw_set_image_pattern(const void* data, int length, int tileModeX, int tileModeY,
+                                      float scaleX, float scaleY);
+
 void ohos_host_draw_set_shadow(float dx, float dy, float blur, unsigned int argb);
 void ohos_host_draw_clear_effects(void);
 

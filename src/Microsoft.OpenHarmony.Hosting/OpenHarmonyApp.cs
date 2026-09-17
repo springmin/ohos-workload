@@ -503,6 +503,9 @@ public static class OpenHarmonyCanvas
     [DllImport(HostLibrary, EntryPoint = "ohos_host_draw_set_radial_gradient")]
     private static extern void RadialGradientNative(float cx, float cy, float radius, uint[] colors, float[] stops, int count);
 
+    [DllImport(HostLibrary, EntryPoint = "ohos_host_draw_set_image_pattern")]
+    private static extern int ImagePatternNative(byte[] data, int length, int tileModeX, int tileModeY, float scaleX, float scaleY);
+
     [DllImport(HostLibrary, EntryPoint = "ohos_host_draw_set_shadow")]
     private static extern void ShadowNative(float dx, float dy, float blur, uint argb);
 
@@ -611,6 +614,19 @@ public static class OpenHarmonyCanvas
     public static void SetRadialGradient(float cx, float cy, float radius, uint[] colors, float[] stops)
     {
         try { RadialGradientNative(cx, cy, radius, colors, stops, colors.Length); } catch { }
+    }
+
+    /// <summary>Tile-image pattern applied to subsequent fills (0=clamp, 1=repeat, 2=mirror).</summary>
+    public static bool SetImagePattern(byte[] data, int tileModeX = 1, int tileModeY = 1, float scaleX = 1f, float scaleY = 1f)
+    {
+        try
+        {
+            return ImagePatternNative(data, data.Length, tileModeX, tileModeY, scaleX, scaleY) == 0;
+        }
+        catch
+        {
+            return false;
+        }
     }
 
     /// <summary>Drop shadow applied to subsequent fills/text.</summary>
