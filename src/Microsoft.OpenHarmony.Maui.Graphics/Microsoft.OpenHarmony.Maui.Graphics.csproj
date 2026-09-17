@@ -1,0 +1,13 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net11.0</TargetFramework>
+    <AssemblyName>Microsoft.OpenHarmony.Maui.Graphics</AssemblyName>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <NoWarn>$(NoWarn);CA1418</NoWarn>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="Microsoft.Maui.Graphics" Version="11.0.0-rc.1.26451.6" />
+    <ProjectReference Include="../Microsoft.OpenHarmony.Hosting/Microsoft.OpenHarmony.Hosting.csproj" />
+  </ItemGroup>
+</Project>

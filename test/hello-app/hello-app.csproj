@@ -6,4 +6,13 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <NoWarn>$(NoWarn);CA1418</NoWarn>
   </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="Microsoft.Maui.Graphics" Version="11.0.0-rc.1.26451.6" />
+    <!-- The platform backend ships in the runtime pack; reference the built assembly here
+         (a ProjectReference makes the publish graph hang on this device's compiler server). -->
+    <Reference Include="Microsoft.OpenHarmony.Maui.Graphics">
+      <HintPath>$(MSBuildThisFileDirectory)../../src/Microsoft.OpenHarmony.Maui.Graphics/bin/Release/net11.0/Microsoft.OpenHarmony.Maui.Graphics.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+  </ItemGroup>
 </Project>

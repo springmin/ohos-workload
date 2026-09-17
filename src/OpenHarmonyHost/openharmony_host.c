@@ -6,6 +6,7 @@
 #include <native_drawing/drawing_brush.h>
 #include <native_drawing/drawing_canvas.h>
 #include <native_drawing/drawing_font.h>
+#include <native_drawing/drawing_path.h>
 #include <native_drawing/drawing_pen.h>
 #include <native_drawing/drawing_rect.h>
 #include <native_drawing/drawing_text_blob.h>
@@ -574,6 +575,40 @@ int ohos_host_draw_text(int x, int y, const char* utf8, float size, unsigned int
     }
     OH_Drawing_FontDestroy(font);
     return rc;
+}
+
+void ohos_host_draw_polyline(const float* xy, int count, int closed, unsigned int argb, int filled, float stroke_width) {
+    if (g_canvas == NULL || xy == NULL || count < 2) {
+        return;
+    }
+    OH_Drawing_Path* path = OH_Drawing_PathCreate();
+    if (path == NULL) {
+        return;
+    }
+    OH_Drawing_PathMoveTo(path, xy[0], xy[1]);
+    for (int i = 1; i < count; i++) {
+        OH_Drawing_PathLineTo(path, xy[i * 2], xy[i * 2 + 1]);
+    }
+    if (closed) {
+        OH_Drawing_PathClose(path);
+    }
+    if (filled) {
+        OH_Drawing_Brush* brush = OH_Drawing_BrushCreate();
+        OH_Drawing_BrushSetColor(brush, (uint32_t)argb);
+        OH_Drawing_CanvasAttachBrush(g_canvas, brush);
+        OH_Drawing_CanvasDrawPath(g_canvas, path);
+        OH_Drawing_CanvasDetachBrush(g_canvas);
+        OH_Drawing_BrushDestroy(brush);
+    } else {
+        OH_Drawing_Pen* pen = OH_Drawing_PenCreate();
+        OH_Drawing_PenSetColor(pen, (uint32_t)argb);
+        OH_Drawing_PenSetWidth(pen, stroke_width > 0.0f ? stroke_width : 1.0f);
+        OH_Drawing_CanvasAttachPen(g_canvas, pen);
+        OH_Drawing_CanvasDrawPath(g_canvas, path);
+        OH_Drawing_CanvasDetachPen(g_canvas);
+        OH_Drawing_PenDestroy(pen);
+    }
+    OH_Drawing_PathDestroy(path);
 }
 
 int ohos_host_draw_present(void) {

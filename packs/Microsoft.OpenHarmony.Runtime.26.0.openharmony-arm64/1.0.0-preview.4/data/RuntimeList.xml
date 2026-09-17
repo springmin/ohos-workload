@@ -1,4 +1,5 @@
 <FileList TargetFrameworkIdentifier=".NETCoreApp" TargetFrameworkVersion="11.0" FrameworkName="Microsoft.OpenHarmony" Name="Microsoft OpenHarmony">
   <File Type="Managed" Path="runtimes/openharmony-arm64/lib/net11.0/Microsoft.OpenHarmony.dll" AssemblyName="Microsoft.OpenHarmony" PublicKeyToken="" AssemblyVersion="1.0.0.0" FileVersion="1.0.0.0" />
   <File Type="Managed" Path="runtimes/openharmony-arm64/lib/net11.0/Microsoft.OpenHarmony.Hosting.dll" AssemblyName="Microsoft.OpenHarmony.Hosting" PublicKeyToken="" AssemblyVersion="1.0.0.0" FileVersion="1.0.0.0" />
+  <File Type="Managed" Path="runtimes/openharmony-arm64/lib/net11.0/Microsoft.OpenHarmony.Maui.Graphics.dll" AssemblyName="Microsoft.OpenHarmony.Maui.Graphics" PublicKeyToken="" AssemblyVersion="1.0.0.0" FileVersion="1.0.0.0" />
 </FileList>

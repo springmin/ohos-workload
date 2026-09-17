@@ -386,6 +386,9 @@ public static class OpenHarmonyCanvas
     [DllImport(HostLibrary, EntryPoint = "ohos_host_draw_text", CharSet = CharSet.Ansi)]
     private static extern int TextNative(int x, int y, string utf8, float size, uint argb);
 
+    [DllImport(HostLibrary, EntryPoint = "ohos_host_draw_polyline")]
+    private static extern void PolylineNative(float[] xy, int count, int closed, uint argb, int filled, float strokeWidth);
+
     [DllImport(HostLibrary, EntryPoint = "ohos_host_draw_present")]
     private static extern int PresentNative();
 
@@ -415,6 +418,26 @@ public static class OpenHarmonyCanvas
     public static void StrokeRect(int x, int y, int width, int height, uint argb)
     {
         try { RectNative(x, y, width, height, argb, 0); } catch { }
+    }
+
+    /// <summary>Draws a polyline/polygon (packed x,y pairs). Curves are flattened by the caller.</summary>
+    public static void Polyline(float[] xy, bool closed, uint argb, bool filled, float strokeWidth = 1f)
+    {
+        try { PolylineNative(xy, xy.Length / 2, closed ? 1 : 0, argb, filled ? 1 : 0, strokeWidth); } catch { }
+    }
+
+    /// <summary>Draws an ellipse approximated by a closed polyline.</summary>
+    public static void Ellipse(float cx, float cy, float rx, float ry, uint argb, bool filled, float strokeWidth = 1f)
+    {
+        const int segments = 48;
+        var pts = new float[segments * 2];
+        for (int i = 0; i < segments; i++)
+        {
+            double a = 2 * Math.PI * i / segments;
+            pts[i * 2] = cx + (float)(rx * Math.Cos(a));
+            pts[i * 2 + 1] = cy + (float)(ry * Math.Sin(a));
+        }
+        Polyline(pts, closed: true, argb, filled, strokeWidth);
     }
 
     public static bool DrawText(int x, int y, string text, float size, uint argb)

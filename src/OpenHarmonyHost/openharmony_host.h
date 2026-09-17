@@ -72,6 +72,9 @@ int  ohos_host_draw_begin(int width, int height);
 void ohos_host_draw_clear(unsigned int argb);
 void ohos_host_draw_rect(int x, int y, int width, int height, unsigned int argb, int filled);
 int  ohos_host_draw_text(int x, int y, const char* utf8, float size, unsigned int argb);
+/// Draws a polyline/polygon from packed coordinates [x0,y0,x1,y1,...]. Curves are
+/// flattened by the caller. filled = 1 fills (closed), otherwise strokes with stroke_width.
+void ohos_host_draw_polyline(const float* xy, int count, int closed, unsigned int argb, int filled, float stroke_width);
 int  ohos_host_draw_present(void);
 
 /// The ArkUI NodeContent handle previously stored (may be NULL).
