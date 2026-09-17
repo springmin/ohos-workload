@@ -27,6 +27,25 @@ public sealed class App : Application
         entry.TextChanged += (_, e) => status.Text = $"text: '{e.NewTextValue}'";
         entry.Completed += (_, _) => status.Text = "entry completed";
 
+        // W22-2: value controls (checkbox, switch, slider, progress, spinner).
+        var checkBox = new CheckBox { IsChecked = true };
+        var toggle = new Switch { IsToggled = false };
+        var slider = new Slider { Minimum = 0, Maximum = 100, Value = 40, HeightRequest = 40 };
+        var progress = new ProgressBar { Progress = 0.4, HeightRequest = 8 };
+        var spinner = new ActivityIndicator { IsRunning = true, HeightRequest = 24 };
+        checkBox.CheckedChanged += (_, e) => status.Text = $"checkbox: {e.Value}";
+        toggle.Toggled += (_, e) => status.Text = $"switch: {e.Value}";
+        slider.ValueChanged += (_, e) =>
+        {
+            progress.Progress = e.NewValue / 100.0;
+            status.Text = $"slider: {e.NewValue:0}";
+        };
+        var valueControls = new HorizontalStackLayout { Spacing = 16 };
+        valueControls.Add(checkBox);
+        valueControls.Add(toggle);
+        valueControls.Add(slider);
+        valueControls.Add(spinner);
+
         // W21: clip + translate scrolling, driven by touch drags.
         var rows = new VerticalStackLayout { Spacing = 8 };
         for (int i = 0; i < 12; i++)
@@ -48,6 +67,8 @@ public sealed class App : Application
         layout.Add(subtitle);
         layout.Add(counter);
         layout.Add(entry);
+        layout.Add(valueControls);
+        layout.Add(progress);
         layout.Add(scroll);
         layout.Add(reset);
         layout.Add(status);
