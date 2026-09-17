@@ -69,6 +69,17 @@ public sealed class App : Application
         }
         var scroll = new ScrollView { Content = rows, HeightRequest = 320 };
 
+        // W22-6: gesture recognizer (tap) + view transforms.
+        int taps = 0;
+        var tapTarget = new Label { Text = "tap this label (0 taps)", FontSize = 30, BackgroundColor = Colors.DimGray };
+        var tapGesture = new TapGestureRecognizer();
+        tapGesture.Tapped += (_, _) =>
+        {
+            taps++;
+            tapTarget.Text = $"tap this label ({taps} taps)";
+        };
+        tapTarget.GestureRecognizers.Add(tapGesture);
+
         var reset = new Button { Text = "Reset", FontSize = 32 };
         reset.Clicked += (_, _) =>
         {
@@ -106,6 +117,7 @@ public sealed class App : Application
         layout.Add(valueRow2);
         layout.Add(collection);
         layout.Add(scroll);
+        layout.Add(tapTarget);
         layout.Add(reset);
         layout.Add(status);
         return new ContentPage { Title = "MAUI on OpenHarmony", Content = layout };
