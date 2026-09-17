@@ -1,0 +1,8 @@
+{
+  "string": [
+    { "name": "app_name", "value": "hello-maui" },
+    { "name": "module_desc", "value": "hello-maui" },
+    { "name": "EntryAbility_desc", "value": "hello-maui" },
+    { "name": "EntryAbility_label", "value": "hello-maui" }
+  ]
+}
