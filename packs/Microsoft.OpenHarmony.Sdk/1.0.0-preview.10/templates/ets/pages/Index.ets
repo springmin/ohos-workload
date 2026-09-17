@@ -16,14 +16,39 @@ import host from 'libopenharmonyhost.so';
 struct Index {
   private content: NodeContent = new NodeContent();
 
+  @State inputText: string = '';
+  private controller: TextInputController = new TextInputController();
+
   aboutToAppear(): void {
     // 2 = foreground; the native host forwards it to the managed bridge.
     host.notifyLifecycle(2);
     host.setNodeContent(this.content);
+    // The managed Entry asks for the soft keyboard through this sink.
+    host.registerTextInputSink((show: number) => {
+      if (show === 1) {
+        this.controller.caretPosition(0);
+        focusControl.requestFocus('ohos_dotnet_input');
+      } else {
+        focusControl.requestFocus('ohos_dotnet_surface');
+      }
+    });
   }
 
   build() {
     Stack() {
+      // Text entry bridge: the managed Entry reads what is typed here.
+      TextInput({ text: this.inputText, placeholder: 'type here', controller: this.controller })
+        .id('ohos_dotnet_input')
+        .height(56)
+        .position({ x: 0, y: 0 })
+        .onChange((value: string) => {
+          this.inputText = value;
+          host.notifyTextInput(value);
+        })
+        .onSubmit(() => {
+          host.notifyTextInput(this.inputText);
+        })
+
       XComponent({
         id: 'ohos_dotnet_surface',
         type: XComponentType.SURFACE,

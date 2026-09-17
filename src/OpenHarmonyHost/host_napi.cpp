@@ -28,6 +28,7 @@ OhosHostAppHandle* g_handle = nullptr;
 // XComponent (surface) support -------------------------------------------------
 napi_env g_env = nullptr;
 napi_ref g_exports_ref = nullptr;
+napi_ref g_text_input_sink_ref = nullptr;
 OH_NativeXComponent* g_xcomponent = nullptr;
 
 void OnSurfaceCreated(OH_NativeXComponent* component, void* window) {
@@ -126,6 +127,61 @@ void TryRegisterXComponent() {
     if (OH_NativeXComponent_GetXComponentId(g_xcomponent, id, &size) == 0) {
         OH_LOG_INFO(LOG_APP, "[openharmony-host] xcomponent '%{public}s' registered (touch+frame)", id);
     }
+}
+
+std::string GetStringArg(napi_env env, napi_value value);
+
+// Called by the host core (managed side) to show/hide the ArkTS soft keyboard.
+void OnTextInputRequest(int show) {
+    if (g_env == nullptr || g_text_input_sink_ref == nullptr) {
+        return;
+    }
+    napi_value sink = nullptr;
+    if (napi_get_reference_value(g_env, g_text_input_sink_ref, &sink) != napi_ok || sink == nullptr) {
+        return;
+    }
+    napi_value global = nullptr;
+    napi_get_global(g_env, &global);
+    napi_value arg = nullptr;
+    napi_create_int32(g_env, show, &arg);
+    napi_value result = nullptr;
+    napi_call_function(g_env, global, sink, 1, &arg, &result);
+}
+
+// ArkTS calls host.registerTextInputSink(fn) so the shell can show/hide its input.
+napi_value RegisterTextInputSink(napi_env env, napi_callback_info info) {
+    size_t argc = 1;
+    napi_value argv[1] = {nullptr};
+    napi_get_cb_info(env, info, &argc, argv, nullptr, nullptr);
+    if (argc >= 1) {
+        napi_valuetype type = napi_undefined;
+        napi_typeof(env, argv[0], &type);
+        if (type == napi_function) {
+            if (g_text_input_sink_ref != nullptr) {
+                napi_delete_reference(env, g_text_input_sink_ref);
+            }
+            napi_create_reference(env, argv[0], 1, &g_text_input_sink_ref);
+            ohos_host_set_text_input_listener(OnTextInputRequest);
+            OH_LOG_INFO(LOG_APP, "[openharmony-host] text input sink registered");
+        }
+    }
+    napi_value undefined = nullptr;
+    napi_get_undefined(env, &undefined);
+    return undefined;
+}
+
+// ArkTS calls host.notifyTextInput(text) on every change.
+napi_value NotifyTextInput(napi_env env, napi_callback_info info) {
+    size_t argc = 1;
+    napi_value argv[1] = {nullptr};
+    napi_get_cb_info(env, info, &argc, argv, nullptr, nullptr);
+    if (argc >= 1) {
+        std::string text = GetStringArg(env, argv[0]);
+        ohos_host_notify_text_input(text.c_str());
+    }
+    napi_value undefined = nullptr;
+    napi_get_undefined(env, &undefined);
+    return undefined;
 }
 
 napi_value RegisterXComponent(napi_env env, napi_callback_info info) {
@@ -287,6 +343,8 @@ napi_value Init(napi_env env, napi_value exports) {
     TryRegisterXComponent();
     napi_property_descriptor properties[] = {
         {"registerXComponent", nullptr, RegisterXComponent, nullptr, nullptr, nullptr, napi_default, nullptr},
+        {"registerTextInputSink", nullptr, RegisterTextInputSink, nullptr, nullptr, nullptr, napi_default, nullptr},
+        {"notifyTextInput", nullptr, NotifyTextInput, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"startApp", nullptr, StartApp, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"notifyLifecycle", nullptr, NotifyLifecycle, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"setNodeContent", nullptr, SetNodeContent, nullptr, nullptr, nullptr, napi_default, nullptr},

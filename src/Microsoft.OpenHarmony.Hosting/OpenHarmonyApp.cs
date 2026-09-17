@@ -110,11 +110,18 @@ public static class OpenHarmonyBridge
     [DllImport(HostLibrary, EntryPoint = "ohos_host_register_input")]
     private static extern void RegisterInputNative(IntPtr touch, IntPtr frame);
 
+    [DllImport(HostLibrary, EntryPoint = "ohos_host_register_text_input")]
+    private static extern void RegisterTextInputNative(IntPtr callback);
+
+    [DllImport(HostLibrary, EntryPoint = "ohos_host_request_text_input")]
+    private static extern void RequestTextInputNative(int show);
+
     private delegate void NativeLifecycleDelegate(int evt);
     private delegate void NativeNodeDelegate(IntPtr node);
     private delegate void NativeSurfaceDelegate(IntPtr window, int width, int height, int state);
     private delegate void NativeTouchDelegate(int type, float x, float y, int pointerCount, int pointerId);
     private delegate void NativeFrameDelegate(long timestamp, long targetTimestamp);
+    private delegate void NativeTextInputDelegate(IntPtr utf8);
 
     private static readonly object s_sync = new();
     private static OpenHarmonyAppContext? s_context;
@@ -125,10 +132,12 @@ public static class OpenHarmonyBridge
     private static NativeSurfaceDelegate? s_surfaceThunk;
     private static NativeTouchDelegate? s_touchThunk;
     private static NativeFrameDelegate? s_frameThunk;
+    private static NativeTextInputDelegate? s_textInputThunk;
     private static readonly List<OpenHarmonyLifecycleEvent> s_pending = new();
     private static Action<OpenHarmonySurfaceInfo>? s_surfaceHandlers;
     private static Action<OpenHarmonyTouchEventArgs>? s_touchHandlers;
     private static Action<OpenHarmonyFrameEventArgs>? s_frameHandlers;
+    private static Action<string>? s_textInputHandlers;
     private static OpenHarmonySurfaceInfo? s_surface;
     private static Action<OpenHarmonyAppContext>? s_initializedHandlers;
     private static Action<OpenHarmonyLifecycleEvent>? s_lifecycleHandlers;
@@ -180,6 +189,26 @@ public static class OpenHarmonyBridge
     {
         add { lock (s_sync) { s_touchHandlers += value; } }
         remove { lock (s_sync) { s_touchHandlers -= value; } }
+    }
+
+    /// <summary>Raised with the text typed in the ArkTS shell's input control.</summary>
+    public static event Action<string>? TextInput
+    {
+        add { lock (s_sync) { s_textInputHandlers += value; } }
+        remove { lock (s_sync) { s_textInputHandlers -= value; } }
+    }
+
+    /// <summary>Asks the ArkTS shell to show (true) or hide (false) the soft keyboard.</summary>
+    public static void RequestTextInput(bool show)
+    {
+        try
+        {
+            RequestTextInputNative(show ? 1 : 0);
+        }
+        catch
+        {
+            // No native host (tests): the request is a no-op.
+        }
     }
 
     /// <summary>Raised on every platform frame callback (vsync-aligned rendering tick).</summary>
@@ -367,6 +396,16 @@ public static class OpenHarmonyBridge
             RegisterInputNative(
                 Marshal.GetFunctionPointerForDelegate(s_touchThunk),
                 Marshal.GetFunctionPointerForDelegate(s_frameThunk));
+            s_textInputThunk = OnTextInputNative;
+            try
+            {
+                RegisterTextInputNative(Marshal.GetFunctionPointerForDelegate(s_textInputThunk));
+            }
+            catch (Exception ex)
+            {
+                // Soft keyboard support is optional: an older host library must not break apps.
+                WriteStatus($"text input registration skipped: {ex.GetType().Name}");
+            }
             registered = true;
         }
         catch (Exception ex)
@@ -409,6 +448,17 @@ public static class OpenHarmonyBridge
             handlers = s_touchHandlers;
         }
         handlers?.Invoke(args);
+    }
+
+    private static void OnTextInputNative(IntPtr utf8)
+    {
+        string text = Marshal.PtrToStringUTF8(utf8) ?? string.Empty;
+        Action<string>? handlers;
+        lock (s_sync)
+        {
+            handlers = s_textInputHandlers;
+        }
+        handlers?.Invoke(text);
     }
 
     private static void OnFrameNative(long timestamp, long targetTimestamp)

@@ -47,8 +47,20 @@ void ohos_host_register_bridge(void* lifecycle, void* node, void* surface);
 /// frame: void (*)(int64_t timestamp, int64_t targetTimestamp). Both may be NULL.
 void ohos_host_register_input(void* touch, void* frame);
 
+/// Registers the managed text-input callback (optional; apps without text input skip it).
+void ohos_host_register_text_input(void* callback);
+
 /// Forwards an XComponent touch event to the managed bridge (type: 0=down 1=up 2=move 3=cancel).
 void ohos_host_notify_touch(int type, float x, float y, int pointerCount, int pointerId);
+
+/// Text input: forwards text typed in the ArkTS shell to the managed bridge.
+void ohos_host_notify_text_input(const char* utf8);
+
+/// Asks the ArkTS shell to show/hide the soft keyboard (the NAPI layer owns the sink).
+void ohos_host_request_text_input(int show);
+
+/// The NAPI layer registers a listener that talks to the ArkTS shell.
+void ohos_host_set_text_input_listener(void (*listener)(int show));
 
 /// Forwards an XComponent frame callback to the managed bridge.
 void ohos_host_notify_frame(int64_t timestamp, int64_t targetTimestamp);

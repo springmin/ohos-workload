@@ -22,6 +22,19 @@ public sealed class App : Application
             counter.Text = $"Count: {clicks}";
             status.Text = $"last click #{clicks}";
         };
+        // W22-1: soft-keyboard text input through the ArkTS shell's TextInput.
+        var entry = new Entry { Placeholder = "type here (soft keyboard)", FontSize = 32 };
+        entry.TextChanged += (_, e) => status.Text = $"text: '{e.NewTextValue}'";
+        entry.Completed += (_, _) => status.Text = "entry completed";
+
+        // W21: clip + translate scrolling, driven by touch drags.
+        var rows = new VerticalStackLayout { Spacing = 8 };
+        for (int i = 0; i < 12; i++)
+        {
+            rows.Add(new Label { Text = $"scrollable row {i}", FontSize = 26 });
+        }
+        var scroll = new ScrollView { Content = rows, HeightRequest = 320 };
+
         var reset = new Button { Text = "Reset", FontSize = 32 };
         reset.Clicked += (_, _) =>
         {
@@ -34,6 +47,8 @@ public sealed class App : Application
         layout.Add(title);
         layout.Add(subtitle);
         layout.Add(counter);
+        layout.Add(entry);
+        layout.Add(scroll);
         layout.Add(reset);
         layout.Add(status);
         return new ContentPage { Content = layout };

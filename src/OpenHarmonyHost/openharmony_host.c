@@ -205,6 +205,7 @@ struct OhosHostAppHandle {
     void (*bridge_surface)(void*, int, int, int);
     void (*bridge_touch)(int, float, float, int, int);
     void (*bridge_frame)(int64_t, int64_t);
+    void (*bridge_text_input)(const char*);
     void* surface_window;
     int surface_width;
     int surface_height;
@@ -437,6 +438,12 @@ void ohos_host_set_native_window(void* window, int width, int height, ohos_surfa
     }
 }
 
+void ohos_host_register_text_input(void* callback) {
+    if (g_app != NULL) {
+        g_app->bridge_text_input = (void (*)(const char*))callback;
+    }
+}
+
 void ohos_host_register_input(void* touch, void* frame) {
     fprintf(stderr, "[openharmony-host] register_input touch=%p frame=%p g_app=%p\n", touch, frame, (void*)g_app);
     fflush(stderr);
@@ -450,6 +457,26 @@ void ohos_host_register_input(void* touch, void* frame) {
 void ohos_host_notify_touch(int type, float x, float y, int pointerCount, int pointerId) {
     if (g_app != NULL && g_app->bridge_touch != NULL) {
         g_app->bridge_touch(type, x, y, pointerCount, pointerId);
+    }
+}
+
+static void (*g_text_input_listener)(int show) = NULL;
+
+void ohos_host_set_text_input_listener(void (*listener)(int show)) {
+    g_text_input_listener = listener;
+}
+
+void ohos_host_request_text_input(int show) {
+    fprintf(stderr, "[openharmony-host] text input request: %d\n", show);
+    fflush(stderr);
+    if (g_text_input_listener != NULL) {
+        g_text_input_listener(show);
+    }
+}
+
+void ohos_host_notify_text_input(const char* utf8) {
+    if (g_app != NULL && g_app->bridge_text_input != NULL && utf8 != NULL) {
+        g_app->bridge_text_input(utf8);
     }
 }
 
