@@ -7,7 +7,8 @@ namespace HelloMauiApp;
 public sealed class App : Application
 {
     protected override Window CreateWindow(IActivationState? activationState)
-        => new Window(BuildPage());
+        // The page is hosted in a navigation page: the slice draws the bar and its back button.
+        => new Window(new NavigationPage(BuildPage()) { Title = "Home", BarBackgroundColor = Colors.DarkSlateBlue });
 
     private static ContentPage BuildPage()
     {
@@ -72,6 +73,6 @@ public sealed class App : Application
         layout.Add(scroll);
         layout.Add(reset);
         layout.Add(status);
-        return new ContentPage { Content = layout };
+        return new ContentPage { Title = "MAUI on OpenHarmony", Content = layout };
     }
 }

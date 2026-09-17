@@ -138,6 +138,7 @@ public static class OpenHarmonyBridge
     private static Action<OpenHarmonyTouchEventArgs>? s_touchHandlers;
     private static Action<OpenHarmonyFrameEventArgs>? s_frameHandlers;
     private static Action<string>? s_textInputHandlers;
+    private static Action? s_redrawHandlers;
     private static OpenHarmonySurfaceInfo? s_surface;
     private static Action<OpenHarmonyAppContext>? s_initializedHandlers;
     private static Action<OpenHarmonyLifecycleEvent>? s_lifecycleHandlers;
@@ -196,6 +197,24 @@ public static class OpenHarmonyBridge
     {
         add { lock (s_sync) { s_textInputHandlers += value; } }
         remove { lock (s_sync) { s_textInputHandlers -= value; } }
+    }
+
+    /// <summary>Raised when the UI asks for a redraw (navigation pushes/pops, app state changes).</summary>
+    public static event Action? RedrawRequested
+    {
+        add { lock (s_sync) { s_redrawHandlers += value; } }
+        remove { lock (s_sync) { s_redrawHandlers -= value; } }
+    }
+
+    /// <summary>Requests a redraw from the platform host (no-op without one).</summary>
+    public static void RequestRedraw()
+    {
+        Action? handlers;
+        lock (s_sync)
+        {
+            handlers = s_redrawHandlers;
+        }
+        handlers?.Invoke();
     }
 
     /// <summary>Asks the ArkTS shell to show (true) or hide (false) the soft keyboard.</summary>
