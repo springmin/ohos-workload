@@ -51,6 +51,40 @@ void OnSurfaceDestroyed(OH_NativeXComponent* component, void* window) {
     ohos_host_set_native_window(window, 0, 0, OHOS_SURFACE_DESTROYED);
 }
 
+void OnTouch(OH_NativeXComponent* component, void* window) {
+    OH_NativeXComponent_TouchEvent event = {};
+    if (OH_NativeXComponent_GetTouchEvent(component, window, &event) != 0) {
+        return;
+    }
+    float x = event.x;
+    float y = event.y;
+    if (event.numPoints > 0) {
+        OH_NativeXComponent_GetTouchPointWindowX(component, 0, &x);
+        OH_NativeXComponent_GetTouchPointWindowY(component, 0, &y);
+    }
+    ohos_host_notify_touch(static_cast<int>(event.type), x, y,
+                           static_cast<int>(event.numPoints), static_cast<int>(event.id));
+}
+
+void OnMouse(OH_NativeXComponent* component, void* window) {
+    OH_NativeXComponent_MouseEvent event = {};
+    if (OH_NativeXComponent_GetMouseEvent(component, window, &event) != 0) {
+        return;
+    }
+    int type = 2;  // move
+    if (event.action == OH_NATIVEXCOMPONENT_MOUSE_PRESS) {
+        type = 0;
+    } else if (event.action == OH_NATIVEXCOMPONENT_MOUSE_RELEASE) {
+        type = 1;
+    }
+    ohos_host_notify_touch(type, event.x, event.y, 1, 0);
+}
+
+void OnFrame(OH_NativeXComponent* component, uint64_t timestamp, uint64_t targetTimestamp) {
+    (void)component;
+    ohos_host_notify_frame(static_cast<int64_t>(timestamp), static_cast<int64_t>(targetTimestamp));
+}
+
 // The framework exposes the native XComponent through the module exports
 // (OH_NATIVE_XCOMPONENT_OBJ) when the page uses <XComponent libraryname="...">.
 void TryRegisterXComponent() {
@@ -74,17 +108,23 @@ void TryRegisterXComponent() {
         .OnSurfaceCreated = OnSurfaceCreated,
         .OnSurfaceChanged = OnSurfaceChanged,
         .OnSurfaceDestroyed = OnSurfaceDestroyed,
-        .DispatchTouchEvent = nullptr,
+        .DispatchTouchEvent = OnTouch,
     };
     if (OH_NativeXComponent_RegisterCallback(g_xcomponent, &callback) != 0) {
         OH_LOG_WARN(LOG_APP, "[openharmony-host] RegisterCallback failed");
         g_xcomponent = nullptr;
         return;
     }
+    static OH_NativeXComponent_MouseEvent_Callback mouseCallback = {
+        .DispatchMouseEvent = OnMouse,
+        .DispatchHoverEvent = nullptr,
+    };
+    OH_NativeXComponent_RegisterMouseEventCallback(g_xcomponent, &mouseCallback);
+    OH_NativeXComponent_RegisterOnFrameCallback(g_xcomponent, OnFrame);
     char id[128] = {0};
     uint64_t size = sizeof(id);
     if (OH_NativeXComponent_GetXComponentId(g_xcomponent, id, &size) == 0) {
-        OH_LOG_INFO(LOG_APP, "[openharmony-host] xcomponent '%{public}s' registered", id);
+        OH_LOG_INFO(LOG_APP, "[openharmony-host] xcomponent '%{public}s' registered (touch+frame)", id);
     }
 }
 

@@ -42,6 +42,17 @@ const char* ohos_host_get_app_context(void);
 /// Any of them may be NULL.
 void ohos_host_register_bridge(void* lifecycle, void* node, void* surface);
 
+/// Input + frame callbacks (registered by the managed bridge in addition to the render
+/// bridge). touch: void (*)(int type, float x, float y, int pointerCount, int pointerId);
+/// frame: void (*)(int64_t timestamp, int64_t targetTimestamp). Both may be NULL.
+void ohos_host_register_input(void* touch, void* frame);
+
+/// Forwards an XComponent touch event to the managed bridge (type: 0=down 1=up 2=move 3=cancel).
+void ohos_host_notify_touch(int type, float x, float y, int pointerCount, int pointerId);
+
+/// Forwards an XComponent frame callback to the managed bridge.
+void ohos_host_notify_frame(int64_t timestamp, int64_t targetTimestamp);
+
 /// Surface state pushed to the managed bridge (see ohos_host_set_native_window).
 typedef enum {
     OHOS_SURFACE_CREATED = 0,

@@ -10,6 +10,46 @@ using System.Text.Json.Serialization;
 
 namespace Microsoft.OpenHarmony.Hosting;
 
+public enum OpenHarmonyTouchAction
+{
+    Down = 0,
+    Up = 1,
+    Move = 2,
+    Cancel = 3,
+}
+
+/// <summary>An XComponent touch/mouse event forwarded from the native host.</summary>
+public sealed class OpenHarmonyTouchEventArgs
+{
+    public OpenHarmonyTouchEventArgs(OpenHarmonyTouchAction action, float x, float y, int pointerCount, int pointerId)
+    {
+        Action = action;
+        X = x;
+        Y = y;
+        PointerCount = pointerCount;
+        PointerId = pointerId;
+    }
+
+    public OpenHarmonyTouchAction Action { get; }
+    public float X { get; }
+    public float Y { get; }
+    public int PointerCount { get; }
+    public int PointerId { get; }
+}
+
+/// <summary>A frame tick from the platform (vsync-aligned).</summary>
+public sealed class OpenHarmonyFrameEventArgs
+{
+    public OpenHarmonyFrameEventArgs(long timestamp, long targetTimestamp)
+    {
+        Timestamp = timestamp;
+        TargetTimestamp = targetTimestamp;
+    }
+
+    public long Timestamp { get; }
+    public long TargetTimestamp { get; }
+}
+
 public enum OpenHarmonySurfaceState
 {
     Created = 0,
@@ -67,9 +107,14 @@ public static class OpenHarmonyBridge
     [DllImport(HostLibrary, EntryPoint = "ohos_host_register_bridge")]
     private static extern void RegisterBridgeNative(IntPtr lifecycle, IntPtr node, IntPtr surface);
 
+    [DllImport(HostLibrary, EntryPoint = "ohos_host_register_input")]
+    private static extern void RegisterInputNative(IntPtr touch, IntPtr frame);
+
     private delegate void NativeLifecycleDelegate(int evt);
     private delegate void NativeNodeDelegate(IntPtr node);
     private delegate void NativeSurfaceDelegate(IntPtr window, int width, int height, int state);
+    private delegate void NativeTouchDelegate(int type, float x, float y, int pointerCount, int pointerId);
+    private delegate void NativeFrameDelegate(long timestamp, long targetTimestamp);
 
     private static readonly object s_sync = new();
     private static OpenHarmonyAppContext? s_context;
@@ -78,8 +123,12 @@ public static class OpenHarmonyBridge
     private static NativeLifecycleDelegate? s_lifecycleThunk;
     private static NativeNodeDelegate? s_nodeThunk;
     private static NativeSurfaceDelegate? s_surfaceThunk;
+    private static NativeTouchDelegate? s_touchThunk;
+    private static NativeFrameDelegate? s_frameThunk;
     private static readonly List<OpenHarmonyLifecycleEvent> s_pending = new();
     private static Action<OpenHarmonySurfaceInfo>? s_surfaceHandlers;
+    private static Action<OpenHarmonyTouchEventArgs>? s_touchHandlers;
+    private static Action<OpenHarmonyFrameEventArgs>? s_frameHandlers;
     private static OpenHarmonySurfaceInfo? s_surface;
     private static Action<OpenHarmonyAppContext>? s_initializedHandlers;
     private static Action<OpenHarmonyLifecycleEvent>? s_lifecycleHandlers;
@@ -124,6 +173,20 @@ public static class OpenHarmonyBridge
         {
             return false;
         }
+    }
+
+    /// <summary>Raised for every XComponent touch/mouse event (input for handlers/gestures).</summary>
+    public static event Action<OpenHarmonyTouchEventArgs>? Touch
+    {
+        add { lock (s_sync) { s_touchHandlers += value; } }
+        remove { lock (s_sync) { s_touchHandlers -= value; } }
+    }
+
+    /// <summary>Raised on every platform frame callback (vsync-aligned rendering tick).</summary>
+    public static event Action<OpenHarmonyFrameEventArgs>? Frame
+    {
+        add { lock (s_sync) { s_frameHandlers += value; } }
+        remove { lock (s_sync) { s_frameHandlers -= value; } }
     }
 
     /// <summary>Raised when the ArkUI XComponent surface is created/changed/destroyed.
@@ -299,6 +362,11 @@ public static class OpenHarmonyBridge
                 Marshal.GetFunctionPointerForDelegate(s_lifecycleThunk),
                 Marshal.GetFunctionPointerForDelegate(s_nodeThunk),
                 Marshal.GetFunctionPointerForDelegate(s_surfaceThunk));
+            s_touchThunk = OnTouchNative;
+            s_frameThunk = OnFrameNative;
+            RegisterInputNative(
+                Marshal.GetFunctionPointerForDelegate(s_touchThunk),
+                Marshal.GetFunctionPointerForDelegate(s_frameThunk));
             registered = true;
         }
         catch (Exception ex)
@@ -330,6 +398,28 @@ public static class OpenHarmonyBridge
         }
         WriteStatus($"lifecycle: {lifecycleEvent}");
         handlers(lifecycleEvent);
+    }
+
+    private static void OnTouchNative(int type, float x, float y, int pointerCount, int pointerId)
+    {
+        var args = new OpenHarmonyTouchEventArgs((OpenHarmonyTouchAction)type, x, y, pointerCount, pointerId);
+        Action<OpenHarmonyTouchEventArgs>? handlers;
+        lock (s_sync)
+        {
+            handlers = s_touchHandlers;
+        }
+        handlers?.Invoke(args);
+    }
+
+    private static void OnFrameNative(long timestamp, long targetTimestamp)
+    {
+        var args = new OpenHarmonyFrameEventArgs(timestamp, targetTimestamp);
+        Action<OpenHarmonyFrameEventArgs>? handlers;
+        lock (s_sync)
+        {
+            handlers = s_frameHandlers;
+        }
+        handlers?.Invoke(args);
     }
 
     private static void OnSurfaceNative(IntPtr window, int width, int height, int state)

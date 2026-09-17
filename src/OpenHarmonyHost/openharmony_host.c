@@ -202,6 +202,8 @@ struct OhosHostAppHandle {
     void (*bridge_lifecycle)(int);
     void (*bridge_node)(void*);
     void (*bridge_surface)(void*, int, int, int);
+    void (*bridge_touch)(int, float, float, int, int);
+    void (*bridge_frame)(int64_t, int64_t);
     void* surface_window;
     int surface_width;
     int surface_height;
@@ -431,6 +433,28 @@ void ohos_host_set_native_window(void* window, int width, int height, ohos_surfa
         if (g_app->bridge_surface != NULL) {
             g_app->bridge_surface(window, width, height, (int)state);
         }
+    }
+}
+
+void ohos_host_register_input(void* touch, void* frame) {
+    fprintf(stderr, "[openharmony-host] register_input touch=%p frame=%p g_app=%p\n", touch, frame, (void*)g_app);
+    fflush(stderr);
+    if (g_app == NULL) {
+        return;
+    }
+    g_app->bridge_touch = (void (*)(int, float, float, int, int))touch;
+    g_app->bridge_frame = (void (*)(int64_t, int64_t))frame;
+}
+
+void ohos_host_notify_touch(int type, float x, float y, int pointerCount, int pointerId) {
+    if (g_app != NULL && g_app->bridge_touch != NULL) {
+        g_app->bridge_touch(type, x, y, pointerCount, pointerId);
+    }
+}
+
+void ohos_host_notify_frame(int64_t timestamp, int64_t targetTimestamp) {
+    if (g_app != NULL && g_app->bridge_frame != NULL) {
+        g_app->bridge_frame(timestamp, targetTimestamp);
     }
 }
 
