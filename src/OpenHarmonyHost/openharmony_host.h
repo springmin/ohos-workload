@@ -78,6 +78,14 @@ void ohos_host_draw_save(void);
 void ohos_host_draw_restore(void);
 void ohos_host_draw_clip_rect(float x, float y, float width, float height, int subtract);
 void ohos_host_draw_clip_polyline(const float* xy, int count);
+// Brush effects (apply to subsequent fills/text until cleared).
+void ohos_host_draw_set_linear_gradient(float x0, float y0, float x1, float y1,
+                                        const unsigned int* colors, const float* stops, int count);
+void ohos_host_draw_set_radial_gradient(float cx, float cy, float radius,
+                                        const unsigned int* colors, const float* stops, int count);
+void ohos_host_draw_set_shadow(float dx, float dy, float blur, unsigned int argb);
+void ohos_host_draw_clear_effects(void);
+
 /// Decodes PNG/JPEG bytes and draws them into the destination rectangle.
 int  ohos_host_draw_image_bytes(const void* data, int length, float x, float y, float width, float height);
 

@@ -30,7 +30,14 @@ public sealed class OpenHarmonyCanvas : ICanvas
     public LineJoin StrokeLineJoin { get; set; } = LineJoin.Miter;
     public float[]? StrokeDashPattern { get; set; }
     public float StrokeDashOffset { get; set; }
-    public Color FillColor { set => _fillColor = value; }
+    public Color FillColor
+    {
+        set
+        {
+            _fillColor = value;
+            HostCanvas.ClearEffects();
+        }
+    }
     public Color FontColor { set => _fontColor = value; }
     public IFont? Font { get; set; }
     public float FontSize { get; set; } = 14f;
@@ -279,9 +286,68 @@ public sealed class OpenHarmonyCanvas : ICanvas
         HorizontalAlignment horizontalAlignment, VerticalAlignment verticalAlignment)
         => GetStringSize(value, font, fontSize);
 
-    // ---------------------------------------------------------------- not mapped yet
-    public void SetShadow(SizeF offset, float blur, Color color) { }
-    public void SetFillPaint(Paint paint, RectF rectangle) { }
+    // ---------------------------------------------------------------- effects
+    public void SetShadow(SizeF offset, float blur, Color color)
+        => HostCanvas.SetShadow(offset.Width, offset.Height, blur, ToArgb(color, _alpha));
+
+    public void SetFillPaint(Paint paint, RectF rectangle)
+    {
+        switch (paint)
+        {
+            case SolidPaint solid when solid.Color is not null:
+                _fillColor = solid.Color;
+                HostCanvas.ClearEffects();
+                break;
+            case LinearGradientPaint linear:
+                SetGradient(linear.GradientStops, linear.StartColor, linear.EndColor,
+                    (float)linear.StartPoint.X, (float)linear.StartPoint.Y,
+                    (float)linear.EndPoint.X, (float)linear.EndPoint.Y, isRadial: false);
+                break;
+            case RadialGradientPaint radial:
+                SetGradient(radial.GradientStops, radial.StartColor, radial.EndColor,
+                    (float)radial.Center.X, (float)radial.Center.Y, (float)radial.Radius, 0f, isRadial: true);
+                break;
+            default:
+                // PatternPaint and other paints are not mapped yet; the current fill colour stays.
+                break;
+        }
+    }
+
+    private void SetGradient(PaintGradientStop[]? stops, Color? startColor, Color? endColor,
+        float x0, float y0, float x1, float y1, bool isRadial)
+    {
+        var colors = new List<uint>();
+        var positions = new List<float>();
+        if (stops is { Length: > 0 })
+        {
+            foreach (PaintGradientStop stop in stops)
+            {
+                colors.Add(ToArgb(stop.Color, _alpha));
+                positions.Add(stop.Offset);
+            }
+        }
+        else
+        {
+            colors.Add(ToArgb(startColor ?? _fillColor, _alpha));
+            positions.Add(0f);
+            colors.Add(ToArgb(endColor ?? _fillColor, _alpha));
+            positions.Add(1f);
+        }
+        if (colors.Count < 2)
+        {
+            return;
+        }
+        Vector2 p0 = P(x0, y0);
+        if (isRadial == true)
+        {
+            HostCanvas.SetRadialGradient(p0.X, p0.Y, x1, colors.ToArray(), positions.ToArray());
+        }
+        else
+        {
+            Vector2 p1 = P(x1, y1);
+            HostCanvas.SetLinearGradient(p0.X, p0.Y, p1.X, p1.Y, colors.ToArray(), positions.ToArray());
+        }
+    }
     public void DrawImage(IImage image, float x, float y, float width, float height)
     {
         if (image is null)

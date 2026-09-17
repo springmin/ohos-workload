@@ -10,6 +10,9 @@
 #include <native_drawing/drawing_font.h>
 #include <native_drawing/drawing_path.h>
 #include <native_drawing/drawing_pixel_map.h>
+#include <native_drawing/drawing_point.h>
+#include <native_drawing/drawing_shader_effect.h>
+#include <native_drawing/drawing_shadow_layer.h>
 #include <native_drawing/drawing_pen.h>
 #include <native_drawing/drawing_rect.h>
 #include <native_drawing/drawing_text_blob.h>
@@ -486,6 +489,80 @@ int ohos_host_join_app(OhosHostAppHandle* handle) {
 // ---------------------------------------------------------------------------
 
 static OH_Drawing_Bitmap* g_canvas_bitmap = NULL;
+static OH_Drawing_ShaderEffect* g_brush_shader = NULL;
+static OH_Drawing_ShadowLayer* g_brush_shadow = NULL;
+
+static OH_Drawing_Brush* OhosMakeFillBrush(unsigned int argb) {
+    OH_Drawing_Brush* brush = OH_Drawing_BrushCreate();
+    if (brush == NULL) {
+        return NULL;
+    }
+    OH_Drawing_BrushSetColor(brush, (uint32_t)argb);
+    if (g_brush_shader != NULL) {
+        OH_Drawing_BrushSetShaderEffect(brush, g_brush_shader);
+    }
+    if (g_brush_shadow != NULL) {
+        OH_Drawing_BrushSetShadowLayer(brush, g_brush_shadow);
+    }
+    return brush;
+}
+
+void ohos_host_draw_clear_effects(void) {
+    if (g_brush_shader != NULL) {
+        OH_Drawing_ShaderEffectDestroy(g_brush_shader);
+        g_brush_shader = NULL;
+    }
+    if (g_brush_shadow != NULL) {
+        OH_Drawing_ShadowLayerDestroy(g_brush_shadow);
+        g_brush_shadow = NULL;
+    }
+}
+
+void ohos_host_draw_set_linear_gradient(float x0, float y0, float x1, float y1,
+                                        const unsigned int* colors, const float* stops, int count) {
+    if (colors == NULL || count < 2) {
+        return;
+    }
+    OH_Drawing_Point* start = OH_Drawing_PointCreate(x0, y0);
+    OH_Drawing_Point* end = OH_Drawing_PointCreate(x1, y1);
+    if (start == NULL || end == NULL) {
+        return;
+    }
+    if (g_brush_shader != NULL) {
+        OH_Drawing_ShaderEffectDestroy(g_brush_shader);
+        g_brush_shader = NULL;
+    }
+    g_brush_shader = OH_Drawing_ShaderEffectCreateLinearGradient(start, end, (const uint32_t*)colors,
+                                                                stops, (uint32_t)count, CLAMP);
+    OH_Drawing_PointDestroy(start);
+    OH_Drawing_PointDestroy(end);
+}
+
+void ohos_host_draw_set_radial_gradient(float cx, float cy, float radius,
+                                        const unsigned int* colors, const float* stops, int count) {
+    if (colors == NULL || count < 2 || radius <= 0.0f) {
+        return;
+    }
+    OH_Drawing_Point* center = OH_Drawing_PointCreate(cx, cy);
+    if (center == NULL) {
+        return;
+    }
+    if (g_brush_shader != NULL) {
+        OH_Drawing_ShaderEffectDestroy(g_brush_shader);
+        g_brush_shader = NULL;
+    }
+    g_brush_shader = OH_Drawing_ShaderEffectCreateRadialGradient(center, radius, (const uint32_t*)colors,
+                                                                stops, (uint32_t)count, CLAMP);
+    OH_Drawing_PointDestroy(center);
+}
+
+void ohos_host_draw_set_shadow(float dx, float dy, float blur, unsigned int argb) {
+    if (g_brush_shadow != NULL) {
+        OH_Drawing_ShadowLayerDestroy(g_brush_shadow);
+        g_brush_shadow = NULL;
+    }
+    g_brush_shadow = OH_Drawing_ShadowLayerCreate(blur, dx, dy, (uint32_t)argb);
+}
 static OH_Drawing_Canvas* g_canvas = NULL;
 static int g_canvas_width = 0;
 static int g_canvas_height = 0;
@@ -537,8 +614,7 @@ void ohos_host_draw_rect(int x, int y, int width, int height, unsigned int argb,
         return;
     }
     if (filled) {
-        OH_Drawing_Brush* brush = OH_Drawing_BrushCreate();
-        OH_Drawing_BrushSetColor(brush, (uint32_t)argb);
+        OH_Drawing_Brush* brush = OhosMakeFillBrush(argb);
         OH_Drawing_CanvasAttachBrush(g_canvas, brush);
         OH_Drawing_CanvasDrawRect(g_canvas, rect);
         OH_Drawing_CanvasDetachBrush(g_canvas);
@@ -567,8 +643,7 @@ int ohos_host_draw_text(int x, int y, const char* utf8, float size, unsigned int
     OH_Drawing_TextBlob* blob = OH_Drawing_TextBlobCreateFromString(utf8, font, TEXT_ENCODING_UTF8);
     int rc = -1;
     if (blob != NULL) {
-        OH_Drawing_Brush* brush = OH_Drawing_BrushCreate();
-        OH_Drawing_BrushSetColor(brush, (uint32_t)argb);
+        OH_Drawing_Brush* brush = OhosMakeFillBrush(argb);
         OH_Drawing_CanvasAttachBrush(g_canvas, brush);
         OH_Drawing_CanvasDrawTextBlob(g_canvas, blob, (float)x, (float)y);
         OH_Drawing_CanvasDetachBrush(g_canvas);
@@ -596,8 +671,7 @@ void ohos_host_draw_polyline(const float* xy, int count, int closed, unsigned in
         OH_Drawing_PathClose(path);
     }
     if (filled) {
-        OH_Drawing_Brush* brush = OH_Drawing_BrushCreate();
-        OH_Drawing_BrushSetColor(brush, (uint32_t)argb);
+        OH_Drawing_Brush* brush = OhosMakeFillBrush(argb);
         OH_Drawing_CanvasAttachBrush(g_canvas, brush);
         OH_Drawing_CanvasDrawPath(g_canvas, path);
         OH_Drawing_CanvasDetachBrush(g_canvas);

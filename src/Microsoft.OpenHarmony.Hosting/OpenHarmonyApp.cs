@@ -407,6 +407,18 @@ public static class OpenHarmonyCanvas
     [DllImport(HostLibrary, EntryPoint = "ohos_host_draw_image_bytes")]
     private static extern int DrawImageBytesNative(byte[] data, int length, float x, float y, float width, float height);
 
+    [DllImport(HostLibrary, EntryPoint = "ohos_host_draw_set_linear_gradient")]
+    private static extern void LinearGradientNative(float x0, float y0, float x1, float y1, uint[] colors, float[] stops, int count);
+
+    [DllImport(HostLibrary, EntryPoint = "ohos_host_draw_set_radial_gradient")]
+    private static extern void RadialGradientNative(float cx, float cy, float radius, uint[] colors, float[] stops, int count);
+
+    [DllImport(HostLibrary, EntryPoint = "ohos_host_draw_set_shadow")]
+    private static extern void ShadowNative(float dx, float dy, float blur, uint argb);
+
+    [DllImport(HostLibrary, EntryPoint = "ohos_host_draw_clear_effects")]
+    private static extern void ClearEffectsNative();
+
     [DllImport(HostLibrary, EntryPoint = "ohos_host_draw_present")]
     private static extern int PresentNative();
 
@@ -498,6 +510,26 @@ public static class OpenHarmonyCanvas
             return false;
         }
     }
+
+    /// <summary>Linear gradient applied to subsequent fills/text.</summary>
+    public static void SetLinearGradient(float x0, float y0, float x1, float y1, uint[] colors, float[] stops)
+    {
+        try { LinearGradientNative(x0, y0, x1, y1, colors, stops, colors.Length); } catch { }
+    }
+
+    /// <summary>Radial gradient applied to subsequent fills/text.</summary>
+    public static void SetRadialGradient(float cx, float cy, float radius, uint[] colors, float[] stops)
+    {
+        try { RadialGradientNative(cx, cy, radius, colors, stops, colors.Length); } catch { }
+    }
+
+    /// <summary>Drop shadow applied to subsequent fills/text.</summary>
+    public static void SetShadow(float dx, float dy, float blur, uint argb)
+    {
+        try { ShadowNative(dx, dy, blur, argb); } catch { }
+    }
+
+    public static void ClearEffects() { try { ClearEffectsNative(); } catch { } }
 
     public static bool DrawText(int x, int y, string text, float size, uint argb)
     {
