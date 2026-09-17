@@ -127,10 +127,17 @@ public sealed class App : Application
             Padding = 10,
             Content = new Label { Text = "inside border", FontSize = 24 },
         };
+        var pickerDemo = new Picker { Title = "pick", FontSize = 24 };
+        pickerDemo.Items.Add("one");
+        pickerDemo.Items.Add("two");
+        pickerDemo.Items.Add("three");
         var valueRow2 = new HorizontalStackLayout { Spacing = 16 };
         valueRow2.Add(new Stepper { Minimum = 0, Maximum = 10, Increment = 1, Value = 1 });
         valueRow2.Add(new RadioButton { Content = "radio choice" });
         valueRow2.Add(new SearchBar { Placeholder = "search...", HeightRequest = 48 });
+        valueRow2.Add(new DatePicker { Date = new DateTime(2026, 9, 17), FontSize = 24 });
+        valueRow2.Add(new TimePicker { Time = new TimeSpan(14, 30, 0), FontSize = 24 });
+        valueRow2.Add(pickerDemo);
 
         layout.Add(title);
         layout.Add(subtitle);
