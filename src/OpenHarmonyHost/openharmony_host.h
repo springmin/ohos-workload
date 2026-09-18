@@ -62,6 +62,10 @@ int ohos_host_vibrate(int duration_ms);
 /// Essentials over the NDK: network access (0 unknown, 1 none, 2 local, 3 internet).
 int ohos_host_network_access(void);
 
+/// Soft keyboard through the input-method NDK (attach + show/hide).
+int ohos_host_keyboard_show(void);
+int ohos_host_keyboard_hide(void);
+
 /// Custom fonts: loads a typeface from a font file used by all text drawing/measuring (an empty
 /// path restores the platform default face).
 void ohos_host_set_font_file(const char* path);

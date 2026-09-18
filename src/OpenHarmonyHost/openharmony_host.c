@@ -4,6 +4,9 @@
 #include <network/netmanager/net_connection.h>
 #include <network/netmanager/net_connection_type.h>
 #include <accesstoken/ability_access_control.h>
+#include <inputmethod/inputmethod_controller_capi.h>
+#include <inputmethod/inputmethod_inputmethod_proxy_capi.h>
+#include <inputmethod/inputmethod_attach_options_capi.h>
 #include <native_drawing/drawing_font.h>
 #include <native_drawing/drawing_typeface.h>
 #include <LocationKit/oh_location.h>
@@ -16,6 +19,9 @@
 #include <native_drawing/drawing_bitmap.h>
 #include <native_drawing/drawing_brush.h>
 #include <native_drawing/drawing_canvas.h>
+#include <inputmethod/inputmethod_controller_capi.h>
+#include <inputmethod/inputmethod_inputmethod_proxy_capi.h>
+#include <inputmethod/inputmethod_attach_options_capi.h>
 #include <native_drawing/drawing_font.h>
 #include <native_drawing/drawing_matrix.h>
 #include <native_drawing/drawing_path.h>
@@ -553,6 +559,52 @@ int ohos_host_location_get(double* latitude, double* longitude, double* altitude
     if (longitude != NULL) *longitude = g_last_longitude;
     if (altitude != NULL) *altitude = g_last_altitude;
     return 1;
+}
+
+// ---------------------------------------------------------------------------
+// Soft keyboard: attach an (empty) editor proxy so the platform can show the input method.
+// The text callbacks are the next step; this already drives the keyboard from the platform.
+// ---------------------------------------------------------------------------
+
+static InputMethod_TextEditorProxy* g_editor_proxy = NULL;
+static InputMethod_InputMethodProxy* g_inputmethod_proxy = NULL;
+
+static int EnsureInputMethod(void) {
+    if (g_inputmethod_proxy != NULL) {
+        return 0;
+    }
+    if (g_editor_proxy == NULL) {
+        g_editor_proxy = OH_TextEditorProxy_Create();
+        if (g_editor_proxy == NULL) {
+            return -1;
+        }
+    }
+    InputMethod_AttachOptions* options = OH_AttachOptions_Create(false);
+    if (options == NULL) {
+        return -1;
+    }
+    InputMethod_ErrorCode rc = OH_InputMethodController_Attach(g_editor_proxy, options, &g_inputmethod_proxy);
+    OH_AttachOptions_Destroy(options);
+    if (rc != 0) {
+        fprintf(stderr, "[openharmony-host] input method attach rc=%d\n", rc);
+        g_inputmethod_proxy = NULL;
+        return (int)rc;
+    }
+    return 0;
+}
+
+int ohos_host_keyboard_show(void) {
+    if (EnsureInputMethod() != 0 || g_inputmethod_proxy == NULL) {
+        return -1;
+    }
+    return (int)OH_InputMethodProxy_ShowKeyboard(g_inputmethod_proxy);
+}
+
+int ohos_host_keyboard_hide(void) {
+    if (g_inputmethod_proxy == NULL) {
+        return 0;
+    }
+    return (int)OH_InputMethodProxy_HideKeyboard(g_inputmethod_proxy);
 }
 
 int ohos_host_network_access(void) {

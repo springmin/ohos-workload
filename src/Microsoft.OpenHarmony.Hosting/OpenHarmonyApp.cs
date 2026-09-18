@@ -122,6 +122,12 @@ public static class OpenHarmonyBridge
     [DllImport(HostLibrary, EntryPoint = "ohos_host_request_text_input")]
     private static extern void RequestTextInputNative(int show);
 
+    [DllImport(HostLibrary, EntryPoint = "ohos_host_keyboard_show")]
+    private static extern int KeyboardShowNative();
+
+    [DllImport(HostLibrary, EntryPoint = "ohos_host_keyboard_hide")]
+    private static extern int KeyboardHideNative();
+
     [DllImport(HostLibrary, EntryPoint = "ohos_host_request_vibration")]
     private static extern void RequestVibrationNative(int durationMs);
 
@@ -382,6 +388,18 @@ public static class OpenHarmonyBridge
     /// <summary>Asks the ArkTS shell to show (true) or hide (false) the soft keyboard.</summary>
     public static void RequestTextInput(bool show)
     {
+        // Preferred: drive the soft keyboard straight from the platform input-method NDK.
+        try
+        {
+            if (show ? KeyboardShowNative() == 0 : KeyboardHideNative() == 0)
+            {
+                return;
+            }
+        }
+        catch
+        {
+            // No native host (tests): fall through to the ArkTS request.
+        }
         try
         {
             RequestTextInputNative(show ? 1 : 0);
