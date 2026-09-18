@@ -476,6 +476,18 @@ void ohos_host_request_text_input(int show) {
     }
 }
 
+static void (*g_vibration_listener)(int duration_ms) = NULL;
+
+void ohos_host_set_vibration_listener(void (*listener)(int)) {
+    g_vibration_listener = listener;
+}
+
+void ohos_host_request_vibration(int duration_ms) {
+    if (g_vibration_listener != NULL) {
+        g_vibration_listener(duration_ms);
+    }
+}
+
 static void (*g_keystore_listener)(int request_id, const char* op, const char* alias, const char* data_base64) = NULL;
 
 void ohos_host_keystore_set_listener(void (*listener)(int, const char*, const char*, const char*)) {

@@ -56,6 +56,10 @@ void ohos_host_notify_touch(int type, float x, float y, int pointerCount, int po
 /// Text input: forwards text typed in the ArkTS shell to the managed bridge.
 void ohos_host_notify_text_input(const char* utf8);
 
+/// Essentials: asks the ArkTS shell to vibrate (listener registered by the NAPI layer).
+void ohos_host_request_vibration(int duration_ms);
+void ohos_host_set_vibration_listener(void (*listener)(int duration_ms));
+
 /// Universal key store (HUKS) bridge: the managed side asks the ArkTS shell to run key
 /// operations; results come back through ohos_host_keystore_complete.
 void ohos_host_keystore_set_listener(void (*listener)(int request_id, const char* op, const char* alias, const char* data_base64));

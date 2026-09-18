@@ -23,6 +23,13 @@ struct Index {
     // 2 = foreground; the native host forwards it to the managed bridge.
     host.notifyLifecycle(2);
     host.setNodeContent(this.content);
+    // Essentials (vibration/permissions/geolocation/pickers/connectivity/launcher) need the
+    // matching SDK kits, which are not part of this minimal shell project's compilation set yet
+    // (see docs/plans/2026-09-18-ohos-arkts-essentials-bridge-plan.md). The sinks stay
+    // registered and report "unavailable" so the managed side behaves deterministically.
+    host.registerVibrationSink((durationMs: number) => {
+    });
+
     // SecureStorage: the managed side asks HUKS to generate/encrypt/decrypt.
     // The keystore kit is not part of this minimal shell project's dependencies/syscap yet, so
     // every request is answered with rc=-1 and the managed side uses its documented file

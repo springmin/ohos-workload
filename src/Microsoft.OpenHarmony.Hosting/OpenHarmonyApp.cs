@@ -122,6 +122,9 @@ public static class OpenHarmonyBridge
     [DllImport(HostLibrary, EntryPoint = "ohos_host_request_text_input")]
     private static extern void RequestTextInputNative(int show);
 
+    [DllImport(HostLibrary, EntryPoint = "ohos_host_request_vibration")]
+    private static extern void RequestVibrationNative(int durationMs);
+
     private delegate void NativeLifecycleDelegate(int evt);
     private delegate void NativeNodeDelegate(IntPtr node);
     private delegate void NativeSurfaceDelegate(IntPtr window, int width, int height, int state);
@@ -240,6 +243,19 @@ public static class OpenHarmonyBridge
             handlers = s_redrawHandlers;
         }
         handlers?.Invoke();
+    }
+
+    /// <summary>Asks the ArkTS shell to vibrate for the given duration (no-op without a sink).</summary>
+    public static void RequestVibration(int durationMs)
+    {
+        try
+        {
+            RequestVibrationNative(durationMs);
+        }
+        catch
+        {
+            // No native host (tests) or no sink: vibration is optional.
+        }
     }
 
     /// <summary>Asks the ArkTS shell to show (true) or hide (false) the soft keyboard.</summary>
