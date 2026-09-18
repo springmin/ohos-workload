@@ -207,6 +207,7 @@ struct OhosHostAppHandle {
     void (*bridge_frame)(int64_t, int64_t);
     void (*bridge_text_input)(const char*);
     void (*bridge_text_submitted)(void);
+    void (*bridge_keystore_result)(int request_id, int rc, const char* data_base64);
     void* surface_window;
     int surface_width;
     int surface_height;
@@ -472,6 +473,30 @@ void ohos_host_request_text_input(int show) {
     fflush(stderr);
     if (g_text_input_listener != NULL) {
         g_text_input_listener(show);
+    }
+}
+
+static void (*g_keystore_listener)(int request_id, const char* op, const char* alias, const char* data_base64) = NULL;
+
+void ohos_host_keystore_set_listener(void (*listener)(int, const char*, const char*, const char*)) {
+    g_keystore_listener = listener;
+}
+
+void ohos_host_keystore_register_result(void* callback) {
+    if (g_app != NULL) {
+        g_app->bridge_keystore_result = (void (*)(int, int, const char*))callback;
+    }
+}
+
+void ohos_host_keystore_request(int request_id, const char* op, const char* alias, const char* data_base64) {
+    if (g_keystore_listener != NULL) {
+        g_keystore_listener(request_id, op, alias, data_base64);
+    }
+}
+
+void ohos_host_keystore_complete(int request_id, int rc, const char* data_base64) {
+    if (g_app != NULL && g_app->bridge_keystore_result != NULL) {
+        g_app->bridge_keystore_result(request_id, rc, data_base64);
     }
 }
 

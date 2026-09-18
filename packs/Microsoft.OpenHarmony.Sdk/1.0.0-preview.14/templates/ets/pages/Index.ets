@@ -23,6 +23,15 @@ struct Index {
     // 2 = foreground; the native host forwards it to the managed bridge.
     host.notifyLifecycle(2);
     host.setNodeContent(this.content);
+    // SecureStorage: the managed side asks HUKS to generate/encrypt/decrypt.
+    // The keystore kit is not part of this minimal shell project's dependencies/syscap yet, so
+    // every request is answered with rc=-1 and the managed side uses its documented file
+    // fallback. Enabling the real path means adding the universal keystore kit to the shell
+    // project (see docs/plans/2026-09-18-ohos-secure-storage-huks-plan.md).
+    host.registerKeystoreSink((requestId: number, op: string, alias: string, data: string) => {
+      host.notifyKeystoreResult(requestId, -1, '');
+    });
+
     // The managed Entry asks for the soft keyboard through this sink.
     host.registerTextInputSink((show: number) => {
       if (show === 1) {

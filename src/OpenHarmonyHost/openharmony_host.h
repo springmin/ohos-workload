@@ -56,6 +56,13 @@ void ohos_host_notify_touch(int type, float x, float y, int pointerCount, int po
 /// Text input: forwards text typed in the ArkTS shell to the managed bridge.
 void ohos_host_notify_text_input(const char* utf8);
 
+/// Universal key store (HUKS) bridge: the managed side asks the ArkTS shell to run key
+/// operations; results come back through ohos_host_keystore_complete.
+void ohos_host_keystore_set_listener(void (*listener)(int request_id, const char* op, const char* alias, const char* data_base64));
+void ohos_host_keystore_register_result(void* callback);
+void ohos_host_keystore_request(int request_id, const char* op, const char* alias, const char* data_base64);
+void ohos_host_keystore_complete(int request_id, int rc, const char* data_base64);
+
 /// Text input: the user pressed the keyboard's submit/return key.
 void ohos_host_notify_text_submitted(void);
 

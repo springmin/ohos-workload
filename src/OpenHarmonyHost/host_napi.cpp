@@ -131,6 +131,72 @@ void TryRegisterXComponent() {
 
 std::string GetStringArg(napi_env env, napi_value value);
 
+napi_ref g_keystore_sink_ref = nullptr;
+
+// Called by the host core (managed side) to run a HUKS operation in the ArkTS shell.
+void OnKeystoreRequest(int requestId, const char* op, const char* alias, const char* dataBase64) {
+    if (g_env == nullptr || g_keystore_sink_ref == nullptr) {
+        return;
+    }
+    napi_value sink = nullptr;
+    if (napi_get_reference_value(g_env, g_keystore_sink_ref, &sink) != napi_ok || sink == nullptr) {
+        return;
+    }
+    napi_value global = nullptr;
+    napi_get_global(g_env, &global);
+    napi_value argv[4] = {nullptr, nullptr, nullptr, nullptr};
+    napi_create_int32(g_env, requestId, &argv[0]);
+    napi_create_string_utf8(g_env, op != nullptr ? op : "", NAPI_AUTO_LENGTH, &argv[1]);
+    napi_create_string_utf8(g_env, alias != nullptr ? alias : "", NAPI_AUTO_LENGTH, &argv[2]);
+    napi_create_string_utf8(g_env, dataBase64 != nullptr ? dataBase64 : "", NAPI_AUTO_LENGTH, &argv[3]);
+    napi_value result = nullptr;
+    napi_call_function(g_env, global, sink, 4, argv, &result);
+}
+
+// ArkTS calls host.registerKeystoreSink(fn) to receive keystore requests.
+napi_value RegisterKeystoreSink(napi_env env, napi_callback_info info) {
+    size_t argc = 1;
+    napi_value argv[1] = {nullptr};
+    napi_get_cb_info(env, info, &argc, argv, nullptr, nullptr);
+    if (argc >= 1) {
+        napi_valuetype type = napi_undefined;
+        napi_typeof(env, argv[0], &type);
+        if (type == napi_function) {
+            if (g_keystore_sink_ref != nullptr) {
+                napi_delete_reference(env, g_keystore_sink_ref);
+            }
+            napi_create_reference(env, argv[0], 1, &g_keystore_sink_ref);
+            ohos_host_keystore_set_listener(OnKeystoreRequest);
+        }
+    }
+    napi_value undefined = nullptr;
+    napi_get_undefined(env, &undefined);
+    return undefined;
+}
+
+// ArkTS calls host.notifyKeystoreResult(requestId, rc, dataBase64).
+napi_value NotifyKeystoreResult(napi_env env, napi_callback_info info) {
+    size_t argc = 3;
+    napi_value argv[3] = {nullptr, nullptr, nullptr};
+    napi_get_cb_info(env, info, &argc, argv, nullptr, nullptr);
+    int requestId = 0;
+    int rc = -1;
+    std::string data;
+    if (argc >= 1) {
+        napi_get_value_int32(env, argv[0], &requestId);
+    }
+    if (argc >= 2) {
+        napi_get_value_int32(env, argv[1], &rc);
+    }
+    if (argc >= 3) {
+        data = GetStringArg(env, argv[2]);
+    }
+    ohos_host_keystore_complete(requestId, rc, data.c_str());
+    napi_value undefined = nullptr;
+    napi_get_undefined(env, &undefined);
+    return undefined;
+}
+
 // Called by the host core (managed side) to show/hide the ArkTS soft keyboard.
 void OnTextInputRequest(int show) {
     if (g_env == nullptr || g_text_input_sink_ref == nullptr) {
@@ -361,6 +427,9 @@ napi_value Init(napi_env env, napi_value exports) {
         {"registerTextInputSink", nullptr, RegisterTextInputSink, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"notifyTextInput", nullptr, NotifyTextInput, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"notifyTextSubmitted", nullptr, NotifyTextSubmitted, nullptr, nullptr, nullptr, napi_default, nullptr},
+        {"registerKeystoreSink", nullptr, RegisterKeystoreSink, nullptr, nullptr, nullptr, napi_default, nullptr},
+
+        {"notifyKeystoreResult", nullptr, NotifyKeystoreResult, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"startApp", nullptr, StartApp, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"notifyLifecycle", nullptr, NotifyLifecycle, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"setNodeContent", nullptr, SetNodeContent, nullptr, nullptr, nullptr, napi_default, nullptr},

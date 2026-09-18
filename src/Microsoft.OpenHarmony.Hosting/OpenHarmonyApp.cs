@@ -116,6 +116,9 @@ public static class OpenHarmonyBridge
     [DllImport(HostLibrary, EntryPoint = "ohos_host_register_text_submitted")]
     private static extern void RegisterTextSubmittedNative(IntPtr callback);
 
+    [DllImport(HostLibrary, EntryPoint = "ohos_host_keystore_register_result")]
+    private static extern void RegisterKeystoreResultNative(IntPtr callback);
+
     [DllImport(HostLibrary, EntryPoint = "ohos_host_request_text_input")]
     private static extern void RequestTextInputNative(int show);
 
@@ -126,6 +129,7 @@ public static class OpenHarmonyBridge
     private delegate void NativeFrameDelegate(long timestamp, long targetTimestamp);
     private delegate void NativeTextInputDelegate(IntPtr utf8);
     private delegate void NativeTextSubmittedDelegate();
+    private delegate void NativeKeystoreResultDelegate(int requestId, int rc, IntPtr dataUtf8);
 
     private static readonly object s_sync = new();
     private static OpenHarmonyAppContext? s_context;
@@ -138,6 +142,7 @@ public static class OpenHarmonyBridge
     private static NativeFrameDelegate? s_frameThunk;
     private static NativeTextInputDelegate? s_textInputThunk;
     private static NativeTextSubmittedDelegate? s_textSubmittedThunk;
+    private static NativeKeystoreResultDelegate? s_keystoreResultThunk;
     private static readonly List<OpenHarmonyLifecycleEvent> s_pending = new();
     private static Action<OpenHarmonySurfaceInfo>? s_surfaceHandlers;
     private static Action<OpenHarmonyTouchEventArgs>? s_touchHandlers;
@@ -204,6 +209,13 @@ public static class OpenHarmonyBridge
         add { lock (s_sync) { s_textInputHandlers += value; } }
         remove { lock (s_sync) { s_textInputHandlers -= value; } }
     }
+
+    /// <summary>Completes a pending keystore request (called by the ArkTS sink).</summary>
+    public static void CompleteKeystoreRequest(int requestId, int rc, string data)
+        => KeystoreResult?.Invoke(requestId, rc, data);
+
+    /// <summary>Raised when the ArkTS keystore sink answers a request.</summary>
+    public static event Action<int, int, string>? KeystoreResult;
 
     /// <summary>Raised when the user pressed the return key in the ArkTS shell's input.</summary>
     public static event Action? TextSubmitted
@@ -434,6 +446,8 @@ public static class OpenHarmonyBridge
                 RegisterTextInputNative(Marshal.GetFunctionPointerForDelegate(s_textInputThunk));
                 s_textSubmittedThunk = OnTextSubmittedNative;
                 RegisterTextSubmittedNative(Marshal.GetFunctionPointerForDelegate(s_textSubmittedThunk));
+                s_keystoreResultThunk = OnKeystoreResultNative;
+                RegisterKeystoreResultNative(Marshal.GetFunctionPointerForDelegate(s_keystoreResultThunk));
             }
             catch (Exception ex)
             {
@@ -493,6 +507,12 @@ public static class OpenHarmonyBridge
             handlers = s_textInputHandlers;
         }
         handlers?.Invoke(text);
+    }
+
+    private static void OnKeystoreResultNative(int requestId, int rc, IntPtr dataUtf8)
+    {
+        string data = dataUtf8 == IntPtr.Zero ? string.Empty : Marshal.PtrToStringUTF8(dataUtf8) ?? string.Empty;
+        KeystoreResult?.Invoke(requestId, rc, data);
     }
 
     private static void OnTextSubmittedNative()

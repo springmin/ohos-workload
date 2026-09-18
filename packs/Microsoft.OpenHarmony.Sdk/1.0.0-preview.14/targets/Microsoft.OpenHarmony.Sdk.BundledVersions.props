@@ -4,10 +4,10 @@
     <KnownFrameworkReference Include="Microsoft.OpenHarmony"
                               TargetFramework="net11.0"
                               RuntimeFrameworkName="Microsoft.OpenHarmony"
-                              DefaultRuntimeFrameworkVersion="1.0.0-preview.13"
-                              LatestRuntimeFrameworkVersion="1.0.0-preview.13"
+                              DefaultRuntimeFrameworkVersion="1.0.0-preview.14"
+                              LatestRuntimeFrameworkVersion="1.0.0-preview.14"
                               TargetingPackName="Microsoft.OpenHarmony.Ref.$(TargetPlatformVersion)"
-                              TargetingPackVersion="1.0.0-preview.13"
+                              TargetingPackVersion="1.0.0-preview.14"
                               RuntimePackNamePatterns="Microsoft.OpenHarmony.Runtime.$(TargetPlatformVersion).**RID**"
                               RuntimePackRuntimeIdentifiers="openharmony-arm64"
                               />
