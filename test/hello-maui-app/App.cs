@@ -8,13 +8,31 @@ namespace HelloMauiApp;
 public sealed class App : Application
 {
     protected override Window CreateWindow(IActivationState? activationState)
-        // The main page lives in a navigation page; a second tab shows animations.
-        => new Window(new TabbedPage
+        // The window hosts a flyout page (drawer) whose detail is a tabbed page; the main page
+        // itself lives in a navigation page so the slice exercises every page type.
+        => new Window(new FlyoutPage
         {
-            Children =
+            Flyout = new ContentPage
             {
-                new NavigationPage(BuildPage()) { Title = "Home", BarBackgroundColor = Colors.DarkSlateBlue },
-                new ContentPage { Title = "Animations", Content = BuildAnimationPage() },
+                Title = "Menu",
+                Content = new VerticalStackLayout
+                {
+                    Padding = 24,
+                    Spacing = 12,
+                    Children =
+                    {
+                        new Label { Text = "Drawer", FontSize = 34 },
+                        new Label { Text = "tap outside to close", FontSize = 22 },
+                    },
+                },
+            },
+            Detail = new TabbedPage
+            {
+                Children =
+                {
+                    new NavigationPage(BuildPage()) { Title = "Home", BarBackgroundColor = Colors.DarkSlateBlue },
+                    new ContentPage { Title = "Animations", Content = BuildAnimationPage() },
+                },
             },
         });
 
