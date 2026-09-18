@@ -52,7 +52,20 @@ public sealed class App : Application
             fadeTarget.Rotation = 0;
             status.Text = "animations done";
         };
-        return new VerticalStackLayout { Padding = 32, Spacing = 24, Children = { fadeTarget, run, status } };
+        var carousel = new CarouselView
+        {
+            ItemsSource = new List<string> { "swipe A", "swipe B", "swipe C" },
+            ItemTemplate = new DataTemplate(() =>
+            {
+                var slide = new Label { FontSize = 34, HorizontalOptions = LayoutOptions.Center };
+                slide.SetBinding(Label.TextProperty, ".");
+                return slide;
+            }),
+            HeightRequest = 160,
+        };
+        var positionLabel = new Label { Text = "swipe the carousel", FontSize = 24, HorizontalOptions = LayoutOptions.Center };
+        carousel.PositionChanged += (_, _) => positionLabel.Text = $"slide {carousel.Position + 1}";
+        return new VerticalStackLayout { Padding = 32, Spacing = 24, Children = { fadeTarget, carousel, positionLabel, run, status } };
     }
 
     private static ContentPage BuildPage()
@@ -113,6 +126,19 @@ public sealed class App : Application
         }
         var scroll = new ScrollView { Content = rows, HeightRequest = 320 };
 
+        // W22-12: legacy ListView (cells) and a CarouselView.
+        var legacyList = new ListView
+        {
+            ItemsSource = Enumerable.Range(0, 12).Select(i => $"legacy row {i}").ToList(),
+            ItemTemplate = new DataTemplate(() =>
+            {
+                var cell = new TextCell();
+                cell.SetBinding(TextCell.TextProperty, ".");
+                return cell;
+            }),
+            HeightRequest = 200,
+        };
+
         // W22-6: gesture recognizer (tap) + view transforms.
         int taps = 0;
         var tapTarget = new Label { Text = "tap this label (0 taps)", FontSize = 30, BackgroundColor = Colors.DimGray };
@@ -166,6 +192,7 @@ public sealed class App : Application
         layout.Add(shapeRow);
         layout.Add(borderBox);
         layout.Add(valueRow2);
+        layout.Add(legacyList);
         layout.Add(collection);
         layout.Add(scroll);
         layout.Add(tapTarget);
