@@ -206,6 +206,7 @@ struct OhosHostAppHandle {
     void (*bridge_touch)(int, float, float, int, int);
     void (*bridge_frame)(int64_t, int64_t);
     void (*bridge_text_input)(const char*);
+    void (*bridge_text_submitted)(void);
     void* surface_window;
     int surface_width;
     int surface_height;
@@ -471,6 +472,18 @@ void ohos_host_request_text_input(int show) {
     fflush(stderr);
     if (g_text_input_listener != NULL) {
         g_text_input_listener(show);
+    }
+}
+
+void ohos_host_notify_text_submitted(void) {
+    if (g_app != NULL && g_app->bridge_text_submitted != NULL) {
+        g_app->bridge_text_submitted();
+    }
+}
+
+void ohos_host_register_text_submitted(void* callback) {
+    if (g_app != NULL) {
+        g_app->bridge_text_submitted = (void (*)(void))callback;
     }
 }
 

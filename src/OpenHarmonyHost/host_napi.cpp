@@ -170,6 +170,21 @@ napi_value RegisterTextInputSink(napi_env env, napi_callback_info info) {
     return undefined;
 }
 
+// ArkTS calls host.notifyTextSubmitted(text) when the return key is pressed.
+napi_value NotifyTextSubmitted(napi_env env, napi_callback_info info) {
+    size_t argc = 1;
+    napi_value argv[1] = {nullptr};
+    napi_get_cb_info(env, info, &argc, argv, nullptr, nullptr);
+    if (argc >= 1) {
+        std::string text = GetStringArg(env, argv[0]);
+        ohos_host_notify_text_input(text.c_str());
+    }
+    ohos_host_notify_text_submitted();
+    napi_value undefined = nullptr;
+    napi_get_undefined(env, &undefined);
+    return undefined;
+}
+
 // ArkTS calls host.notifyTextInput(text) on every change.
 napi_value NotifyTextInput(napi_env env, napi_callback_info info) {
     size_t argc = 1;
@@ -345,6 +360,7 @@ napi_value Init(napi_env env, napi_value exports) {
         {"registerXComponent", nullptr, RegisterXComponent, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"registerTextInputSink", nullptr, RegisterTextInputSink, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"notifyTextInput", nullptr, NotifyTextInput, nullptr, nullptr, nullptr, napi_default, nullptr},
+        {"notifyTextSubmitted", nullptr, NotifyTextSubmitted, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"startApp", nullptr, StartApp, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"notifyLifecycle", nullptr, NotifyLifecycle, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"setNodeContent", nullptr, SetNodeContent, nullptr, nullptr, nullptr, napi_default, nullptr},

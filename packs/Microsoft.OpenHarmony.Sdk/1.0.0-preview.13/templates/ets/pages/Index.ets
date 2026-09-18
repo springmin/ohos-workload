@@ -46,7 +46,8 @@ struct Index {
           host.notifyTextInput(value);
         })
         .onSubmit(() => {
-          host.notifyTextInput(this.inputText);
+          // The managed Entry/SearchBar raises Completed/SearchButtonPressed.
+          host.notifyTextSubmitted(this.inputText);
         })
 
       XComponent({

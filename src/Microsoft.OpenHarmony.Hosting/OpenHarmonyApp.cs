@@ -113,6 +113,9 @@ public static class OpenHarmonyBridge
     [DllImport(HostLibrary, EntryPoint = "ohos_host_register_text_input")]
     private static extern void RegisterTextInputNative(IntPtr callback);
 
+    [DllImport(HostLibrary, EntryPoint = "ohos_host_register_text_submitted")]
+    private static extern void RegisterTextSubmittedNative(IntPtr callback);
+
     [DllImport(HostLibrary, EntryPoint = "ohos_host_request_text_input")]
     private static extern void RequestTextInputNative(int show);
 
@@ -122,6 +125,7 @@ public static class OpenHarmonyBridge
     private delegate void NativeTouchDelegate(int type, float x, float y, int pointerCount, int pointerId);
     private delegate void NativeFrameDelegate(long timestamp, long targetTimestamp);
     private delegate void NativeTextInputDelegate(IntPtr utf8);
+    private delegate void NativeTextSubmittedDelegate();
 
     private static readonly object s_sync = new();
     private static OpenHarmonyAppContext? s_context;
@@ -133,12 +137,14 @@ public static class OpenHarmonyBridge
     private static NativeTouchDelegate? s_touchThunk;
     private static NativeFrameDelegate? s_frameThunk;
     private static NativeTextInputDelegate? s_textInputThunk;
+    private static NativeTextSubmittedDelegate? s_textSubmittedThunk;
     private static readonly List<OpenHarmonyLifecycleEvent> s_pending = new();
     private static Action<OpenHarmonySurfaceInfo>? s_surfaceHandlers;
     private static Action<OpenHarmonyTouchEventArgs>? s_touchHandlers;
     private static Action<OpenHarmonyFrameEventArgs>? s_frameHandlers;
     private static Action<string>? s_textInputHandlers;
     private static Action? s_redrawHandlers;
+    private static Action? s_textSubmittedHandlers;
     private static OpenHarmonySurfaceInfo? s_surface;
     private static Action<OpenHarmonyAppContext>? s_initializedHandlers;
     private static Action<OpenHarmonyLifecycleEvent>? s_lifecycleHandlers;
@@ -197,6 +203,13 @@ public static class OpenHarmonyBridge
     {
         add { lock (s_sync) { s_textInputHandlers += value; } }
         remove { lock (s_sync) { s_textInputHandlers -= value; } }
+    }
+
+    /// <summary>Raised when the user pressed the return key in the ArkTS shell's input.</summary>
+    public static event Action? TextSubmitted
+    {
+        add { lock (s_sync) { s_textSubmittedHandlers += value; } }
+        remove { lock (s_sync) { s_textSubmittedHandlers -= value; } }
     }
 
     /// <summary>Raised when the UI asks for a redraw (navigation pushes/pops, app state changes).</summary>
@@ -419,6 +432,8 @@ public static class OpenHarmonyBridge
             try
             {
                 RegisterTextInputNative(Marshal.GetFunctionPointerForDelegate(s_textInputThunk));
+                s_textSubmittedThunk = OnTextSubmittedNative;
+                RegisterTextSubmittedNative(Marshal.GetFunctionPointerForDelegate(s_textSubmittedThunk));
             }
             catch (Exception ex)
             {
@@ -478,6 +493,16 @@ public static class OpenHarmonyBridge
             handlers = s_textInputHandlers;
         }
         handlers?.Invoke(text);
+    }
+
+    private static void OnTextSubmittedNative()
+    {
+        Action? handlers;
+        lock (s_sync)
+        {
+            handlers = s_textSubmittedHandlers;
+        }
+        handlers?.Invoke();
     }
 
     private static void OnFrameNative(long timestamp, long targetTimestamp)

@@ -56,6 +56,12 @@ void ohos_host_notify_touch(int type, float x, float y, int pointerCount, int po
 /// Text input: forwards text typed in the ArkTS shell to the managed bridge.
 void ohos_host_notify_text_input(const char* utf8);
 
+/// Text input: the user pressed the keyboard's submit/return key.
+void ohos_host_notify_text_submitted(void);
+
+/// Registers the managed text-submitted callback (optional).
+void ohos_host_register_text_submitted(void* callback);
+
 /// Asks the ArkTS shell to show/hide the soft keyboard (the NAPI layer owns the sink).
 void ohos_host_request_text_input(int show);
 
