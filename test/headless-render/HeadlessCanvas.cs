@@ -16,6 +16,20 @@ public sealed class HeadlessCanvas : MauiCanvas
 
     public int DrawnPixels { get; private set; }
 
+    /// <summary>
+    /// Clears the raster and the drawing state so the next render starts like a device frame
+    /// (the native canvas resets in Begin()).
+    /// </summary>
+    public void Reset()
+    {
+        Array.Clear(_pixels);
+        DrawnPixels = 0;
+        _states.Clear();
+        _offsetX = 0;
+        _offsetY = 0;
+        Alpha = 1f;
+    }
+
     public Color GetPixel(int x, int y)
     {
         if (x < 0 || y < 0 || x >= _width || y >= _height)
