@@ -13,7 +13,7 @@ using HostCanvas = Microsoft.OpenHarmony.Hosting.OpenHarmonyCanvas;
 namespace Microsoft.OpenHarmony.Maui.Graphics;
 
 /// <summary>An <see cref="ICanvas"/> that draws into the ArkUI XComponent surface.</summary>
-public sealed class OpenHarmonyCanvas : ICanvas
+public class OpenHarmonyCanvas : ICanvas
 {
     private readonly Stack<Matrix3x2> _savedStates = new();
     private Matrix3x2 _transform = Matrix3x2.Identity;
@@ -27,23 +27,24 @@ public sealed class OpenHarmonyCanvas : ICanvas
     public float DisplayScale { get; set; } = 1f;
     public float StrokeSize { get; set; } = 1f;
     public float MiterLimit { get; set; } = 4f;
-    public Color StrokeColor { set => _strokeColor = value; }
+    public Color StrokeColor { get => _strokeColor; set => _strokeColor = value; }
     public LineCap StrokeLineCap { get; set; } = LineCap.Butt;
     public LineJoin StrokeLineJoin { get; set; } = LineJoin.Miter;
     public float[]? StrokeDashPattern { get; set; }
     public float StrokeDashOffset { get; set; }
     public Color FillColor
     {
+        get => _fillColor;
         set
         {
             _fillColor = value;
             HostCanvas.ClearEffects();
         }
     }
-    public Color FontColor { set => _fontColor = value; }
+    public Color FontColor { get => _fontColor; set => _fontColor = value; }
     public IFont? Font { get; set; }
     public float FontSize { get; set; } = 14f;
-    public float Alpha { set => _alpha = Math.Clamp(value, 0f, 1f); }
+    public float Alpha { get => _alpha; set => _alpha = Math.Clamp(value, 0f, 1f); }
     public bool Antialias { get; set; } = true;
     public BlendMode BlendMode { get; set; } = BlendMode.Normal;
 
@@ -93,11 +94,11 @@ public sealed class OpenHarmonyCanvas : ICanvas
         return xy;
     }
 
-    public void DrawPath(PathF path) => Stroke(Flatten(path), closed: true);
-    public void FillPath(PathF path, WindingMode windingMode) => Fill(Flatten(path));
+    public virtual void DrawPath(PathF path) => Stroke(Flatten(path), closed: true);
+    public virtual void FillPath(PathF path, WindingMode windingMode) => Fill(Flatten(path));
 
     // ---------------------------------------------------------------- state
-    public void SaveState()
+    public virtual void SaveState()
     {
         _savedStates.Push(_transform);
         HostCanvas.Save();
@@ -134,7 +135,7 @@ public sealed class OpenHarmonyCanvas : ICanvas
         => _transform = Matrix3x2.CreateRotation(degrees * MathF.PI / 180f) * _transform;
 
     public void Scale(float sx, float sy) => _transform = Matrix3x2.CreateScale(sx, sy) * _transform;
-    public void Translate(float tx, float ty) => _transform = Matrix3x2.CreateTranslation(tx, ty) * _transform;
+    public virtual void Translate(float tx, float ty) => _transform = Matrix3x2.CreateTranslation(tx, ty) * _transform;
     public void ConcatenateTransform(Matrix3x2 transform) => _transform = transform * _transform;
 
     // ---------------------------------------------------------------- clipping
@@ -148,7 +149,7 @@ public sealed class OpenHarmonyCanvas : ICanvas
     public void ClipPath(PathF path, WindingMode windingMode = WindingMode.NonZero)
         => HostCanvas.ClipPolyline(Flatten(path));
 
-    public void ClipRectangle(float x, float y, float width, float height)
+    public virtual void ClipRectangle(float x, float y, float width, float height)
     {
         Vector2 topLeft = P(x, y);
         Vector2 bottomRight = P(x + width, y + height);
@@ -156,13 +157,13 @@ public sealed class OpenHarmonyCanvas : ICanvas
     }
 
     // ---------------------------------------------------------------- primitives
-    public void DrawLine(float x1, float y1, float x2, float y2)
+    public virtual void DrawLine(float x1, float y1, float x2, float y2)
         => Stroke(Points((x1, y1), (x2, y2)), closed: false);
 
-    public void DrawRectangle(float x, float y, float width, float height)
+    public virtual void DrawRectangle(float x, float y, float width, float height)
         => Stroke(Points((x, y), (x + width, y), (x + width, y + height), (x, y + height)), closed: true);
 
-    public void FillRectangle(float x, float y, float width, float height)
+    public virtual void FillRectangle(float x, float y, float width, float height)
     {
         if (TryFillWithPattern(x, y, width, height))
         {
@@ -171,10 +172,10 @@ public sealed class OpenHarmonyCanvas : ICanvas
         Fill(Points((x, y), (x + width, y), (x + width, y + height), (x, y + height)));
     }
 
-    public void DrawRoundedRectangle(float x, float y, float width, float height, float cornerRadius)
+    public virtual void DrawRoundedRectangle(float x, float y, float width, float height, float cornerRadius)
         => Stroke(RoundedPoints(x, y, width, height, cornerRadius), closed: true);
 
-    public void FillRoundedRectangle(float x, float y, float width, float height, float cornerRadius)
+    public virtual void FillRoundedRectangle(float x, float y, float width, float height, float cornerRadius)
         => Fill(RoundedPoints(x, y, width, height, cornerRadius));
 
     private float[] RoundedPoints(float x, float y, float width, float height, float radius)
@@ -197,14 +198,14 @@ public sealed class OpenHarmonyCanvas : ICanvas
         return Points(points.ToArray());
     }
 
-    public void DrawEllipse(float x, float y, float width, float height)
+    public virtual void DrawEllipse(float x, float y, float width, float height)
     {
         Vector2 c = P(x + width / 2f, y + height / 2f);
         HostCanvas.Ellipse(c.X, c.Y, width / 2f, height / 2f,
             ToArgb(_strokeColor, _alpha), filled: false, StrokeSize * DisplayScale);
     }
 
-    public void FillEllipse(float x, float y, float width, float height)
+    public virtual void FillEllipse(float x, float y, float width, float height)
     {
         Vector2 c = P(x + width / 2f, y + height / 2f);
         HostCanvas.Ellipse(c.X, c.Y, width / 2f, height / 2f,
@@ -246,7 +247,7 @@ public sealed class OpenHarmonyCanvas : ICanvas
         DrawString(value, x + dx, y, size.Width, size.Height, horizontalAlignment, VerticalAlignment.Top);
     }
 
-    public void DrawString(string value, float x, float y, float width, float height,
+    public virtual void DrawString(string value, float x, float y, float width, float height,
         HorizontalAlignment horizontalAlignment, VerticalAlignment verticalAlignment, float lineSpacingAdjustment = 0)
     {
         var size = GetStringSize(value, Font!, FontSize);
