@@ -155,7 +155,7 @@ RenderFresh();
 Check("corner radius 0 stays square", canvas.GetPixel((int)squareFrame.X + 1, (int)squareFrame.Y + 1), Colors.MediumSeaGreen, 30);
 
 // Selection tint: tapping an item blends DodgerBlue 35% over the page.
-var selectable = (CollectionView)root.Children[8];
+var selectable = root.Children.OfType<CollectionView>().First();
 RenderFresh();
 Rect item0 = ((OpenHarmonyView)selectable.Handler!.PlatformView!).ViewChildren.FirstOrDefault()?.Frame ?? default;
 float itemX = (float)item0.X + 6;
@@ -166,6 +166,13 @@ RenderFresh();
 Console.WriteLine($"  selection item0={item0} tapped=({itemX:0},{itemY:0}) selected='{selectable.SelectedItem}'");
 Color tinted = canvas.GetPixel((int)itemX, (int)itemY);
 Known("selection tint", tinted, Blend(Colors.DarkSlateBlue, Colors.DodgerBlue, 0.35f));
+
+// GraphicsView: the IDrawable paints through the compositor canvas.
+var graphicsCtl = root.Children.OfType<Microsoft.Maui.Controls.GraphicsView>().First();
+RenderFresh();
+Rect graphicsFrame = graphicsCtl.Frame;
+Check("graphicsview drawable", canvas.GetPixel((int)(graphicsFrame.X + graphicsFrame.Width / 2),
+    (int)(graphicsFrame.Y + graphicsFrame.Height / 2)), Colors.Magenta, 10);
 
 Console.WriteLine($"  drawn pixel writes: {canvas.DrawnPixels}");
 Color Blend(Color background, Color foreground, float alpha) => new(
@@ -182,6 +189,15 @@ void Known(string what, Color actual, Color expected)
 
 Console.WriteLine(failures == 0 ? "PIXEL ASSERTIONS PASSED" : $"PIXEL ASSERTIONS FAILED ({failures})");
 return failures == 0 ? 0 : 1;
+
+sealed class SolidDrawable : Microsoft.Maui.Graphics.IDrawable
+{
+    public void Draw(Microsoft.Maui.Graphics.ICanvas canvas, Microsoft.Maui.Graphics.RectF dirtyRect)
+    {
+        canvas.FillColor = Microsoft.Maui.Graphics.Colors.Magenta;
+        canvas.FillRectangle(dirtyRect);
+    }
+}
 
 public sealed class PixelApp : Application
 {
@@ -231,6 +247,11 @@ public sealed class PixelApp : Application
             FontSize = 26,
             BackgroundColor = Colors.MediumSeaGreen,
             CornerRadius = 0,
+        });
+        layout.Add(new GraphicsView
+        {
+            Drawable = new SolidDrawable(),
+            HeightRequest = 70,
         });
         var selectable = new CollectionView
         {
