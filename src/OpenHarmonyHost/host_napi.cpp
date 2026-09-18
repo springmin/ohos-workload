@@ -154,6 +154,44 @@ void OnKeystoreRequest(int requestId, const char* op, const char* alias, const c
 }
 
 // ArkTS calls host.registerKeystoreSink(fn) to receive keystore requests.
+// ArkTS calls host.registerVibrationSink(fn) to receive vibration requests (the preferred
+// path is the NDK export ohos_host_vibrate; this sink stays for shells that provide one).
+napi_ref g_vibration_sink_ref = nullptr;
+
+void OnVibrationRequest(int durationMs) {
+    if (g_env != nullptr && g_vibration_sink_ref != nullptr) {
+        napi_value sink = nullptr;
+        if (napi_get_reference_value(g_env, g_vibration_sink_ref, &sink) == napi_ok && sink != nullptr) {
+            napi_value global = nullptr;
+            napi_get_global(g_env, &global);
+            napi_value arg = nullptr;
+            napi_create_int32(g_env, durationMs, &arg);
+            napi_value result = nullptr;
+            napi_call_function(g_env, global, sink, 1, &arg, &result);
+        }
+    }
+}
+
+napi_value RegisterVibrationSink(napi_env env, napi_callback_info info) {
+    size_t argc = 1;
+    napi_value argv[1] = {nullptr};
+    napi_get_cb_info(env, info, &argc, argv, nullptr, nullptr);
+    if (argc >= 1) {
+        napi_valuetype type = napi_undefined;
+        napi_typeof(env, argv[0], &type);
+        if (type == napi_function) {
+            if (g_vibration_sink_ref != nullptr) {
+                napi_delete_reference(env, g_vibration_sink_ref);
+            }
+            napi_create_reference(env, argv[0], 1, &g_vibration_sink_ref);
+            ohos_host_set_vibration_listener(OnVibrationRequest);
+        }
+    }
+    napi_value undefined = nullptr;
+    napi_get_undefined(env, &undefined);
+    return undefined;
+}
+
 napi_value RegisterKeystoreSink(napi_env env, napi_callback_info info) {
     size_t argc = 1;
     napi_value argv[1] = {nullptr};

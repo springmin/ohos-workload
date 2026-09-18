@@ -1,5 +1,10 @@
 #include "openharmony_host.h"
 
+#include <sensors/vibrator.h>
+#include <network/netmanager/net_connection.h>
+#include <network/netmanager/net_connection_type.h>
+#include <accesstoken/ability_access_control.h>
+
 #include <dlfcn.h>
 #include <multimedia/image_framework/image/image_source_native.h>
 #include <multimedia/image_framework/image/pixelmap_native.h>
@@ -474,6 +479,49 @@ void ohos_host_request_text_input(int show) {
     if (g_text_input_listener != NULL) {
         g_text_input_listener(show);
     }
+}
+
+// ---------------------------------------------------------------------------
+// Essentials implemented directly on the OpenHarmony NDK (no ArkTS involved).
+// ---------------------------------------------------------------------------
+
+int ohos_host_vibrate(int duration_ms) {
+    Vibrator_Attribute attribute;
+    attribute.vibratorId = 0;
+    attribute.usage = (Vibrator_Usage)0; /* Vibrator_Usage default (unknown) */
+    int32_t rc = OH_Vibrator_PlayVibration(duration_ms > 0 ? duration_ms : 100, attribute);
+    if (rc != 0) {
+        fprintf(stderr, "[openharmony-host] vibrate rc=%d\n", rc);
+    }
+    return (int)rc;
+}
+
+int ohos_host_network_access(void) {
+    int32_t hasDefault = 0;
+    if (OH_NetConn_HasDefaultNet(&hasDefault) != 0 || hasDefault == 0) {
+        return 1; /* none */
+    }
+    NetConn_NetHandle handle;
+    if (OH_NetConn_GetDefaultNet(&handle) != 0) {
+        return 2; /* local */
+    }
+    NetConn_NetCapabilities capabilities;
+    if (OH_NetConn_GetNetCapabilities(&handle, &capabilities) != 0) {
+        return 2;
+    }
+    for (int32_t i = 0; i < capabilities.netCapsSize; i++) {
+        if (capabilities.netCaps[i] == NETCONN_NET_CAPABILITY_INTERNET) {
+            return 3; /* internet */
+        }
+    }
+    return 2;
+}
+
+int ohos_host_check_permission(const char* permission) {
+    if (permission == NULL) {
+        return 0;
+    }
+    return OH_AT_CheckSelfPermission(permission) ? 1 : 0;
 }
 
 static void (*g_vibration_listener)(int duration_ms) = NULL;

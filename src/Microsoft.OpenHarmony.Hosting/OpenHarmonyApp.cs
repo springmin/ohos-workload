@@ -125,6 +125,15 @@ public static class OpenHarmonyBridge
     [DllImport(HostLibrary, EntryPoint = "ohos_host_request_vibration")]
     private static extern void RequestVibrationNative(int durationMs);
 
+    [DllImport(HostLibrary, EntryPoint = "ohos_host_vibrate")]
+    private static extern int VibrateNative(int durationMs);
+
+    [DllImport(HostLibrary, EntryPoint = "ohos_host_network_access")]
+    private static extern int NetworkAccessNative();
+
+    [DllImport(HostLibrary, EntryPoint = "ohos_host_check_permission", CharSet = CharSet.Ansi)]
+    private static extern int CheckPermissionNative(string permission);
+
     private delegate void NativeLifecycleDelegate(int evt);
     private delegate void NativeNodeDelegate(IntPtr node);
     private delegate void NativeSurfaceDelegate(IntPtr window, int width, int height, int state);
@@ -243,6 +252,50 @@ public static class OpenHarmonyBridge
             handlers = s_redrawHandlers;
         }
         handlers?.Invoke();
+    }
+
+    /// <summary>Vibrates through the platform NDK (falls back to the ArkTS sink when absent).</summary>
+    public static bool Vibrate(int durationMs)
+    {
+        try
+        {
+            if (VibrateNative(durationMs) == 0)
+            {
+                return true;
+            }
+        }
+        catch
+        {
+            // No native host (tests): fall through to the sink request.
+        }
+        RequestVibration(durationMs);
+        return false;
+    }
+
+    /// <summary>Network access from the platform NDK: 0 unknown, 1 none, 2 local, 3 internet.</summary>
+    public static int NetworkAccessLevel()
+    {
+        try
+        {
+            return NetworkAccessNative();
+        }
+        catch
+        {
+            return 0;
+        }
+    }
+
+    /// <summary>Self permission check through the platform NDK (false when unavailable).</summary>
+    public static bool CheckSelfPermission(string permission)
+    {
+        try
+        {
+            return CheckPermissionNative(permission) == 1;
+        }
+        catch
+        {
+            return false;
+        }
     }
 
     /// <summary>Asks the ArkTS shell to vibrate for the given duration (no-op without a sink).</summary>

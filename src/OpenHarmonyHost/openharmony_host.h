@@ -56,6 +56,15 @@ void ohos_host_notify_touch(int type, float x, float y, int pointerCount, int po
 /// Text input: forwards text typed in the ArkTS shell to the managed bridge.
 void ohos_host_notify_text_input(const char* utf8);
 
+/// Essentials over the NDK: vibration (OH_Vibrator_PlayVibration).
+int ohos_host_vibrate(int duration_ms);
+
+/// Essentials over the NDK: network access (0 unknown, 1 none, 2 local, 3 internet).
+int ohos_host_network_access(void);
+
+/// Essentials over the NDK: self permission check (OH_AT_CheckSelfPermission).
+int ohos_host_check_permission(const char* permission);
+
 /// Essentials: asks the ArkTS shell to vibrate (listener registered by the NAPI layer).
 void ohos_host_request_vibration(int duration_ms);
 void ohos_host_set_vibration_listener(void (*listener)(int duration_ms));
