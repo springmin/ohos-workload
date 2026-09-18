@@ -1,5 +1,5 @@
 {
-  "version": "1.0.0-preview.19",
+  "version": "1.0.0-preview.20",
   "workloads": {
     "openharmony": {
       "description": ".NET SDK for OpenHarmony",
@@ -16,15 +16,15 @@
   "packs": {
     "Microsoft.OpenHarmony.Sdk": {
       "kind": "sdk",
-      "version": "1.0.0-preview.19"
+      "version": "1.0.0-preview.20"
     },
     "Microsoft.OpenHarmony.Ref.20.0": {
       "kind": "framework",
-      "version": "1.0.0-preview.19"
+      "version": "1.0.0-preview.20"
     },
     "Microsoft.OpenHarmony.Runtime.20.0.openharmony-arm64": {
       "kind": "framework",
-      "version": "1.0.0-preview.19"
+      "version": "1.0.0-preview.20"
     },
     "Microsoft.NETCore.App.Runtime.openharmony-arm64": {
       "kind": "framework",
@@ -32,11 +32,11 @@
     },
     "Microsoft.OpenHarmony.Ref.26.0": {
       "kind": "framework",
-      "version": "1.0.0-preview.19"
+      "version": "1.0.0-preview.20"
     },
     "Microsoft.OpenHarmony.Runtime.26.0.openharmony-arm64": {
       "kind": "framework",
-      "version": "1.0.0-preview.19"
+      "version": "1.0.0-preview.20"
     }
   }
 }

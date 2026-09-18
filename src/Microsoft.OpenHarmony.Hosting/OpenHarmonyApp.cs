@@ -119,6 +119,12 @@ public static class OpenHarmonyBridge
     [DllImport(HostLibrary, EntryPoint = "ohos_host_keystore_register_result")]
     private static extern void RegisterKeystoreResultNative(IntPtr callback);
 
+    [DllImport(HostLibrary, EntryPoint = "ohos_host_picker_register_result")]
+    private static extern void RegisterPickerResultNative(IntPtr callback);
+
+    [DllImport(HostLibrary, EntryPoint = "ohos_host_picker_request")]
+    private static extern void RequestPickerNative(int requestId, int kind);
+
     [DllImport(HostLibrary, EntryPoint = "ohos_host_request_text_input")]
     private static extern void RequestTextInputNative(int show);
 
@@ -163,6 +169,7 @@ public static class OpenHarmonyBridge
     private delegate void NativeTextInputDelegate(IntPtr utf8);
     private delegate void NativeTextSubmittedDelegate();
     private delegate void NativeKeystoreResultDelegate(int requestId, int rc, IntPtr dataUtf8);
+    private delegate void NativePickerResultDelegate(int requestId, int rc, IntPtr nameUtf8, IntPtr dataUtf8);
 
     private static readonly object s_sync = new();
     private static OpenHarmonyAppContext? s_context;
@@ -176,6 +183,7 @@ public static class OpenHarmonyBridge
     private static NativeTextInputDelegate? s_textInputThunk;
     private static NativeTextSubmittedDelegate? s_textSubmittedThunk;
     private static NativeKeystoreResultDelegate? s_keystoreResultThunk;
+    private static NativePickerResultDelegate? s_pickerResultThunk;
     private static readonly List<OpenHarmonyLifecycleEvent> s_pending = new();
     private static Action<OpenHarmonySurfaceInfo>? s_surfaceHandlers;
     private static Action<OpenHarmonyTouchEventArgs>? s_touchHandlers;
@@ -242,6 +250,17 @@ public static class OpenHarmonyBridge
         add { lock (s_sync) { s_textInputHandlers += value; } }
         remove { lock (s_sync) { s_textInputHandlers -= value; } }
     }
+
+    /// <summary>Asks the shell to open the system picker (kind: 0 files, 1 photos, 2 videos).</summary>
+    public static void RequestPicker(int requestId, int kind)
+        => RequestPickerNative(requestId, kind);
+
+    /// <summary>Raised when the ArkTS picker sink answers a request.</summary>
+    public static event Action<int, int, string, string>? PickerResult;
+
+    /// <summary>Completes a pending picker request (called by the ArkTS sink).</summary>
+    public static void CompletePickerRequest(int requestId, int rc, string name, string data)
+        => PickerResult?.Invoke(requestId, rc, name, data);
 
     /// <summary>Completes a pending keystore request (called by the ArkTS sink).</summary>
     public static void CompleteKeystoreRequest(int requestId, int rc, string data)
@@ -619,6 +638,8 @@ public static class OpenHarmonyBridge
                 RegisterTextSubmittedNative(Marshal.GetFunctionPointerForDelegate(s_textSubmittedThunk));
                 s_keystoreResultThunk = OnKeystoreResultNative;
                 RegisterKeystoreResultNative(Marshal.GetFunctionPointerForDelegate(s_keystoreResultThunk));
+                s_pickerResultThunk = OnPickerResultNative;
+                RegisterPickerResultNative(Marshal.GetFunctionPointerForDelegate(s_pickerResultThunk));
             }
             catch (Exception ex)
             {
@@ -678,6 +699,13 @@ public static class OpenHarmonyBridge
             handlers = s_textInputHandlers;
         }
         handlers?.Invoke(text);
+    }
+
+    private static void OnPickerResultNative(int requestId, int rc, IntPtr nameUtf8, IntPtr dataUtf8)
+    {
+        string name = nameUtf8 == IntPtr.Zero ? string.Empty : Marshal.PtrToStringUTF8(nameUtf8) ?? string.Empty;
+        string data = dataUtf8 == IntPtr.Zero ? string.Empty : Marshal.PtrToStringUTF8(dataUtf8) ?? string.Empty;
+        CompletePickerRequest(requestId, rc, name, data);
     }
 
     private static void OnKeystoreResultNative(int requestId, int rc, IntPtr dataUtf8)

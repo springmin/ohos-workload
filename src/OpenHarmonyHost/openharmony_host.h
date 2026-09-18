@@ -62,6 +62,13 @@ int ohos_host_vibrate(int duration_ms);
 /// Essentials over the NDK: network access (0 unknown, 1 none, 2 local, 3 internet).
 int ohos_host_network_access(void);
 
+/// Pickers: the managed side asks the ArkTS shell to open the system picker (kind: 0 file,
+/// 1 photo, 2 video) and receives the chosen file's name plus base64 content.
+void ohos_host_picker_set_listener(void (*listener)(int request_id, int kind));
+void ohos_host_picker_register_result(void* callback);
+void ohos_host_picker_request(int request_id, int kind);
+void ohos_host_picker_complete(int request_id, int rc, const char* name, const char* data_base64);
+
 /// Soft keyboard through the input-method NDK (attach + show/hide).
 int ohos_host_keyboard_show(void);
 /// Seeds the IME buffer with the focused editor's current text.

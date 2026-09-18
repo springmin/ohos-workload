@@ -10,6 +10,9 @@
 // managed code attaches through OpenHarmonyBridge.NodeContent.
 import { NodeContent } from '@ohos.arkui.node';
 import host from 'libopenharmonyhost.so';
+import picker from '@ohos.file.picker';
+import fs from '@ohos.file.fs';
+import util from '@ohos.util';
 
 @Entry
 @Component
@@ -34,6 +37,32 @@ struct Index {
     // buildOption.strictMode { caseSensitiveCheck: true, useNormalizedOHMUrl: true } - the
     // strictMode block is now emitted, the numeric-version + matching staged SDK layout is the
     // next candidate. Verified snippet lives in the ArkTS Essentials plan.
+    // File/media pickers: the managed side asks for the system picker; the chosen file's name
+    // and bytes travel back as base64 (all kinds use the document picker, so the shell needs no
+    // extra UI component).
+    host.registerPickerSink(async (requestId: number, kind: number) => {
+      try {
+        const documentPicker = new picker.DocumentViewPicker();
+        const uris = await documentPicker.select({ maxSelectNumber: 1 });
+        if (!uris || uris.length === 0) {
+          host.notifyPickerResult(requestId, -1, '', '');
+          return;
+        }
+        const uri = uris[0];
+        const file = fs.openSync(uri, fs.OpenMode.READ_ONLY);
+        const stat = fs.statSync(file.fd);
+        const buffer = new ArrayBuffer(stat.size);
+        fs.readSync(file.fd, buffer);
+        fs.closeSync(file);
+        const helper = new util.Base64Helper();
+        const encoded = helper.encodeToStringSync(new Uint8Array(buffer));
+        const name = uri.substring(uri.lastIndexOf('/') + 1);
+        host.notifyPickerResult(requestId, 0, name, encoded);
+      } catch (error) {
+        host.notifyPickerResult(requestId, -1, '', '');
+      }
+    });
+
     host.registerVibrationSink((durationMs: number) => {
     });
 

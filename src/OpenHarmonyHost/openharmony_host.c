@@ -223,6 +223,7 @@ struct OhosHostAppHandle {
     void (*bridge_text_input)(const char*);
     void (*bridge_text_submitted)(void);
     void (*bridge_keystore_result)(int request_id, int rc, const char* data_base64);
+    void (*bridge_picker_result)(int request_id, int rc, const char* name, const char* data_base64);
     void* surface_window;
     int surface_width;
     int surface_height;
@@ -680,6 +681,35 @@ static int EnsureInputMethod(void) {
         return (int)rc;
     }
     return 0;
+}
+
+// ---------------------------------------------------------------------------
+// Pickers: requests go to the ArkTS shell (system picker), results come back with the file
+// name and its content encoded as base64.
+// ---------------------------------------------------------------------------
+
+static void (*g_picker_listener)(int request_id, int kind) = NULL;
+
+void ohos_host_picker_set_listener(void (*listener)(int, int)) {
+    g_picker_listener = listener;
+}
+
+void ohos_host_picker_register_result(void* callback) {
+    if (g_app != NULL) {
+        g_app->bridge_picker_result = (void (*)(int, int, const char*, const char*))callback;
+    }
+}
+
+void ohos_host_picker_request(int request_id, int kind) {
+    if (g_picker_listener != NULL) {
+        g_picker_listener(request_id, kind);
+    }
+}
+
+void ohos_host_picker_complete(int request_id, int rc, const char* name, const char* data_base64) {
+    if (g_app != NULL && g_app->bridge_picker_result != NULL) {
+        g_app->bridge_picker_result(request_id, rc, name, data_base64);
+    }
 }
 
 int ohos_host_keyboard_show(void) {

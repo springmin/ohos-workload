@@ -154,6 +154,65 @@ void OnKeystoreRequest(int requestId, const char* op, const char* alias, const c
 }
 
 // ArkTS calls host.registerKeystoreSink(fn) to receive keystore requests.
+napi_ref g_picker_sink_ref = nullptr;
+
+void OnPickerRequest(int requestId, int kind) {
+    if (g_env == nullptr || g_picker_sink_ref == nullptr) {
+        return;
+    }
+    napi_value sink = nullptr;
+    if (napi_get_reference_value(g_env, g_picker_sink_ref, &sink) != napi_ok || sink == nullptr) {
+        return;
+    }
+    napi_value global = nullptr;
+    napi_get_global(g_env, &global);
+    napi_value argv[2] = {nullptr, nullptr};
+    napi_create_int32(g_env, requestId, &argv[0]);
+    napi_create_int32(g_env, kind, &argv[1]);
+    napi_value result = nullptr;
+    napi_call_function(g_env, global, sink, 2, argv, &result);
+}
+
+// ArkTS calls host.registerPickerSink(fn) to receive picker requests.
+napi_value RegisterPickerSink(napi_env env, napi_callback_info info) {
+    size_t argc = 1;
+    napi_value argv[1] = {nullptr};
+    napi_get_cb_info(env, info, &argc, argv, nullptr, nullptr);
+    if (argc >= 1) {
+        napi_valuetype type = napi_undefined;
+        napi_typeof(env, argv[0], &type);
+        if (type == napi_function) {
+            if (g_picker_sink_ref != nullptr) {
+                napi_delete_reference(env, g_picker_sink_ref);
+            }
+            napi_create_reference(env, argv[0], 1, &g_picker_sink_ref);
+            ohos_host_picker_set_listener(OnPickerRequest);
+        }
+    }
+    napi_value undefined = nullptr;
+    napi_get_undefined(env, &undefined);
+    return undefined;
+}
+
+// ArkTS calls host.notifyPickerResult(requestId, rc, name, dataBase64).
+napi_value NotifyPickerResult(napi_env env, napi_callback_info info) {
+    size_t argc = 4;
+    napi_value argv[4] = {nullptr, nullptr, nullptr, nullptr};
+    napi_get_cb_info(env, info, &argc, argv, nullptr, nullptr);
+    int requestId = 0;
+    int rc = -1;
+    std::string name;
+    std::string data;
+    if (argc >= 1) napi_get_value_int32(env, argv[0], &requestId);
+    if (argc >= 2) napi_get_value_int32(env, argv[1], &rc);
+    if (argc >= 3) name = GetStringArg(env, argv[2]);
+    if (argc >= 4) data = GetStringArg(env, argv[3]);
+    ohos_host_picker_complete(requestId, rc, name.c_str(), data.c_str());
+    napi_value undefined = nullptr;
+    napi_get_undefined(env, &undefined);
+    return undefined;
+}
+
 // ArkTS calls host.registerVibrationSink(fn) to receive vibration requests (the preferred
 // path is the NDK export ohos_host_vibrate; this sink stays for shells that provide one).
 napi_ref g_vibration_sink_ref = nullptr;
@@ -467,6 +526,8 @@ napi_value Init(napi_env env, napi_value exports) {
         {"notifyTextSubmitted", nullptr, NotifyTextSubmitted, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"registerKeystoreSink", nullptr, RegisterKeystoreSink, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"registerVibrationSink", nullptr, RegisterVibrationSink, nullptr, nullptr, nullptr, napi_default, nullptr},
+        {"registerPickerSink", nullptr, RegisterPickerSink, nullptr, nullptr, nullptr, napi_default, nullptr},
+        {"notifyPickerResult", nullptr, NotifyPickerResult, nullptr, nullptr, nullptr, napi_default, nullptr},
 
         {"notifyKeystoreResult", nullptr, NotifyKeystoreResult, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"startApp", nullptr, StartApp, nullptr, nullptr, nullptr, napi_default, nullptr},
