@@ -1418,3 +1418,21 @@ void ohos_host_sensor_stop(void) {
         g_sensor_subscriber = NULL;
     }
 }
+
+
+// ---------------------------------------------------------------------------
+// Notification Kit: forwards a publish request to the ArkTS shell through the
+// NAPI layer (the shell registers a sink with registerNotificationSink).
+// ---------------------------------------------------------------------------
+#ifdef __cplusplus
+extern "C"
+#endif
+void OhosNotifyNotification(int id, const char* title, const char* text);
+
+int ohos_host_notification_show(int id, const char* title, const char* text) {
+    if (title == NULL) {
+        return -1;
+    }
+    OhosNotifyNotification(id, title, text != NULL ? text : "");
+    return 0;
+}

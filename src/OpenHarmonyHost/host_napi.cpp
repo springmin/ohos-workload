@@ -155,6 +155,39 @@ void OnKeystoreRequest(int requestId, const char* op, const char* alias, const c
 
 // ArkTS calls host.registerKeystoreSink(fn) to receive keystore requests.
 napi_ref g_picker_sink_ref = nullptr;
+napi_ref g_notification_sink_ref = nullptr;
+
+// Called from the host C layer: forwards a notification publish request to ArkTS.
+extern "C" void OhosNotifyNotification(int id, const char* title, const char* text) {
+    if (g_env == nullptr || g_notification_sink_ref == nullptr) {
+        return;
+    }
+    napi_value sink = nullptr;
+    if (napi_get_reference_value(g_env, g_notification_sink_ref, &sink) != napi_ok || sink == nullptr) {
+        return;
+    }
+    napi_value argv[3];
+    napi_create_int32(g_env, id, &argv[0]);
+    napi_create_string_utf8(g_env, title != nullptr ? title : "", NAPI_AUTO_LENGTH, &argv[1]);
+    napi_create_string_utf8(g_env, text != nullptr ? text : "", NAPI_AUTO_LENGTH, &argv[2]);
+    napi_value result = nullptr;
+    napi_call_function(g_env, sink, sink, 3, argv, &result);
+}
+
+// ArkTS calls host.registerNotificationSink(fn) to publish notifications.
+napi_value RegisterNotificationSink(napi_env env, napi_callback_info info) {
+    size_t argc = 1;
+    napi_value argv[1];
+    napi_get_cb_info(env, info, &argc, argv, nullptr, nullptr);
+    if (argc < 1) {
+        return nullptr;
+    }
+    if (g_notification_sink_ref != nullptr) {
+        napi_delete_reference(env, g_notification_sink_ref);
+    }
+    napi_create_reference(env, argv[0], 1, &g_notification_sink_ref);
+    return nullptr;
+}
 napi_ref g_web_sink_ref = nullptr;
 
 void OnPickerRequest(int requestId, int kind) {
@@ -596,6 +629,8 @@ napi_value Init(napi_env env, napi_value exports) {
         {"registerKeystoreSink", nullptr, RegisterKeystoreSink, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"registerVibrationSink", nullptr, RegisterVibrationSink, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"registerPickerSink", nullptr, RegisterPickerSink, nullptr, nullptr, nullptr, napi_default, nullptr},
+
+        {"registerNotificationSink", nullptr, RegisterNotificationSink, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"registerWebSink", nullptr, RegisterWebSink, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"notifyWebEvent", nullptr, NotifyWebEvent, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"notifyAvoidArea", nullptr, NotifyAvoidArea, nullptr, nullptr, nullptr, napi_default, nullptr},

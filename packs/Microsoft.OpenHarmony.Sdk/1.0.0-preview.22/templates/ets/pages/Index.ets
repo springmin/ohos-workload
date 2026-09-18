@@ -9,6 +9,7 @@
 // rendering target for Skia/MAUI. The ContentSlot next to it hosts native ArkUI nodes that
 // managed code attaches through OpenHarmonyBridge.NodeContent.
 import { NodeContent } from '@ohos.arkui.node';
+import notificationManager from '@ohos.notificationManager';
 import host from 'libopenharmonyhost.so';
 import picker from '@ohos.file.picker';
 import fs from '@ohos.file.fs';
@@ -77,6 +78,17 @@ struct Index {
     // and bytes travel back as base64 (all kinds use the document picker, so the shell needs no
     // extra UI component).
     host.registerPickerSink(async (requestId: number, kind: number) => {
+        host.registerNotificationSink((notificationId: number, notificationTitle: string, notificationText: string): void => {
+            notificationManager.publish({
+                id: notificationId,
+                content: {
+                    notificationContentType: notificationManager.ContentType.NOTIFICATION_CONTENT_BASIC_TEXT,
+                    normal: { title: notificationTitle, text: notificationText, additionalText: '' }
+                }
+            }).catch((publishError: Error): void => {
+                console.error(`notification publish failed: ${publishError.message}`);
+            });
+        });
       try {
         const documentPicker = new picker.DocumentViewPicker();
         const uris = await documentPicker.select({ maxSelectNumber: 1 });
