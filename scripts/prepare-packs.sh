@@ -5,7 +5,7 @@
 # -openharmony release and verified by sha256.
 set -e
 W="$(cd "$(dirname "$0")/.." && pwd)"
-VER=1.0.0-preview.16
+VER=1.0.0-preview.17
 DOTNET="${DOTNET:-$HOME/.dotnet/dotnet}"
 RTV=11.0.0-rc.1.26451.109
 SHA=b9fff88aadd4bbfc73964d0fdb05dc551755fd956332cd7d44cf06556f51

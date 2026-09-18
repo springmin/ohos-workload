@@ -4,6 +4,10 @@
 #include <network/netmanager/net_connection.h>
 #include <network/netmanager/net_connection_type.h>
 #include <accesstoken/ability_access_control.h>
+#include <native_drawing/drawing_font.h>
+#include <native_drawing/drawing_typeface.h>
+#include <LocationKit/oh_location.h>
+#include <LocationKit/oh_location_type.h>
 
 #include <dlfcn.h>
 #include <multimedia/image_framework/image/image_source_native.h>
@@ -496,6 +500,61 @@ int ohos_host_vibrate(int duration_ms) {
     return (int)rc;
 }
 
+// ---------------------------------------------------------------------------
+// Geolocation: a locating session whose callback stores the newest fix.
+// ---------------------------------------------------------------------------
+
+static double g_last_latitude = 0.0;
+static double g_last_longitude = 0.0;
+static double g_last_altitude = 0.0;
+static int g_location_has_fix = 0;
+static Location_RequestConfig* g_location_config = NULL;
+
+static void OnLocationReported(Location_Info* location, void* userData) {
+    (void)userData;
+    if (location == NULL) {
+        return;
+    }
+    Location_BasicInfo info = OH_LocationInfo_GetBasicInfo(location);
+    g_last_latitude = info.latitude;
+    g_last_longitude = info.longitude;
+    g_last_altitude = info.altitude;
+    g_location_has_fix = 1;
+}
+
+int ohos_host_location_start(void) {
+    if (g_location_config == NULL) {
+        g_location_config = OH_Location_CreateRequestConfig();
+        if (g_location_config == NULL) {
+            return -1;
+        }
+        OH_LocationRequestConfig_SetCallback(g_location_config, OnLocationReported, NULL);
+    }
+    int32_t rc = OH_Location_StartLocating(g_location_config);
+    if (rc != 0) {
+        fprintf(stderr, "[openharmony-host] location start rc=%d\n", rc);
+    }
+    return (int)rc;
+}
+
+int ohos_host_location_stop(void) {
+    if (g_location_config == NULL) {
+        return 0;
+    }
+    int32_t rc = OH_Location_StopLocating(g_location_config);
+    return (int)rc;
+}
+
+int ohos_host_location_get(double* latitude, double* longitude, double* altitude) {
+    if (!g_location_has_fix) {
+        return 0;
+    }
+    if (latitude != NULL) *latitude = g_last_latitude;
+    if (longitude != NULL) *longitude = g_last_longitude;
+    if (altitude != NULL) *altitude = g_last_altitude;
+    return 1;
+}
+
 int ohos_host_network_access(void) {
     int32_t hasDefault = 0;
     if (OH_NetConn_HasDefaultNet(&hasDefault) != 0 || hasDefault == 0) {
@@ -820,6 +879,21 @@ void ohos_host_draw_rect(int x, int y, int width, int height, unsigned int argb,
     OH_Drawing_RectDestroy(rect);
 }
 
+static OH_Drawing_Typeface* g_custom_typeface = NULL;
+
+void ohos_host_set_font_file(const char* path) {
+    if (g_custom_typeface != NULL) {
+        OH_Drawing_TypefaceDestroy(g_custom_typeface);
+        g_custom_typeface = NULL;
+    }
+    if (path == NULL || *path == '\0') {
+        return;
+    }
+    g_custom_typeface = OH_Drawing_TypefaceCreateFromFile(path, 0);
+    fprintf(stderr, "[openharmony-host] font file %s -> %s\n", path,
+            g_custom_typeface != NULL ? "loaded" : "failed");
+}
+
 int ohos_host_draw_text(int x, int y, const char* utf8, float size, unsigned int argb) {
     if (g_canvas == NULL || utf8 == NULL || *utf8 == '\0') {
         return -1;
@@ -828,7 +902,13 @@ int ohos_host_draw_text(int x, int y, const char* utf8, float size, unsigned int
     if (font == NULL) {
         return -1;
     }
+    if (g_custom_typeface != NULL) {
+        OH_Drawing_FontSetTypeface(font, g_custom_typeface);
+    }
     OH_Drawing_FontSetTextSize(font, size);
+    if (g_custom_typeface != NULL) {
+        OH_Drawing_FontSetTypeface(font, g_custom_typeface);
+    }
     OH_Drawing_TextBlob* blob = OH_Drawing_TextBlobCreateFromString(utf8, font, TEXT_ENCODING_UTF8);
     int rc = -1;
     if (blob != NULL) {

@@ -134,6 +134,18 @@ public static class OpenHarmonyBridge
     [DllImport(HostLibrary, EntryPoint = "ohos_host_check_permission", CharSet = CharSet.Ansi)]
     private static extern int CheckPermissionNative(string permission);
 
+    [DllImport(HostLibrary, EntryPoint = "ohos_host_set_font_file", CharSet = CharSet.Ansi)]
+    private static extern void SetFontFileNative(string path);
+
+    [DllImport(HostLibrary, EntryPoint = "ohos_host_location_start")]
+    private static extern int LocationStartNative();
+
+    [DllImport(HostLibrary, EntryPoint = "ohos_host_location_stop")]
+    private static extern int LocationStopNative();
+
+    [DllImport(HostLibrary, EntryPoint = "ohos_host_location_get")]
+    private static extern int LocationGetNative(out double latitude, out double longitude, out double altitude);
+
     private delegate void NativeLifecycleDelegate(int evt);
     private delegate void NativeNodeDelegate(IntPtr node);
     private delegate void NativeSurfaceDelegate(IntPtr window, int width, int height, int state);
@@ -282,6 +294,62 @@ public static class OpenHarmonyBridge
         catch
         {
             return 0;
+        }
+    }
+
+    /// <summary>Loads a custom font file for all subsequent text drawing (empty paths reset it).</summary>
+    public static bool SetFontFile(string? path)
+    {
+        try
+        {
+            SetFontFileNative(path ?? string.Empty);
+            return true;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    /// <summary>Starts a locating session (OH_Location_StartLocating).</summary>
+    public static bool StartLocation()
+    {
+        try
+        {
+            return LocationStartNative() == 0;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    /// <summary>Stops the locating session.</summary>
+    public static void StopLocation()
+    {
+        try
+        {
+            LocationStopNative();
+        }
+        catch
+        {
+            // Optional service.
+        }
+    }
+
+    /// <summary>Latest fix from the locating callback, if any.</summary>
+    public static bool TryGetLocation(out double latitude, out double longitude, out double altitude)
+    {
+        latitude = 0;
+        longitude = 0;
+        altitude = 0;
+        try
+        {
+            return LocationGetNative(out latitude, out longitude, out altitude) == 1;
+        }
+        catch
+        {
+            return false;
         }
     }
 

@@ -62,6 +62,16 @@ int ohos_host_vibrate(int duration_ms);
 /// Essentials over the NDK: network access (0 unknown, 1 none, 2 local, 3 internet).
 int ohos_host_network_access(void);
 
+/// Custom fonts: loads a typeface from a font file used by all text drawing/measuring (an empty
+/// path restores the platform default face).
+void ohos_host_set_font_file(const char* path);
+
+/// Essentials over the NDK: geolocation (OH_Location_*). Start/stop a locating session and read
+/// the most recent fix (returns 1 when a fix is available, 0 otherwise).
+int ohos_host_location_start(void);
+int ohos_host_location_stop(void);
+int ohos_host_location_get(double* latitude, double* longitude, double* altitude);
+
 /// Essentials over the NDK: self permission check (OH_AT_CheckSelfPermission).
 int ohos_host_check_permission(const char* permission);
 

@@ -17,7 +17,7 @@ fi
 set -e
 W="$(cd "$(dirname "$0")/.." && pwd)"
 SDK="${OHOS_SDK_ROOT:-$HOME/.harmonybrew/Cellar/ohos-sdk/26.0.0.18_2}"
-VER=1.0.0-preview.16
+VER=1.0.0-preview.17
 TPL="$W/packs/Microsoft.OpenHarmony.Sdk/$VER/templates"
 BUILD="${ARKTS_BUILD_DIR:-$W/.arkts-build}"
 PROJ="${ARKTS_PROJECT_DIR:-$HVIGOR_DIR/project}"
