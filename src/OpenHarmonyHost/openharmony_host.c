@@ -1317,3 +1317,104 @@ int ohos_host_draw_present(void) {
     fprintf(stderr, "[openharmony-host] canvas presented (%dx%d)\n", width, height);
     return 0;
 }
+
+
+// ---------------------------------------------------------------------------
+// Sensor Kit (NDK sensors/oh_sensor.h): subscribe/unsubscribe and forward one
+// reading per event to the managed listener set by the runtime.
+// ---------------------------------------------------------------------------
+#include <sensors/oh_sensor.h>
+
+static Sensor_SubscriptionId* g_sensor_id = NULL;
+static Sensor_SubscriptionAttribute* g_sensor_attr = NULL;
+static Sensor_Subscriber* g_sensor_subscriber = NULL;
+static void (*g_sensor_listener)(int type, float x, float y, float z, long long timestamp) = NULL;
+
+static void OhosSensorEventCallback(Sensor_Event* event) {
+    if (event == NULL || g_sensor_listener == NULL) {
+        return;
+    }
+    Sensor_Type type = SENSOR_TYPE_ACCELEROMETER;
+    OH_SensorEvent_GetType(event, &type);
+    float* data = NULL;
+    uint32_t length = 0;
+    OH_SensorEvent_GetData(event, &data, &length);
+    int64_t timestamp = 0;
+    OH_SensorEvent_GetTimestamp(event, &timestamp);
+    float x = (data != NULL && length > 0) ? data[0] : 0.0f;
+    float y = (data != NULL && length > 1) ? data[1] : 0.0f;
+    float z = (data != NULL && length > 2) ? data[2] : 0.0f;
+    g_sensor_listener((int)type, x, y, z, (long long)timestamp);
+}
+
+void ohos_host_sensor_set_listener(void* listener) {
+    g_sensor_listener = (void (*)(int, float, float, float, long long))listener;
+}
+
+void ohos_host_sensor_stop(void);
+
+int ohos_host_sensor_is_supported(int type) {
+    uint32_t capacity = 32;
+    Sensor_Info** infos = OH_Sensor_CreateInfos(capacity);
+    if (infos == NULL) {
+        return 0;
+    }
+    uint32_t count = capacity;
+    if (OH_Sensor_GetInfos(infos, &count) != SENSOR_SUCCESS) {
+        OH_Sensor_DestroyInfos(infos, capacity);
+        return 0;
+    }
+    int supported = 0;
+    for (uint32_t i = 0; i < count; i++) {
+        Sensor_Type current = SENSOR_TYPE_ACCELEROMETER;
+        if (OH_SensorInfo_GetType(infos[i], &current) == SENSOR_SUCCESS && (int)current == type) {
+            supported = 1;
+            break;
+        }
+    }
+    OH_Sensor_DestroyInfos(infos, capacity);
+    return supported;
+}
+
+int ohos_host_sensor_start(int type, int interval_ms) {
+    ohos_host_sensor_stop();
+    Sensor_SubscriptionId* id = OH_Sensor_CreateSubscriptionId();
+    Sensor_SubscriptionAttribute* attr = OH_Sensor_CreateSubscriptionAttribute();
+    Sensor_Subscriber* subscriber = OH_Sensor_CreateSubscriber();
+    if (id == NULL || attr == NULL || subscriber == NULL) {
+        ohos_host_sensor_stop();
+        return -1;
+    }
+    OH_SensorSubscriptionId_SetType(id, (Sensor_Type)type);
+    OH_SensorSubscriptionAttribute_SetSamplingInterval(attr, interval_ms * 1000000LL);
+    OH_SensorSubscriber_SetCallback(subscriber, OhosSensorEventCallback);
+    Sensor_Result result = OH_Sensor_Subscribe(id, attr, subscriber);
+    if (result != SENSOR_SUCCESS) {
+        OH_Sensor_DestroySubscriptionId(id);
+        OH_Sensor_DestroySubscriptionAttribute(attr);
+        OH_Sensor_DestroySubscriber(subscriber);
+        return (int)result;
+    }
+    g_sensor_id = id;
+    g_sensor_attr = attr;
+    g_sensor_subscriber = subscriber;
+    return 0;
+}
+
+void ohos_host_sensor_stop(void) {
+    if (g_sensor_id != NULL && g_sensor_subscriber != NULL) {
+        OH_Sensor_Unsubscribe(g_sensor_id, g_sensor_subscriber);
+    }
+    if (g_sensor_id != NULL) {
+        OH_Sensor_DestroySubscriptionId(g_sensor_id);
+        g_sensor_id = NULL;
+    }
+    if (g_sensor_attr != NULL) {
+        OH_Sensor_DestroySubscriptionAttribute(g_sensor_attr);
+        g_sensor_attr = NULL;
+    }
+    if (g_sensor_subscriber != NULL) {
+        OH_Sensor_DestroySubscriber(g_sensor_subscriber);
+        g_sensor_subscriber = NULL;
+    }
+}

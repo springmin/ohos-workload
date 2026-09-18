@@ -27,7 +27,7 @@ mkdir -p "$OUT"
     -o "$OUT/libopenharmonyhost.so" \
     "$SRC/host_napi.cpp" "$SRC/openharmony_host.c" \
     -lace_napi.z -lace_ndk.z -lhilog_ndk.z -lnative_window -lnative_drawing -limage_source -lpixelmap \
-    -lohvibrator.z -lnet_connection -lability_access_control -llocation_ndk -ldl
+    -lohvibrator.z -lnet_connection -lability_access_control -llocation_ndk -lohsensor -ldl
 ls -l "$OUT/libopenharmonyhost.so"
 
 if [ "${SKIP_SIGN:-0}" = "1" ]; then
