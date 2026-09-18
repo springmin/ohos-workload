@@ -144,6 +144,12 @@ w('build-profile.json5', f"""{{
         compatibleSdkVersion: '{platform_version}',
         targetSdkVersion: '{platform_version}',
         runtimeOS: 'OpenHarmony',
+        buildOption: {{
+          strictMode: {{
+            caseSensitiveCheck: true,
+            useNormalizedOHMUrl: true,
+          }},
+        }},
       }},
     ],
     buildModeSet: [{{ name: 'debug' }}, {{ name: 'release' }}],

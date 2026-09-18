@@ -27,12 +27,13 @@ struct Index {
     // matching SDK kits, which are not part of this minimal shell project's compilation set yet
     // (see docs/plans/2026-09-18-ohos-arkts-essentials-bridge-plan.md). The sinks stay
     // registered and report "unavailable" so the managed side behaves deterministically.
-    // Essentials: vibration / keystore sinks stay degradable for now.
-    // The real implementations (direct '@ohos.vibrator' / '@ohos.security.huks' imports with
-    // huks.HuksOptions types and the callback APIs) are verified to compile against this SDK
-    // when the project is built manually; through the pack build script they do not resolve,
-    // and the last variable is the project regeneration step of the script itself. The verified
-    // snippet lives in docs/plans/2026-09-18-ohos-arkts-essentials-bridge-plan.md.
+    // Essentials: vibration / keystore sinks stay degradable until the SDK declarations are
+    // surfaced to this project's compilation. Official reference for the remaining step:
+    // applications_app_samples (OpenHarmony-v6.1-Release) uses numeric SDK versions
+    // (compileSdkVersion: 23, compatibleSdkVersion: 20, targetSdkVersion: 23) and
+    // buildOption.strictMode { caseSensitiveCheck: true, useNormalizedOHMUrl: true } - the
+    // strictMode block is now emitted, the numeric-version + matching staged SDK layout is the
+    // next candidate. Verified snippet lives in the ArkTS Essentials plan.
     host.registerVibrationSink((durationMs: number) => {
     });
 
