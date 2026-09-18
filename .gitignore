@@ -12,3 +12,5 @@ packs/**/hosts/**/*.so
 .feed/
 dist/
 .signing/
+# WIP: managed pixel harness (needs the canvas backend getters, see docs)
+test/headless-render/
