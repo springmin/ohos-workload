@@ -28,13 +28,13 @@ struct Index {
     // (see docs/plans/2026-09-18-ohos-arkts-essentials-bridge-plan.md). The sinks stay
     // registered and report "unavailable" so the managed side behaves deterministically.
     // Essentials: vibration / keystore sinks.
-    // The SDK's system modules (@ohos.vibrator, @ohos.security.huks via @kit.*) do not resolve
-    // in this minimal hvigor project yet: the loader registers the SDK's api/arkts/kits as
-    // system module paths (verified in ets-loader/main.js) and the kit_configs map the names
-    // correctly, but the bindings still come back unresolved, so the sink reports
-    // "unavailable" and the managed side uses its documented fallback. See the HUKS plan and
-    // the ArkTS Essentials plan for the exact findings and next step (compare against a
-    // DevEco-generated project's loader/plugin versions).
+    // Verified against the SDK (2026-09-18): the *direct* module forms
+    //   import vibrator from '@ohos.vibrator';  import huks from '@ohos.security.huks';
+    // compile fine when the project is built with its own hvigor CLI
+    // (node node_modules/@ohos/hvigor/bin/hvigor.js ... assembleHap), including
+    // `huks.HuksOptions` type usage and the enum constants; the same source fails through the
+    // pack build script, so its hvigor invocation/environment is what must be aligned next
+    // (see the ArkTS Essentials plan). Until then the sinks stay degradable.
     host.registerVibrationSink((durationMs: number) => {
     });
 
@@ -44,8 +44,6 @@ struct Index {
     // fallback. Enabling the real path means adding the universal keystore kit to the shell
     // project (see docs/plans/2026-09-18-ohos-secure-storage-huks-plan.md).
     host.registerKeystoreSink((requestId: number, op: string, alias: string, data: string) => {
-      // Degradable: the keystore kit does not resolve in this minimal hvigor project yet, so the
-      // managed side uses its documented file fallback (see the HUKS plan for the SDK findings).
       host.notifyKeystoreResult(requestId, -1, '');
     });
 
