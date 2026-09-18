@@ -46,6 +46,16 @@ void Check(string what, Color actual, Color expected, int tolerance = 24)
 Console.WriteLine($"renderer.Render -> {rendered} (canvas 可能没有原生 surface，这不影响像素断言)");
 
 // Background (page fill) and the three known controls from the test page.
+Console.WriteLine($"  frames: heading={heading.Frame} border={border.Frame} rect={rectangle.Frame}");
+for (int y = 0; y < 1920; y += 160)
+{
+    var row = new System.Text.StringBuilder();
+    for (int x = 0; x < 1080; x += 120)
+    {
+        row.Append(canvas.GetPixel(x, y).ToArgbHex()).Append(' ');
+    }
+    Console.WriteLine($"  y={y,4}: {row}");
+}
 Check("page background", canvas.GetPixel(4, 4), Colors.DarkSlateBlue);
 Rect headingFrame = heading.Frame;
 Check("heading text marker", canvas.GetPixel((int)(headingFrame.X + 8), (int)(headingFrame.Y + headingFrame.Height - 4)), Colors.White);
