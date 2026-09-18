@@ -2,6 +2,7 @@
 using Microsoft.Maui;
 using Microsoft.Maui.Controls;
 using Microsoft.Maui.Controls.Shapes;
+using Microsoft.Maui.Storage;
 
 namespace HelloMauiApp;
 
@@ -70,16 +71,18 @@ public sealed class App : Application
 
     private static ContentPage BuildPage()
     {
-        int clicks = 0;
+        // W22-13: Essentials - the counter survives restarts through Preferences.
+        int clicks = Preferences.Get("demo.clicks", 0);
         var title = new Label { Text = "MAUI on OpenHarmony", FontSize = 44 };
         var subtitle = new Label { Text = "Microsoft.Maui.Controls through the platform slice", FontSize = 24 };
         var status = new Label { Text = "Tap the counter", FontSize = 28 };
-        var counter = new Button { Text = "Count: 0", FontSize = 40 };
+        var counter = new Button { Text = $"Count: {clicks}", FontSize = 40 };
         counter.Clicked += (_, _) =>
         {
             clicks++;
+            Preferences.Set("demo.clicks", clicks);
             counter.Text = $"Count: {clicks}";
-            status.Text = $"last click #{clicks}";
+            status.Text = $"last click #{clicks} (saved)";
         };
         // W22-1: soft-keyboard text input through the ArkTS shell's TextInput.
         var entry = new Entry { Placeholder = "type here (soft keyboard)", FontSize = 32 };
@@ -154,6 +157,7 @@ public sealed class App : Application
         reset.Clicked += (_, _) =>
         {
             clicks = 0;
+            Preferences.Remove("demo.clicks");
             counter.Text = "Count: 0";
             status.Text = "reset";
         };
