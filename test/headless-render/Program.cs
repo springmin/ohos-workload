@@ -25,6 +25,7 @@ var renderer = app.Services.GetRequiredService<OpenHarmonyWindowRenderer>();
 var page = (ContentPage)host.Window!.Content!;
 var root = (VerticalStackLayout)page.Content!;
 var heading = (Label)root.Children[0];
+var button = (Button)root.Children[3];
 var border = (Border)root.Children[1];
 var rectangle = root.Children[2];
 host.Arrange(1080, 1920);
@@ -75,6 +76,15 @@ Check("heading text marker", canvas.GetPixel((int)(headingFrame.X + 8), (int)(he
 Check("border stroke", canvas.GetPixel((int)borderFrame.X + 1, (int)(borderFrame.Y + borderFrame.Height / 2)), Colors.DodgerBlue);
 Check("rectangle fill", canvas.GetPixel((int)(rectFrame.X + rectFrame.Width / 2), (int)(rectFrame.Y + rectFrame.Height / 2)), Colors.OrangeRed);
 
+// Interaction state: pressing the button repaints it in the pressed colour.
+Rect buttonFrame = button.Frame;
+host.HandleTouch(true, false, (float)(buttonFrame.X + buttonFrame.Width / 2), (float)(buttonFrame.Y + buttonFrame.Height / 2));
+renderer.Render(page, 1080, 1920);
+Check("button pressed state",
+    canvas.GetPixel((int)(buttonFrame.X + buttonFrame.Width / 2), (int)(buttonFrame.Y + buttonFrame.Height / 2)),
+    Colors.OrangeRed);
+host.HandleTouch(false, true, (float)(buttonFrame.X + buttonFrame.Width / 2), (float)(buttonFrame.Y + buttonFrame.Height / 2));
+
 Console.WriteLine($"  drawn pixel writes: {canvas.DrawnPixels}");
 Console.WriteLine(failures == 0 ? "PIXEL ASSERTIONS PASSED" : $"PIXEL ASSERTIONS FAILED ({failures})");
 return failures == 0 ? 0 : 1;
@@ -100,6 +110,12 @@ public sealed class PixelApp : Application
             WidthRequest = 60,
             HeightRequest = 60,
             Fill = Colors.OrangeRed,
+        });
+        layout.Add(new Button
+        {
+            Text = "press me",
+            FontSize = 26,
+            BackgroundColor = Colors.MediumSeaGreen,
         });
         return new ContentPage { BackgroundColor = Colors.DarkSlateBlue, Content = layout };
     }
