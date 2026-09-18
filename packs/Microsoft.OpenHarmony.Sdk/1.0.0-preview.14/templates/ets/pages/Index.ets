@@ -27,14 +27,12 @@ struct Index {
     // matching SDK kits, which are not part of this minimal shell project's compilation set yet
     // (see docs/plans/2026-09-18-ohos-arkts-essentials-bridge-plan.md). The sinks stay
     // registered and report "unavailable" so the managed side behaves deterministically.
-    // Essentials: vibration / keystore sinks.
-    // Verified against the SDK (2026-09-18): the *direct* module forms
-    //   import vibrator from '@ohos.vibrator';  import huks from '@ohos.security.huks';
-    // compile fine when the project is built with its own hvigor CLI
-    // (node node_modules/@ohos/hvigor/bin/hvigor.js ... assembleHap), including
-    // `huks.HuksOptions` type usage and the enum constants; the same source fails through the
-    // pack build script, so its hvigor invocation/environment is what must be aligned next
-    // (see the ArkTS Essentials plan). Until then the sinks stay degradable.
+    // Essentials: vibration / keystore sinks stay degradable for now.
+    // The real implementations (direct '@ohos.vibrator' / '@ohos.security.huks' imports with
+    // huks.HuksOptions types and the callback APIs) are verified to compile against this SDK
+    // when the project is built manually; through the pack build script they do not resolve,
+    // and the last variable is the project regeneration step of the script itself. The verified
+    // snippet lives in docs/plans/2026-09-18-ohos-arkts-essentials-bridge-plan.md.
     host.registerVibrationSink((durationMs: number) => {
     });
 
