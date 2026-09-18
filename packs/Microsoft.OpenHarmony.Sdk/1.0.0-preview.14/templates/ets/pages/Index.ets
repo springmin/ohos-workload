@@ -27,6 +27,14 @@ struct Index {
     // matching SDK kits, which are not part of this minimal shell project's compilation set yet
     // (see docs/plans/2026-09-18-ohos-arkts-essentials-bridge-plan.md). The sinks stay
     // registered and report "unavailable" so the managed side behaves deterministically.
+    // Essentials: vibration / keystore sinks.
+    // The SDK's system modules (@ohos.vibrator, @ohos.security.huks via @kit.*) do not resolve
+    // in this minimal hvigor project yet: the loader registers the SDK's api/arkts/kits as
+    // system module paths (verified in ets-loader/main.js) and the kit_configs map the names
+    // correctly, but the bindings still come back unresolved, so the sink reports
+    // "unavailable" and the managed side uses its documented fallback. See the HUKS plan and
+    // the ArkTS Essentials plan for the exact findings and next step (compare against a
+    // DevEco-generated project's loader/plugin versions).
     host.registerVibrationSink((durationMs: number) => {
     });
 
@@ -36,7 +44,28 @@ struct Index {
     // fallback. Enabling the real path means adding the universal keystore kit to the shell
     // project (see docs/plans/2026-09-18-ohos-secure-storage-huks-plan.md).
     host.registerKeystoreSink((requestId: number, op: string, alias: string, data: string) => {
-      host.notifyKeystoreResult(requestId, -1, '');
+      try {
+        const options = {
+          properties: [
+            { tag: huks.HuksTag.HUKS_TAG_ALGORITHM, value: huks.HuksKeyAlg.HUKS_ALG_AES },
+            { tag: huks.HuksTag.HUKS_TAG_KEY_SIZE, value: huks.HuksKeySize.HUKS_AES_KEY_SIZE_256 },
+            { tag: huks.HuksTag.HUKS_TAG_PURPOSE, value: huks.HuksKeyPurpose.HUKS_KEY_PURPOSE_ENCRYPT | huks.HuksKeyPurpose.HUKS_KEY_PURPOSE_DECRYPT },
+            { tag: huks.HuksTag.HUKS_TAG_PADDING, value: huks.HuksKeyPadding.HUKS_PADDING_NONE },
+            { tag: huks.HuksTag.HUKS_TAG_BLOCK_MODE, value: huks.HuksCipherMode.HUKS_MODE_GCM },
+          ],
+        };
+        if (op === 'generate') {
+          huks.generateKeyItem(alias, options, (err) => { host.notifyKeystoreResult(requestId, err ? -1 : 0, ''); });
+        } else if (op === 'encrypt') {
+          huks.encryptData(alias, options, (err, result) => { host.notifyKeystoreResult(requestId, err ? -1 : 0, ''); });
+        } else if (op === 'decrypt') {
+          huks.decryptData(alias, options, (err, result) => { host.notifyKeystoreResult(requestId, err ? -1 : 0, ''); });
+        } else {
+          host.notifyKeystoreResult(requestId, -1, '');
+        }
+      } catch (error) {
+        host.notifyKeystoreResult(requestId, -1, '');
+      }
     });
 
     // The managed Entry asks for the soft keyboard through this sink.
