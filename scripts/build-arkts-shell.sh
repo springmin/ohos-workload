@@ -206,7 +206,7 @@ run_hvigor() {
     ( cd "$PROJ" && \
       env -i PATH="$(dirname "$NODE_BIN")${JAVA_HOME:+:$JAVA_HOME/bin}:/usr/bin:/bin" HOME="$HOME" \
           ${JAVA_HOME:+JAVA_HOME="$JAVA_HOME"} \
-          OHOS_BASE_SDK_HOME="$SDK_ROOT" DEVECO_SDK_HOME="$SDK_ROOT" \
+          OHOS_BASE_SDK_HOME="$SDK" DEVECO_SDK_HOME="$SDK" \
           externalApiPaths="$SDK/ets/api:$SDK/ets/kits:$SDK/ets/arkts" \
           "$NODE_BIN" "$HVIGOR_JS" \
             assembleHap -m module -p module=entry@default -p product=default -p buildMode=debug \
