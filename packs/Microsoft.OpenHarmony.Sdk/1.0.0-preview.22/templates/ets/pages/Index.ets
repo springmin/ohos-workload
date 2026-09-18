@@ -9,6 +9,8 @@
 // rendering target for Skia/MAUI. The ContentSlot next to it hosts native ArkUI nodes that
 // managed code attaches through OpenHarmonyBridge.NodeContent.
 import { NodeContent } from '@ohos.arkui.node';
+import cameraPicker from '@ohos.multimedia.cameraPicker';
+import fileIo from '@ohos.file.fs';
 import notificationManager from '@ohos.notificationManager';
 import host from 'libopenharmonyhost.so';
 import picker from '@ohos.file.picker';
@@ -78,6 +80,26 @@ struct Index {
     // and bytes travel back as base64 (all kinds use the document picker, so the shell needs no
     // extra UI component).
     host.registerPickerSink(async (requestId: number, kind: number) => {
+      if (kind === 3 || kind === 4) {
+        try {
+          const mediaType = kind === 3 ? cameraPicker.PickerMediaType.PHOTO : cameraPicker.PickerMediaType.VIDEO;
+          const picked = await cameraPicker.pick(getContext(this), [mediaType], {
+            cameraPosition: cameraPicker.CameraPosition.CAMERA_POSITION_BACK,
+          });
+          const captureUri: string = picked.resultUri;
+          const captureName: string = captureUri.substring(captureUri.lastIndexOf('/') + 1);
+          const captureFile = fileIo.openSync(captureUri, fileIo.OpenMode.READ_ONLY);
+          const captureBuffer = new ArrayBuffer(fileIo.statSync(captureUri).size);
+          fileIo.readSync(captureFile.fd, captureBuffer);
+          fileIo.closeSync(captureFile);
+          const captureBase64 = new util.Base64Helper().encodeToStringSync(new Uint8Array(captureBuffer));
+          host.notifyPickerResult(requestId, 0, captureName, captureBase64);
+        } catch (captureError) {
+          console.error(`camera capture failed: ${captureError.message}`);
+          host.notifyPickerResult(requestId, -1, '', '');
+        }
+        return;
+      }
         host.registerNotificationSink((notificationId: number, notificationTitle: string, notificationText: string): void => {
             notificationManager.publish({
                 id: notificationId,
