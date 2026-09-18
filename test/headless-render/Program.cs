@@ -85,7 +85,51 @@ Check("button pressed state",
     Colors.OrangeRed);
 host.HandleTouch(false, true, (float)(buttonFrame.X + buttonFrame.Width / 2), (float)(buttonFrame.Y + buttonFrame.Height / 2));
 
+// Disabled state: the same colour, dimmed by the renderer's 50% alpha.
+Rect disabledFrame = ((Button)root.Children[4]).Frame;
+Console.WriteLine($"  disabled button IsEnabled={((Button)root.Children[4]).IsEnabled} cornerRadius={((Button)root.Children[3]).CornerRadius} platformCorner={((OpenHarmonyView)button.Handler!.PlatformView!).CornerRadius}");
+Color dimmed = canvas.GetPixel((int)(disabledFrame.X + disabledFrame.Width / 2), (int)(disabledFrame.Y + disabledFrame.Height / 2));
+Color expectedDim = Blend(Colors.DarkSlateBlue, Colors.MediumSeaGreen, 0.5f);
+Check("disabled button dimmed", dimmed, expectedDim, 20);
+
+// CheckBox: the box stroke is drawn at the view's edge.
+var check = (CheckBox)root.Children[5];
+Rect checkFrame = check.Frame;
+// The box is drawn inset (70% of the view, centred): sample its left edge.
+var checkPlatform = check.Handler?.PlatformView as OpenHarmonyView;
+RectF drawFrame = checkPlatform?.Frame ?? new RectF((float)checkFrame.X, (float)checkFrame.Y, (float)checkFrame.Width, (float)checkFrame.Height);
+float boxSide = Math.Min(drawFrame.Width, drawFrame.Height) * 0.7f;
+float boxLeft = drawFrame.X + (drawFrame.Width - boxSide) / 2f;
+Console.WriteLine($"  checkbox virtual={checkFrame} draw={drawFrame} boxLeft={boxLeft:0}");
+Check("checkbox box stroke", canvas.GetPixel((int)boxLeft + 1, (int)(drawFrame.Y + drawFrame.Height / 2)), Colors.White, 40);
+
+// Rounded corners: the button's corner stays background while its centre is the fill.
+Rect roundedFrame = buttonFrame;
+Color corner = canvas.GetPixel((int)roundedFrame.X + 1, (int)roundedFrame.Y + 1);
+Check("button rounded corner", corner, Colors.DarkSlateBlue, 0);
+
+// Image: the blit destination is observed (pixels come from the native blitter).
+Rect? imageDestination = null;
+OpenHarmonyView.ImageDrawn = rect => imageDestination ??= new Rect(rect.X, rect.Y, rect.Width, rect.Height);
+renderer.Render(page, 1080, 1920);
+Rect imageFrame = ((Image)root.Children[6]).Frame;
+Console.WriteLine($"  image frame={imageFrame} drawnAt={(imageDestination is { } d ? d.ToString() : "<none>")} bytes={(((Image)root.Children[6]).Handler?.PlatformView as OpenHarmonyView)?.ImageBytes?.Length ?? 0}");
+bool imageOk = imageDestination is { } destination2 &&
+               Math.Abs(destination2.X + destination2.Width / 2 - (imageFrame.X + imageFrame.Width / 2)) <= 1 &&
+               Math.Abs(destination2.Y + destination2.Height / 2 - (imageFrame.Y + imageFrame.Height / 2)) <= 1;
+Console.WriteLine($"  [{(imageOk ? "PASS" : "FAIL")}] image blit centred in its frame");
+if (!imageOk)
+{
+    failures++;
+}
+
 Console.WriteLine($"  drawn pixel writes: {canvas.DrawnPixels}");
+Color Blend(Color background, Color foreground, float alpha) => new(
+    (float)(foreground.Red * alpha + background.Red * (1 - alpha)),
+    (float)(foreground.Green * alpha + background.Green * (1 - alpha)),
+    (float)(foreground.Blue * alpha + background.Blue * (1 - alpha)),
+    1f);
+
 Console.WriteLine(failures == 0 ? "PIXEL ASSERTIONS PASSED" : $"PIXEL ASSERTIONS FAILED ({failures})");
 return failures == 0 ? 0 : 1;
 
@@ -116,7 +160,21 @@ public sealed class PixelApp : Application
             Text = "press me",
             FontSize = 26,
             BackgroundColor = Colors.MediumSeaGreen,
+            CornerRadius = 14,
         });
+        var disabled = new Button
+        {
+            Text = "disabled",
+            FontSize = 26,
+            BackgroundColor = Colors.MediumSeaGreen,
+            IsEnabled = false,
+        };
+        layout.Add(disabled);
+        layout.Add(new CheckBox { IsChecked = true });
+        string imagePath = Path.Combine(Path.GetTempPath(), "pixel-image.png");
+        File.WriteAllBytes(imagePath, Convert.FromBase64String(
+            "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=="));
+        layout.Add(new Image { Source = ImageSource.FromFile(imagePath), HeightRequest = 64 });
         return new ContentPage { BackgroundColor = Colors.DarkSlateBlue, Content = layout };
     }
 }

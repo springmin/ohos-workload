@@ -128,7 +128,21 @@ public sealed class HeadlessCanvas : MauiCanvas
     }
 
     public override void FillRoundedRectangle(float x, float y, float width, float height, float cornerRadius)
-        => FillRectangle(x, y, width, height);
+    {
+        if (cornerRadius <= 1)
+        {
+            FillRectangle(x, y, width, height);
+            return;
+        }
+        float r = Math.Min(cornerRadius, Math.Min(width, height) / 2f);
+        FillRectangle(x + r, y, Math.Max(0.5f, width - 2 * r), height);
+        FillRectangle(x, y + r, r, Math.Max(0.5f, height - 2 * r));
+        FillRectangle(x + width - r, y + r, r, Math.Max(0.5f, height - 2 * r));
+        FillEllipseCore(x + r, y + r, r);
+        FillEllipseCore(x + width - r, y + r, r);
+        FillEllipseCore(x + r, y + height - r, r);
+        FillEllipseCore(x + width - r, y + height - r, r);
+    }
 
     public override void DrawRoundedRectangle(float x, float y, float width, float height, float cornerRadius)
         => DrawRectangle(x, y, width, height);
