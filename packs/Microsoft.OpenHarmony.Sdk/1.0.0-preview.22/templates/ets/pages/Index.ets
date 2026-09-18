@@ -14,6 +14,7 @@ import picker from '@ohos.file.picker';
 import fs from '@ohos.file.fs';
 import util from '@ohos.util';
 import web_webview from '@ohos.web.webview';
+import window from '@ohos.window';
 
 @Entry
 @Component
@@ -40,6 +41,15 @@ struct Index {
     // buildOption.strictMode { caseSensitiveCheck: true, useNormalizedOHMUrl: true } - the
     // strictMode block is now emitted, the numeric-version + matching staged SDK layout is the
     // next candidate. Verified snippet lives in the ArkTS Essentials plan.
+    // Safe area: report the system avoid area so the managed layout can inset its content.
+    window.getLastWindow(getContext(this)).then((win) => {
+      const area = win.getWindowAvoidArea(window.AvoidAreaType.TYPE_SYSTEM);
+      host.notifyAvoidArea(area.topRect.height, area.bottomRect.height,
+                           area.leftRect.width, area.rightRect.width);
+    }).catch(() => {
+      // Window information is optional.
+    });
+
     // WebView: a hidden ArkWeb component that the managed WebView handler drives.
     host.registerWebSink((op: string, arg: string) => {
       try {

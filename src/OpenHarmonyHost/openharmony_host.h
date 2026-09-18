@@ -62,6 +62,10 @@ int ohos_host_vibrate(int duration_ms);
 /// Essentials over the NDK: network access (0 unknown, 1 none, 2 local, 3 internet).
 int ohos_host_network_access(void);
 
+/// Safe area: the shell reports the window's avoid area; the host stores it for the app host.
+void ohos_host_set_avoid_area(int top, int bottom, int left, int right);
+int ohos_host_get_avoid_area(int* top, int* bottom, int* left, int* right);
+
 /// WebView: commands (op: show/hide/load/eval/back) go to the shell's ArkWeb component, page
 /// events come back through ohos_host_web_register_event.
 void ohos_host_web_set_listener(void (*listener)(const char* op, const char* arg));

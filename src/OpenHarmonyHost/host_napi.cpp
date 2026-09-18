@@ -212,6 +212,21 @@ napi_value RegisterWebSink(napi_env env, napi_callback_info info) {
     return undefined;
 }
 
+// ArkTS calls host.notifyAvoidArea(top, bottom, left, right).
+napi_value NotifyAvoidArea(napi_env env, napi_callback_info info) {
+    size_t argc = 4;
+    napi_value argv[4] = {nullptr, nullptr, nullptr, nullptr};
+    napi_get_cb_info(env, info, &argc, argv, nullptr, nullptr);
+    int values[4] = {0, 0, 0, 0};
+    for (size_t i = 0; i < 4 && i < argc; i++) {
+        napi_get_value_int32(env, argv[i], &values[i]);
+    }
+    ohos_host_set_avoid_area(values[0], values[1], values[2], values[3]);
+    napi_value undefined = nullptr;
+    napi_get_undefined(env, &undefined);
+    return undefined;
+}
+
 // ArkTS calls host.notifyWebEvent(state, url).
 napi_value NotifyWebEvent(napi_env env, napi_callback_info info) {
     size_t argc = 2;
@@ -583,6 +598,7 @@ napi_value Init(napi_env env, napi_value exports) {
         {"registerPickerSink", nullptr, RegisterPickerSink, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"registerWebSink", nullptr, RegisterWebSink, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"notifyWebEvent", nullptr, NotifyWebEvent, nullptr, nullptr, nullptr, napi_default, nullptr},
+        {"notifyAvoidArea", nullptr, NotifyAvoidArea, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"notifyPickerResult", nullptr, NotifyPickerResult, nullptr, nullptr, nullptr, napi_default, nullptr},
 
         {"notifyKeystoreResult", nullptr, NotifyKeystoreResult, nullptr, nullptr, nullptr, napi_default, nullptr},

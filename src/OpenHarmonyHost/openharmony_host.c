@@ -685,6 +685,31 @@ static int EnsureInputMethod(void) {
 }
 
 // ---------------------------------------------------------------------------
+// Safe area: reported by the shell (window.getWindowAvoidArea) and consumed by the app host.
+// ---------------------------------------------------------------------------
+
+static int g_avoid_top = 0;
+static int g_avoid_bottom = 0;
+static int g_avoid_left = 0;
+static int g_avoid_right = 0;
+
+void ohos_host_set_avoid_area(int top, int bottom, int left, int right) {
+    g_avoid_top = top > 0 ? top : 0;
+    g_avoid_bottom = bottom > 0 ? bottom : 0;
+    g_avoid_left = left > 0 ? left : 0;
+    g_avoid_right = right > 0 ? right : 0;
+    fprintf(stderr, "[openharmony-host] avoid area t=%d b=%d l=%d r=%d\n", g_avoid_top, g_avoid_bottom, g_avoid_left, g_avoid_right);
+}
+
+int ohos_host_get_avoid_area(int* top, int* bottom, int* left, int* right) {
+    if (top != NULL) *top = g_avoid_top;
+    if (bottom != NULL) *bottom = g_avoid_bottom;
+    if (left != NULL) *left = g_avoid_left;
+    if (right != NULL) *right = g_avoid_right;
+    return 1;
+}
+
+// ---------------------------------------------------------------------------
 // WebView: the shell owns a hidden ArkWeb component; commands drive it and page events come back.
 // ---------------------------------------------------------------------------
 

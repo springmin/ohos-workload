@@ -131,6 +131,9 @@ public static class OpenHarmonyBridge
     [DllImport(HostLibrary, EntryPoint = "ohos_host_web_register_event")]
     private static extern void RegisterWebEventNative(IntPtr callback);
 
+    [DllImport(HostLibrary, EntryPoint = "ohos_host_get_avoid_area")]
+    private static extern int GetAvoidAreaNative(out int top, out int bottom, out int left, out int right);
+
     [DllImport(HostLibrary, EntryPoint = "ohos_host_request_text_input")]
     private static extern void RequestTextInputNative(int show);
 
@@ -257,6 +260,23 @@ public static class OpenHarmonyBridge
     {
         add { lock (s_sync) { s_textInputHandlers += value; } }
         remove { lock (s_sync) { s_textInputHandlers -= value; } }
+    }
+
+    /// <summary>Window avoid area (safe insets) as reported by the shell, in pixels.</summary>
+    public static bool TryGetAvoidArea(out int top, out int bottom, out int left, out int right)
+    {
+        top = 0;
+        bottom = 0;
+        left = 0;
+        right = 0;
+        try
+        {
+            return GetAvoidAreaNative(out top, out bottom, out left, out right) == 1;
+        }
+        catch
+        {
+            return false;
+        }
     }
 
     /// <summary>Sends a WebView command to the shell's ArkWeb component (show/hide/load/eval/back).</summary>
