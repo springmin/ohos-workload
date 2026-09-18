@@ -106,14 +106,12 @@ Rect checkFrame = check.Frame;
 RenderFresh();
 var checkPlatform = check.Handler?.PlatformView as OpenHarmonyView;
 RectF drawFrame = checkPlatform?.Frame ?? new RectF((float)checkFrame.X, (float)checkFrame.Y, (float)checkFrame.Width, (float)checkFrame.Height);
-float boxSide = Math.Min(drawFrame.Width, drawFrame.Height) * 0.7f;
-float boxLeft = drawFrame.X + (drawFrame.Width - boxSide) / 2f;
-Console.WriteLine($"  checkbox virtual={checkFrame} draw={drawFrame} boxLeft={boxLeft:0}");
-Known("checkbox box stroke", canvas.GetPixel((int)boxLeft + 1, (int)(drawFrame.Y + drawFrame.Height / 2)), Colors.White);
-// Check line: sample the first check stroke segment (drawn when IsChecked).
 float side = Math.Min(drawFrame.Width, drawFrame.Height) * 0.7f;
 float boxX = drawFrame.X + (drawFrame.Width - side) / 2f;
 float boxY = drawFrame.Y + (drawFrame.Height - side) / 2f;
+Console.WriteLine($"  checkbox virtual={checkFrame} draw={drawFrame} box=({boxX:0},{boxY:0},{side:0})");
+Known("checkbox box stroke", canvas.GetPixel((int)(boxX + side / 2f), (int)boxY + 1), Colors.White);
+// Check line: sample the first check stroke segment (drawn when IsChecked).
 int checkX = (int)(boxX + side * 0.35f);
 int checkY = (int)(boxY + side * 0.65f);
 Color withCheck = canvas.GetPixel(checkX, checkY);
@@ -153,7 +151,7 @@ if (!imageOk)
 var squareButton = (Button)root.Children[7];
 Rect squareFrame = squareButton.Frame;
 RenderFresh();
-Known("corner radius 0 stays square", canvas.GetPixel((int)squareFrame.X + 1, (int)squareFrame.Y + 1), Colors.MediumSeaGreen);
+Check("corner radius 0 stays square", canvas.GetPixel((int)squareFrame.X + 1, (int)squareFrame.Y + 1), Colors.MediumSeaGreen, 30);
 
 // Selection tint: tapping an item blends DodgerBlue 35% over the page.
 var selectable = (CollectionView)root.Children[8];
