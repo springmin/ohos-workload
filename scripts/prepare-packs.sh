@@ -5,7 +5,7 @@
 # -openharmony release and verified by sha256.
 set -e
 W="$(cd "$(dirname "$0")/.." && pwd)"
-VER=1.0.0-preview.22
+VER=1.0.0-preview.23
 DOTNET="${DOTNET:-$HOME/.dotnet/dotnet}"
 RTV=11.0.0-rc.1.26451.109
 SHA=b9fff88aadd4bbfc73964d0fdb05dc551755fd956332cd7d44cf06556f51
@@ -34,12 +34,14 @@ for API in 20.0 26.0; do
   R="$W/packs/Microsoft.OpenHarmony.Ref.$API/$VER/ref/net11.0"
   mkdir -p "$R"
   cp "$HOSTING" "$R/"
+  mkdir -p "$W/packs/Microsoft.OpenHarmony.Ref.$API/$VER/data"
   cat > "$W/packs/Microsoft.OpenHarmony.Ref.$API/$VER/data/FrameworkList.xml" <<'XML'
 <FileList TargetFrameworkIdentifier=".NETCoreApp" TargetFrameworkVersion="11.0" FrameworkName="Microsoft.OpenHarmony" Name="Microsoft OpenHarmony">
   <File Type="Managed" Path="ref/net11.0/Microsoft.OpenHarmony.dll" AssemblyName="Microsoft.OpenHarmony" PublicKeyToken="" AssemblyVersion="1.0.0.0" FileVersion="1.0.0.0" />
   <File Type="Managed" Path="ref/net11.0/Microsoft.OpenHarmony.Hosting.dll" AssemblyName="Microsoft.OpenHarmony.Hosting" PublicKeyToken="" AssemblyVersion="1.0.0.0" FileVersion="1.0.0.0" />
 </FileList>
 XML
+  mkdir -p "$P/data"
   cat > "$P/data/RuntimeList.xml" <<'XML'
 <FileList TargetFrameworkIdentifier=".NETCoreApp" TargetFrameworkVersion="11.0" FrameworkName="Microsoft.OpenHarmony" Name="Microsoft OpenHarmony">
   <File Type="Managed" Path="runtimes/openharmony-arm64/lib/net11.0/Microsoft.OpenHarmony.dll" AssemblyName="Microsoft.OpenHarmony" PublicKeyToken="" AssemblyVersion="1.0.0.0" FileVersion="1.0.0.0" />
@@ -56,6 +58,7 @@ for API in 20.0 26.0; do
   P="$W/packs/Microsoft.OpenHarmony.Runtime.$API.openharmony-arm64/$VER"
   mkdir -p "$P/runtimes/openharmony-arm64/lib/net11.0"
   cp "$MAUI_GFX" "$P/runtimes/openharmony-arm64/lib/net11.0/"
+  mkdir -p "$P/data"
   cat > "$P/data/RuntimeList.xml" <<'XML'
 <FileList TargetFrameworkIdentifier=".NETCoreApp" TargetFrameworkVersion="11.0" FrameworkName="Microsoft.OpenHarmony" Name="Microsoft OpenHarmony">
   <File Type="Managed" Path="runtimes/openharmony-arm64/lib/net11.0/Microsoft.OpenHarmony.dll" AssemblyName="Microsoft.OpenHarmony" PublicKeyToken="" AssemblyVersion="1.0.0.0" FileVersion="1.0.0.0" />
