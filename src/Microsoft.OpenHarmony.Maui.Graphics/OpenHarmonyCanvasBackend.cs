@@ -104,7 +104,7 @@ public class OpenHarmonyCanvas : ICanvas
         HostCanvas.Save();
     }
 
-    public bool RestoreState()
+    public virtual bool RestoreState()
     {
         if (_savedStates.Count == 0)
         {

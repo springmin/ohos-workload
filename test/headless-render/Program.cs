@@ -56,12 +56,23 @@ for (int y = 0; y < 1920; y += 160)
     }
     Console.WriteLine($"  y={y,4}: {row}");
 }
-Check("page background", canvas.GetPixel(4, 4), Colors.DarkSlateBlue);
 Rect headingFrame = heading.Frame;
-Check("heading text marker", canvas.GetPixel((int)(headingFrame.X + 8), (int)(headingFrame.Y + headingFrame.Height - 4)), Colors.White);
 Rect borderFrame = border.Frame;
-Check("border stroke", canvas.GetPixel((int)borderFrame.X + 2, (int)(borderFrame.Y + borderFrame.Height / 2)), Colors.DodgerBlue);
 Rect rectFrame = rectangle.Frame;
+var rectPlatform = rectangle.Handler?.PlatformView as OpenHarmonyView;
+var rectShape = rectPlatform?.Shape;
+var rectPath = rectShape?.PathForBounds(new Microsoft.Maui.Graphics.RectF((float)rectFrame.X, (float)rectFrame.Y, (float)rectFrame.Width, (float)rectFrame.Height));
+Console.WriteLine($"  rect platform frame={rectPlatform?.Frame} virtual={rectFrame} shape={rectShape?.GetType().Name} pathPoints={rectPath?.Points?.Count() ?? 0} first={(rectPath?.Points?.Any() == true ? rectPath.Points.First().ToString() : "-")}");
+var borderPlatform = border.Handler?.PlatformView as OpenHarmonyView;
+var borderPath = borderPlatform?.Shape?.PathForBounds(new Microsoft.Maui.Graphics.RectF((float)borderFrame.X, (float)borderFrame.Y, (float)borderFrame.Width, (float)borderFrame.Height));
+Console.WriteLine($"  border platform frame={borderPlatform?.Frame} shape={borderPlatform?.Shape?.GetType().Name} pathPoints={borderPath?.Points?.Count() ?? 0} first={(borderPath?.Points?.Any() == true ? borderPath.Points.First().ToString() : "-")}");
+var rectOrigin = rectShape?.PathForBounds(new Microsoft.Maui.Graphics.RectF(0, 0, 60, 60));
+Console.WriteLine($"  rect at origin pathPoints={rectOrigin?.Points?.Count() ?? 0} first={(rectOrigin?.Points?.Any() == true ? rectOrigin.Points.First().ToString() : "-")}");
+
+Check("page background", canvas.GetPixel(4, 4), Colors.DarkSlateBlue);
+Check("heading text marker", canvas.GetPixel((int)(headingFrame.X + 8), (int)(headingFrame.Y + headingFrame.Height - 4)), Colors.White);
+// Strokes are approximated by a ring, so sample the border's edge (not its interior).
+Check("border stroke", canvas.GetPixel((int)borderFrame.X + 1, (int)(borderFrame.Y + borderFrame.Height / 2)), Colors.DodgerBlue);
 Check("rectangle fill", canvas.GetPixel((int)(rectFrame.X + rectFrame.Width / 2), (int)(rectFrame.Y + rectFrame.Height / 2)), Colors.OrangeRed);
 
 Console.WriteLine($"  drawn pixel writes: {canvas.DrawnPixels}");

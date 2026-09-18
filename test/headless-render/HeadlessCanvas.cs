@@ -86,8 +86,26 @@ public sealed class HeadlessCanvas : MauiCanvas
         FillRectangle(minX, minY, Math.Max(1, maxX - minX), Math.Max(1, maxY - minY));
     }
 
+    /// <summary>Ring approximation of a stroke: the bounding box's four edges are drawn.</summary>
     public override void DrawPath(PathF path)
-        => FillPath(path, WindingMode.NonZero);
+    {
+        if (path.Points is null || !path.Points.Any())
+        {
+            return;
+        }
+        Color fill = FillColor;
+        FillColor = StrokeColor;
+        float minX = path.Points.Min(p => p.X), minY = path.Points.Min(p => p.Y);
+        float maxX = path.Points.Max(p => p.X), maxY = path.Points.Max(p => p.Y);
+        float width = Math.Max(1, maxX - minX);
+        float height = Math.Max(1, maxY - minY);
+        float t = Math.Max(1, StrokeSize);
+        FillRectangle(minX, minY, width, t);
+        FillRectangle(minX, minY + height - t, width, t);
+        FillRectangle(minX, minY, t, height);
+        FillRectangle(minX + width - t, minY, t, height);
+        FillColor = fill;
+    }
 
     public override void FillRectangle(float x, float y, float width, float height)
     {
@@ -170,6 +188,27 @@ public sealed class HeadlessCanvas : MauiCanvas
         FillColor = saved;
     }
 
+
+    private readonly Stack<(float OffsetX, float OffsetY, Color Fill, Color Stroke, Color Font, float Alpha)> _states = new();
+
+    public override void SaveState()
+        => _states.Push((_offsetX, _offsetY, FillColor, StrokeColor, FontColor, Alpha));
+
+    public override bool RestoreState()
+    {
+        if (_states.Count == 0)
+        {
+            return false;
+        }
+        (float ox, float oy, Color fill, Color stroke, Color font, float alpha) = _states.Pop();
+        _offsetX = ox;
+        _offsetY = oy;
+        FillColor = fill;
+        StrokeColor = stroke;
+        FontColor = font;
+        Alpha = alpha;
+        return true;
+    }
 
     public override void Translate(float tx, float ty)
     {
