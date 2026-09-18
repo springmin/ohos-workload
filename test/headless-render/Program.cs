@@ -110,7 +110,8 @@ float side = Math.Min(drawFrame.Width, drawFrame.Height) * 0.7f;
 float boxX = drawFrame.X + (drawFrame.Width - side) / 2f;
 float boxY = drawFrame.Y + (drawFrame.Height - side) / 2f;
 Console.WriteLine($"  checkbox virtual={checkFrame} draw={drawFrame} box=({boxX:0},{boxY:0},{side:0})");
-Known("checkbox box stroke", canvas.GetPixel((int)(boxX + side / 2f), (int)boxY + 1), Colors.White);
+Color boxStroke = checkPlatform?.CheckBoxColor ?? Colors.White;
+Known("checkbox box stroke", canvas.GetPixel((int)(boxX + side / 2f), (int)boxY + 1), boxStroke);
 // Check line: sample the first check stroke segment (drawn when IsChecked).
 int checkX = (int)(boxX + side * 0.35f);
 int checkY = (int)(boxY + side * 0.65f);
@@ -162,6 +163,7 @@ float itemY = (float)(item0.Y + item0.Height / 2);
 host.HandleTouch(true, false, itemX, itemY);
 host.HandleTouch(false, true, itemX, itemY);
 RenderFresh();
+Console.WriteLine($"  selection item0={item0} tapped=({itemX:0},{itemY:0}) selected='{selectable.SelectedItem}'");
 Color tinted = canvas.GetPixel((int)itemX, (int)itemY);
 Known("selection tint", tinted, Blend(Colors.DarkSlateBlue, Colors.DodgerBlue, 0.35f));
 

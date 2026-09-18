@@ -5,7 +5,7 @@
 # unsigned ELF files). Set SKIP_SIGN=1 to keep it unsigned.
 set -e
 W="$(cd "$(dirname "$0")/.." && pwd)"
-VER=1.0.0-preview.14
+VER=1.0.0-preview.15
 NATIVE="${OHOS_NDK:-}"
 if [ -z "$NATIVE" ]; then
     ROOT="${OHOS_SDK:-$HOME/.harmonybrew/Cellar/ohos-sdk/26.0.0.18_2}"
