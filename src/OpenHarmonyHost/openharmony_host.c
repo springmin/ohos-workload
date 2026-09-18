@@ -569,6 +569,91 @@ int ohos_host_location_get(double* latitude, double* longitude, double* altitude
 static InputMethod_TextEditorProxy* g_editor_proxy = NULL;
 static InputMethod_InputMethodProxy* g_inputmethod_proxy = NULL;
 
+// IME text callback buffer: the host tracks what the keyboard typed so insert/delete can be
+// forwarded to the managed bridge as whole-text updates (the existing TextInput contract).
+static char g_ime_text[4096] = {0};
+
+static void ImeForwardText(void) {
+    if (g_app != NULL && g_app->bridge_text_input != NULL) {
+        g_app->bridge_text_input(g_ime_text);
+    }
+}
+
+static void ImeAppendUtf8(const char* utf8) {
+    size_t used = strlen(g_ime_text);
+    size_t incoming = strlen(utf8);
+    if (used + incoming >= sizeof(g_ime_text)) {
+        return;
+    }
+    memcpy(g_ime_text + used, utf8, incoming);
+    g_ime_text[used + incoming] = '\0';
+}
+
+static void ImeDeleteBackward(int32_t length) {
+    for (int32_t i = 0; i < length; i++) {
+        size_t used = strlen(g_ime_text);
+        if (used > 0) {
+            /* Back off one UTF-8 sequence. */
+            size_t cut = used - 1;
+            while (cut > 0 && (g_ime_text[cut] & 0xC0) == 0x80) {
+                cut--;
+            }
+            g_ime_text[cut] = '\0';
+        }
+    }
+}
+
+static void OnImeInsertText(InputMethod_TextEditorProxy* proxy, const char16_t* text, size_t length) {
+    (void)proxy;
+    if (text == NULL || length == 0) {
+        return;
+    }
+    /* UTF-16 -> UTF-8 (BMP only; surrogate pairs are passed through as two characters). */
+    char utf8[1024];
+    size_t out = 0;
+    for (size_t i = 0; i < length && out + 4 < sizeof(utf8); i++) {
+        uint32_t c = (uint32_t)text[i];
+        if (c < 0x80) {
+            utf8[out++] = (char)c;
+        } else if (c < 0x800) {
+            utf8[out++] = (char)(0xC0 | (c >> 6));
+            utf8[out++] = (char)(0x80 | (c & 0x3F));
+        } else {
+            utf8[out++] = (char)(0xE0 | (c >> 12));
+            utf8[out++] = (char)(0x80 | ((c >> 6) & 0x3F));
+            utf8[out++] = (char)(0x80 | (c & 0x3F));
+        }
+    }
+    utf8[out] = '\0';
+    ImeAppendUtf8(utf8);
+    ImeForwardText();
+}
+
+static void OnImeDeleteForward(InputMethod_TextEditorProxy* proxy, int32_t length) {
+    (void)proxy;
+    (void)length;
+    /* Forward deletion at the end of the buffer is a no-op for our single-caret model. */
+}
+
+static void OnImeDeleteBackward(InputMethod_TextEditorProxy* proxy, int32_t length) {
+    (void)proxy;
+    ImeDeleteBackward(length);
+    ImeForwardText();
+}
+
+static void OnImeGetTextConfig(InputMethod_TextEditorProxy* proxy, InputMethod_TextConfig* config) {
+    (void)proxy;
+    (void)config;
+}
+
+void ohos_host_keyboard_set_text(const char* utf8) {
+    g_ime_text[0] = '\0';
+    if (utf8 != NULL) {
+        strncpy(g_ime_text, utf8, sizeof(g_ime_text) - 1);
+        g_ime_text[sizeof(g_ime_text) - 1] = '\0';
+    }
+}
+
 static int EnsureInputMethod(void) {
     if (g_inputmethod_proxy != NULL) {
         return 0;
@@ -578,6 +663,10 @@ static int EnsureInputMethod(void) {
         if (g_editor_proxy == NULL) {
             return -1;
         }
+        OH_TextEditorProxy_SetInsertTextFunc(g_editor_proxy, OnImeInsertText);
+        OH_TextEditorProxy_SetDeleteForwardFunc(g_editor_proxy, OnImeDeleteForward);
+        OH_TextEditorProxy_SetDeleteBackwardFunc(g_editor_proxy, OnImeDeleteBackward);
+        OH_TextEditorProxy_SetGetTextConfigFunc(g_editor_proxy, OnImeGetTextConfig);
     }
     InputMethod_AttachOptions* options = OH_AttachOptions_Create(false);
     if (options == NULL) {

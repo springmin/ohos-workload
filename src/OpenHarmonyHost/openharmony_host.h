@@ -64,6 +64,8 @@ int ohos_host_network_access(void);
 
 /// Soft keyboard through the input-method NDK (attach + show/hide).
 int ohos_host_keyboard_show(void);
+/// Seeds the IME buffer with the focused editor's current text.
+void ohos_host_keyboard_set_text(const char* utf8);
 int ohos_host_keyboard_hide(void);
 
 /// Custom fonts: loads a typeface from a font file used by all text drawing/measuring (an empty

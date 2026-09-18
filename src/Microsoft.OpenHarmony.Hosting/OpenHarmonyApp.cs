@@ -128,6 +128,9 @@ public static class OpenHarmonyBridge
     [DllImport(HostLibrary, EntryPoint = "ohos_host_keyboard_hide")]
     private static extern int KeyboardHideNative();
 
+    [DllImport(HostLibrary, EntryPoint = "ohos_host_keyboard_set_text", CharSet = CharSet.Ansi)]
+    private static extern void KeyboardSetTextNative(string text);
+
     [DllImport(HostLibrary, EntryPoint = "ohos_host_request_vibration")]
     private static extern void RequestVibrationNative(int durationMs);
 
@@ -300,6 +303,19 @@ public static class OpenHarmonyBridge
         catch
         {
             return 0;
+        }
+    }
+
+    /// <summary>Seeds the IME buffer with the focused editor's text so backspace works.</summary>
+    public static void SetKeyboardText(string? text)
+    {
+        try
+        {
+            KeyboardSetTextNative(text ?? string.Empty);
+        }
+        catch
+        {
+            // Optional: only meaningful with the native input method.
         }
     }
 
