@@ -155,6 +155,7 @@ void OnKeystoreRequest(int requestId, const char* op, const char* alias, const c
 
 // ArkTS calls host.registerKeystoreSink(fn) to receive keystore requests.
 napi_ref g_picker_sink_ref = nullptr;
+napi_ref g_web_sink_ref = nullptr;
 
 void OnPickerRequest(int requestId, int kind) {
     if (g_env == nullptr || g_picker_sink_ref == nullptr) {
@@ -171,6 +172,59 @@ void OnPickerRequest(int requestId, int kind) {
     napi_create_int32(g_env, kind, &argv[1]);
     napi_value result = nullptr;
     napi_call_function(g_env, global, sink, 2, argv, &result);
+}
+
+void OnWebCommand(const char* op, const char* arg) {
+    if (g_env == nullptr || g_web_sink_ref == nullptr) {
+        return;
+    }
+    napi_value sink = nullptr;
+    if (napi_get_reference_value(g_env, g_web_sink_ref, &sink) != napi_ok || sink == nullptr) {
+        return;
+    }
+    napi_value global = nullptr;
+    napi_get_global(g_env, &global);
+    napi_value argv[2] = {nullptr, nullptr};
+    napi_create_string_utf8(g_env, op, NAPI_AUTO_LENGTH, &argv[0]);
+    napi_create_string_utf8(g_env, arg, NAPI_AUTO_LENGTH, &argv[1]);
+    napi_value result = nullptr;
+    napi_call_function(g_env, global, sink, 2, argv, &result);
+}
+
+// ArkTS calls host.registerWebSink(fn) to receive web commands.
+napi_value RegisterWebSink(napi_env env, napi_callback_info info) {
+    size_t argc = 1;
+    napi_value argv[1] = {nullptr};
+    napi_get_cb_info(env, info, &argc, argv, nullptr, nullptr);
+    if (argc >= 1) {
+        napi_valuetype type = napi_undefined;
+        napi_typeof(env, argv[0], &type);
+        if (type == napi_function) {
+            if (g_web_sink_ref != nullptr) {
+                napi_delete_reference(env, g_web_sink_ref);
+            }
+            napi_create_reference(env, argv[0], 1, &g_web_sink_ref);
+            ohos_host_web_set_listener(OnWebCommand);
+        }
+    }
+    napi_value undefined = nullptr;
+    napi_get_undefined(env, &undefined);
+    return undefined;
+}
+
+// ArkTS calls host.notifyWebEvent(state, url).
+napi_value NotifyWebEvent(napi_env env, napi_callback_info info) {
+    size_t argc = 2;
+    napi_value argv[2] = {nullptr, nullptr};
+    napi_get_cb_info(env, info, &argc, argv, nullptr, nullptr);
+    std::string state;
+    std::string url;
+    if (argc >= 1) state = GetStringArg(env, argv[0]);
+    if (argc >= 2) url = GetStringArg(env, argv[1]);
+    ohos_host_web_notify_event(state.c_str(), url.c_str());
+    napi_value undefined = nullptr;
+    napi_get_undefined(env, &undefined);
+    return undefined;
 }
 
 // ArkTS calls host.registerPickerSink(fn) to receive picker requests.
@@ -527,6 +581,8 @@ napi_value Init(napi_env env, napi_value exports) {
         {"registerKeystoreSink", nullptr, RegisterKeystoreSink, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"registerVibrationSink", nullptr, RegisterVibrationSink, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"registerPickerSink", nullptr, RegisterPickerSink, nullptr, nullptr, nullptr, napi_default, nullptr},
+        {"registerWebSink", nullptr, RegisterWebSink, nullptr, nullptr, nullptr, napi_default, nullptr},
+        {"notifyWebEvent", nullptr, NotifyWebEvent, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"notifyPickerResult", nullptr, NotifyPickerResult, nullptr, nullptr, nullptr, napi_default, nullptr},
 
         {"notifyKeystoreResult", nullptr, NotifyKeystoreResult, nullptr, nullptr, nullptr, napi_default, nullptr},

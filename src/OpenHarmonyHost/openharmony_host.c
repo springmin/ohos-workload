@@ -224,6 +224,7 @@ struct OhosHostAppHandle {
     void (*bridge_text_submitted)(void);
     void (*bridge_keystore_result)(int request_id, int rc, const char* data_base64);
     void (*bridge_picker_result)(int request_id, int rc, const char* name, const char* data_base64);
+    void (*bridge_web_event)(const char* state, const char* url);
     void* surface_window;
     int surface_width;
     int surface_height;
@@ -681,6 +682,34 @@ static int EnsureInputMethod(void) {
         return (int)rc;
     }
     return 0;
+}
+
+// ---------------------------------------------------------------------------
+// WebView: the shell owns a hidden ArkWeb component; commands drive it and page events come back.
+// ---------------------------------------------------------------------------
+
+static void (*g_web_listener)(const char* op, const char* arg) = NULL;
+
+void ohos_host_web_set_listener(void (*listener)(const char*, const char*)) {
+    g_web_listener = listener;
+}
+
+void ohos_host_web_register_event(void* callback) {
+    if (g_app != NULL) {
+        g_app->bridge_web_event = (void (*)(const char*, const char*))callback;
+    }
+}
+
+void ohos_host_web_command(const char* op, const char* arg) {
+    if (g_web_listener != NULL) {
+        g_web_listener(op != NULL ? op : "", arg != NULL ? arg : "");
+    }
+}
+
+void ohos_host_web_notify_event(const char* state, const char* url) {
+    if (g_app != NULL && g_app->bridge_web_event != NULL) {
+        g_app->bridge_web_event(state != NULL ? state : "", url != NULL ? url : "");
+    }
 }
 
 // ---------------------------------------------------------------------------

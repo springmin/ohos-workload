@@ -13,6 +13,7 @@ import host from 'libopenharmonyhost.so';
 import picker from '@ohos.file.picker';
 import fs from '@ohos.file.fs';
 import util from '@ohos.util';
+import web_webview from '@ohos.web.webview';
 
 @Entry
 @Component
@@ -20,6 +21,8 @@ struct Index {
   private content: NodeContent = new NodeContent();
 
   @State inputText: string = '';
+  @State webVisible: boolean = false;
+  private webController: web_webview.WebviewController = new web_webview.WebviewController();
   private controller: TextInputController = new TextInputController();
 
   aboutToAppear(): void {
@@ -37,6 +40,29 @@ struct Index {
     // buildOption.strictMode { caseSensitiveCheck: true, useNormalizedOHMUrl: true } - the
     // strictMode block is now emitted, the numeric-version + matching staged SDK layout is the
     // next candidate. Verified snippet lives in the ArkTS Essentials plan.
+    // WebView: a hidden ArkWeb component that the managed WebView handler drives.
+    host.registerWebSink((op: string, arg: string) => {
+      try {
+        if (op === 'show') {
+          this.webVisible = true;
+        } else if (op === 'hide') {
+          this.webVisible = false;
+        } else if (op === 'load') {
+          this.webVisible = true;
+          this.webController.loadUrl(arg);
+        } else if (op === 'data') {
+          this.webVisible = true;
+          this.webController.loadData(arg, 'text/html', 'UTF-8');
+        } else if (op === 'back') {
+          if (this.webController.accessBackward()) {
+            this.webController.backward();
+          }
+        }
+      } catch (error) {
+        // Web errors never take the app down.
+      }
+    });
+
     // File/media pickers: the managed side asks for the system picker; the chosen file's name
     // and bytes travel back as base64 (all kinds use the document picker, so the shell needs no
     // extra UI component).
@@ -88,6 +114,16 @@ struct Index {
 
   build() {
     Stack() {
+      // ArkWeb: hidden until the managed WebView asks for it.
+      Web({ src: '', controller: this.webController })
+        .visibility(this.webVisible ? Visibility.Visible : Visibility.None)
+        .onPageBegin((event) => {
+          host.notifyWebEvent('started', event ? event.url : '');
+        })
+        .onPageEnd((event) => {
+          host.notifyWebEvent('finished', event ? event.url : '');
+        })
+
       // Text entry bridge: the managed Entry reads what is typed here.
       TextInput({ text: this.inputText, placeholder: 'type here', controller: this.controller })
         .id('ohos_dotnet_input')

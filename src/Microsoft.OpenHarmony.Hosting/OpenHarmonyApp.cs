@@ -125,6 +125,12 @@ public static class OpenHarmonyBridge
     [DllImport(HostLibrary, EntryPoint = "ohos_host_picker_request")]
     private static extern void RequestPickerNative(int requestId, int kind);
 
+    [DllImport(HostLibrary, EntryPoint = "ohos_host_web_command", CharSet = CharSet.Ansi)]
+    private static extern void WebCommandNative(string op, string arg);
+
+    [DllImport(HostLibrary, EntryPoint = "ohos_host_web_register_event")]
+    private static extern void RegisterWebEventNative(IntPtr callback);
+
     [DllImport(HostLibrary, EntryPoint = "ohos_host_request_text_input")]
     private static extern void RequestTextInputNative(int show);
 
@@ -170,6 +176,7 @@ public static class OpenHarmonyBridge
     private delegate void NativeTextSubmittedDelegate();
     private delegate void NativeKeystoreResultDelegate(int requestId, int rc, IntPtr dataUtf8);
     private delegate void NativePickerResultDelegate(int requestId, int rc, IntPtr nameUtf8, IntPtr dataUtf8);
+    private delegate void NativeWebEventDelegate(IntPtr stateUtf8, IntPtr urlUtf8);
 
     private static readonly object s_sync = new();
     private static OpenHarmonyAppContext? s_context;
@@ -184,6 +191,7 @@ public static class OpenHarmonyBridge
     private static NativeTextSubmittedDelegate? s_textSubmittedThunk;
     private static NativeKeystoreResultDelegate? s_keystoreResultThunk;
     private static NativePickerResultDelegate? s_pickerResultThunk;
+    private static NativeWebEventDelegate? s_webEventThunk;
     private static readonly List<OpenHarmonyLifecycleEvent> s_pending = new();
     private static Action<OpenHarmonySurfaceInfo>? s_surfaceHandlers;
     private static Action<OpenHarmonyTouchEventArgs>? s_touchHandlers;
@@ -250,6 +258,24 @@ public static class OpenHarmonyBridge
         add { lock (s_sync) { s_textInputHandlers += value; } }
         remove { lock (s_sync) { s_textInputHandlers -= value; } }
     }
+
+    /// <summary>Sends a WebView command to the shell's ArkWeb component (show/hide/load/eval/back).</summary>
+    public static void WebCommand(string op, string? arg = null)
+    {
+        try
+        {
+            WebCommandNative(op, arg ?? string.Empty);
+        }
+        catch
+        {
+            // No native host (tests): the command is a no-op.
+        }
+    }
+
+    /// <summary>Raised for ArkWeb page events (state, url).</summary>
+    public static event Action<string, string>? WebEvent;
+
+    public static void CompleteWebEvent(string state, string url) => WebEvent?.Invoke(state, url);
 
     /// <summary>Asks the shell to open the system picker (kind: 0 files, 1 photos, 2 videos).</summary>
     public static void RequestPicker(int requestId, int kind)
@@ -640,6 +666,8 @@ public static class OpenHarmonyBridge
                 RegisterKeystoreResultNative(Marshal.GetFunctionPointerForDelegate(s_keystoreResultThunk));
                 s_pickerResultThunk = OnPickerResultNative;
                 RegisterPickerResultNative(Marshal.GetFunctionPointerForDelegate(s_pickerResultThunk));
+                s_webEventThunk = OnWebEventNative;
+                RegisterWebEventNative(Marshal.GetFunctionPointerForDelegate(s_webEventThunk));
             }
             catch (Exception ex)
             {
@@ -699,6 +727,13 @@ public static class OpenHarmonyBridge
             handlers = s_textInputHandlers;
         }
         handlers?.Invoke(text);
+    }
+
+    private static void OnWebEventNative(IntPtr stateUtf8, IntPtr urlUtf8)
+    {
+        string state = stateUtf8 == IntPtr.Zero ? string.Empty : Marshal.PtrToStringUTF8(stateUtf8) ?? string.Empty;
+        string url = urlUtf8 == IntPtr.Zero ? string.Empty : Marshal.PtrToStringUTF8(urlUtf8) ?? string.Empty;
+        CompleteWebEvent(state, url);
     }
 
     private static void OnPickerResultNative(int requestId, int rc, IntPtr nameUtf8, IntPtr dataUtf8)

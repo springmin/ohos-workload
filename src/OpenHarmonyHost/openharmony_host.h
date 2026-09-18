@@ -62,6 +62,13 @@ int ohos_host_vibrate(int duration_ms);
 /// Essentials over the NDK: network access (0 unknown, 1 none, 2 local, 3 internet).
 int ohos_host_network_access(void);
 
+/// WebView: commands (op: show/hide/load/eval/back) go to the shell's ArkWeb component, page
+/// events come back through ohos_host_web_register_event.
+void ohos_host_web_set_listener(void (*listener)(const char* op, const char* arg));
+void ohos_host_web_register_event(void* callback);
+void ohos_host_web_command(const char* op, const char* arg);
+void ohos_host_web_notify_event(const char* state, const char* url);
+
 /// Pickers: the managed side asks the ArkTS shell to open the system picker (kind: 0 file,
 /// 1 photo, 2 video) and receives the chosen file's name plus base64 content.
 void ohos_host_picker_set_listener(void (*listener)(int request_id, int kind));
