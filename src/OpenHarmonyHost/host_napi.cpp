@@ -946,3 +946,25 @@ napi_value AccessibilityStatus(napi_env env, napi_callback_info info) {
     napi_create_int32(env, g_a11y_status, &result);
     return result;
 }
+
+
+// Managed side hooks: register the action listener and push accessibility events.
+extern "C" void ohos_host_accessibility_set_action_listener(void* callback) {
+    g_a11y_action_listener = (void (*)(int, int))callback;
+}
+
+extern "C" int ohos_host_accessibility_send_event(int eventType) {
+    if (g_a11y_provider == nullptr || eventType == 0) {
+        return 0;
+    }
+    ArkUI_AccessibilityEventInfo* event = OH_ArkUI_CreateAccessibilityEventInfo();
+    if (event == nullptr) {
+        return 0;
+    }
+    if (OH_ArkUI_AccessibilityEventSetEventType(event, (ArkUI_AccessibilityEventType)eventType) != 0) {
+        OH_ArkUI_DestoryAccessibilityEventInfo(event);
+        return 0;
+    }
+    OH_ArkUI_SendAccessibilityAsyncEvent(g_a11y_provider, event, nullptr);
+    return 1;
+}
