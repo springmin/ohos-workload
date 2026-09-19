@@ -583,6 +583,29 @@ napi_value NotifyAvoidArea(napi_env env, napi_callback_info info) {
     return undefined;
 }
 
+// ArkTS calls host.notifyTheme(isDark) when the device colour mode changes (1 = dark, 0 = light).
+static void (*g_theme_listener)(int isDark) = nullptr;
+
+extern "C" void ohos_host_theme_set_listener(void* callback) {
+    g_theme_listener = (void (*)(int))callback;
+}
+
+napi_value NotifyTheme(napi_env env, napi_callback_info info) {
+    size_t argc = 1;
+    napi_value argv[1] = {nullptr};
+    napi_get_cb_info(env, info, &argc, argv, nullptr, nullptr);
+    int32_t isDark = 0;
+    if (argc >= 1) {
+        napi_get_value_int32(env, argv[0], &isDark);
+    }
+    if (g_theme_listener != nullptr) {
+        g_theme_listener(isDark != 0 ? 1 : 0);
+    }
+    napi_value undefined = nullptr;
+    napi_get_undefined(env, &undefined);
+    return undefined;
+}
+
 // ArkTS calls host.notifyWebEvent(state, url).
 napi_value NotifyWebEvent(napi_env env, napi_callback_info info) {
     size_t argc = 2;
@@ -977,6 +1000,7 @@ napi_value Init(napi_env env, napi_value exports) {
         {"registerWebSink", nullptr, RegisterWebSink, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"notifyWebEvent", nullptr, NotifyWebEvent, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"notifyAvoidArea", nullptr, NotifyAvoidArea, nullptr, nullptr, nullptr, napi_default, nullptr},
+        {"notifyTheme", nullptr, NotifyTheme, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"notifyPickerResult", nullptr, NotifyPickerResult, nullptr, nullptr, nullptr, napi_default, nullptr},
 
         {"notifyKeystoreResult", nullptr, NotifyKeystoreResult, nullptr, nullptr, nullptr, napi_default, nullptr},

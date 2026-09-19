@@ -303,6 +303,50 @@ var barometerDefault = Barometer.Default;
 var orientationDefault = OrientationSensor.Default;
 Console.WriteLine($"[verify] sensors extra magnetometer={magnetometerDefault.GetType().Name} compass={compassDefault.GetType().Name} barometer={barometerDefault.GetType().Name} orientation={orientationDefault.GetType().Name} supported={magnetometerDefault.IsSupported}");
 
+// Gap 2: haptic feedback over the host's NDK vibration export (ohos_host_vibrate ->
+// OH_Vibrator_PlayVibration). Desktop builds have no libopenharmonyhost.so, so IsSupported
+// must answer false and Perform(Click/LongPress) must degrade without throwing.
+var hapticsDefault = HapticFeedback.Default;
+Console.WriteLine($"[verify] haptics default is OpenHarmony={hapticsDefault is OpenHarmonyHapticFeedback} ({hapticsDefault.GetType().Name})");
+bool hapticClickReturned = false;
+bool hapticLongPressReturned = false;
+try
+{
+    hapticsDefault.Perform(HapticFeedbackType.Click);
+    hapticClickReturned = true;
+    hapticsDefault.Perform(HapticFeedbackType.LongPress);
+    hapticLongPressReturned = true;
+}
+catch (Exception ex)
+{
+    Console.WriteLine($"[verify] haptics perform threw {ex.GetType().Name}: {ex.Message}");
+}
+Console.WriteLine($"[verify] haptics Perform(Click/LongPress) degraded without throwing={hapticClickReturned}/{hapticLongPressReturned}");
+Console.WriteLine($"[verify] haptics IsSupported={hapticsDefault.IsSupported} static={HapticFeedback.IsSupported} (false without the host library)");
+
+// Gap 2: app theme following over the ArkUI colour-mode bridge (Index.ets Environment.envProp
+// 'colorMode' + @Watch -> host.notifyTheme -> ohos_host_theme_set_listener -> this handler).
+// Desktop has no host library, so Register() must be a guarded no-op; the managed handler is
+// then exercised directly (dark -> UserAppTheme/RequestedTheme Dark, light -> Light, restored).
+bool themeRegisterReturned = false;
+try
+{
+    OpenHarmonyTheme.Register();
+    themeRegisterReturned = true;
+}
+catch (Exception ex)
+{
+    Console.WriteLine($"[verify] theme register threw {ex.GetType().Name}: {ex.Message}");
+}
+var themeBefore = Application.Current!.UserAppTheme;
+OpenHarmonyTheme.OnPlatformThemeChanged(true);
+bool themeDark = Application.Current.UserAppTheme == AppTheme.Dark && Application.Current.RequestedTheme == AppTheme.Dark;
+OpenHarmonyTheme.OnPlatformThemeChanged(false);
+bool themeLight = Application.Current.UserAppTheme == AppTheme.Light && Application.Current.RequestedTheme == AppTheme.Light;
+Application.Current.UserAppTheme = themeBefore;
+Console.WriteLine($"[verify] theme register degraded without throwing={themeRegisterReturned} (no host library)");
+Console.WriteLine($"[verify] theme bridge dark={themeDark} light={themeLight} restored={Application.Current.UserAppTheme == themeBefore} last={OpenHarmonyTheme.LastIsDark}");
+
 // Gap 2: notification kit (the shell publishes on device; desktop degrades to false).
 Console.WriteLine($"[verify] notifications show(on desktop)={OpenHarmonyNotifications.Show("Title", "Text")}");
 

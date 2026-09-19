@@ -40,8 +40,26 @@ struct Index {
   @State inputText: string = '';
   @State webVisible: boolean = false;
   @State menuItems: HostMenuItem[] = [];
+  // App theme: 'colorMode' is an ArkUI environment property that the framework keeps in
+  // AppStorage and refreshes when the device switches between light and dark. The watch
+  // forwards every change to the managed side through host.notifyTheme(isDark).
+  @StorageProp('colorMode') @Watch('onColorModeChanged') colorMode: ColorMode = ColorMode.LIGHT;
   private webController: web_webview.WebviewController = new web_webview.WebviewController();
   private controller: TextInputController = new TextInputController();
+
+  // Forwards the current device colour mode (1 = dark, 0 = light) to the managed app.
+  private reportTheme(): void {
+    try {
+      const mode: ColorMode | undefined = AppStorage.get<ColorMode>('colorMode');
+      host.notifyTheme(mode === ColorMode.DARK ? 1 : 0);
+    } catch (themeError) {
+      // A host library without the theme export leaves the managed default in place.
+    }
+  }
+
+  private onColorModeChanged(): void {
+    this.reportTheme();
+  }
 
   // Reads the host's current menu table into @State (empty when the sink is unavailable).
   private pullMenu(): void {
@@ -80,6 +98,11 @@ struct Index {
     // 2 = foreground; the native host forwards it to the managed bridge.
     host.notifyLifecycle(2);
     host.setNodeContent(this.content);
+    // App theme: bind the device colour mode into AppStorage (idempotent; the recommended
+    // startup point is the first page's aboutToAppear in this shell) and report the initial
+    // light/dark state to the managed side. Later changes arrive through onColorModeChanged.
+    Environment.envProp<ColorMode>('colorMode', ColorMode.LIGHT);
+    this.reportTheme();
     // Essentials (vibration/permissions/geolocation/pickers/connectivity/launcher) need the
     // matching SDK kits, which are not part of this minimal shell project's compilation set yet
     // (see docs/plans/2026-09-18-ohos-arkts-essentials-bridge-plan.md). The sinks stay
