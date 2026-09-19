@@ -20,6 +20,7 @@ static int AttachAccessibilityValue(napi_env env, napi_value value);
 napi_value AccessibilityStatus(napi_env env, napi_callback_info info);
 
 #include <string>
+#include <vector>
 
 #include "openharmony_host.h"
 
@@ -368,6 +369,142 @@ napi_value RegisterAbilitySink(napi_env env, napi_callback_info info) {
             napi_create_reference(env, argv[0], 1, &g_ability_sink_ref);
             OH_LOG_INFO(LOG_APP, "[openharmony-host] ability sink registered");
         }
+    }
+    napi_value undefined = nullptr;
+    napi_get_undefined(env, &undefined);
+    return undefined;
+}
+
+// Menus: the managed side publishes the current page's menu items as a flat table
+// (ohos_host_menu_begin/item/commit). The ArkTS shell pulls it back through menuCount/menuItem
+// after registerMenuChangedSink fires (count, also sent for an empty table so the menu hides),
+// and reports a tap with host.notifyMenuAction(index) -> the managed activation callback.
+// The table carries text/enabled only: nested MenuFlyoutSubItems are flattened by the managed
+// publisher, which drops the depth information because this table has no column for it.
+struct HostMenuItem {
+    std::string text;
+    bool enabled;
+};
+
+static std::vector<HostMenuItem> g_menu_items;
+static napi_ref g_menu_changed_sink_ref = nullptr;
+static void (*g_menu_action_listener)(int index) = nullptr;
+
+// ArkTS calls host.menuCount() to size its @State array.
+napi_value MenuCount(napi_env env, napi_callback_info info) {
+    (void)info;
+    napi_value result = nullptr;
+    napi_create_int32(env, (int32_t)g_menu_items.size(), &result);
+    return result;
+}
+
+// ArkTS calls host.menuItem(index) and receives { text, enabled } (undefined out of range).
+napi_value MenuGetItem(napi_env env, napi_callback_info info) {
+    size_t argc = 1;
+    napi_value argv[1] = {nullptr};
+    napi_get_cb_info(env, info, &argc, argv, nullptr, nullptr);
+    int32_t index = -1;
+    if (argc >= 1) {
+        napi_get_value_int32(env, argv[0], &index);
+    }
+    if (index < 0 || (size_t)index >= g_menu_items.size()) {
+        napi_value undefined = nullptr;
+        napi_get_undefined(env, &undefined);
+        return undefined;
+    }
+    const HostMenuItem& item = g_menu_items[(size_t)index];
+    napi_value object = nullptr;
+    napi_create_object(env, &object);
+    napi_value text = nullptr;
+    napi_create_string_utf8(env, item.text.c_str(), NAPI_AUTO_LENGTH, &text);
+    napi_set_named_property(env, object, "text", text);
+    napi_value enabled = nullptr;
+    napi_get_boolean(env, item.enabled, &enabled);
+    napi_set_named_property(env, object, "enabled", enabled);
+    return object;
+}
+
+// Asks the shell to rebuild its menu state from the table just committed.
+static void NotifyMenuChanged() {
+    if (g_env == nullptr || g_menu_changed_sink_ref == nullptr) {
+        return;
+    }
+    napi_value sink = nullptr;
+    if (napi_get_reference_value(g_env, g_menu_changed_sink_ref, &sink) != napi_ok || sink == nullptr) {
+        return;
+    }
+    napi_value argv[1] = {nullptr};
+    napi_create_int32(g_env, (int32_t)g_menu_items.size(), &argv[0]);
+    napi_value result = nullptr;
+    napi_call_function(g_env, sink, sink, 1, argv, &result);
+}
+
+// Managed P/Invoke: opens a new menu table (drops the previous one).
+extern "C" int ohos_host_menu_begin(int count) {
+    g_menu_items.clear();
+    if (count > 0) {
+        g_menu_items.reserve((size_t)count);
+    }
+    return 0;
+}
+
+// Managed P/Invoke: sets one row; index is the row position published back to the shell.
+extern "C" int ohos_host_menu_item(int index, const char* text, int enabled) {
+    if (index < 0) {
+        return -1;
+    }
+    size_t position = (size_t)index;
+    if (position >= g_menu_items.size()) {
+        g_menu_items.resize(position + 1);
+    }
+    g_menu_items[position].text = text != nullptr ? text : "";
+    g_menu_items[position].enabled = enabled != 0;
+    return 0;
+}
+
+// Managed P/Invoke: publishes the table and reports the new count.
+extern "C" int ohos_host_menu_commit(void) {
+    NotifyMenuChanged();
+    return (int)g_menu_items.size();
+}
+
+// Managed P/Invoke: registers the callback invoked by host.notifyMenuAction(index).
+extern "C" void ohos_host_menu_set_listener(void* callback) {
+    g_menu_action_listener = (void (*)(int))callback;
+}
+
+// ArkTS calls host.registerMenuChangedSink(fn) to be told when the table changed.
+napi_value RegisterMenuChangedSink(napi_env env, napi_callback_info info) {
+    size_t argc = 1;
+    napi_value argv[1] = {nullptr};
+    napi_get_cb_info(env, info, &argc, argv, nullptr, nullptr);
+    if (argc >= 1) {
+        napi_valuetype type = napi_undefined;
+        napi_typeof(env, argv[0], &type);
+        if (type == napi_function) {
+            if (g_menu_changed_sink_ref != nullptr) {
+                napi_delete_reference(env, g_menu_changed_sink_ref);
+            }
+            napi_create_reference(env, argv[0], 1, &g_menu_changed_sink_ref);
+            OH_LOG_INFO(LOG_APP, "[openharmony-host] menu sink registered");
+        }
+    }
+    napi_value undefined = nullptr;
+    napi_get_undefined(env, &undefined);
+    return undefined;
+}
+
+// ArkTS calls host.notifyMenuAction(index) when a menu row is tapped.
+napi_value NotifyMenuAction(napi_env env, napi_callback_info info) {
+    size_t argc = 1;
+    napi_value argv[1] = {nullptr};
+    napi_get_cb_info(env, info, &argc, argv, nullptr, nullptr);
+    int32_t index = -1;
+    if (argc >= 1) {
+        napi_get_value_int32(env, argv[0], &index);
+    }
+    if (index >= 0 && g_menu_action_listener != nullptr) {
+        g_menu_action_listener((int)index);
     }
     napi_value undefined = nullptr;
     napi_get_undefined(env, &undefined);
@@ -823,6 +960,10 @@ napi_value Init(napi_env env, napi_value exports) {
         {"notifyTtsResult", nullptr, NotifyTtsResult, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"registerAbilitySink", nullptr, RegisterAbilitySink, nullptr, nullptr, nullptr, napi_default, nullptr},
 
+        {"registerMenuChangedSink", nullptr, RegisterMenuChangedSink, nullptr, nullptr, nullptr, napi_default, nullptr},
+        {"menuCount", nullptr, MenuCount, nullptr, nullptr, nullptr, napi_default, nullptr},
+        {"menuItem", nullptr, MenuGetItem, nullptr, nullptr, nullptr, napi_default, nullptr},
+        {"notifyMenuAction", nullptr, NotifyMenuAction, nullptr, nullptr, nullptr, napi_default, nullptr},
 
         {"notifyPinch", nullptr, NotifyPinch, nullptr, nullptr, nullptr, napi_default, nullptr},
 

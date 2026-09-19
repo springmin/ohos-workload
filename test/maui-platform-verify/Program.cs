@@ -893,6 +893,65 @@ if (entry is not null)
     Console.WriteLine($"[verify] selection drag cursor={entryView.CursorPosition} length={entryView.SelectionLength} virtual=({entry.CursorPosition},{entry.SelectionLength}) text='{entry.Text}'");
 }
 
+// Menus: the current page's MenuBarItems are published as a flat host table (begin/item/commit)
+// and a shell tap (host.notifyMenuAction -> internal OnMenuAction) activates the source item
+// through IMenuItemController. MenuFlyoutSubItems are flattened and MenuFlyoutSeparators are
+// skipped; an item is enabled only when its bar is enabled too.
+int menuClicks = 0;
+int menuCommands = 0;
+int menuDisabledClicks = 0;
+var menuPage = new ContentPage { Title = "Menu page", Content = new Label { Text = "menu page" } };
+var menuFileBar = new MenuBarItem { Text = "File" };
+var menuNew = new MenuFlyoutItem { Text = "New", Command = new Command(() => menuCommands++) };
+var menuOpen = new MenuFlyoutItem { Text = "Open" };
+menuOpen.Clicked += (_, _) => menuClicks++;
+menuFileBar.Add(menuNew);
+menuFileBar.Add(new MenuFlyoutSeparator());
+menuFileBar.Add(menuOpen);
+var menuExport = new MenuFlyoutSubItem { Text = "Export" };
+menuExport.Add(new MenuFlyoutItem { Text = "PDF" });
+menuExport.Add(new MenuFlyoutItem { Text = "PNG", IsEnabled = false });
+menuFileBar.Add(menuExport);
+menuPage.MenuBarItems.Add(menuFileBar);
+var menuEditBar = new MenuBarItem { Text = "Edit", IsEnabled = false };
+var menuUndo = new MenuFlyoutItem { Text = "Undo" };
+menuUndo.Clicked += (_, _) => menuDisabledClicks++;
+menuEditBar.Add(menuUndo);
+menuPage.MenuBarItems.Add(menuEditBar);
+
+bool menuPublished = OpenHarmonyMenus.Refresh(menuPage);
+Console.WriteLine($"[verify] menus table count={OpenHarmonyMenus.Items.Count} order=[{string.Join("|", OpenHarmonyMenus.Items.Select(m => $"{m.Index}:{m.Text}"))}] nativePublished={menuPublished} (no host library off-device)");
+Console.WriteLine($"[verify] menus enabled=[{string.Join(",", OpenHarmonyMenus.Items.Select(m => m.IsEnabled ? "on" : "off"))}] depth=[{string.Join(",", OpenHarmonyMenus.Items.Select(m => m.Depth))}]");
+Console.WriteLine($"[verify] menus publish intent wouldPublish={OpenHarmonyMenus.WouldPublish} lastPublished={OpenHarmonyMenus.LastPublishedCount} available={OpenHarmonyMenus.IsAvailable} (no host library off-device)");
+bool menuActivated = OpenHarmonyMenus.OnMenuAction(0);
+bool menuCommandActivated = OpenHarmonyMenus.OnMenuAction(1);
+bool menuDisabledActivated = OpenHarmonyMenus.OnMenuAction(4);
+Console.WriteLine($"[verify] menus activate click={menuActivated}/{menuClicks} command={menuCommandActivated}/{menuCommands} disabledBlocked={!menuDisabledActivated && menuDisabledClicks == 0}");
+
+// An unchanged table is not republished; a different page replaces it (page-change sync).
+int menuSkips = OpenHarmonyMenus.RefreshesSkipped;
+bool menuRepublished = OpenHarmonyMenus.Refresh(menuPage);
+var menuSecondPage = new ContentPage { Title = "Second", Content = new Label { Text = "second" } };
+var menuViewBar = new MenuBarItem { Text = "View" };
+var menuZoom = new MenuFlyoutItem { Text = "Zoom" };
+menuZoom.Clicked += (_, _) => menuClicks++;
+menuViewBar.Add(menuZoom);
+menuSecondPage.MenuBarItems.Add(menuViewBar);
+OpenHarmonyMenus.Refresh(menuSecondPage);
+bool menuTableReplaced = OpenHarmonyMenus.Items.Count == 1 && OpenHarmonyMenus.Items[0].Text == "Zoom";
+Console.WriteLine($"[verify] menus unchanged skip={!menuRepublished && OpenHarmonyMenus.RefreshesSkipped == menuSkips + 1} pageChangeReplaced={menuTableReplaced} count={OpenHarmonyMenus.Items.Count} text='{OpenHarmonyMenus.Items.FirstOrDefault()?.Text}'");
+
+// Automatic page-change sync: a menu added to the host window's current page is picked up by
+// the next platform redraw (the event navigation handlers raise on push/pop), no explicit call.
+if (navRoot.CurrentPage is ContentPage livePage)
+{
+    var liveBar = new MenuBarItem { Text = "Live" };
+    liveBar.Add(new MenuFlyoutItem { Text = "Live action" });
+    livePage.MenuBarItems.Add(liveBar);
+    Microsoft.OpenHarmony.Hosting.OpenHarmonyBridge.RequestRedraw();
+    Console.WriteLine($"[verify] menus auto sync on redraw={OpenHarmonyMenus.Items.Any(m => m.Text == "Live action")} count={OpenHarmonyMenus.Items.Count}");
+}
+
 sealed class ProbeDrawable : Microsoft.Maui.Graphics.IDrawable
 {
     public int DrawCalls { get; private set; }

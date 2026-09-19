@@ -22,6 +22,16 @@ import util from '@ohos.util';
 import web_webview from '@ohos.web.webview';
 import window from '@ohos.window';
 
+// Menu bridge: the managed side publishes the current page's menu bars (MenuBarItem/MenuFlyout)
+// as a flat table through the host. registerMenuChangedSink fires after every commit - including
+// the empty table that hides the menu - and the table is pulled back with menuCount/menuItem.
+// The rows are rendered by an ArkUI bindMenu below and a tap goes back to the managed item
+// through host.notifyMenuAction(index).
+interface HostMenuItem {
+  text: string;
+  enabled: boolean;
+}
+
 @Entry
 @Component
 struct Index {
@@ -29,8 +39,42 @@ struct Index {
 
   @State inputText: string = '';
   @State webVisible: boolean = false;
+  @State menuItems: HostMenuItem[] = [];
   private webController: web_webview.WebviewController = new web_webview.WebviewController();
   private controller: TextInputController = new TextInputController();
+
+  // Reads the host's current menu table into @State (empty when the sink is unavailable).
+  private pullMenu(): void {
+    try {
+      const count: number = host.menuCount() as number;
+      const items: HostMenuItem[] = [];
+      for (let i = 0; i < count; i++) {
+        items.push(host.menuItem(i) as HostMenuItem);
+      }
+      this.menuItems = items;
+    } catch (menuError) {
+      this.menuItems = [];
+    }
+  }
+
+  // Maps the table to ArkUI menu elements; the managed enabled flag is carried over so ArkUI
+  // greys out disabled rows and does not run their action.
+  private buildMenuElements(): MenuElement[] {
+    const elements: MenuElement[] = [];
+    for (let i = 0; i < this.menuItems.length; i++) {
+      const index: number = i;
+      const item: HostMenuItem = this.menuItems[i];
+      const element: MenuElement = {
+        value: item.text,
+        enabled: item.enabled,
+        action: (): void => {
+          host.notifyMenuAction(index);
+        }
+      };
+      elements.push(element);
+    }
+    return elements;
+  }
 
   aboutToAppear(): void {
     // 2 = foreground; the native host forwards it to the managed bridge.
@@ -203,6 +247,18 @@ struct Index {
         focusControl.requestFocus('ohos_dotnet_surface');
       }
     });
+
+    // Menus: pull the initial table, then refresh on every commit from the managed side.
+    // A host library without the menu exports degrades to no menu instead of failing the page.
+    try {
+      host.registerMenuChangedSink((count: number): void => {
+        console.info(`[maui] menu table changed: ${count} rows`);
+        this.pullMenu();
+      });
+      this.pullMenu();
+    } catch (menuError) {
+      this.menuItems = [];
+    }
   }
 
   build() {
@@ -244,6 +300,17 @@ struct Index {
         .height('100%')
 
       ContentSlot(this.content)
+
+      // Menu handle: only present while the managed page publishes menu bars. The ArkUI menu is
+      // bound to the flat element array; choosing a row calls host.notifyMenuAction(index).
+      if (this.menuItems.length > 0) {
+        Button('Menu')
+          .align(Alignment.TopEnd)
+          .margin({ top: 8, right: 8 })
+          .height(40)
+          .fontSize(18)
+          .bindMenu(this.buildMenuElements())
+      }
     }
     .width('100%')
     .height('100%')
