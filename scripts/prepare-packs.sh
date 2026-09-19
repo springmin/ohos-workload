@@ -94,3 +94,19 @@ s = open(rl, encoding='utf-8-sig').read().replace('runtimes/ohos-arm64/','runtim
 open(rl,'w',encoding='utf-8').write(s)
 PY
 echo "   laid out $BCL"
+
+
+echo "== 2/2 normalize the runtime pack deps.json (RID rename) =="
+python3 - "$BCL" <<'PY'
+import glob, os, sys
+root = sys.argv[1]
+count = 0
+for path in glob.glob(os.path.join(root, '**', '*.deps.json'), recursive=True):
+    with open(path, encoding='utf-8-sig') as handle:
+        text = handle.read()
+    if 'ohos-arm64' in text:
+        with open(path, 'w', encoding='utf-8') as handle:
+            handle.write(text.replace('ohos-arm64', 'openharmony-arm64'))
+        count += 1
+print(f"   rewrote {count} deps.json files under {root}")
+PY
