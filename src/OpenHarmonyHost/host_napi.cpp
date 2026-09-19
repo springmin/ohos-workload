@@ -157,6 +157,24 @@ void OnKeystoreRequest(int requestId, const char* op, const char* alias, const c
 napi_ref g_picker_sink_ref = nullptr;
 napi_ref g_notification_sink_ref = nullptr;
 
+extern "C" void OhosNotifyPinch(int phase, double scale, float x, float y);
+
+napi_value NotifyPinch(napi_env env, napi_callback_info info) {
+    size_t argc = 4;
+    napi_value argv[4];
+    napi_get_cb_info(env, info, &argc, argv, nullptr, nullptr);
+    int32_t phase = 0;
+    double scale = 1.0;
+    double x = 0.0;
+    double y = 0.0;
+    if (argc > 0) napi_get_value_int32(env, argv[0], &phase);
+    if (argc > 1) napi_get_value_double(env, argv[1], &scale);
+    if (argc > 2) napi_get_value_double(env, argv[2], &x);
+    if (argc > 3) napi_get_value_double(env, argv[3], &y);
+    OhosNotifyPinch(phase, scale, (float)x, (float)y);
+    return nullptr;
+}
+
 // Called from the host C layer: forwards a notification publish request to ArkTS.
 extern "C" void OhosNotifyNotification(int id, const char* title, const char* text) {
     if (g_env == nullptr || g_notification_sink_ref == nullptr) {
@@ -631,6 +649,9 @@ napi_value Init(napi_env env, napi_value exports) {
         {"registerPickerSink", nullptr, RegisterPickerSink, nullptr, nullptr, nullptr, napi_default, nullptr},
 
         {"registerNotificationSink", nullptr, RegisterNotificationSink, nullptr, nullptr, nullptr, napi_default, nullptr},
+
+
+        {"notifyPinch", nullptr, NotifyPinch, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"registerWebSink", nullptr, RegisterWebSink, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"notifyWebEvent", nullptr, NotifyWebEvent, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"notifyAvoidArea", nullptr, NotifyAvoidArea, nullptr, nullptr, nullptr, napi_default, nullptr},

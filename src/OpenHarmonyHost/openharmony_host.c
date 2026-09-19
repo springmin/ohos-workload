@@ -1436,3 +1436,23 @@ int ohos_host_notification_show(int id, const char* title, const char* text) {
     OhosNotifyNotification(id, title, text != NULL ? text : "");
     return 0;
 }
+
+
+// ---------------------------------------------------------------------------
+// Pinch input: the shell reports phase/scale/centre; the managed listener set
+// through ohos_host_register_pinch receives them.
+// ---------------------------------------------------------------------------
+static void (*g_pinch_listener)(int phase, double scale, float x, float y) = NULL;
+
+void ohos_host_register_pinch(void* callback) {
+    g_pinch_listener = (void (*)(int, double, float, float))callback;
+}
+
+#ifdef __cplusplus
+extern "C"
+#endif
+void OhosNotifyPinch(int phase, double scale, float x, float y) {
+    if (g_pinch_listener != NULL) {
+        g_pinch_listener(phase, scale, x, y);
+    }
+}

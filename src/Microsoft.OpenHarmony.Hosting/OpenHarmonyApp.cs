@@ -113,6 +113,13 @@ public static class OpenHarmonyBridge
     [DllImport(HostLibrary, EntryPoint = "ohos_host_register_text_input")]
     private static extern void RegisterTextInputNative(IntPtr callback);
 
+    [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+    public delegate void PinchCallback(int phase, double scale, float x, float y);
+
+    [DllImport(HostLibrary, EntryPoint = "ohos_host_register_pinch")]
+    private static extern void RegisterPinch(IntPtr callback);
+
+
     [DllImport(HostLibrary, EntryPoint = "ohos_host_register_text_submitted")]
     private static extern void RegisterTextSubmittedNative(IntPtr callback);
 
@@ -206,8 +213,37 @@ public static class OpenHarmonyBridge
     private static Action<OpenHarmonyAppContext>? s_initializedHandlers;
     private static Action<OpenHarmonyLifecycleEvent>? s_lifecycleHandlers;
 
+    /// <summary>Raised when the shell reports a pinch (phase, scale, centre x, centre y).</summary>
+    public static event Action<int, double, float, float>? Pinch;
+
+    private static bool _pinchRegistered;
+    private static PinchCallback? _pinchCallback;
+
+    /// <summary>Registers the managed pinch listener with the host (idempotent, device only).</summary>
+    public static void RegisterPinchListener()
+    {
+        if (_pinchRegistered)
+        {
+            return;
+        }
+        _pinchRegistered = true;
+        _pinchCallback = OnPinch;
+        try
+        {
+            RegisterPinch(Marshal.GetFunctionPointerForDelegate(_pinchCallback));
+        }
+        catch (Exception)
+        {
+            // Not running on a device: pinch reports never arrive.
+        }
+    }
+
+    private static void OnPinch(int phase, double scale, float x, float y)
+        => Pinch?.Invoke(phase, scale, x, y);
+
     /// <summary>Raised (also for late subscribers) once the host context is available.</summary>
     public static event Action<OpenHarmonyAppContext>? Initialized
+
     {
         add
         {
