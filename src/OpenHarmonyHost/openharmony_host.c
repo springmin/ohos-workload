@@ -1456,3 +1456,120 @@ void OhosNotifyPinch(int phase, double scale, float x, float y) {
         g_pinch_listener(phase, scale, x, y);
     }
 }
+
+
+// ---------------------------------------------------------------------------
+// Accessibility: the runtime publishes a shadow node tree every frame. The
+// provider callbacks in the NAPI layer read it back through the accessors
+// below and turn it into ArkUI accessibility element information.
+// ---------------------------------------------------------------------------
+#include <stdlib.h>
+#include <string.h>
+
+typedef struct OhosAccessibilityNode {
+    int id;
+    int parent_id;
+    char* role;
+    char* text;
+    char* description;
+    float x, y, width, height;
+    int flags;
+    int actions;
+} OhosAccessibilityNode;
+
+static OhosAccessibilityNode* g_a11y_nodes = NULL;
+static int g_a11y_capacity = 0;
+static int g_a11y_fill = 0;
+static int g_a11y_count = 0;
+
+static char* OhosA11yString(const char* value) {
+    if (value == NULL) {
+        return NULL;
+    }
+    size_t length = strlen(value) + 1;
+    char* copy = (char*)malloc(length);
+    if (copy != NULL) {
+        memcpy(copy, value, length);
+    }
+    return copy;
+}
+
+static void OhosA11yFreeNodes(void) {
+    if (g_a11y_nodes != NULL) {
+        for (int i = 0; i < g_a11y_fill; i++) {
+            free(g_a11y_nodes[i].role);
+            free(g_a11y_nodes[i].text);
+            free(g_a11y_nodes[i].description);
+        }
+        free(g_a11y_nodes);
+    }
+    g_a11y_nodes = NULL;
+    g_a11y_capacity = 0;
+    g_a11y_fill = 0;
+    g_a11y_count = 0;
+}
+
+int ohos_host_accessibility_begin(int count) {
+    OhosA11yFreeNodes();
+    if (count <= 0) {
+        return 0;
+    }
+    g_a11y_nodes = (OhosAccessibilityNode*)calloc((size_t)count, sizeof(OhosAccessibilityNode));
+    if (g_a11y_nodes == NULL) {
+        return -1;
+    }
+    g_a11y_capacity = count;
+    return 0;
+}
+
+int ohos_host_accessibility_node(int id, int parent_id, const char* role, const char* text,
+                                 const char* description, float x, float y, float width, float height,
+                                 int flags, int actions) {
+    if (g_a11y_nodes == NULL || g_a11y_fill >= g_a11y_capacity) {
+        return -1;
+    }
+    OhosAccessibilityNode* node = &g_a11y_nodes[g_a11y_fill++];
+    node->id = id;
+    node->parent_id = parent_id;
+    node->role = OhosA11yString(role);
+    node->text = OhosA11yString(text);
+    node->description = OhosA11yString(description);
+    node->x = x;
+    node->y = y;
+    node->width = width;
+    node->height = height;
+    node->flags = flags;
+    node->actions = actions;
+    return 0;
+}
+
+int ohos_host_accessibility_commit(void) {
+    g_a11y_count = g_a11y_fill;
+    return g_a11y_count;
+}
+
+int ohos_host_accessibility_count(void) {
+    return g_a11y_count;
+}
+
+int ohos_host_accessibility_get(int index, int* id, int* parent_id, const char** role,
+                                const char** text, const char** description,
+                                float* x, float* y, float* width, float* height,
+                                int* flags, int* actions) {
+    if (g_a11y_nodes == NULL || index < 0 || index >= g_a11y_count) {
+        return -1;
+    }
+    OhosAccessibilityNode* node = &g_a11y_nodes[index];
+    if (id != NULL) *id = node->id;
+    if (parent_id != NULL) *parent_id = node->parent_id;
+    if (role != NULL) *role = node->role;
+    if (text != NULL) *text = node->text;
+    if (description != NULL) *description = node->description;
+    if (x != NULL) *x = node->x;
+    if (y != NULL) *y = node->y;
+    if (width != NULL) *width = node->width;
+    if (height != NULL) *height = node->height;
+    if (flags != NULL) *flags = node->flags;
+    if (actions != NULL) *actions = node->actions;
+    return 0;
+}
