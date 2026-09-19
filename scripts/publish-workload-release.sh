@@ -96,11 +96,6 @@ if [ "$SKIP_LATEST" = 0 ]; then
     fi
     run gh release upload workload-latest "$W/dist/SHA256SUMS" --repo "$REPO" --clobber
 fi
-    run gh release create workload-latest --repo "$REPO" \
-    run gh release upload workload-latest "$W/dist/SHA256SUMS" --repo "$REPO" --clobber
-        --title "OpenHarmony platform workload — rolling latest" \
-        --notes-file "$NOTES" --latest=false "$LATEST_ASSET"
-fi
 
 if [ -n "$SDK_RELEASE" ]; then
     echo "== attaching the versioned bundle to the SDK release $SDK_RELEASE =="
