@@ -246,6 +246,82 @@ napi_value RegisterNotificationSink(napi_env env, napi_callback_info info) {
     napi_create_reference(env, argv[0], 1, &g_notification_sink_ref);
     return nullptr;
 }
+
+// TextToSpeech: the managed side forwards speak requests through ohos_host_tts_speak; the
+// ArkTS shell's sink (registerTtsSink) owns the Speech Kit call and answers with
+// host.notifyTtsResult(requestId, code).
+napi_ref g_tts_sink_ref = nullptr;
+static void (*g_tts_result_listener)(int request_id, int code) = nullptr;
+
+// Called from the host C layer (managed P/Invoke): forwards a speak request to ArkTS.
+extern "C" int ohos_host_tts_speak(int request_id, const char* text, const char* locale) {
+    if (g_env == nullptr || g_tts_sink_ref == nullptr) {
+        return -1;
+    }
+    napi_value sink = nullptr;
+    if (napi_get_reference_value(g_env, g_tts_sink_ref, &sink) != napi_ok || sink == nullptr) {
+        return -1;
+    }
+    napi_value argv[3];
+    napi_create_int32(g_env, request_id, &argv[0]);
+    napi_create_string_utf8(g_env, text != nullptr ? text : "", NAPI_AUTO_LENGTH, &argv[1]);
+    napi_create_string_utf8(g_env, locale != nullptr ? locale : "", NAPI_AUTO_LENGTH, &argv[2]);
+    napi_value result = nullptr;
+    napi_status status = napi_call_function(g_env, sink, sink, 3, argv, &result);
+    return status == napi_ok ? 0 : -1;
+}
+
+// The managed side registers the callback that completes a pending speak request.
+extern "C" void ohos_host_tts_register_result(void* callback) {
+    g_tts_result_listener = (void (*)(int, int))callback;
+}
+
+// Called by the NAPI notify below: hands the shell's answer back to managed code.
+extern "C" void ohos_host_tts_result(int request_id, int code) {
+    if (g_tts_result_listener != nullptr) {
+        g_tts_result_listener(request_id, code);
+    }
+}
+
+// ArkTS calls host.registerTtsSink(fn) to receive speak requests.
+napi_value RegisterTtsSink(napi_env env, napi_callback_info info) {
+    size_t argc = 1;
+    napi_value argv[1] = {nullptr};
+    napi_get_cb_info(env, info, &argc, argv, nullptr, nullptr);
+    if (argc >= 1) {
+        napi_valuetype type = napi_undefined;
+        napi_typeof(env, argv[0], &type);
+        if (type == napi_function) {
+            if (g_tts_sink_ref != nullptr) {
+                napi_delete_reference(env, g_tts_sink_ref);
+            }
+            napi_create_reference(env, argv[0], 1, &g_tts_sink_ref);
+        }
+    }
+    napi_value undefined = nullptr;
+    napi_get_undefined(env, &undefined);
+    return undefined;
+}
+
+// ArkTS calls host.notifyTtsResult(requestId, code) when the engine finished.
+napi_value NotifyTtsResult(napi_env env, napi_callback_info info) {
+    size_t argc = 2;
+    napi_value argv[2] = {nullptr, nullptr};
+    napi_get_cb_info(env, info, &argc, argv, nullptr, nullptr);
+    int requestId = 0;
+    int code = -1;
+    if (argc >= 1) {
+        napi_get_value_int32(env, argv[0], &requestId);
+    }
+    if (argc >= 2) {
+        napi_get_value_int32(env, argv[1], &code);
+    }
+    ohos_host_tts_result(requestId, code);
+    napi_value undefined = nullptr;
+    napi_get_undefined(env, &undefined);
+    return undefined;
+}
+
 napi_ref g_web_sink_ref = nullptr;
 
 void OnPickerRequest(int requestId, int kind) {
@@ -691,6 +767,8 @@ napi_value Init(napi_env env, napi_value exports) {
         {"registerPickerSink", nullptr, RegisterPickerSink, nullptr, nullptr, nullptr, napi_default, nullptr},
 
         {"registerNotificationSink", nullptr, RegisterNotificationSink, nullptr, nullptr, nullptr, napi_default, nullptr},
+        {"registerTtsSink", nullptr, RegisterTtsSink, nullptr, nullptr, nullptr, napi_default, nullptr},
+        {"notifyTtsResult", nullptr, NotifyTtsResult, nullptr, nullptr, nullptr, napi_default, nullptr},
 
 
         {"notifyPinch", nullptr, NotifyPinch, nullptr, nullptr, nullptr, napi_default, nullptr},

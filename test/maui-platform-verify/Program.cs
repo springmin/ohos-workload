@@ -295,8 +295,34 @@ catch (Exception ex)
     Console.WriteLine($"[verify] sensors default unavailable ({ex.GetType().Name})");
 }
 
+// Gap 2: the remaining Essentials sensor interfaces installed by the slice (desktop has no host
+// library, so every IsSupported probe must answer false instead of throwing).
+var magnetometerDefault = Magnetometer.Default;
+var compassDefault = Compass.Default;
+var barometerDefault = Barometer.Default;
+var orientationDefault = OrientationSensor.Default;
+Console.WriteLine($"[verify] sensors extra magnetometer={magnetometerDefault.GetType().Name} compass={compassDefault.GetType().Name} barometer={barometerDefault.GetType().Name} orientation={orientationDefault.GetType().Name} supported={magnetometerDefault.IsSupported}");
+
 // Gap 2: notification kit (the shell publishes on device; desktop degrades to false).
 Console.WriteLine($"[verify] notifications show(on desktop)={OpenHarmonyNotifications.Show("Title", "Text")}");
+
+// Gap 2: TextToSpeech over the Speech Kit bridge (the OpenHarmony SDK ships no speech module,
+// so the shell sink answers unavailable and the managed side must degrade without throwing).
+var ttsDefault = Microsoft.Maui.Media.TextToSpeech.Default;
+Console.WriteLine($"[verify] tts default is OpenHarmony={ttsDefault is OpenHarmonyTextToSpeech} ({ttsDefault.GetType().Name})");
+bool ttsSpeakReturned = false;
+try
+{
+    await ttsDefault.SpeakAsync("verify speech");
+    ttsSpeakReturned = true;
+}
+catch (Exception ex)
+{
+    Console.WriteLine($"[verify] tts speak threw {ex.GetType().Name}: {ex.Message}");
+}
+Console.WriteLine($"[verify] tts speak degraded without throwing={ttsSpeakReturned}");
+var ttsLocales = (await ttsDefault.GetLocalesAsync()).ToList();
+Console.WriteLine($"[verify] tts locales={ttsLocales.Count} first='{ttsLocales.FirstOrDefault()?.Id}' language='{ttsLocales.FirstOrDefault()?.Language}'");
 
 // Gap 3: camera capture goes through the shell picker (device only).
 Console.WriteLine($"[verify] media captureSupported={MediaPicker.Default.IsCaptureSupported} capture={await MediaPicker.Default.CapturePhotoAsync() is null} (null off-device)");

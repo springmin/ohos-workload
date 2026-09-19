@@ -146,6 +146,17 @@ struct Index {
       host.notifyKeystoreResult(requestId, -1, '');
     });
 
+    // TextToSpeech: speak requests arrive from the managed side (ohos_host_tts_speak). The
+    // OpenHarmony SDK this shell compiles against has no speech synthesis module: both
+    // '@kit.CoreSpeechKit' and '@ohos.ai.tts' fail with "Cannot find module ... or its
+    // corresponding type declarations", so - like the keystore sink above - the request is
+    // answered with "unavailable" (rc=-1) and the managed side degrades (it never throws).
+    // With a Speech Kit SDK: create the engine once (textToSpeech.createEngine), call
+    // engine.speak(text, ...) and answer host.notifyTtsResult(requestId, 0) when it finishes.
+    host.registerTtsSink((requestId: number, text: string, locale: string): void => {
+      host.notifyTtsResult(requestId, -1);
+    });
+
     // The managed Entry asks for the soft keyboard through this sink.
     host.registerTextInputSink((show: number) => {
       if (show === 1) {
