@@ -529,7 +529,65 @@ Console.WriteLine($"[verify] clipboard after clear hasText={Clipboard.Default.Ha
 Console.WriteLine($"[verify] connectivity access={Connectivity.Current.NetworkAccess} profiles={Connectivity.Current.ConnectionProfiles.Count()}");
 Console.WriteLine($"[verify] launcher open={await Launcher.Default.TryOpenAsync(new Uri("https://example.com"))} browser open={await Browser.Default.OpenAsync(new Uri("https://example.com"))}");
 await Share.Default.RequestAsync(new ShareTextRequest { Text = "hello" });
-Console.WriteLine("[verify] share request completed (no-op, documented)");
+Console.WriteLine("[verify] share request completed (no host library -> degraded, documented)");
+
+// Gap 4: app-launching essentials (Launcher/Browser/Share) over the ArkTS ability bridge
+// (ohos_host_ability_start -> shell registerAbilitySink -> UIAbilityContext.startAbility).
+// On desktop there is no libopenharmonyhost.so, so every call must degrade to false without
+// throwing, and the three Essentials defaults must be this slice's implementations.
+var launcherDefault = Launcher.Default;
+var browserDefault = Browser.Default;
+var shareDefault = Share.Default;
+Console.WriteLine($"[verify] intents defaults launcher={launcherDefault.GetType().Name} browser={browserDefault.GetType().Name} share={shareDefault.GetType().Name}");
+Console.WriteLine($"[verify] intents defaults are OpenHarmony={launcherDefault is OpenHarmonyLauncher} browser={browserDefault is OpenHarmonyBrowser} share={shareDefault is OpenHarmonyShare}");
+bool canOpen = false;
+bool launcherOpen = false;
+bool launcherTryOpen = false;
+try
+{
+    canOpen = await launcherDefault.CanOpenAsync(new Uri("https://example.com"));
+    launcherOpen = await launcherDefault.OpenAsync(new Uri("https://example.com"));
+    launcherTryOpen = await launcherDefault.TryOpenAsync(new Uri("https://example.com"));
+}
+catch (Exception ex)
+{
+    Console.WriteLine($"[verify] intents launcher threw {ex.GetType().Name}: {ex.Message}");
+}
+Console.WriteLine($"[verify] intents launcher degraded without throwing canOpen={canOpen} open={launcherOpen} tryOpen={launcherTryOpen}");
+bool browserOpen = false;
+try
+{
+    browserOpen = await browserDefault.OpenAsync(new Uri("https://example.com"), BrowserLaunchMode.SystemPreferred);
+}
+catch (Exception ex)
+{
+    Console.WriteLine($"[verify] intents browser threw {ex.GetType().Name}: {ex.Message}");
+}
+Console.WriteLine($"[verify] intents browser degraded without throwing={browserOpen}");
+bool openFile = false;
+try
+{
+    openFile = await launcherDefault.OpenAsync(new OpenFileRequest { File = new ReadOnlyFile(imagePath) });
+}
+catch (Exception ex)
+{
+    Console.WriteLine($"[verify] intents launcher file threw {ex.GetType().Name}: {ex.Message}");
+}
+Console.WriteLine($"[verify] intents launcher file request degraded without throwing open={openFile}");
+bool shareTextReturned = false;
+bool shareFileReturned = false;
+try
+{
+    await shareDefault.RequestAsync(new ShareTextRequest { Text = "verify share" });
+    shareTextReturned = true;
+    await shareDefault.RequestAsync(new ShareFileRequest { File = new ShareFile(imagePath) });
+    shareFileReturned = true;
+}
+catch (Exception ex)
+{
+    Console.WriteLine($"[verify] intents share threw {ex.GetType().Name}: {ex.Message}");
+}
+Console.WriteLine($"[verify] intents share degraded without throwing text={shareTextReturned} file={shareFileReturned}");
 
 // W22-12: ListView (virtualized cells) + CarouselView swipe.
 var listCtl = root.Children.OfType<ListView>().FirstOrDefault();

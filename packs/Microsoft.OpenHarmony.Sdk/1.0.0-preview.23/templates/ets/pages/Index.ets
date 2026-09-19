@@ -11,6 +11,8 @@
 import { NodeContent } from '@ohos.arkui.node';
 import cameraPicker from '@ohos.multimedia.cameraPicker';
 import camera from '@ohos.multimedia.camera';
+import common from '@ohos.app.ability.common';
+import Want from '@ohos.app.ability.Want';
 import fileIo from '@ohos.file.fs';
 import notificationManager from '@ohos.notificationManager';
 import host from 'libopenharmonyhost.so';
@@ -155,6 +157,41 @@ struct Index {
     // engine.speak(text, ...) and answer host.notifyTtsResult(requestId, 0) when it finishes.
     host.registerTtsSink((requestId: number, text: string, locale: string): void => {
       host.notifyTtsResult(requestId, -1);
+    });
+
+    // Launcher/Browser/Share: managed requests arrive through ohos_host_ability_start. kind 0
+    // opens a uri (implicit viewData Want), kind 1 shares plain text (implicit sendData Want),
+    // kind 2 is the availability probe (never launches). The UIAbilityContext owns the actual
+    // startAbility call; a rejected launch is logged, and only the dispatch status (true when the
+    // request was handed to the system) is reported back to the managed side.
+    // Plain text has no wantConstant key in this SDK (Share Kit/systemShare is not part of it),
+    // so the text travels under 'ohos.extra.param.key.content', the key used by the
+    // pre-Share-Kit samples for ohos.want.action.sendData.
+    host.registerAbilitySink((kind: number, uri: string, text: string): boolean => {
+      try {
+        const context = getContext(this) as common.UIAbilityContext;
+        if (kind === 2) {
+          return context !== undefined && context !== null;
+        }
+        const want: Want = new Want();
+        if (kind === 1) {
+          want.action = 'ohos.want.action.sendData';
+          want.type = 'text/plain';
+          want.parameters = { 'ohos.extra.param.key.content': text };
+        } else {
+          want.action = 'ohos.want.action.viewData';
+          want.uri = uri;
+        }
+        context.startAbility(want).then((): void => {
+          console.info(`[maui] ability start dispatched: kind=${kind}`);
+        }).catch((startError: Error): void => {
+          console.error(`[maui] ability start failed: kind=${kind} ${startError.message}`);
+        });
+        return true;
+      } catch (startError) {
+        console.error(`[maui] ability start threw: ${(startError as Error).message}`);
+        return false;
+      }
     });
 
     // The managed Entry asks for the soft keyboard through this sink.

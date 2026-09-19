@@ -322,6 +322,58 @@ napi_value NotifyTtsResult(napi_env env, napi_callback_info info) {
     return undefined;
 }
 
+// App launching: Launcher/Browser/Share forward requests through ohos_host_ability_start; the
+// ArkTS shell's sink (registerAbilitySink) owns the UIAbilityContext.startAbility call.
+// kind 0 = open uri (implicit viewData Want), 1 = share text (implicit sendData Want),
+// 2 = availability probe, answered by the shell without launching anything.
+napi_ref g_ability_sink_ref = nullptr;
+
+// Called from managed code (P/Invoke): forwards an ability-start request to the ArkTS shell and
+// returns 0 when the sink handled it (dispatched or, for the probe, available).
+extern "C" int ohos_host_ability_start(int kind, const char* uri, const char* text) {
+    if (g_env == nullptr || g_ability_sink_ref == nullptr) {
+        return -1;
+    }
+    napi_value sink = nullptr;
+    if (napi_get_reference_value(g_env, g_ability_sink_ref, &sink) != napi_ok || sink == nullptr) {
+        return -1;
+    }
+    napi_value argv[3];
+    napi_create_int32(g_env, kind, &argv[0]);
+    napi_create_string_utf8(g_env, uri != nullptr ? uri : "", NAPI_AUTO_LENGTH, &argv[1]);
+    napi_create_string_utf8(g_env, text != nullptr ? text : "", NAPI_AUTO_LENGTH, &argv[2]);
+    napi_value result = nullptr;
+    if (napi_call_function(g_env, sink, sink, 3, argv, &result) != napi_ok) {
+        return -1;
+    }
+    bool handled = false;
+    if (result == nullptr || napi_get_value_bool(g_env, result, &handled) != napi_ok || !handled) {
+        return -1;
+    }
+    return 0;
+}
+
+// ArkTS calls host.registerAbilitySink(fn) to receive launcher/browser/share requests.
+napi_value RegisterAbilitySink(napi_env env, napi_callback_info info) {
+    size_t argc = 1;
+    napi_value argv[1] = {nullptr};
+    napi_get_cb_info(env, info, &argc, argv, nullptr, nullptr);
+    if (argc >= 1) {
+        napi_valuetype type = napi_undefined;
+        napi_typeof(env, argv[0], &type);
+        if (type == napi_function) {
+            if (g_ability_sink_ref != nullptr) {
+                napi_delete_reference(env, g_ability_sink_ref);
+            }
+            napi_create_reference(env, argv[0], 1, &g_ability_sink_ref);
+            OH_LOG_INFO(LOG_APP, "[openharmony-host] ability sink registered");
+        }
+    }
+    napi_value undefined = nullptr;
+    napi_get_undefined(env, &undefined);
+    return undefined;
+}
+
 napi_ref g_web_sink_ref = nullptr;
 
 void OnPickerRequest(int requestId, int kind) {
@@ -769,6 +821,7 @@ napi_value Init(napi_env env, napi_value exports) {
         {"registerNotificationSink", nullptr, RegisterNotificationSink, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"registerTtsSink", nullptr, RegisterTtsSink, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"notifyTtsResult", nullptr, NotifyTtsResult, nullptr, nullptr, nullptr, napi_default, nullptr},
+        {"registerAbilitySink", nullptr, RegisterAbilitySink, nullptr, nullptr, nullptr, napi_default, nullptr},
 
 
         {"notifyPinch", nullptr, NotifyPinch, nullptr, nullptr, nullptr, napi_default, nullptr},
