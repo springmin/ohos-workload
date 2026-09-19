@@ -82,12 +82,20 @@ if [ "$SKIP_VERSIONED" = 0 ]; then
 fi
 
 if [ "$SKIP_LATEST" = 0 ]; then
-    echo "== refreshing workload-latest (stable asset name) =="
+    echo "== refreshing workload-latest (stable asset name, updated in place) =="
     run mkdir -p "$(dirname "$LATEST_ASSET")"
     run cp -f "$BUNDLE" "$LATEST_ASSET"
-    if [ "$DRY_RUN" = 0 ]; then
-        gh release delete workload-latest --repo "$REPO" --yes --cleanup-tag >/dev/null 2>&1 || true
+    if gh release view workload-latest --repo "$REPO" >/dev/null 2>&1; then
+        # Update in place: deleting first meant a failed recreate could drop the release.
+        run gh release upload workload-latest "$LATEST_ASSET" --repo "$REPO" --clobber
+        run gh release edit workload-latest --repo "$REPO" --title "OpenHarmony platform workload" --notes-file "$NOTES"
+    else
+        run gh release create workload-latest --repo "$REPO" \
+            --title "OpenHarmony platform workload" \
+            --notes-file "$NOTES" --latest=false "$LATEST_ASSET"
     fi
+    run gh release upload workload-latest "$W/dist/SHA256SUMS" --repo "$REPO" --clobber
+fi
     run gh release create workload-latest --repo "$REPO" \
     run gh release upload workload-latest "$W/dist/SHA256SUMS" --repo "$REPO" --clobber
         --title "OpenHarmony platform workload — rolling latest" \
