@@ -16,6 +16,7 @@
 
 // Forward declarations: the module function table below references these (defined at the end).
 napi_value AttachAccessibilityNode(napi_env env, napi_callback_info info);
+static int AttachAccessibilityValue(napi_env env, napi_value value);
 napi_value AccessibilityStatus(napi_env env, napi_callback_info info);
 
 #include <string>
@@ -648,6 +649,8 @@ napi_value SetNodeContent(napi_env env, napi_callback_info info) {
     napi_value undefined = nullptr;
     napi_get_undefined(env, &undefined);
     return undefined;
+    // The accessibility provider rides the same NodeContent the shell hands over.
+    AttachAccessibilityValue(env, argv[0]);
 }
 
 napi_value StopApp(napi_env env, napi_callback_info info) {
@@ -920,6 +923,27 @@ static ArkUI_AccessibilityProviderCallbacks g_a11y_callbacks = {
 };
 
 // ArkTS calls host.attachAccessibilityNode(nodeOrNodeContent) with the node that hosts our content.
+static int AttachAccessibilityValue(napi_env env, napi_value value) {
+    if (value == nullptr) {
+        return g_a11y_status;
+    }
+    ArkUI_NodeHandle node = nullptr;
+    if (OH_ArkUI_GetNodeHandleFromNapiValue(env, value, &node) == 0 && node != nullptr) {
+        g_a11y_status = 2;  // frame node received
+        if (OH_ArkUI_NativeModule_GetNativeAccessibilityProvider(&node, &g_a11y_provider) == 0 &&
+            g_a11y_provider != nullptr &&
+            OH_ArkUI_AccessibilityProviderRegisterCallback(g_a11y_provider, &g_a11y_callbacks) == 0) {
+            g_a11y_status = 1;  // provider attached
+        }
+        return g_a11y_status;
+    }
+    ArkUI_NodeContentHandle content = nullptr;
+    if (OH_ArkUI_GetNodeContentFromNapiValue(env, value, &content) == 0 && content != nullptr) {
+        g_a11y_status = 3;  // node content received; a custom node still has to be supplied
+    }
+    return g_a11y_status;
+}
+
 napi_value AttachAccessibilityNode(napi_env env, napi_callback_info info) {
     size_t argc = 1;
     napi_value argv[1];
@@ -927,14 +951,7 @@ napi_value AttachAccessibilityNode(napi_env env, napi_callback_info info) {
     if (argc < 1) {
         return nullptr;
     }
-    ArkUI_NodeHandle node = nullptr;
-    if (OH_ArkUI_GetNodeHandleFromNapiValue(env, argv[0], &node) == 0 && node != nullptr &&
-        OH_ArkUI_NativeModule_GetNativeAccessibilityProvider(&node, &g_a11y_provider) == 0 &&
-        g_a11y_provider != nullptr) {
-        if (OH_ArkUI_AccessibilityProviderRegisterCallback(g_a11y_provider, &g_a11y_callbacks) == 0) {
-            g_a11y_status = 1;
-        }
-    }
+    AttachAccessibilityValue(env, argv[0]);
     napi_value result = nullptr;
     napi_create_int32(env, g_a11y_status, &result);
     return result;
