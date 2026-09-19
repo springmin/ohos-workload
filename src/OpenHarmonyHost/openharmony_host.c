@@ -1328,7 +1328,10 @@ int ohos_host_draw_present(void) {
 static Sensor_SubscriptionId* g_sensor_id = NULL;
 static Sensor_SubscriptionAttribute* g_sensor_attr = NULL;
 static Sensor_Subscriber* g_sensor_subscriber = NULL;
-static void (*g_sensor_listener)(int type, float x, float y, float z, long long timestamp) = NULL;
+// The listener carries four components: ORIENTATION (256) reports Euler angles in data[0..2],
+// while ROTATION_VECTOR (259) additionally reports the scalar part in data[3] (w defaults to
+// 1.0 for three-component payloads such as accelerometer/gyroscope/barometer readings).
+static void (*g_sensor_listener)(int type, float x, float y, float z, float w, long long timestamp) = NULL;
 
 static void OhosSensorEventCallback(Sensor_Event* event) {
     if (event == NULL || g_sensor_listener == NULL) {
@@ -1344,11 +1347,12 @@ static void OhosSensorEventCallback(Sensor_Event* event) {
     float x = (data != NULL && length > 0) ? data[0] : 0.0f;
     float y = (data != NULL && length > 1) ? data[1] : 0.0f;
     float z = (data != NULL && length > 2) ? data[2] : 0.0f;
-    g_sensor_listener((int)type, x, y, z, (long long)timestamp);
+    float w = (data != NULL && length > 3) ? data[3] : 1.0f;
+    g_sensor_listener((int)type, x, y, z, w, (long long)timestamp);
 }
 
 void ohos_host_sensor_set_listener(void* listener) {
-    g_sensor_listener = (void (*)(int, float, float, float, long long))listener;
+    g_sensor_listener = (void (*)(int, float, float, float, float, long long))listener;
 }
 
 void ohos_host_sensor_stop(void);

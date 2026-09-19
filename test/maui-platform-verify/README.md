@@ -1,6 +1,6 @@
 # Interaction regression suite (headless)
 
-The 157-check MAUI-on-OpenHarmony interaction harness. It builds the platform slice sources from the
+The 158-check MAUI-on-OpenHarmony interaction harness. It builds the platform slice sources from the
 `maui-ohos` working tree and drives the app host without a device: touch/drag/pinch/pointer input,
 overlays, gestures (tap/pan/swipe/pinch/pointer/drag-and-drop), sensors/haptics/notification/picker
 wiring, the app-theme colour-mode handler, the launcher/browser/share ability bridge, the
@@ -14,7 +14,7 @@ bridge (script evaluation + `dotnetHost.postMessage`).
 # the MAUI_SLICE_DIR / HOSTING_DLL env vars (or the MauiSliceDir / HostingDll MSBuild properties)
 # before building elsewhere.
 dotnet build -v:q
-dotnet bin/Debug/net11.0/verify.dll | grep -c '\[verify\]'   # expect 157
+dotnet bin/Debug/net11.0/verify.dll | grep -c '\[verify\]'   # expect 158
 ```
 
 ## Notes
@@ -23,7 +23,7 @@ dotnet bin/Debug/net11.0/verify.dll | grep -c '\[verify\]'   # expect 157
   blocks codesigned ELF apphosts on some machines).
 - The suite fails loudly (unhandled exception) when a slice change breaks startup or when an
   assertion for the gesture flows (including the drag-and-drop checks) does not hold; keep it at
-  157 checks when touching the platform slice.
+  158 checks when touching the platform slice.
 - JavaScript bridge coverage: `WebView.EvaluateJavaScriptAsync` completes with null/empty and
   never throws off-device (no host library), the native `notifyJsMessage` callback raises
   `OpenHarmonyWebViewHandler.JsMessage` with the `dotnetHost.postMessage` payload, and the
@@ -40,5 +40,10 @@ dotnet bin/Debug/net11.0/verify.dll | grep -c '\[verify\]'   # expect 157
   DragStarting, DragOver/DragLeave fire when the pointer enters/leaves a drop-aware view, Drop
   delivers the source text through DataPackageView.GetTextAsync(), and a release over nothing raises
   DropCompleted with DropResult=None (the internal result is read reflectively).
+- Rotation-vector coverage: the orientation sensor is wired to `SENSOR_TYPE_ROTATION_VECTOR` (259)
+  and the host listener forwards four components. The assertion invokes the managed callback through
+  the six-parameter `SensorCallback` delegate (pinning the native signature) and checks that
+  `(x, y, z, w)` reaches `OrientationSensorData.Orientation` unchanged, with no reconstructed
+  scalar part.
 - CI wiring (building the slice in a runner) is tracked in the handover status document; this copy
   preserves the suite in the repository so it can be made portable.

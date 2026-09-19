@@ -303,6 +303,30 @@ var barometerDefault = Barometer.Default;
 var orientationDefault = OrientationSensor.Default;
 Console.WriteLine($"[verify] sensors extra magnetometer={magnetometerDefault.GetType().Name} compass={compassDefault.GetType().Name} barometer={barometerDefault.GetType().Name} orientation={orientationDefault.GetType().Name} supported={magnetometerDefault.IsSupported}");
 
+// Orientation is wired to SENSOR_TYPE_ROTATION_VECTOR (259): the host forwards four components
+// (x, y, z, w) and the managed plumbing maps them onto OrientationSensorData unchanged, with no
+// reconstructed scalar part. Off-device there is no host library, so invoke the managed callback
+// the native listener calls; going through the public delegate type also pins the six-parameter
+// native signature.
+var orientationProbe = OpenHarmonyOrientationSensor.Instance;
+Microsoft.Maui.Devices.Sensors.OrientationSensorData? rotationVectorReading = null;
+void OnRotationVector(object? sender, Microsoft.Maui.Devices.Sensors.OrientationSensorChangedEventArgs e)
+    => rotationVectorReading = e.Reading;
+orientationProbe.ReadingChanged += OnRotationVector;
+var onReadingMethod = typeof(OpenHarmonySensors).GetMethod("OnReading",
+    System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static)!;
+var sensorCallback = (OpenHarmonySensors.SensorCallback)Delegate.CreateDelegate(typeof(OpenHarmonySensors.SensorCallback), onReadingMethod);
+sensorCallback(OpenHarmonySensors.OrientationType, 0.5f, -0.25f, 0.125f, 0.75f, 123456L);
+orientationProbe.ReadingChanged -= OnRotationVector;
+bool rotationVectorOk = OpenHarmonySensors.OrientationType == 259 && rotationVectorReading is not null &&
+    rotationVectorReading.Value.Orientation.X == 0.5f && rotationVectorReading.Value.Orientation.Y == -0.25f &&
+    rotationVectorReading.Value.Orientation.Z == 0.125f && rotationVectorReading.Value.Orientation.W == 0.75f;
+Console.WriteLine($"[verify] sensors rotation vector type={OpenHarmonySensors.OrientationType} reading=({rotationVectorReading?.Orientation.X}, {rotationVectorReading?.Orientation.Y}, {rotationVectorReading?.Orientation.Z}, {rotationVectorReading?.Orientation.W}) unchanged={rotationVectorOk}");
+if (!rotationVectorOk)
+{
+    throw new InvalidOperationException("the rotation-vector reading did not reach OrientationSensorData unchanged");
+}
+
 // Gap 2: haptic feedback over the host's NDK vibration export (ohos_host_vibrate ->
 // OH_Vibrator_PlayVibration). Desktop builds have no libopenharmonyhost.so, so IsSupported
 // must answer false and Perform(Click/LongPress) must degrade without throwing.
