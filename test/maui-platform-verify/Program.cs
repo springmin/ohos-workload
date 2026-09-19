@@ -354,6 +354,15 @@ if (a11yTextCtl is not null)
     host.Render();
     Console.WriteLine($"[verify] a11y events after text change={OpenHarmonyAccessibility.PendingEventCount} (text update bit={(OpenHarmonyAccessibility.PendingEventCount & 0x10) != 0})");
 }
+
+// D2: accessibility action routing (CLICK -> normal tap path).
+var a11yTapNode = OpenHarmonyAccessibility.Nodes.FirstOrDefault(n => n.Text == "tap me" && n.Role == "text");
+if (a11yTapNode is not null)
+{
+    int tapsBefore = gestures.TapCount;
+    bool clickHandled = host.HandleAccessibilityAction(a11yTapNode.Id, 0x10);
+    Console.WriteLine($"[verify] a11y click handled={clickHandled} taps {tapsBefore}->{gestures.TapCount}");
+}
 Console.WriteLine($"[verify] a11y actions text=[{string.Join(",", OpenHarmonyAccessibility.ActionsFor("text"))}] input=[{string.Join(",", OpenHarmonyAccessibility.ActionsFor("textInput"))}]");
 
 // Alert overlay: DisplayAlert shows in the compositor and a button tap completes it.
