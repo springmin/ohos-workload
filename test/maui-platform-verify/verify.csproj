@@ -1,0 +1,25 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net11.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <NoWarn>$(NoWarn);CA1418</NoWarn>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="Microsoft.Maui.Controls" Version="11.0.0-rc.1.26451.6" />
+    <PackageReference Include="Microsoft.Maui.Graphics" Version="11.0.0-rc.1.26451.6" />
+    <Reference Include="Microsoft.OpenHarmony.Hosting">
+      <HintPath>/storage/Users/currentUser/springsources/ohos-workload/src/Microsoft.OpenHarmony.Hosting/bin/Release/net11.0/Microsoft.OpenHarmony.Hosting.dll</HintPath>
+      <Private>true</Private>
+    </Reference>
+    <Reference Include="Microsoft.OpenHarmony.Maui.Graphics">
+      <HintPath>/storage/Users/currentUser/springsources/ohos-workload/src/Microsoft.OpenHarmony.Maui.Graphics/bin/Release/net11.0/Microsoft.OpenHarmony.Maui.Graphics.dll</HintPath>
+      <Private>true</Private>
+    </Reference>
+    <Compile Include="/storage/Users/currentUser/springsources/maui-ohos/src/Core/src/Platform/OpenHarmony/*.cs" />
+  </ItemGroup>
+  <ItemGroup>
+    <MauiXaml Include="XamlPage.xaml" />
+  </ItemGroup>
+</Project>
