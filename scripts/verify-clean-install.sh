@@ -13,14 +13,12 @@ WORK="${2:-/data/storage/el2/base/tmp/opencode/clean-install}"
 rm -rf "$WORK"; mkdir -p "$WORK"
 echo "== extracting $BUNDLE"
 tar xzf "$BUNDLE" -C "$WORK"
-# The bundle extracts packs/, manifests/, ... directly; older bundles may nest a root directory.
-if [ -d "$WORK/packs" ]; then
-    ROOT="$WORK"
-elif [ "$(ls -d "$WORK"/* 2>/dev/null | wc -l)" -eq 1 ] && [ -d "$(ls -d "$WORK"/* | head -1)/packs" ]; then
-    ROOT="$(ls -d "$WORK"/* | head -1)"
-else
+# Layout-agnostic: find the directory that owns packs/ (whatever nesting the bundle uses).
+PACKS_DIR="$(find "$WORK" -maxdepth 4 -type d -name packs 2>/dev/null | head -1)"
+if [ -z "$PACKS_DIR" ]; then
     echo "bundle layout not recognised under $WORK" >&2; exit 1
 fi
+ROOT="$(dirname "$PACKS_DIR")"
 echo "== root: $ROOT"
 
 fail=0
