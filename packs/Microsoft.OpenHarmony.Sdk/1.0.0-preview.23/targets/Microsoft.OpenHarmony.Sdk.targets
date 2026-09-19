@@ -1,0 +1,8 @@
+<Project>
+  <!-- W1 placeholder: .hap packaging lands in W2 (host + ArkTS shell). -->
+  <Target Name="OpenHarmonyHapPackagingPlaceholder"
+          AfterTargets="Publish"
+          Condition=" '$(TargetPlatformIdentifier)' == 'openharmony' and '$(OpenHarmonyHapPackaging)' == 'true' ">
+    <Message Importance="high" Text="OpenHarmony: .hap packaging is a W2 deliverable (publish output is at $(PublishDir))." />
+  </Target>
+</Project>
