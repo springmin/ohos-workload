@@ -1,0 +1,25 @@
+name: pixel-regression
+
+on:
+  push:
+    branches: [ master ]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  pixel:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '11.0.x'
+          dotnet-quality: 'preview'
+      - name: Run the headless pixel suite
+        run: dotnet run -c Release
+        working-directory: test/headless-render
+      - name: Assert the suite passed
+        run: |
+          dotnet run -c Release --no-build -p:NoBuild=true > result.txt 2>&1 || true
+          grep -q "PIXEL ASSERTIONS PASSED" result.txt
+        working-directory: test/headless-render
