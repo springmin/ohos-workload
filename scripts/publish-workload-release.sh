@@ -89,6 +89,7 @@ if [ "$SKIP_LATEST" = 0 ]; then
         gh release delete workload-latest --repo "$REPO" --yes --cleanup-tag >/dev/null 2>&1 || true
     fi
     run gh release create workload-latest --repo "$REPO" \
+    run gh release upload workload-latest "$W/dist/SHA256SUMS" --repo "$REPO" --clobber
         --title "OpenHarmony platform workload — rolling latest" \
         --notes-file "$NOTES" --latest=false "$LATEST_ASSET"
 fi
