@@ -985,3 +985,9 @@ extern "C" int ohos_host_accessibility_send_event(int eventType) {
     OH_ArkUI_SendAccessibilityAsyncEvent(g_a11y_provider, event, nullptr);
     return 1;
 }
+
+
+// C entry point so the managed runtime can log the attach state (1/2/3, see the handover status).
+extern "C" int ohos_host_accessibility_provider_status(void) {
+    return g_a11y_status;
+}
