@@ -10,6 +10,7 @@
 // managed code attaches through OpenHarmonyBridge.NodeContent.
 import { NodeContent } from '@ohos.arkui.node';
 import cameraPicker from '@ohos.multimedia.cameraPicker';
+import camera from '@ohos.multimedia.camera';
 import fileIo from '@ohos.file.fs';
 import notificationManager from '@ohos.notificationManager';
 import host from 'libopenharmonyhost.so';
@@ -84,7 +85,7 @@ struct Index {
         try {
           const mediaType = kind === 3 ? cameraPicker.PickerMediaType.PHOTO : cameraPicker.PickerMediaType.VIDEO;
           const picked = await cameraPicker.pick(getContext(this), [mediaType], {
-            cameraPosition: cameraPicker.CameraPosition.CAMERA_POSITION_BACK,
+            cameraPosition: camera.CameraPosition.CAMERA_POSITION_BACK,
           });
           const captureUri: string = picked.resultUri;
           const captureName: string = captureUri.substring(captureUri.lastIndexOf('/') + 1);
