@@ -4,6 +4,7 @@
     <MauiSliceDir Condition="'$(MauiSliceDir)' == ''">$(MAUI_SLICE_DIR)</MauiSliceDir>
     <HostingDll Condition="'$(HostingDll)' == ''">$(HOSTING_DLL)</HostingDll>
     <HostingDll Condition="'$(HostingDll)' == ''">/storage/Users/currentUser/springsources/ohos-workload/src/Microsoft.OpenHarmony.Hosting/bin/Release/net11.0/Microsoft.OpenHarmony.Hosting.dll</HostingDll>
+    <MauiSliceDir Condition="'$(MauiSliceDir)' == ''">/storage/Users/currentUser/springsources/maui-ohos/src/Core/src/Platform/OpenHarmony</MauiSliceDir>
   </PropertyGroup>
   <PropertyGroup>
     <OutputType>Exe</OutputType>
@@ -23,7 +24,7 @@
       <HintPath>/storage/Users/currentUser/springsources/ohos-workload/src/Microsoft.OpenHarmony.Maui.Graphics/bin/Release/net11.0/Microsoft.OpenHarmony.Maui.Graphics.dll</HintPath>
       <Private>true</Private>
     </Reference>
-    <Compile Include="/storage/Users/currentUser/springsources/maui-ohos/src/Core/src/Platform/OpenHarmony/*.cs" />
+    <Compile Include="$(MauiSliceDir)/*.cs" />
   </ItemGroup>
   <ItemGroup>
     <MauiXaml Include="XamlPage.xaml" />
