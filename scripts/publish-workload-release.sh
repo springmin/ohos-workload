@@ -67,6 +67,10 @@ MD
 if [ "$SKIP_VERSIONED" = 0 ]; then
     echo "== publishing $VERSIONED_TAG =="
     if [ "$DRY_RUN" = 0 ] && gh release view "$VERSIONED_TAG" --repo "$REPO" >/dev/null 2>&1; then
+
+# Publish the artifact checksums alongside the bundle (generated if missing).
+[ -f "$W/dist/SHA256SUMS" ] || sh "$W/scripts/release-checksums.sh" >/dev/null
+        run gh release upload "$VERSIONED_TAG" "$BUNDLE" --repo "$REPO" --clobber
         run gh release upload "$VERSIONED_TAG" "$BUNDLE" --repo "$REPO" --clobber
         run gh release edit "$VERSIONED_TAG" --repo "$REPO" --notes-file "$NOTES"
     else
