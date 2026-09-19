@@ -1,10 +1,11 @@
 # Interaction regression suite (headless)
 
-The 152-check MAUI-on-OpenHarmony interaction harness. It builds the platform slice sources from the
+The 157-check MAUI-on-OpenHarmony interaction harness. It builds the platform slice sources from the
 `maui-ohos` working tree and drives the app host without a device: touch/drag/pinch/pointer input,
 overlays, gestures (tap/pan/swipe/pinch/pointer/drag-and-drop), sensors/haptics/notification/picker
 wiring, the app-theme colour-mode handler, the launcher/browser/share ability bridge, the
-accessibility shadow tree snapshot and the menu table/activation bridge.
+accessibility shadow tree snapshot, the menu table/activation bridge and the WebView JavaScript
+bridge (script evaluation + `dotnetHost.postMessage`).
 
 ## Running it
 
@@ -13,7 +14,7 @@ accessibility shadow tree snapshot and the menu table/activation bridge.
 # the MAUI_SLICE_DIR / HOSTING_DLL env vars (or the MauiSliceDir / HostingDll MSBuild properties)
 # before building elsewhere.
 dotnet build -v:q
-dotnet bin/Debug/net11.0/verify.dll | grep -c '\[verify\]'   # expect 152
+dotnet bin/Debug/net11.0/verify.dll | grep -c '\[verify\]'   # expect 157
 ```
 
 ## Notes
@@ -22,7 +23,15 @@ dotnet bin/Debug/net11.0/verify.dll | grep -c '\[verify\]'   # expect 152
   blocks codesigned ELF apphosts on some machines).
 - The suite fails loudly (unhandled exception) when a slice change breaks startup or when an
   assertion for the gesture flows (including the drag-and-drop checks) does not hold; keep it at
-  152 checks when touching the platform slice.
+  157 checks when touching the platform slice.
+- JavaScript bridge coverage: `WebView.EvaluateJavaScriptAsync` completes with null/empty and
+  never throws off-device (no host library), the native `notifyJsMessage` callback raises
+  `OpenHarmonyWebViewHandler.JsMessage` with the `dotnetHost.postMessage` payload, and the
+  HybridWebView handler is registered in `SliceHandlers`, completes
+  `HybridWebView.EvaluateJavaScriptAsync`/`InvokeJavaScriptAsync` without hanging, degrades
+  `SendRawMessage` and routes `__RawMessage|...`/plain payloads into `RawMessageReceived`.
+  Hybrid asset serving (`HybridRoot`/`DefaultFile`) is not part of this batch; see the slice's
+  `OpenHarmonyHybridWebViewHandler` header.
 - Haptics coverage: `HapticFeedback.Default` is the slice implementation, `Perform(Click/LongPress)`
   degrades without throwing off-device, and `IsSupported` is false without the host library. The app
   theme handler is exercised directly (ArkUI colour-mode reports need a device): setting dark/light

@@ -40,6 +40,8 @@ struct Index {
   @State inputText: string = '';
   @State webVisible: boolean = false;
   @State menuItems: HostMenuItem[] = [];
+  // JavaScript bridge: set once the dotnetHost proxy was registered on the attached controller.
+  private dotNetHostRegistered: boolean = false;
   // App theme: 'colorMode' is an ArkUI environment property that the framework keeps in
   // AppStorage and refreshes when the device switches between light and dark. The watch
   // forwards every change to the managed side through host.notifyTheme(isDark).
@@ -94,6 +96,38 @@ struct Index {
     return elements;
   }
 
+  // JavaScript bridge: registers the dotnetHost proxy that page scripts call to reach the
+  // managed side. registerJavaScriptProxy needs the controller attached to the Web component
+  // (BusinessError 17100001 otherwise), so onControllerAttached calls this.
+  private registerDotNetHost(): void {
+    if (this.dotNetHostRegistered) {
+      return;
+    }
+    try {
+      this.webController.registerJavaScriptProxy({
+        postMessage: (payload: string): void => {
+          host.notifyJsMessage(payload);
+        }
+      }, 'dotnetHost', ['postMessage']);
+      this.dotNetHostRegistered = true;
+    } catch (proxyError) {
+      console.error(`[maui] dotnetHost proxy registration failed: ${(proxyError as Error).message}`);
+    }
+  }
+
+  // Registered proxies appear on the next page load, so the documented window.__ohosDotNet
+  // alias is (re)published after every load (best effort; a page that cannot run it still
+  // keeps the dotnetHost global provided by the proxy registration).
+  private injectDotNetHostAlias(): void {
+    try {
+      this.webController.runJavaScript('window.__ohosDotNet = window.dotnetHost;', () => {
+        // The alias is best-effort; an error leaves the page without the alias only.
+      });
+    } catch (aliasError) {
+      // A page that rejects the injection script must not take the app down.
+    }
+  }
+
   aboutToAppear(): void {
     // 2 = foreground; the native host forwards it to the managed bridge.
     host.notifyLifecycle(2);
@@ -143,6 +177,18 @@ struct Index {
         }
       } catch (error) {
         // Web errors never take the app down.
+      }
+    });
+
+    // JavaScript bridge: the managed side evaluates scripts through ohos_host_web_eval; the
+    // runJavaScript result (or its error) travels back to the awaiting request.
+    host.registerWebEvalSink((script: string, requestId: number): void => {
+      try {
+        this.webController.runJavaScript(script, (err, result) => {
+          host.notifyWebEvalResult(requestId, result || '', err ? 1 : 0);
+        });
+      } catch (evalError) {
+        host.notifyWebEvalResult(requestId, '', 1);
       }
     });
 
@@ -289,11 +335,17 @@ struct Index {
       // ArkWeb: hidden until the managed WebView asks for it.
       Web({ src: '', controller: this.webController })
         .visibility(this.webVisible ? Visibility.Visible : Visibility.None)
+        // The controller is attached here; registering the dotnetHost proxy any earlier fails
+        // with BusinessError 17100001 (controller not associated with a Web component).
+        .onControllerAttached(() => {
+          this.registerDotNetHost();
+        })
         .onPageBegin((event) => {
           host.notifyWebEvent('started', event ? event.url : '');
         })
         .onPageEnd((event) => {
           host.notifyWebEvent('finished', event ? event.url : '');
+          this.injectDotNetHostAlias();
         })
 
       // Text entry bridge: the managed Entry reads what is typed here.

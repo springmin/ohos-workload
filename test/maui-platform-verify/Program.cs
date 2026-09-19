@@ -1089,6 +1089,121 @@ if (navRoot.CurrentPage is ContentPage livePage)
     Console.WriteLine($"[verify] menus auto sync on redraw={OpenHarmonyMenus.Items.Any(m => m.Text == "Live action")} count={OpenHarmonyMenus.Items.Count}");
 }
 
+// WebView JavaScript bridge (host ohos_host_web_eval/notifyWebEvalResult + shell
+// registerWebEvalSink/notifyJsMessage): the managed handler must complete
+// WebView.EvaluateJavaScriptAsync without throwing when no host library is present, and the
+// native message callback (OnJsMessageNative -> HandleJsMessage) must raise JsMessage with the
+// dotnetHost.postMessage payload.
+var webProbe = new Microsoft.Maui.Controls.WebView { HeightRequest = 200 };
+OpenHarmonyHandlerConnector.Connect(webProbe);
+string? webEval = null;
+bool webEvalThrew = false;
+try
+{
+    webEval = await webProbe.EvaluateJavaScriptAsync("1 + 1");
+}
+catch (Exception ex)
+{
+    webEvalThrew = true;
+    Console.WriteLine($"[verify] webview eval threw {ex.GetType().Name}: {ex.Message}");
+}
+bool webEvalOk = !webEvalThrew && webEval is null or "";
+Console.WriteLine($"[verify] webview handler={webProbe.Handler?.GetType().Name ?? "null"} evaluateAsync completes={webEvalOk} result={(webEval is null ? "<null>" : $"'{webEval}'")} (no host library)");
+if (!webEvalOk || webProbe.Handler is not OpenHarmonyWebViewHandler)
+{
+    throw new InvalidOperationException("WebView.EvaluateJavaScriptAsync did not degrade to null/empty off-device");
+}
+
+string? jsMessage = null;
+void OnJsMessageProbe(string payload) => jsMessage = payload;
+OpenHarmonyWebViewHandler.JsMessage += OnJsMessageProbe;
+try
+{
+    // This is exactly what the native notifyJsMessage callback invokes (OnJsMessageNative).
+    OpenHarmonyWebViewHandler.HandleJsMessage("{\"hello\":\"bridge\"}");
+}
+finally
+{
+    OpenHarmonyWebViewHandler.JsMessage -= OnJsMessageProbe;
+}
+bool jsMessageOk = jsMessage == "{\"hello\":\"bridge\"}";
+Console.WriteLine($"[verify] webview JsMessage raised={jsMessageOk} payload='{jsMessage}'");
+if (!jsMessageOk)
+{
+    throw new InvalidOperationException("the WebView JsMessage event did not carry the payload");
+}
+
+// HybridWebView: the MAUI contracts (EvaluateJavaScriptAsync/SendRawMessage/RawMessageReceived,
+// plus InvokeJavaScriptAsync over the same message protocol) ride the same shell channel. The
+// handler is registered in SliceHandlers, completes requests off-device instead of hanging, and
+// inbound __RawMessage payloads (and plain dotnetHost payloads) reach RawMessageReceived.
+bool hybridRegistered = MauiOpenHarmonyExtensions.SliceHandlers.TryGetValue(typeof(IHybridWebView), out Type? hybridType) &&
+                        hybridType == typeof(OpenHarmonyHybridWebViewHandler);
+var hybridProbe = new Microsoft.Maui.Controls.HybridWebView { HeightRequest = 200 };
+OpenHarmonyHandlerConnector.Connect(hybridProbe);
+string? hybridEval = null;
+bool hybridEvalThrew = false;
+try
+{
+    hybridEval = await hybridProbe.EvaluateJavaScriptAsync("1 + 1");
+}
+catch (Exception ex)
+{
+    hybridEvalThrew = true;
+    Console.WriteLine($"[verify] hybrid eval threw {ex.GetType().Name}: {ex.Message}");
+}
+bool hybridEvalOk = !hybridEvalThrew && hybridEval is null or "";
+Console.WriteLine($"[verify] hybrid handler={hybridProbe.Handler?.GetType().Name ?? "null"} registered={hybridRegistered} evaluateAsync completes={hybridEvalOk} result={(hybridEval is null ? "<null>" : $"'{hybridEval}'")} (no host library, no asset serving)");
+if (!hybridRegistered || hybridProbe.Handler is not OpenHarmonyHybridWebViewHandler || !hybridEvalOk)
+{
+    throw new InvalidOperationException("the HybridWebView handler assertion failed");
+}
+
+string? hybridRaw = null;
+hybridProbe.RawMessageReceived += (_, e) => hybridRaw = e.Message;
+bool hybridSendThrew = false;
+try
+{
+    hybridProbe.SendRawMessage("raw-from-dotnet");
+}
+catch (Exception ex)
+{
+    hybridSendThrew = true;
+    Console.WriteLine($"[verify] hybrid send threw {ex.GetType().Name}: {ex.Message}");
+}
+OpenHarmonyHybridWebViewHandler.OnJsMessage("__RawMessage|" + Uri.EscapeDataString("hello <hybrid>"));
+string rawPrefixed = hybridRaw ?? "<null>";
+hybridRaw = null;
+OpenHarmonyHybridWebViewHandler.OnJsMessage("plain payload");
+string rawPlain = hybridRaw ?? "<null>";
+bool hybridRawOk = !hybridSendThrew && rawPrefixed == "hello <hybrid>" && rawPlain == "plain payload";
+Console.WriteLine($"[verify] hybrid SendRawMessage degrades={!hybridSendThrew} rawMessage prefixed='{rawPrefixed}' plain='{rawPlain}'");
+if (!hybridRawOk)
+{
+    throw new InvalidOperationException("the HybridWebView raw message assertion failed");
+}
+
+// InvokeJavaScriptAsync rides the same protocol (window.HybridWebView.__InvokeJavaScript ->
+// __InvokeJavaScriptCompleted). Without a host library the kickoff cannot reach a page, so the
+// contract must complete instead of leaving the caller waiting for the timeout.
+bool hybridInvokeOk = false;
+bool hybridInvokeThrew = false;
+try
+{
+    await hybridProbe.InvokeJavaScriptAsync("verifyNoop");
+    hybridInvokeOk = true;
+}
+catch (Exception ex)
+{
+    hybridInvokeThrew = true;
+    Console.WriteLine($"[verify] hybrid invoke threw {ex.GetType().Name}: {ex.Message}");
+}
+Console.WriteLine($"[verify] hybrid InvokeJavaScriptAsync completes={hybridInvokeOk} (no host library -> null, no hang)");
+if (!hybridInvokeOk || hybridInvokeThrew)
+{
+    throw new InvalidOperationException("the HybridWebView InvokeJavaScriptAsync path did not complete off-device");
+}
+
 sealed class ProbeDrawable : Microsoft.Maui.Graphics.IDrawable
 {
     public int DrawCalls { get; private set; }

@@ -621,6 +621,97 @@ napi_value NotifyWebEvent(napi_env env, napi_callback_info info) {
     return undefined;
 }
 
+// JavaScript bridge: the managed side evaluates scripts through ohos_host_web_eval; the ArkTS
+// shell's registerWebEvalSink handler runs them on the ArkWeb controller and answers with
+// host.notifyWebEvalResult(requestId, result, error). Page messages posted from JavaScript
+// through the dotnetHost proxy arrive as host.notifyJsMessage(payload) and are forwarded to the
+// managed callback registered with ohos_host_web_js_register_message.
+napi_ref g_web_eval_sink_ref = nullptr;
+static void (*g_web_eval_result_listener)(int request_id, const char* result, int error) = nullptr;
+static void (*g_web_js_message_listener)(const char* payload) = nullptr;
+
+// Called from managed code (P/Invoke): forwards a script evaluation request to the ArkTS sink.
+extern "C" int ohos_host_web_eval(const char* script, int request_id) {
+    if (g_env == nullptr || g_web_eval_sink_ref == nullptr) {
+        return -1;
+    }
+    napi_value sink = nullptr;
+    if (napi_get_reference_value(g_env, g_web_eval_sink_ref, &sink) != napi_ok || sink == nullptr) {
+        return -1;
+    }
+    napi_value argv[2] = {nullptr, nullptr};
+    napi_create_string_utf8(g_env, script != nullptr ? script : "", NAPI_AUTO_LENGTH, &argv[0]);
+    napi_create_int32(g_env, request_id, &argv[1]);
+    napi_value result = nullptr;
+    napi_status status = napi_call_function(g_env, sink, sink, 2, argv, &result);
+    return status == napi_ok ? 0 : -1;
+}
+
+// The managed side registers the callback that completes a pending script evaluation.
+extern "C" void ohos_host_web_js_register_result(void* callback) {
+    g_web_eval_result_listener = (void (*)(int, const char*, int))callback;
+}
+
+// The managed side registers the callback that receives JavaScript page messages.
+extern "C" void ohos_host_web_js_register_message(void* callback) {
+    g_web_js_message_listener = (void (*)(const char*))callback;
+}
+
+// ArkTS calls host.registerWebEvalSink(fn) to receive script evaluation requests.
+napi_value RegisterWebEvalSink(napi_env env, napi_callback_info info) {
+    size_t argc = 1;
+    napi_value argv[1] = {nullptr};
+    napi_get_cb_info(env, info, &argc, argv, nullptr, nullptr);
+    if (argc >= 1) {
+        napi_valuetype type = napi_undefined;
+        napi_typeof(env, argv[0], &type);
+        if (type == napi_function) {
+            if (g_web_eval_sink_ref != nullptr) {
+                napi_delete_reference(env, g_web_eval_sink_ref);
+            }
+            napi_create_reference(env, argv[0], 1, &g_web_eval_sink_ref);
+            OH_LOG_INFO(LOG_APP, "[openharmony-host] web eval sink registered");
+        }
+    }
+    napi_value undefined = nullptr;
+    napi_get_undefined(env, &undefined);
+    return undefined;
+}
+
+// ArkTS calls host.notifyWebEvalResult(requestId, result, error) when runJavaScript finished.
+napi_value NotifyWebEvalResult(napi_env env, napi_callback_info info) {
+    size_t argc = 3;
+    napi_value argv[3] = {nullptr, nullptr, nullptr};
+    napi_get_cb_info(env, info, &argc, argv, nullptr, nullptr);
+    int requestId = 0;
+    std::string result;
+    int error = 0;
+    if (argc >= 1) napi_get_value_int32(env, argv[0], &requestId);
+    if (argc >= 2) result = GetStringArg(env, argv[1]);
+    if (argc >= 3) napi_get_value_int32(env, argv[2], &error);
+    if (g_web_eval_result_listener != nullptr) {
+        g_web_eval_result_listener(requestId, result.c_str(), error);
+    }
+    napi_value undefined = nullptr;
+    napi_get_undefined(env, &undefined);
+    return undefined;
+}
+
+// ArkTS calls host.notifyJsMessage(payload) from the dotnetHost.postMessage JavaScript proxy.
+napi_value NotifyJsMessage(napi_env env, napi_callback_info info) {
+    size_t argc = 1;
+    napi_value argv[1] = {nullptr};
+    napi_get_cb_info(env, info, &argc, argv, nullptr, nullptr);
+    std::string payload;
+    if (argc >= 1) payload = GetStringArg(env, argv[0]);
+    if (g_web_js_message_listener != nullptr) {
+        g_web_js_message_listener(payload.c_str());
+    }
+    napi_value undefined = nullptr;
+    napi_get_undefined(env, &undefined);
+    return undefined;
+}
+
 // ArkTS calls host.registerPickerSink(fn) to receive picker requests.
 napi_value RegisterPickerSink(napi_env env, napi_callback_info info) {
     size_t argc = 1;
@@ -999,6 +1090,9 @@ napi_value Init(napi_env env, napi_value exports) {
         {"attachAccessibilityNode", nullptr, AttachAccessibilityNode, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"registerWebSink", nullptr, RegisterWebSink, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"notifyWebEvent", nullptr, NotifyWebEvent, nullptr, nullptr, nullptr, napi_default, nullptr},
+        {"registerWebEvalSink", nullptr, RegisterWebEvalSink, nullptr, nullptr, nullptr, napi_default, nullptr},
+        {"notifyWebEvalResult", nullptr, NotifyWebEvalResult, nullptr, nullptr, nullptr, napi_default, nullptr},
+        {"notifyJsMessage", nullptr, NotifyJsMessage, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"notifyAvoidArea", nullptr, NotifyAvoidArea, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"notifyTheme", nullptr, NotifyTheme, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"notifyPickerResult", nullptr, NotifyPickerResult, nullptr, nullptr, nullptr, napi_default, nullptr},
