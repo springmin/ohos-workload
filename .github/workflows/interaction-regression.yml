@@ -1,0 +1,39 @@
+name: interaction-regression
+
+# Runs the 126-check headless interaction suite. It compiles the MAUI slice sources and needs the
+# hosting assembly; both come from the maui-ohos fork and the workload's own build. The job is
+# best-effort today: the slice/Hosting roots are passed through the same environment variables the
+# project already supports (MAUI_SLICE_DIR / HOSTING_DLL), so a runner that has them (or a cached
+# MAUI preview install plus a sparse checkout of maui-ohos) can run it unchanged.
+on:
+  workflow_dispatch:
+  push:
+    branches: [ master ]
+
+jobs:
+  interaction:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '11.0.x'
+          dotnet-quality: 'preview'
+      - name: Provide the slice and hosting roots
+        run: |
+          echo "MAUI_SLICE_DIR=$MAUI_SLICE_DIR" >> $GITHUB_ENV
+          echo "HOSTING_DLL=$HOSTING_DLL" >> $GITHUB_ENV
+        env:
+          MAUI_SLICE_DIR: ${{ vars.MAUI_SLICE_DIR }}
+          HOSTING_DLL: ${{ vars.HOSTING_DLL }}
+      - name: Run the suite when the roots are configured
+        if: ${{ vars.MAUI_SLICE_DIR != '' && vars.HOSTING_DLL != '' }}
+        working-directory: test/maui-platform-verify
+        run: |
+          dotnet build -v:q
+          dotnet bin/Debug/net11.0/verify.dll | tee out.txt
+          test "$(grep -c '\[verify\]' out.txt)" -ge 126
+          ! grep -q Unhandled out.txt
+      - name: Report missing configuration
+        if: ${{ vars.MAUI_SLICE_DIR == '' || vars.HOSTING_DLL == '' }}
+        run: echo "MAUI_SLICE_DIR/HOSTING_DLL repository variables are not set; skipping the suite."

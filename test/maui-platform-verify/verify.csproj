@@ -1,5 +1,11 @@
 <Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
+    <!-- Portable roots: override with env vars or MSBuild properties (CI). -->
+    <MauiSliceDir Condition="'$(MauiSliceDir)' == ''">$(MAUI_SLICE_DIR)</MauiSliceDir>
+    <HostingDll Condition="'$(HostingDll)' == ''">$(HOSTING_DLL)</HostingDll>
+    <HostingDll Condition="'$(HostingDll)' == ''">/storage/Users/currentUser/springsources/ohos-workload/src/Microsoft.OpenHarmony.Hosting/bin/Release/net11.0/Microsoft.OpenHarmony.Hosting.dll</HostingDll>
+  </PropertyGroup>
+  <PropertyGroup>
     <OutputType>Exe</OutputType>
     <TargetFramework>net11.0</TargetFramework>
     <Nullable>enable</Nullable>
@@ -10,7 +16,7 @@
     <PackageReference Include="Microsoft.Maui.Controls" Version="11.0.0-rc.1.26451.6" />
     <PackageReference Include="Microsoft.Maui.Graphics" Version="11.0.0-rc.1.26451.6" />
     <Reference Include="Microsoft.OpenHarmony.Hosting">
-      <HintPath>/storage/Users/currentUser/springsources/ohos-workload/src/Microsoft.OpenHarmony.Hosting/bin/Release/net11.0/Microsoft.OpenHarmony.Hosting.dll</HintPath>
+      <HintPath>$(HostingDll)</HintPath>
       <Private>true</Private>
     </Reference>
     <Reference Include="Microsoft.OpenHarmony.Maui.Graphics">
