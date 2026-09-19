@@ -1,0 +1,11 @@
+<Project>
+  <!-- Repository-wide C# policy for the workload's own projects (audit follow-up):
+       nullable annotations on, recommended analyzers enabled, warnings are not errors so the
+       baseline can be burned down incrementally instead of blocking builds. -->
+  <PropertyGroup>
+    <Nullable>enable</Nullable>
+    <AnalysisLevel>latest</AnalysisLevel>
+    <TreatWarningsAsErrors>false</TreatWarningsAsErrors>
+    <LangVersion>latest</LangVersion>
+  </PropertyGroup>
+</Project>
