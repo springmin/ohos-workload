@@ -1,11 +1,12 @@
 # Interaction regression suite (headless)
 
-The 158-check MAUI-on-OpenHarmony interaction harness. It builds the platform slice sources from the
+The 163-check MAUI-on-OpenHarmony interaction harness. It builds the platform slice sources from the
 `maui-ohos` working tree and drives the app host without a device: touch/drag/pinch/pointer input,
 overlays, gestures (tap/pan/swipe/pinch/pointer/drag-and-drop), sensors/haptics/notification/picker
 wiring, the app-theme colour-mode handler, the launcher/browser/share ability bridge, the
-accessibility shadow tree snapshot, the menu table/activation bridge and the WebView JavaScript
-bridge (script evaluation + `dotnetHost.postMessage`).
+accessibility shadow tree snapshot, the menu table/activation bridge, the WebView JavaScript
+bridge (script evaluation + `dotnetHost.postMessage`) and the contacts/calendar platform extras
+(off-device degradation plus the delimited payload parsers).
 
 ## Running it
 
@@ -14,7 +15,7 @@ bridge (script evaluation + `dotnetHost.postMessage`).
 # the MAUI_SLICE_DIR / HOSTING_DLL env vars (or the MauiSliceDir / HostingDll MSBuild properties)
 # before building elsewhere.
 dotnet build -v:q
-dotnet bin/Debug/net11.0/verify.dll | grep -c '\[verify\]'   # expect 158
+dotnet bin/Debug/net11.0/verify.dll | grep -c '\[verify\]'   # expect 163
 ```
 
 ## Notes
@@ -23,7 +24,16 @@ dotnet bin/Debug/net11.0/verify.dll | grep -c '\[verify\]'   # expect 158
   blocks codesigned ELF apphosts on some machines).
 - The suite fails loudly (unhandled exception) when a slice change breaks startup or when an
   assertion for the gesture flows (including the drag-and-drop checks) does not hold; keep it at
-  158 checks when touching the platform slice.
+  163 checks when touching the platform slice.
+- Contacts/calendar coverage: `OpenHarmonyContacts.FindAsync` and
+  `OpenHarmonyCalendar.ListUpcomingAsync`/`AddEventAsync` return empty/false without throwing
+  off-device and report `IsSupported == false` before and after the call (the permission probe
+  fails without the host library); the delimited payload parsers are exercised with the
+  exact "name\tphone" and "title\tstartIso\tendIso" payload shapes the ArkTS shell sends. The
+  shell half imports `@kit.ContactsKit`/`@kit.CalendarKit` (both compile with the ArkTS toolchain)
+  and requires `ohos.permission.READ_CONTACTS` (contacts) and `ohos.permission.READ_CALENDAR` /
+  `ohos.permission.WRITE_CALENDAR` (calendar) at runtime; without the manifest declaration the
+  sinks answer "unavailable" instead of guessing.
 - JavaScript bridge coverage: `WebView.EvaluateJavaScriptAsync` completes with null/empty and
   never throws off-device (no host library), the native `notifyJsMessage` callback raises
   `OpenHarmonyWebViewHandler.JsMessage` with the `dotnetHost.postMessage` payload, and the

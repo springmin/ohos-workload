@@ -1228,6 +1228,99 @@ if (!hybridInvokeOk || hybridInvokeThrew)
     throw new InvalidOperationException("the HybridWebView InvokeJavaScriptAsync path did not complete off-device");
 }
 
+// Gap 5: Contacts/Calendar platform extras over the host/ArkTS kit bridge
+// (ohos_host_contacts_query / ohos_host_calendar_list / ohos_host_calendar_add ->
+// shell registerContactsSink / registerCalendarSink -> @kit.ContactsKit / @kit.CalendarKit).
+// Off-device there is no libopenharmonyhost.so, so both must return empty/false without throwing
+// and report IsSupported == false; the wire parsers are proven with the exact delimited payload
+// shape the shell sends ("name\tphone" and "title\tstartIso\tendIso" lines).
+bool contactsSupportedBefore = OpenHarmonyContacts.IsSupported;
+IReadOnlyList<OpenHarmonyContact> contactsFound = Array.Empty<OpenHarmonyContact>();
+bool contactsThrew = false;
+try
+{
+    contactsFound = await OpenHarmonyContacts.FindAsync("ver", 5);
+}
+catch (Exception ex)
+{
+    contactsThrew = true;
+    Console.WriteLine($"[verify] contacts FindAsync threw {ex.GetType().Name}: {ex.Message}");
+}
+bool contactsDegraded = !contactsThrew && contactsFound.Count == 0 &&
+    !contactsSupportedBefore && !OpenHarmonyContacts.IsSupported;
+Console.WriteLine($"[verify] contacts FindAsync degraded without throwing={!contactsThrew} count={contactsFound.Count} supported(before={contactsSupportedBefore}, after={OpenHarmonyContacts.IsSupported})");
+if (!contactsDegraded)
+{
+    throw new InvalidOperationException("OpenHarmonyContacts.FindAsync did not degrade off-device");
+}
+
+var contactsParsed = OpenHarmonyContacts.Parse("Ada Lovelace\t+15550100\nGrace Hopper\t+15550101\nNo Phone\n");
+bool contactsParsedOk = contactsParsed.Count == 3 &&
+    contactsParsed[0] == new OpenHarmonyContact("Ada Lovelace", "+15550100") &&
+    contactsParsed[1] == new OpenHarmonyContact("Grace Hopper", "+15550101") &&
+    contactsParsed[2] == new OpenHarmonyContact("No Phone", string.Empty);
+Console.WriteLine($"[verify] contacts parser count={contactsParsed.Count} first='{contactsParsed[0].Name}/{contactsParsed[0].Phone}' second='{contactsParsed[1].Name}/{contactsParsed[1].Phone}' assert={contactsParsedOk}");
+if (!contactsParsedOk)
+{
+    throw new InvalidOperationException("the contacts payload parser assertion failed");
+}
+
+bool calendarSupportedBefore = OpenHarmonyCalendar.IsSupported;
+IReadOnlyList<OpenHarmonyCalendarEvent> upcoming = Array.Empty<OpenHarmonyCalendarEvent>();
+bool calendarListThrew = false;
+try
+{
+    upcoming = await OpenHarmonyCalendar.ListUpcomingAsync(7);
+}
+catch (Exception ex)
+{
+    calendarListThrew = true;
+    Console.WriteLine($"[verify] calendar ListUpcomingAsync threw {ex.GetType().Name}: {ex.Message}");
+}
+bool calendarDegraded = !calendarListThrew && upcoming.Count == 0 &&
+    !calendarSupportedBefore && !OpenHarmonyCalendar.IsSupported;
+Console.WriteLine($"[verify] calendar ListUpcomingAsync degraded without throwing={!calendarListThrew} count={upcoming.Count} supported(before={calendarSupportedBefore}, after={OpenHarmonyCalendar.IsSupported})");
+if (!calendarDegraded)
+{
+    throw new InvalidOperationException("OpenHarmonyCalendar.ListUpcomingAsync did not degrade off-device");
+}
+
+bool addReturned = true;
+bool calendarAddThrew = false;
+try
+{
+    addReturned = await OpenHarmonyCalendar.AddEventAsync(
+        "Verify event", "2026-09-19T09:00:00.000Z", "2026-09-19T10:00:00.000Z");
+}
+catch (Exception ex)
+{
+    calendarAddThrew = true;
+    Console.WriteLine($"[verify] calendar AddEventAsync threw {ex.GetType().Name}: {ex.Message}");
+}
+bool calendarAddDegraded = !calendarAddThrew && !addReturned;
+Console.WriteLine($"[verify] calendar AddEventAsync degraded without throwing={!calendarAddThrew} returned={addReturned}");
+if (!calendarAddDegraded)
+{
+    throw new InvalidOperationException("OpenHarmonyCalendar.AddEventAsync did not degrade off-device");
+}
+
+var eventsParsed = OpenHarmonyCalendar.Parse(
+    "Team sync\t2026-09-19T09:00:00.000Z\t2026-09-19T10:00:00.000Z\n" +
+    "Local standup\t2026-09-20T09:30:00+08:00\t2026-09-20T09:45:00+08:00\n" +
+    "broken line\n" +
+    "Bad dates\tnot-a-date\t2026-09-20T10:00:00.000Z\n");
+bool calendarParsedOk = eventsParsed.Count == 2 &&
+    eventsParsed[0].Title == "Team sync" &&
+    eventsParsed[0].Start == DateTimeOffset.Parse("2026-09-19T09:00:00.000Z", System.Globalization.CultureInfo.InvariantCulture) &&
+    eventsParsed[0].End == DateTimeOffset.Parse("2026-09-19T10:00:00.000Z", System.Globalization.CultureInfo.InvariantCulture) &&
+    eventsParsed[1].Title == "Local standup" &&
+    eventsParsed[1].Start == DateTimeOffset.Parse("2026-09-20T09:30:00+08:00", System.Globalization.CultureInfo.InvariantCulture);
+Console.WriteLine($"[verify] calendar parser count={eventsParsed.Count} first='{eventsParsed[0].Title}/{eventsParsed[0].Start:O}' splitLinesDropped={eventsParsed.Count == 2} assert={calendarParsedOk}");
+if (!calendarParsedOk)
+{
+    throw new InvalidOperationException("the calendar payload parser assertion failed");
+}
+
 sealed class ProbeDrawable : Microsoft.Maui.Graphics.IDrawable
 {
     public int DrawCalls { get; private set; }

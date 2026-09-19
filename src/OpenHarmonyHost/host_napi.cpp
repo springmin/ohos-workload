@@ -11,6 +11,7 @@
 #include <napi/native_api.h>
 #include <hilog/log.h>
 #include <pthread.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -318,6 +319,172 @@ napi_value NotifyTtsResult(napi_env env, napi_callback_info info) {
         napi_get_value_int32(env, argv[1], &code);
     }
     ohos_host_tts_result(requestId, code);
+    napi_value undefined = nullptr;
+    napi_get_undefined(env, &undefined);
+    return undefined;
+}
+
+// Contacts (Contacts Kit) and Calendar (Calendar Kit): the managed side forwards a request
+// through ohos_host_contacts_query / ohos_host_calendar_list / ohos_host_calendar_add; the
+// ArkTS shell's registerContactsSink / registerCalendarSink handlers own the kit calls (and the
+// runtime permission request) and answer through host.notifyContactsResult /
+// host.notifyCalendarResult. The payload is a delimited table, one record per line with '\t'
+// separated fields (contacts: name, phone; calendar: title, start ISO-8601, end ISO-8601);
+// code 0 means the answer is complete (an empty payload is a valid "no records"), code -1 means
+// the kit, the permission or the sink was unavailable.
+napi_ref g_contacts_sink_ref = nullptr;
+napi_ref g_calendar_sink_ref = nullptr;
+static void (*g_contacts_result_listener)(int request_id, int code, const char* payload) = nullptr;
+static void (*g_calendar_result_listener)(int request_id, int code, const char* payload) = nullptr;
+
+// Called from managed code (P/Invoke): forwards a name-prefix lookup (limit caps the number of
+// returned rows) to the ArkTS sink; returns 0 when it was dispatched.
+extern "C" int ohos_host_contacts_query(int request_id, const char* name_prefix, int limit) {
+    if (g_env == nullptr || g_contacts_sink_ref == nullptr) {
+        return -1;
+    }
+    napi_value sink = nullptr;
+    if (napi_get_reference_value(g_env, g_contacts_sink_ref, &sink) != napi_ok || sink == nullptr) {
+        return -1;
+    }
+    napi_value argv[3];
+    napi_create_int32(g_env, request_id, &argv[0]);
+    napi_create_string_utf8(g_env, name_prefix != nullptr ? name_prefix : "", NAPI_AUTO_LENGTH, &argv[1]);
+    napi_create_int32(g_env, limit, &argv[2]);
+    napi_value result = nullptr;
+    napi_status status = napi_call_function(g_env, sink, sink, 3, argv, &result);
+    return status == napi_ok ? 0 : -1;
+}
+
+// The managed side registers the callback that completes a pending contacts request.
+extern "C" void ohos_host_contacts_register_result(void* callback) {
+    g_contacts_result_listener = (void (*)(int, int, const char*))callback;
+}
+
+// Called by the NAPI notify below: hands the shell's answer back to managed code.
+extern "C" void ohos_host_contacts_result(int request_id, int code, const char* payload) {
+    if (g_contacts_result_listener != nullptr) {
+        g_contacts_result_listener(request_id, code, payload != nullptr ? payload : "");
+    }
+}
+
+// ArkTS calls host.registerContactsSink(fn) to receive contacts lookups.
+napi_value RegisterContactsSink(napi_env env, napi_callback_info info) {
+    size_t argc = 1;
+    napi_value argv[1] = {nullptr};
+    napi_get_cb_info(env, info, &argc, argv, nullptr, nullptr);
+    if (argc >= 1) {
+        napi_valuetype type = napi_undefined;
+        napi_typeof(env, argv[0], &type);
+        if (type == napi_function) {
+            if (g_contacts_sink_ref != nullptr) {
+                napi_delete_reference(env, g_contacts_sink_ref);
+            }
+            napi_create_reference(env, argv[0], 1, &g_contacts_sink_ref);
+            OH_LOG_INFO(LOG_APP, "[openharmony-host] contacts sink registered");
+        }
+    }
+    napi_value undefined = nullptr;
+    napi_get_undefined(env, &undefined);
+    return undefined;
+}
+
+// ArkTS calls host.notifyContactsResult(requestId, code, payload) when a lookup finished.
+napi_value NotifyContactsResult(napi_env env, napi_callback_info info) {
+    size_t argc = 3;
+    napi_value argv[3] = {nullptr, nullptr, nullptr};
+    napi_get_cb_info(env, info, &argc, argv, nullptr, nullptr);
+    int requestId = 0;
+    int code = -1;
+    std::string payload;
+    if (argc >= 1) napi_get_value_int32(env, argv[0], &requestId);
+    if (argc >= 2) napi_get_value_int32(env, argv[1], &code);
+    if (argc >= 3) payload = GetStringArg(env, argv[2]);
+    ohos_host_contacts_result(requestId, code, payload.c_str());
+    napi_value undefined = nullptr;
+    napi_get_undefined(env, &undefined);
+    return undefined;
+}
+
+// Calls the calendar sink: op 0 = list (arg1 = days), op 1 = add (arg1 = title,
+// arg2 = start ISO-8601, arg3 = end ISO-8601).
+static int CallCalendarSink(int request_id, int op, const char* arg1, const char* arg2, const char* arg3) {
+    if (g_env == nullptr || g_calendar_sink_ref == nullptr) {
+        return -1;
+    }
+    napi_value sink = nullptr;
+    if (napi_get_reference_value(g_env, g_calendar_sink_ref, &sink) != napi_ok || sink == nullptr) {
+        return -1;
+    }
+    napi_value argv[5];
+    napi_create_int32(g_env, request_id, &argv[0]);
+    napi_create_int32(g_env, op, &argv[1]);
+    napi_create_string_utf8(g_env, arg1 != nullptr ? arg1 : "", NAPI_AUTO_LENGTH, &argv[2]);
+    napi_create_string_utf8(g_env, arg2 != nullptr ? arg2 : "", NAPI_AUTO_LENGTH, &argv[3]);
+    napi_create_string_utf8(g_env, arg3 != nullptr ? arg3 : "", NAPI_AUTO_LENGTH, &argv[4]);
+    napi_value result = nullptr;
+    napi_status status = napi_call_function(g_env, sink, sink, 5, argv, &result);
+    return status == napi_ok ? 0 : -1;
+}
+
+// Called from managed code (P/Invoke): lists events in the next `days` days.
+extern "C" int ohos_host_calendar_list(int request_id, int days) {
+    char buffer[32];
+    buffer[0] = '\0';
+    snprintf(buffer, sizeof(buffer), "%d", days);
+    return CallCalendarSink(request_id, 0, buffer, "", "");
+}
+
+// Called from managed code (P/Invoke): adds one event from ISO-8601 start/end times.
+extern "C" int ohos_host_calendar_add(int request_id, const char* title, const char* start_iso, const char* end_iso) {
+    return CallCalendarSink(request_id, 1, title, start_iso, end_iso);
+}
+
+// The managed side registers the callback that completes a pending calendar request.
+extern "C" void ohos_host_calendar_register_result(void* callback) {
+    g_calendar_result_listener = (void (*)(int, int, const char*))callback;
+}
+
+// Called by the NAPI notify below: hands the shell's answer back to managed code.
+extern "C" void ohos_host_calendar_result(int request_id, int code, const char* payload) {
+    if (g_calendar_result_listener != nullptr) {
+        g_calendar_result_listener(request_id, code, payload != nullptr ? payload : "");
+    }
+}
+
+// ArkTS calls host.registerCalendarSink(fn) to receive calendar list/add requests.
+napi_value RegisterCalendarSink(napi_env env, napi_callback_info info) {
+    size_t argc = 1;
+    napi_value argv[1] = {nullptr};
+    napi_get_cb_info(env, info, &argc, argv, nullptr, nullptr);
+    if (argc >= 1) {
+        napi_valuetype type = napi_undefined;
+        napi_typeof(env, argv[0], &type);
+        if (type == napi_function) {
+            if (g_calendar_sink_ref != nullptr) {
+                napi_delete_reference(env, g_calendar_sink_ref);
+            }
+            napi_create_reference(env, argv[0], 1, &g_calendar_sink_ref);
+            OH_LOG_INFO(LOG_APP, "[openharmony-host] calendar sink registered");
+        }
+    }
+    napi_value undefined = nullptr;
+    napi_get_undefined(env, &undefined);
+    return undefined;
+}
+
+// ArkTS calls host.notifyCalendarResult(requestId, code, payload) when a request finished.
+napi_value NotifyCalendarResult(napi_env env, napi_callback_info info) {
+    size_t argc = 3;
+    napi_value argv[3] = {nullptr, nullptr, nullptr};
+    napi_get_cb_info(env, info, &argc, argv, nullptr, nullptr);
+    int requestId = 0;
+    int code = -1;
+    std::string payload;
+    if (argc >= 1) napi_get_value_int32(env, argv[0], &requestId);
+    if (argc >= 2) napi_get_value_int32(env, argv[1], &code);
+    if (argc >= 3) payload = GetStringArg(env, argv[2]);
+    ohos_host_calendar_result(requestId, code, payload.c_str());
     napi_value undefined = nullptr;
     napi_get_undefined(env, &undefined);
     return undefined;
@@ -1072,6 +1239,10 @@ napi_value Init(napi_env env, napi_value exports) {
         {"registerNotificationSink", nullptr, RegisterNotificationSink, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"registerTtsSink", nullptr, RegisterTtsSink, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"notifyTtsResult", nullptr, NotifyTtsResult, nullptr, nullptr, nullptr, napi_default, nullptr},
+        {"registerContactsSink", nullptr, RegisterContactsSink, nullptr, nullptr, nullptr, napi_default, nullptr},
+        {"notifyContactsResult", nullptr, NotifyContactsResult, nullptr, nullptr, nullptr, napi_default, nullptr},
+        {"registerCalendarSink", nullptr, RegisterCalendarSink, nullptr, nullptr, nullptr, napi_default, nullptr},
+        {"notifyCalendarResult", nullptr, NotifyCalendarResult, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"registerAbilitySink", nullptr, RegisterAbilitySink, nullptr, nullptr, nullptr, napi_default, nullptr},
 
         {"registerMenuChangedSink", nullptr, RegisterMenuChangedSink, nullptr, nullptr, nullptr, napi_default, nullptr},

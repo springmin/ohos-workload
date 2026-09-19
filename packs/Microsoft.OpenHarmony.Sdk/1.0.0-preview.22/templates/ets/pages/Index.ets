@@ -9,8 +9,11 @@
 // rendering target for Skia/MAUI. The ContentSlot next to it hosts native ArkUI nodes that
 // managed code attaches through OpenHarmonyBridge.NodeContent.
 import { NodeContent } from '@ohos.arkui.node';
+import abilityAccessCtrl, { Permissions } from '@ohos.abilityAccessCtrl';
 import cameraPicker from '@ohos.multimedia.cameraPicker';
 import camera from '@ohos.multimedia.camera';
+import { calendarManager } from '@kit.CalendarKit';
+import { contact } from '@kit.ContactsKit';
 import common from '@ohos.app.ability.common';
 import Want from '@ohos.app.ability.Want';
 import fileIo from '@ohos.file.fs';
@@ -270,6 +273,90 @@ struct Index {
     // engine.speak(text, ...) and answer host.notifyTtsResult(requestId, 0) when it finishes.
     host.registerTtsSink((requestId: number, text: string, locale: string): void => {
       host.notifyTtsResult(requestId, -1);
+    });
+
+    // Contacts (platform extra): the managed side asks through ohos_host_contacts_query. The
+    // sink requires ohos.permission.READ_CONTACTS, queries the Contacts Kit
+    // (@kit.ContactsKit -> contact.queryContacts) and answers with "name\tphone" lines, capped
+    // at the managed limit. A missing kit or a denied permission answers code -1, which the
+    // managed side reports as IsSupported == false instead of guessing.
+    host.registerContactsSink(async (requestId: number, namePrefix: string, limit: number): Promise<void> => {
+      try {
+        const context = getContext(this) as common.UIAbilityContext;
+        const permissions: Permissions[] = ['ohos.permission.READ_CONTACTS'];
+        const atManager = abilityAccessCtrl.createAtManager();
+        const granted = await atManager.requestPermissionsFromUser(context, permissions);
+        if (granted.authResults.length === 0 || granted.authResults[0] !== 0) {
+          host.notifyContactsResult(requestId, -1, '');
+          return;
+        }
+        const all = await contact.queryContacts(context);
+        const rows: string[] = [];
+        for (const item of all) {
+          const name: string = item.name && item.name.fullName ? item.name.fullName : '';
+          if (namePrefix.length > 0 && !name.startsWith(namePrefix)) {
+            continue;
+          }
+          const phone: string = item.phoneNumbers && item.phoneNumbers.length > 0
+            ? item.phoneNumbers[0].phoneNumber : '';
+          rows.push(`${name}\t${phone}`);
+          if (rows.length >= limit) {
+            break;
+          }
+        }
+        host.notifyContactsResult(requestId, 0, rows.join('\n'));
+      } catch (contactsError) {
+        console.error(`[maui] contacts query failed: ${(contactsError as Error).message}`);
+        host.notifyContactsResult(requestId, -1, '');
+      }
+    });
+
+    // Calendar (platform extra): the managed side asks through ohos_host_calendar_list (op 0,
+    // arg1 = days) or ohos_host_calendar_add (op 1, arg1 = title, arg2/arg3 = ISO start/end).
+    // Both require the runtime calendar permissions and run through the Calendar Kit
+    // (@kit.CalendarKit -> calendarManager.getCalendar -> getEvents / addEvent). A missing kit
+    // or a denied permission answers code -1 (managed IsSupported == false).
+    host.registerCalendarSink(async (requestId: number, op: number, arg1: string, arg2: string, arg3: string): Promise<void> => {
+      try {
+        const context = getContext(this) as common.UIAbilityContext;
+        const permissions: Permissions[] = op === 0
+          ? ['ohos.permission.READ_CALENDAR']
+          : ['ohos.permission.READ_CALENDAR', 'ohos.permission.WRITE_CALENDAR'];
+        const atManager = abilityAccessCtrl.createAtManager();
+        const granted = await atManager.requestPermissionsFromUser(context, permissions);
+        for (let i = 0; i < granted.authResults.length; i++) {
+          if (granted.authResults[i] !== 0) {
+            host.notifyCalendarResult(requestId, -1, '');
+            return;
+          }
+        }
+        const manager = calendarManager.getCalendarManager(context);
+        const calendar = await manager.getCalendar();
+        if (op === 0) {
+          const days: number = Number.parseInt(arg1, 10) || 0;
+          const now: number = Date.now();
+          const end: number = now + days * 24 * 60 * 60 * 1000;
+          const events = await calendar.getEvents(calendarManager.EventFilter.filterByTime(now, end));
+          const rows: string[] = [];
+          for (const item of events) {
+            const title: string = item.title ? item.title : '';
+            rows.push(`${title}\t${new Date(item.startTime).toISOString()}\t${new Date(item.endTime).toISOString()}`);
+          }
+          host.notifyCalendarResult(requestId, 0, rows.join('\n'));
+          return;
+        }
+        const event: calendarManager.Event = {
+          type: calendarManager.EventType.NORMAL,
+          title: arg1,
+          startTime: Date.parse(arg2),
+          endTime: Date.parse(arg3),
+        };
+        await calendar.addEvent(event);
+        host.notifyCalendarResult(requestId, 0, '');
+      } catch (calendarError) {
+        console.error(`[maui] calendar request failed: ${(calendarError as Error).message}`);
+        host.notifyCalendarResult(requestId, -1, '');
+      }
     });
 
     // Launcher/Browser/Share: managed requests arrive through ohos_host_ability_start. kind 0
