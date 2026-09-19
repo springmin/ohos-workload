@@ -52,11 +52,46 @@ void OnSurfaceDestroyed(OH_NativeXComponent* component, void* window) {
     ohos_host_set_native_window(window, 0, 0, OHOS_SURFACE_DESTROYED);
 }
 
+extern "C" void OhosNotifyPinch(int phase, double scale, float x, float y);
+
+static bool g_pinch_active = false;
+static double g_pinch_start_distance = 0.0;
+
+// Two-finger pinch straight from the XComponent touch event (the event carries every point).
+static void MaybeReportPinch(OH_NativeXComponent* component, const OH_NativeXComponent_TouchEvent& event) {
+    if (event.numPoints >= 2) {
+        float x0 = 0.0f, y0 = 0.0f, x1 = 0.0f, y1 = 0.0f;
+        OH_NativeXComponent_GetTouchPointWindowX(component, 0, &x0);
+        OH_NativeXComponent_GetTouchPointWindowY(component, 0, &y0);
+        OH_NativeXComponent_GetTouchPointWindowX(component, 1, &x1);
+        OH_NativeXComponent_GetTouchPointWindowY(component, 1, &y1);
+        double dx = static_cast<double>(x1) - static_cast<double>(x0);
+        double dy = static_cast<double>(y1) - static_cast<double>(y0);
+        double squared = dx * dx + dy * dy;
+        double distance = squared > 0.0 ? __builtin_sqrt(squared) : 1.0;
+        float centerX = static_cast<float>((static_cast<double>(x0) + static_cast<double>(x1)) / 2.0);
+        float centerY = static_cast<float>((static_cast<double>(y0) + static_cast<double>(y1)) / 2.0);
+        if (!g_pinch_active) {
+            g_pinch_active = true;
+            g_pinch_start_distance = distance;
+            OhosNotifyPinch(0, 1.0, centerX, centerY);
+        } else {
+            double scale = g_pinch_start_distance > 0.0 ? distance / g_pinch_start_distance : 1.0;
+            OhosNotifyPinch(1, scale, centerX, centerY);
+        }
+    } else if (g_pinch_active) {
+        g_pinch_active = false;
+        g_pinch_start_distance = 0.0;
+        OhosNotifyPinch(2, 1.0, 0.0f, 0.0f);
+    }
+}
+
 void OnTouch(OH_NativeXComponent* component, void* window) {
     OH_NativeXComponent_TouchEvent event = {};
     if (OH_NativeXComponent_GetTouchEvent(component, window, &event) != 0) {
         return;
     }
+    MaybeReportPinch(component, event);
     float x = event.x;
     float y = event.y;
     if (event.numPoints > 0) {
