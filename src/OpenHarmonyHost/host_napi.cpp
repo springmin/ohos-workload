@@ -14,6 +14,10 @@
 #include <stdlib.h>
 #include <string.h>
 
+// Forward declarations: the module function table below references these (defined at the end).
+napi_value AttachAccessibilityNode(napi_env env, napi_callback_info info);
+napi_value AccessibilityStatus(napi_env env, napi_callback_info info);
+
 #include <string>
 
 #include "openharmony_host.h"
@@ -687,6 +691,14 @@ napi_value Init(napi_env env, napi_value exports) {
 
 
         {"notifyPinch", nullptr, NotifyPinch, nullptr, nullptr, nullptr, napi_default, nullptr},
+
+
+
+        {"accessibilityStatus", nullptr, AccessibilityStatus, nullptr, nullptr, nullptr, napi_default, nullptr},
+
+
+
+        {"attachAccessibilityNode", nullptr, AttachAccessibilityNode, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"registerWebSink", nullptr, RegisterWebSink, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"notifyWebEvent", nullptr, NotifyWebEvent, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"notifyAvoidArea", nullptr, NotifyAvoidArea, nullptr, nullptr, nullptr, napi_default, nullptr},
@@ -717,4 +729,220 @@ static napi_module g_hostModule = {
 
 extern "C" __attribute__((constructor)) void RegisterHostModule(void) {
     napi_module_register(&g_hostModule);
+}
+
+
+// ---------------------------------------------------------------------------
+// Accessibility provider: serves the node table published by the runtime to
+// ArkUI's accessibility framework (see docs/plans/2026-09-19-ohos-arkts-handover-status.md 3b).
+// ---------------------------------------------------------------------------
+#include <arkui/native_node_napi.h>
+#include <arkui/native_interface_accessibility.h>
+#include <cstring>
+
+extern "C" int ohos_host_accessibility_count(void);
+extern "C" int ohos_host_accessibility_get(int index, int* id, int* parent_id, const char** role,
+                                           const char** text, const char** description,
+                                           float* x, float* y, float* width, float* height,
+                                           int* flags, int* actions);
+
+static ArkUI_AccessibilityProvider* g_a11y_provider = nullptr;
+static int g_a11y_status = 0;  // 0 = not attached, 1 = attached
+static void (*g_a11y_action_listener)(int id, int action) = nullptr;
+
+static void A11yAddNode(ArkUI_AccessibilityElementInfoList* list, int index) {
+    int id = 0, parent = 0, flags = 0, actions = 0;
+    const char* role = nullptr; const char* text = nullptr; const char* description = nullptr;
+    float x = 0, y = 0, w = 0, h = 0;
+    if (ohos_host_accessibility_get(index, &id, &parent, &role, &text, &description,
+                                    &x, &y, &w, &h, &flags, &actions) != 0) {
+        return;
+    }
+    ArkUI_AccessibilityElementInfo* info = OH_ArkUI_AddAndGetAccessibilityElementInfo(list);
+    if (info == nullptr) {
+        return;
+    }
+    OH_ArkUI_AccessibilityElementInfoSetElementId(info, id);
+    OH_ArkUI_AccessibilityElementInfoSetParentId(info, parent);
+    OH_ArkUI_AccessibilityElementInfoSetComponentType(info, role != nullptr ? role : "group");
+    if (text != nullptr) {
+        OH_ArkUI_AccessibilityElementInfoSetAccessibilityText(info, text);
+    }
+    if (description != nullptr) {
+        OH_ArkUI_AccessibilityElementInfoSetContents(info, description);
+    }
+    ArkUI_AccessibleRect rect;
+    rect.leftTopX = (int32_t)x;
+    rect.leftTopY = (int32_t)y;
+    rect.rightBottomX = (int32_t)(x + w);
+    rect.rightBottomY = (int32_t)(y + h);
+    OH_ArkUI_AccessibilityElementInfoSetScreenRect(info, &rect);
+    OH_ArkUI_AccessibilityElementInfoSetClickable(info, (actions & 0x10) != 0);
+    OH_ArkUI_AccessibilityElementInfoSetEnabled(info, (flags & 1) != 0);
+    OH_ArkUI_AccessibilityElementInfoSetFocusable(info, (flags & 2) != 0);
+}
+
+static int32_t A11yFindById(int64_t elementId, ArkUI_AccessibilitySearchMode mode,
+                            int32_t requestId, ArkUI_AccessibilityElementInfoList* list) {
+    (void)requestId;
+    int count = ohos_host_accessibility_count();
+    if (count <= 0) {
+        return ARKUI_ACCESSIBILITY_NATIVE_RESULT_FAILED;
+    }
+    if (elementId <= 0) {
+        A11yAddNode(list, 0);              // root
+        return ARKUI_ACCESSIBILITY_NATIVE_RESULT_SUCCESSFUL;
+    }
+    for (int i = 0; i < count; i++) {
+        int id = 0;
+        ohos_host_accessibility_get(i, &id, nullptr, nullptr, nullptr, nullptr,
+                                   nullptr, nullptr, nullptr, nullptr, nullptr, nullptr);
+        if (id == (int)elementId) {
+            A11yAddNode(list, i);
+            if ((int)mode & ARKUI_ACCESSIBILITY_NATIVE_SEARCH_MODE_PREFETCH_CHILDREN) {
+                for (int j = 0; j < count; j++) {
+                    int parent = 0;
+                    ohos_host_accessibility_get(j, nullptr, &parent, nullptr, nullptr, nullptr,
+                                               nullptr, nullptr, nullptr, nullptr, nullptr, nullptr);
+                    if (parent == id) {
+                        A11yAddNode(list, j);
+                    }
+                }
+            }
+            return ARKUI_ACCESSIBILITY_NATIVE_RESULT_SUCCESSFUL;
+        }
+    }
+    return ARKUI_ACCESSIBILITY_NATIVE_RESULT_FAILED;
+}
+
+static int32_t A11yFindByText(int64_t elementId, const char* text, int32_t requestId,
+                              ArkUI_AccessibilityElementInfoList* list) {
+    (void)elementId; (void)requestId;
+    if (text == nullptr) {
+        return ARKUI_ACCESSIBILITY_NATIVE_RESULT_BAD_PARAMETER;
+    }
+    int count = ohos_host_accessibility_count();
+    int found = 0;
+    for (int i = 0; i < count; i++) {
+        const char* nodeText = nullptr; const char* description = nullptr;
+        ohos_host_accessibility_get(i, nullptr, nullptr, nullptr, &nodeText, &description,
+                                   nullptr, nullptr, nullptr, nullptr, nullptr, nullptr);
+        if ((nodeText != nullptr && strstr(nodeText, text) != nullptr) ||
+            (description != nullptr && strstr(description, text) != nullptr)) {
+            A11yAddNode(list, i);
+            found++;
+        }
+    }
+    return found > 0 ? ARKUI_ACCESSIBILITY_NATIVE_RESULT_SUCCESSFUL : ARKUI_ACCESSIBILITY_NATIVE_RESULT_FAILED;
+}
+
+static int A11yFirstFocusable(int afterIndex) {
+    int count = ohos_host_accessibility_count();
+    for (int step = 0; step < count; step++) {
+        int i = (afterIndex + 1 + step) % count;
+        int flags = 0;
+        ohos_host_accessibility_get(i, nullptr, nullptr, nullptr, nullptr, nullptr,
+                                   nullptr, nullptr, nullptr, nullptr, &flags, nullptr);
+        if ((flags & 2) != 0) {
+            return i;
+        }
+    }
+    return -1;
+}
+
+static int32_t A11yFillSingle(int index, ArkUI_AccessibilityElementInfo* info) {
+    if (index < 0 || info == nullptr) {
+        return ARKUI_ACCESSIBILITY_NATIVE_RESULT_FAILED;
+    }
+    int id = 0, parent = 0, flags = 0, actions = 0;
+    const char* role = nullptr; const char* text = nullptr; const char* description = nullptr;
+    float x = 0, y = 0, w = 0, h = 0;
+    if (ohos_host_accessibility_get(index, &id, &parent, &role, &text, &description,
+                                    &x, &y, &w, &h, &flags, &actions) != 0) {
+        return ARKUI_ACCESSIBILITY_NATIVE_RESULT_FAILED;
+    }
+    OH_ArkUI_AccessibilityElementInfoSetElementId(info, id);
+    OH_ArkUI_AccessibilityElementInfoSetParentId(info, parent);
+    OH_ArkUI_AccessibilityElementInfoSetComponentType(info, role != nullptr ? role : "group");
+    if (text != nullptr) {
+        OH_ArkUI_AccessibilityElementInfoSetAccessibilityText(info, text);
+    }
+    if (description != nullptr) {
+        OH_ArkUI_AccessibilityElementInfoSetContents(info, description);
+    }
+    ArkUI_AccessibleRect rect;
+    rect.leftTopX = (int32_t)x; rect.leftTopY = (int32_t)y;
+    rect.rightBottomX = (int32_t)(x + w); rect.rightBottomY = (int32_t)(y + h);
+    OH_ArkUI_AccessibilityElementInfoSetScreenRect(info, &rect);
+    OH_ArkUI_AccessibilityElementInfoSetClickable(info, (actions & 0x10) != 0);
+    OH_ArkUI_AccessibilityElementInfoSetEnabled(info, (flags & 1) != 0);
+    OH_ArkUI_AccessibilityElementInfoSetFocusable(info, (flags & 2) != 0);
+    return ARKUI_ACCESSIBILITY_NATIVE_RESULT_SUCCESSFUL;
+}
+
+static int32_t A11yFocused(int64_t elementId, ArkUI_AccessibilityFocusType focusType,
+                           int32_t requestId, ArkUI_AccessibilityElementInfo* info) {
+    (void)elementId; (void)focusType; (void)requestId;
+    return A11yFillSingle(A11yFirstFocusable(-1), info);
+}
+
+static int32_t A11yNextFocus(int64_t elementId, ArkUI_AccessibilityFocusMoveDirection direction,
+                             int32_t requestId, ArkUI_AccessibilityElementInfo* info) {
+    (void)direction; (void)requestId;
+    return A11yFillSingle(A11yFirstFocusable((int)elementId - 1), info);
+}
+
+static int32_t A11yExecuteAction(int64_t elementId, ArkUI_Accessibility_ActionType action,
+                                 ArkUI_AccessibilityActionArguments* arguments, int32_t requestId) {
+    (void)arguments; (void)requestId;
+    if (g_a11y_action_listener != nullptr) {
+        g_a11y_action_listener((int)elementId, (int)action);
+        return ARKUI_ACCESSIBILITY_NATIVE_RESULT_SUCCESSFUL;
+    }
+    return ARKUI_ACCESSIBILITY_NATIVE_RESULT_FAILED;
+}
+
+static int32_t A11yClearFocus(void) {
+    return ARKUI_ACCESSIBILITY_NATIVE_RESULT_SUCCESSFUL;
+}
+
+static int32_t A11yCursorPosition(int64_t elementId, int32_t requestId, int32_t* index) {
+    (void)elementId; (void)requestId;
+    if (index != nullptr) {
+        *index = 0;
+    }
+    return ARKUI_ACCESSIBILITY_NATIVE_RESULT_SUCCESSFUL;
+}
+
+static ArkUI_AccessibilityProviderCallbacks g_a11y_callbacks = {
+    A11yFindById, A11yFindByText, A11yFocused, A11yNextFocus,
+    A11yExecuteAction, A11yClearFocus, A11yCursorPosition,
+};
+
+// ArkTS calls host.attachAccessibilityNode(nodeOrNodeContent) with the node that hosts our content.
+napi_value AttachAccessibilityNode(napi_env env, napi_callback_info info) {
+    size_t argc = 1;
+    napi_value argv[1];
+    napi_get_cb_info(env, info, &argc, argv, nullptr, nullptr);
+    if (argc < 1) {
+        return nullptr;
+    }
+    ArkUI_NodeHandle node = nullptr;
+    if (OH_ArkUI_GetNodeHandleFromNapiValue(env, argv[0], &node) == 0 && node != nullptr &&
+        OH_ArkUI_NativeModule_GetNativeAccessibilityProvider(&node, &g_a11y_provider) == 0 &&
+        g_a11y_provider != nullptr) {
+        if (OH_ArkUI_AccessibilityProviderRegisterCallback(g_a11y_provider, &g_a11y_callbacks) == 0) {
+            g_a11y_status = 1;
+        }
+    }
+    napi_value result = nullptr;
+    napi_create_int32(env, g_a11y_status, &result);
+    return result;
+}
+
+napi_value AccessibilityStatus(napi_env env, napi_callback_info info) {
+    (void)info;
+    napi_value result = nullptr;
+    napi_create_int32(env, g_a11y_status, &result);
+    return result;
 }

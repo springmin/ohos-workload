@@ -1466,6 +1466,10 @@ void OhosNotifyPinch(int phase, double scale, float x, float y) {
 #include <stdlib.h>
 #include <string.h>
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 typedef struct OhosAccessibilityNode {
     int id;
     int parent_id;
@@ -1573,3 +1577,7 @@ int ohos_host_accessibility_get(int index, int* id, int* parent_id, const char**
     if (actions != NULL) *actions = node->actions;
     return 0;
 }
+
+#ifdef __cplusplus
+}
+#endif
