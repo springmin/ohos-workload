@@ -753,6 +753,20 @@ static ArkUI_AccessibilityProvider* g_a11y_provider = nullptr;
 static int g_a11y_status = 0;  // 0 = not attached, 1 = attached
 static void (*g_a11y_action_listener)(int id, int action) = nullptr;
 
+// Layout coordinates can be extreme or NaN; the framework rect is int32, so clamp them.
+static int32_t A11yCoord(float value) {
+    if (value != value) {
+        return 0;
+    }
+    if (value < -32768.0f) {
+        return -32768;
+    }
+    if (value > 32767.0f) {
+        return 32767;
+    }
+    return (int32_t)value;
+}
+
 static void A11yAddNode(ArkUI_AccessibilityElementInfoList* list, int index) {
     int id = 0, parent = 0, flags = 0, actions = 0;
     const char* role = nullptr; const char* text = nullptr; const char* description = nullptr;
@@ -775,10 +789,10 @@ static void A11yAddNode(ArkUI_AccessibilityElementInfoList* list, int index) {
         OH_ArkUI_AccessibilityElementInfoSetContents(info, description);
     }
     ArkUI_AccessibleRect rect;
-    rect.leftTopX = (int32_t)x;
-    rect.leftTopY = (int32_t)y;
-    rect.rightBottomX = (int32_t)(x + w);
-    rect.rightBottomY = (int32_t)(y + h);
+    rect.leftTopX = A11yCoord(x);
+    rect.leftTopY = A11yCoord(y);
+    rect.rightBottomX = A11yCoord(x + w);
+    rect.rightBottomY = A11yCoord(y + h);
     OH_ArkUI_AccessibilityElementInfoSetScreenRect(info, &rect);
     OH_ArkUI_AccessibilityElementInfoSetClickable(info, (actions & 0x10) != 0);
     OH_ArkUI_AccessibilityElementInfoSetEnabled(info, (flags & 1) != 0);
@@ -874,8 +888,8 @@ static int32_t A11yFillSingle(int index, ArkUI_AccessibilityElementInfo* info) {
         OH_ArkUI_AccessibilityElementInfoSetContents(info, description);
     }
     ArkUI_AccessibleRect rect;
-    rect.leftTopX = (int32_t)x; rect.leftTopY = (int32_t)y;
-    rect.rightBottomX = (int32_t)(x + w); rect.rightBottomY = (int32_t)(y + h);
+    rect.leftTopX = A11yCoord(x); rect.leftTopY = A11yCoord(y);
+    rect.rightBottomX = A11yCoord(x + w); rect.rightBottomY = A11yCoord(y + h);
     OH_ArkUI_AccessibilityElementInfoSetScreenRect(info, &rect);
     OH_ArkUI_AccessibilityElementInfoSetClickable(info, (actions & 0x10) != 0);
     OH_ArkUI_AccessibilityElementInfoSetEnabled(info, (flags & 1) != 0);

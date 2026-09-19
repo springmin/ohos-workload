@@ -363,6 +363,15 @@ if (a11yTapNode is not null)
     bool clickHandled = host.HandleAccessibilityAction(a11yTapNode.Id, 0x10);
     Console.WriteLine($"[verify] a11y click handled={clickHandled} taps {tapsBefore}->{gestures.TapCount}");
 }
+
+// Audit: an unchanged frame must not re-publish the tree to the host.
+if (OpenHarmonyAccessibility.Nodes.Count > 0)
+{
+    host.Render();
+    int skippedBefore = OpenHarmonyAccessibility.FramesSkipped;
+    host.Render();
+    Console.WriteLine($"[verify] a11y skip unchanged frame: wouldPublish={OpenHarmonyAccessibility.WouldPublish} skipped {skippedBefore}->{OpenHarmonyAccessibility.FramesSkipped}");
+}
 Console.WriteLine($"[verify] a11y actions text=[{string.Join(",", OpenHarmonyAccessibility.ActionsFor("text"))}] input=[{string.Join(",", OpenHarmonyAccessibility.ActionsFor("textInput"))}]");
 
 // Alert overlay: DisplayAlert shows in the compositor and a button tap completes it.
