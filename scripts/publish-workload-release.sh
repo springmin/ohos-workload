@@ -10,6 +10,10 @@
 # Usage: scripts/publish-workload-release.sh [--repo owner/name] [--dry-run]
 #          [--skip-versioned] [--skip-latest] [--also-sdk-release <tag>]
 set -e
+
+log() { printf '[%s] %s\n' "$(date '+%H:%M:%S')" "$*"; }
+warn() { printf '[%s] WARN: %s\n' "$(date '+%H:%M:%S')" "$*" >&2; }
+
 W="$(cd "$(dirname "$0")/.." && pwd)"
 REPO="${REPO:-springmin/sdk-ohos}"
 BAND="${SDK_BAND:-11.0.100-rc.1}"
@@ -25,7 +29,7 @@ while [ $# -gt 0 ]; do
         --skip-versioned) SKIP_VERSIONED=1 ;;
         --skip-latest) SKIP_LATEST=1 ;;
         --also-sdk-release) shift; SDK_RELEASE="$1" ;;
-        *) echo "unknown argument: $1" >&2; exit 2 ;;
+        *) warn "unknown argument: $1"; exit 2 ;;
     esac
     shift
 done
@@ -37,11 +41,11 @@ VERSIONED_TAG="workload-$VER"
 BUNDLE="$W/dist/openharmony-workload-$VER.tar.gz"
 LATEST_ASSET="$W/.feed/openharmony-workload-latest.tar.gz"
 
-echo "== repo=$REPO version=$VER =="
+log "== repo=$REPO version=$VER =="
 if [ ! -f "$BUNDLE" ] || [ "$DRY_RUN" = 1 ]; then
     run sh "$W/scripts/pack-workload-bundle.sh"
 fi
-[ -f "$BUNDLE" ] || { echo "ERROR: bundle not found: $BUNDLE" >&2; exit 1; }
+[ -f "$BUNDLE" ] || { warn "bundle not found: $BUNDLE"; exit 1; }
 
 NOTES="$(mktemp)"
 cat > "$NOTES" <<MD
@@ -65,7 +69,7 @@ Uninstall: \`dotnet workload uninstall openharmony\` and remove
 MD
 
 if [ "$SKIP_VERSIONED" = 0 ]; then
-    echo "== publishing $VERSIONED_TAG =="
+    log "== publishing $VERSIONED_TAG =="
     if [ "$DRY_RUN" = 0 ] && gh release view "$VERSIONED_TAG" --repo "$REPO" >/dev/null 2>&1; then
 
 # Publish the artifact checksums alongside the bundle (generated if missing).
@@ -82,7 +86,7 @@ if [ "$SKIP_VERSIONED" = 0 ]; then
 fi
 
 if [ "$SKIP_LATEST" = 0 ]; then
-    echo "== refreshing workload-latest (stable asset name, updated in place) =="
+    log "== refreshing workload-latest (stable asset name, updated in place) =="
     run mkdir -p "$(dirname "$LATEST_ASSET")"
     run cp -f "$BUNDLE" "$LATEST_ASSET"
     if gh release view workload-latest --repo "$REPO" >/dev/null 2>&1; then
@@ -98,8 +102,8 @@ if [ "$SKIP_LATEST" = 0 ]; then
 fi
 
 if [ -n "$SDK_RELEASE" ]; then
-    echo "== attaching the versioned bundle to the SDK release $SDK_RELEASE =="
+    log "== attaching the versioned bundle to the SDK release $SDK_RELEASE =="
     run gh release upload "$SDK_RELEASE" "$BUNDLE" --repo "$REPO" --clobber
 fi
 rm -f "$NOTES"
-echo "== done =="
+log "== done =="

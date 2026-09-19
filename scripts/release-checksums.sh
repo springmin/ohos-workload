@@ -1,6 +1,10 @@
 #!/bin/sh
 # Writes dist/SHA256SUMS for every release artifact (bundle, signed/unsigned haps, shell archive).
 set -e
+
+log() { printf '[%s] %s\n' "$(date '+%H:%M:%S')" "$*"; }
+warn() { printf '[%s] WARN: %s\n' "$(date '+%H:%M:%S')" "$*" >&2; }
+
 W="$(cd "$(dirname "$0")/.." && pwd)"
 OUT="$W/dist/SHA256SUMS"
 : > "$OUT"

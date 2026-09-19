@@ -4,21 +4,24 @@
 # inspects the SDK pack for the host, shell archives, hap target and signing script.
 set -e
 
+log() { printf '[%s] %s\n' "$(date '+%H:%M:%S')" "$*"; }
+warn() { printf '[%s] WARN: %s\n' "$(date '+%H:%M:%S')" "$*" >&2; }
+
 W="$(cd "$(dirname "$0")/.." && pwd)"
 VER="$(ls "$W/packs/Microsoft.OpenHarmony.Sdk" | tail -1)"
 MANIFEST="$(ls "$W"/manifests/*/microsoft.net.sdk.openharmony/WorkloadManifest.json | head -1)"
 BUNDLE="${1:-$W/dist/openharmony-workload-$VER.tar.gz}"
 WORK="${2:-/data/storage/el2/base/tmp/opencode/clean-install}"
 
-[ -f "$BUNDLE" ] || { echo "bundle not found: $BUNDLE" >&2; exit 1; }
+[ -f "$BUNDLE" ] || { warn "bundle not found: $BUNDLE"; exit 1; }
 rm -rf "$WORK"; mkdir -p "$WORK"
-echo "== extracting $(basename "$BUNDLE")"
+log "== extracting $(basename "$BUNDLE")"
 tar xzf "$BUNDLE" -C "$WORK"
 FEED="$(find "$WORK" -maxdepth 3 -type d -name feed | head -1)"
-[ -n "$FEED" ] || { echo "no feed/ directory in the bundle" >&2; exit 1; }
-echo "== feed: $FEED ($(ls "$FEED" | wc -l) packages)"
+[ -n "$FEED" ] || { warn "no feed/ directory in the bundle"; exit 1; }
+log "== feed: $FEED ($(ls "$FEED" | wc -l) packages)"
 
-echo "== packs declared by $(basename "$MANIFEST")"
+log "== packs declared by $(basename "$MANIFEST")"
 python3 - "$FEED" "$MANIFEST" <<'PY' || exit 1
 import json, os, sys
 feed, manifest = sys.argv[1], sys.argv[2]
@@ -50,15 +53,15 @@ for pid, version in entries:
 sys.exit(1 if missing else 0)
 PY
 
-echo "== SDK pack contents (host, shell, hap target, signing)"
+log "== SDK pack contents (host, shell, hap target, signing)"
 SDKPKG="$(ls "$FEED" | grep -iE "^Microsoft\.OpenHarmony\.Sdk\." | head -1)"
-echo "  sdk pack: $SDKPKG"
+log "  sdk pack: $SDKPKG"
 fail=0
 for entry in "hosts/arm64-v8a/libopenharmonyhost.so" "templates/ets/modules.abc" "targets/OpenHarmony.Hap.targets" "templates/scripts/sign-hap.sh"; do
   if unzip -l "$FEED/$SDKPKG" 2>/dev/null | grep -q "$entry"; then echo "  ok   $entry"; else echo "  MISS $entry"; fail=1; fi
 done
 
-echo "== consumer install command"
-echo "  dotnet workload install openharmony --source \"$FEED\""
+log "== consumer install command"
+log "  dotnet workload install openharmony --source \"$FEED\""
 
-if [ "$fail" -eq 0 ]; then echo "CLEAN INSTALL FEED OK"; else echo "CLEAN INSTALL FEED FAILED" >&2; exit 1; fi
+if [ "$fail" -eq 0 ]; then log "CLEAN INSTALL FEED OK"; else warn "CLEAN INSTALL FEED FAILED"; exit 1; fi

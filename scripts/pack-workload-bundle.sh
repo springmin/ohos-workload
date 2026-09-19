@@ -7,6 +7,10 @@
 #     README.md
 # Usage: scripts/pack-workload-bundle.sh [output-dir]
 set -e
+
+log() { printf '[%s] %s\n' "$(date '+%H:%M:%S')" "$*"; }
+warn() { printf '[%s] WARN: %s\n' "$(date '+%H:%M:%S')" "$*" >&2; }
+
 W="$(cd "$(dirname "$0")/.." && pwd)"
 OUT="${1:-$W/dist}"
 BAND="${SDK_BAND:-11.0.100-rc.1}"
@@ -14,10 +18,10 @@ VER="$(python3 -c "import json;print(json.load(open('$W/manifests/$BAND/microsof
 NAME="openharmony-workload-$VER"
 STAGE="$OUT/$NAME"
 
-echo "== packing the workload feed =="
+log "== packing the workload feed =="
 sh "$W/scripts/pack-local-workload.sh" "$W/.feed"
 
-echo "== assembling $NAME =="
+log "== assembling $NAME =="
 rm -rf "$STAGE"
 mkdir -p "$STAGE/feed" "$STAGE/manifests"
 cp -r "$W/manifests/$BAND/microsoft.net.sdk.openharmony" "$STAGE/manifests/"
@@ -66,7 +70,7 @@ At runtime the shell starts the managed app, forwards lifecycle events and hands
   driven automatically by `dotnet publish -p:OpenHarmonyHapPackage=true`.
 MD
 
-echo "== creating the tarball =="
+log "== creating the tarball =="
 mkdir -p "$OUT"
 tar -czf "$OUT/$NAME.tar.gz" -C "$OUT" "$NAME"
 ls -l "$OUT/$NAME.tar.gz"
