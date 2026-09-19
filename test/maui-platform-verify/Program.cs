@@ -683,6 +683,99 @@ if (panCtl is not null)
     Console.WriteLine($"[verify] pan gesture started={gestures.PanStarted} totalY={gestures.PanTotalY:0.#} completed={gestures.PanCompleted}");
 }
 
+// Gap 1e: drag-and-drop gestures (long press + move, drop target hit testing). The recognizers
+// are attached to labels already arranged near the top of the page so this check does not shift
+// the frames the rest of the suite asserts.
+var dragSourceCtl = root.Children.OfType<Label>().FirstOrDefault(l => l.Text == "swipe me");
+var dropTargetCtl = root.Children.OfType<Label>().FirstOrDefault(l => l.Text == "pinch me");
+if (dragSourceCtl is not null && dropTargetCtl is not null)
+{
+    var dragRecognizer = new Microsoft.Maui.Controls.DragGestureRecognizer();
+    dragRecognizer.DragStarting += (_, _) => gestures.DragStartingCount++;
+    dragRecognizer.DropCompleted += (_, e) =>
+    {
+        gestures.DropCompletedCount++;
+        gestures.LastDropResult = gestures.DropResultOf(e);
+    };
+    dragSourceCtl.GestureRecognizers.Add(dragRecognizer);
+
+    var dropRecognizer = new Microsoft.Maui.Controls.DropGestureRecognizer();
+    dropRecognizer.DragOver += (_, e) =>
+    {
+        gestures.DragOverCount++;
+        gestures.LastDragOverText = e.Data.Text;
+    };
+    dropRecognizer.DragLeave += (_, _) => gestures.DragLeaveCount++;
+    dropRecognizer.Drop += (_, e) =>
+    {
+        gestures.DropCount++;
+        gestures.DroppedText = e.Data.GetTextAsync().GetAwaiter().GetResult();
+    };
+    dropTargetCtl.GestureRecognizers.Add(dropRecognizer);
+
+    host.Arrange(1080, 1920);
+    Rect sourceFrame = dragSourceCtl.Frame;
+    Rect targetFrame = dropTargetCtl.Frame;
+    float sx = (float)(sourceFrame.X + sourceFrame.Width / 2);
+    float sy = (float)(sourceFrame.Y + sourceFrame.Height / 2);
+    float tx = (float)(targetFrame.X + targetFrame.Width / 2);
+    float ty = (float)(targetFrame.Y + targetFrame.Height / 2);
+
+    // (1) Long press + move starts the drag; entering the target raises DragOver, leaving and
+    //     re-entering raises DragLeave/DragOver, and releasing over it delivers Drop with the
+    //     source text, then DropCompleted on the source.
+    gestures.DragStartingCount = gestures.DragOverCount = gestures.DragLeaveCount = 0;
+    gestures.DropCount = gestures.DropCompletedCount = 0;
+    gestures.LastDragOverText = gestures.DroppedText = null;
+    bool dd = host.HandleTouch(true, false, sx, sy);
+    await Task.Delay(600);
+    bool dm = host.HandleMove(sx + 24, sy);
+    bool dOver = host.HandleMove(tx, ty);
+    bool dAway = host.HandleMove(sx, 1900f);
+    bool dBack = host.HandleMove(tx, ty);
+    bool du = host.HandleTouch(false, true, tx, ty);
+    bool dropFlowOk = gestures.DragStartingCount == 1 && gestures.DragOverCount == 2 &&
+                      gestures.DragLeaveCount == 1 && gestures.LastDragOverText == "swipe me" &&
+                      gestures.DropCount == 1 && gestures.DroppedText == "swipe me" &&
+                      gestures.DropCompletedCount == 1;
+    Console.WriteLine($"[verify] drag/drop handled={dd}/{dm}/{dOver}/{dAway}/{dBack}/{du} starting={gestures.DragStartingCount} over={gestures.DragOverCount} leave={gestures.DragLeaveCount} drop={gestures.DropCount} text='{gestures.DroppedText}' completed={gestures.DropCompletedCount} assert={dropFlowOk}");
+    if (!dropFlowOk)
+    {
+        throw new InvalidOperationException("drag/drop flow assertion failed");
+    }
+
+    // (2) Releasing over nothing raises no Drop and DropCompleted reports no operation (failure).
+    gestures.DragStartingCount = gestures.DragOverCount = gestures.DragLeaveCount = 0;
+    gestures.DropCount = gestures.DropCompletedCount = 0;
+    gestures.DroppedText = null;
+    float emptyY = 1900f;
+    host.HandleTouch(true, false, sx, sy);
+    await Task.Delay(600);
+    host.HandleMove(sx + 24, sy);
+    host.HandleMove(sx, emptyY);
+    host.HandleTouch(false, true, sx, emptyY);
+    bool noTargetOk = gestures.DragStartingCount == 1 && gestures.DragOverCount == 0 &&
+                      gestures.DropCount == 0 && gestures.DropCompletedCount == 1 &&
+                      gestures.LastDropResult == "None";
+    Console.WriteLine($"[verify] drag/drop over nothing starting={gestures.DragStartingCount} over={gestures.DragOverCount} drop={gestures.DropCount} completed={gestures.DropCompletedCount} result={gestures.LastDropResult} success=false={noTargetOk}");
+    if (!noTargetOk)
+    {
+        throw new InvalidOperationException("drag/drop over nothing assertion failed");
+    }
+
+    // (3) Moving beyond the slop before the long-press window never promotes the press.
+    gestures.DragStartingCount = 0;
+    host.HandleTouch(true, false, sx, sy);
+    host.HandleMove(sx, sy + 24);
+    host.HandleMove(sx, sy + 48);
+    host.HandleTouch(false, true, sx, sy + 48);
+    Console.WriteLine($"[verify] drag/drop early move starting={gestures.DragStartingCount} (no drag before 500 ms) assert={gestures.DragStartingCount == 0}");
+    if (gestures.DragStartingCount != 0)
+    {
+        throw new InvalidOperationException("early-move drag assertion failed");
+    }
+}
+
 var animatedCtl = root.Children.OfType<Label>().FirstOrDefault(l => l.Text == "transformed");
 if (animatedCtl is not null)
 {
@@ -985,6 +1078,22 @@ static class gestures
     public static bool PanStarted;
     public static bool PanCompleted;
     public static double PanTotalY;
+    public static int DragStartingCount;
+    public static int DragOverCount;
+    public static int DragLeaveCount;
+    public static int DropCount;
+    public static int DropCompletedCount;
+    public static string? LastDragOverText;
+    public static string? DroppedText;
+    public static string LastDropResult = "?";
+
+    public static string DropResultOf(Microsoft.Maui.Controls.DropCompletedEventArgs args)
+    {
+        // DropResult is internal in the Controls contract; read it reflectively in the harness.
+        var prop = typeof(Microsoft.Maui.Controls.DropCompletedEventArgs).GetProperty("DropResult",
+            System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Public);
+        return prop?.GetValue(args)?.ToString() ?? "unknown";
+    }
 }
 
 class RoutedPage : ContentPage
