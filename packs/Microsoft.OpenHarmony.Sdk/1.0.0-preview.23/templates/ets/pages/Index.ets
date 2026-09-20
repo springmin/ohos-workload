@@ -251,14 +251,61 @@ struct Index {
   }
 
   // Registered proxies appear on the next page load, so the documented window.__ohosDotNet
-  // alias is (re)published after every load (best effort; a page that cannot run it still
-  // keeps the dotnetHost global provided by the proxy registration).
-  private injectDotNetHostAlias(): void {
+  // alias and the window.external compatibility layer are (re)published after every load
+  // (best effort; a page that cannot run the script still keeps the dotnetHost global
+  // provided by the proxy registration).
+  //
+  // window.external is the channel the stock hybridwebview.js and the Blazor boot script
+  // speak:
+  //   sendMessage(payload)    page -> host; forwarded to the dotnetHost proxy, whose
+  //                           postMessage implementation is the existing
+  //                           host.notifyJsMessage sink (__RawMessage|... and the
+  //                           __InvokeJavaScript* records keep their stock handling).
+  //   receiveMessage(payload) host -> page; the managed HybridWebView.SendRawMessage already
+  //                           calls window.external.receiveMessage(json) and falls back to
+  //                           the HybridWebViewMessageReceived event, so the shim raises that
+  //                           same event with { detail: { message } } (the stock
+  //                           iOS/MacCatalyst script's shape).
+  // Existing members are never replaced, so a page script that installed its own
+  // window.external (or its own receiveMessage) keeps it, and pages that use
+  // dotnetHost.postMessage directly keep working unchanged.
+  private injectPageBridge(): void {
     try {
-      this.webController.runJavaScript('window.__ohosDotNet = window.dotnetHost;', () => {
-        // The alias is best-effort; an error leaves the page without the alias only.
-      });
-    } catch (aliasError) {
+      this.webController.runJavaScript(
+        `(function () {
+          var target = window.dotnetHost || window.__ohosDotNet;
+          window.__ohosDotNet = target;
+          var external = window.external;
+          if (!external || (typeof external !== 'object' && typeof external !== 'function')) {
+            external = {};
+            window.external = external;
+          }
+          if (typeof external.sendMessage !== 'function') {
+            external.sendMessage = function (payload) {
+              try {
+                var proxy = window.dotnetHost || window.__ohosDotNet;
+                if (proxy && typeof proxy.postMessage === 'function') {
+                  proxy.postMessage(payload);
+                }
+              } catch (sendError) {
+                // The proxy is unavailable; the page keeps running without the bridge.
+              }
+            };
+          }
+          if (typeof external.receiveMessage !== 'function') {
+            external.receiveMessage = function (payload) {
+              try {
+                window.dispatchEvent(new CustomEvent('HybridWebViewMessageReceived', { detail: { message: payload } }));
+              } catch (receiveError) {
+                // A page without CustomEvent support stays without host delivery.
+              }
+            };
+          }
+        })();`,
+        () => {
+          // The bridge is best-effort; an error leaves the page with dotnetHost only.
+        });
+    } catch (bridgeError) {
       // A page that rejects the injection script must not take the app down.
     }
   }
@@ -742,6 +789,63 @@ struct Index {
     host.setNodeContent(this.content);
   }
 
+  // Accessibility self-check: the tiny overlay button in build() reports what the native host
+  // answered for the provider, so a tester can read the state off the device and paste it into
+  // a report with one tap. host.accessibilityStatus() is a plain int (see the host's
+  // AccessibilityStatus export):
+  //   0 = not attached, 1 = attached (expected), 2 = frame node refused,
+  //   3 = custom node not created, 4 = custom node attached but provider refused.
+  // The optional host.accessibilityNodeCount() export appends the published node count when
+  // the host library has it; a host without either export degrades to "unavailable" instead of
+  // failing the page.
+  private accessibilityStatusText(status: number): string {
+    if (status === 0) {
+      return '0 (not attached)';
+    }
+    if (status === 1) {
+      return '1 (attached - expected)';
+    }
+    if (status === 2) {
+      return '2 (frame node refused)';
+    }
+    if (status === 3) {
+      return '3 (custom node not created)';
+    }
+    if (status === 4) {
+      return '4 (custom node attached but provider refused)';
+    }
+    return `${status} (unknown status)`;
+  }
+
+  private showAccessibilitySelfCheck(): void {
+    let statusText: string = 'unavailable (the host does not export accessibilityStatus)';
+    try {
+      statusText = this.accessibilityStatusText(host.accessibilityStatus() as number);
+    } catch (statusError) {
+      statusText = 'unavailable (the host does not export accessibilityStatus)';
+    }
+    let message: string = `accessibilityStatus: ${statusText}`;
+    try {
+      // Optional export: only newer host libraries publish it, so it is read behind a
+      // runtime typeof check and simply omitted when the library has no such export.
+      if (typeof host.accessibilityNodeCount === 'function') {
+        message += `\naccessibilityNodeCount: ${host.accessibilityNodeCount() as number}`;
+      }
+    } catch (nodeCountError) {
+      message += '\naccessibilityNodeCount: unavailable';
+    }
+    this.getUIContext().showAlertDialog({
+      title: 'Accessibility self-check',
+      message: message,
+      confirm: {
+        value: 'OK',
+        action: (): void => {
+          // Only dismisses the report.
+        }
+      }
+    });
+  }
+
   // HybridWebView: the managed handler registers the payload directory and the hybrid layout
   // through the existing web command channel (op "hybrid"); a successful registration loads
   // the MAUI hybrid origin, whose requests onInterceptRequest answers from the payload.
@@ -1048,7 +1152,7 @@ struct Index {
         })
         .onPageEnd((event) => {
           host.notifyWebEvent('finished', event ? event.url : '');
-          this.injectDotNetHostAlias();
+          this.injectPageBridge();
         })
 
       // Text entry bridge: the managed Entry reads what is typed here.
@@ -1089,6 +1193,20 @@ struct Index {
           .fontSize(18)
           .bindMenu(this.buildMenuElements())
       }
+
+      // Accessibility self-check: a tiny overlay in the opposite corner. The Stack overlays
+      // it, so it never takes layout space from the managed surface (the XComponent and the
+      // ContentSlot keep their full size); tapping it shows the provider state.
+      Button('A11Y')
+        .align(Alignment.BottomStart)
+        .margin({ bottom: 4, left: 4 })
+        .width(44)
+        .height(24)
+        .fontSize(10)
+        .opacity(0.55)
+        .onClick(() => {
+          this.showAccessibilitySelfCheck();
+        })
     }
     .width('100%')
     .height('100%')
