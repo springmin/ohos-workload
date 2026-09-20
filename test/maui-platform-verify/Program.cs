@@ -1177,7 +1177,7 @@ catch (Exception ex)
     Console.WriteLine($"[verify] hybrid eval threw {ex.GetType().Name}: {ex.Message}");
 }
 bool hybridEvalOk = !hybridEvalThrew && hybridEval is null or "";
-Console.WriteLine($"[verify] hybrid handler={hybridProbe.Handler?.GetType().Name ?? "null"} registered={hybridRegistered} evaluateAsync completes={hybridEvalOk} result={(hybridEval is null ? "<null>" : $"'{hybridEval}'")} (no host library, no asset serving)");
+Console.WriteLine($"[verify] hybrid handler={hybridProbe.Handler?.GetType().Name ?? "null"} registered={hybridRegistered} evaluateAsync completes={hybridEvalOk} result={(hybridEval is null ? "<null>" : $"'{hybridEval}'")} (no host library; asset registration is a no-op off-device)");
 if (!hybridRegistered || hybridProbe.Handler is not OpenHarmonyHybridWebViewHandler || !hybridEvalOk)
 {
     throw new InvalidOperationException("the HybridWebView handler assertion failed");
@@ -1226,6 +1226,22 @@ Console.WriteLine($"[verify] hybrid InvokeJavaScriptAsync completes={hybridInvok
 if (!hybridInvokeOk || hybridInvokeThrew)
 {
     throw new InvalidOperationException("the HybridWebView InvokeJavaScriptAsync path did not complete off-device");
+}
+
+// Hybrid asset serving: the shell serves the app package (https://0.0.0.1/ -> <base>/<root>)
+// and the framework bootstrap script (<base>/_framework/hybridwebview.js) through the ArkWeb
+// component's request interception; the handler extracts that script out of the Microsoft.Maui
+// assembly, so the resource name it uses is pinned here.
+bool hybridScriptEmbedded;
+using (Stream? hybridScript = typeof(Microsoft.Maui.Handlers.HybridWebViewHandler).Assembly
+           .GetManifestResourceStream(OpenHarmonyHybridWebViewHandler.HybridWebViewScriptPath))
+{
+    hybridScriptEmbedded = hybridScript is not null;
+}
+Console.WriteLine($"[verify] hybrid bootstrap resource '{OpenHarmonyHybridWebViewHandler.HybridWebViewScriptPath}' embedded={hybridScriptEmbedded} origin={OpenHarmonyHybridWebViewHandler.HybridAppOrigin}");
+if (!hybridScriptEmbedded)
+{
+    throw new InvalidOperationException("the HybridWebView bootstrap script resource was not found");
 }
 
 // Gap 5: Contacts/Calendar platform extras over the host/ArkTS kit bridge

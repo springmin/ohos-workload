@@ -35,6 +35,18 @@ interface HostMenuItem {
   enabled: boolean;
 }
 
+// HybridWebView asset bridge: the managed handler registers the extracted app payload
+// directory (base), the hybrid root (HybridRoot, e.g. "wwwroot") and the default file
+// (DefaultFile, e.g. "index.html"). App-origin requests (https://0.0.0.1/ - the MAUI hybrid
+// origin) are answered from <base>/<root>/<path>; the framework bootstrap script
+// (_framework/hybridwebview.js, extracted by the managed handler next to the payload) is
+// served from <base>/_framework/hybridwebview.js. Everything else is not intercepted.
+interface HybridAssetsConfig {
+  base: string;
+  root: string;
+  defaultFile: string;
+}
+
 @Entry
 @Component
 struct Index {
@@ -43,6 +55,14 @@ struct Index {
   @State inputText: string = '';
   @State webVisible: boolean = false;
   @State menuItems: HostMenuItem[] = [];
+  // HybridWebView asset bridge state (registered by the managed handler; empty -> no
+  // interception, so the regular WebView flows are never touched).
+  private hybridBase: string = '';
+  private hybridRoot: string = '';
+  private hybridDefaultFile: string = '';
+  private hybridRegistered: boolean = false;
+  // MAUI's hybrid origin: HybridWebViewHandler.AppOrigin (https://0.0.0.1/).
+  private hybridOrigin: string = 'https://0.0.0.1/';
   // JavaScript bridge: set once the dotnetHost proxy was registered on the attached controller.
   private dotNetHostRegistered: boolean = false;
   // App theme: 'colorMode' is an ArkUI environment property that the framework keeps in
@@ -177,6 +197,9 @@ struct Index {
           if (this.webController.accessBackward()) {
             this.webController.backward();
           }
+        } else if (op === 'hybrid') {
+          // HybridWebView asset root registration from the managed handler.
+          this.registerHybridAssets(arg);
         }
       } catch (error) {
         // Web errors never take the app down.
@@ -417,6 +440,184 @@ struct Index {
     }
   }
 
+  // HybridWebView: the managed handler registers the payload directory and the hybrid layout
+  // through the existing web command channel (op "hybrid"); a successful registration loads
+  // the MAUI hybrid origin, whose requests onInterceptRequest answers from the payload.
+  private registerHybridAssets(arg: string): void {
+    try {
+      const config = JSON.parse(arg) as HybridAssetsConfig;
+      this.hybridBase = config.base;
+      this.hybridRoot = config.root;
+      this.hybridDefaultFile = config.defaultFile;
+      this.hybridRegistered = this.hybridBase.length > 0 && this.hybridRoot.length > 0
+        && this.hybridDefaultFile.length > 0;
+      if (this.hybridRegistered) {
+        this.webVisible = true;
+        this.webController.loadUrl(this.hybridOrigin);
+      }
+    } catch (hybridError) {
+      console.error(`[maui] hybrid assets registration failed: ${(hybridError as Error).message}`);
+      this.hybridRegistered = false;
+    }
+  }
+
+  // Resolves an app-origin URL to an absolute file below the payload directory. Unknown and
+  // malformed paths (including traversal attempts) resolve to '' and are answered with 404.
+  private hybridFilePath(url: string): string {
+    let path: string = url;
+    const scheme: number = path.indexOf('://');
+    if (scheme >= 0) {
+      const slash: number = path.indexOf('/', scheme + 3);
+      path = slash >= 0 ? path.substring(slash) : '/';
+    }
+    const query: number = path.indexOf('?');
+    if (query >= 0) {
+      path = path.substring(0, query);
+    }
+    const fragment: number = path.indexOf('#');
+    if (fragment >= 0) {
+      path = path.substring(0, fragment);
+    }
+    try {
+      path = decodeURIComponent(path);
+    } catch (decodeError) {
+      return '';
+    }
+    while (path.startsWith('/')) {
+      path = path.substring(1);
+    }
+    if (path.indexOf('..') >= 0 || path.indexOf('\\') >= 0) {
+      return '';
+    }
+    if (path.length === 0) {
+      path = this.hybridDefaultFile;
+    }
+    if (path === '_framework/hybridwebview.js') {
+      return `${this.hybridBase}/${path}`;
+    }
+    return `${this.hybridBase}/${this.hybridRoot}/${path}`;
+  }
+
+  private hybridMimeType(path: string): string {
+    const lower: string = path.toLowerCase();
+    if (lower.endsWith('.html') || lower.endsWith('.htm')) {
+      return 'text/html';
+    }
+    if (lower.endsWith('.js') || lower.endsWith('.mjs')) {
+      return 'text/javascript';
+    }
+    if (lower.endsWith('.css')) {
+      return 'text/css';
+    }
+    if (lower.endsWith('.json')) {
+      return 'application/json';
+    }
+    if (lower.endsWith('.wasm')) {
+      return 'application/wasm';
+    }
+    if (lower.endsWith('.svg')) {
+      return 'image/svg+xml';
+    }
+    if (lower.endsWith('.png')) {
+      return 'image/png';
+    }
+    if (lower.endsWith('.jpg') || lower.endsWith('.jpeg')) {
+      return 'image/jpeg';
+    }
+    if (lower.endsWith('.gif')) {
+      return 'image/gif';
+    }
+    if (lower.endsWith('.webp')) {
+      return 'image/webp';
+    }
+    if (lower.endsWith('.ico')) {
+      return 'image/x-icon';
+    }
+    if (lower.endsWith('.woff')) {
+      return 'font/woff';
+    }
+    if (lower.endsWith('.woff2')) {
+      return 'font/woff2';
+    }
+    if (lower.endsWith('.ttf')) {
+      return 'font/ttf';
+    }
+    if (lower.endsWith('.txt') || lower.endsWith('.map')) {
+      return 'text/plain';
+    }
+    return 'application/octet-stream';
+  }
+
+  private hybridErrorResponse(code: number): WebResourceResponse {
+    const response: WebResourceResponse = new WebResourceResponse();
+    response.setResponseCode(code);
+    response.setResponseMimeType('text/plain');
+    response.setResponseEncoding('utf-8');
+    if (code !== 204) {
+      response.setResponseData(code === 404 ? 'Not Found' : 'Bad Request');
+    }
+    return response;
+  }
+
+  // ArkWeb needs the intercepted response synchronously, and payload assets are small, so the
+  // file is read inline through @ohos.file.fs (open/read/close).
+  private serveHybridFile(url: string): WebResourceResponse {
+    const filePath: string = this.hybridFilePath(url);
+    if (filePath.length === 0) {
+      return this.hybridErrorResponse(404);
+    }
+    let fd: number = -1;
+    try {
+      const stat = fileIo.statSync(filePath);
+      if (!stat.isFile()) {
+        return this.hybridErrorResponse(404);
+      }
+      const file = fileIo.openSync(filePath, fileIo.OpenMode.READ_ONLY);
+      fd = file.fd;
+      const buffer = new ArrayBuffer(stat.size);
+      fileIo.readSync(fd, buffer);
+      const response: WebResourceResponse = new WebResourceResponse();
+      response.setResponseCode(200);
+      response.setResponseMimeType(this.hybridMimeType(filePath));
+      response.setResponseEncoding('utf-8');
+      response.setResponseData(buffer);
+      return response;
+    } catch (ioError) {
+      return this.hybridErrorResponse(404);
+    } finally {
+      if (fd >= 0) {
+        try {
+          fileIo.closeSync(fd);
+        } catch (closeError) {
+          // The handle is released with the response in the worst case.
+        }
+      }
+    }
+  }
+
+  // JS -> .NET channel of the served hybridwebview.js: the script POSTs its payload in the
+  // X-Maui-Request-Body header (the same transport Android uses). The body is handed to the
+  // existing JS message sink, so __RawMessage / __InvokeJavaScript* records reach the managed
+  // HybridWebView handler. The invoke endpoint itself is not implemented in this batch.
+  private hybridMessageResponse(event: OnInterceptRequestEvent): WebResourceResponse {
+    let body: string = '';
+    let token: string = '';
+    const headers = event.request.getRequestHeader();
+    for (let i = 0; i < headers.length; i++) {
+      const name: string = headers[i].headerKey.toLowerCase();
+      if (name === 'x-maui-request-body') {
+        body = headers[i].headerValue;
+      } else if (name === 'x-maui-invoke-token') {
+        token = headers[i].headerValue;
+      }
+    }
+    if (token !== 'HybridWebView' || body.length === 0) {
+      return this.hybridErrorResponse(400);
+    }
+    host.notifyJsMessage(body);
+    return this.hybridErrorResponse(204);
+  }
+
   build() {
     Stack() {
       // ArkWeb: hidden until the managed WebView asks for it.
@@ -426,6 +627,22 @@ struct Index {
         // with BusinessError 17100001 (controller not associated with a Web component).
         .onControllerAttached(() => {
           this.registerDotNetHost();
+        })
+        .onInterceptRequest((event) => {
+          try {
+            // Only the MAUI hybrid origin is intercepted, and only after the managed handler
+            // registered the payload root; everything else is left to the Web engine.
+            if (!this.hybridRegistered || !event.request.getRequestUrl().startsWith(this.hybridOrigin)) {
+              return null;
+            }
+            const url: string = event.request.getRequestUrl();
+            if (url.startsWith(this.hybridOrigin + '__hwvSendMessage')) {
+              return this.hybridMessageResponse(event);
+            }
+            return this.serveHybridFile(url);
+          } catch (interceptError) {
+            return null;
+          }
         })
         .onPageBegin((event) => {
           host.notifyWebEvent('started', event ? event.url : '');
