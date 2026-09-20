@@ -1,0 +1,15 @@
+<Project>
+  <!-- Version-only TargetFramework: this file is only imported for openharmony TFMs. -->
+  <ItemGroup>
+    <KnownFrameworkReference Include="Microsoft.OpenHarmony"
+                              TargetFramework="net11.0"
+                              RuntimeFrameworkName="Microsoft.OpenHarmony"
+                              DefaultRuntimeFrameworkVersion="1.0.0-preview.24"
+                              LatestRuntimeFrameworkVersion="1.0.0-preview.24"
+                              TargetingPackName="Microsoft.OpenHarmony.Ref.$(TargetPlatformVersion)"
+                              TargetingPackVersion="1.0.0-preview.24"
+                              RuntimePackNamePatterns="Microsoft.OpenHarmony.Runtime.$(TargetPlatformVersion).**RID**"
+                              RuntimePackRuntimeIdentifiers="openharmony-arm64"
+                              />
+  </ItemGroup>
+</Project>

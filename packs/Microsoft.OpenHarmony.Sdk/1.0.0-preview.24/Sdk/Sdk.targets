@@ -1,0 +1,53 @@
+<Project>
+  <PropertyGroup Condition=" '$(TargetPlatformIdentifier)' == 'openharmony' ">
+    <MicrosoftOpenHarmonySdkTargetsImported>true</MicrosoftOpenHarmonySdkTargetsImported>
+    <TargetPlatformSupported>true</TargetPlatformSupported>
+    <TargetPlatformDisplayName>OpenHarmony</TargetPlatformDisplayName>
+    <!-- Platform symbols, matching the convention of the other platform SDKs (ANDROID, ...). -->
+    <DefineConstants Condition=" '$(DisableImplicitFrameworkDefines)' != 'true' ">$(DefineConstants);OPENHARMONY;__OPENHARMONY__</DefineConstants>
+    <SupportedOSPlatformVersion Condition=" '$(SupportedOSPlatformVersion)' == '' ">20.0</SupportedOSPlatformVersion>
+    <SupportedOSPlatformVersion Condition=" '$(SupportedOSPlatformVersion)' != '' and !$(SupportedOSPlatformVersion.Contains('.')) ">$(SupportedOSPlatformVersion).0</SupportedOSPlatformVersion>
+    <_OpenHarmonySdkTargetsDir>$(MSBuildThisFileDirectory)../targets/</_OpenHarmonySdkTargetsDir>
+    <!-- Host model: the .hap host, not a classic apphost. -->
+    <UseAppHost Condition=" '$(UseAppHost)' == '' ">false</UseAppHost>
+    <SelfContained Condition=" '$(SelfContained)' == '' ">true</SelfContained>
+    <AllowSelfContainedWithoutRuntimeIdentifier Condition=" '$(AllowSelfContainedWithoutRuntimeIdentifier)' == '' ">true</AllowSelfContainedWithoutRuntimeIdentifier>
+    <GenerateDependencyFile Condition=" '$(GenerateDependencyFile)' == '' ">false</GenerateDependencyFile>
+    <CopyLocalLockFileAssemblies Condition=" '$(CopyLocalLockFileAssemblies)' == '' ">true</CopyLocalLockFileAssemblies>
+    <!-- No classic apphost: the .hap host (NAPI) loads hostfxr. The SDK's built-in
+         apphost-less RID list does not know openharmony yet. -->
+    <_RuntimeIdentifierUsesAppHost Condition=" '$(RuntimeIdentifier)' != '' and $(RuntimeIdentifier.StartsWith('openharmony')) ">false</_RuntimeIdentifierUsesAppHost>
+    <!-- The openharmony RIDs are not in the SDK's bundled RID graph yet; the workload carries one. -->
+    <RuntimeIdentifierGraphPath Condition=" '$(RuntimeIdentifierGraphPath)' == '' ">$(MSBuildThisFileDirectory)../ridgraph/PortableRuntimeIdentifierGraph.openharmony.json</RuntimeIdentifierGraphPath>
+  </PropertyGroup>
+
+  <PropertyGroup Condition=" '$(TargetPlatformIdentifier)' == 'openharmony' ">
+    <_OpenHarmonySdkPackDir>$(MSBuildThisFileDirectory)..\</_OpenHarmonySdkPackDir>
+  </PropertyGroup>
+
+  <Import Project="$(MSBuildThisFileDirectory)../targets/OpenHarmony.Hap.targets" Condition=" '$(TargetPlatformIdentifier)' == 'openharmony' " />
+
+  <ItemGroup Condition=" '$(TargetPlatformIdentifier)' == 'openharmony' ">
+    <SdkSupportedTargetPlatformIdentifier Include="openharmony" DisplayName="OpenHarmony" />
+    <!-- The installed SDK's bundled RID list predates the openharmony rename; the platform
+         workload owns the RID until it ships in Microsoft.NETCore.Platforms. -->
+    <KnownFrameworkReference Update="Microsoft.NETCore.App"
+                              RuntimePackRuntimeIdentifiers="%(RuntimePackRuntimeIdentifiers);openharmony-arm64" />
+    <!-- Valid TargetPlatformVersions (OpenHarmony API levels): CI public SDK = 20, device SDK = 26. -->
+    <SdkSupportedTargetPlatformVersion Include="20.0" MinimumNETVersion="10.0" />
+    <SdkSupportedTargetPlatformVersion Include="26.0" MinimumNETVersion="10.0" />
+    <FrameworkReference Condition=" '$(DisableImplicitFrameworkReferences)' != 'true' "
+                        Include="Microsoft.OpenHarmony" IsImplicitlyDefined="true" Pack="false" PrivateAssets="All" />
+    <!-- Version-only TargetFramework: this item only exists for openharmony projects. -->
+    <KnownFrameworkReference Include="Microsoft.OpenHarmony"
+                              TargetFramework="net11.0"
+                              RuntimeFrameworkName="Microsoft.OpenHarmony"
+                              DefaultRuntimeFrameworkVersion="1.0.0-preview.24"
+                              LatestRuntimeFrameworkVersion="1.0.0-preview.24"
+                              TargetingPackName="Microsoft.OpenHarmony.Ref.$(TargetPlatformVersion)"
+                              TargetingPackVersion="1.0.0-preview.24"
+                              RuntimePackNamePatterns="Microsoft.OpenHarmony.Runtime.$(TargetPlatformVersion).**RID**"
+                              RuntimePackRuntimeIdentifiers="openharmony-arm64"
+                              />
+  </ItemGroup>
+</Project>
