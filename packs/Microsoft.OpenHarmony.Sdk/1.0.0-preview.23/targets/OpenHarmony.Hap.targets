@@ -2,7 +2,18 @@
   <!-- publish -> .hap packaging for OpenHarmony.
        Stage layout (packed by the OpenHarmony SDK's ohos_packing_tool):
            module.json, ets/modules.abc, libs/<abi>/libopenharmonyhost.so,
-           resources/base/..., resources/rawfile/{app.json,dotnet.zip} -->
+           resources/base/..., resources/rawfile/{app.json,dotnet.zip}
+
+       Opt-in permissions: set OpenHarmonyExtraPermissions to a ';' or ',' separated list of
+       permission names, e.g. (keep the quotes - MSBuild splits an unquoted command-line
+       property value at ';' and ',', or use %3B / %2C):
+           -p:'OpenHarmonyExtraPermissions="ohos.permission.READ_CONTACTS;ohos.permission.READ_CALENDAR"'
+       or set OpenHarmonyExtraPermissions in the project file. When the property is set and
+       non-empty the generated module.json gains the matching minimal
+       "requestPermissions":[{"name":"..."}] array (no usedScene/resources entries).
+       Declaring a permission here does not grant it: the app still has to request it at
+       runtime (abilityAccessCtrl.requestPermissionsFromUser). Unset/empty keeps module.json
+       byte-identical to the build without the property. -->
   <PropertyGroup>
     <OpenHarmonyHapPackage Condition=" '$(OpenHarmonyHapPackage)' == '' ">false</OpenHarmonyHapPackage>
     <OpenHarmonyHapSigning Condition=" '$(OpenHarmonyHapSigning)' == '' ">true</OpenHarmonyHapSigning>
@@ -18,6 +29,9 @@
     <OpenHarmonyApiReleaseType Condition=" '$(OpenHarmonyApiReleaseType)' == '' ">Beta1</OpenHarmonyApiReleaseType>
     <OpenHarmonyHapDebug Condition=" '$(OpenHarmonyHapDebug)' == '' ">true</OpenHarmonyHapDebug>
     <OpenHarmonyAbi Condition=" '$(OpenHarmonyAbi)' == '' ">arm64-v8a</OpenHarmonyAbi>
+    <!-- Opt-in module.json requestPermissions: ';'/',' separated permission names (see the
+         file header). Empty (the default) leaves the generated module.json untouched. -->
+    <OpenHarmonyExtraPermissions Condition=" '$(OpenHarmonyExtraPermissions)' == '' "></OpenHarmonyExtraPermissions>
     <!-- UI builds: point OpenHarmonyArktsModulesAbc at a modules.abc produced by the ArkTS
          toolchain (ets-loader/hvigor or DevEco Studio, which compiles both the ability and
          the ArkUI pages), and set OpenHarmonyUIPage to the page record (e.g. pages/Index).
@@ -77,6 +91,20 @@
       <_OpenHarmonyModuleJson>$(_OpenHarmonyModuleJson.Replace('@API_RELEASE_TYPE@', '$(OpenHarmonyApiReleaseType)'))</_OpenHarmonyModuleJson>
       <_OpenHarmonyModuleJson>$(_OpenHarmonyModuleJson.Replace('@DEBUG@', '$(OpenHarmonyHapDebug)'))</_OpenHarmonyModuleJson>
       <_OpenHarmonyModuleJson>$(_OpenHarmonyModuleJson.Replace('@ABILITY_NAME@', '$(OpenHarmonyAbilityName)'))</_OpenHarmonyModuleJson>
+    </PropertyGroup>
+    <!-- Opt-in requestPermissions: inject only when OpenHarmonyExtraPermissions is set and
+         non-empty, so an unset property leaves module.json byte-identical. The list is split
+         on ';' and ',' with empty entries dropped (MSBuild trims each item). The minimal
+         {"name": "..."} form is used because usedScene/ability entries would need resources. -->
+    <PropertyGroup Condition=" '$(OpenHarmonyExtraPermissions)' != '' ">
+      <_OpenHarmonyNormalizedPermissions>$(OpenHarmonyExtraPermissions.Replace(',', ';'))</_OpenHarmonyNormalizedPermissions>
+    </PropertyGroup>
+    <ItemGroup Condition=" '$(OpenHarmonyExtraPermissions)' != '' ">
+      <_OpenHarmonyExtraPermission Include="$([MSBuild]::Unescape('$(_OpenHarmonyNormalizedPermissions)'))" />
+    </ItemGroup>
+    <PropertyGroup Condition=" '$(OpenHarmonyExtraPermissions)' != '' ">
+      <_OpenHarmonyPermissionsJson>"requestPermissions":[@(_OpenHarmonyExtraPermission->'{"name":"%(Identity)"}', ',')]</_OpenHarmonyPermissionsJson>
+      <_OpenHarmonyModuleJson>$([System.String]::Copy('$(_OpenHarmonyModuleJson)').TrimEnd('}')),$(_OpenHarmonyPermissionsJson)}}</_OpenHarmonyModuleJson>
     </PropertyGroup>
     <WriteLinesToFile File="$(_OpenHarmonyHapStageDir)module.json" Lines="$(_OpenHarmonyModuleJson)" Overwrite="true" WriteOnlyWhenDifferent="true" />
 
