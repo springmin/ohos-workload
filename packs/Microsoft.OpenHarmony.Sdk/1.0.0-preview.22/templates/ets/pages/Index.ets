@@ -20,6 +20,7 @@ import common from '@ohos.app.ability.common';
 import display from '@ohos.display';
 import print from '@ohos.print';
 import Want from '@ohos.app.ability.Want';
+import wantConstant from '@ohos.app.ability.wantConstant';
 import fileIo from '@ohos.file.fs';
 import notificationManager from '@ohos.notificationManager';
 import host from 'libopenharmonyhost.so';
@@ -865,12 +866,18 @@ struct Index {
 
     // Launcher/Browser/Share: managed requests arrive through ohos_host_ability_start. kind 0
     // opens a uri (implicit viewData Want), kind 1 shares plain text (implicit sendData Want),
-    // kind 2 is the availability probe (never launches). The UIAbilityContext owns the actual
-    // startAbility call; a rejected launch is logged, and only the dispatch status (true when the
-    // request was handed to the system) is reported back to the managed side.
+    // kind 2 is the availability probe (never launches), kind 3 shares a file (implicit
+    // sendData Want with uri + MIME type + FLAG_AUTH_READ_URI_PERMISSION). The UIAbilityContext
+    // owns the actual startAbility call; a rejected launch is logged, and only the dispatch
+    // status (true when the request was handed to the system) is reported back to the managed
+    // side.
     // Plain text has no wantConstant key in this SDK (Share Kit/systemShare is not part of it),
     // so the text travels under 'ohos.extra.param.key.content', the key used by the
     // pre-Share-Kit samples for ohos.want.action.sendData.
+    // The read flag on kind 3 is wantConstant.Flags.FLAG_AUTH_READ_URI_PERMISSION (0x1), which
+    // this SDK declares in @ohos.app.ability.wantConstant; it asks the ability manager to grant
+    // the receiver read access to the file:// uri. Whether the target app can actually read the
+    // sandbox file depends on that app and is not verifiable from this shell.
     host.registerAbilitySink((kind: number, uri: string, text: string): boolean => {
       try {
         const context = getContext(this) as common.UIAbilityContext;
@@ -882,6 +889,12 @@ struct Index {
           want.action = 'ohos.want.action.sendData';
           want.type = 'text/plain';
           want.parameters = { 'ohos.extra.param.key.content': text };
+        } else if (kind === 3) {
+          // File share: uri = file:// URI (built by the managed side), text = MIME type.
+          want.action = 'ohos.want.action.sendData';
+          want.uri = uri;
+          want.type = text;
+          want.flags = wantConstant.Flags.FLAG_AUTH_READ_URI_PERMISSION;
         } else {
           want.action = 'ohos.want.action.viewData';
           want.uri = uri;
