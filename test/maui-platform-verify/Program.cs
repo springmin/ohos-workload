@@ -1897,6 +1897,144 @@ if (!displayPushOk || !keepScreenOnOk)
 }
 Console.WriteLine($"[verify] display off-device info={emptyInfo.Width}x{emptyInfo.Height} density={emptyInfo.Density} rotation={emptyInfo.Rotation} orientation={emptyInfo.Orientation} (empty default asserted)");
 
+// ---- Deterministic fuzz (bounded, seeded) -----------------------------------------------------
+// A seeded storm of touch sequences with extreme but finite (mostly out-of-bounds) coordinates,
+// two very long strings through the simulated bridge payloads and a ~300-node deep view tree that
+// drives the iterative accessibility/diagnostics walks. It is bounded (300 sequences, 32-48 KiB
+// payloads, no big buffers), deterministic (fixed seed) and must finish in seconds, so it asserts
+// "no unhandled exception, no hang" without slowing the suite down.
+var fuzzWatch = System.Diagnostics.Stopwatch.StartNew();
+var fuzzRandom = new Random(20260920);   // fixed seed -> identical sequences on every run
+string fuzzTouchResult = "no throw";
+for (int i = 0; i < 300; i++)
+{
+    // Every fifth sequence lands inside the 1080x1920 surface; the rest uses finite but extreme
+    // coordinates (including +-float.MaxValue) that no device would ever produce.
+    float x0, y0, x1, y1;
+    if (i % 5 == 0)
+    {
+        x0 = (float)(fuzzRandom.NextDouble() * 1080);
+        y0 = (float)(fuzzRandom.NextDouble() * 1920);
+        x1 = (float)(fuzzRandom.NextDouble() * 1080);
+        y1 = (float)(fuzzRandom.NextDouble() * 1920);
+    }
+    else if (i % 97 == 0)
+    {
+        x0 = float.MaxValue; y0 = -float.MaxValue;
+        x1 = float.MinValue; y1 = float.MaxValue;
+    }
+    else
+    {
+        x0 = (float)(fuzzRandom.NextDouble() * 4_000_000 - 2_000_000);
+        y0 = (float)(fuzzRandom.NextDouble() * 4_000_000 - 2_000_000);
+        x1 = (float)(fuzzRandom.NextDouble() * 4_000_000 - 2_000_000);
+        y1 = (float)(fuzzRandom.NextDouble() * 4_000_000 - 2_000_000);
+    }
+    try
+    {
+        host.HandleTouch(true, false, x0, y0);
+        for (int moves = fuzzRandom.Next(3); moves > 0; moves--)
+        {
+            host.HandleMove((float)(fuzzRandom.NextDouble() * 4_000_000 - 2_000_000),
+                            (float)(fuzzRandom.NextDouble() * 4_000_000 - 2_000_000));
+        }
+        host.HandleTouch(false, true, x1, y1);
+    }
+    catch (Exception ex)
+    {
+        fuzzTouchResult = $"sequence {i} threw {ex.GetType().Name}: {ex.Message}";
+        break;
+    }
+}
+Console.WriteLine($"[verify] fuzz touch sequences=300 seed=20260920 extreme=finite out-of-bounds=true result={fuzzTouchResult}");
+if (fuzzTouchResult != "no throw")
+{
+    throw new InvalidOperationException($"the seeded touch fuzz raised {fuzzTouchResult}");
+}
+
+// Two very long payloads through the simulated JS -> .NET bridge: the HybridWebView
+// __RawMessage channel (escaped/unescaped) and the native notifyJsMessage callback, both must
+// round-trip the full string without throwing.
+string fuzzLongRaw = new string('r', 32 * 1024);
+string fuzzLongJson = new string('j', 48 * 1024);
+string? fuzzRawSeen = null;
+string? fuzzJsSeen = null;
+void FuzzOnJs(string payload) => fuzzJsSeen = payload;
+hybridProbe.RawMessageReceived += (_, e) => fuzzRawSeen = e.Message;
+OpenHarmonyWebViewHandler.JsMessage += FuzzOnJs;
+string fuzzPayloadResult;
+try
+{
+    OpenHarmonyHybridWebViewHandler.OnJsMessage("__RawMessage|" + Uri.EscapeDataString(fuzzLongRaw));
+    string? fuzzRawAfterHybrid = fuzzRawSeen;
+    OpenHarmonyWebViewHandler.HandleJsMessage("{\"pad\":\"" + fuzzLongJson + "\"}");
+    string expectedJson = "{\"pad\":\"" + fuzzLongJson + "\"}";
+    // The native WebView callback is also fanned out to the HybridWebView raw channel (the shell
+    // routes every dotnetHost.postMessage payload through it), so the raw probe sees the JSON
+    // payload as well after the second call.
+    fuzzPayloadResult = fuzzRawAfterHybrid == fuzzLongRaw && fuzzJsSeen == expectedJson
+        ? "round-trip ok"
+        : $"hybrid={fuzzRawAfterHybrid?.Length ?? -1} js={fuzzJsSeen?.Length ?? -1} rawAfterJs={fuzzRawSeen?.Length ?? -1}";
+}
+catch (Exception ex)
+{
+    fuzzPayloadResult = $"{ex.GetType().Name}: {ex.Message}";
+}
+finally
+{
+    OpenHarmonyWebViewHandler.JsMessage -= FuzzOnJs;
+}
+Console.WriteLine($"[verify] fuzz bridge payloads raw={fuzzLongRaw.Length}B json={fuzzLongJson.Length}B result={fuzzPayloadResult}");
+if (fuzzPayloadResult != "round-trip ok")
+{
+    throw new InvalidOperationException($"the long bridge payload fuzz failed: {fuzzPayloadResult}");
+}
+
+// A ~300-node deep tree (150 nested layouts, each with a label) through the iterative walks:
+// OpenHarmonyAccessibility.Visit (the Stack-based shadow tree) and the diagnostics overlay walk,
+// both reached through OpenHarmonyWindowRenderer.Render, plus the recursive Describe log. The tree
+// is kept detached so the assertion is independent of the app page the touch fuzz left behind.
+var fuzzRenderer = app.Services.GetRequiredService<OpenHarmonyWindowRenderer>();
+var fuzzTree = new VerticalStackLayout { Spacing = 1 };
+Microsoft.Maui.ILayout fuzzCursor = fuzzTree;
+for (int i = 0; i < 150; i++)
+{
+    var fuzzLabel = new Label { Text = $"fuzz node {i}", FontSize = 8 };
+    var fuzzNested = new VerticalStackLayout { Spacing = 1 };
+    fuzzCursor.Add(fuzzLabel);
+    fuzzCursor.Add(fuzzNested);
+    fuzzCursor = fuzzNested;
+}
+string fuzzTreeResult;
+try
+{
+    OpenHarmonyDiagnostics.Enabled = true;
+    bool fuzzRendered = fuzzRenderer.Render(fuzzTree, 1080, 1920);
+    OpenHarmonyDiagnostics.Enabled = false;
+    int fuzzNodes = OpenHarmonyAccessibility.Nodes.Count;
+    int fuzzDescribeChars = fuzzRenderer.Describe(fuzzTree).Length;
+    fuzzTreeResult = fuzzRendered && fuzzNodes >= 300 && fuzzDescribeChars > 0
+        ? "render=True walk ok"
+        : $"render={fuzzRendered} nodes={fuzzNodes} describeChars={fuzzDescribeChars}";
+}
+catch (Exception ex)
+{
+    OpenHarmonyDiagnostics.Enabled = false;
+    fuzzTreeResult = $"{ex.GetType().Name}: {ex.Message}";
+}
+Console.WriteLine($"[verify] fuzz deep tree nodes=301 depth=150 seed=20260920 result={fuzzTreeResult}");
+if (fuzzTreeResult != "render=True walk ok")
+{
+    throw new InvalidOperationException($"the deep-tree fuzz failed: {fuzzTreeResult}");
+}
+
+int fuzzMillis = (int)fuzzWatch.ElapsedMilliseconds;
+Console.WriteLine($"[verify] fuzz bounded elapsed={fuzzMillis}ms limit=30000ms seed=20260920 (no hang)");
+if (fuzzWatch.Elapsed > TimeSpan.FromSeconds(30))
+{
+    throw new InvalidOperationException($"the fuzz section took {fuzzMillis} ms");
+}
+
 // Target object for the HybridWebView JS -> .NET invocation checks. The reflection invoker
 // matches methods by name and deserializes each JSON parameter value into the parameter type.
 sealed class VerifyHybridInvokeTarget

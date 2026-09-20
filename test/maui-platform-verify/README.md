@@ -18,7 +18,7 @@ parsers plus the ModuleInitializer-installed defaults).
 # (or the MauiSliceDir / HostingDll / OpenHarmonyGraphicsDll MSBuild properties) before building
 # elsewhere; an explicit -p: value wins over the environment and the absolute fallbacks.
 dotnet build -v:q
-dotnet bin/Debug/net11.0/verify.dll | grep -c '\[verify\]'   # expect 191
+dotnet bin/Debug/net11.0/verify.dll | grep -c '\[verify\]'   # expect 195 (191 checks + 4 fuzz lines)
 ```
 
 The `interaction-regression` workflow (`.github/workflows/interaction-regression.yml`) runs the
@@ -28,13 +28,33 @@ suite on a GitHub runner as a real gate: it checks out this repository plus `spr
 points `MAUI_SLICE_DIR` / `HOSTING_DLL` / `OPENHARMONY_GRAPHICS_DLL` at those roots, and fails the
 job unless the run exits 0, reports at least 191 `[verify]` lines and logs no `Unhandled` line.
 
+## Fuzz tail
+
+The suite ends with a bounded, deterministic fuzz section (fixed seed `20260920`) that adds four
+`[verify]` lines:
+
+- 300 down/move/up sequences through the app host with finite but extreme coordinates, mostly
+  out-of-bounds (uniform in `+-2,000,000`, plus `+-float.MaxValue`); every fifth sequence lands
+  inside the 1080x1920 surface so real hit-testing runs too. A throwing sequence fails the suite.
+- two very long simulated JS -> .NET bridge payloads: a 32 KiB `__RawMessage` payload through
+  `OpenHarmonyHybridWebViewHandler.OnJsMessage` (escaped and unescaped) and a 48 KiB JSON payload
+  through the native-shaped `OpenHarmonyWebViewHandler.HandleJsMessage`; both must round-trip
+  intact without throwing.
+- a detached 301-node tree (150 nested layouts with a label each) driven through
+  `OpenHarmonyWindowRenderer.Render`, which exercises the iterative accessibility shadow-tree walk
+  (`OpenHarmonyAccessibility.Visit`) and the diagnostics overlay walk, plus the recursive
+  `Describe` log.
+
+It asserts no unhandled exception and no hang (the section must finish in seconds; the run above
+took ~0.2 s) and performs no large allocations.
+
 ## Notes
 
 - Output goes to `bin/Debug/net11.0/verify.dll` (run the dll, not the apphost: the device policy
   blocks codesigned ELF apphosts on some machines).
 - The suite fails loudly (unhandled exception) when a slice change breaks startup or when an
   assertion for the gesture flows (including the drag-and-drop checks) does not hold; keep it at
-  191 checks when touching the platform slice.
+  191 checks plus the 4 fuzz lines when touching the platform slice.
 - Contacts/calendar coverage: `OpenHarmonyContacts.FindAsync` and
   `OpenHarmonyCalendar.ListUpcomingAsync`/`AddEventAsync` return empty/false without throwing
   off-device and report `IsSupported == false` before and after the call (the permission probe
