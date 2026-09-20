@@ -24,6 +24,9 @@ HVIGOR_DIR="${HVIGOR_DIR:-$BUILD/hvigor}"
 PROJ="${ARKTS_PROJECT_DIR:-$HVIGOR_DIR/project}"
 HVIGOR_VERSION="${HVIGOR_VERSION:-6.26.4}"
 MIRROR="${HVIGOR_MIRROR:-https://repo.harmonyos.com/npm}"
+# TYPECHECK=1 enables hvigor's ArkTS type checker (typeCheck: true). The default stays false
+# because the shipping build only needs the compile; use TYPECHECK=1 for the error-free check.
+TYPECHECK="${TYPECHECK:-0}"
 NODE_BIN="${NODE:-$(command -v node)}"
 OUT_DIR="${OUT_DIR:-$W/dist/ets}"
 
@@ -82,9 +85,10 @@ cp "$TPL/resources/base/element/color.json" "$PROJ/entry/src/main/resources/base
 cp "$TPL/resources/base/media/app_icon.png" "$PROJ/entry/src/main/resources/base/media/"
 cp "$TPL/resources/base/media/app_icon.png" "$PROJ/AppScope/resources/base/media/"
 
-python3 - "$PROJ" "$PLATFORM_VERSION" "$API_VERSION" <<'PY'
+python3 - "$PROJ" "$PLATFORM_VERSION" "$API_VERSION" "$TYPECHECK" <<'PY'
 import json, os, sys
-proj, platform_version, api_version = sys.argv[1:4]
+proj, platform_version, api_version, typecheck = sys.argv[1:5]
+typecheck_json = 'true' if typecheck == '1' else 'false'
 def w(rel, text):
     with open(os.path.join(proj, rel), 'w') as f: f.write(text)
 
@@ -130,11 +134,11 @@ w('entry/oh-package.json5', """{
 w('hvigor/hvigor-config.json5', """{
   modelVersion: '6.0.0',
   dependencies: {},
-  execution: { analyze: 'normal', daemon: false, incremental: false, parallel: true, typeCheck: false },
+  execution: { analyze: 'normal', daemon: false, incremental: false, parallel: true, typeCheck: __TYPECHECK__ },
   logging: { level: 'info' },
   debugging: { stacktrace: false },
 }
-""")
+""".replace('__TYPECHECK__', typecheck_json))
 w('build-profile.json5', f"""{{
   app: {{
     products: [
@@ -196,6 +200,10 @@ w('local.properties', f"sdk.dir={proj}/../sdk\nnodejs.dir={os.path.expanduser('~
 print('  project scaffold written:', proj)
 PY
 printf 'sdk.dir=%s\nnodejs.dir=%s\n' "$SDK_ROOT" "${NODE_HOME:-$HOME/.harmonybrew}" > "$PROJ/local.properties"
+# The hvigorfile imports @ohos/hvigor-ohos-plugin; with TYPECHECK=1 hvigor typechecks that
+# file too, and its module resolution only looks inside the project, so expose the installed
+# hvigor packages as the project's node_modules (the layout DevEco Studio produces).
+ln -sfn "$HVIGOR_DIR/node_modules" "$PROJ/node_modules"
 
 # 4) build -------------------------------------------------------------------
 # hvigor resolves the plugin by walking up from the project directory; the default project

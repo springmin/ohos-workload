@@ -49,6 +49,27 @@ interface HybridAssetsConfig {
   defaultFile: string;
 }
 
+// JS -> .NET invocation payload the stock hybridwebview.js POSTs to __hwvInvokeDotNet:
+// { "MethodName": "...", "ParamValues": ["<json>", ...] }.
+interface HybridInvokeRequest {
+  MethodName?: string;
+  ParamValues?: string[];
+}
+
+// Error payload completed into a delayed __hwvInvokeDotNet response; the JavaScript bridge
+// checks IsError and throws an Error carrying ErrorMessage.
+interface HybridInvokeErrorResult {
+  IsError: boolean;
+  ErrorMessage: string;
+}
+
+// A pending invocation whose intercepted response is held open with setResponseIsReady(false)
+// until the managed handler answers (or the fallback timeout fires).
+interface HybridPendingInvoke {
+  response: WebResourceResponse;
+  timer: number;
+}
+
 @Entry
 @Component
 struct Index {
@@ -65,6 +86,13 @@ struct Index {
   private hybridRegistered: boolean = false;
   // MAUI's hybrid origin: HybridWebViewHandler.AppOrigin (https://0.0.0.1/).
   private hybridOrigin: string = 'https://0.0.0.1/';
+  // JS -> .NET invocation state: the intercepted __hwvInvokeDotNet responses held open until
+  // the managed handler answers through host.registerHybridInvokeResultSink.
+  private hybridInvokeSeq: number = 0;
+  private hybridInvokes: Map<number, HybridPendingInvoke> = new Map();
+  // Last-resort timeout so a lost invocation rejects the fetch instead of hanging it; the
+  // managed handler answers with its own error payload after 10 s.
+  private hybridInvokeTimeoutMs: number = 15000;
   // JavaScript bridge: set once the dotnetHost proxy was registered on the attached controller.
   private dotNetHostRegistered: boolean = false;
   // App theme: 'colorMode' is an ArkUI environment property that the framework keeps in
@@ -219,6 +247,17 @@ struct Index {
         host.notifyWebEvalResult(requestId, '', 1);
       }
     });
+
+    // HybridWebView JS -> .NET invocation results: the managed handler answers a
+    // host.notifyHybridInvoke call through ohos_host_hwv_invoke_result, which lands here and
+    // completes the delayed __hwvInvokeDotNet response.
+    try {
+      host.registerHybridInvokeResultSink((requestId: number, payload: string): void => {
+        this.completeHybridInvoke(requestId, payload);
+      });
+    } catch (hybridInvokeSinkError) {
+      console.error(`[maui] hybrid invoke result sink registration failed: ${(hybridInvokeSinkError as Error).message}`);
+    }
 
     // File/media pickers: the managed side asks for the system picker; the chosen file's name
     // and bytes travel back as base64 (all kinds use the document picker, so the shell needs no
@@ -683,7 +722,7 @@ struct Index {
   // JS -> .NET channel of the served hybridwebview.js: the script POSTs its payload in the
   // X-Maui-Request-Body header (the same transport Android uses). The body is handed to the
   // existing JS message sink, so __RawMessage / __InvokeJavaScript* records reach the managed
-  // HybridWebView handler. The invoke endpoint itself is not implemented in this batch.
+  // HybridWebView handler. The matching __hwvInvokeDotNet endpoint is hybridInvokeResponse.
   private hybridMessageResponse(event: OnInterceptRequestEvent): WebResourceResponse {
     let body: string = '';
     let token: string = '';
@@ -701,6 +740,98 @@ struct Index {
     }
     host.notifyJsMessage(body);
     return this.hybridErrorResponse(204);
+  }
+
+  // Error payload for a delayed invocation response. It completes the response with HTTP 200
+  // so fetch resolves and the stock invokeDotNet code reads IsError and rejects.
+  private hybridInvokeErrorPayload(message: string): string {
+    const payload: HybridInvokeErrorResult = { IsError: true, ErrorMessage: message };
+    return JSON.stringify(payload);
+  }
+
+  // Completes a held-open __hwvInvokeDotNet response once (later duplicates are ignored) and
+  // clears its timeout. The data is always written on the next tick, after onInterceptRequest
+  // returned the not-ready response: the documented order is setResponseIsReady(false) ->
+  // setResponseData -> setResponseIsReady(true). A synchronous answer (managed method that
+  // completes inline) therefore cannot write into the response mid-interception.
+  private completeHybridInvoke(requestId: number, payload: string): void {
+    const pending: HybridPendingInvoke | undefined = this.hybridInvokes.get(requestId);
+    if (pending === undefined) {
+      return;
+    }
+    this.hybridInvokes.delete(requestId);
+    clearTimeout(pending.timer);
+    setTimeout(() => {
+      try {
+        pending.response.setResponseData(payload);
+        pending.response.setResponseCode(200);
+        pending.response.setReasonMessage('OK');
+        pending.response.setResponseIsReady(true);
+      } catch (completeError) {
+        console.error(`[maui] hybrid invoke response failed: ${(completeError as Error).message}`);
+      }
+    }, 0);
+  }
+
+  // JS -> .NET invocation endpoint: hybridwebview.js POSTs
+  // { MethodName, ParamValues } to <origin>/__hwvInvokeDotNet. The intercepted response is
+  // returned not-ready (setResponseIsReady(false)), the invocation is handed to the managed
+  // handler through host.notifyHybridInvoke, and completeHybridInvoke answers it. Every
+  // failure path (bad request, missing host export, managed error, timeout) completes the
+  // response with an error payload, so the page's promise rejects instead of hanging.
+  private hybridInvokeResponse(event: OnInterceptRequestEvent): WebResourceResponse {
+    let body: string = '';
+    let token: string = '';
+    const headers = event.request.getRequestHeader();
+    for (let i = 0; i < headers.length; i++) {
+      const name: string = headers[i].headerKey.toLowerCase();
+      if (name === 'x-maui-request-body') {
+        body = headers[i].headerValue;
+      } else if (name === 'x-maui-invoke-token') {
+        token = headers[i].headerValue;
+      }
+    }
+    if (token !== 'HybridWebView' || body.length === 0) {
+      return this.hybridErrorResponse(400);
+    }
+    let method: string = '';
+    let argsJson: string = '[]';
+    try {
+      const data = JSON.parse(body) as HybridInvokeRequest;
+      if (data.MethodName !== undefined) {
+        method = data.MethodName;
+      }
+      if (data.ParamValues !== undefined) {
+        argsJson = JSON.stringify(data.ParamValues);
+      }
+    } catch (parseError) {
+      return this.hybridErrorResponse(400);
+    }
+    if (method.length === 0) {
+      return this.hybridErrorResponse(400);
+    }
+    const response: WebResourceResponse = new WebResourceResponse();
+    response.setResponseCode(200);
+    response.setResponseMimeType('application/json');
+    response.setResponseEncoding('utf-8');
+    response.setResponseIsReady(false);
+    const requestId: number = ++this.hybridInvokeSeq;
+    const timer: number = setTimeout(() => {
+      this.completeHybridInvoke(requestId,
+        this.hybridInvokeErrorPayload('the .NET invocation timed out'));
+    }, this.hybridInvokeTimeoutMs);
+    this.hybridInvokes.set(requestId, { response: response, timer: timer });
+    try {
+      const rc: number = host.notifyHybridInvoke(requestId, method, argsJson) as number;
+      if (rc !== 0) {
+        this.completeHybridInvoke(requestId,
+          this.hybridInvokeErrorPayload('the .NET host is not listening for hybrid invocations'));
+      }
+    } catch (invokeError) {
+      this.completeHybridInvoke(requestId,
+        this.hybridInvokeErrorPayload('the .NET host does not expose the hybrid invocation bridge'));
+    }
+    return response;
   }
 
   build() {
@@ -721,6 +852,9 @@ struct Index {
               return null;
             }
             const url: string = event.request.getRequestUrl();
+            if (url.startsWith(this.hybridOrigin + '__hwvInvokeDotNet')) {
+              return this.hybridInvokeResponse(event);
+            }
             if (url.startsWith(this.hybridOrigin + '__hwvSendMessage')) {
               return this.hybridMessageResponse(event);
             }

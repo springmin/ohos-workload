@@ -1,6 +1,6 @@
 # Interaction regression suite (headless)
 
-The 174-check MAUI-on-OpenHarmony interaction harness. It builds the platform slice sources from the
+The 181-check MAUI-on-OpenHarmony interaction harness. It builds the platform slice sources from the
 `maui-ohos` working tree and drives the app host without a device: touch/drag/pinch/pointer input,
 overlays, gestures (tap/pan/swipe/pinch/pointer/drag-and-drop), sensors/haptics/notification/picker
 wiring, the app-theme colour-mode handler, the launcher/browser/share ability bridge, the
@@ -16,7 +16,7 @@ and the text-to-PDF renderer).
 # the MAUI_SLICE_DIR / HOSTING_DLL env vars (or the MauiSliceDir / HostingDll MSBuild properties)
 # before building elsewhere.
 dotnet build -v:q
-dotnet bin/Debug/net11.0/verify.dll | grep -c '\[verify\]'   # expect 174
+dotnet bin/Debug/net11.0/verify.dll | grep -c '\[verify\]'   # expect 181
 ```
 
 ## Notes
@@ -25,7 +25,7 @@ dotnet bin/Debug/net11.0/verify.dll | grep -c '\[verify\]'   # expect 174
   blocks codesigned ELF apphosts on some machines).
 - The suite fails loudly (unhandled exception) when a slice change breaks startup or when an
   assertion for the gesture flows (including the drag-and-drop checks) does not hold; keep it at
-  174 checks when touching the platform slice.
+  181 checks when touching the platform slice.
 - Contacts/calendar coverage: `OpenHarmonyContacts.FindAsync` and
   `OpenHarmonyCalendar.ListUpcomingAsync`/`AddEventAsync` return empty/false without throwing
   off-device and report `IsSupported == false` before and after the call (the permission probe
@@ -66,9 +66,17 @@ dotnet bin/Debug/net11.0/verify.dll | grep -c '\[verify\]'   # expect 174
   default file with the shell, which answers app-origin requests from `<AppDir>/<root>/...`,
   serves the bootstrap script from `<AppDir>/_framework/hybridwebview.js` and forwards the script's
   `__hwvSendMessage` posts into the managed handler. Off-device there is no app context, so
-  registration is a no-op; the JS -> .NET `__hwvInvokeDotNet` endpoint is not implemented (the
-  page's `InvokeDotNet` rejects, while the .NET -> JS direction keeps working). See the slice's
-  `OpenHarmonyHybridWebViewHandler` header.
+  registration is a no-op. The JS -> .NET `__hwvInvokeDotNet` endpoint is implemented: the shell
+  intercepts the fetch, returns the response not-ready (`setResponseIsReady(false)` - the SDK
+  members are pinned by the typeCheck probe in the workload repo), forwards
+  `host.notifyHybridInvoke(requestId, method, argsJson)` and completes the response when the
+  managed handler answers through `ohos_host_hwv_invoke_result`. The suite drives the managed half
+  directly (`OnHybridInvokeAsync`, the same path as the native callback) with a
+  `SetInvokeJavaScriptTarget` object: a string round trip (`Echo` -> `"echo:hi"`), a typed result
+  (`Add` -> `42`), a missing method, malformed parameter JSON, a page without an invoker and a
+  disconnected page all answer the `DotNetInvokeResult` error payload (never a hang), and the
+  payload is observed through `HybridInvokeResultSent` because the native export is absent
+  off-device. See the slice's `OpenHarmonyHybridWebViewHandler` header.
 - Haptics coverage: `HapticFeedback.Default` is the slice implementation, `Perform(Click/LongPress)`
   degrades without throwing off-device, and `IsSupported` is false without the host library. The app
   theme handler is exercised directly (ArkUI colour-mode reports need a device): setting dark/light

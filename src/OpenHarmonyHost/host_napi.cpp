@@ -1034,6 +1034,81 @@ napi_value NotifyJsMessage(napi_env env, napi_callback_info info) {
     return undefined;
 }
 
+// HybridWebView JS -> .NET invocation bridge: the ArkTS shell intercepts the
+// __hwvInvokeDotNet request, calls host.notifyHybridInvoke(requestId, method, argsJson) and
+// keeps the intercepted WebResourceResponse open (setResponseIsReady(false)); the managed
+// HybridWebView handler answers through ohos_host_hwv_invoke_result(requestId, payloadJson),
+// which hands the result to the shell's registerHybridInvokeResultSink callback so the
+// response can be completed.
+napi_ref g_hybrid_invoke_result_sink_ref = nullptr;
+static void (*g_hybrid_invoke_listener)(int request_id, const char* method, const char* args_json) = nullptr;
+
+// The managed side registers the callback that services a JS invocation (P/Invoke).
+extern "C" void ohos_host_hwv_register_invoke(void* callback) {
+    g_hybrid_invoke_listener = (void (*)(int, const char*, const char*))callback;
+}
+
+// ArkTS calls host.notifyHybridInvoke(requestId, method, argsJson). Returns 0 when the
+// invocation reached the managed listener and -1 otherwise; the shell answers a -1 with an
+// error payload instead of leaving the fetch open.
+napi_value NotifyHybridInvoke(napi_env env, napi_callback_info info) {
+    size_t argc = 3;
+    napi_value argv[3] = {nullptr, nullptr, nullptr};
+    napi_get_cb_info(env, info, &argc, argv, nullptr, nullptr);
+    int requestId = 0;
+    if (argc >= 1) napi_get_value_int32(env, argv[0], &requestId);
+    std::string method;
+    std::string args;
+    if (argc >= 2) method = GetStringArg(env, argv[1]);
+    if (argc >= 3) args = GetStringArg(env, argv[2]);
+    int rc = -1;
+    if (g_hybrid_invoke_listener != nullptr && !method.empty()) {
+        g_hybrid_invoke_listener(requestId, method.c_str(), args.c_str());
+        rc = 0;
+    }
+    napi_value result = nullptr;
+    napi_create_int32(env, rc, &result);
+    return result;
+}
+
+// ArkTS calls host.registerHybridInvokeResultSink(fn) to receive invocation results.
+napi_value RegisterHybridInvokeResultSink(napi_env env, napi_callback_info info) {
+    size_t argc = 1;
+    napi_value argv[1] = {nullptr};
+    napi_get_cb_info(env, info, &argc, argv, nullptr, nullptr);
+    if (argc >= 1) {
+        napi_valuetype type = napi_undefined;
+        napi_typeof(env, argv[0], &type);
+        if (type == napi_function) {
+            if (g_hybrid_invoke_result_sink_ref != nullptr) {
+                napi_delete_reference(env, g_hybrid_invoke_result_sink_ref);
+            }
+            napi_create_reference(env, argv[0], 1, &g_hybrid_invoke_result_sink_ref);
+        }
+    }
+    napi_value undefined = nullptr;
+    napi_get_undefined(env, &undefined);
+    return undefined;
+}
+
+// Called from managed code (P/Invoke) with the invocation result. Returns 0 when the result
+// reached the ArkTS sink, -1 when there is no result sink registered.
+extern "C" int ohos_host_hwv_invoke_result(int request_id, const char* payload_json) {
+    if (g_env == nullptr || g_hybrid_invoke_result_sink_ref == nullptr) {
+        return -1;
+    }
+    napi_value sink = nullptr;
+    if (napi_get_reference_value(g_env, g_hybrid_invoke_result_sink_ref, &sink) != napi_ok || sink == nullptr) {
+        return -1;
+    }
+    napi_value argv[2] = {nullptr, nullptr};
+    napi_create_int32(g_env, request_id, &argv[0]);
+    napi_create_string_utf8(g_env, payload_json != nullptr ? payload_json : "", NAPI_AUTO_LENGTH, &argv[1]);
+    napi_value result = nullptr;
+    napi_status status = napi_call_function(g_env, sink, sink, 2, argv, &result);
+    return status == napi_ok ? 0 : -1;
+}
+
 // ArkTS calls host.registerPickerSink(fn) to receive picker requests.
 napi_value RegisterPickerSink(napi_env env, napi_callback_info info) {
     size_t argc = 1;
@@ -1423,6 +1498,8 @@ napi_value Init(napi_env env, napi_value exports) {
         {"registerWebEvalSink", nullptr, RegisterWebEvalSink, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"notifyWebEvalResult", nullptr, NotifyWebEvalResult, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"notifyJsMessage", nullptr, NotifyJsMessage, nullptr, nullptr, nullptr, napi_default, nullptr},
+        {"notifyHybridInvoke", nullptr, NotifyHybridInvoke, nullptr, nullptr, nullptr, napi_default, nullptr},
+        {"registerHybridInvokeResultSink", nullptr, RegisterHybridInvokeResultSink, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"notifyAvoidArea", nullptr, NotifyAvoidArea, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"notifyTheme", nullptr, NotifyTheme, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"notifyPickerResult", nullptr, NotifyPickerResult, nullptr, nullptr, nullptr, napi_default, nullptr},

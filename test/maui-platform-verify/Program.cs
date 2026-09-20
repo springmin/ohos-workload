@@ -1,3 +1,4 @@
+using System.Text.Json;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Maui;
 using Microsoft.Maui.Controls;
@@ -1244,6 +1245,103 @@ if (!hybridScriptEmbedded)
     throw new InvalidOperationException("the HybridWebView bootstrap script resource was not found");
 }
 
+// JS -> .NET invocation (__hwvInvokeDotNet): the shell holds the intercepted fetch open with
+// setResponseIsReady(false), forwards method + JSON parameter array through
+// host.notifyHybridInvoke, and completes the response with the DotNetInvokeResult payload the
+// managed handler produces. Off-device the native export is absent, so the payload is
+// observed through HybridInvokeResultSent (the same payload a device sends through
+// ohos_host_hwv_invoke_result). Every branch must answer - the page's fetch must never hang.
+var invokeResults = new Dictionary<int, string>();
+void OnHybridInvokeResult(int requestId, string payload) => invokeResults[requestId] = payload;
+OpenHarmonyHybridWebViewHandler.HybridInvokeResultSent += OnHybridInvokeResult;
+hybridProbe.SetInvokeJavaScriptTarget(new VerifyHybridInvokeTarget());
+
+int invokeEchoId = 91001;
+await OpenHarmonyHybridWebViewHandler.OnHybridInvokeAsync(invokeEchoId, "Echo", "[\"\\\"hi\\\"\"]");
+bool invokeEchoOk = invokeResults.TryGetValue(invokeEchoId, out string? echoPayload)
+    && PayloadBool(echoPayload, "IsError") == false
+    && PayloadBool(echoPayload, "IsJson") == true
+    && PayloadString(echoPayload, "Result") == "\"echo:hi\"";
+Console.WriteLine($"[verify] hybrid InvokeDotNet round trip method=Echo result={PayloadString(invokeResults.GetValueOrDefault(invokeEchoId), "Result")} payload={invokeResults.GetValueOrDefault(invokeEchoId)}");
+if (!invokeEchoOk)
+{
+    throw new InvalidOperationException("the HybridWebView __hwvInvokeDotNet round trip assertion failed");
+}
+
+int invokeAddId = 91002;
+await OpenHarmonyHybridWebViewHandler.OnHybridInvokeAsync(invokeAddId, "Add", "[\"20\",\"22\"]");
+bool invokeAddOk = invokeResults.TryGetValue(invokeAddId, out string? addPayload)
+    && PayloadBool(addPayload, "IsError") == false
+    && PayloadString(addPayload, "Result") == "42";
+Console.WriteLine($"[verify] hybrid InvokeDotNet typed result method=Add result={PayloadString(invokeResults.GetValueOrDefault(invokeAddId), "Result")}");
+if (!invokeAddOk)
+{
+    throw new InvalidOperationException("the HybridWebView typed __hwvInvokeDotNet result assertion failed");
+}
+
+int invokeMissingId = 91003;
+await OpenHarmonyHybridWebViewHandler.OnHybridInvokeAsync(invokeMissingId, "NoSuchMethod", "[]");
+bool invokeMissingOk = invokeResults.TryGetValue(invokeMissingId, out string? missingPayload)
+    && PayloadBool(missingPayload, "IsError") == true
+    && !string.IsNullOrEmpty(PayloadString(missingPayload, "ErrorMessage"));
+Console.WriteLine($"[verify] hybrid InvokeDotNet missing method degrades to an error payload message='{PayloadString(invokeResults.GetValueOrDefault(invokeMissingId), "ErrorMessage")}'");
+if (!invokeMissingOk)
+{
+    throw new InvalidOperationException("the HybridWebView missing-method error payload assertion failed");
+}
+
+int invokeBadArgsId = 91004;
+await OpenHarmonyHybridWebViewHandler.OnHybridInvokeAsync(invokeBadArgsId, "Echo", "not-json");
+bool invokeBadArgsOk = invokeResults.TryGetValue(invokeBadArgsId, out string? badArgsPayload)
+    && PayloadBool(badArgsPayload, "IsError") == true;
+Console.WriteLine($"[verify] hybrid InvokeDotNet bad parameter JSON degrades to an error payload message='{PayloadString(invokeResults.GetValueOrDefault(invokeBadArgsId), "ErrorMessage")}'");
+if (!invokeBadArgsOk)
+{
+    throw new InvalidOperationException("the HybridWebView bad-parameter error payload assertion failed");
+}
+
+// Honest degradation: a page without an InvokeJavaScriptTarget and a disconnected shell both
+// answer an error payload instead of leaving the intercepted fetch open.
+var hybridNoTarget = new Microsoft.Maui.Controls.HybridWebView { HeightRequest = 200 };
+OpenHarmonyHandlerConnector.Connect(hybridNoTarget);
+int invokeNoTargetId = 91005;
+await OpenHarmonyHybridWebViewHandler.OnHybridInvokeAsync(invokeNoTargetId, "Echo", "[]");
+bool invokeNoTargetOk = invokeResults.TryGetValue(invokeNoTargetId, out string? noTargetPayload)
+    && PayloadBool(noTargetPayload, "IsError") == true
+    && PayloadString(noTargetPayload, "ErrorMessage")?.Contains("invoker", StringComparison.OrdinalIgnoreCase) == true;
+Console.WriteLine($"[verify] hybrid InvokeDotNet without an InvokeJavaScriptTarget degrades message='{PayloadString(invokeResults.GetValueOrDefault(invokeNoTargetId), "ErrorMessage")}'");
+if (!invokeNoTargetOk)
+{
+    throw new InvalidOperationException("the HybridWebView no-invoker error payload assertion failed");
+}
+
+hybridNoTarget.Handler?.DisconnectHandler();
+hybridNoTarget.Handler = null;
+int invokeNoPageId = 91006;
+await OpenHarmonyHybridWebViewHandler.OnHybridInvokeAsync(invokeNoPageId, "Echo", "[]");
+bool invokeNoPageOk = invokeResults.TryGetValue(invokeNoPageId, out string? noPagePayload)
+    && PayloadBool(noPagePayload, "IsError") == true
+    && !string.IsNullOrEmpty(PayloadString(noPagePayload, "ErrorMessage"));
+Console.WriteLine($"[verify] hybrid InvokeDotNet without a registered page degrades message='{PayloadString(invokeResults.GetValueOrDefault(invokeNoPageId), "ErrorMessage")}'");
+if (!invokeNoPageOk)
+{
+    throw new InvalidOperationException("the HybridWebView no-page error payload assertion failed");
+}
+
+bool invokeBridgeDegraded = !OpenHarmonyHybridWebViewHandler.IsInvokeBridgeAvailable && invokeResults.Count == 6;
+Console.WriteLine($"[verify] hybrid invoke bridge hostLibraryPresent={OpenHarmonyHybridWebViewHandler.IsInvokeBridgeAvailable} payloads={invokeResults.Count} allCompleted={invokeBridgeDegraded}");
+if (!invokeBridgeDegraded)
+{
+    throw new InvalidOperationException("the HybridWebView invoke bridge degradation assertion failed");
+}
+OpenHarmonyHybridWebViewHandler.HybridInvokeResultSent -= OnHybridInvokeResult;
+
+static bool PayloadBool(string? payload, string name)
+    => !string.IsNullOrEmpty(payload) && JsonDocument.Parse(payload).RootElement.GetProperty(name).GetBoolean();
+
+static string? PayloadString(string? payload, string name)
+    => string.IsNullOrEmpty(payload) ? null : JsonDocument.Parse(payload).RootElement.GetProperty(name).GetString();
+
 // Gap 5: Contacts/Calendar platform extras over the host/ArkTS kit bridge
 // (ohos_host_contacts_query / ohos_host_calendar_list / ohos_host_calendar_add ->
 // shell registerContactsSink / registerCalendarSink -> @kit.ContactsKit / @kit.CalendarKit).
@@ -1583,6 +1681,14 @@ Console.WriteLine($"[verify] printing job name sanitizer 'verify text.pdf'->'{sa
 if (!sanitizeOk)
 {
     throw new InvalidOperationException("the print job name sanitizer assertion failed");
+}
+
+// Target object for the HybridWebView JS -> .NET invocation checks. The reflection invoker
+// matches methods by name and deserializes each JSON parameter value into the parameter type.
+sealed class VerifyHybridInvokeTarget
+{
+    public string Echo(string value) => "echo:" + value;
+    public int Add(int a, int b) => a + b;
 }
 
 sealed class ProbeDrawable : Microsoft.Maui.Graphics.IDrawable
