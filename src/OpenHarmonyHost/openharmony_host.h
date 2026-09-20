@@ -204,6 +204,12 @@ int ohos_host_accessibility_node(int id, int parent_id, const char* role, const 
                                  int checked);
 int ohos_host_accessibility_commit(void);
 int ohos_host_accessibility_count(void);
+/// Published node count (the number of nodes the provider sees after the last commit).
+/// Read by the ArkTS shell through the NAPI accessibilityNodeCount export, which backs the
+/// accessibility self-check dialog. The distinct name keeps the off-device publish-contract
+/// reflection (which resolves the 16-argument publish function by its exact name) unambiguous;
+/// this function is not part of that contract.
+int ohos_host_accessibility_node_count(void);
 int ohos_host_accessibility_get(int index, int* id, int* parent_id, const char** role,
                                 const char** text, const char** description, const char** hint,
                                 float* x, float* y, float* width, float* height,

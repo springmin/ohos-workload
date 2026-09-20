@@ -21,6 +21,7 @@
 napi_value AttachAccessibilityNode(napi_env env, napi_callback_info info);
 static int AttachAccessibilityValue(napi_env env, napi_value value);
 napi_value AccessibilityStatus(napi_env env, napi_callback_info info);
+napi_value AccessibilityNodeCount(napi_env env, napi_callback_info info);
 
 #include <string>
 #include <vector>
@@ -1597,6 +1598,7 @@ napi_value Init(napi_env env, napi_value exports) {
 
 
         {"accessibilityStatus", nullptr, AccessibilityStatus, nullptr, nullptr, nullptr, napi_default, nullptr},
+        {"accessibilityNodeCount", nullptr, AccessibilityNodeCount, nullptr, nullptr, nullptr, napi_default, nullptr},
 
 
 
@@ -1802,6 +1804,27 @@ static void A11ySetCheckedState(ArkUI_AccessibilityElementInfo* info, int checke
     }
 }
 
+// Grouping and accessibility level. The managed shadow tree publishes "group" for every
+// container that is not a concrete control (layouts, pages, scroll content), so those nodes
+// are marked as accessibility groups instead of unnamed leaves. The level follows what the
+// node itself carries: text/description/hint, an action a screen reader can offer, a check
+// state or a valid range means the node must be recognized ("yes"); a node with none of
+// those is layout-only (an empty container, a decoration image) and stays out of the focus
+// order ("no"). "no-hide-descendants" is deliberately never used, so the children of a
+// layout-only container are still announced from their own records.
+static void A11ySetGroupAndLevel(ArkUI_AccessibilityElementInfo* info, const A11yNodeRecord& node) {
+    if (node.role != nullptr && strcmp(node.role, "group") == 0) {
+        OH_ArkUI_AccessibilityElementInfoSetAccessibilityGroup(info, true);
+    }
+    bool hasContent = (node.text != nullptr && node.text[0] != '\0')
+        || (node.description != nullptr && node.description[0] != '\0')
+        || (node.hint != nullptr && node.hint[0] != '\0');
+    // (rangeMin <= rangeMax) is the host's range-validity test, so NaN (absent) falls through.
+    bool recognized = hasContent || node.actions != 0
+        || node.checked == 0 || node.checked == 1 || (node.rangeMin <= node.rangeMax);
+    OH_ArkUI_AccessibilityElementInfoSetAccessibilityLevel(info, recognized ? "yes" : "no");
+}
+
 // Fills one ArkUI element from a published record. Shared by the list queries
 // (findAccessibilityNodeInfosById/findByText) and the single-node callbacks
 // (findFocused/findNextFocus), so every path publishes the same fields.
@@ -1834,6 +1857,7 @@ static int32_t A11yFillElement(int index, ArkUI_AccessibilityElementInfo* info) 
     OH_ArkUI_AccessibilityElementInfoSetClickable(info, (node.actions & 0x10) != 0);
     OH_ArkUI_AccessibilityElementInfoSetEnabled(info, (node.flags & 1) != 0);
     OH_ArkUI_AccessibilityElementInfoSetFocusable(info, (node.flags & 2) != 0);
+    A11ySetGroupAndLevel(info, node);
     A11ySetRoleStates(info, node.role);
     A11ySetRangeState(info, node.role, node.rangeMin, node.rangeMax, node.rangeCurrent);
     A11ySetCheckedState(info, node.checked);
@@ -2197,6 +2221,15 @@ napi_value AccessibilityStatus(napi_env env, napi_callback_info info) {
     (void)info;
     napi_value result = nullptr;
     napi_create_int32(env, g_a11y_status, &result);
+    return result;
+}
+
+// Published node count for the shell's accessibility self-check dialog (host.accessibilityNodeCount).
+// Reads the native node table's committed count; 0 before the first publish (or when no app runs).
+napi_value AccessibilityNodeCount(napi_env env, napi_callback_info info) {
+    (void)info;
+    napi_value result = nullptr;
+    napi_create_int32(env, ohos_host_accessibility_node_count(), &result);
     return result;
 }
 

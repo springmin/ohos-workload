@@ -1580,6 +1580,13 @@ int ohos_host_accessibility_count(void) {
     return g_a11y_count;
 }
 
+// Published node count for the shell's accessibility self-check (host.accessibilityNodeCount).
+// Same value as ohos_host_accessibility_count; the distinct name keeps the publish-contract
+// reflection described above from mistaking this symbol for the 16-argument publish function.
+int ohos_host_accessibility_node_count(void) {
+    return g_a11y_count;
+}
+
 // Mirrors ohos_host_accessibility_node: 17 arguments, same order plus the output pointers
 // (index first, then the 16 published fields). See openharmony_host.h.
 int ohos_host_accessibility_get(int index, int* id, int* parent_id, const char** role,
