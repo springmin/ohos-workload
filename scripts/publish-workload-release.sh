@@ -3,12 +3,16 @@
 #
 #   workload-<version>   immutable release, asset openharmony-workload-<version>.tar.gz
 #   workload-latest      rolling release,  asset openharmony-workload-latest.tar.gz
+#   device-test-kit      delivery kit,     assets device-test-kit.tar.gz + .sha256
+#                        (also attached to workload-latest). Skipped, with a log line, when the
+#                        kit tarball is absent (DEVICE_TEST_KIT overrides the default path).
 #
 # Optionally attach the versioned asset to an SDK release as well (the "A" layout):
 #   --also-sdk-release v11.0.100-rc.1.26451.109-openharmony
 #
 # Usage: scripts/publish-workload-release.sh [--repo owner/name] [--dry-run]
-#          [--skip-versioned] [--skip-latest] [--also-sdk-release <tag>]
+#          [--skip-versioned] [--skip-latest] [--skip-kit] [--kit <tarball>]
+#          [--kit-tag <tag>] [--also-sdk-release <tag>]
 set -e
 
 log() { printf '[%s] %s\n' "$(date '+%H:%M:%S')" "$*"; }
@@ -20,7 +24,12 @@ BAND="${SDK_BAND:-11.0.100-rc.1}"
 DRY_RUN=0
 SKIP_VERSIONED=0
 SKIP_LATEST=0
+SKIP_KIT=0
 SDK_RELEASE=""
+# Delivery kit tarball (signed haps + acceptance docs). Its release carries the tarball plus a
+# transfer checksum; the same two assets are refreshed on workload-latest.
+KIT_SRC="${DEVICE_TEST_KIT:-/data/storage/el2/base/tmp/opencode/device-test-kit.tar.gz}"
+KIT_TAG="${DEVICE_TEST_KIT_TAG:-device-test-kit}"
 
 while [ $# -gt 0 ]; do
     case "$1" in
@@ -28,6 +37,9 @@ while [ $# -gt 0 ]; do
         --dry-run) DRY_RUN=1 ;;
         --skip-versioned) SKIP_VERSIONED=1 ;;
         --skip-latest) SKIP_LATEST=1 ;;
+        --skip-kit) SKIP_KIT=1 ;;
+        --kit) shift; KIT_SRC="$1" ;;
+        --kit-tag) shift; KIT_TAG="$1" ;;
         --also-sdk-release) shift; SDK_RELEASE="$1" ;;
         *) warn "unknown argument: $1"; exit 2 ;;
     esac
@@ -35,6 +47,16 @@ while [ $# -gt 0 ]; do
 done
 
 run() { if [ "$DRY_RUN" = 1 ]; then printf '   [dry-run] %s\n' "$*"; else "$@"; fi; }
+
+# "<hash>  <name>" for a file in the current directory (sha256sum, or a python fallback for
+# hosts without coreutils).
+sha256_line() {
+    if command -v sha256sum >/dev/null 2>&1; then
+        sha256sum "$1"
+    else
+        python3 -c "import hashlib,sys;print(hashlib.sha256(open(sys.argv[1],'rb').read()).hexdigest()+'  '+sys.argv[1])" "$1"
+    fi
+}
 
 VER="$(python3 -c "import json;print(json.load(open('$W/manifests/$BAND/microsoft.net.sdk.openharmony/WorkloadManifest.json'))['version'])")"
 VERSIONED_TAG="workload-$VER"
@@ -99,6 +121,55 @@ if [ "$SKIP_LATEST" = 0 ]; then
             --notes-file "$NOTES" --latest=false "$LATEST_ASSET"
     fi
     run gh release upload workload-latest "$W/dist/SHA256SUMS" --repo "$REPO" --clobber
+fi
+
+# Device-test kit: signed haps + acceptance/signing docs. Its own release gets the tarball and a
+# transfer checksum, and workload-latest carries the same two assets (stable names, --clobber).
+if [ "$SKIP_KIT" = 0 ]; then
+    KIT_NAME="$(basename "$KIT_SRC")"
+    KIT_STAGE="$W/.feed/$KIT_NAME"
+    KIT_SUMS="$KIT_STAGE.sha256"
+    if [ ! -f "$KIT_SRC" ]; then
+        log "== device-test kit skipped (not found: $KIT_SRC) =="
+    else
+        log "== publishing the device-test kit $KIT_NAME (tag $KIT_TAG) =="
+        run mkdir -p "$(dirname "$KIT_STAGE")"
+        run cp -f "$KIT_SRC" "$KIT_STAGE"
+        if [ "$DRY_RUN" = 1 ]; then
+            printf '   [dry-run] %s > %s/%s\n' "sha256_line $KIT_NAME" "$(dirname "$KIT_STAGE")" "$(basename "$KIT_SUMS")"
+        else
+            ( cd "$(dirname "$KIT_STAGE")" && sha256_line "$KIT_NAME" > "$KIT_NAME.sha256" )
+            log "kit sha256: $(cut -d' ' -f1 "$KIT_SUMS")"
+        fi
+
+        KIT_NOTES="$(mktemp)"
+        cat > "$KIT_NOTES" <<MD
+# OpenHarmony MAUI device-test kit
+
+Signed \`hello-maui-app\` haps together with the acceptance checklist, the signing/UDID guide
+and the bundle-level \`SHA256SUMS\` (default, permissions and api20 variants).
+
+\`$KIT_NAME.sha256\` is the transfer checksum of this tarball. Extract it and follow
+\`README-交付说明.md\`; on install error \`9568344\` send the device UDID (see
+\`签名与UDID指南.md\`).
+MD
+
+        if gh release view "$KIT_TAG" --repo "$REPO" >/dev/null 2>&1; then
+            run gh release upload "$KIT_TAG" "$KIT_STAGE" "$KIT_SUMS" --repo "$REPO" --clobber
+            run gh release edit "$KIT_TAG" --repo "$REPO" \
+                --title "OpenHarmony MAUI device-test kit" --notes-file "$KIT_NOTES"
+        else
+            run gh release create "$KIT_TAG" --repo "$REPO" \
+                --title "OpenHarmony MAUI device-test kit" --notes-file "$KIT_NOTES" --latest=false \
+                "$KIT_STAGE" "$KIT_SUMS"
+        fi
+        if [ "$SKIP_LATEST" = 0 ]; then
+            run gh release upload workload-latest "$KIT_STAGE" "$KIT_SUMS" --repo "$REPO" --clobber
+        else
+            log "workload-latest not refreshed (--skip-latest): kit assets not attached there"
+        fi
+        rm -f "$KIT_NOTES"
+    fi
 fi
 
 if [ -n "$SDK_RELEASE" ]; then
