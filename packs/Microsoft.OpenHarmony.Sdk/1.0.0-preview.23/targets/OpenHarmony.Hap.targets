@@ -44,7 +44,25 @@
        "requestPermissions":[{"name":"..."}] array (no usedScene/resources entries).
        Declaring a permission here does not grant it: the app still has to request it at
        runtime (abilityAccessCtrl.requestPermissionsFromUser). Unset/empty keeps module.json
-       byte-identical to the build without the property. -->
+       byte-identical to the build without the property.
+
+       Blazor asset staging (milestone 3.0): when the project directory contains a wwwroot
+       content root, _OpenHarmonyStageBlazorAssets copies it into the publish payload as
+       wwwroot/**, so the hap's resources/rawfile/dotnet.zip extracts to <AppDir>/wwwroot - the
+       exact <base>/<root>/<path> convention the ArkTS shell already serves for the hybrid origin
+       (https://0.0.0.1/): Blazor's origin https://0.0.0.0/ is answered from
+       <AppDir>/<root>/<request path>. The framework script is staged alongside as
+       wwwroot/_framework/blazor.webview.js: the project's static web assets (@(StaticWebAsset))
+       are the canonical source when the Razor/static-web-assets pipeline ran, otherwise it is
+       read from the NuGet cache
+       ($(NuGetPackageRoot)microsoft.aspnetcore.components.webview/*/staticwebassets/); a
+       @(MauiAsset) list with wwwroot/<TargetPath> entries (ConvertStaticWebAssetsToMauiAssets) is
+       consumed too when a MAUI SDK produced it. This is the OpenHarmony port's stand-in for the
+       MauiAsset consumer, which does not exist in this tree. NOTE (native model): the OpenHarmony
+       host runs the managed app in-process on CoreCLR, so Blazor Hybrid here is the native model
+       (like Android/iOS), not the WebAssembly one - the WebView only needs blazor.webview.js and
+       the message transport, and no dotnet.js/dotnet.native.wasm/_*.dll browser assets are
+       staged. A project without wwwroot is untouched, so its payload stays byte-identical. -->
   <PropertyGroup>
     <OpenHarmonyHapPackage Condition=" '$(OpenHarmonyHapPackage)' == '' ">false</OpenHarmonyHapPackage>
     <OpenHarmonyHapSigning Condition=" '$(OpenHarmonyHapSigning)' == '' ">true</OpenHarmonyHapSigning>
@@ -171,9 +189,55 @@
     <RemoveDir Directories="$(_OpenHarmonyResetPublishDir)" />
   </Target>
 
+  <!-- Blazor asset staging: see "Blazor asset staging" in the file header. Runs after the publish
+       copy and before _OpenHarmonyStageHap packs PublishDir, so the staged files travel inside
+       resources/rawfile/dotnet.zip and land under <AppDir>/wwwroot in the extracted payload.
+       Without a wwwroot the target is a no-op (no items, no copies, no output). -->
+  <Target Name="_OpenHarmonyStageBlazorAssets"
+          Condition=" '$(OpenHarmonyHapPackage)' == 'true' and '$(TargetPlatformIdentifier)' == 'openharmony' ">
+    <PropertyGroup>
+      <_OpenHarmonyBlazorWwwroot>$(MSBuildProjectDirectory)/wwwroot</_OpenHarmonyBlazorWwwroot>
+      <_OpenHarmonyBlazorPublishDir>$([MSBuild]::NormalizeDirectory('$(MSBuildProjectDirectory)', '$(PublishDir)'))</_OpenHarmonyBlazorPublishDir>
+    </PropertyGroup>
+    <ItemGroup Condition=" Exists('$(_OpenHarmonyBlazorWwwroot)/') ">
+      <!-- The app's wwwroot content root. The /**/* glob yields files only (extensionless files
+           included), and %(RecursiveDir) keeps the tree shape under publish/wwwroot/. -->
+      <_OpenHarmonyBlazorAsset Include="$(_OpenHarmonyBlazorWwwroot)/**/*" />
+      <!-- Canonical framework script source when the Razor/static-web-assets pipeline ran. -->
+      <_OpenHarmonyBlazorStaticScript Include="@(StaticWebAsset)"
+          Condition=" '%(StaticWebAsset.Filename)%(StaticWebAsset.Extension)' == 'blazor.webview.js' " />
+      <!-- MauiAsset entries produced by ConvertStaticWebAssetsToMauiAssets (when a MAUI SDK ran);
+           TargetPath is the final payload-relative path (wwwroot/...). Only wwwroot entries are
+           consumed so a foreign asset cannot escape the content root. -->
+      <_OpenHarmonyBlazorMauiAsset Include="@(MauiAsset)"
+          Condition=" $([System.String]::Copy('%(MauiAsset.TargetPath)').Replace('\', '/').StartsWith('wwwroot/')) " />
+    </ItemGroup>
+    <ItemGroup Condition=" '@(_OpenHarmonyBlazorAsset)' != '' and '@(_OpenHarmonyBlazorStaticScript)' == '' ">
+      <!-- NuGet-cache fallback (the WebView package is a transitive dependency of
+           Microsoft.AspNetCore.Components.WebView.Maui and lives in the global packages folder). -->
+      <_OpenHarmonyBlazorScript Include="$(NuGetPackageRoot)microsoft.aspnetcore.components.webview/*/staticwebassets/blazor.webview.js" />
+    </ItemGroup>
+    <ItemGroup Condition=" '@(_OpenHarmonyBlazorStaticScript)' != '' ">
+      <_OpenHarmonyBlazorScript Include="@(_OpenHarmonyBlazorStaticScript)" />
+    </ItemGroup>
+    <Copy Condition=" '@(_OpenHarmonyBlazorMauiAsset)' != '' "
+          SourceFiles="@(_OpenHarmonyBlazorMauiAsset)"
+          DestinationFiles="@(_OpenHarmonyBlazorMauiAsset->'$(_OpenHarmonyBlazorPublishDir)%(TargetPath)')" />
+    <Copy Condition=" '@(_OpenHarmonyBlazorAsset)' != '' "
+          SourceFiles="@(_OpenHarmonyBlazorAsset)"
+          DestinationFiles="@(_OpenHarmonyBlazorAsset->'$(_OpenHarmonyBlazorPublishDir)wwwroot/%(RecursiveDir)%(Filename)%(Extension)')" />
+    <Copy Condition=" '@(_OpenHarmonyBlazorScript)' != '' "
+          SourceFiles="@(_OpenHarmonyBlazorScript)"
+          DestinationFiles="@(_OpenHarmonyBlazorScript->'$(_OpenHarmonyBlazorPublishDir)wwwroot/_framework/blazor.webview.js')" />
+    <Message Importance="high" Condition=" '@(_OpenHarmonyBlazorAsset)' != '' and '@(_OpenHarmonyBlazorScript)' != '' "
+             Text="OpenHarmony: staged the Blazor content root (wwwroot) and _framework/blazor.webview.js into $(PublishDir)wwwroot (native model; no wasm/dotnet browser assets)" />
+    <Message Importance="high" Condition=" '@(_OpenHarmonyBlazorAsset)' != '' and '@(_OpenHarmonyBlazorScript)' == '' "
+             Text="OpenHarmony: staged the Blazor content root (wwwroot) into $(PublishDir)wwwroot; blazor.webview.js was not found in @(StaticWebAsset) or the NuGet cache" />
+  </Target>
+
   <Target Name="_OpenHarmonyStageHap"
           AfterTargets="Publish"
-          DependsOnTargets="_OpenHarmonyDetectToolchain;_OpenHarmonyResolveHapStageDir"
+          DependsOnTargets="_OpenHarmonyDetectToolchain;_OpenHarmonyResolveHapStageDir;_OpenHarmonyStageBlazorAssets"
           Condition=" '$(OpenHarmonyHapPackage)' == 'true' and '$(TargetPlatformIdentifier)' == 'openharmony' ">
     <PropertyGroup>
       <_OpenHarmonyTemplatesDir>$(_OpenHarmonySdkPackDir)templates/</_OpenHarmonyTemplatesDir>

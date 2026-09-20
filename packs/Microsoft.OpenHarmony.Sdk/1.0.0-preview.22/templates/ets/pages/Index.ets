@@ -51,6 +51,22 @@ interface HybridAssetsConfig {
   defaultFile: string;
 }
 
+// BlazorWebView asset bridge (milestone 3): the managed handler registers the app payload
+// directory (base), the content root (root, normally "wwwroot"), the default file
+// (defaultFile, normally "index.html") and the Blazor origin (BlazorWebViewHandler.AppOrigin,
+// https://0.0.0.0/). App-origin requests are answered from <base>/<root>/<path> - the same
+// <base>/<root>/... convention the hybrid bridge uses for https://0.0.0.1/, except that
+// _framework/blazor.webview.js is an ordinary file below the content root (the pack targets
+// stage it there), not a special case next to the payload. The page-end bootstrap below
+// installs the callback form of window.external.receiveMessage, publishes
+// window.__dispatchMessageCallback and calls Blazor.start().
+interface BlazorAssetsConfig {
+  origin: string;
+  base: string;
+  root: string;
+  defaultFile: string;
+}
+
 // JS -> .NET invocation payload the stock hybridwebview.js POSTs to __hwvInvokeDotNet:
 // { "MethodName": "...", "ParamValues": ["<json>", ...] }.
 interface HybridInvokeRequest {
@@ -88,6 +104,18 @@ struct Index {
   private hybridRegistered: boolean = false;
   // MAUI's hybrid origin: HybridWebViewHandler.AppOrigin (https://0.0.0.1/).
   private hybridOrigin: string = 'https://0.0.0.1/';
+  // Blazor asset bridge state (registered by the managed handler; empty -> no interception of
+  // the Blazor origin, so hybrid pages are never touched). The origin always carries a trailing
+  // '/' so the root document and its default file can be recognized textually.
+  private blazorBase: string = '';
+  private blazorRoot: string = '';
+  private blazorDefaultFile: string = '';
+  private blazorRegistered: boolean = false;
+  // MAUI's Blazor origin: BlazorWebViewHandler.AppOrigin (https://0.0.0.0/).
+  private blazorOrigin: string = 'https://0.0.0.0/';
+  // One bootstrap per loaded document: reset in onPageBegin, so a navigation/reload runs the
+  // sequence again while repeated onPageEnd callbacks for the same document do not.
+  private blazorBootstrapped: boolean = false;
   // JS -> .NET invocation state: the intercepted __hwvInvokeDotNet responses held open until
   // the managed handler answers through host.registerHybridInvokeResultSink.
   private hybridInvokeSeq: number = 0;
@@ -310,6 +338,101 @@ struct Index {
     }
   }
 
+  // True when the loaded document is the Blazor root: the origin itself or the origin plus the
+  // registered default host file. SPA navigations are same-document and do not re-trigger this.
+  private isBlazorRootDocument(pageUrl: string): boolean {
+    let url: string = pageUrl;
+    const query: number = url.indexOf('?');
+    if (query >= 0) {
+      url = url.substring(0, query);
+    }
+    const fragment: number = url.indexOf('#');
+    if (fragment >= 0) {
+      url = url.substring(0, fragment);
+    }
+    return url === this.blazorOrigin || url === `${this.blazorOrigin}${this.blazorDefaultFile}`;
+  }
+
+  // BlazorWebView bootstrap (milestone 3): on the Blazor root document install the callback
+  // form of window.external.receiveMessage, publish window.__dispatchMessageCallback and call
+  // Blazor.start() once blazor.webview.js has loaded. This is the sequence the package's
+  // blazor.webview.js and the platform handlers use (the bundle only reads window.external
+  // inside Blazor.start(), so the registration has to exist before the start call; the
+  // autostart="false" host-page script is the stock MAUI template). The framework script is
+  // injected when the host page does not load it itself. Hybrid pages keep the compatibility
+  // shim injected above unchanged.
+  private injectBlazorBootstrap(pageUrl: string): void {
+    if (!this.blazorRegistered || this.blazorBootstrapped || !this.isBlazorRootDocument(pageUrl)) {
+      return;
+    }
+    this.blazorBootstrapped = true;
+    const scriptUrl: string = `${this.blazorOrigin}_framework/blazor.webview.js`;
+    const bootstrap: string = `(function () {
+      if (window.__ohosBlazorBootstrapped) { return; }
+      window.__ohosBlazorBootstrapped = true;
+      window.__receiveMessageCallbacks = window.__receiveMessageCallbacks || [];
+      window.__dispatchMessageCallback = function (message) {
+        window.__receiveMessageCallbacks.forEach(function (callback) { callback(message); });
+      };
+      var external = window.external;
+      if (!external || (typeof external !== 'object' && typeof external !== 'function')) {
+        external = {};
+        window.external = external;
+      }
+      if (typeof external.sendMessage !== 'function') {
+        external.sendMessage = function (payload) {
+          try {
+            var proxy = window.dotnetHost || window.__ohosDotNet;
+            if (proxy && typeof proxy.postMessage === 'function') {
+              proxy.postMessage(payload);
+            }
+          } catch (sendError) {
+            // The proxy is unavailable; the page keeps running without the bridge.
+          }
+        };
+      }
+      external.receiveMessage = function (callback) {
+        window.__receiveMessageCallbacks.push(callback);
+      };
+      window.onpageshow = function (event) {
+        if (event.persisted) {
+          window.location.reload();
+        }
+      };
+      function startBlazor() {
+        try {
+          if (typeof Blazor !== 'undefined' && typeof Blazor.start === 'function') {
+            Blazor.start();
+          }
+        } catch (startError) {
+          // Blazor has already started or refused to start; the page keeps running.
+        }
+      }
+      if (typeof Blazor !== 'undefined') {
+        startBlazor();
+        return;
+      }
+      var existing = document.querySelector('script[src*="blazor.webview.js"]');
+      if (existing) {
+        existing.addEventListener('load', startBlazor);
+        return;
+      }
+      var script = document.createElement('script');
+      script.src = '${scriptUrl}';
+      script.setAttribute('autostart', 'false');
+      script.addEventListener('load', startBlazor);
+      document.body.appendChild(script);
+    })();`;
+    try {
+      this.webController.runJavaScript(bootstrap, () => {
+        // Best effort; an error leaves the page with the hybrid bridge only.
+      });
+    } catch (bootstrapError) {
+      this.blazorBootstrapped = false;
+      console.error(`[maui] blazor bootstrap injection failed: ${(bootstrapError as Error).message}`);
+    }
+  }
+
   // Bluetooth discovery: bluetoothDeviceFind reports an array of device addresses per callback.
   // The listener resolves each name with getRemoteDeviceName, keeps the accumulated table for
   // op 4 and pushes each record to the managed side as "name\taddress". It is registered while
@@ -426,6 +549,9 @@ struct Index {
           } else if (op === 'hybrid') {
             // HybridWebView asset root registration from the managed handler.
             this.registerHybridAssets(arg);
+          } else if (op === 'blazor') {
+            // BlazorWebView asset root registration from the managed handler (milestone 3).
+            this.registerBlazorAssets(arg);
           }
         } catch (error) {
           // Web errors never take the app down.
@@ -867,6 +993,32 @@ struct Index {
     }
   }
 
+  // BlazorWebView: the managed handler registers the payload directory and the Blazor layout
+  // through the "blazor" web command. The registration mirrors the hybrid bridge (the shell is
+  // the loader until the managed WebViewManager navigates in a later milestone): interception
+  // is armed for the origin and the root document is loaded so the page-end bootstrap runs.
+  private registerBlazorAssets(arg: string): void {
+    try {
+      const config = JSON.parse(arg) as BlazorAssetsConfig;
+      this.blazorBase = config.base;
+      this.blazorRoot = config.root;
+      this.blazorDefaultFile = config.defaultFile;
+      this.blazorOrigin = config.origin.length > 0 ? config.origin : 'https://0.0.0.0/';
+      if (!this.blazorOrigin.endsWith('/')) {
+        this.blazorOrigin = `${this.blazorOrigin}/`;
+      }
+      this.blazorRegistered = this.blazorBase.length > 0 && this.blazorRoot.length > 0
+        && this.blazorDefaultFile.length > 0;
+      if (this.blazorRegistered) {
+        this.webVisible = true;
+        this.webController.loadUrl(this.blazorOrigin);
+      }
+    } catch (blazorError) {
+      console.error(`[maui] blazor assets registration failed: ${(blazorError as Error).message}`);
+      this.blazorRegistered = false;
+    }
+  }
+
   // Resolves an app-origin URL to an absolute file below the payload directory. Unknown and
   // malformed paths (including traversal attempts) resolve to '' and are answered with 404.
   private hybridFilePath(url: string): string {
@@ -902,6 +1054,42 @@ struct Index {
       return `${this.hybridBase}/${path}`;
     }
     return `${this.hybridBase}/${this.hybridRoot}/${path}`;
+  }
+
+  // Resolves a Blazor app-origin URL (https://0.0.0.0/...) to an absolute file below
+  // <base>/<root>. Unknown and malformed paths (including traversal attempts) resolve to '' and
+  // are answered with 404. Every path - _framework/blazor.webview.js included - is looked up
+  // under the content root, which is exactly where the pack targets stage it.
+  private blazorFilePath(url: string): string {
+    let path: string = url;
+    const scheme: number = path.indexOf('://');
+    if (scheme >= 0) {
+      const slash: number = path.indexOf('/', scheme + 3);
+      path = slash >= 0 ? path.substring(slash) : '/';
+    }
+    const query: number = path.indexOf('?');
+    if (query >= 0) {
+      path = path.substring(0, query);
+    }
+    const fragment: number = path.indexOf('#');
+    if (fragment >= 0) {
+      path = path.substring(0, fragment);
+    }
+    try {
+      path = decodeURIComponent(path);
+    } catch (decodeError) {
+      return '';
+    }
+    while (path.startsWith('/')) {
+      path = path.substring(1);
+    }
+    if (path.indexOf('..') >= 0 || path.indexOf('\\') >= 0) {
+      return '';
+    }
+    if (path.length === 0) {
+      path = this.blazorDefaultFile;
+    }
+    return `${this.blazorBase}/${this.blazorRoot}/${path}`;
   }
 
   private hybridMimeType(path: string): string {
@@ -966,9 +1154,9 @@ struct Index {
   }
 
   // ArkWeb needs the intercepted response synchronously, and payload assets are small, so the
-  // file is read inline through @ohos.file.fs (open/read/close).
-  private serveHybridFile(url: string): WebResourceResponse {
-    const filePath: string = this.hybridFilePath(url);
+  // file is read inline through @ohos.file.fs (open/read/close). '' (an unknown or unsafe path)
+  // is answered with 404, so both bridges share the read path.
+  private servePayloadFile(filePath: string): WebResourceResponse {
     if (filePath.length === 0) {
       return this.hybridErrorResponse(404);
     }
@@ -999,6 +1187,16 @@ struct Index {
         }
       }
     }
+  }
+
+  // HybridWebView assets live under <base>/<root> (plus the framework script next to the base).
+  private serveHybridFile(url: string): WebResourceResponse {
+    return this.servePayloadFile(this.hybridFilePath(url));
+  }
+
+  // BlazorWebView assets live under <base>/<root> only.
+  private serveBlazorFile(url: string): WebResourceResponse {
+    return this.servePayloadFile(this.blazorFilePath(url));
   }
 
   // JS -> .NET channel of the served hybridwebview.js: the script POSTs its payload in the
@@ -1130,12 +1328,18 @@ struct Index {
         })
         .onInterceptRequest((event) => {
           try {
+            const url: string = event.request.getRequestUrl();
+            // Blazor origin (https://0.0.0.0/): every app asset, _framework/blazor.webview.js
+            // included, is served from <base>/<root>. The hybrid __hwv* endpoints do not exist
+            // here: blazor.webview.js talks through window.external (the dotnetHost proxy).
+            if (this.blazorRegistered && url.startsWith(this.blazorOrigin)) {
+              return this.serveBlazorFile(url);
+            }
             // Only the MAUI hybrid origin is intercepted, and only after the managed handler
             // registered the payload root; everything else is left to the Web engine.
-            if (!this.hybridRegistered || !event.request.getRequestUrl().startsWith(this.hybridOrigin)) {
+            if (!this.hybridRegistered || !url.startsWith(this.hybridOrigin)) {
               return null;
             }
-            const url: string = event.request.getRequestUrl();
             if (url.startsWith(this.hybridOrigin + '__hwvInvokeDotNet')) {
               return this.hybridInvokeResponse(event);
             }
@@ -1148,11 +1352,15 @@ struct Index {
           }
         })
         .onPageBegin((event) => {
+          // A new main-frame document gets its own Blazor bootstrap.
+          this.blazorBootstrapped = false;
           host.notifyWebEvent('started', event ? event.url : '');
         })
         .onPageEnd((event) => {
-          host.notifyWebEvent('finished', event ? event.url : '');
+          const pageUrl: string = event ? event.url : '';
+          host.notifyWebEvent('finished', pageUrl);
           this.injectPageBridge();
+          this.injectBlazorBootstrap(pageUrl);
         })
 
       // Text entry bridge: the managed Entry reads what is typed here.
