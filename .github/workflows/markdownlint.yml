@@ -1,0 +1,32 @@
+name: markdownlint
+
+# Lints every Markdown file this repository owns with markdownlint-cli2 (npm package, pinned to
+# the exact version whose behaviour is recorded in .markdownlint-cli2.jsonc). The gate is
+# blocking on purpose:
+#
+#   - the lint set is four tracked files, so a run takes seconds;
+#   - the files include the two shipped `packs/**/templates/ets/pages/README.md` copies and
+#     test/maui-platform-verify/README.md, where a broken table or malformed list is a real
+#     defect in something users or CI read;
+#   - three rules are already disabled (with reasons) in .markdownlint-cli2.jsonc, so the gate
+#     only enforces what the existing docs satisfy.
+#
+# The config file supplies the globs (all .md/.markdown) and the ignored generated trees
+# (.arkts-build/, .feed/, .signing/, dist/, node_modules and the runtime pack layout), so no
+# arguments are passed here.
+on:
+  push:
+    branches: [ master ]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  markdownlint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Lint Markdown (markdownlint-cli2 0.23.3)
+        run: npx --yes markdownlint-cli2@0.23.3

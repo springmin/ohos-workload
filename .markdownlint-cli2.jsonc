@@ -1,0 +1,40 @@
+// markdownlint-cli2 configuration (CI: .github/workflows/markdownlint.yml, pinned there to
+// markdownlint-cli2 0.23.3 / markdownlint 0.41.1 — the versions these overrides were measured
+// against).
+//
+// Scope: every Markdown file this repository owns. Generated/derived trees are ignored so that
+// a local run (which may have .arkts-build/, .feed/, dist/ and .signing/ filled in) lints the
+// same set as a clean CI checkout. `packs/Microsoft.NETCore.App.Runtime.openharmony-arm64/**`
+// is the .gitignore'd layout written by scripts/prepare-packs.sh (it contains the runtime
+// pack's own PACKAGE.md, which starts at `## About` and is not ours to restyle).
+//
+// Rule overrides. Each one is disabled because it fires on the docs as they exist today; the
+// exceptions are deliberate rather than accidental:
+//
+//   MD013 line-length: the docs use long prose lines on purpose (README.md reaches 146 chars;
+//     test/maui-platform-verify/README.md wraps around 100). There is no repository column
+//     limit, and re-wrapping the shipped/tested docs is not worth the churn. Enabling it with
+//     a larger limit would still fail README.md.
+//   MD040 fenced-code-language: README.md's "Layout" section uses a language-less fence for a
+//     directory tree (README.md:13). That is the only occurrence; if a `text` tag is added
+//     there, this override can be dropped.
+//   MD060 table-column-style: added in markdownlint 0.41. The existing tables use the common
+//     compact separator (`|---|---|`) with padded cells, which the rule reports as a style
+//     mismatch in every table that has it. Normalizing the tables (including the two shipped
+//     pack templates) is out of scope for adding the gate.
+{
+  "globs": ["**/*.md", "**/*.markdown"],
+  "ignores": [
+    "**/node_modules/**",
+    ".arkts-build/**",
+    ".feed/**",
+    ".signing/**",
+    "dist/**",
+    "packs/Microsoft.NETCore.App.Runtime.openharmony-arm64/**"
+  ],
+  "config": {
+    "MD013": false,
+    "MD040": false,
+    "MD060": false
+  }
+}
