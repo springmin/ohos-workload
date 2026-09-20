@@ -1650,6 +1650,7 @@ extern "C" __attribute__((constructor)) void RegisterHostModule(void) {
 #include <arkui/native_node.h>
 #include <arkui/native_node_napi.h>
 #include <arkui/native_interface_accessibility.h>
+#include <cmath>
 #include <cstring>
 
 extern "C" int ohos_host_accessibility_count(void);
@@ -1730,6 +1731,29 @@ static void A11ySetOperationActions(ArkUI_AccessibilityElementInfo* info, int ac
     }
 }
 
+// Role-derived element states. The managed shadow tree publishes the role vocabulary
+// button/text/textInput/checkBox/switch/slider/image/group/header (OpenHarmonyAccessibility.RoleOf),
+// so the states below are derived from that string alone:
+//   textInput        -> editable
+//   checkBox, switch -> checkable
+// The checked state itself is NOT part of the published node record (which carries only
+// role/text/description/rect/flags/actions), so SetChecked is deliberately not called:
+// announcing a fabricated "unchecked" for a toggle that may be on is worse than staying silent.
+// Range info (slider/progress) is skipped for the same reason: ArkUI_AccessibleRangeInfo needs
+// min/max/current, the record has none, and a made-up 0/100/0 would announce a wrong position.
+// Both gaps need a publish-contract extension (new value fields in ohos_host_accessibility_node);
+// the exact signature is recorded in the audit doc, section 29.
+static void A11ySetRoleStates(ArkUI_AccessibilityElementInfo* info, const char* role) {
+    if (role == nullptr) {
+        return;
+    }
+    if (strcmp(role, "textInput") == 0) {
+        OH_ArkUI_AccessibilityElementInfoSetEditable(info, true);
+    } else if (strcmp(role, "checkBox") == 0 || strcmp(role, "switch") == 0) {
+        OH_ArkUI_AccessibilityElementInfoSetCheckable(info, true);
+    }
+}
+
 static void A11yAddNode(ArkUI_AccessibilityElementInfoList* list, int index) {
     int id = 0, parent = 0, flags = 0, actions = 0;
     const char* role = nullptr; const char* text = nullptr; const char* description = nullptr;
@@ -1760,6 +1784,7 @@ static void A11yAddNode(ArkUI_AccessibilityElementInfoList* list, int index) {
     OH_ArkUI_AccessibilityElementInfoSetClickable(info, (actions & 0x10) != 0);
     OH_ArkUI_AccessibilityElementInfoSetEnabled(info, (flags & 1) != 0);
     OH_ArkUI_AccessibilityElementInfoSetFocusable(info, (flags & 2) != 0);
+    A11ySetRoleStates(info, role);
     A11ySetOperationActions(info, actions);
 }
 
@@ -1831,6 +1856,134 @@ static int A11yFirstFocusable(int afterIndex) {
     return -1;
 }
 
+// --- Direction-aware focus movement (findNextFocusAccessibilityNode) -----------------------
+//
+// The published node table carries screen rects but no reading order, so the two kinds of move
+// use different rules:
+//   * UP/DOWN/LEFT/RIGHT are geometric. The origin is the centre of the current node's screen
+//     rect; a candidate (any other focusable node) must lie strictly ahead on the primary axis
+//     (primaryDelta >= kA11yFocusEpsilon - this drops elements behind and elements overlapping
+//     the origin) and is scored as
+//         primaryDelta + kA11yFocusPerpendicularPenalty * perpendicularDelta
+//     so an element straight ahead beats a nearer diagonal one. The penalty is the whole
+//     heuristic: it is compared in the same units as the rect (pixels), so 2:1 means "1 px of
+//     sideways drift costs 2 px of forward distance". Ties go to the smaller perpendicular
+//     distance, then to the earlier published index, keeping the choice deterministic.
+//   * FORWARD/BACKWARD ignore geometry and walk the published index order (the order in which
+//     the managed tree walk visits nodes, root first), starting after/before the current index
+//     and wrapping at both ends.
+// All comparisons require at least one candidate to pass `>= epsilon`, so NaN rects are skipped
+// rather than poisoning the score. Nothing qualifying returns FAILED.
+static const float kA11yFocusEpsilon = 1.0f;
+static const float kA11yFocusPerpendicularPenalty = 2.0f;
+
+// Reads the centre and focusable bit of one table entry; false when the index is not in the table.
+static bool A11yReadNodeGeom(int index, float* centerX, float* centerY, bool* focusable) {
+    float x = 0, y = 0, w = 0, h = 0;
+    int flags = 0;
+    if (ohos_host_accessibility_get(index, nullptr, nullptr, nullptr, nullptr, nullptr,
+                                    &x, &y, &w, &h, &flags, nullptr) != 0) {
+        return false;
+    }
+    if (centerX != nullptr) {
+        *centerX = x + w * 0.5f;
+    }
+    if (centerY != nullptr) {
+        *centerY = y + h * 0.5f;
+    }
+    if (focusable != nullptr) {
+        *focusable = (flags & 2) != 0;
+    }
+    return true;
+}
+
+// Index of the node published under this id, or -1 when it is not in the table.
+static int A11yIndexOfId(int64_t elementId) {
+    if (elementId <= 0) {
+        return -1;
+    }
+    int count = ohos_host_accessibility_count();
+    for (int i = 0; i < count; i++) {
+        int id = 0;
+        if (ohos_host_accessibility_get(i, &id, nullptr, nullptr, nullptr, nullptr,
+                                        nullptr, nullptr, nullptr, nullptr, nullptr, nullptr) == 0 &&
+            id == (int)elementId) {
+            return i;
+        }
+    }
+    return -1;
+}
+
+// Nearest focusable node in one of the four geometric directions; -1 when none qualifies.
+static int A11yNearestInDirection(int current, ArkUI_AccessibilityFocusMoveDirection direction) {
+    float originX = 0, originY = 0;
+    if (!A11yReadNodeGeom(current, &originX, &originY, nullptr)) {
+        return -1;
+    }
+    const bool horizontal = direction == ARKUI_ACCESSIBILITY_NATIVE_DIRECTION_LEFT ||
+                            direction == ARKUI_ACCESSIBILITY_NATIVE_DIRECTION_RIGHT;
+    const float sign = (direction == ARKUI_ACCESSIBILITY_NATIVE_DIRECTION_RIGHT ||
+                        direction == ARKUI_ACCESSIBILITY_NATIVE_DIRECTION_DOWN) ? 1.0f : -1.0f;
+    int count = ohos_host_accessibility_count();
+    int best = -1;
+    float bestScore = 0, bestPerpendicular = 0;
+    for (int i = 0; i < count; i++) {
+        if (i == current) {
+            continue;
+        }
+        float cx = 0, cy = 0;
+        bool focusable = false;
+        if (!A11yReadNodeGeom(i, &cx, &cy, &focusable) || !focusable) {
+            continue;
+        }
+        float primary = sign * (horizontal ? cx - originX : cy - originY);
+        if (!(primary >= kA11yFocusEpsilon)) {   // behind, overlapping, or NaN
+            continue;
+        }
+        float perpendicular = fabsf(horizontal ? cy - originY : cx - originX);
+        if (!(perpendicular >= 0.0f)) {          // NaN
+            continue;
+        }
+        float score = primary + kA11yFocusPerpendicularPenalty * perpendicular;
+        if (best < 0 || score < bestScore ||
+            (score == bestScore && perpendicular < bestPerpendicular)) {
+            best = i;
+            bestScore = score;
+            bestPerpendicular = perpendicular;
+        }
+    }
+    return best;
+}
+
+// Index-order focus step (FORWARD/BACKWARD), wrapping at both ends. When the current id is not
+// in the table, the pre-R2 assumption "id == index + 1" is kept so stale ids move relative to
+// the same index as before; ids <= 0 start at the first (FORWARD) or last (BACKWARD) node.
+static int A11yStepFocus(int64_t elementId, bool backward) {
+    int count = ohos_host_accessibility_count();
+    if (count <= 0) {
+        return -1;
+    }
+    int start = A11yIndexOfId(elementId);
+    if (start < 0) {
+        if (elementId > 0) {
+            start = (int)((elementId - 1) % count);
+        } else {
+            start = backward ? count : -1;
+        }
+    }
+    for (int step = 1; step <= count; step++) {
+        int i = backward ? (int)(((start - step) % count + count) % count)
+                         : (start + step) % count;
+        int flags = 0;
+        if (ohos_host_accessibility_get(i, nullptr, nullptr, nullptr, nullptr, nullptr,
+                                        nullptr, nullptr, nullptr, nullptr, &flags, nullptr) == 0 &&
+            (flags & 2) != 0) {
+            return i;
+        }
+    }
+    return -1;
+}
+
 static int32_t A11yFillSingle(int index, ArkUI_AccessibilityElementInfo* info) {
     if (index < 0 || info == nullptr) {
         return ARKUI_ACCESSIBILITY_NATIVE_RESULT_FAILED;
@@ -1858,6 +2011,7 @@ static int32_t A11yFillSingle(int index, ArkUI_AccessibilityElementInfo* info) {
     OH_ArkUI_AccessibilityElementInfoSetClickable(info, (actions & 0x10) != 0);
     OH_ArkUI_AccessibilityElementInfoSetEnabled(info, (flags & 1) != 0);
     OH_ArkUI_AccessibilityElementInfoSetFocusable(info, (flags & 2) != 0);
+    A11ySetRoleStates(info, role);
     A11ySetOperationActions(info, actions);
     return ARKUI_ACCESSIBILITY_NATIVE_RESULT_SUCCESSFUL;
 }
@@ -1870,8 +2024,35 @@ static int32_t A11yFocused(int64_t elementId, ArkUI_AccessibilityFocusType focus
 
 static int32_t A11yNextFocus(int64_t elementId, ArkUI_AccessibilityFocusMoveDirection direction,
                              int32_t requestId, ArkUI_AccessibilityElementInfo* info) {
-    (void)direction; (void)requestId;
-    return A11yFillSingle(A11yFirstFocusable((int)elementId - 1), info);
+    (void)requestId;
+    int index = -1;
+    switch (direction) {
+        case ARKUI_ACCESSIBILITY_NATIVE_DIRECTION_UP:
+        case ARKUI_ACCESSIBILITY_NATIVE_DIRECTION_DOWN:
+        case ARKUI_ACCESSIBILITY_NATIVE_DIRECTION_LEFT:
+        case ARKUI_ACCESSIBILITY_NATIVE_DIRECTION_RIGHT: {
+            // elementId <= 0 means "no current node" (the convention used by findAccessibilityNodeInfosById,
+            // where it selects the root): use the root's rect as the geometric origin.
+            int current = A11yIndexOfId(elementId);
+            if (current < 0 && elementId <= 0) {
+                current = 0;
+            }
+            index = A11yNearestInDirection(current, direction);
+            break;
+        }
+        case ARKUI_ACCESSIBILITY_NATIVE_DIRECTION_BACKWARD:
+            index = A11yStepFocus(elementId, true);
+            break;
+        case ARKUI_ACCESSIBILITY_NATIVE_DIRECTION_FORWARD:
+        default:
+            // FORWARD, and also INVALID/unknown values: those keep the pre-R2 index-order move.
+            index = A11yStepFocus(elementId, false);
+            break;
+    }
+    if (index < 0) {
+        return ARKUI_ACCESSIBILITY_NATIVE_RESULT_FAILED;
+    }
+    return A11yFillSingle(index, info);
 }
 
 static int32_t A11yExecuteAction(int64_t elementId, ArkUI_Accessibility_ActionType action,
