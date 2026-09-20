@@ -1499,21 +1499,23 @@ napi_value SetNodeContent(napi_env env, napi_callback_info info) {
     size_t argc = 1;
     napi_value argv[1] = {nullptr};
     napi_get_cb_info(env, info, &argc, argv, nullptr, nullptr);
-    if (argc >= 1) {
+    if (argc >= 1 && argv[0] != nullptr) {
         // The ArkTS side passes a NodeContent (from @ohos.arkui.node); convert it to
         // the native handle the managed app can attach ArkUI nodes to.
         ArkUI_NodeContentHandle content = nullptr;
-        if (OH_ArkUI_GetNodeContentFromNapiValue(env, argv[0], &content) == 0) {
+        if (OH_ArkUI_GetNodeContentFromNapiValue(env, argv[0], &content) == 0 && content != nullptr) {
             ohos_host_set_node_content(g_handle, content);
         } else {
             OH_LOG_WARN(LOG_APP, "[openharmony-host] setNodeContent: not a NodeContent value");
         }
+        // The accessibility provider rides the same NodeContent the shell hands over, so the
+        // attach runs here. It used to sit after the return above and was dead code, which left
+        // the provider unattached forever.
+        AttachAccessibilityValue(env, argv[0]);
     }
     napi_value undefined = nullptr;
     napi_get_undefined(env, &undefined);
     return undefined;
-    // The accessibility provider rides the same NodeContent the shell hands over.
-    AttachAccessibilityValue(env, argv[0]);
 }
 
 napi_value StopApp(napi_env env, napi_callback_info info) {
@@ -1626,6 +1628,8 @@ extern "C" __attribute__((constructor)) void RegisterHostModule(void) {
 // Accessibility provider: serves the node table published by the runtime to
 // ArkUI's accessibility framework (see docs/plans/2026-09-19-ohos-arkts-handover-status.md 3b).
 // ---------------------------------------------------------------------------
+#include <arkui/native_interface.h>
+#include <arkui/native_node.h>
 #include <arkui/native_node_napi.h>
 #include <arkui/native_interface_accessibility.h>
 #include <cstring>
@@ -1637,8 +1641,21 @@ extern "C" int ohos_host_accessibility_get(int index, int* id, int* parent_id, c
                                            int* flags, int* actions);
 
 static ArkUI_AccessibilityProvider* g_a11y_provider = nullptr;
-static int g_a11y_status = 0;  // 0 = not attached, 1 = attached
+// Provider attach state, readable from ArkTS through host.accessibilityStatus() and from the
+// managed side through ohos_host_accessibility_provider_status() (logged as
+// "[maui] accessibility provider status=N"):
+//   0 = not attached (no usable value received yet)
+//   1 = provider attached, callbacks registered (expected on device)
+//   2 = frame node received, but it is not a CUSTOM node, so the provider call refused it
+//   3 = NodeContent received, but the native CUSTOM node could not be created or added to it
+//   4 = CUSTOM node created and added to the NodeContent, but the provider refused it
+static int g_a11y_status = 0;
 static void (*g_a11y_action_listener)(int id, int action) = nullptr;
+// ArkUI only hands out the accessibility provider for a node of type ARKUI_NODE_CUSTOM. The
+// custom node has to stay alive and inside the NodeContent for as long as the provider is
+// registered, so it is kept here (setNodeContent may run again when the page is re-entered).
+static ArkUI_NodeHandle g_a11y_custom_node = nullptr;
+static bool g_a11y_custom_added = false;
 
 // Layout coordinates can be extreme or NaN; the framework rect is int32, so clamp them.
 static int32_t A11yCoord(float value) {
@@ -1823,25 +1840,78 @@ static ArkUI_AccessibilityProviderCallbacks g_a11y_callbacks = {
     A11yExecuteAction, A11yClearFocus, A11yCursorPosition,
 };
 
-// ArkTS calls host.attachAccessibilityNode(nodeOrNodeContent) with the node that hosts our content.
+// Attaches the accessibility provider from the value the shell hands over. Two shapes are
+// accepted: a FrameNode (host.attachAccessibilityNode) and the startup NodeContent
+// (host.setNodeContent). ArkUI refuses the provider for every node type except
+// ARKUI_NODE_CUSTOM, and ArkTS cannot create a custom node (typeNode.createNode(uiContext,
+// 'custom') does not compile), so the NodeContent path creates the CUSTOM node here, natively,
+// and adds it to the content before asking for the provider.
 static int AttachAccessibilityValue(napi_env env, napi_value value) {
-    if (value == nullptr) {
+    if (env == nullptr || value == nullptr) {
         return g_a11y_status;
     }
+    if (g_a11y_provider != nullptr) {
+        return g_a11y_status;  // already attached; setNodeContent may run again on page re-entry
+    }
+
+    // FrameNode path: any frame node can reach here, but only ARKUI_NODE_CUSTOM gets a provider;
+    // keep the direct attempt so the diagnosis stays 2 (received but refused).
     ArkUI_NodeHandle node = nullptr;
     if (OH_ArkUI_GetNodeHandleFromNapiValue(env, value, &node) == 0 && node != nullptr) {
         g_a11y_status = 2;  // frame node received
-        if (OH_ArkUI_NativeModule_GetNativeAccessibilityProvider(&node, &g_a11y_provider) == 0 &&
-            g_a11y_provider != nullptr &&
-            OH_ArkUI_AccessibilityProviderRegisterCallback(g_a11y_provider, &g_a11y_callbacks) == 0) {
+        ArkUI_AccessibilityProvider* provider = nullptr;
+        if (OH_ArkUI_NativeModule_GetNativeAccessibilityProvider(&node, &provider) == 0 &&
+            provider != nullptr &&
+            OH_ArkUI_AccessibilityProviderRegisterCallback(provider, &g_a11y_callbacks) == 0) {
+            g_a11y_provider = provider;
             g_a11y_status = 1;  // provider attached
         }
         return g_a11y_status;
     }
+
+    // NodeContent path: the shell hands its content over at startup (host.setNodeContent).
     ArkUI_NodeContentHandle content = nullptr;
-    if (OH_ArkUI_GetNodeContentFromNapiValue(env, value, &content) == 0 && content != nullptr) {
-        g_a11y_status = 3;  // node content received; a custom node still has to be supplied
+    if (OH_ArkUI_GetNodeContentFromNapiValue(env, value, &content) != 0 || content == nullptr) {
+        return g_a11y_status;
     }
+    g_a11y_status = 3;  // NodeContent received; the CUSTOM node still has to be created/added
+
+    ArkUI_NativeNodeAPI_1* api = nullptr;
+    OH_ArkUI_GetModuleInterface(ARKUI_NATIVE_NODE, ArkUI_NativeNodeAPI_1, api);
+    if (api == nullptr || api->createNode == nullptr) {
+        OH_LOG_WARN(LOG_APP, "[openharmony-host] accessibility: native node API unavailable");
+        return g_a11y_status;
+    }
+    if (g_a11y_custom_node == nullptr) {
+        g_a11y_custom_node = api->createNode(ARKUI_NODE_CUSTOM);
+    }
+    if (g_a11y_custom_node == nullptr) {
+        OH_LOG_WARN(LOG_APP, "[openharmony-host] accessibility: createNode(ARKUI_NODE_CUSTOM) failed");
+        return g_a11y_status;
+    }
+    if (!g_a11y_custom_added) {
+        if (OH_ArkUI_NodeContent_AddNode(content, g_a11y_custom_node) != 0) {
+            OH_LOG_WARN(LOG_APP, "[openharmony-host] accessibility: NodeContent_AddNode failed");
+            return g_a11y_status;
+        }
+        g_a11y_custom_added = true;
+    }
+    g_a11y_status = 4;  // CUSTOM node is in the content; the provider has not accepted it yet
+
+    ArkUI_NodeHandle custom = g_a11y_custom_node;
+    ArkUI_AccessibilityProvider* provider = nullptr;
+    if (OH_ArkUI_NativeModule_GetNativeAccessibilityProvider(&custom, &provider) != 0 ||
+        provider == nullptr) {
+        OH_LOG_WARN(LOG_APP, "[openharmony-host] accessibility: provider refused the CUSTOM node");
+        return g_a11y_status;
+    }
+    if (OH_ArkUI_AccessibilityProviderRegisterCallback(provider, &g_a11y_callbacks) != 0) {
+        OH_LOG_WARN(LOG_APP, "[openharmony-host] accessibility: provider callback registration failed");
+        return g_a11y_status;
+    }
+    g_a11y_provider = provider;
+    g_a11y_status = 1;  // provider attached
+    OH_LOG_INFO(LOG_APP, "[openharmony-host] accessibility: provider attached to the CUSTOM node");
     return g_a11y_status;
 }
 
