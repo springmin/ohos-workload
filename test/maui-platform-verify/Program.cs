@@ -1523,6 +1523,74 @@ if (!stateParsedOk)
     throw new InvalidOperationException("the bluetooth adapter-state parser assertion failed");
 }
 
+// Discovery devices (Gap 6 follow-up): op 4 returns the bluetoothDeviceFind table, each device
+// also arrives as a pushed DeviceFound event. Off-device both must degrade without throwing.
+IReadOnlyList<OpenHarmonyBluetoothDevice> discoveredDevices = Array.Empty<OpenHarmonyBluetoothDevice>();
+bool discoveredThrew = false;
+try
+{
+    discoveredDevices = await OpenHarmonyBluetooth.GetDiscoveredDevicesAsync();
+}
+catch (Exception ex)
+{
+    discoveredThrew = true;
+    Console.WriteLine($"[verify] bluetooth GetDiscoveredDevicesAsync threw {ex.GetType().Name}: {ex.Message}");
+}
+bool discoveredDegraded = !discoveredThrew && discoveredDevices.Count == 0 && !OpenHarmonyBluetooth.IsSupported;
+Console.WriteLine($"[verify] bluetooth GetDiscoveredDevicesAsync degraded without throwing={!discoveredThrew} count={discoveredDevices.Count} supported={OpenHarmonyBluetooth.IsSupported}");
+if (!discoveredDegraded)
+{
+    throw new InvalidOperationException("OpenHarmonyBluetooth.GetDiscoveredDevicesAsync did not degrade off-device");
+}
+
+var discoveredParsed = OpenHarmonyBluetooth.ParseDevices(
+    "QuietComfort\tAA:BB:CC:DD:EE:01\n\tAA:BB:CC:DD:EE:02\nNoAddressOnly\n");
+bool parseDevicesOk = discoveredParsed.Count == 3 &&
+    discoveredParsed[0] == new OpenHarmonyBluetoothDevice("QuietComfort", "AA:BB:CC:DD:EE:01") &&
+    discoveredParsed[1] == new OpenHarmonyBluetoothDevice(string.Empty, "AA:BB:CC:DD:EE:02") &&
+    OpenHarmonyBluetooth.ParsePairedDevices(null).Count == 0 &&
+    OpenHarmonyBluetooth.ParsePairedDevices("X\tY").Count == 1 &&
+    OpenHarmonyBluetooth.ParsePairedDevices("X\tY")[0] == new OpenHarmonyBluetoothDevice("X", "Y");
+Console.WriteLine($"[verify] bluetooth device parser count={discoveredParsed.Count} first='{discoveredParsed[0].Name}/{discoveredParsed[0].Address}' nameless='{discoveredParsed[1].Address}' pairedDelegates=True assert={parseDevicesOk}");
+if (!parseDevicesOk)
+{
+    throw new InvalidOperationException("the bluetooth device payload parser assertion failed");
+}
+
+string? foundName = null;
+string? foundAddress = null;
+int foundCount = 0;
+EventHandler<OpenHarmonyBluetoothDevice> onDeviceFound = (_, device) =>
+{
+    foundName = device.Name;
+    foundAddress = device.Address;
+    foundCount++;
+};
+OpenHarmonyBluetooth.DeviceFound += onDeviceFound;
+bool foundThrew = false;
+try
+{
+    OpenHarmonyBluetooth.OnDeviceFoundPayload("Headset\t11:22:33:44:55:66");
+    OpenHarmonyBluetooth.OnDeviceFoundPayload(null);
+    OpenHarmonyBluetooth.OnDeviceFoundPayload("malformed-without-tab-is-still-a-device");
+    OpenHarmonyBluetooth.OnDeviceFoundPayload(string.Empty);
+}
+catch (Exception ex)
+{
+    foundThrew = true;
+    Console.WriteLine($"[verify] bluetooth DeviceFound payload threw {ex.GetType().Name}: {ex.Message}");
+}
+OpenHarmonyBluetooth.DeviceFound -= onDeviceFound;
+// The tabless record is a valid address-only entry, so exactly the two non-empty records raise
+// (the second one with an empty name).
+bool deviceFoundOk = !foundThrew && foundCount == 2 && foundName == string.Empty &&
+    foundAddress == "malformed-without-tab-is-still-a-device";
+Console.WriteLine($"[verify] bluetooth DeviceFound event count={foundCount} last='{foundName}/{foundAddress}' noThrow={!foundThrew} assert={deviceFoundOk}");
+if (!deviceFoundOk)
+{
+    throw new InvalidOperationException("the bluetooth DeviceFound event assertion failed");
+}
+
 bool printingSupportedBefore = OpenHarmonyPrinting.IsSupported;
 bool printMissingReturned = true;
 bool printMissingThrew = false;
@@ -1682,6 +1750,152 @@ if (!sanitizeOk)
 {
     throw new InvalidOperationException("the print job name sanitizer assertion failed");
 }
+
+// Gap 6 follow-up: Battery/DeviceDisplay (Essentials) over the shell push bridge
+// (host.notifyBattery / host.notifyDisplay -> the ModuleInitializer-installed implementations).
+// Off-device the native registration is guarded, the properties stay at the documented defaults
+// and the payload parsers are exercised with the exact shell formats.
+bool batteryInstalled = Microsoft.Maui.Devices.Battery.Default is OpenHarmonyBattery;
+Console.WriteLine($"[verify] battery default installed={batteryInstalled} type={Microsoft.Maui.Devices.Battery.Default.GetType().Name} instance={ReferenceEquals(Microsoft.Maui.Devices.Battery.Default, OpenHarmonyBattery.Instance)}");
+if (!batteryInstalled)
+{
+    throw new InvalidOperationException("OpenHarmonyBattery was not installed as the Essentials Battery default");
+}
+
+OpenHarmonyBatterySnapshot? charging = OpenHarmonyBattery.ParseState("85\t1\t2\t1\t600");
+OpenHarmonyBatterySnapshot? discharging = OpenHarmonyBattery.ParseState("50\t2\t1\t1\t601");
+OpenHarmonyBatterySnapshot? fullAbsent = OpenHarmonyBattery.ParseState("100\t3\t3\t0\t603");
+OpenHarmonyBatterySnapshot? ignored = OpenHarmonyBattery.ParseState("100\t3\t3\t0\t650");
+bool batteryParsedOk = charging is { ChargeLevel: 0.85, State: BatteryState.Charging, PowerSource: BatteryPowerSource.Usb, EnergySaver: EnergySaverStatus.Off } &&
+    discharging is { ChargeLevel: 0.5, State: BatteryState.Discharging, PowerSource: BatteryPowerSource.AC, EnergySaver: EnergySaverStatus.On } &&
+    fullAbsent is { ChargeLevel: 1.0, State: BatteryState.NotPresent, PowerSource: BatteryPowerSource.Wireless, EnergySaver: EnergySaverStatus.On } &&
+    ignored is { State: BatteryState.NotPresent, EnergySaver: EnergySaverStatus.On } &&
+    OpenHarmonyBattery.ParseState("85\t1") is null &&
+    OpenHarmonyBattery.ParseState("a\tb\tc\td\te") is null &&
+    OpenHarmonyBattery.ParseState(null) is null;
+Console.WriteLine($"[verify] battery parser charging={charging?.ChargeLevel}/{charging?.State}/{charging?.PowerSource}/{charging?.EnergySaver} discharging={discharging?.ChargeLevel}/{discharging?.State}/{discharging?.PowerSource}/{discharging?.EnergySaver} absent={fullAbsent?.State} customSaver={ignored?.EnergySaver} malformedNull={OpenHarmonyBattery.ParseState("85\t1") is null} assert={batteryParsedOk}");
+if (!batteryParsedOk)
+{
+    throw new InvalidOperationException("the battery payload parser assertion failed");
+}
+
+bool batteryOffDeviceOk = true;
+double batteryLevel = -1;
+BatteryState batteryState = BatteryState.Unknown;
+BatteryPowerSource batterySource = BatteryPowerSource.Unknown;
+bool batteryEvents = false;
+bool saverEvents = false;
+EventHandler<BatteryInfoChangedEventArgs> onBatteryInfoChanged = (_, e) =>
+{
+    batteryLevel = e.ChargeLevel;
+    batteryState = e.State;
+    batterySource = e.PowerSource;
+    batteryEvents = true;
+};
+EventHandler<EnergySaverStatusChangedEventArgs> onEnergySaverChanged = (_, e) =>
+{
+    saverEvents = e.EnergySaverStatus == EnergySaverStatus.On;
+};
+try
+{
+    Microsoft.Maui.Devices.Battery.BatteryInfoChanged += onBatteryInfoChanged;
+    Microsoft.Maui.Devices.Battery.EnergySaverStatusChanged += onEnergySaverChanged;
+    batteryOffDeviceOk = Microsoft.Maui.Devices.Battery.ChargeLevel == 0 &&
+        Microsoft.Maui.Devices.Battery.State == BatteryState.Unknown &&
+        Microsoft.Maui.Devices.Battery.PowerSource == BatteryPowerSource.Unknown &&
+        Microsoft.Maui.Devices.Battery.EnergySaverStatus == EnergySaverStatus.Unknown;
+    // The native-shaped payload push is the same path the host callback runs on-device.
+    OpenHarmonyBattery.OnBatteryPayload("42\t2\t2\t1\t650");
+    OpenHarmonyBattery.OnBatteryPayload("garbage");
+}
+catch (Exception ex)
+{
+    batteryOffDeviceOk = false;
+    Console.WriteLine($"[verify] battery payload push threw {ex.GetType().Name}: {ex.Message}");
+}
+finally
+{
+    Microsoft.Maui.Devices.Battery.BatteryInfoChanged -= onBatteryInfoChanged;
+    Microsoft.Maui.Devices.Battery.EnergySaverStatusChanged -= onEnergySaverChanged;
+}
+bool batteryPushOk = batteryOffDeviceOk && batteryEvents && saverEvents && batteryLevel == 0.42 &&
+    batteryState == BatteryState.Discharging && batterySource == BatteryPowerSource.Usb &&
+    Microsoft.Maui.Devices.Battery.EnergySaverStatus == EnergySaverStatus.On;
+Console.WriteLine($"[verify] battery push level={batteryLevel} state={batteryState} source={batterySource} saver={Microsoft.Maui.Devices.Battery.EnergySaverStatus} infoEvents={batteryEvents} saverEvents={saverEvents} noThrow={batteryOffDeviceOk} assert={batteryPushOk}");
+if (!batteryPushOk)
+{
+    throw new InvalidOperationException("the battery payload push assertion failed");
+}
+
+bool displayInstalled = Microsoft.Maui.Devices.DeviceDisplay.Current is OpenHarmonyDeviceDisplay;
+Console.WriteLine($"[verify] display default installed={displayInstalled} type={Microsoft.Maui.Devices.DeviceDisplay.Current.GetType().Name} instance={ReferenceEquals(Microsoft.Maui.Devices.DeviceDisplay.Current, OpenHarmonyDeviceDisplay.Instance)}");
+if (!displayInstalled)
+{
+    throw new InvalidOperationException("OpenHarmonyDeviceDisplay was not installed as the Essentials DeviceDisplay current");
+}
+
+DisplayInfo emptyInfo = Microsoft.Maui.Devices.DeviceDisplay.MainDisplayInfo;
+DisplayInfo? portrait = OpenHarmonyDeviceDisplay.ParseDisplayInfo("1080\t2340\t480\t0\t60\t0");
+DisplayInfo? landscape = OpenHarmonyDeviceDisplay.ParseDisplayInfo("2340\t1080\t320\t3\t90\t3");
+DisplayInfo? inferred = OpenHarmonyDeviceDisplay.ParseDisplayInfo("1080\t2340\t480\t0\t60");
+bool displayParsedOk = portrait is { Width: 1080, Height: 2340, Density: 3.0, Rotation: DisplayRotation.Rotation0, Orientation: DisplayOrientation.Portrait, RefreshRate: 60 } &&
+    landscape is { Width: 2340, Height: 1080, Density: 2.0, Rotation: DisplayRotation.Rotation270, Orientation: DisplayOrientation.Landscape, RefreshRate: 90 } &&
+    inferred is { Orientation: DisplayOrientation.Portrait } &&
+    emptyInfo is { Width: 0, Height: 0, Density: 1, Rotation: DisplayRotation.Unknown, Orientation: DisplayOrientation.Unknown } &&
+    OpenHarmonyDeviceDisplay.ParseDisplayInfo("x\ty\tz\t0\t60\t0") is null &&
+    OpenHarmonyDeviceDisplay.ParseDisplayInfo("1080\t2340\t480\t0") is null &&
+    OpenHarmonyDeviceDisplay.ParseDisplayInfo(null) is null;
+Console.WriteLine($"[verify] display parser portrait={portrait?.Width}x{portrait?.Height} density={portrait?.Density} rotation={portrait?.Rotation} orientation={portrait?.Orientation} landscape={landscape?.Width}x{landscape?.Height} rotation270={landscape?.Rotation == DisplayRotation.Rotation270} inferredOrientation={inferred?.Orientation} malformedNull={OpenHarmonyDeviceDisplay.ParseDisplayInfo("x\ty\tz\t0\t60\t0") is null} assert={displayParsedOk}");
+if (!displayParsedOk)
+{
+    throw new InvalidOperationException("the display payload parser assertion failed");
+}
+
+DisplayInfo? changedInfo = null;
+int displayChangedCount = 0;
+EventHandler<DisplayInfoChangedEventArgs> onDisplayChanged = (_, e) =>
+{
+    changedInfo = e.DisplayInfo;
+    displayChangedCount++;
+};
+bool displayPushOk;
+try
+{
+    Microsoft.Maui.Devices.DeviceDisplay.MainDisplayInfoChanged += onDisplayChanged;
+    OpenHarmonyDeviceDisplay.OnDisplayPayload("1080\t2340\t480\t0\t60\t0");
+    DisplayInfo first = changedInfo ?? throw new InvalidOperationException("the display change event did not deliver a display info");
+    OpenHarmonyDeviceDisplay.OnDisplayPayload("1080\t2340\t480\t0\t60\t0");   // identical -> no second raise
+    OpenHarmonyDeviceDisplay.OnDisplayPayload("2340\t1080\t320\t3\t90\t3");
+    OpenHarmonyDeviceDisplay.OnDisplayPayload("garbage");
+    displayPushOk = displayChangedCount == 2 && first.Width == 1080 && first.Density == 3.0 &&
+        changedInfo is { Width: 2340, Rotation: DisplayRotation.Rotation270 } &&
+        Microsoft.Maui.Devices.DeviceDisplay.MainDisplayInfo.Width == 2340;
+}
+catch (Exception ex)
+{
+    displayPushOk = false;
+    Console.WriteLine($"[verify] display payload push threw {ex.GetType().Name}: {ex.Message}");
+}
+finally
+{
+    Microsoft.Maui.Devices.DeviceDisplay.MainDisplayInfoChanged -= onDisplayChanged;
+}
+bool keepScreenOnOk = !Microsoft.Maui.Devices.DeviceDisplay.KeepScreenOn;
+try
+{
+    Microsoft.Maui.Devices.DeviceDisplay.KeepScreenOn = true;
+    keepScreenOnOk = !Microsoft.Maui.Devices.DeviceDisplay.KeepScreenOn;
+}
+catch (Exception)
+{
+    keepScreenOnOk = false;
+}
+Console.WriteLine($"[verify] display push changed={displayChangedCount} final={changedInfo?.Width}x{changedInfo?.Height} density={changedInfo?.Density} rotation={changedInfo?.Rotation} keepScreenOnFalse={keepScreenOnOk} noThrow={displayPushOk}");
+if (!displayPushOk || !keepScreenOnOk)
+{
+    throw new InvalidOperationException("the display payload push assertion failed");
+}
+Console.WriteLine($"[verify] display off-device info={emptyInfo.Width}x{emptyInfo.Height} density={emptyInfo.Density} rotation={emptyInfo.Rotation} orientation={emptyInfo.Orientation} (empty default asserted)");
 
 // Target object for the HybridWebView JS -> .NET invocation checks. The reflection invoker
 // matches methods by name and deserializes each JSON parameter value into the parameter type.

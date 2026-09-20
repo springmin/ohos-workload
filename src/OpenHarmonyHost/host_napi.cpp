@@ -570,6 +570,35 @@ napi_value NotifyBluetoothResult(napi_env env, napi_callback_info info) {
     return undefined;
 }
 
+// Discovery pushes each found device (the shell's bluetoothDeviceFind listener) through
+// host.notifyBluetoothDeviceFound("name\taddress"). The managed side receives it through the
+// callback registered with ohos_host_bluetooth_register_device_found (a separate export, so an
+// older host without it still serves the query operations - the managed side only loses push).
+static void (*g_bluetooth_device_listener)(const char* payload) = nullptr;
+
+extern "C" void ohos_host_bluetooth_register_device_found(void* callback) {
+    g_bluetooth_device_listener = (void (*)(const char*))callback;
+}
+
+extern "C" void ohos_host_bluetooth_device_found(const char* payload) {
+    if (g_bluetooth_device_listener != nullptr) {
+        g_bluetooth_device_listener(payload != nullptr ? payload : "");
+    }
+}
+
+// ArkTS calls host.notifyBluetoothDeviceFound("name\taddress") for each discovered device.
+napi_value NotifyBluetoothDeviceFound(napi_env env, napi_callback_info info) {
+    size_t argc = 1;
+    napi_value argv[1] = {nullptr};
+    napi_get_cb_info(env, info, &argc, argv, nullptr, nullptr);
+    std::string payload;
+    if (argc >= 1) payload = GetStringArg(env, argv[0]);
+    ohos_host_bluetooth_device_found(payload.c_str());
+    napi_value undefined = nullptr;
+    napi_get_undefined(env, &undefined);
+    return undefined;
+}
+
 // Printing (Print Kit): the managed side forwards a file path through ohos_host_print_file;
 // the ArkTS shell's registerPrintSink handler calls @ohos.print print.print([path], context)
 // (ohos.permission.PRINT is system_grant, so the shell does not prompt) and answers through
@@ -922,6 +951,64 @@ napi_value NotifyTheme(napi_env env, napi_callback_info info) {
     }
     if (g_theme_listener != nullptr) {
         g_theme_listener(isDark != 0 ? 1 : 0);
+    }
+    napi_value undefined = nullptr;
+    napi_get_undefined(env, &undefined);
+    return undefined;
+}
+
+// Battery (Basic Services Kit): the ArkTS shell reports the batteryInfo snapshot through
+// host.notifyBattery("soc\tchargeState\tpluggedType\tpresent\tpowerMode") at page start and on
+// the battery/charging/power-save common events. The last payload is remembered and replayed
+// when the managed listener registers through ohos_host_battery_set_listener, so the managed
+// Battery properties have the current values regardless of which side starts first.
+static void (*g_battery_listener)(const char* payload) = nullptr;
+static std::string g_battery_payload;
+
+extern "C" void ohos_host_battery_set_listener(void* callback) {
+    g_battery_listener = (void (*)(const char*))callback;
+    if (g_battery_listener != nullptr && !g_battery_payload.empty()) {
+        g_battery_listener(g_battery_payload.c_str());
+    }
+}
+
+napi_value NotifyBattery(napi_env env, napi_callback_info info) {
+    size_t argc = 1;
+    napi_value argv[1] = {nullptr};
+    napi_get_cb_info(env, info, &argc, argv, nullptr, nullptr);
+    std::string payload;
+    if (argc >= 1) payload = GetStringArg(env, argv[0]);
+    g_battery_payload = payload;
+    if (g_battery_listener != nullptr) {
+        g_battery_listener(payload.c_str());
+    }
+    napi_value undefined = nullptr;
+    napi_get_undefined(env, &undefined);
+    return undefined;
+}
+
+// Display: same push shape for DeviceDisplay, through
+// host.notifyDisplay("width\theight\tdensityDPI\trotation\trefreshRate\torientation") at page
+// start and on display.on('change'); the last payload is replayed on listener registration.
+static void (*g_display_listener)(const char* payload) = nullptr;
+static std::string g_display_payload;
+
+extern "C" void ohos_host_display_set_listener(void* callback) {
+    g_display_listener = (void (*)(const char*))callback;
+    if (g_display_listener != nullptr && !g_display_payload.empty()) {
+        g_display_listener(g_display_payload.c_str());
+    }
+}
+
+napi_value NotifyDisplay(napi_env env, napi_callback_info info) {
+    size_t argc = 1;
+    napi_value argv[1] = {nullptr};
+    napi_get_cb_info(env, info, &argc, argv, nullptr, nullptr);
+    std::string payload;
+    if (argc >= 1) payload = GetStringArg(env, argv[0]);
+    g_display_payload = payload;
+    if (g_display_listener != nullptr) {
+        g_display_listener(payload.c_str());
     }
     napi_value undefined = nullptr;
     napi_get_undefined(env, &undefined);
@@ -1475,6 +1562,7 @@ napi_value Init(napi_env env, napi_value exports) {
         {"notifyCalendarResult", nullptr, NotifyCalendarResult, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"registerBluetoothSink", nullptr, RegisterBluetoothSink, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"notifyBluetoothResult", nullptr, NotifyBluetoothResult, nullptr, nullptr, nullptr, napi_default, nullptr},
+        {"notifyBluetoothDeviceFound", nullptr, NotifyBluetoothDeviceFound, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"registerPrintSink", nullptr, RegisterPrintSink, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"notifyPrintResult", nullptr, NotifyPrintResult, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"registerAbilitySink", nullptr, RegisterAbilitySink, nullptr, nullptr, nullptr, napi_default, nullptr},
@@ -1502,6 +1590,8 @@ napi_value Init(napi_env env, napi_value exports) {
         {"registerHybridInvokeResultSink", nullptr, RegisterHybridInvokeResultSink, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"notifyAvoidArea", nullptr, NotifyAvoidArea, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"notifyTheme", nullptr, NotifyTheme, nullptr, nullptr, nullptr, napi_default, nullptr},
+        {"notifyBattery", nullptr, NotifyBattery, nullptr, nullptr, nullptr, napi_default, nullptr},
+        {"notifyDisplay", nullptr, NotifyDisplay, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"notifyPickerResult", nullptr, NotifyPickerResult, nullptr, nullptr, nullptr, napi_default, nullptr},
 
         {"notifyKeystoreResult", nullptr, NotifyKeystoreResult, nullptr, nullptr, nullptr, napi_default, nullptr},

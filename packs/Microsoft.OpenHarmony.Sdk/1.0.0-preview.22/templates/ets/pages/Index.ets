@@ -12,10 +12,12 @@ import { NodeContent } from '@ohos.arkui.node';
 import abilityAccessCtrl, { Permissions } from '@ohos.abilityAccessCtrl';
 import cameraPicker from '@ohos.multimedia.cameraPicker';
 import camera from '@ohos.multimedia.camera';
+import { batteryInfo, BusinessError, commonEventManager, power } from '@kit.BasicServicesKit';
 import { calendarManager } from '@kit.CalendarKit';
 import { access, connection } from '@kit.ConnectivityKit';
 import { contact } from '@kit.ContactsKit';
 import common from '@ohos.app.ability.common';
+import display from '@ohos.display';
 import print from '@ohos.print';
 import Want from '@ohos.app.ability.Want';
 import fileIo from '@ohos.file.fs';
@@ -99,6 +101,15 @@ struct Index {
   // AppStorage and refreshes when the device switches between light and dark. The watch
   // forwards every change to the managed side through host.notifyTheme(isDark).
   @StorageProp('colorMode') @Watch('onColorModeChanged') colorMode: ColorMode = ColorMode.LIGHT;
+  // Battery/DeviceDisplay (Essentials): the last batteryInfo/power snapshot is pushed through
+  // host.notifyBattery on the battery common events, the display snapshot through
+  // host.notifyDisplay on display.on('change'). Registered once per page.
+  private batteryEventsRegistered: boolean = false;
+  private displayChangeRegistered: boolean = false;
+  // Bluetooth discovery: address -> last known name, from bluetoothDeviceFind. Cleared when a
+  // new discovery starts and served to the managed side through op 4.
+  private discoveredBluetooth: Map<string, string> = new Map();
+  private bluetoothDeviceRegistered: boolean = false;
   private webController: web_webview.WebviewController = new web_webview.WebviewController();
   private controller: TextInputController = new TextInputController();
 
@@ -114,6 +125,77 @@ struct Index {
 
   private onColorModeChanged(): void {
     this.reportTheme();
+  }
+
+  // Battery (Essentials): batteryInfo is a Basic Services Kit namespace of live constants and
+  // power.getPowerMode() reports the device power mode. The raw values travel as one tab
+  // separated payload ("soc\tchargeState\tpluggedType\tpresent\tpowerMode"); the managed
+  // OpenHarmonyBattery maps them to the MAUI enums. Best effort: a host library without the
+  // export leaves the managed defaults in place.
+  private reportBattery(): void {
+    try {
+      const present: number = batteryInfo.isBatteryPresent ? 1 : 0;
+      const payload: string = `${batteryInfo.batterySOC}\t${batteryInfo.chargingStatus}\t${batteryInfo.pluggedType}\t${present}\t${power.getPowerMode()}`;
+      host.notifyBattery(payload);
+    } catch (batteryError) {
+      // The managed side keeps its Unknown defaults.
+    }
+  }
+
+  // Display (Essentials): getDefaultDisplaySync returns the current display; the managed
+  // OpenHarmonyDeviceDisplay turns "width\theight\tdensityDPI\trotation\trefreshRate\torientation"
+  // into DisplayInfo (width/height px, density = densityDPI / 160).
+  private reportDisplay(): void {
+    try {
+      const info = display.getDefaultDisplaySync();
+      const payload: string = `${info.width}\t${info.height}\t${info.densityDPI}\t${info.rotation}\t${info.refreshRate}\t${info.orientation}`;
+      host.notifyDisplay(payload);
+    } catch (displayError) {
+      // The managed side keeps its empty display info.
+    }
+  }
+
+  // Battery changes arrive as common events (the platform publishes BATTERY_CHANGED on any
+  // level/charging change, plus CHARGING/DISCHARGING/POWER_SAVE_MODE_CHANGED). Subscription is
+  // best effort: a rejected subscription leaves the startup snapshot as the last value.
+  private subscribeBatteryEvents(): void {
+    if (this.batteryEventsRegistered) {
+      return;
+    }
+    try {
+      const subscriber = commonEventManager.createSubscriberSync({
+        events: [
+          commonEventManager.Support.COMMON_EVENT_BATTERY_CHANGED,
+          commonEventManager.Support.COMMON_EVENT_CHARGING,
+          commonEventManager.Support.COMMON_EVENT_DISCHARGING,
+          commonEventManager.Support.COMMON_EVENT_POWER_SAVE_MODE_CHANGED,
+        ],
+      });
+      commonEventManager.subscribe(subscriber, (subscribeError: BusinessError, event: commonEventManager.CommonEventData): void => {
+        if (!subscribeError) {
+          this.reportBattery();
+        }
+      });
+      this.batteryEventsRegistered = true;
+    } catch (batteryEventError) {
+      console.error(`[maui] battery events unavailable: ${(batteryEventError as Error).message}`);
+    }
+  }
+
+  // Display changes (rotation, size, refresh rate) arrive through display.on('change'); the
+  // callback argument is the display id, the snapshot itself is re-read synchronously.
+  private subscribeDisplayChange(): void {
+    if (this.displayChangeRegistered) {
+      return;
+    }
+    try {
+      display.on('change', (displayId: number): void => {
+        this.reportDisplay();
+      });
+      this.displayChangeRegistered = true;
+    } catch (displayEventError) {
+      console.error(`[maui] display change events unavailable: ${(displayEventError as Error).message}`);
+    }
   }
 
   // Reads the host's current menu table into @State (empty when the sink is unavailable).
@@ -181,6 +263,53 @@ struct Index {
     }
   }
 
+  // Bluetooth discovery: bluetoothDeviceFind reports an array of device addresses per callback.
+  // The listener resolves each name with getRemoteDeviceName, keeps the accumulated table for
+  // op 4 and pushes each record to the managed side as "name\taddress". It is registered while
+  // discovery runs (the permission was granted by the sink) and removed on stop.
+  private ensureBluetoothDeviceListener(): void {
+    if (this.bluetoothDeviceRegistered) {
+      return;
+    }
+    try {
+      connection.on('bluetoothDeviceFind', (devices: Array<string>): void => {
+        this.onBluetoothDevicesFound(devices);
+      });
+      this.bluetoothDeviceRegistered = true;
+    } catch (findError) {
+      console.error(`[maui] bluetooth discovery listener failed: ${(findError as Error).message}`);
+    }
+  }
+
+  private unsubscribeBluetoothDeviceListener(): void {
+    if (!this.bluetoothDeviceRegistered) {
+      return;
+    }
+    try {
+      connection.off('bluetoothDeviceFind');
+    } catch (offError) {
+      // Stopping discovery already succeeded; a stale listener is harmless.
+    }
+    this.bluetoothDeviceRegistered = false;
+  }
+
+  private onBluetoothDevicesFound(devices: Array<string>): void {
+    for (const deviceId of devices) {
+      let name: string = '';
+      try {
+        name = connection.getRemoteDeviceName(deviceId);
+      } catch (nameError) {
+        name = '';
+      }
+      this.discoveredBluetooth.set(deviceId, name);
+      try {
+        host.notifyBluetoothDeviceFound(`${name}\t${deviceId}`);
+      } catch (notifyError) {
+        // An older host library drops the push; op 4 still serves the accumulated table.
+      }
+    }
+  }
+
   aboutToAppear(): void {
     // 2 = foreground; the native host forwards it to the managed bridge.
     host.notifyLifecycle(2);
@@ -190,6 +319,11 @@ struct Index {
     // light/dark state to the managed side. Later changes arrive through onColorModeChanged.
     Environment.envProp<ColorMode>('colorMode', ColorMode.LIGHT);
     this.reportTheme();
+    // Battery/DeviceDisplay (Essentials): push the startup snapshots and follow later changes.
+    this.reportBattery();
+    this.reportDisplay();
+    this.subscribeBatteryEvents();
+    this.subscribeDisplayChange();
     // Essentials (vibration/permissions/geolocation/pickers/connectivity/launcher) need the
     // matching SDK kits, which are not part of this minimal shell project's compilation set yet
     // (see docs/plans/2026-09-18-ohos-arkts-essentials-bridge-plan.md). The sinks stay
@@ -426,9 +560,10 @@ struct Index {
     // Bluetooth (platform extra): the managed side asks through ohos_host_bluetooth_query.
     // op 0 reports the adapter state (access.getState), op 1 lists the paired devices
     // (connection.getPairedDevices + getRemoteDeviceName), op 2/3 start/stop classic discovery
-    // (connection.startBluetoothDiscovery / stopBluetoothDiscovery). ACCESS_BLUETOOTH is a
-    // user_grant permission, so the shell requests it first; a denial answers code -1 (managed
-    // IsSupported == false). Paired devices travel as "name\taddress" lines.
+    // (connection.startBluetoothDiscovery / stopBluetoothDiscovery) and op 4 answers the devices
+    // found since the last start (filled by the bluetoothDeviceFind listener). ACCESS_BLUETOOTH
+    // is a user_grant permission, so the shell requests it first; a denial answers code -1
+    // (managed IsSupported == false). Devices travel as "name\taddress" lines.
     host.registerBluetoothSink(async (requestId: number, op: number): Promise<void> => {
       try {
         const context = getContext(this) as common.UIAbilityContext;
@@ -444,6 +579,15 @@ struct Index {
           host.notifyBluetoothResult(requestId, 0, `${state}`);
           return;
         }
+        if (op === 4) {
+          // Discovered devices are accumulated locally; no adapter call is needed.
+          const discovered: string[] = [];
+          this.discoveredBluetooth.forEach((name: string, address: string): void => {
+            discovered.push(`${name}\t${address}`);
+          });
+          host.notifyBluetoothResult(requestId, 0, discovered.join('\n'));
+          return;
+        }
         if (op === 2 || op === 3) {
           // Discovery and its stop need a powered adapter; while it is off they would throw
           // 2900003. That is a transient device state, so it answers code -2 (the managed side
@@ -453,9 +597,14 @@ struct Index {
             return;
           }
           if (op === 2) {
+            // A fresh scan starts an empty result set; the listener is registered once the
+            // permission is in place (the discovery callback needs it too).
+            this.discoveredBluetooth.clear();
+            this.ensureBluetoothDeviceListener();
             connection.startBluetoothDiscovery();
           } else {
             connection.stopBluetoothDiscovery();
+            this.unsubscribeBluetoothDeviceListener();
           }
           host.notifyBluetoothResult(requestId, 0, '');
           return;

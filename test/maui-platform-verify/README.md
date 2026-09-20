@@ -1,13 +1,14 @@
 # Interaction regression suite (headless)
 
-The 181-check MAUI-on-OpenHarmony interaction harness. It builds the platform slice sources from the
+The 191-check MAUI-on-OpenHarmony interaction harness. It builds the platform slice sources from the
 `maui-ohos` working tree and drives the app host without a device: touch/drag/pinch/pointer input,
 overlays, gestures (tap/pan/swipe/pinch/pointer/drag-and-drop), sensors/haptics/notification/picker
 wiring, the app-theme colour-mode handler, the launcher/browser/share ability bridge, the
 accessibility shadow tree snapshot, the menu table/activation bridge, the WebView JavaScript
-bridge (script evaluation + `dotnetHost.postMessage`) and the contacts/calendar and
+bridge (script evaluation + `dotnetHost.postMessage`), the contacts/calendar and
 Bluetooth/printing platform extras (off-device degradation plus the delimited payload parsers
-and the text-to-PDF renderer).
+and the text-to-PDF renderer) and the Essentials Battery/DeviceDisplay push bridge (payload
+parsers plus the ModuleInitializer-installed defaults).
 
 ## Running it
 
@@ -16,7 +17,7 @@ and the text-to-PDF renderer).
 # the MAUI_SLICE_DIR / HOSTING_DLL env vars (or the MauiSliceDir / HostingDll MSBuild properties)
 # before building elsewhere.
 dotnet build -v:q
-dotnet bin/Debug/net11.0/verify.dll | grep -c '\[verify\]'   # expect 181
+dotnet bin/Debug/net11.0/verify.dll | grep -c '\[verify\]'   # expect 191
 ```
 
 ## Notes
@@ -25,7 +26,7 @@ dotnet bin/Debug/net11.0/verify.dll | grep -c '\[verify\]'   # expect 181
   blocks codesigned ELF apphosts on some machines).
 - The suite fails loudly (unhandled exception) when a slice change breaks startup or when an
   assertion for the gesture flows (including the drag-and-drop checks) does not hold; keep it at
-  181 checks when touching the platform slice.
+  191 checks when touching the platform slice.
 - Contacts/calendar coverage: `OpenHarmonyContacts.FindAsync` and
   `OpenHarmonyCalendar.ListUpcomingAsync`/`AddEventAsync` return empty/false without throwing
   off-device and report `IsSupported == false` before and after the call (the permission probe
@@ -39,11 +40,17 @@ dotnet bin/Debug/net11.0/verify.dll | grep -c '\[verify\]'   # expect 181
   appends the minimal `requestPermissions` array to the generated module.json (preview.22 and
   preview.23 packs; unset keeps the file byte-identical).
 - Bluetooth/printing coverage: `OpenHarmonyBluetooth.IsEnabledAsync`,
-  `GetPairedDevicesAsync`, `StartDiscoveryAsync` and `StopDiscoveryAsync` return false/empty
-  without throwing off-device and `IsSupported` stays false; the paired-device parser is
+  `GetPairedDevicesAsync`, `StartDiscoveryAsync`, `StopDiscoveryAsync` and
+  `GetDiscoveredDevicesAsync` return false/empty without throwing off-device and `IsSupported`
+  stays false; the device parser (`ParseDevices`, which `ParsePairedDevices` delegates to) is
   exercised with the exact "name\taddress" payload (including a nameless record and a record
-  with no tab) and the adapter-state parser with the `access.BluetoothState` values ("2" on,
-  "0"/"1"/garbage off). `OpenHarmonyPrinting.PrintFileAsync` returns false for a missing file
+  with no tab), the adapter-state parser with the `access.BluetoothState` values ("2" on,
+  "0"/"1"/garbage off), and the discovered-device push with the native-shaped
+  `OnDeviceFoundPayload` records (a named record and an address-only record raise `DeviceFound`,
+  null/empty payloads raise nothing). The shell half registers
+  `connection.on('bluetoothDeviceFind')` while discovery runs, pushes each record through
+  `host.notifyBluetoothDeviceFound` and answers op 4 with the accumulated table.
+  `OpenHarmonyPrinting.PrintFileAsync` returns false for a missing file
   and for an unavailable bridge, `PrintTextAsync` writes a real PDF into the cache directory
   and still degrades to false, and the text-to-PDF renderer is checked structurally: `%PDF-1.4`
   header, `startxref` pointing at the xref table, every xref entry resolving to its `n 0 obj`
@@ -81,6 +88,22 @@ dotnet bin/Debug/net11.0/verify.dll | grep -c '\[verify\]'   # expect 181
   degrades without throwing off-device, and `IsSupported` is false without the host library. The app
   theme handler is exercised directly (ArkUI colour-mode reports need a device): setting dark/light
   updates `UserAppTheme`/`RequestedTheme` and the previous value is restored afterwards.
+- Battery/DeviceDisplay coverage: the `[ModuleInitializer]` installers make `Battery.Default` the
+  slice `OpenHarmonyBattery` and `DeviceDisplay.Current` the slice `OpenHarmonyDeviceDisplay`; the
+  battery parser is exercised with the shell payload "soc\tchargeState\tpluggedType\tpresent\
+  tpowerMode" (Charging/Usb/Off, Discharging/AC/On, Full+absent+extreme-power-save, the explicit
+  MODE_CUSTOM_POWER_SAVE 650, and malformed payloads -> null), and a native-shaped payload push
+  updates `Battery.ChargeLevel`/`State`/`PowerSource`/`EnergySaverStatus` and raises both change
+  events. The display parser is exercised with "width\theight\tdensityDPI\trotation\trefreshRate\
+  torientation" (portrait 1080x2340@480 -> density 3/Rotation0, landscape-inverted 2340x1080@320 ->
+  density 2/Rotation270, orientation inferred from width/height when the sixth field is missing, and
+  malformed payloads -> null); a native-shaped push updates `DeviceDisplay.MainDisplayInfo` and
+  raises `MainDisplayInfoChanged` once per distinct snapshot. Off-device nothing throws, the
+  properties stay at Unknown/0x0 and `KeepScreenOn` reports false (no platform keep-screen path in
+  this increment). The shell half reads `batteryInfo`/`power.getPowerMode()` and
+  `display.getDefaultDisplaySync()` at page start, follows the battery common events and
+  `display.on('change')`, and pushes the raw values through `host.notifyBattery`/`host.notifyDisplay`
+  (the host replays the last snapshot to the managed listener).
 - Drag-and-drop coverage: a long press (500 ms) followed by a move past the 8 px slop raises
   DragStarting, DragOver/DragLeave fire when the pointer enters/leaves a drop-aware view, Drop
   delivers the source text through DataPackageView.GetTextAsync(), and a release over nothing raises
