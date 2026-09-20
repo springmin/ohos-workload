@@ -4,6 +4,16 @@
            module.json, ets/modules.abc, libs/<abi>/libopenharmonyhost.so,
            resources/base/..., resources/rawfile/{app.json,dotnet.zip}
 
+       Staging directory: OpenHarmonyHapStageDir (overridable) selects where the payload above
+       is staged before packing. It is resolved at target execution time - not at evaluation
+       time, when PublishDir is still empty - with these defaults, in order:
+           $(IntermediateOutputPath)openharmony-hap/      (default; under obj/)
+           $(BaseIntermediateOutputPath)openharmony-hap/  (when IntermediateOutputPath is unset)
+           $(PublishDir)openharmony-hap/                  (publish-only project types)
+       The directory is deleted and recreated for each package, so stale files from an earlier
+       publish cannot leak into a hap. The property must point somewhere other than the project
+       directory: the packaging writes module.json, ets/, resources/ and libs/ into it.
+
        Opt-in permissions: set OpenHarmonyExtraPermissions to a ';' or ',' separated list of
        permission names, e.g. (keep the quotes - MSBuild splits an unquoted command-line
        property value at ';' and ',', or use %3B / %2C):
@@ -44,7 +54,8 @@
     <!-- Toolchain: the OpenHarmony SDK's toolchains/lib (packing + signing tools). -->
     <OpenHarmonySdkRoot Condition=" '$(OpenHarmonySdkRoot)' == '' ">$(OHOS_SDK_ROOT)</OpenHarmonySdkRoot>
     <OpenHarmonyToolchainDir Condition=" '$(OpenHarmonyToolchainDir)' == '' and '$(OpenHarmonySdkRoot)' != '' ">$(OpenHarmonySdkRoot)/toolchains/lib</OpenHarmonyToolchainDir>
-    <_OpenHarmonyHapStageDir Condition=" '$(PublishDir)' != '' ">$(OutputPath)$(RuntimeIdentifier)/hap/</_OpenHarmonyHapStageDir>
+    <!-- OpenHarmonyHapStageDir deliberately has no default here: it is derived in
+         _OpenHarmonyResolveHapStageDir once PublishDir/IntermediateOutputPath are set. -->
     <_OpenHarmonyHapUnsigned>$(OutputPath)$(RuntimeIdentifier)/$(AssemblyName)-unsigned.hap</_OpenHarmonyHapUnsigned>
     <_OpenHarmonyHapFile>$(OutputPath)$(RuntimeIdentifier)/$(AssemblyName).hap</_OpenHarmonyHapFile>
   </PropertyGroup>
@@ -61,9 +72,27 @@
            Text="OpenHarmony packaging requires the OpenHarmony SDK toolchain. Set OpenHarmonySdkRoot (or OHOS_SDK_ROOT) to the SDK root that contains toolchains/lib." />
   </Target>
 
+  <!-- Resolves the staging directory at target execution time. PublishDir is assigned by the
+       Publish target (and IntermediateOutputPath by the common targets), so evaluating the
+       fallback at import time would leave the stage dir empty and turn every staging path
+       below into a path relative to the project directory. -->
+  <Target Name="_OpenHarmonyResolveHapStageDir">
+    <PropertyGroup>
+      <OpenHarmonyHapStageDir Condition=" '$(OpenHarmonyHapStageDir)' == '' and '$(IntermediateOutputPath)' != '' ">$(IntermediateOutputPath)openharmony-hap/</OpenHarmonyHapStageDir>
+      <OpenHarmonyHapStageDir Condition=" '$(OpenHarmonyHapStageDir)' == '' and '$(BaseIntermediateOutputPath)' != '' ">$(BaseIntermediateOutputPath)openharmony-hap/</OpenHarmonyHapStageDir>
+      <OpenHarmonyHapStageDir Condition=" '$(OpenHarmonyHapStageDir)' == '' and '$(PublishDir)' != '' ">$(PublishDir)openharmony-hap/</OpenHarmonyHapStageDir>
+      <_OpenHarmonyHapStageDir Condition=" '$(OpenHarmonyHapStageDir)' != '' ">$([MSBuild]::NormalizeDirectory('$(MSBuildProjectDirectory)', '$(OpenHarmonyHapStageDir)'))</_OpenHarmonyHapStageDir>
+      <_OpenHarmonyProjectDirNormalized>$([MSBuild]::NormalizeDirectory('$(MSBuildProjectDirectory)'))</_OpenHarmonyProjectDirNormalized>
+    </PropertyGroup>
+    <Error Condition=" '$(OpenHarmonyHapStageDir)' == '' "
+           Text="OpenHarmonyHapStageDir could not be derived (no IntermediateOutputPath, BaseIntermediateOutputPath or PublishDir); set the OpenHarmonyHapStageDir property explicitly." />
+    <Error Condition=" '$(_OpenHarmonyHapStageDir)' == '$(_OpenHarmonyProjectDirNormalized)' "
+           Text="OpenHarmonyHapStageDir must not be the project directory ('$(MSBuildProjectDirectory)'); the packaging writes module.json, ets/, resources/ and libs/ into the staging directory." />
+  </Target>
+
   <Target Name="_OpenHarmonyStageHap"
           AfterTargets="Publish"
-          DependsOnTargets="_OpenHarmonyDetectToolchain"
+          DependsOnTargets="_OpenHarmonyDetectToolchain;_OpenHarmonyResolveHapStageDir"
           Condition=" '$(OpenHarmonyHapPackage)' == 'true' and '$(TargetPlatformIdentifier)' == 'openharmony' ">
     <PropertyGroup>
       <_OpenHarmonyTemplatesDir>$(_OpenHarmonySdkPackDir)templates/</_OpenHarmonyTemplatesDir>
@@ -144,6 +173,7 @@
 
   <Target Name="_OpenHarmonyPackHap"
           AfterTargets="_OpenHarmonyStageHap"
+          DependsOnTargets="_OpenHarmonyResolveHapStageDir"
           Condition=" '$(OpenHarmonyHapPackage)' == 'true' and '$(TargetPlatformIdentifier)' == 'openharmony' ">
     <Exec Command="&quot;$(OpenHarmonyToolchainDir)/ohos_packing_tool&quot; pack --mode hap --json-path &quot;$(_OpenHarmonyHapStageDir)module.json&quot; --ets-path &quot;$(_OpenHarmonyHapStageDir)ets&quot; --resources-path &quot;$(_OpenHarmonyHapStageDir)resources&quot; --lib-path &quot;$(_OpenHarmonyHapStageDir)libs&quot; --out-path &quot;$(_OpenHarmonyHapUnsigned)&quot; --force true" />
     <Message Importance="high" Text="OpenHarmony: packed $(_OpenHarmonyHapUnsigned)" />
