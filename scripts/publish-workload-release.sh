@@ -1,7 +1,7 @@
 #!/bin/sh
 # Publishes the OpenHarmony platform workload as GitHub releases:
 #
-#   workload-<version>   immutable release, asset openharmony-workload-<version>.tar.gz
+#   workload-<version>   immutable release, assets openharmony-workload-<version>.tar.gz + SHA256SUMS
 #   workload-latest      rolling release,  asset openharmony-workload-latest.tar.gz
 #   device-test-kit      delivery kit,     assets device-test-kit.tar.gz + .sha256
 #                        (also attached to workload-latest). Skipped, with a log line, when the
@@ -136,7 +136,7 @@ if [ "$SKIP_VERSIONED" = 0 ]; then
     else
         run gh release create "$VERSIONED_TAG" --repo "$REPO" \
             --title "OpenHarmony platform workload $VER" --notes-file "$NOTES" --latest=false \
-            "$BUNDLE"
+            "$BUNDLE" "$W/dist/SHA256SUMS"
     fi
 fi
 
