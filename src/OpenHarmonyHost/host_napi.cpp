@@ -15,6 +15,8 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include <mutex>
+
 // Forward declarations: the module function table below references these (defined at the end).
 napi_value AttachAccessibilityNode(napi_env env, napi_callback_info info);
 static int AttachAccessibilityValue(napi_env env, napi_value value);
@@ -35,8 +37,185 @@ OhosHostAppHandle* g_handle = nullptr;
 // XComponent (surface) support -------------------------------------------------
 napi_env g_env = nullptr;
 napi_ref g_exports_ref = nullptr;
-napi_ref g_text_input_sink_ref = nullptr;
 OH_NativeXComponent* g_xcomponent = nullptr;
+
+// Host -> shell dispatch over napi_threadsafe_function ---------------------------
+// The managed app runs on its own thread, but ArkTS values and the shell's callbacks may
+// only be touched on the JS/UI thread. Every sink therefore owns a
+// napi_threadsafe_function created from the registered function by Register*Sink;
+// notifications copy their arguments into a heap block and enqueue it with
+// napi_call_threadsafe_function. The queue is small, bounded and always called
+// non-blocking: when it is full the notification is dropped after one log line instead
+// of blocking the caller or touching the JS thread from the wrong side. The shell-side
+// deferral stays in place as defence in depth.
+//
+// napi_threadsafe_function surface used (napi/native_api.h + node_api_types.h):
+//   napi_status napi_create_threadsafe_function(napi_env env, napi_value func,
+//       napi_value async_resource, napi_value async_resource_name, size_t max_queue_size,
+//       size_t initial_thread_count, void* thread_finalize_data,
+//       napi_finalize thread_finalize_cb, void* context,
+//       napi_threadsafe_function_call_js call_js_cb, napi_threadsafe_function* result);
+//   napi_status napi_call_threadsafe_function(napi_threadsafe_function func, void* data,
+//       napi_threadsafe_function_call_mode is_blocking);   // napi_tsfn_nonblocking
+//   napi_status napi_release_threadsafe_function(napi_threadsafe_function func,
+//       napi_threadsafe_function_release_mode mode);       // napi_tsfn_abort
+//   typedef void (*napi_threadsafe_function_call_js)(napi_env env, napi_value js_callback,
+//       void* context, void* data);
+
+struct SinkArg {
+    bool is_string = false;
+    int32_t int_value = 0;
+    std::string string_value;
+};
+
+// One notification: the argument vector the shell callback will be invoked with.
+struct SinkCall {
+    enum { kMaxArgs = 5 };
+    int count = 0;
+    SinkArg args[kMaxArgs];
+
+    void AddInt(int32_t value) {
+        if (count < kMaxArgs) {
+            args[count].is_string = false;
+            args[count].int_value = value;
+            count++;
+        }
+    }
+
+    void AddString(const char* value) {
+        if (count < kMaxArgs) {
+            args[count].is_string = true;
+            args[count].string_value = value != nullptr ? value : "";
+            count++;
+        }
+    }
+};
+
+// One per registered sink: the threadsafe function bound to the shell callback plus the
+// bookkeeping needed to free queued notifications when the sink is replaced.
+struct HostSink {
+    HostSink(const char* sink_name, bool use_global_this)
+        : name(sink_name), global_this(use_global_this) {}
+
+    const char* name = "";
+    // The direct calls used the sink itself as `this` in most places and the JS global in
+    // the web/picker/vibration/text-input paths; the dispatch keeps that per sink.
+    bool global_this = false;
+    napi_threadsafe_function tsfn = nullptr;
+    bool queue_full_logged = false;
+    std::mutex lock;
+    std::vector<SinkCall*> pending;
+};
+
+// Runs on the JS/UI thread: builds the arguments, calls the shell callback and releases
+// the payload. A throwing callback is ignored, exactly like the discarded
+// napi_call_function return value used to be.
+static void HostSinkDispatch(napi_env env, napi_value js_callback, void* context, void* data) {
+    HostSink* sink = static_cast<HostSink*>(context);
+    SinkCall* call = static_cast<SinkCall*>(data);
+    if (call == nullptr) {
+        return;
+    }
+    if (sink != nullptr) {
+        std::lock_guard<std::mutex> guard(sink->lock);
+        for (size_t i = 0; i < sink->pending.size(); i++) {
+            if (sink->pending[i] == call) {
+                sink->pending.erase(sink->pending.begin() + (std::ptrdiff_t)i);
+                break;
+            }
+        }
+    }
+    if (env != nullptr && js_callback != nullptr) {
+        napi_value argv[SinkCall::kMaxArgs];
+        for (int i = 0; i < call->count; i++) {
+            if (call->args[i].is_string) {
+                napi_create_string_utf8(env, call->args[i].string_value.c_str(), NAPI_AUTO_LENGTH, &argv[i]);
+            } else {
+                napi_create_int32(env, call->args[i].int_value, &argv[i]);
+            }
+        }
+        napi_value this_arg = js_callback;
+        if (sink != nullptr && sink->global_this && napi_get_global(env, &this_arg) != napi_ok) {
+            this_arg = js_callback;
+        }
+        napi_value result = nullptr;
+        napi_call_function(env, this_arg, js_callback, (size_t)call->count, argv, &result);
+    }
+    delete call;
+}
+
+// Destroys the sink's threadsafe function and frees anything still queued. Runs on the JS
+// thread (Register*Sink), so it cannot overlap a HostSinkDispatch that is executing there;
+// aborting drops the pending items without calling the dispatch, hence the explicit free.
+static void HostSinkReset(HostSink& sink) {
+    std::lock_guard<std::mutex> guard(sink.lock);
+    if (sink.tsfn != nullptr) {
+        napi_release_threadsafe_function(sink.tsfn, napi_tsfn_abort);
+        sink.tsfn = nullptr;
+    }
+    for (SinkCall* call : sink.pending) {
+        delete call;
+    }
+    sink.pending.clear();
+    sink.queue_full_logged = false;
+}
+
+// Enqueues one notification. Never blocks: returns false when the call was dropped (no
+// sink registered, queue full or the threadsafe function is closing). The payload is
+// always consumed, so callers must not touch it afterwards.
+static bool HostSinkPost(HostSink& sink, SinkCall* call) {
+    if (call == nullptr) {
+        return false;
+    }
+    bool posted = false;
+    {
+        std::lock_guard<std::mutex> guard(sink.lock);
+        if (sink.tsfn != nullptr) {
+            sink.pending.push_back(call);
+            napi_status status = napi_call_threadsafe_function(sink.tsfn, call, napi_tsfn_nonblocking);
+            if (status == napi_ok) {
+                sink.queue_full_logged = false;
+                posted = true;
+            } else {
+                // Not enqueued: our entry is still the last one (the lock keeps the
+                // dispatch from mutating `pending` meanwhile).
+                sink.pending.pop_back();
+                if (status == napi_queue_full && !sink.queue_full_logged) {
+                    sink.queue_full_logged = true;
+                    OH_LOG_WARN(LOG_APP, "[openharmony-host] %{public}s: callback queue full, dropping notification",
+                                sink.name);
+                }
+            }
+        }
+    }
+    if (!posted) {
+        delete call;
+    }
+    return posted;
+}
+
+// Creates (or replaces) the sink's threadsafe function from the ArkTS callback. Runs on
+// the JS thread; the previous function, if any, is aborted here and never carries over.
+static void HostSinkRegister(napi_env env, HostSink& sink, napi_value function) {
+    HostSinkReset(sink);
+    napi_value resource_name = nullptr;
+    napi_create_string_utf8(env, sink.name, NAPI_AUTO_LENGTH, &resource_name);
+    if (resource_name == nullptr) {
+        OH_LOG_WARN(LOG_APP, "[openharmony-host] %{public}s: could not name the callback queue", sink.name);
+        return;
+    }
+    std::lock_guard<std::mutex> guard(sink.lock);
+    napi_status status = napi_create_threadsafe_function(
+        env, function, nullptr, resource_name, 64, 1, nullptr, nullptr, &sink,
+        HostSinkDispatch, &sink.tsfn);
+    if (status != napi_ok) {
+        sink.tsfn = nullptr;
+        OH_LOG_WARN(LOG_APP, "[openharmony-host] %{public}s: callback queue unavailable (%{public}d)",
+                    sink.name, (int)status);
+    }
+}
+
+HostSink g_text_input_sink("text input", true);
 
 void OnSurfaceCreated(OH_NativeXComponent* component, void* window) {
     uint64_t width = 0;
@@ -173,31 +352,20 @@ void TryRegisterXComponent() {
 
 std::string GetStringArg(napi_env env, napi_value value);
 
-napi_ref g_keystore_sink_ref = nullptr;
+HostSink g_keystore_sink("keystore", true);
 
 // Called by the host core (managed side) to run a HUKS operation in the ArkTS shell.
 void OnKeystoreRequest(int requestId, const char* op, const char* alias, const char* dataBase64) {
-    if (g_env == nullptr || g_keystore_sink_ref == nullptr) {
-        return;
-    }
-    napi_value sink = nullptr;
-    if (napi_get_reference_value(g_env, g_keystore_sink_ref, &sink) != napi_ok || sink == nullptr) {
-        return;
-    }
-    napi_value global = nullptr;
-    napi_get_global(g_env, &global);
-    napi_value argv[4] = {nullptr, nullptr, nullptr, nullptr};
-    napi_create_int32(g_env, requestId, &argv[0]);
-    napi_create_string_utf8(g_env, op != nullptr ? op : "", NAPI_AUTO_LENGTH, &argv[1]);
-    napi_create_string_utf8(g_env, alias != nullptr ? alias : "", NAPI_AUTO_LENGTH, &argv[2]);
-    napi_create_string_utf8(g_env, dataBase64 != nullptr ? dataBase64 : "", NAPI_AUTO_LENGTH, &argv[3]);
-    napi_value result = nullptr;
-    napi_call_function(g_env, global, sink, 4, argv, &result);
+    SinkCall* call = new SinkCall();
+    call->AddInt(requestId);
+    call->AddString(op);
+    call->AddString(alias);
+    call->AddString(dataBase64);
+    HostSinkPost(g_keystore_sink, call);
 }
 
 // ArkTS calls host.registerKeystoreSink(fn) to receive keystore requests.
-napi_ref g_picker_sink_ref = nullptr;
-napi_ref g_notification_sink_ref = nullptr;
+HostSink g_notification_sink("notification", false);
 
 extern "C" void OhosNotifyPinch(int phase, double scale, float x, float y);
 
@@ -219,19 +387,11 @@ napi_value NotifyPinch(napi_env env, napi_callback_info info) {
 
 // Called from the host C layer: forwards a notification publish request to ArkTS.
 extern "C" void OhosNotifyNotification(int id, const char* title, const char* text) {
-    if (g_env == nullptr || g_notification_sink_ref == nullptr) {
-        return;
-    }
-    napi_value sink = nullptr;
-    if (napi_get_reference_value(g_env, g_notification_sink_ref, &sink) != napi_ok || sink == nullptr) {
-        return;
-    }
-    napi_value argv[3];
-    napi_create_int32(g_env, id, &argv[0]);
-    napi_create_string_utf8(g_env, title != nullptr ? title : "", NAPI_AUTO_LENGTH, &argv[1]);
-    napi_create_string_utf8(g_env, text != nullptr ? text : "", NAPI_AUTO_LENGTH, &argv[2]);
-    napi_value result = nullptr;
-    napi_call_function(g_env, sink, sink, 3, argv, &result);
+    SinkCall* call = new SinkCall();
+    call->AddInt(id);
+    call->AddString(title);
+    call->AddString(text);
+    HostSinkPost(g_notification_sink, call);
 }
 
 // ArkTS calls host.registerNotificationSink(fn) to publish notifications.
@@ -242,35 +402,23 @@ napi_value RegisterNotificationSink(napi_env env, napi_callback_info info) {
     if (argc < 1) {
         return nullptr;
     }
-    if (g_notification_sink_ref != nullptr) {
-        napi_delete_reference(env, g_notification_sink_ref);
-    }
-    napi_create_reference(env, argv[0], 1, &g_notification_sink_ref);
+    HostSinkRegister(env, g_notification_sink, argv[0]);
     return nullptr;
 }
 
 // TextToSpeech: the managed side forwards speak requests through ohos_host_tts_speak; the
 // ArkTS shell's sink (registerTtsSink) owns the Speech Kit call and answers with
 // host.notifyTtsResult(requestId, code).
-napi_ref g_tts_sink_ref = nullptr;
+HostSink g_tts_sink("tts", false);
 static void (*g_tts_result_listener)(int request_id, int code) = nullptr;
 
 // Called from the host C layer (managed P/Invoke): forwards a speak request to ArkTS.
 extern "C" int ohos_host_tts_speak(int request_id, const char* text, const char* locale) {
-    if (g_env == nullptr || g_tts_sink_ref == nullptr) {
-        return -1;
-    }
-    napi_value sink = nullptr;
-    if (napi_get_reference_value(g_env, g_tts_sink_ref, &sink) != napi_ok || sink == nullptr) {
-        return -1;
-    }
-    napi_value argv[3];
-    napi_create_int32(g_env, request_id, &argv[0]);
-    napi_create_string_utf8(g_env, text != nullptr ? text : "", NAPI_AUTO_LENGTH, &argv[1]);
-    napi_create_string_utf8(g_env, locale != nullptr ? locale : "", NAPI_AUTO_LENGTH, &argv[2]);
-    napi_value result = nullptr;
-    napi_status status = napi_call_function(g_env, sink, sink, 3, argv, &result);
-    return status == napi_ok ? 0 : -1;
+    SinkCall* call = new SinkCall();
+    call->AddInt(request_id);
+    call->AddString(text);
+    call->AddString(locale);
+    return HostSinkPost(g_tts_sink, call) ? 0 : -1;
 }
 
 // The managed side registers the callback that completes a pending speak request.
@@ -294,10 +442,7 @@ napi_value RegisterTtsSink(napi_env env, napi_callback_info info) {
         napi_valuetype type = napi_undefined;
         napi_typeof(env, argv[0], &type);
         if (type == napi_function) {
-            if (g_tts_sink_ref != nullptr) {
-                napi_delete_reference(env, g_tts_sink_ref);
-            }
-            napi_create_reference(env, argv[0], 1, &g_tts_sink_ref);
+            HostSinkRegister(env, g_tts_sink, argv[0]);
         }
     }
     napi_value undefined = nullptr;
@@ -332,28 +477,19 @@ napi_value NotifyTtsResult(napi_env env, napi_callback_info info) {
 // separated fields (contacts: name, phone; calendar: title, start ISO-8601, end ISO-8601);
 // code 0 means the answer is complete (an empty payload is a valid "no records"), code -1 means
 // the kit, the permission or the sink was unavailable.
-napi_ref g_contacts_sink_ref = nullptr;
-napi_ref g_calendar_sink_ref = nullptr;
+HostSink g_contacts_sink("contacts", false);
+HostSink g_calendar_sink("calendar", false);
 static void (*g_contacts_result_listener)(int request_id, int code, const char* payload) = nullptr;
 static void (*g_calendar_result_listener)(int request_id, int code, const char* payload) = nullptr;
 
 // Called from managed code (P/Invoke): forwards a name-prefix lookup (limit caps the number of
 // returned rows) to the ArkTS sink; returns 0 when it was dispatched.
 extern "C" int ohos_host_contacts_query(int request_id, const char* name_prefix, int limit) {
-    if (g_env == nullptr || g_contacts_sink_ref == nullptr) {
-        return -1;
-    }
-    napi_value sink = nullptr;
-    if (napi_get_reference_value(g_env, g_contacts_sink_ref, &sink) != napi_ok || sink == nullptr) {
-        return -1;
-    }
-    napi_value argv[3];
-    napi_create_int32(g_env, request_id, &argv[0]);
-    napi_create_string_utf8(g_env, name_prefix != nullptr ? name_prefix : "", NAPI_AUTO_LENGTH, &argv[1]);
-    napi_create_int32(g_env, limit, &argv[2]);
-    napi_value result = nullptr;
-    napi_status status = napi_call_function(g_env, sink, sink, 3, argv, &result);
-    return status == napi_ok ? 0 : -1;
+    SinkCall* call = new SinkCall();
+    call->AddInt(request_id);
+    call->AddString(name_prefix);
+    call->AddInt(limit);
+    return HostSinkPost(g_contacts_sink, call) ? 0 : -1;
 }
 
 // The managed side registers the callback that completes a pending contacts request.
@@ -377,10 +513,7 @@ napi_value RegisterContactsSink(napi_env env, napi_callback_info info) {
         napi_valuetype type = napi_undefined;
         napi_typeof(env, argv[0], &type);
         if (type == napi_function) {
-            if (g_contacts_sink_ref != nullptr) {
-                napi_delete_reference(env, g_contacts_sink_ref);
-            }
-            napi_create_reference(env, argv[0], 1, &g_contacts_sink_ref);
+            HostSinkRegister(env, g_contacts_sink, argv[0]);
             OH_LOG_INFO(LOG_APP, "[openharmony-host] contacts sink registered");
         }
     }
@@ -409,22 +542,13 @@ napi_value NotifyContactsResult(napi_env env, napi_callback_info info) {
 // Calls the calendar sink: op 0 = list (arg1 = days), op 1 = add (arg1 = title,
 // arg2 = start ISO-8601, arg3 = end ISO-8601).
 static int CallCalendarSink(int request_id, int op, const char* arg1, const char* arg2, const char* arg3) {
-    if (g_env == nullptr || g_calendar_sink_ref == nullptr) {
-        return -1;
-    }
-    napi_value sink = nullptr;
-    if (napi_get_reference_value(g_env, g_calendar_sink_ref, &sink) != napi_ok || sink == nullptr) {
-        return -1;
-    }
-    napi_value argv[5];
-    napi_create_int32(g_env, request_id, &argv[0]);
-    napi_create_int32(g_env, op, &argv[1]);
-    napi_create_string_utf8(g_env, arg1 != nullptr ? arg1 : "", NAPI_AUTO_LENGTH, &argv[2]);
-    napi_create_string_utf8(g_env, arg2 != nullptr ? arg2 : "", NAPI_AUTO_LENGTH, &argv[3]);
-    napi_create_string_utf8(g_env, arg3 != nullptr ? arg3 : "", NAPI_AUTO_LENGTH, &argv[4]);
-    napi_value result = nullptr;
-    napi_status status = napi_call_function(g_env, sink, sink, 5, argv, &result);
-    return status == napi_ok ? 0 : -1;
+    SinkCall* call = new SinkCall();
+    call->AddInt(request_id);
+    call->AddInt(op);
+    call->AddString(arg1);
+    call->AddString(arg2);
+    call->AddString(arg3);
+    return HostSinkPost(g_calendar_sink, call) ? 0 : -1;
 }
 
 // Called from managed code (P/Invoke): lists events in the next `days` days.
@@ -461,10 +585,7 @@ napi_value RegisterCalendarSink(napi_env env, napi_callback_info info) {
         napi_valuetype type = napi_undefined;
         napi_typeof(env, argv[0], &type);
         if (type == napi_function) {
-            if (g_calendar_sink_ref != nullptr) {
-                napi_delete_reference(env, g_calendar_sink_ref);
-            }
-            napi_create_reference(env, argv[0], 1, &g_calendar_sink_ref);
+            HostSinkRegister(env, g_calendar_sink, argv[0]);
             OH_LOG_INFO(LOG_APP, "[openharmony-host] calendar sink registered");
         }
     }
@@ -499,25 +620,16 @@ napi_value NotifyCalendarResult(napi_env env, napi_callback_info info) {
 // answers through host.notifyBluetoothResult. The payload is a '\n' separated table of
 // "name\taddress" records (paired devices) or the decimal access.BluetoothState (state);
 // code 0 is a complete answer, -1 unavailable, -2 a transient kit failure.
-napi_ref g_bluetooth_sink_ref = nullptr;
+HostSink g_bluetooth_sink("bluetooth", false);
 static void (*g_bluetooth_result_listener)(int request_id, int code, const char* payload) = nullptr;
 
 // Called from managed code (P/Invoke): forwards a Bluetooth operation to the ArkTS sink;
 // returns 0 when it was dispatched.
 extern "C" int ohos_host_bluetooth_query(int request_id, int op) {
-    if (g_env == nullptr || g_bluetooth_sink_ref == nullptr) {
-        return -1;
-    }
-    napi_value sink = nullptr;
-    if (napi_get_reference_value(g_env, g_bluetooth_sink_ref, &sink) != napi_ok || sink == nullptr) {
-        return -1;
-    }
-    napi_value argv[2];
-    napi_create_int32(g_env, request_id, &argv[0]);
-    napi_create_int32(g_env, op, &argv[1]);
-    napi_value result = nullptr;
-    napi_status status = napi_call_function(g_env, sink, sink, 2, argv, &result);
-    return status == napi_ok ? 0 : -1;
+    SinkCall* call = new SinkCall();
+    call->AddInt(request_id);
+    call->AddInt(op);
+    return HostSinkPost(g_bluetooth_sink, call) ? 0 : -1;
 }
 
 // The managed side registers the callback that completes a pending Bluetooth request.
@@ -541,10 +653,7 @@ napi_value RegisterBluetoothSink(napi_env env, napi_callback_info info) {
         napi_valuetype type = napi_undefined;
         napi_typeof(env, argv[0], &type);
         if (type == napi_function) {
-            if (g_bluetooth_sink_ref != nullptr) {
-                napi_delete_reference(env, g_bluetooth_sink_ref);
-            }
-            napi_create_reference(env, argv[0], 1, &g_bluetooth_sink_ref);
+            HostSinkRegister(env, g_bluetooth_sink, argv[0]);
             OH_LOG_INFO(LOG_APP, "[openharmony-host] bluetooth sink registered");
         }
     }
@@ -604,24 +713,15 @@ napi_value NotifyBluetoothDeviceFound(napi_env env, napi_callback_info info) {
 // (ohos.permission.PRINT is system_grant, so the shell does not prompt) and answers through
 // host.notifyPrintResult with code 0 when the system print UI accepted the job and -1 when
 // the framework rejected it. The message carries the framework error for the host log.
-napi_ref g_print_sink_ref = nullptr;
+HostSink g_print_sink("print", false);
 static void (*g_print_result_listener)(int request_id, int code, const char* message) = nullptr;
 
 // Called from managed code (P/Invoke): forwards a print file path to the ArkTS sink.
 extern "C" int ohos_host_print_file(int request_id, const char* path) {
-    if (g_env == nullptr || g_print_sink_ref == nullptr) {
-        return -1;
-    }
-    napi_value sink = nullptr;
-    if (napi_get_reference_value(g_env, g_print_sink_ref, &sink) != napi_ok || sink == nullptr) {
-        return -1;
-    }
-    napi_value argv[2];
-    napi_create_int32(g_env, request_id, &argv[0]);
-    napi_create_string_utf8(g_env, path != nullptr ? path : "", NAPI_AUTO_LENGTH, &argv[1]);
-    napi_value result = nullptr;
-    napi_status status = napi_call_function(g_env, sink, sink, 2, argv, &result);
-    return status == napi_ok ? 0 : -1;
+    SinkCall* call = new SinkCall();
+    call->AddInt(request_id);
+    call->AddString(path);
+    return HostSinkPost(g_print_sink, call) ? 0 : -1;
 }
 
 // The managed side registers the callback that completes a pending print request.
@@ -645,10 +745,7 @@ napi_value RegisterPrintSink(napi_env env, napi_callback_info info) {
         napi_valuetype type = napi_undefined;
         napi_typeof(env, argv[0], &type);
         if (type == napi_function) {
-            if (g_print_sink_ref != nullptr) {
-                napi_delete_reference(env, g_print_sink_ref);
-            }
-            napi_create_reference(env, argv[0], 1, &g_print_sink_ref);
+            HostSinkRegister(env, g_print_sink, argv[0]);
             OH_LOG_INFO(LOG_APP, "[openharmony-host] print sink registered");
         }
     }
@@ -678,6 +775,12 @@ napi_value NotifyPrintResult(napi_env env, napi_callback_info info) {
 // ArkTS shell's sink (registerAbilitySink) owns the UIAbilityContext.startAbility call.
 // kind 0 = open uri (implicit viewData Want), 1 = share text (implicit sendData Want),
 // 2 = availability probe, answered by the shell without launching anything.
+//
+// This is the one sink that deliberately stays on a direct napi_call_function: the managed side
+// consumes the shell's boolean answer (Launcher.CanOpenAsync / TryOpenAsync return it), and a
+// napi_threadsafe_function only reports "queued", not "handled". Moving it to the TSFN would
+// silently report every request as dispatched. The call is synchronous with the .NET thread and
+// the shell-side deferral covers the JS/UI-thread hop.
 napi_ref g_ability_sink_ref = nullptr;
 
 // Called from managed code (P/Invoke): forwards an ability-start request to the ArkTS shell and
@@ -738,7 +841,7 @@ struct HostMenuItem {
 };
 
 static std::vector<HostMenuItem> g_menu_items;
-static napi_ref g_menu_changed_sink_ref = nullptr;
+HostSink g_menu_changed_sink("menu", false);
 static void (*g_menu_action_listener)(int index) = nullptr;
 
 // ArkTS calls host.menuCount() to size its @State array.
@@ -775,19 +878,12 @@ napi_value MenuGetItem(napi_env env, napi_callback_info info) {
     return object;
 }
 
-// Asks the shell to rebuild its menu state from the table just committed.
+// Asks the shell to rebuild its menu state from the table just committed. The item count is
+// captured here (the table may be rebuilt before the JS thread drains the queue).
 static void NotifyMenuChanged() {
-    if (g_env == nullptr || g_menu_changed_sink_ref == nullptr) {
-        return;
-    }
-    napi_value sink = nullptr;
-    if (napi_get_reference_value(g_env, g_menu_changed_sink_ref, &sink) != napi_ok || sink == nullptr) {
-        return;
-    }
-    napi_value argv[1] = {nullptr};
-    napi_create_int32(g_env, (int32_t)g_menu_items.size(), &argv[0]);
-    napi_value result = nullptr;
-    napi_call_function(g_env, sink, sink, 1, argv, &result);
+    SinkCall* call = new SinkCall();
+    call->AddInt((int32_t)g_menu_items.size());
+    HostSinkPost(g_menu_changed_sink, call);
 }
 
 // Managed P/Invoke: opens a new menu table (drops the previous one).
@@ -833,10 +929,7 @@ napi_value RegisterMenuChangedSink(napi_env env, napi_callback_info info) {
         napi_valuetype type = napi_undefined;
         napi_typeof(env, argv[0], &type);
         if (type == napi_function) {
-            if (g_menu_changed_sink_ref != nullptr) {
-                napi_delete_reference(env, g_menu_changed_sink_ref);
-            }
-            napi_create_reference(env, argv[0], 1, &g_menu_changed_sink_ref);
+            HostSinkRegister(env, g_menu_changed_sink, argv[0]);
             OH_LOG_INFO(LOG_APP, "[openharmony-host] menu sink registered");
         }
     }
@@ -862,40 +955,21 @@ napi_value NotifyMenuAction(napi_env env, napi_callback_info info) {
     return undefined;
 }
 
-napi_ref g_web_sink_ref = nullptr;
+HostSink g_picker_sink("picker", true);
+HostSink g_web_sink("web", true);
 
 void OnPickerRequest(int requestId, int kind) {
-    if (g_env == nullptr || g_picker_sink_ref == nullptr) {
-        return;
-    }
-    napi_value sink = nullptr;
-    if (napi_get_reference_value(g_env, g_picker_sink_ref, &sink) != napi_ok || sink == nullptr) {
-        return;
-    }
-    napi_value global = nullptr;
-    napi_get_global(g_env, &global);
-    napi_value argv[2] = {nullptr, nullptr};
-    napi_create_int32(g_env, requestId, &argv[0]);
-    napi_create_int32(g_env, kind, &argv[1]);
-    napi_value result = nullptr;
-    napi_call_function(g_env, global, sink, 2, argv, &result);
+    SinkCall* call = new SinkCall();
+    call->AddInt(requestId);
+    call->AddInt(kind);
+    HostSinkPost(g_picker_sink, call);
 }
 
 void OnWebCommand(const char* op, const char* arg) {
-    if (g_env == nullptr || g_web_sink_ref == nullptr) {
-        return;
-    }
-    napi_value sink = nullptr;
-    if (napi_get_reference_value(g_env, g_web_sink_ref, &sink) != napi_ok || sink == nullptr) {
-        return;
-    }
-    napi_value global = nullptr;
-    napi_get_global(g_env, &global);
-    napi_value argv[2] = {nullptr, nullptr};
-    napi_create_string_utf8(g_env, op, NAPI_AUTO_LENGTH, &argv[0]);
-    napi_create_string_utf8(g_env, arg, NAPI_AUTO_LENGTH, &argv[1]);
-    napi_value result = nullptr;
-    napi_call_function(g_env, global, sink, 2, argv, &result);
+    SinkCall* call = new SinkCall();
+    call->AddString(op);
+    call->AddString(arg);
+    HostSinkPost(g_web_sink, call);
 }
 
 // ArkTS calls host.registerWebSink(fn) to receive web commands.
@@ -907,10 +981,7 @@ napi_value RegisterWebSink(napi_env env, napi_callback_info info) {
         napi_valuetype type = napi_undefined;
         napi_typeof(env, argv[0], &type);
         if (type == napi_function) {
-            if (g_web_sink_ref != nullptr) {
-                napi_delete_reference(env, g_web_sink_ref);
-            }
-            napi_create_reference(env, argv[0], 1, &g_web_sink_ref);
+            HostSinkRegister(env, g_web_sink, argv[0]);
             ohos_host_web_set_listener(OnWebCommand);
         }
     }
@@ -1035,25 +1106,16 @@ napi_value NotifyWebEvent(napi_env env, napi_callback_info info) {
 // host.notifyWebEvalResult(requestId, result, error). Page messages posted from JavaScript
 // through the dotnetHost proxy arrive as host.notifyJsMessage(payload) and are forwarded to the
 // managed callback registered with ohos_host_web_js_register_message.
-napi_ref g_web_eval_sink_ref = nullptr;
+HostSink g_web_eval_sink("web eval", false);
 static void (*g_web_eval_result_listener)(int request_id, const char* result, int error) = nullptr;
 static void (*g_web_js_message_listener)(const char* payload) = nullptr;
 
 // Called from managed code (P/Invoke): forwards a script evaluation request to the ArkTS sink.
 extern "C" int ohos_host_web_eval(const char* script, int request_id) {
-    if (g_env == nullptr || g_web_eval_sink_ref == nullptr) {
-        return -1;
-    }
-    napi_value sink = nullptr;
-    if (napi_get_reference_value(g_env, g_web_eval_sink_ref, &sink) != napi_ok || sink == nullptr) {
-        return -1;
-    }
-    napi_value argv[2] = {nullptr, nullptr};
-    napi_create_string_utf8(g_env, script != nullptr ? script : "", NAPI_AUTO_LENGTH, &argv[0]);
-    napi_create_int32(g_env, request_id, &argv[1]);
-    napi_value result = nullptr;
-    napi_status status = napi_call_function(g_env, sink, sink, 2, argv, &result);
-    return status == napi_ok ? 0 : -1;
+    SinkCall* call = new SinkCall();
+    call->AddString(script);
+    call->AddInt(request_id);
+    return HostSinkPost(g_web_eval_sink, call) ? 0 : -1;
 }
 
 // The managed side registers the callback that completes a pending script evaluation.
@@ -1075,10 +1137,7 @@ napi_value RegisterWebEvalSink(napi_env env, napi_callback_info info) {
         napi_valuetype type = napi_undefined;
         napi_typeof(env, argv[0], &type);
         if (type == napi_function) {
-            if (g_web_eval_sink_ref != nullptr) {
-                napi_delete_reference(env, g_web_eval_sink_ref);
-            }
-            napi_create_reference(env, argv[0], 1, &g_web_eval_sink_ref);
+            HostSinkRegister(env, g_web_eval_sink, argv[0]);
             OH_LOG_INFO(LOG_APP, "[openharmony-host] web eval sink registered");
         }
     }
@@ -1127,7 +1186,7 @@ napi_value NotifyJsMessage(napi_env env, napi_callback_info info) {
 // HybridWebView handler answers through ohos_host_hwv_invoke_result(requestId, payloadJson),
 // which hands the result to the shell's registerHybridInvokeResultSink callback so the
 // response can be completed.
-napi_ref g_hybrid_invoke_result_sink_ref = nullptr;
+HostSink g_hybrid_invoke_result_sink("hybrid invoke result", false);
 static void (*g_hybrid_invoke_listener)(int request_id, const char* method, const char* args_json) = nullptr;
 
 // The managed side registers the callback that services a JS invocation (P/Invoke).
@@ -1167,10 +1226,7 @@ napi_value RegisterHybridInvokeResultSink(napi_env env, napi_callback_info info)
         napi_valuetype type = napi_undefined;
         napi_typeof(env, argv[0], &type);
         if (type == napi_function) {
-            if (g_hybrid_invoke_result_sink_ref != nullptr) {
-                napi_delete_reference(env, g_hybrid_invoke_result_sink_ref);
-            }
-            napi_create_reference(env, argv[0], 1, &g_hybrid_invoke_result_sink_ref);
+            HostSinkRegister(env, g_hybrid_invoke_result_sink, argv[0]);
         }
     }
     napi_value undefined = nullptr;
@@ -1181,19 +1237,10 @@ napi_value RegisterHybridInvokeResultSink(napi_env env, napi_callback_info info)
 // Called from managed code (P/Invoke) with the invocation result. Returns 0 when the result
 // reached the ArkTS sink, -1 when there is no result sink registered.
 extern "C" int ohos_host_hwv_invoke_result(int request_id, const char* payload_json) {
-    if (g_env == nullptr || g_hybrid_invoke_result_sink_ref == nullptr) {
-        return -1;
-    }
-    napi_value sink = nullptr;
-    if (napi_get_reference_value(g_env, g_hybrid_invoke_result_sink_ref, &sink) != napi_ok || sink == nullptr) {
-        return -1;
-    }
-    napi_value argv[2] = {nullptr, nullptr};
-    napi_create_int32(g_env, request_id, &argv[0]);
-    napi_create_string_utf8(g_env, payload_json != nullptr ? payload_json : "", NAPI_AUTO_LENGTH, &argv[1]);
-    napi_value result = nullptr;
-    napi_status status = napi_call_function(g_env, sink, sink, 2, argv, &result);
-    return status == napi_ok ? 0 : -1;
+    SinkCall* call = new SinkCall();
+    call->AddInt(request_id);
+    call->AddString(payload_json);
+    return HostSinkPost(g_hybrid_invoke_result_sink, call) ? 0 : -1;
 }
 
 // ArkTS calls host.registerPickerSink(fn) to receive picker requests.
@@ -1205,10 +1252,7 @@ napi_value RegisterPickerSink(napi_env env, napi_callback_info info) {
         napi_valuetype type = napi_undefined;
         napi_typeof(env, argv[0], &type);
         if (type == napi_function) {
-            if (g_picker_sink_ref != nullptr) {
-                napi_delete_reference(env, g_picker_sink_ref);
-            }
-            napi_create_reference(env, argv[0], 1, &g_picker_sink_ref);
+            HostSinkRegister(env, g_picker_sink, argv[0]);
             ohos_host_picker_set_listener(OnPickerRequest);
         }
     }
@@ -1238,20 +1282,12 @@ napi_value NotifyPickerResult(napi_env env, napi_callback_info info) {
 
 // ArkTS calls host.registerVibrationSink(fn) to receive vibration requests (the preferred
 // path is the NDK export ohos_host_vibrate; this sink stays for shells that provide one).
-napi_ref g_vibration_sink_ref = nullptr;
+HostSink g_vibration_sink("vibration", true);
 
 void OnVibrationRequest(int durationMs) {
-    if (g_env != nullptr && g_vibration_sink_ref != nullptr) {
-        napi_value sink = nullptr;
-        if (napi_get_reference_value(g_env, g_vibration_sink_ref, &sink) == napi_ok && sink != nullptr) {
-            napi_value global = nullptr;
-            napi_get_global(g_env, &global);
-            napi_value arg = nullptr;
-            napi_create_int32(g_env, durationMs, &arg);
-            napi_value result = nullptr;
-            napi_call_function(g_env, global, sink, 1, &arg, &result);
-        }
-    }
+    SinkCall* call = new SinkCall();
+    call->AddInt(durationMs);
+    HostSinkPost(g_vibration_sink, call);
 }
 
 napi_value RegisterVibrationSink(napi_env env, napi_callback_info info) {
@@ -1262,10 +1298,7 @@ napi_value RegisterVibrationSink(napi_env env, napi_callback_info info) {
         napi_valuetype type = napi_undefined;
         napi_typeof(env, argv[0], &type);
         if (type == napi_function) {
-            if (g_vibration_sink_ref != nullptr) {
-                napi_delete_reference(env, g_vibration_sink_ref);
-            }
-            napi_create_reference(env, argv[0], 1, &g_vibration_sink_ref);
+            HostSinkRegister(env, g_vibration_sink, argv[0]);
             ohos_host_set_vibration_listener(OnVibrationRequest);
         }
     }
@@ -1274,6 +1307,7 @@ napi_value RegisterVibrationSink(napi_env env, napi_callback_info info) {
     return undefined;
 }
 
+// ArkTS calls host.registerKeystoreSink(fn) to receive keystore requests.
 napi_value RegisterKeystoreSink(napi_env env, napi_callback_info info) {
     size_t argc = 1;
     napi_value argv[1] = {nullptr};
@@ -1282,10 +1316,7 @@ napi_value RegisterKeystoreSink(napi_env env, napi_callback_info info) {
         napi_valuetype type = napi_undefined;
         napi_typeof(env, argv[0], &type);
         if (type == napi_function) {
-            if (g_keystore_sink_ref != nullptr) {
-                napi_delete_reference(env, g_keystore_sink_ref);
-            }
-            napi_create_reference(env, argv[0], 1, &g_keystore_sink_ref);
+            HostSinkRegister(env, g_keystore_sink, argv[0]);
             ohos_host_keystore_set_listener(OnKeystoreRequest);
         }
     }
@@ -1319,19 +1350,9 @@ napi_value NotifyKeystoreResult(napi_env env, napi_callback_info info) {
 
 // Called by the host core (managed side) to show/hide the ArkTS soft keyboard.
 void OnTextInputRequest(int show) {
-    if (g_env == nullptr || g_text_input_sink_ref == nullptr) {
-        return;
-    }
-    napi_value sink = nullptr;
-    if (napi_get_reference_value(g_env, g_text_input_sink_ref, &sink) != napi_ok || sink == nullptr) {
-        return;
-    }
-    napi_value global = nullptr;
-    napi_get_global(g_env, &global);
-    napi_value arg = nullptr;
-    napi_create_int32(g_env, show, &arg);
-    napi_value result = nullptr;
-    napi_call_function(g_env, global, sink, 1, &arg, &result);
+    SinkCall* call = new SinkCall();
+    call->AddInt(show);
+    HostSinkPost(g_text_input_sink, call);
 }
 
 // ArkTS calls host.registerTextInputSink(fn) so the shell can show/hide its input.
@@ -1343,10 +1364,7 @@ napi_value RegisterTextInputSink(napi_env env, napi_callback_info info) {
         napi_valuetype type = napi_undefined;
         napi_typeof(env, argv[0], &type);
         if (type == napi_function) {
-            if (g_text_input_sink_ref != nullptr) {
-                napi_delete_reference(env, g_text_input_sink_ref);
-            }
-            napi_create_reference(env, argv[0], 1, &g_text_input_sink_ref);
+            HostSinkRegister(env, g_text_input_sink, argv[0]);
             ohos_host_set_text_input_listener(OnTextInputRequest);
             OH_LOG_INFO(LOG_APP, "[openharmony-host] text input sink registered");
         }
@@ -1671,6 +1689,47 @@ static int32_t A11yCoord(float value) {
     return (int32_t)value;
 }
 
+// The managed side publishes the ArkUI action bits (OpenHarmonyAccessibilityAction); the
+// framework wants one ArkUI_AccessibleAction entry per supported action, so the bitmask is
+// expanded into an array here. actionType carries the same bit value and description is the
+// action name used by the framework's own vocabulary (@ohos.accessibility AccessibilityAction:
+// 'click', 'longClick', 'scrollForward', 'setText', ...), which is what a screen reader shows.
+// ArkUI_AccessibleAction { ArkUI_Accessibility_ActionType actionType; const char* description; }
+static void A11ySetOperationActions(ArkUI_AccessibilityElementInfo* info, int actions) {
+    struct ActionEntry {
+        int bit;
+        ArkUI_Accessibility_ActionType type;
+        const char* description;
+    };
+    static const ActionEntry kActions[] = {
+        {0x00000010, ARKUI_ACCESSIBILITY_NATIVE_ACTION_TYPE_CLICK, "click"},
+        {0x00000020, ARKUI_ACCESSIBILITY_NATIVE_ACTION_TYPE_LONG_CLICK, "longClick"},
+        {0x00000040, ARKUI_ACCESSIBILITY_NATIVE_ACTION_TYPE_GAIN_ACCESSIBILITY_FOCUS, "accessibilityFocus"},
+        {0x00000080, ARKUI_ACCESSIBILITY_NATIVE_ACTION_TYPE_CLEAR_ACCESSIBILITY_FOCUS, "clearAccessibilityFocus"},
+        {0x00000100, ARKUI_ACCESSIBILITY_NATIVE_ACTION_TYPE_SCROLL_FORWARD, "scrollForward"},
+        {0x00000200, ARKUI_ACCESSIBILITY_NATIVE_ACTION_TYPE_SCROLL_BACKWARD, "scrollBackward"},
+        {0x00000400, ARKUI_ACCESSIBILITY_NATIVE_ACTION_TYPE_COPY, "copy"},
+        {0x00000800, ARKUI_ACCESSIBILITY_NATIVE_ACTION_TYPE_PASTE, "paste"},
+        {0x00001000, ARKUI_ACCESSIBILITY_NATIVE_ACTION_TYPE_CUT, "cut"},
+        {0x00002000, ARKUI_ACCESSIBILITY_NATIVE_ACTION_TYPE_SELECT_TEXT, "select"},
+        {0x00004000, ARKUI_ACCESSIBILITY_NATIVE_ACTION_TYPE_SET_TEXT, "setText"},
+        {0x00100000, ARKUI_ACCESSIBILITY_NATIVE_ACTION_TYPE_SET_CURSOR_POSITION, "setCursorPosition"},
+    };
+    ArkUI_AccessibleAction list[sizeof(kActions) / sizeof(kActions[0])];
+    int32_t count = 0;
+    for (const ActionEntry& entry : kActions) {
+        if ((actions & entry.bit) == 0) {
+            continue;
+        }
+        list[count].actionType = entry.type;
+        list[count].description = entry.description;
+        count++;
+    }
+    if (count > 0) {
+        OH_ArkUI_AccessibilityElementInfoSetOperationActions(info, count, list);
+    }
+}
+
 static void A11yAddNode(ArkUI_AccessibilityElementInfoList* list, int index) {
     int id = 0, parent = 0, flags = 0, actions = 0;
     const char* role = nullptr; const char* text = nullptr; const char* description = nullptr;
@@ -1701,6 +1760,7 @@ static void A11yAddNode(ArkUI_AccessibilityElementInfoList* list, int index) {
     OH_ArkUI_AccessibilityElementInfoSetClickable(info, (actions & 0x10) != 0);
     OH_ArkUI_AccessibilityElementInfoSetEnabled(info, (flags & 1) != 0);
     OH_ArkUI_AccessibilityElementInfoSetFocusable(info, (flags & 2) != 0);
+    A11ySetOperationActions(info, actions);
 }
 
 static int32_t A11yFindById(int64_t elementId, ArkUI_AccessibilitySearchMode mode,
@@ -1798,6 +1858,7 @@ static int32_t A11yFillSingle(int index, ArkUI_AccessibilityElementInfo* info) {
     OH_ArkUI_AccessibilityElementInfoSetClickable(info, (actions & 0x10) != 0);
     OH_ArkUI_AccessibilityElementInfoSetEnabled(info, (flags & 1) != 0);
     OH_ArkUI_AccessibilityElementInfoSetFocusable(info, (flags & 2) != 0);
+    A11ySetOperationActions(info, actions);
     return ARKUI_ACCESSIBILITY_NATIVE_RESULT_SUCCESSFUL;
 }
 
