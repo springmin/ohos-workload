@@ -2075,6 +2075,109 @@ if (!unchangedQuiet || !valueChangeSeen)
     throw new InvalidOperationException("the accessibility range frame diff assertion failed");
 }
 
+// ---- Performance budget (bounded, deterministic, seedless) ------------------------------------
+// The frame path (OpenHarmonyWindowRenderer.Render: measure/arrange, the iterative view walk, the
+// accessibility shadow tree rebuild + frame diff and the surface hooks) is timed over a fixed
+// ~400-node tree so an accidental O(n^2) walk, a blocking call or a per-frame allocation storm
+// fails the suite. The tree shape, the frame count and the warm-up split are fixed constants (no
+// Random -> identical work on every run/machine); only the wall-clock numbers vary. A warm-up pass
+// primes the JIT/static caches and one blocking collection runs before the timed loop so a
+// mid-loop Gen0 pause cannot dominate the maximum.
+//
+// Budget rationale - deliberately generous: CI runners are shared and noisy, the suite runs in
+// Debug, and off-device Render still calls the absent native host once per frame (the background
+// FillColor -> ClearEffects lookup, ~4 ms per failed native call on the OpenHarmony dev host,
+// sub-ms on a normal CI runner). Measured on this host: ~4 ms/frame. The perf renderer is built
+// through the slice's documented CanvasFactory test hook with a canvas that no-ops the one
+// rasterizer call Render makes for a detached tree (FillRectangle -> Polyline); without that, a
+// second failed lookup per frame would add ~1 s to the section and swamp the managed work. The
+// factory is restored immediately so no other renderer picks up the substitution.
+//   * average <= 20 ms - very loose in managed terms (the actual renderer work is sub-ms) and
+//     wide enough for the off-device floor plus debug JIT plus a loaded dev host; a uniform
+//     regression (extra walk, blocking wait, quadratic layout) has to add >14 ms/frame to trip
+//     it, and no plausible runner noise makes a healthy frame path average 20 ms.
+//   * max <= 250 ms - a very loose absolute ceiling that only catches a genuine hang/stall;
+//     intentionally far above any plausible single-frame cost.
+//   * max/average <= 100x - the relative outlier check: single frames are routinely preempted on
+//     a shared runner (10-30x a sub-millisecond average), so the documented multiple is generous
+//     and only catastrophic outliers fail it even where the absolute ceilings are too loose.
+// The tree is intentionally detached (no handler connection): with handlers every canvas
+// primitive of the ~400 nodes pays the absent-host lookup, which measured ~1.2 s per frame here
+// and would swamp the managed frame path and the suite's time budget. A detached tree keeps
+// Render's managed work (measure/arrange, traversal, accessibility) plus the renderer-level
+// canvas calls - the same shape the deep-tree fuzz section uses. The allocation delta is
+// reported for context but not asserted: it is runtime/version dependent and the frame-time
+// budget is the regression signal.
+const int perfWarmupFrames = 8;
+const int perfFrames = 200;
+const double perfAverageCeilingMs = 20.0;
+const double perfMaxCeilingMs = 250.0;
+const double perfMaxAverageRatio = 100.0;
+var perfDefaultCanvasFactory = OpenHarmonyWindowRenderer.CanvasFactory;
+OpenHarmonyWindowRenderer.CanvasFactory = () => new PerfCanvas();
+var perfRenderer = new OpenHarmonyWindowRenderer();
+OpenHarmonyWindowRenderer.CanvasFactory = perfDefaultCanvasFactory;
+var perfWatch = System.Diagnostics.Stopwatch.StartNew();
+var perfRoot = new VerticalStackLayout { Spacing = 1 };
+int perfNodes = 1;   // the root layout
+for (int row = 0; row < 100; row++)
+{
+    var perfRow = new HorizontalStackLayout { Spacing = 1 };
+    for (int cell = 0; cell < 3; cell++)
+    {
+        perfRow.Add(new Label { Text = $"perf node {row}.{cell}", FontSize = 10 });
+        perfNodes++;
+    }
+    perfRoot.Add(perfRow);
+    perfNodes++;
+}
+var perfPage = new ContentPage { Content = perfRoot };
+perfPage.Measure(1080, 1920);
+perfPage.Arrange(new Rect(0, 0, 1080, 1920));
+
+// Warm up the renderer/app host: the first frames pay for JIT/static initialization and the first
+// layout pass; they are excluded so the measurement is steady state, not startup.
+bool perfWarm = true;
+for (int i = 0; i < perfWarmupFrames; i++)
+{
+    perfWarm &= perfRenderer.Render(perfPage, 1080, 1920);
+}
+GC.Collect();
+GC.WaitForPendingFinalizers();
+GC.Collect();
+
+var perfTimes = new double[perfFrames];
+long perfAllocBefore = GC.GetAllocatedBytesForCurrentThread();
+for (int i = 0; i < perfFrames; i++)
+{
+    long perfStart = System.Diagnostics.Stopwatch.GetTimestamp();
+    if (!perfRenderer.Render(perfPage, 1080, 1920))
+    {
+        perfWarm = false;
+    }
+    perfTimes[i] = System.Diagnostics.Stopwatch.GetElapsedTime(perfStart).TotalMilliseconds;
+}
+long perfAllocDelta = GC.GetAllocatedBytesForCurrentThread() - perfAllocBefore;
+
+var perfSorted = (double[])perfTimes.Clone();
+Array.Sort(perfSorted);
+double perfAverage = perfTimes.Sum() / perfFrames;
+double perfP50 = perfSorted[perfFrames / 2];
+double perfP95 = perfSorted[Math.Min(perfFrames - 1, (int)Math.Ceiling(perfFrames * 0.95) - 1)];
+double perfMax = perfSorted[^1];
+double perfMaxAverage = perfMax / Math.Max(perfAverage, 1e-9);
+bool perfWithinBudget = perfAverage <= perfAverageCeilingMs
+    && perfMax <= perfMaxCeilingMs
+    && perfMaxAverage <= perfMaxAverageRatio;
+Console.WriteLine($"[verify] perf warmup={perfWarmupFrames} frames={perfFrames} nodes={perfNodes} avg={perfAverage:0.###}ms p50={perfP50:0.###}ms p95={perfP95:0.###}ms max={perfMax:0.###}ms max/avg={perfMaxAverage:0.##} allocDelta={perfAllocDelta}B alloc/frame={perfAllocDelta / (double)perfFrames:0.#}B elapsed={(int)perfWatch.ElapsedMilliseconds}ms budget=avg<={perfAverageCeilingMs:0.###}ms,max<={perfMaxCeilingMs:0.###}ms,max/avg<={perfMaxAverageRatio:0.###} warmupOk={perfWarm} within={perfWithinBudget}");
+if (!perfWarm || !perfWithinBudget)
+{
+    throw new InvalidOperationException(
+        $"the frame-path performance budget failed: avg={perfAverage:0.###}ms (limit {perfAverageCeilingMs}ms) " +
+        $"max={perfMax:0.###}ms (limit {perfMaxCeilingMs}ms) max/avg={perfMaxAverage:0.##} (limit {perfMaxAverageRatio}) " +
+        $"warmupOk={perfWarm} frames={perfFrames} nodes={perfNodes}");
+}
+
 // ---- Deterministic fuzz (bounded, seeded) -----------------------------------------------------
 // A seeded storm of touch sequences with extreme but finite (mostly out-of-bounds) coordinates,
 // two very long strings through the simulated bridge payloads and a ~300-node deep view tree that
@@ -2219,6 +2322,18 @@ sealed class VerifyHybridInvokeTarget
 {
     public string Echo(string value) => "echo:" + value;
     public int Add(int a, int b) => a + b;
+}
+
+/// <summary>
+/// Perf probe canvas: the off-device rasterizer is absent, so the frame-path measurement must not
+/// pay a failed native lookup for the renderer-level background fill (FillRectangle -> Polyline).
+/// Only that one call is overridden; the rest of the managed canvas path is unchanged.
+/// </summary>
+sealed class PerfCanvas : Microsoft.OpenHarmony.Maui.Graphics.OpenHarmonyCanvas
+{
+    public override void FillRectangle(float x, float y, float width, float height)
+    {
+    }
 }
 
 sealed class ProbeDrawable : Microsoft.Maui.Graphics.IDrawable

@@ -1,6 +1,6 @@
 name: interaction-regression
 
-# CI gate for the 195-check headless interaction suite (test/maui-platform-verify). The suite
+# CI gate for the headless interaction + performance suite (test/maui-platform-verify). The suite
 # compiles the MAUI OpenHarmony platform slice sources from the `springmin/maui-ohos` fork and
 # references two assemblies built from this repository through HintPaths, so the job materialises
 # both roots on the runner instead of depending on MAUI_SLICE_DIR / HOSTING_DLL repository
@@ -12,7 +12,11 @@ name: interaction-regression
 #
 # verify.csproj turns those environment variables into MSBuild default properties (an explicit
 # -p: override still wins), so no other configuration is required. The job fails unless the suite
-# exits 0, reports at least 195 "[verify]" lines and logs no "Unhandled" line.
+# exits 0, reports at least 199 "[verify]" lines (195 interaction checks + 4 fuzz lines + the
+# perf line), logs no "Unhandled" line, and the perf line carries the "within=True" budget marker
+# (the frame-path gate: 200 timed OpenHarmonyWindowRenderer.Render frames over a fixed 401-node
+# tree, average <= 20 ms, max <= 250 ms, max/average <= 100x; see the README "Performance budget"
+# section for the rationale).
 on:
   workflow_dispatch:
   push:
@@ -39,7 +43,7 @@ jobs:
         run: |
           dotnet build src/Microsoft.OpenHarmony.Hosting/Microsoft.OpenHarmony.Hosting.csproj -c Release -v:q
           dotnet build src/Microsoft.OpenHarmony.Maui.Graphics/Microsoft.OpenHarmony.Maui.Graphics.csproj -c Release -v:q
-      - name: Run the 195-check interaction suite
+      - name: Run the interaction + performance suite
         working-directory: test/maui-platform-verify
         env:
           MAUI_SLICE_DIR: ${{ github.workspace }}/maui-ohos/src/Core/src/Platform/OpenHarmony
@@ -52,12 +56,16 @@ jobs:
           cat out.txt
           checks=$(grep -c '\[verify\]' out.txt || true)
           echo "interaction checks reported: $checks"
-          if [ "$checks" -lt 195 ]; then
-            echo "::error::expected at least 195 [verify] lines, got $checks"
+          if [ "$checks" -lt 199 ]; then
+            echo "::error::expected at least 199 [verify] lines, got $checks"
             exit 1
           fi
           if grep -q Unhandled out.txt; then
             echo "::error::the interaction suite output contains an unhandled exception"
             exit 1
           fi
-          echo "OK: $checks [verify] lines, no unhandled exception"
+          if ! grep -q '\[verify\] perf .*within=True' out.txt; then
+            echo "::error::the performance budget line is missing or reports within=False"
+            exit 1
+          fi
+          echo "OK: $checks [verify] lines, perf within budget, no unhandled exception"

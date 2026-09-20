@@ -1,6 +1,7 @@
 # Interaction regression suite (headless)
 
-The 195-check MAUI-on-OpenHarmony interaction harness. It builds the platform slice sources from the
+The MAUI-on-OpenHarmony interaction harness (195 interaction checks, a 4-line fuzz tail and a
+frame-path performance budget). It builds the platform slice sources from the
 `maui-ohos` working tree and drives the app host without a device: touch/drag/pinch/pointer input,
 overlays, gestures (tap/pan/swipe/pinch/pointer/drag-and-drop), sensors/haptics/notification/picker
 wiring, the app-theme colour-mode handler, the launcher/browser/share ability bridge, the
@@ -8,7 +9,10 @@ accessibility shadow tree snapshot, the menu table/activation bridge, the WebVie
 bridge (script evaluation + `dotnetHost.postMessage`), the contacts/calendar and
 Bluetooth/printing platform extras (off-device degradation plus the delimited payload parsers
 and the text-to-PDF renderer) and the Essentials Battery/DeviceDisplay push bridge (payload
-parsers plus the ModuleInitializer-installed defaults).
+parsers plus the ModuleInitializer-installed defaults). Before the fuzz tail it runs a frame-path
+performance budget: warm-up plus 200 timed `OpenHarmonyWindowRenderer.Render` frames over a fixed
+401-node tree, reporting average/p50/p95/max frame time and the managed allocation delta and
+failing the suite when the (deliberately loose) budget is exceeded.
 
 ## Running it
 
@@ -18,7 +22,7 @@ parsers plus the ModuleInitializer-installed defaults).
 # (or the MauiSliceDir / HostingDll / OpenHarmonyGraphicsDll MSBuild properties) before building
 # elsewhere; an explicit -p: value wins over the environment and the absolute fallbacks.
 dotnet build -v:q
-dotnet bin/Debug/net11.0/verify.dll | grep -c '\[verify\]'   # expect 199 (195 checks + 4 fuzz lines)
+dotnet bin/Debug/net11.0/verify.dll | grep -c '\[verify\]'   # expect 200 (195 checks + 4 fuzz + 1 perf)
 ```
 
 The `interaction-regression` workflow (`.github/workflows/interaction-regression.yml`) runs the
@@ -26,7 +30,8 @@ suite on a GitHub runner as a real gate: it checks out this repository plus `spr
 (`feature/openharmony`, the branch carrying `src/Core/src/Platform/OpenHarmony`), builds
 `src/Microsoft.OpenHarmony.Hosting` and `src/Microsoft.OpenHarmony.Maui.Graphics` in Release,
 points `MAUI_SLICE_DIR` / `HOSTING_DLL` / `OPENHARMONY_GRAPHICS_DLL` at those roots, and fails the
-job unless the run exits 0, reports at least 195 `[verify]` lines and logs no `Unhandled` line.
+job unless the run exits 0, reports at least 199 `[verify]` lines, the perf line reports
+`within=True`, and no `Unhandled` line is logged.
 
 ## Fuzz tail
 
@@ -48,13 +53,47 @@ The suite ends with a bounded, deterministic fuzz section (fixed seed `20260920`
 It asserts no unhandled exception and no hang (the section must finish in seconds; the run above
 took ~0.2 s) and performs no large allocations.
 
+## Performance budget
+
+Before the fuzz tail the suite measures the frame path: 8 warm-up frames (JIT/static caches, first
+layout pass) and then 200 timed `OpenHarmonyWindowRenderer.Render` frames over a fixed, seedless
+401-node tree (100 rows x 3 labels, detached from the app so the measurement is independent of the
+state the interaction checks leave behind). The perf renderer is built through the slice's
+documented `CanvasFactory` test hook with a canvas that no-ops the renderer-level background fill
+(`FillRectangle`): off-device the native host is absent and every non-overridden canvas call is a
+failed lookup that costs ~4 ms on the OpenHarmony dev host, so without that hook the section would
+spend ~1 s in a rasterizer artifact instead of measuring managed renderer work. The managed frame
+path (measure/arrange, the iterative view walk, the accessibility shadow-tree rebuild and frame
+diff, the surface hooks) runs unchanged.
+
+The `[verify] perf` line reports the average, p50, p95 and max frame time, the max/average ratio,
+the managed allocation delta (`GC.GetAllocatedBytesForCurrentThread`, total and per frame) and the
+section's own wall time. The budget is intentionally loose because CI runners are shared, the
+suite runs in Debug and the off-device frame keeps one failed native lookup on the dev host:
+
+- `avg <= 20 ms` - the managed work is sub-millisecond; a uniform regression (extra walk, blocking
+  call, quadratic layout) has to add more than ~14 ms/frame to trip this.
+- `max <= 250 ms` - a very loose absolute hang guard.
+- `max/avg <= 100x` - the relative outlier check, so a pathological single frame fails even on a
+  machine where the absolute ceilings are too loose; single preempted frames (10-30x a
+  sub-millisecond average) are tolerated.
+
+A violation throws (unhandled exception, non-zero exit) after the numbers are printed, so CI logs
+keep the evidence. Measured on the OpenHarmony dev host (200 frames): avg ~3.5-3.8 ms, p50
+~3.4-3.7 ms, p95 ~4.5-4.7 ms, max 6.4-7.2 ms, max/avg ~1.7-2.1, ~185 KiB allocated per frame (the
+accessibility frame diff rebuilds the 401-node shadow tree: reported for context, not asserted),
+section wall time ~750-810 ms; the whole suite stayed within ~1 s of the unmodified 199-line run.
+On a normal CI runner the one remaining native lookup inside `Render` is sub-millisecond, so the
+reported average should be well under 1 ms.
+
 ## Notes
 
 - Output goes to `bin/Debug/net11.0/verify.dll` (run the dll, not the apphost: the device policy
   blocks codesigned ELF apphosts on some machines).
 - The suite fails loudly (unhandled exception) when a slice change breaks startup or when an
   assertion for the gesture flows (including the drag-and-drop checks) does not hold; keep it at
-  195 checks plus the 4 fuzz lines when touching the platform slice.
+  195 checks plus the 4 fuzz lines plus the 1 perf line (200 `[verify]` lines) when touching the
+  platform slice.
 - Contacts/calendar coverage: `OpenHarmonyContacts.FindAsync` and
   `OpenHarmonyCalendar.ListUpcomingAsync`/`AddEventAsync` return empty/false without throwing
   off-device and report `IsSupported == false` before and after the call (the permission probe
@@ -142,7 +181,8 @@ took ~0.2 s) and performs no large allocations.
   `(x, y, z, w)` reaches `OrientationSensorData.Orientation` unchanged, with no reconstructed
   scalar part.
 - CI wiring: `.github/workflows/interaction-regression.yml` builds the slice checkout and the
-  hosting assemblies on the runner and gates on the 195-check output (see "Running it" above).
+  hosting assemblies on the runner and gates on the `[verify]` line count (>=199) plus the perf
+  `within=True` marker (see "Running it" above).
 - Accessibility publish-contract coverage (R2b): the suite reflects
   `OpenHarmonyAccessibility.AccessibilityNode` (16 parameters now that hint, range and checked
   are published) and parses `ohos_host_accessibility_node`/`_get` out of
