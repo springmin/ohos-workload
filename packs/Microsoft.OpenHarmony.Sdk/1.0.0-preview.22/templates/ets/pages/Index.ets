@@ -140,6 +140,10 @@ struct Index {
   private bluetoothDeviceRegistered: boolean = false;
   private webController: web_webview.WebviewController = new web_webview.WebviewController();
   private controller: TextInputController = new TextInputController();
+  // Flashlight (Camera Kit torch): the camera manager is created on first use and cached. The
+  // host asks synchronously and consumes the sink's boolean answer, so the torch call itself
+  // must stay synchronous (setTorchMode is).
+  private flashlightManager: camera.CameraManager | undefined = undefined;
 
   // Forwards the current device colour mode (1 = dark, 0 = light) to the managed app.
   private reportTheme(): void {
@@ -492,6 +496,18 @@ struct Index {
     setTimeout(() => {
       this.getUIContext().runScopedTask(task);
     }, 0);
+  }
+
+  // Flashlight: creates the camera manager (Camera Kit) once and caches it. getCameraManager
+  // throws when the camera service is unavailable; the sink catches and answers false, and
+  // then drops the cached manager so the next request retries from a clean state.
+  private ensureFlashlightManager(): camera.CameraManager {
+    let manager: camera.CameraManager | undefined = this.flashlightManager;
+    if (manager === undefined) {
+      manager = camera.getCameraManager(getContext(this));
+      this.flashlightManager = manager;
+    }
+    return manager;
   }
 
   aboutToAppear(): void {
@@ -878,6 +894,30 @@ struct Index {
         return true;
       } catch (startError) {
         console.error(`[maui] ability start threw: ${(startError as Error).message}`);
+        return false;
+      }
+    });
+
+    // Flashlight (Camera Kit torch): the managed side asks through ohos_host_flashlight_set(on)
+    // with on 0 = torch off, 1 = torch on, 2 = support probe (isTorchSupported only, no torch
+    // call). The callback returns whether the kit accepted the request; setTorchMode is a
+    // synchronous call that throws (e.g. 7400102 when the camera service does not allow it), so
+    // the boolean is the kit's answer, not a visual confirmation of the LED. A missing kit or
+    // camera answers false and the managed side degrades without throwing.
+    host.registerFlashlightSink((on: number): boolean => {
+      try {
+        const manager = this.ensureFlashlightManager();
+        if (on === 2) {
+          return manager.isTorchSupported();
+        }
+        if (!manager.isTorchSupported()) {
+          return false;
+        }
+        manager.setTorchMode(on === 1 ? camera.TorchMode.ON : camera.TorchMode.OFF);
+        return true;
+      } catch (flashlightError) {
+        console.error(`[maui] flashlight request failed: ${(flashlightError as Error).message}`);
+        this.flashlightManager = undefined;
         return false;
       }
     });

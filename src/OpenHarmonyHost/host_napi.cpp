@@ -830,6 +830,65 @@ napi_value RegisterAbilitySink(napi_env env, napi_callback_info info) {
     return undefined;
 }
 
+// Flashlight (Camera Kit torch): the managed side calls ohos_host_flashlight_set(on) and
+// receives the ArkTS shell's boolean answer. on 0 = torch off, 1 = torch on, 2 = support
+// probe (isTorchSupported only, no torch call). The shell's registerFlashlightSink handler
+// creates/caches the camera manager (camera.getCameraManager), checks isTorchSupported and
+// calls setTorchMode(camera.TorchMode.ON/OFF); setTorchMode is synchronous and throws on
+// failure, so the callback answers whether the kit accepted the request.
+//
+// Like the ability sink above, this one deliberately stays on a direct napi_call_function:
+// the managed side consumes the boolean answer (IFlashlight.IsSupportedAsync and the
+// turn-on/off result) and a napi_threadsafe_function only reports "queued", not "handled".
+// The shell callback answers synchronously and catches its own errors, so there is nothing
+// to await; a missing sink or a non-boolean answer is reported as "not handled".
+napi_ref g_flashlight_sink_ref = nullptr;
+
+// Called from managed code (P/Invoke): asks the ArkTS shell to set or probe the torch.
+// Returns 0 when the sink answered true, -1 when no sink is registered, the call failed or
+// the answer was false.
+extern "C" int ohos_host_flashlight_set(int on) {
+    if (g_env == nullptr || g_flashlight_sink_ref == nullptr) {
+        return -1;
+    }
+    napi_value sink = nullptr;
+    if (napi_get_reference_value(g_env, g_flashlight_sink_ref, &sink) != napi_ok || sink == nullptr) {
+        return -1;
+    }
+    napi_value argv[1];
+    napi_create_int32(g_env, on, &argv[0]);
+    napi_value result = nullptr;
+    if (napi_call_function(g_env, sink, sink, 1, argv, &result) != napi_ok) {
+        return -1;
+    }
+    bool handled = false;
+    if (result == nullptr || napi_get_value_bool(g_env, result, &handled) != napi_ok || !handled) {
+        return -1;
+    }
+    return 0;
+}
+
+// ArkTS calls host.registerFlashlightSink(fn) to receive torch set/probe requests.
+napi_value RegisterFlashlightSink(napi_env env, napi_callback_info info) {
+    size_t argc = 1;
+    napi_value argv[1] = {nullptr};
+    napi_get_cb_info(env, info, &argc, argv, nullptr, nullptr);
+    if (argc >= 1) {
+        napi_valuetype type = napi_undefined;
+        napi_typeof(env, argv[0], &type);
+        if (type == napi_function) {
+            if (g_flashlight_sink_ref != nullptr) {
+                napi_delete_reference(env, g_flashlight_sink_ref);
+            }
+            napi_create_reference(env, argv[0], 1, &g_flashlight_sink_ref);
+            OH_LOG_INFO(LOG_APP, "[openharmony-host] flashlight sink registered");
+        }
+    }
+    napi_value undefined = nullptr;
+    napi_get_undefined(env, &undefined);
+    return undefined;
+}
+
 // Menus: the managed side publishes the current page's menu items as a flat table
 // (ohos_host_menu_begin/item/commit). The ArkTS shell pulls it back through menuCount/menuItem
 // after registerMenuChangedSink fires (count, also sent for an empty table so the menu hides),
@@ -1587,6 +1646,7 @@ napi_value Init(napi_env env, napi_value exports) {
         {"registerPrintSink", nullptr, RegisterPrintSink, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"notifyPrintResult", nullptr, NotifyPrintResult, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"registerAbilitySink", nullptr, RegisterAbilitySink, nullptr, nullptr, nullptr, napi_default, nullptr},
+        {"registerFlashlightSink", nullptr, RegisterFlashlightSink, nullptr, nullptr, nullptr, napi_default, nullptr},
 
         {"registerMenuChangedSink", nullptr, RegisterMenuChangedSink, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"menuCount", nullptr, MenuCount, nullptr, nullptr, nullptr, napi_default, nullptr},
