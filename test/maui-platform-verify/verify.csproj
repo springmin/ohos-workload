@@ -1,9 +1,13 @@
 <Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
-    <!-- Portable roots: override with env vars or MSBuild properties (CI). -->
+    <!-- Portable roots: override with env vars or MSBuild properties (CI). The workflow sets
+         MAUI_SLICE_DIR / HOSTING_DLL / OPENHARMONY_GRAPHICS_DLL; explicit -p: values still win
+         over both the environment and the absolute fallbacks below. -->
     <MauiSliceDir Condition="'$(MauiSliceDir)' == ''">$(MAUI_SLICE_DIR)</MauiSliceDir>
     <HostingDll Condition="'$(HostingDll)' == ''">$(HOSTING_DLL)</HostingDll>
+    <OpenHarmonyGraphicsDll Condition="'$(OpenHarmonyGraphicsDll)' == ''">$(OPENHARMONY_GRAPHICS_DLL)</OpenHarmonyGraphicsDll>
     <HostingDll Condition="'$(HostingDll)' == ''">/storage/Users/currentUser/springsources/ohos-workload/src/Microsoft.OpenHarmony.Hosting/bin/Release/net11.0/Microsoft.OpenHarmony.Hosting.dll</HostingDll>
+    <OpenHarmonyGraphicsDll Condition="'$(OpenHarmonyGraphicsDll)' == ''">/storage/Users/currentUser/springsources/ohos-workload/src/Microsoft.OpenHarmony.Maui.Graphics/bin/Release/net11.0/Microsoft.OpenHarmony.Maui.Graphics.dll</OpenHarmonyGraphicsDll>
     <MauiSliceDir Condition="'$(MauiSliceDir)' == ''">/storage/Users/currentUser/springsources/maui-ohos/src/Core/src/Platform/OpenHarmony</MauiSliceDir>
   </PropertyGroup>
   <PropertyGroup>
@@ -21,7 +25,7 @@
       <Private>true</Private>
     </Reference>
     <Reference Include="Microsoft.OpenHarmony.Maui.Graphics">
-      <HintPath>/storage/Users/currentUser/springsources/ohos-workload/src/Microsoft.OpenHarmony.Maui.Graphics/bin/Release/net11.0/Microsoft.OpenHarmony.Maui.Graphics.dll</HintPath>
+      <HintPath>$(OpenHarmonyGraphicsDll)</HintPath>
       <Private>true</Private>
     </Reference>
     <Compile Include="$(MauiSliceDir)/*.cs" />

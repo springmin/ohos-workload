@@ -13,12 +13,20 @@ parsers plus the ModuleInitializer-installed defaults).
 ## Running it
 
 ```bash
-# The project references the maui-ohos slice and the hosting assembly. Override the defaults with
-# the MAUI_SLICE_DIR / HOSTING_DLL env vars (or the MauiSliceDir / HostingDll MSBuild properties)
-# before building elsewhere.
+# The project references the maui-ohos slice and two assemblies built from this repository.
+# Override the defaults with the MAUI_SLICE_DIR / HOSTING_DLL / OPENHARMONY_GRAPHICS_DLL env vars
+# (or the MauiSliceDir / HostingDll / OpenHarmonyGraphicsDll MSBuild properties) before building
+# elsewhere; an explicit -p: value wins over the environment and the absolute fallbacks.
 dotnet build -v:q
 dotnet bin/Debug/net11.0/verify.dll | grep -c '\[verify\]'   # expect 191
 ```
+
+The `interaction-regression` workflow (`.github/workflows/interaction-regression.yml`) runs the
+suite on a GitHub runner as a real gate: it checks out this repository plus `springmin/maui-ohos`
+(`feature/openharmony`, the branch carrying `src/Core/src/Platform/OpenHarmony`), builds
+`src/Microsoft.OpenHarmony.Hosting` and `src/Microsoft.OpenHarmony.Maui.Graphics` in Release,
+points `MAUI_SLICE_DIR` / `HOSTING_DLL` / `OPENHARMONY_GRAPHICS_DLL` at those roots, and fails the
+job unless the run exits 0, reports at least 191 `[verify]` lines and logs no `Unhandled` line.
 
 ## Notes
 
@@ -113,5 +121,5 @@ dotnet bin/Debug/net11.0/verify.dll | grep -c '\[verify\]'   # expect 191
   the six-parameter `SensorCallback` delegate (pinning the native signature) and checks that
   `(x, y, z, w)` reaches `OrientationSensorData.Orientation` unchanged, with no reconstructed
   scalar part.
-- CI wiring (building the slice in a runner) is tracked in the handover status document; this copy
-  preserves the suite in the repository so it can be made portable.
+- CI wiring: `.github/workflows/interaction-regression.yml` builds the slice checkout and the
+  hosting assemblies on the runner and gates on the 191-check output (see "Running it" above).
