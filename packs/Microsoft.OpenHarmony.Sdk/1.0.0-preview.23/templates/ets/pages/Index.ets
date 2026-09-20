@@ -310,10 +310,23 @@ struct Index {
     }
   }
 
+  // ArkWeb (WebviewController and WebResourceResponse) documents its methods as UI-thread
+  // only, but the host delivers its sinks (web, web eval, hybrid invoke result) on the
+  // managed app thread: the .NET app runs on its own pthread and the native host calls the
+  // registered JS function directly. This helper moves the work back to the page: the
+  // setTimeout callback runs on the ArkTS/UI event loop instead of the host-callback stack,
+  // and runScopedTask executes it inside this component's UIContext so the Web component's
+  // UI instance is the current scope. Both APIs are part of the shipped SDK (getUIContext is
+  // a custom-component method, runScopedTask a UIContext method) and type-check here.
+  private runOnUiThread(task: () => void): void {
+    setTimeout(() => {
+      this.getUIContext().runScopedTask(task);
+    }, 0);
+  }
+
   aboutToAppear(): void {
     // 2 = foreground; the native host forwards it to the managed bridge.
     host.notifyLifecycle(2);
-    host.setNodeContent(this.content);
     // App theme: bind the device colour mode into AppStorage (idempotent; the recommended
     // startup point is the first page's aboutToAppear in this shell) and report the initial
     // light/dark state to the managed side. Later changes arrive through onColorModeChanged.
@@ -345,41 +358,47 @@ struct Index {
     });
 
     // WebView: a hidden ArkWeb component that the managed WebView handler drives.
+    // Host callback: every controller call runs on the page's UI thread (see runOnUiThread).
     host.registerWebSink((op: string, arg: string) => {
-      try {
-        if (op === 'show') {
-          this.webVisible = true;
-        } else if (op === 'hide') {
-          this.webVisible = false;
-        } else if (op === 'load') {
-          this.webVisible = true;
-          this.webController.loadUrl(arg);
-        } else if (op === 'data') {
-          this.webVisible = true;
-          this.webController.loadData(arg, 'text/html', 'UTF-8');
-        } else if (op === 'back') {
-          if (this.webController.accessBackward()) {
-            this.webController.backward();
+      this.runOnUiThread(() => {
+        try {
+          if (op === 'show') {
+            this.webVisible = true;
+          } else if (op === 'hide') {
+            this.webVisible = false;
+          } else if (op === 'load') {
+            this.webVisible = true;
+            this.webController.loadUrl(arg);
+          } else if (op === 'data') {
+            this.webVisible = true;
+            this.webController.loadData(arg, 'text/html', 'UTF-8');
+          } else if (op === 'back') {
+            if (this.webController.accessBackward()) {
+              this.webController.backward();
+            }
+          } else if (op === 'hybrid') {
+            // HybridWebView asset root registration from the managed handler.
+            this.registerHybridAssets(arg);
           }
-        } else if (op === 'hybrid') {
-          // HybridWebView asset root registration from the managed handler.
-          this.registerHybridAssets(arg);
+        } catch (error) {
+          // Web errors never take the app down.
         }
-      } catch (error) {
-        // Web errors never take the app down.
-      }
+      });
     });
 
     // JavaScript bridge: the managed side evaluates scripts through ohos_host_web_eval; the
     // runJavaScript result (or its error) travels back to the awaiting request.
+    // Host callback: runJavaScript is UI-thread only (see runOnUiThread).
     host.registerWebEvalSink((script: string, requestId: number): void => {
-      try {
-        this.webController.runJavaScript(script, (err, result) => {
-          host.notifyWebEvalResult(requestId, result || '', err ? 1 : 0);
-        });
-      } catch (evalError) {
-        host.notifyWebEvalResult(requestId, '', 1);
-      }
+      this.runOnUiThread(() => {
+        try {
+          this.webController.runJavaScript(script, (err, result) => {
+            host.notifyWebEvalResult(requestId, result || '', err ? 1 : 0);
+          });
+        } catch (evalError) {
+          host.notifyWebEvalResult(requestId, '', 1);
+        }
+      });
     });
 
     // HybridWebView JS -> .NET invocation results: the managed handler answers a
@@ -713,6 +732,16 @@ struct Index {
     }
   }
 
+  // Accessibility: host.setNodeContent hands this.content to the native host, which creates
+  // the CUSTOM node and calls OH_ArkUI_NodeContent_AddNode on it. The ContentSlot that hosts
+  // the NodeContent only exists once build() has mounted the page, so attaching it in
+  // aboutToAppear ran before the container was there and left the node unattached (host
+  // status 3). onPageShow runs after the page (and its ContentSlot) is mounted; the host
+  // caches the created node, so a repeated page show cannot attach it twice.
+  onPageShow(): void {
+    host.setNodeContent(this.content);
+  }
+
   // HybridWebView: the managed handler registers the payload directory and the hybrid layout
   // through the existing web command channel (op "hybrid"); a successful registration loads
   // the MAUI hybrid origin, whose requests onInterceptRequest answers from the payload.
@@ -902,7 +931,9 @@ struct Index {
   // clears its timeout. The data is always written on the next tick, after onInterceptRequest
   // returned the not-ready response: the documented order is setResponseIsReady(false) ->
   // setResponseData -> setResponseIsReady(true). A synchronous answer (managed method that
-  // completes inline) therefore cannot write into the response mid-interception.
+  // completes inline) therefore cannot write into the response mid-interception. This runs
+  // both from the managed handler (host callback, managed thread) and from the local timeout
+  // (UI thread), so the response writes are dispatched through runOnUiThread.
   private completeHybridInvoke(requestId: number, payload: string): void {
     const pending: HybridPendingInvoke | undefined = this.hybridInvokes.get(requestId);
     if (pending === undefined) {
@@ -910,7 +941,7 @@ struct Index {
     }
     this.hybridInvokes.delete(requestId);
     clearTimeout(pending.timer);
-    setTimeout(() => {
+    this.runOnUiThread(() => {
       try {
         pending.response.setResponseData(payload);
         pending.response.setResponseCode(200);
@@ -919,7 +950,7 @@ struct Index {
       } catch (completeError) {
         console.error(`[maui] hybrid invoke response failed: ${(completeError as Error).message}`);
       }
-    }, 0);
+    });
   }
 
   // JS -> .NET invocation endpoint: hybridwebview.js POSTs
