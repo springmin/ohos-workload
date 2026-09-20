@@ -1,3 +1,5 @@
+using System.Reflection;
+using System.Runtime.InteropServices;
 using System.Text.Json;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Maui;
@@ -1896,6 +1898,182 @@ if (!displayPushOk || !keepScreenOnOk)
     throw new InvalidOperationException("the display payload push assertion failed");
 }
 Console.WriteLine($"[verify] display off-device info={emptyInfo.Width}x{emptyInfo.Height} density={emptyInfo.Density} rotation={emptyInfo.Rotation} orientation={emptyInfo.Orientation} (empty default asserted)");
+
+// ---- R2b: accessibility publish contract (managed <-> C) and value mapping -------------------
+// The defect fixed here was an argument-count drift: the managed DllImport declared hint as its
+// 6th argument while ohos_host_accessibility_node had no hint parameter, so under AAPCS64
+// flags/actions were delivered shifted on device (flags=3/actions=0x10 arrived as
+// flags=68151328/actions=3). The check below reflects the managed signature and parses the C
+// definition plus the shared header, so any arity/type/name drift fails off-device.
+static string? FindHostSource(string relativePath)
+{
+    var roots = new List<string?>
+    {
+        Environment.GetEnvironmentVariable("OHOS_WORKLOAD_ROOT"),
+        Environment.GetEnvironmentVariable("OHOS_HOST_SRC"),
+        AppContext.BaseDirectory,
+        Directory.GetCurrentDirectory(),
+        typeof(TestApp).Assembly.GetCustomAttributes<AssemblyMetadataAttribute>()
+            .FirstOrDefault(a => a.Key == "MauiSliceDir")?.Value,
+    };
+    foreach (string? root in roots)
+    {
+        if (string.IsNullOrEmpty(root))
+        {
+            continue;
+        }
+        string start = Path.GetFullPath(root);
+        for (DirectoryInfo? dir = new DirectoryInfo(start); dir is not null; dir = dir.Parent)
+        {
+            foreach (string candidate in new[]
+            {
+                Path.Combine(dir.FullName, relativePath),
+                Path.Combine(dir.FullName, "ohos-workload", relativePath),
+            })
+            {
+                if (File.Exists(candidate))
+                {
+                    return candidate;
+                }
+            }
+        }
+    }
+    return null;
+}
+
+// Parameter list between the parentheses of "name(", depth-aware because C types may carry
+// parentheses in more general signatures (not in this one, but the locator stays honest).
+static string? ExtractParameterList(string source, string functionName)
+{
+    int nameAt = source.IndexOf(functionName + "(", StringComparison.Ordinal);
+    if (nameAt < 0)
+    {
+        return null;
+    }
+    int openAt = nameAt + functionName.Length;
+    int depth = 0;
+    for (int i = openAt; i < source.Length; i++)
+    {
+        if (source[i] == '(')
+        {
+            depth++;
+        }
+        else if (source[i] == ')')
+        {
+            depth--;
+            if (depth == 0)
+            {
+                return source.Substring(openAt + 1, i - openAt - 1);
+            }
+        }
+    }
+    return null;
+}
+
+static string[] SplitParameters(string list) => list.Split(',').Select(p => p.Trim()).ToArray();
+static string NormalizeParameterName(string name) => name.Replace("_", string.Empty).ToLowerInvariant();
+static string NativeParameterName(string parameter) =>
+    parameter.Split(' ', StringSplitOptions.RemoveEmptyEntries).Last().TrimStart('*');
+static char ManagedKind(Type type) => type == typeof(int) ? 'i'
+    : type == typeof(float) ? 'f'
+    : type == typeof(double) ? 'd'
+    : type == typeof(string) ? 's' : '?';
+static char NativeKind(string parameter) => parameter.Contains("char*") ? 's'
+    : parameter.Contains("double") ? 'd'
+    : parameter.Contains("float") ? 'f'
+    : parameter.Contains("int") ? 'i' : '?';
+static bool HasUtf8Marshal(ParameterInfo parameter) =>
+    parameter.GetCustomAttribute<MarshalAsAttribute>()?.Value == UnmanagedType.LPUTF8Str;
+
+string? cSourcePath = FindHostSource("src/OpenHarmonyHost/openharmony_host.c");
+string? hSourcePath = FindHostSource("src/OpenHarmonyHost/openharmony_host.h");
+string? cSource = cSourcePath is null ? null : File.ReadAllText(cSourcePath);
+string? hSource = hSourcePath is null ? null : File.ReadAllText(hSourcePath);
+MethodInfo? nodePinvoke = typeof(OpenHarmonyAccessibility).GetMethod(
+    "AccessibilityNode", BindingFlags.NonPublic | BindingFlags.Static);
+string? nativeNodeList = cSource is null ? null : ExtractParameterList(cSource, "ohos_host_accessibility_node");
+string[] nativeNodeParameters = nativeNodeList is null ? Array.Empty<string>() : SplitParameters(nativeNodeList);
+ParameterInfo[] managedNodeParameters = nodePinvoke?.GetParameters() ?? Array.Empty<ParameterInfo>();
+bool nodeCountOk = managedNodeParameters.Length == 16 && nativeNodeParameters.Length == 16;
+bool nodeNamesOk = nodeCountOk && managedNodeParameters
+    .Select(p => NormalizeParameterName(p.Name ?? string.Empty))
+    .SequenceEqual(nativeNodeParameters.Select(p => NormalizeParameterName(NativeParameterName(p))));
+bool nodeTypesOk = nodeCountOk && managedNodeParameters
+    .Select(p => ManagedKind(p.ParameterType))
+    .SequenceEqual(nativeNodeParameters.Select(NativeKind));
+bool nodeMarshalOk = nodeCountOk && managedNodeParameters
+    .Where(p => p.ParameterType == typeof(string)).All(HasUtf8Marshal);
+string? nativeGetList = cSource is null ? null : ExtractParameterList(cSource, "ohos_host_accessibility_get");
+string[] nativeGetParameters = nativeGetList is null ? Array.Empty<string>() : SplitParameters(nativeGetList);
+string? headerNodeList = hSource is null ? null : ExtractParameterList(hSource, "ohos_host_accessibility_node");
+string[] headerNodeParameters = headerNodeList is null ? Array.Empty<string>() : SplitParameters(headerNodeList);
+bool contractOk = nodeCountOk && nodeNamesOk && nodeTypesOk && nodeMarshalOk &&
+    nativeGetParameters.Length == 17 && headerNodeParameters.Length == 16;
+Console.WriteLine($"[verify] a11y node contract managedArgs={managedNodeParameters.Length} nativeArgs={nativeNodeParameters.Length} names={nodeNamesOk} types={nodeTypesOk} utf8={nodeMarshalOk} nativeGetArgs={nativeGetParameters.Length} headerArgs={headerNodeParameters.Length} source='{cSourcePath ?? "<missing>"}' assert={contractOk}");
+if (!contractOk)
+{
+    throw new InvalidOperationException(
+        $"the ohos_host_accessibility_node publish contract drifted: managed={managedNodeParameters.Length} " +
+        $"native={nativeNodeParameters.Length} names={nodeNamesOk} types={nodeTypesOk} utf8={nodeMarshalOk} " +
+        $"nativeGet={nativeGetParameters.Length} header={headerNodeParameters.Length} source={cSourcePath ?? "<missing>"}");
+}
+
+// Value mapping: range is published only where the control has one (slider Minimum/Maximum/
+// Value, progress 0/1/Progress), checked is 0/1 only for toggles, and every other role carries
+// the absent markers (range NaN/NaN, checked -1). The host skips SetRangeInfo for an invalid
+// range and SetChecked for -1, so these are the values a device would announce.
+var rangeProbe = new VerticalStackLayout
+{
+    Children =
+    {
+        new Slider { Minimum = -5, Maximum = 15, Value = 7.5 },
+        new ProgressBar { Progress = 0.25 },
+        new Switch { IsToggled = true },   // Controls.Switch exposes the ISwitch.IsOn value as IsToggled
+        new CheckBox { IsChecked = false },
+        new Label { Text = "plain" },
+    },
+};
+var rangeProbePage = new ContentPage { Content = rangeProbe };
+OpenHarmonyHandlerConnector.ConnectTree(rangeProbePage);
+rangeProbePage.Measure(1080, 600);
+rangeProbePage.Arrange(new Rect(0, 0, 1080, 600));
+OpenHarmonyAccessibility.Refresh(rangeProbePage);
+var sliderNode = OpenHarmonyAccessibility.Nodes.FirstOrDefault(n => n.Role == "slider");
+var progressNode = OpenHarmonyAccessibility.Nodes.FirstOrDefault(n => n.Role == "progress");
+var switchNode = OpenHarmonyAccessibility.Nodes.FirstOrDefault(n => n.Role == "switch");
+var checkBoxNode = OpenHarmonyAccessibility.Nodes.FirstOrDefault(n => n.Role == "checkBox");
+var plainNode = OpenHarmonyAccessibility.Nodes.FirstOrDefault(n => n.Text == "plain");
+bool sliderRangeOk = sliderNode is { RangeMin: -5, RangeMax: 15, RangeCurrent: 7.5, Checked: -1 };
+bool progressRangeOk = progressNode is { RangeMin: 0, RangeMax: 1, RangeCurrent: 0.25, Checked: -1 };
+bool switchCheckedOk = switchNode is { Checked: 1 };
+bool checkBoxCheckedOk = checkBoxNode is { Checked: 0 };
+bool plainAbsentOk = plainNode is not null && double.IsNaN(plainNode.RangeMin) &&
+    double.IsNaN(plainNode.RangeMax) && plainNode.RangeCurrent == 0 && plainNode.Checked == -1;
+Console.WriteLine($"[verify] a11y range slider={sliderNode?.RangeMin}/{sliderNode?.RangeMax}/{sliderNode?.RangeCurrent} progress={progressNode?.RangeMin}/{progressNode?.RangeMax}/{progressNode?.RangeCurrent} map={sliderRangeOk && progressRangeOk}");
+Console.WriteLine($"[verify] a11y checked switch={switchNode?.Checked} checkbox={checkBoxNode?.Checked} plain={plainNode?.Checked} absentRange={plainNode is not null && double.IsNaN(plainNode.RangeMin)} map={switchCheckedOk && checkBoxCheckedOk && plainAbsentOk}");
+if (!sliderRangeOk || !progressRangeOk || !switchCheckedOk || !checkBoxCheckedOk || !plainAbsentOk)
+{
+    throw new InvalidOperationException("the accessibility range/checked value mapping assertion failed");
+}
+
+// A slider drag changes neither text nor bounds, so the frame diff must still flag a state
+// update or the host would never republish the new range; an unchanged frame must stay quiet
+// (an absent NaN range must not look changed on every frame).
+var sliderControl = (Slider)rangeProbe.Children[0];
+OpenHarmonyAccessibility.Publish();       // first probe frame: publishes/diffs
+OpenHarmonyAccessibility.Refresh(rangeProbePage);
+OpenHarmonyAccessibility.Publish();       // identical frame
+bool unchangedQuiet = OpenHarmonyAccessibility.PendingEventCount == 0;
+sliderControl.Value = 8.5;
+OpenHarmonyAccessibility.Refresh(rangeProbePage);
+OpenHarmonyAccessibility.Publish();
+bool valueChangeSeen =
+    (OpenHarmonyAccessibility.PendingEventCount & OpenHarmonyAccessibility.EventPageStateUpdate) != 0;
+Console.WriteLine($"[verify] a11y range diff unchangedQuiet={unchangedQuiet} valueChangeStateUpdate={valueChangeSeen} pending=0x{OpenHarmonyAccessibility.PendingEventCount:x}");
+if (!unchangedQuiet || !valueChangeSeen)
+{
+    throw new InvalidOperationException("the accessibility range frame diff assertion failed");
+}
 
 // ---- Deterministic fuzz (bounded, seeded) -----------------------------------------------------
 // A seeded storm of touch sequences with extreme but finite (mostly out-of-bounds) coordinates,

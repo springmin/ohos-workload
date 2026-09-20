@@ -1,6 +1,6 @@
 # Interaction regression suite (headless)
 
-The 191-check MAUI-on-OpenHarmony interaction harness. It builds the platform slice sources from the
+The 195-check MAUI-on-OpenHarmony interaction harness. It builds the platform slice sources from the
 `maui-ohos` working tree and drives the app host without a device: touch/drag/pinch/pointer input,
 overlays, gestures (tap/pan/swipe/pinch/pointer/drag-and-drop), sensors/haptics/notification/picker
 wiring, the app-theme colour-mode handler, the launcher/browser/share ability bridge, the
@@ -18,7 +18,7 @@ parsers plus the ModuleInitializer-installed defaults).
 # (or the MauiSliceDir / HostingDll / OpenHarmonyGraphicsDll MSBuild properties) before building
 # elsewhere; an explicit -p: value wins over the environment and the absolute fallbacks.
 dotnet build -v:q
-dotnet bin/Debug/net11.0/verify.dll | grep -c '\[verify\]'   # expect 195 (191 checks + 4 fuzz lines)
+dotnet bin/Debug/net11.0/verify.dll | grep -c '\[verify\]'   # expect 199 (195 checks + 4 fuzz lines)
 ```
 
 The `interaction-regression` workflow (`.github/workflows/interaction-regression.yml`) runs the
@@ -26,7 +26,7 @@ suite on a GitHub runner as a real gate: it checks out this repository plus `spr
 (`feature/openharmony`, the branch carrying `src/Core/src/Platform/OpenHarmony`), builds
 `src/Microsoft.OpenHarmony.Hosting` and `src/Microsoft.OpenHarmony.Maui.Graphics` in Release,
 points `MAUI_SLICE_DIR` / `HOSTING_DLL` / `OPENHARMONY_GRAPHICS_DLL` at those roots, and fails the
-job unless the run exits 0, reports at least 191 `[verify]` lines and logs no `Unhandled` line.
+job unless the run exits 0, reports at least 195 `[verify]` lines and logs no `Unhandled` line.
 
 ## Fuzz tail
 
@@ -54,7 +54,7 @@ took ~0.2 s) and performs no large allocations.
   blocks codesigned ELF apphosts on some machines).
 - The suite fails loudly (unhandled exception) when a slice change breaks startup or when an
   assertion for the gesture flows (including the drag-and-drop checks) does not hold; keep it at
-  191 checks plus the 4 fuzz lines when touching the platform slice.
+  195 checks plus the 4 fuzz lines when touching the platform slice.
 - Contacts/calendar coverage: `OpenHarmonyContacts.FindAsync` and
   `OpenHarmonyCalendar.ListUpcomingAsync`/`AddEventAsync` return empty/false without throwing
   off-device and report `IsSupported == false` before and after the call (the permission probe
@@ -142,4 +142,13 @@ took ~0.2 s) and performs no large allocations.
   `(x, y, z, w)` reaches `OrientationSensorData.Orientation` unchanged, with no reconstructed
   scalar part.
 - CI wiring: `.github/workflows/interaction-regression.yml` builds the slice checkout and the
-  hosting assemblies on the runner and gates on the 191-check output (see "Running it" above).
+  hosting assemblies on the runner and gates on the 195-check output (see "Running it" above).
+- Accessibility publish-contract coverage (R2b): the suite reflects
+  `OpenHarmonyAccessibility.AccessibilityNode` (16 parameters now that hint, range and checked
+  are published) and parses `ohos_host_accessibility_node`/`_get` out of
+  `src/OpenHarmonyHost/openharmony_host.c` plus the shared header, comparing argument counts,
+  normalized names, type kinds and the UTF-8 string marshalling; a missing/renamed/reordered
+  argument fails the run instead of shifting registers on device. The probe tree also checks the
+  value mapping (slider Minimum/Maximum/Value, progress 0/1/Progress, switch/checkBox 0/1,
+  absent range NaN/NaN and checked -1 elsewhere) and that a slider value change with unchanged
+  text/bounds raises a page-state update while an unchanged frame stays quiet.

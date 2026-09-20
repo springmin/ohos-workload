@@ -182,6 +182,38 @@ int  ohos_host_draw_image_bytes(const void* data, int length, float x, float y, 
 void ohos_host_draw_polyline(const float* xy, int count, int closed, unsigned int argb, int filled, float stroke_width);
 int  ohos_host_draw_present(void);
 
+// --- accessibility shadow tree (native node table) ---------------------------------
+// The managed runtime publishes one node per rendered frame through
+// ohos_host_accessibility_node; the NAPI accessibility provider reads the table back
+// through ohos_host_accessibility_get and fills ArkUI element info from it.
+// THE ARGUMENT ORDER IS THE CONTRACT: the managed DllImport in maui-ohos
+// (OpenHarmonyAccessibility.AccessibilityNode), this header and openharmony_host.c must
+// all agree. Under AAPCS64 any arity/order drift shifts arguments silently (an earlier
+// revision declared hint as the managed 6th argument while the C side had none, so flags
+// and actions were delivered swapped on device), which is why the interaction harness
+// reflects the managed parameter list and compares it against the C source. Do not
+// reorder, insert or drop arguments without changing both sides and the harness assertion.
+// Absent values: hint may be NULL; a range is only valid when range_min <= range_max
+// (NaN compares false); checked is -1 when unknown/not applicable and 0/1 otherwise.
+int ohos_host_accessibility_begin(int count);
+int ohos_host_accessibility_node(int id, int parent_id, const char* role, const char* text,
+                                 const char* description, const char* hint,
+                                 float x, float y, float width, float height,
+                                 int flags, int actions,
+                                 double range_min, double range_max, double range_current,
+                                 int checked);
+int ohos_host_accessibility_commit(void);
+int ohos_host_accessibility_count(void);
+int ohos_host_accessibility_get(int index, int* id, int* parent_id, const char** role,
+                                const char** text, const char** description, const char** hint,
+                                float* x, float* y, float* width, float* height,
+                                int* flags, int* actions,
+                                double* range_min, double* range_max, double* range_current,
+                                int* checked);
+void ohos_host_accessibility_set_action_listener(void* callback);
+int ohos_host_accessibility_send_event(int event_type);
+int ohos_host_accessibility_provider_status(void);
+
 /// The ArkUI NodeContent handle previously stored (may be NULL).
 void* ohos_host_get_node_content(OhosHostAppHandle* handle);
 

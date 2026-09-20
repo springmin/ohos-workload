@@ -1474,15 +1474,22 @@ void OhosNotifyPinch(int phase, double scale, float x, float y) {
 extern "C" {
 #endif
 
+// Argument order is the publish contract shared with the managed DllImport and the NAPI
+// consumer; see the declarations in openharmony_host.h before touching this struct or the
+// signatures below. Absent values: hint may be NULL, a range is only valid when
+// range_min <= range_max (NaN compares false), checked is -1 when unknown/not applicable.
 typedef struct OhosAccessibilityNode {
     int id;
     int parent_id;
     char* role;
     char* text;
     char* description;
+    char* hint;
     float x, y, width, height;
     int flags;
     int actions;
+    double range_min, range_max, range_current;
+    int checked;
 } OhosAccessibilityNode;
 
 static OhosAccessibilityNode* g_a11y_nodes = NULL;
@@ -1508,6 +1515,7 @@ static void OhosA11yFreeNodes(void) {
             free(g_a11y_nodes[i].role);
             free(g_a11y_nodes[i].text);
             free(g_a11y_nodes[i].description);
+            free(g_a11y_nodes[i].hint);
         }
         free(g_a11y_nodes);
     }
@@ -1530,9 +1538,16 @@ int ohos_host_accessibility_begin(int count) {
     return 0;
 }
 
+// 16 arguments, in this exact order: id, parent_id, role, text, description, hint,
+// x, y, width, height, flags, actions, range_min, range_max, range_current, checked.
+// The order is mirrored by the managed DllImport (maui-ohos OpenHarmonyAccessibility.cs)
+// and asserted off-device by the interaction harness; see openharmony_host.h.
 int ohos_host_accessibility_node(int id, int parent_id, const char* role, const char* text,
-                                 const char* description, float x, float y, float width, float height,
-                                 int flags, int actions) {
+                                 const char* description, const char* hint,
+                                 float x, float y, float width, float height,
+                                 int flags, int actions,
+                                 double range_min, double range_max, double range_current,
+                                 int checked) {
     if (g_a11y_nodes == NULL || g_a11y_fill >= g_a11y_capacity) {
         return -1;
     }
@@ -1542,12 +1557,17 @@ int ohos_host_accessibility_node(int id, int parent_id, const char* role, const 
     node->role = OhosA11yString(role);
     node->text = OhosA11yString(text);
     node->description = OhosA11yString(description);
+    node->hint = OhosA11yString(hint);
     node->x = x;
     node->y = y;
     node->width = width;
     node->height = height;
     node->flags = flags;
     node->actions = actions;
+    node->range_min = range_min;
+    node->range_max = range_max;
+    node->range_current = range_current;
+    node->checked = checked;
     return 0;
 }
 
@@ -1560,10 +1580,14 @@ int ohos_host_accessibility_count(void) {
     return g_a11y_count;
 }
 
+// Mirrors ohos_host_accessibility_node: 17 arguments, same order plus the output pointers
+// (index first, then the 16 published fields). See openharmony_host.h.
 int ohos_host_accessibility_get(int index, int* id, int* parent_id, const char** role,
-                                const char** text, const char** description,
+                                const char** text, const char** description, const char** hint,
                                 float* x, float* y, float* width, float* height,
-                                int* flags, int* actions) {
+                                int* flags, int* actions,
+                                double* range_min, double* range_max, double* range_current,
+                                int* checked) {
     if (g_a11y_nodes == NULL || index < 0 || index >= g_a11y_count) {
         return -1;
     }
@@ -1573,12 +1597,17 @@ int ohos_host_accessibility_get(int index, int* id, int* parent_id, const char**
     if (role != NULL) *role = node->role;
     if (text != NULL) *text = node->text;
     if (description != NULL) *description = node->description;
+    if (hint != NULL) *hint = node->hint;
     if (x != NULL) *x = node->x;
     if (y != NULL) *y = node->y;
     if (width != NULL) *width = node->width;
     if (height != NULL) *height = node->height;
     if (flags != NULL) *flags = node->flags;
     if (actions != NULL) *actions = node->actions;
+    if (range_min != NULL) *range_min = node->range_min;
+    if (range_max != NULL) *range_max = node->range_max;
+    if (range_current != NULL) *range_current = node->range_current;
+    if (checked != NULL) *checked = node->checked;
     return 0;
 }
 

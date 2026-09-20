@@ -18,6 +18,12 @@
     <NoWarn>$(NoWarn);CA1418</NoWarn>
   </PropertyGroup>
   <ItemGroup>
+    <!-- The R2b drift assertion walks up from the slice directory to find the native host source
+         (src/OpenHarmonyHost/openharmony_host.c) when the harness itself is not inside the
+         ohos-workload checkout (scratch copies). -->
+    <AssemblyMetadata Include="MauiSliceDir" Value="$(MauiSliceDir)" />
+  </ItemGroup>
+  <ItemGroup>
     <PackageReference Include="Microsoft.Maui.Controls" Version="11.0.0-rc.1.26451.6" />
     <PackageReference Include="Microsoft.Maui.Graphics" Version="11.0.0-rc.1.26451.6" />
     <Reference Include="Microsoft.OpenHarmony.Hosting">

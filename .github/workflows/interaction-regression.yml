@@ -1,6 +1,6 @@
 name: interaction-regression
 
-# CI gate for the 191-check headless interaction suite (test/maui-platform-verify). The suite
+# CI gate for the 195-check headless interaction suite (test/maui-platform-verify). The suite
 # compiles the MAUI OpenHarmony platform slice sources from the `springmin/maui-ohos` fork and
 # references two assemblies built from this repository through HintPaths, so the job materialises
 # both roots on the runner instead of depending on MAUI_SLICE_DIR / HOSTING_DLL repository
@@ -12,7 +12,7 @@ name: interaction-regression
 #
 # verify.csproj turns those environment variables into MSBuild default properties (an explicit
 # -p: override still wins), so no other configuration is required. The job fails unless the suite
-# exits 0, reports at least 191 "[verify]" lines and logs no "Unhandled" line.
+# exits 0, reports at least 195 "[verify]" lines and logs no "Unhandled" line.
 on:
   workflow_dispatch:
   push:
@@ -39,7 +39,7 @@ jobs:
         run: |
           dotnet build src/Microsoft.OpenHarmony.Hosting/Microsoft.OpenHarmony.Hosting.csproj -c Release -v:q
           dotnet build src/Microsoft.OpenHarmony.Maui.Graphics/Microsoft.OpenHarmony.Maui.Graphics.csproj -c Release -v:q
-      - name: Run the 191-check interaction suite
+      - name: Run the 195-check interaction suite
         working-directory: test/maui-platform-verify
         env:
           MAUI_SLICE_DIR: ${{ github.workspace }}/maui-ohos/src/Core/src/Platform/OpenHarmony
@@ -52,8 +52,8 @@ jobs:
           cat out.txt
           checks=$(grep -c '\[verify\]' out.txt || true)
           echo "interaction checks reported: $checks"
-          if [ "$checks" -lt 191 ]; then
-            echo "::error::expected at least 191 [verify] lines, got $checks"
+          if [ "$checks" -lt 195 ]; then
+            echo "::error::expected at least 195 [verify] lines, got $checks"
             exit 1
           fi
           if grep -q Unhandled out.txt; then

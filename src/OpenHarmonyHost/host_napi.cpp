@@ -1653,11 +1653,33 @@ extern "C" __attribute__((constructor)) void RegisterHostModule(void) {
 #include <cmath>
 #include <cstring>
 
-extern "C" int ohos_host_accessibility_count(void);
-extern "C" int ohos_host_accessibility_get(int index, int* id, int* parent_id, const char** role,
-                                           const char** text, const char** description,
-                                           float* x, float* y, float* width, float* height,
-                                           int* flags, int* actions);
+// The node table accessors (and the publish contract) are declared in openharmony_host.h,
+// which both this file and openharmony_host.c include, so the C++ consumer and the C
+// definition cannot drift apart without failing the build.
+
+// One published record. Unset/absent fields keep the documented sentinels: checked = -1,
+// range invalid when rangeMin > rangeMax (NaN also fails), hint may be null.
+struct A11yNodeRecord {
+    int id = 0;
+    int parent = 0;
+    int flags = 0;
+    int actions = 0;
+    int checked = -1;
+    const char* role = nullptr;
+    const char* text = nullptr;
+    const char* description = nullptr;
+    const char* hint = nullptr;
+    float x = 0, y = 0, width = 0, height = 0;
+    double rangeMin = 0, rangeMax = 0, rangeCurrent = 0;
+};
+
+static bool A11yReadNode(int index, A11yNodeRecord* out) {
+    return ohos_host_accessibility_get(index, &out->id, &out->parent, &out->role, &out->text,
+                                       &out->description, &out->hint, &out->x, &out->y,
+                                       &out->width, &out->height, &out->flags, &out->actions,
+                                       &out->rangeMin, &out->rangeMax, &out->rangeCurrent,
+                                       &out->checked) == 0;
+}
 
 static ArkUI_AccessibilityProvider* g_a11y_provider = nullptr;
 // Provider attach state, readable from ArkTS through host.accessibilityStatus() and from the
@@ -1732,17 +1754,13 @@ static void A11ySetOperationActions(ArkUI_AccessibilityElementInfo* info, int ac
 }
 
 // Role-derived element states. The managed shadow tree publishes the role vocabulary
-// button/text/textInput/checkBox/switch/slider/image/group/header (OpenHarmonyAccessibility.RoleOf),
-// so the states below are derived from that string alone:
+// button/text/textInput/checkBox/switch/slider/progress/image/group/header
+// (OpenHarmonyAccessibility.RoleOf), so the states below are derived from that string alone:
 //   textInput        -> editable
 //   checkBox, switch -> checkable
-// The checked state itself is NOT part of the published node record (which carries only
-// role/text/description/rect/flags/actions), so SetChecked is deliberately not called:
-// announcing a fabricated "unchecked" for a toggle that may be on is worse than staying silent.
-// Range info (slider/progress) is skipped for the same reason: ArkUI_AccessibleRangeInfo needs
-// min/max/current, the record has none, and a made-up 0/100/0 would announce a wrong position.
-// Both gaps need a publish-contract extension (new value fields in ohos_host_accessibility_node);
-// the exact signature is recorded in the audit doc, section 29.
+// The checked state itself comes from the published checked field and only a real 0/1 is
+// forwarded (A11ySetCheckedState); -1 means unknown and is skipped, because announcing a
+// fabricated "unchecked" for a toggle that may be on is worse than staying silent.
 static void A11ySetRoleStates(ArkUI_AccessibilityElementInfo* info, const char* role) {
     if (role == nullptr) {
         return;
@@ -1754,38 +1772,85 @@ static void A11ySetRoleStates(ArkUI_AccessibilityElementInfo* info, const char* 
     }
 }
 
-static void A11yAddNode(ArkUI_AccessibilityElementInfoList* list, int index) {
-    int id = 0, parent = 0, flags = 0, actions = 0;
-    const char* role = nullptr; const char* text = nullptr; const char* description = nullptr;
-    float x = 0, y = 0, w = 0, h = 0;
-    if (ohos_host_accessibility_get(index, &id, &parent, &role, &text, &description,
-                                    &x, &y, &w, &h, &flags, &actions) != 0) {
+// Range info is forwarded only for the roles that have one and only when the published range
+// is valid (range_min <= range_max; NaN also fails that comparison). The managed side sends
+// the control's own coordinate space - slider Minimum/Maximum/Value, progress 0/1/Progress -
+// and marks every other role absent, so a fabricated 0/100/0 is never announced.
+static void A11ySetRangeState(ArkUI_AccessibilityElementInfo* info, const char* role,
+                              double rangeMin, double rangeMax, double rangeCurrent) {
+    if (role == nullptr) {
         return;
+    }
+    if (strcmp(role, "slider") != 0 && strcmp(role, "progress") != 0) {
+        return;
+    }
+    if (!(rangeMin <= rangeMax)) {   // absent marker; also drops a NaN from either bound
+        return;
+    }
+    ArkUI_AccessibleRangeInfo range;
+    range.min = rangeMin;
+    range.max = rangeMax;
+    range.current = rangeCurrent;
+    OH_ArkUI_AccessibilityElementInfoSetRangeInfo(info, &range);
+}
+
+// Checked is forwarded only for a real 0/1; -1 means unknown/not applicable and is skipped
+// (SetCheckable above still tells the framework the role is a toggle).
+static void A11ySetCheckedState(ArkUI_AccessibilityElementInfo* info, int checked) {
+    if (checked == 0 || checked == 1) {
+        OH_ArkUI_AccessibilityElementInfoSetChecked(info, checked == 1);
+    }
+}
+
+// Fills one ArkUI element from a published record. Shared by the list queries
+// (findAccessibilityNodeInfosById/findByText) and the single-node callbacks
+// (findFocused/findNextFocus), so every path publishes the same fields.
+static int32_t A11yFillElement(int index, ArkUI_AccessibilityElementInfo* info) {
+    if (index < 0 || info == nullptr) {
+        return ARKUI_ACCESSIBILITY_NATIVE_RESULT_FAILED;
+    }
+    A11yNodeRecord node;
+    if (!A11yReadNode(index, &node)) {
+        return ARKUI_ACCESSIBILITY_NATIVE_RESULT_FAILED;
+    }
+    OH_ArkUI_AccessibilityElementInfoSetElementId(info, node.id);
+    OH_ArkUI_AccessibilityElementInfoSetParentId(info, node.parent);
+    OH_ArkUI_AccessibilityElementInfoSetComponentType(info, node.role != nullptr ? node.role : "group");
+    if (node.text != nullptr) {
+        OH_ArkUI_AccessibilityElementInfoSetAccessibilityText(info, node.text);
+    }
+    if (node.description != nullptr) {
+        OH_ArkUI_AccessibilityElementInfoSetContents(info, node.description);
+    }
+    if (node.hint != nullptr) {
+        OH_ArkUI_AccessibilityElementInfoSetHintText(info, node.hint);
+    }
+    ArkUI_AccessibleRect rect;
+    rect.leftTopX = A11yCoord(node.x);
+    rect.leftTopY = A11yCoord(node.y);
+    rect.rightBottomX = A11yCoord(node.x + node.width);
+    rect.rightBottomY = A11yCoord(node.y + node.height);
+    OH_ArkUI_AccessibilityElementInfoSetScreenRect(info, &rect);
+    OH_ArkUI_AccessibilityElementInfoSetClickable(info, (node.actions & 0x10) != 0);
+    OH_ArkUI_AccessibilityElementInfoSetEnabled(info, (node.flags & 1) != 0);
+    OH_ArkUI_AccessibilityElementInfoSetFocusable(info, (node.flags & 2) != 0);
+    A11ySetRoleStates(info, node.role);
+    A11ySetRangeState(info, node.role, node.rangeMin, node.rangeMax, node.rangeCurrent);
+    A11ySetCheckedState(info, node.checked);
+    A11ySetOperationActions(info, node.actions);
+    return ARKUI_ACCESSIBILITY_NATIVE_RESULT_SUCCESSFUL;
+}
+
+static void A11yAddNode(ArkUI_AccessibilityElementInfoList* list, int index) {
+    A11yNodeRecord probe;
+    if (!A11yReadNode(index, &probe)) {
+        return;   // keeps empty elements out of the list for a stale index
     }
     ArkUI_AccessibilityElementInfo* info = OH_ArkUI_AddAndGetAccessibilityElementInfo(list);
     if (info == nullptr) {
         return;
     }
-    OH_ArkUI_AccessibilityElementInfoSetElementId(info, id);
-    OH_ArkUI_AccessibilityElementInfoSetParentId(info, parent);
-    OH_ArkUI_AccessibilityElementInfoSetComponentType(info, role != nullptr ? role : "group");
-    if (text != nullptr) {
-        OH_ArkUI_AccessibilityElementInfoSetAccessibilityText(info, text);
-    }
-    if (description != nullptr) {
-        OH_ArkUI_AccessibilityElementInfoSetContents(info, description);
-    }
-    ArkUI_AccessibleRect rect;
-    rect.leftTopX = A11yCoord(x);
-    rect.leftTopY = A11yCoord(y);
-    rect.rightBottomX = A11yCoord(x + w);
-    rect.rightBottomY = A11yCoord(y + h);
-    OH_ArkUI_AccessibilityElementInfoSetScreenRect(info, &rect);
-    OH_ArkUI_AccessibilityElementInfoSetClickable(info, (actions & 0x10) != 0);
-    OH_ArkUI_AccessibilityElementInfoSetEnabled(info, (flags & 1) != 0);
-    OH_ArkUI_AccessibilityElementInfoSetFocusable(info, (flags & 2) != 0);
-    A11ySetRoleStates(info, role);
-    A11ySetOperationActions(info, actions);
+    A11yFillElement(index, info);
 }
 
 static int32_t A11yFindById(int64_t elementId, ArkUI_AccessibilitySearchMode mode,
@@ -1800,23 +1865,20 @@ static int32_t A11yFindById(int64_t elementId, ArkUI_AccessibilitySearchMode mod
         return ARKUI_ACCESSIBILITY_NATIVE_RESULT_SUCCESSFUL;
     }
     for (int i = 0; i < count; i++) {
-        int id = 0;
-        ohos_host_accessibility_get(i, &id, nullptr, nullptr, nullptr, nullptr,
-                                   nullptr, nullptr, nullptr, nullptr, nullptr, nullptr);
-        if (id == (int)elementId) {
-            A11yAddNode(list, i);
-            if ((int)mode & ARKUI_ACCESSIBILITY_NATIVE_SEARCH_MODE_PREFETCH_CHILDREN) {
-                for (int j = 0; j < count; j++) {
-                    int parent = 0;
-                    ohos_host_accessibility_get(j, nullptr, &parent, nullptr, nullptr, nullptr,
-                                               nullptr, nullptr, nullptr, nullptr, nullptr, nullptr);
-                    if (parent == id) {
-                        A11yAddNode(list, j);
-                    }
+        A11yNodeRecord node;
+        if (!A11yReadNode(i, &node) || node.id != (int)elementId) {
+            continue;
+        }
+        A11yAddNode(list, i);
+        if ((int)mode & ARKUI_ACCESSIBILITY_NATIVE_SEARCH_MODE_PREFETCH_CHILDREN) {
+            for (int j = 0; j < count; j++) {
+                A11yNodeRecord child;
+                if (A11yReadNode(j, &child) && child.parent == node.id) {
+                    A11yAddNode(list, j);
                 }
             }
-            return ARKUI_ACCESSIBILITY_NATIVE_RESULT_SUCCESSFUL;
         }
+        return ARKUI_ACCESSIBILITY_NATIVE_RESULT_SUCCESSFUL;
     }
     return ARKUI_ACCESSIBILITY_NATIVE_RESULT_FAILED;
 }
@@ -1830,11 +1892,12 @@ static int32_t A11yFindByText(int64_t elementId, const char* text, int32_t reque
     int count = ohos_host_accessibility_count();
     int found = 0;
     for (int i = 0; i < count; i++) {
-        const char* nodeText = nullptr; const char* description = nullptr;
-        ohos_host_accessibility_get(i, nullptr, nullptr, nullptr, &nodeText, &description,
-                                   nullptr, nullptr, nullptr, nullptr, nullptr, nullptr);
-        if ((nodeText != nullptr && strstr(nodeText, text) != nullptr) ||
-            (description != nullptr && strstr(description, text) != nullptr)) {
+        A11yNodeRecord node;
+        if (!A11yReadNode(i, &node)) {
+            continue;
+        }
+        if ((node.text != nullptr && strstr(node.text, text) != nullptr) ||
+            (node.description != nullptr && strstr(node.description, text) != nullptr)) {
             A11yAddNode(list, i);
             found++;
         }
@@ -1846,10 +1909,8 @@ static int A11yFirstFocusable(int afterIndex) {
     int count = ohos_host_accessibility_count();
     for (int step = 0; step < count; step++) {
         int i = (afterIndex + 1 + step) % count;
-        int flags = 0;
-        ohos_host_accessibility_get(i, nullptr, nullptr, nullptr, nullptr, nullptr,
-                                   nullptr, nullptr, nullptr, nullptr, &flags, nullptr);
-        if ((flags & 2) != 0) {
+        A11yNodeRecord node;
+        if (A11yReadNode(i, &node) && (node.flags & 2) != 0) {
             return i;
         }
     }
@@ -1879,20 +1940,18 @@ static const float kA11yFocusPerpendicularPenalty = 2.0f;
 
 // Reads the centre and focusable bit of one table entry; false when the index is not in the table.
 static bool A11yReadNodeGeom(int index, float* centerX, float* centerY, bool* focusable) {
-    float x = 0, y = 0, w = 0, h = 0;
-    int flags = 0;
-    if (ohos_host_accessibility_get(index, nullptr, nullptr, nullptr, nullptr, nullptr,
-                                    &x, &y, &w, &h, &flags, nullptr) != 0) {
+    A11yNodeRecord node;
+    if (!A11yReadNode(index, &node)) {
         return false;
     }
     if (centerX != nullptr) {
-        *centerX = x + w * 0.5f;
+        *centerX = node.x + node.width * 0.5f;
     }
     if (centerY != nullptr) {
-        *centerY = y + h * 0.5f;
+        *centerY = node.y + node.height * 0.5f;
     }
     if (focusable != nullptr) {
-        *focusable = (flags & 2) != 0;
+        *focusable = (node.flags & 2) != 0;
     }
     return true;
 }
@@ -1904,10 +1963,8 @@ static int A11yIndexOfId(int64_t elementId) {
     }
     int count = ohos_host_accessibility_count();
     for (int i = 0; i < count; i++) {
-        int id = 0;
-        if (ohos_host_accessibility_get(i, &id, nullptr, nullptr, nullptr, nullptr,
-                                        nullptr, nullptr, nullptr, nullptr, nullptr, nullptr) == 0 &&
-            id == (int)elementId) {
+        A11yNodeRecord node;
+        if (A11yReadNode(i, &node) && node.id == (int)elementId) {
             return i;
         }
     }
@@ -1974,52 +2031,18 @@ static int A11yStepFocus(int64_t elementId, bool backward) {
     for (int step = 1; step <= count; step++) {
         int i = backward ? (int)(((start - step) % count + count) % count)
                          : (start + step) % count;
-        int flags = 0;
-        if (ohos_host_accessibility_get(i, nullptr, nullptr, nullptr, nullptr, nullptr,
-                                        nullptr, nullptr, nullptr, nullptr, &flags, nullptr) == 0 &&
-            (flags & 2) != 0) {
+        A11yNodeRecord node;
+        if (A11yReadNode(i, &node) && (node.flags & 2) != 0) {
             return i;
         }
     }
     return -1;
 }
 
-static int32_t A11yFillSingle(int index, ArkUI_AccessibilityElementInfo* info) {
-    if (index < 0 || info == nullptr) {
-        return ARKUI_ACCESSIBILITY_NATIVE_RESULT_FAILED;
-    }
-    int id = 0, parent = 0, flags = 0, actions = 0;
-    const char* role = nullptr; const char* text = nullptr; const char* description = nullptr;
-    float x = 0, y = 0, w = 0, h = 0;
-    if (ohos_host_accessibility_get(index, &id, &parent, &role, &text, &description,
-                                    &x, &y, &w, &h, &flags, &actions) != 0) {
-        return ARKUI_ACCESSIBILITY_NATIVE_RESULT_FAILED;
-    }
-    OH_ArkUI_AccessibilityElementInfoSetElementId(info, id);
-    OH_ArkUI_AccessibilityElementInfoSetParentId(info, parent);
-    OH_ArkUI_AccessibilityElementInfoSetComponentType(info, role != nullptr ? role : "group");
-    if (text != nullptr) {
-        OH_ArkUI_AccessibilityElementInfoSetAccessibilityText(info, text);
-    }
-    if (description != nullptr) {
-        OH_ArkUI_AccessibilityElementInfoSetContents(info, description);
-    }
-    ArkUI_AccessibleRect rect;
-    rect.leftTopX = A11yCoord(x); rect.leftTopY = A11yCoord(y);
-    rect.rightBottomX = A11yCoord(x + w); rect.rightBottomY = A11yCoord(y + h);
-    OH_ArkUI_AccessibilityElementInfoSetScreenRect(info, &rect);
-    OH_ArkUI_AccessibilityElementInfoSetClickable(info, (actions & 0x10) != 0);
-    OH_ArkUI_AccessibilityElementInfoSetEnabled(info, (flags & 1) != 0);
-    OH_ArkUI_AccessibilityElementInfoSetFocusable(info, (flags & 2) != 0);
-    A11ySetRoleStates(info, role);
-    A11ySetOperationActions(info, actions);
-    return ARKUI_ACCESSIBILITY_NATIVE_RESULT_SUCCESSFUL;
-}
-
 static int32_t A11yFocused(int64_t elementId, ArkUI_AccessibilityFocusType focusType,
                            int32_t requestId, ArkUI_AccessibilityElementInfo* info) {
     (void)elementId; (void)focusType; (void)requestId;
-    return A11yFillSingle(A11yFirstFocusable(-1), info);
+    return A11yFillElement(A11yFirstFocusable(-1), info);
 }
 
 static int32_t A11yNextFocus(int64_t elementId, ArkUI_AccessibilityFocusMoveDirection direction,
@@ -2052,7 +2075,7 @@ static int32_t A11yNextFocus(int64_t elementId, ArkUI_AccessibilityFocusMoveDire
     if (index < 0) {
         return ARKUI_ACCESSIBILITY_NATIVE_RESULT_FAILED;
     }
-    return A11yFillSingle(index, info);
+    return A11yFillElement(index, info);
 }
 
 static int32_t A11yExecuteAction(int64_t elementId, ArkUI_Accessibility_ActionType action,
