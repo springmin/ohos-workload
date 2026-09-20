@@ -1,12 +1,13 @@
 # Interaction regression suite (headless)
 
-The 164-check MAUI-on-OpenHarmony interaction harness. It builds the platform slice sources from the
+The 174-check MAUI-on-OpenHarmony interaction harness. It builds the platform slice sources from the
 `maui-ohos` working tree and drives the app host without a device: touch/drag/pinch/pointer input,
 overlays, gestures (tap/pan/swipe/pinch/pointer/drag-and-drop), sensors/haptics/notification/picker
 wiring, the app-theme colour-mode handler, the launcher/browser/share ability bridge, the
 accessibility shadow tree snapshot, the menu table/activation bridge, the WebView JavaScript
-bridge (script evaluation + `dotnetHost.postMessage`) and the contacts/calendar platform extras
-(off-device degradation plus the delimited payload parsers).
+bridge (script evaluation + `dotnetHost.postMessage`) and the contacts/calendar and
+Bluetooth/printing platform extras (off-device degradation plus the delimited payload parsers
+and the text-to-PDF renderer).
 
 ## Running it
 
@@ -15,7 +16,7 @@ bridge (script evaluation + `dotnetHost.postMessage`) and the contacts/calendar 
 # the MAUI_SLICE_DIR / HOSTING_DLL env vars (or the MauiSliceDir / HostingDll MSBuild properties)
 # before building elsewhere.
 dotnet build -v:q
-dotnet bin/Debug/net11.0/verify.dll | grep -c '\[verify\]'   # expect 164
+dotnet bin/Debug/net11.0/verify.dll | grep -c '\[verify\]'   # expect 174
 ```
 
 ## Notes
@@ -24,7 +25,7 @@ dotnet bin/Debug/net11.0/verify.dll | grep -c '\[verify\]'   # expect 164
   blocks codesigned ELF apphosts on some machines).
 - The suite fails loudly (unhandled exception) when a slice change breaks startup or when an
   assertion for the gesture flows (including the drag-and-drop checks) does not hold; keep it at
-  164 checks when touching the platform slice.
+  174 checks when touching the platform slice.
 - Contacts/calendar coverage: `OpenHarmonyContacts.FindAsync` and
   `OpenHarmonyCalendar.ListUpcomingAsync`/`AddEventAsync` return empty/false without throwing
   off-device and report `IsSupported == false` before and after the call (the permission probe
@@ -37,6 +38,22 @@ dotnet bin/Debug/net11.0/verify.dll | grep -c '\[verify\]'   # expect 164
   `-p:'OpenHarmonyExtraPermissions="ohos.permission.READ_CONTACTS;ohos.permission.READ_CALENDAR"'`
   appends the minimal `requestPermissions` array to the generated module.json (preview.22 and
   preview.23 packs; unset keeps the file byte-identical).
+- Bluetooth/printing coverage: `OpenHarmonyBluetooth.IsEnabledAsync`,
+  `GetPairedDevicesAsync`, `StartDiscoveryAsync` and `StopDiscoveryAsync` return false/empty
+  without throwing off-device and `IsSupported` stays false; the paired-device parser is
+  exercised with the exact "name\taddress" payload (including a nameless record and a record
+  with no tab) and the adapter-state parser with the `access.BluetoothState` values ("2" on,
+  "0"/"1"/garbage off). `OpenHarmonyPrinting.PrintFileAsync` returns false for a missing file
+  and for an unavailable bridge, `PrintTextAsync` writes a real PDF into the cache directory
+  and still degrades to false, and the text-to-PDF renderer is checked structurally: `%PDF-1.4`
+  header, `startxref` pointing at the xref table, every xref entry resolving to its `n 0 obj`
+  header, `/Length`-delimited streams followed by `endstream`, escaped parentheses/slashes and
+  the Latin-1 octal escape, plus 3-page pagination of a 120-line document (the same documents
+  were also validated with an independent Python xref/stream parser). The shell half compiles
+  `access`/`connection` from `@kit.ConnectivityKit` and `print` from `@ohos.print` and requires
+  `ohos.permission.ACCESS_BLUETOOTH` (user_grant, requested at call time) and
+  `ohos.permission.PRINT` (system_grant); pass them through the same
+  `-p:'OpenHarmonyExtraPermissions="..."'` list so the packaged module.json declares them.
 - JavaScript bridge coverage: `WebView.EvaluateJavaScriptAsync` completes with null/empty and
   never throws off-device (no host library), the native `notifyJsMessage` callback raises
   `OpenHarmonyWebViewHandler.JsMessage` with the `dotnetHost.postMessage` payload, and the

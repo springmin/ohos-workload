@@ -1337,6 +1337,254 @@ if (!calendarParsedOk)
     throw new InvalidOperationException("the calendar payload parser assertion failed");
 }
 
+// Gap 6: Bluetooth/Printing platform extras over the same host/ArkTS kit bridge
+// (ohos_host_bluetooth_query -> shell registerBluetoothSink -> @kit.ConnectivityKit
+// access/connection; ohos_host_print_file -> shell registerPrintSink -> @ohos.print).
+// Off-device there is no libopenharmonyhost.so, so every call must return false/empty without
+// throwing and report IsSupported == false; the paired-device/state parsers and the text->PDF
+// renderer are exercised with simulated payloads.
+bool bluetoothSupportedBefore = OpenHarmonyBluetooth.IsSupported;
+bool bluetoothEnabled = true;
+bool bluetoothEnabledThrew = false;
+try
+{
+    bluetoothEnabled = await OpenHarmonyBluetooth.IsEnabledAsync();
+}
+catch (Exception ex)
+{
+    bluetoothEnabledThrew = true;
+    Console.WriteLine($"[verify] bluetooth IsEnabledAsync threw {ex.GetType().Name}: {ex.Message}");
+}
+bool bluetoothEnabledDegraded = !bluetoothEnabledThrew && !bluetoothEnabled &&
+    !bluetoothSupportedBefore && !OpenHarmonyBluetooth.IsSupported;
+Console.WriteLine($"[verify] bluetooth IsEnabledAsync degraded without throwing={!bluetoothEnabledThrew} enabled={bluetoothEnabled} supported(before={bluetoothSupportedBefore}, after={OpenHarmonyBluetooth.IsSupported})");
+if (!bluetoothEnabledDegraded)
+{
+    throw new InvalidOperationException("OpenHarmonyBluetooth.IsEnabledAsync did not degrade off-device");
+}
+
+IReadOnlyList<OpenHarmonyBluetoothDevice> pairedDevices = Array.Empty<OpenHarmonyBluetoothDevice>();
+bool pairedThrew = false;
+try
+{
+    pairedDevices = await OpenHarmonyBluetooth.GetPairedDevicesAsync();
+}
+catch (Exception ex)
+{
+    pairedThrew = true;
+    Console.WriteLine($"[verify] bluetooth GetPairedDevicesAsync threw {ex.GetType().Name}: {ex.Message}");
+}
+bool pairedDegraded = !pairedThrew && pairedDevices.Count == 0 && !OpenHarmonyBluetooth.IsSupported;
+Console.WriteLine($"[verify] bluetooth GetPairedDevicesAsync degraded without throwing={!pairedThrew} count={pairedDevices.Count} supported={OpenHarmonyBluetooth.IsSupported}");
+if (!pairedDegraded)
+{
+    throw new InvalidOperationException("OpenHarmonyBluetooth.GetPairedDevicesAsync did not degrade off-device");
+}
+
+bool discoveryStarted = true;
+bool discoveryStopped = true;
+bool discoveryThrew = false;
+try
+{
+    discoveryStarted = await OpenHarmonyBluetooth.StartDiscoveryAsync();
+    discoveryStopped = await OpenHarmonyBluetooth.StopDiscoveryAsync();
+}
+catch (Exception ex)
+{
+    discoveryThrew = true;
+    Console.WriteLine($"[verify] bluetooth discovery threw {ex.GetType().Name}: {ex.Message}");
+}
+bool discoveryDegraded = !discoveryThrew && !discoveryStarted && !discoveryStopped;
+Console.WriteLine($"[verify] bluetooth discovery degraded without throwing={!discoveryThrew} started={discoveryStarted} stopped={discoveryStopped}");
+if (!discoveryDegraded)
+{
+    throw new InvalidOperationException("OpenHarmonyBluetooth discovery did not degrade off-device");
+}
+
+var pairedParsed = OpenHarmonyBluetooth.ParsePairedDevices(
+    "QuietComfort\tAA:BB:CC:DD:EE:01\n\tAA:BB:CC:DD:EE:02\nNoAddressOnly\n");
+bool pairedParsedOk = pairedParsed.Count == 3 &&
+    pairedParsed[0] == new OpenHarmonyBluetoothDevice("QuietComfort", "AA:BB:CC:DD:EE:01") &&
+    pairedParsed[1] == new OpenHarmonyBluetoothDevice(string.Empty, "AA:BB:CC:DD:EE:02") &&
+    pairedParsed[2] == new OpenHarmonyBluetoothDevice(string.Empty, "NoAddressOnly");
+Console.WriteLine($"[verify] bluetooth paired parser count={pairedParsed.Count} first='{pairedParsed[0].Name}/{pairedParsed[0].Address}' nameless='{pairedParsed[1].Address}' assert={pairedParsedOk}");
+if (!pairedParsedOk)
+{
+    throw new InvalidOperationException("the bluetooth paired-device payload parser assertion failed");
+}
+
+bool stateOn = OpenHarmonyBluetooth.ParseAdapterState("2");
+bool stateOff = OpenHarmonyBluetooth.ParseAdapterState("0");
+bool stateTurningOn = OpenHarmonyBluetooth.ParseAdapterState("1");
+bool stateGarbage = OpenHarmonyBluetooth.ParseAdapterState("nope") ||
+    OpenHarmonyBluetooth.ParseAdapterState(null);
+bool stateParsedOk = stateOn && !stateOff && !stateTurningOn && !stateGarbage;
+Console.WriteLine($"[verify] bluetooth state parser on={stateOn} off={stateOff} turningOn={stateTurningOn} garbage={stateGarbage} assert={stateParsedOk}");
+if (!stateParsedOk)
+{
+    throw new InvalidOperationException("the bluetooth adapter-state parser assertion failed");
+}
+
+bool printingSupportedBefore = OpenHarmonyPrinting.IsSupported;
+bool printMissingReturned = true;
+bool printMissingThrew = false;
+try
+{
+    printMissingReturned = await OpenHarmonyPrinting.PrintFileAsync(
+        Path.Combine(FileSystem.CacheDirectory, "verify-missing-print-file.pdf"));
+}
+catch (Exception ex)
+{
+    printMissingThrew = true;
+    Console.WriteLine($"[verify] printing PrintFileAsync threw {ex.GetType().Name}: {ex.Message}");
+}
+bool printMissingDegraded = !printMissingThrew && !printMissingReturned &&
+    !printingSupportedBefore && !OpenHarmonyPrinting.IsSupported;
+Console.WriteLine($"[verify] printing PrintFileAsync missing-file degraded without throwing={!printMissingThrew} returned={printMissingReturned} supported(before={printingSupportedBefore}, after={OpenHarmonyPrinting.IsSupported})");
+if (!printMissingDegraded)
+{
+    throw new InvalidOperationException("OpenHarmonyPrinting.PrintFileAsync did not degrade off-device");
+}
+
+bool printTextReturned = true;
+bool printTextThrew = false;
+try
+{
+    printTextReturned = await OpenHarmonyPrinting.PrintTextAsync("verify text", "Hello printing\nSecond line");
+}
+catch (Exception ex)
+{
+    printTextThrew = true;
+    Console.WriteLine($"[verify] printing PrintTextAsync threw {ex.GetType().Name}: {ex.Message}");
+}
+string textPdfPath = Path.Combine(FileSystem.CacheDirectory, "verify_text.pdf");
+bool textPdfWritten = File.Exists(textPdfPath) &&
+    System.Text.Encoding.ASCII.GetString(File.ReadAllBytes(textPdfPath), 0, 8) == "%PDF-1.4";
+bool printTextDegraded = !printTextThrew && !printTextReturned && !OpenHarmonyPrinting.IsSupported;
+Console.WriteLine($"[verify] printing PrintTextAsync degraded without throwing={!printTextThrew} returned={printTextReturned} wrotePdf={textPdfWritten} supported={OpenHarmonyPrinting.IsSupported}");
+if (!printTextDegraded || !textPdfWritten)
+{
+    throw new InvalidOperationException("OpenHarmonyPrinting.PrintTextAsync did not degrade off-device");
+}
+File.Delete(textPdfPath);
+
+byte[] textPdf = OpenHarmonyPrinting.BuildTextPdf(
+    "Hello print\nLine two\n\nEscapes (paren) and \\ slash\nCafe\u00e9");
+string pdfAscii = System.Text.Encoding.ASCII.GetString(textPdf);
+int startxrefIndex = pdfAscii.LastIndexOf("startxref\n", StringComparison.Ordinal);
+int pdfXrefOffset = -1;
+if (startxrefIndex >= 0)
+{
+    int valueStart = startxrefIndex + "startxref\n".Length;
+    int valueEnd = pdfAscii.IndexOf('\n', valueStart);
+    if (valueEnd > valueStart)
+    {
+        int.TryParse(pdfAscii.AsSpan(valueStart, valueEnd - valueStart), out pdfXrefOffset);
+    }
+}
+// Skip the "xref" line, the "0 <count>" line and the free entry to reach object 1's entry.
+int firstXrefEntry = pdfAscii.IndexOf('\n', pdfXrefOffset) + 1;
+firstXrefEntry = pdfAscii.IndexOf('\n', firstXrefEntry) + 1;
+firstXrefEntry = pdfAscii.IndexOf('\n', firstXrefEntry) + 1;
+int firstObjectOffset = -1;
+if (firstXrefEntry > 0)
+{
+    int.TryParse(pdfAscii.AsSpan(firstXrefEntry, 10), out firstObjectOffset);
+}
+// Every xref entry (1..Size-1) must point at its "<n> 0 obj" header.
+int pdfSizeStart = pdfAscii.IndexOf("/Size ", StringComparison.Ordinal) + "/Size ".Length;
+int pdfSizeEnd = pdfAscii.IndexOf(' ', pdfSizeStart);
+int pdfObjectCount = 0;
+if (pdfSizeStart > 0 && pdfSizeEnd > pdfSizeStart)
+{
+    int.TryParse(pdfAscii.AsSpan(pdfSizeStart, pdfSizeEnd - pdfSizeStart), out pdfObjectCount);
+}
+bool xrefEntriesOk = pdfObjectCount > 1;
+int xrefEntryCursor = firstXrefEntry;
+for (int i = 1; i < pdfObjectCount && xrefEntriesOk; i++)
+{
+    int entryOffset = -1;
+    if (xrefEntryCursor > 0)
+    {
+        int.TryParse(pdfAscii.AsSpan(xrefEntryCursor, 10), out entryOffset);
+    }
+    string expectedHeader = $"{i} 0 obj";
+    xrefEntriesOk = entryOffset > 0 && entryOffset + expectedHeader.Length <= pdfAscii.Length &&
+        pdfAscii.Substring(entryOffset, expectedHeader.Length) == expectedHeader;
+    xrefEntryCursor = pdfAscii.IndexOf('\n', xrefEntryCursor) + 1;
+}
+// Every content stream's declared /Length must be followed by endstream after optional
+// whitespace (the EOL before the keyword may or may not be counted per writer style).
+bool streamLengthsOk = true;
+int streamCursor = 0;
+while (true)
+{
+    // Anchored with the leading newline so the "stream" inside "endstream" never matches.
+    int streamAt = pdfAscii.IndexOf("\nstream\n", streamCursor, StringComparison.Ordinal);
+    if (streamAt < 0)
+    {
+        break;
+    }
+    int dataStart = streamAt + "\nstream\n".Length;
+    int lengthAt = pdfAscii.LastIndexOf("/Length ", streamAt, StringComparison.Ordinal);
+    int declaredLength = -1;
+    if (lengthAt >= 0)
+    {
+        int lengthValueStart = lengthAt + "/Length ".Length;
+        int lengthValueEnd = pdfAscii.IndexOf(' ', lengthValueStart);
+        int.TryParse(pdfAscii.AsSpan(lengthValueStart, lengthValueEnd - lengthValueStart), out declaredLength);
+    }
+    int afterData = declaredLength >= 0 ? dataStart + declaredLength : -1;
+    while (afterData >= 0 && afterData < pdfAscii.Length &&
+        (pdfAscii[afterData] == '\r' || pdfAscii[afterData] == '\n' || pdfAscii[afterData] == ' '))
+    {
+        afterData++;
+    }
+    bool thisStreamOk = afterData >= 0 && afterData + "endstream".Length <= pdfAscii.Length &&
+        pdfAscii.Substring(afterData, "endstream".Length) == "endstream";
+    if (!thisStreamOk)
+    {
+        streamLengthsOk = false;
+    }
+    streamCursor = thisStreamOk ? afterData + "endstream".Length : pdfAscii.Length;
+}
+bool pdfOk = pdfAscii.StartsWith("%PDF-1.4", StringComparison.Ordinal) &&
+    pdfAscii.EndsWith("%%EOF\n", StringComparison.Ordinal) &&
+    pdfAscii.Contains("/Type /Catalog", StringComparison.Ordinal) &&
+    pdfAscii.Contains("/Type /Pages", StringComparison.Ordinal) &&
+    pdfAscii.Contains("/Subtype /Type1", StringComparison.Ordinal) &&
+    pdfAscii.Contains("(Escapes \\(paren\\) and \\\\ slash)", StringComparison.Ordinal) &&
+    pdfAscii.Contains("\\351", StringComparison.Ordinal) &&
+    pdfXrefOffset > 0 && pdfXrefOffset < pdfAscii.Length &&
+    pdfAscii.Substring(pdfXrefOffset, 4) == "xref" &&
+    firstObjectOffset > 0 && pdfAscii.Substring(firstObjectOffset, 7) == "1 0 obj" &&
+    xrefEntriesOk && streamLengthsOk;
+Console.WriteLine($"[verify] printing text pdf bytes={textPdf.Length} xref={pdfXrefOffset} objects={pdfObjectCount} xrefEntriesOk={xrefEntriesOk} streamLengthsOk={streamLengthsOk} assert={pdfOk}");
+if (!pdfOk)
+{
+    throw new InvalidOperationException("the text-to-PDF document structure assertion failed");
+}
+
+byte[] longPdf = OpenHarmonyPrinting.BuildTextPdf(
+    string.Join("\n", Enumerable.Range(0, 120).Select(i => $"print line {i}")));
+string longPdfAscii = System.Text.Encoding.ASCII.GetString(longPdf);
+bool longPdfOk = longPdfAscii.Contains("/Count 3", StringComparison.Ordinal) && longPdf.Length > textPdf.Length;
+Console.WriteLine($"[verify] printing text pdf pagination bytes={longPdf.Length} pages=3 assert={longPdfOk}");
+if (!longPdfOk)
+{
+    throw new InvalidOperationException("the multi-page text-to-PDF assertion failed");
+}
+
+string sanitized = OpenHarmonyPrinting.SanitizeJobName("verify text.pdf");
+bool sanitizeOk = sanitized == "verify_text_pdf" &&
+    OpenHarmonyPrinting.SanitizeJobName("  ") == "print" &&
+    OpenHarmonyPrinting.SanitizeJobName(null) == "print";
+Console.WriteLine($"[verify] printing job name sanitizer 'verify text.pdf'->'{sanitized}' empty->'{OpenHarmonyPrinting.SanitizeJobName(null)}' assert={sanitizeOk}");
+if (!sanitizeOk)
+{
+    throw new InvalidOperationException("the print job name sanitizer assertion failed");
+}
+
 sealed class ProbeDrawable : Microsoft.Maui.Graphics.IDrawable
 {
     public int DrawCalls { get; private set; }

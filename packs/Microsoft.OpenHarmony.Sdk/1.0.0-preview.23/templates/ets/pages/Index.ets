@@ -13,8 +13,10 @@ import abilityAccessCtrl, { Permissions } from '@ohos.abilityAccessCtrl';
 import cameraPicker from '@ohos.multimedia.cameraPicker';
 import camera from '@ohos.multimedia.camera';
 import { calendarManager } from '@kit.CalendarKit';
+import { access, connection } from '@kit.ConnectivityKit';
 import { contact } from '@kit.ContactsKit';
 import common from '@ohos.app.ability.common';
+import print from '@ohos.print';
 import Want from '@ohos.app.ability.Want';
 import fileIo from '@ohos.file.fs';
 import notificationManager from '@ohos.notificationManager';
@@ -379,6 +381,89 @@ struct Index {
       } catch (calendarError) {
         console.error(`[maui] calendar request failed: ${(calendarError as Error).message}`);
         host.notifyCalendarResult(requestId, -1, '');
+      }
+    });
+
+    // Bluetooth (platform extra): the managed side asks through ohos_host_bluetooth_query.
+    // op 0 reports the adapter state (access.getState), op 1 lists the paired devices
+    // (connection.getPairedDevices + getRemoteDeviceName), op 2/3 start/stop classic discovery
+    // (connection.startBluetoothDiscovery / stopBluetoothDiscovery). ACCESS_BLUETOOTH is a
+    // user_grant permission, so the shell requests it first; a denial answers code -1 (managed
+    // IsSupported == false). Paired devices travel as "name\taddress" lines.
+    host.registerBluetoothSink(async (requestId: number, op: number): Promise<void> => {
+      try {
+        const context = getContext(this) as common.UIAbilityContext;
+        const permissions: Permissions[] = ['ohos.permission.ACCESS_BLUETOOTH'];
+        const atManager = abilityAccessCtrl.createAtManager();
+        const granted = await atManager.requestPermissionsFromUser(context, permissions);
+        if (granted.authResults.length === 0 || granted.authResults[0] !== 0) {
+          host.notifyBluetoothResult(requestId, -1, '');
+          return;
+        }
+        const state: access.BluetoothState = access.getState();
+        if (op === 0) {
+          host.notifyBluetoothResult(requestId, 0, `${state}`);
+          return;
+        }
+        if (op === 2 || op === 3) {
+          // Discovery and its stop need a powered adapter; while it is off they would throw
+          // 2900003. That is a transient device state, so it answers code -2 (the managed side
+          // fails the call but keeps IsSupported) instead of -1 (platform unavailable).
+          if (state !== access.BluetoothState.STATE_ON) {
+            host.notifyBluetoothResult(requestId, -2, '');
+            return;
+          }
+          if (op === 2) {
+            connection.startBluetoothDiscovery();
+          } else {
+            connection.stopBluetoothDiscovery();
+          }
+          host.notifyBluetoothResult(requestId, 0, '');
+          return;
+        }
+        // Paired devices need a powered adapter; while it is off the platform throws
+        // 2900003, which is answered as a valid empty list instead of a failure.
+        if (state !== access.BluetoothState.STATE_ON) {
+          host.notifyBluetoothResult(requestId, 0, '');
+          return;
+        }
+        const devices: Array<string> = connection.getPairedDevices();
+        const rows: string[] = [];
+        for (const deviceId of devices) {
+          let name: string = '';
+          try {
+            name = connection.getRemoteDeviceName(deviceId);
+          } catch (nameError) {
+            name = '';
+          }
+          rows.push(`${name}\t${deviceId}`);
+        }
+        host.notifyBluetoothResult(requestId, 0, rows.join('\n'));
+      } catch (bluetoothError) {
+        console.error(`[maui] bluetooth request failed: ${(bluetoothError as Error).message}`);
+        host.notifyBluetoothResult(requestId, -1, '');
+      }
+    });
+
+    // Printing (platform extra): the managed side asks through ohos_host_print_file with an
+    // absolute path to a PDF/image it rendered (PrintTextAsync writes <cacheDir>/<job>.pdf).
+    // ohos.permission.PRINT is system_grant, so there is no runtime prompt: a packaged app
+    // that declares it can print. print.print resolves once the system print UI accepted the
+    // job; the final page outcome belongs to the print service, so code 0 means "accepted".
+    host.registerPrintSink(async (requestId: number, path: string): Promise<void> => {
+      try {
+        const context = getContext(this) as common.UIAbilityContext;
+        const task: print.PrintTask = await print.print([path], context);
+        task.on('fail', (): void => {
+          console.error('[maui] print task reported failure');
+        });
+        task.on('cancel', (): void => {
+          console.info('[maui] print task cancelled');
+        });
+        host.notifyPrintResult(requestId, 0, '');
+      } catch (printError) {
+        console.error(`[maui] print request failed: ${(printError as Error).message}`);
+        host.notifyPrintResult(requestId, -1, (printError as Error).message);
       }
     });
 

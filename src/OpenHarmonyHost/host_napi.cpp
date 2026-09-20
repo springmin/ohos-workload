@@ -490,6 +490,161 @@ napi_value NotifyCalendarResult(napi_env env, napi_callback_info info) {
     return undefined;
 }
 
+// Bluetooth (Connectivity Kit): the managed side forwards a request through
+// ohos_host_bluetooth_query (op 0 = adapter state, 1 = paired devices, 2 = start discovery,
+// 3 = stop discovery); the ArkTS shell's registerBluetoothSink handler requests
+// ohos.permission.ACCESS_BLUETOOTH (user_grant) and runs the kit call
+// (@kit.ConnectivityKit access.getState / connection.getPairedDevices /
+// connection.getRemoteDeviceName / startBluetoothDiscovery / stopBluetoothDiscovery), then
+// answers through host.notifyBluetoothResult. The payload is a '\n' separated table of
+// "name\taddress" records (paired devices) or the decimal access.BluetoothState (state);
+// code 0 is a complete answer, -1 unavailable, -2 a transient kit failure.
+napi_ref g_bluetooth_sink_ref = nullptr;
+static void (*g_bluetooth_result_listener)(int request_id, int code, const char* payload) = nullptr;
+
+// Called from managed code (P/Invoke): forwards a Bluetooth operation to the ArkTS sink;
+// returns 0 when it was dispatched.
+extern "C" int ohos_host_bluetooth_query(int request_id, int op) {
+    if (g_env == nullptr || g_bluetooth_sink_ref == nullptr) {
+        return -1;
+    }
+    napi_value sink = nullptr;
+    if (napi_get_reference_value(g_env, g_bluetooth_sink_ref, &sink) != napi_ok || sink == nullptr) {
+        return -1;
+    }
+    napi_value argv[2];
+    napi_create_int32(g_env, request_id, &argv[0]);
+    napi_create_int32(g_env, op, &argv[1]);
+    napi_value result = nullptr;
+    napi_status status = napi_call_function(g_env, sink, sink, 2, argv, &result);
+    return status == napi_ok ? 0 : -1;
+}
+
+// The managed side registers the callback that completes a pending Bluetooth request.
+extern "C" void ohos_host_bluetooth_register_result(void* callback) {
+    g_bluetooth_result_listener = (void (*)(int, int, const char*))callback;
+}
+
+// Called by the NAPI notify below: hands the shell's answer back to managed code.
+extern "C" void ohos_host_bluetooth_result(int request_id, int code, const char* payload) {
+    if (g_bluetooth_result_listener != nullptr) {
+        g_bluetooth_result_listener(request_id, code, payload != nullptr ? payload : "");
+    }
+}
+
+// ArkTS calls host.registerBluetoothSink(fn) to receive Bluetooth requests.
+napi_value RegisterBluetoothSink(napi_env env, napi_callback_info info) {
+    size_t argc = 1;
+    napi_value argv[1] = {nullptr};
+    napi_get_cb_info(env, info, &argc, argv, nullptr, nullptr);
+    if (argc >= 1) {
+        napi_valuetype type = napi_undefined;
+        napi_typeof(env, argv[0], &type);
+        if (type == napi_function) {
+            if (g_bluetooth_sink_ref != nullptr) {
+                napi_delete_reference(env, g_bluetooth_sink_ref);
+            }
+            napi_create_reference(env, argv[0], 1, &g_bluetooth_sink_ref);
+            OH_LOG_INFO(LOG_APP, "[openharmony-host] bluetooth sink registered");
+        }
+    }
+    napi_value undefined = nullptr;
+    napi_get_undefined(env, &undefined);
+    return undefined;
+}
+
+// ArkTS calls host.notifyBluetoothResult(requestId, code, payload) when a request finished.
+napi_value NotifyBluetoothResult(napi_env env, napi_callback_info info) {
+    size_t argc = 3;
+    napi_value argv[3] = {nullptr, nullptr, nullptr};
+    napi_get_cb_info(env, info, &argc, argv, nullptr, nullptr);
+    int requestId = 0;
+    int code = -1;
+    std::string payload;
+    if (argc >= 1) napi_get_value_int32(env, argv[0], &requestId);
+    if (argc >= 2) napi_get_value_int32(env, argv[1], &code);
+    if (argc >= 3) payload = GetStringArg(env, argv[2]);
+    ohos_host_bluetooth_result(requestId, code, payload.c_str());
+    napi_value undefined = nullptr;
+    napi_get_undefined(env, &undefined);
+    return undefined;
+}
+
+// Printing (Print Kit): the managed side forwards a file path through ohos_host_print_file;
+// the ArkTS shell's registerPrintSink handler calls @ohos.print print.print([path], context)
+// (ohos.permission.PRINT is system_grant, so the shell does not prompt) and answers through
+// host.notifyPrintResult with code 0 when the system print UI accepted the job and -1 when
+// the framework rejected it. The message carries the framework error for the host log.
+napi_ref g_print_sink_ref = nullptr;
+static void (*g_print_result_listener)(int request_id, int code, const char* message) = nullptr;
+
+// Called from managed code (P/Invoke): forwards a print file path to the ArkTS sink.
+extern "C" int ohos_host_print_file(int request_id, const char* path) {
+    if (g_env == nullptr || g_print_sink_ref == nullptr) {
+        return -1;
+    }
+    napi_value sink = nullptr;
+    if (napi_get_reference_value(g_env, g_print_sink_ref, &sink) != napi_ok || sink == nullptr) {
+        return -1;
+    }
+    napi_value argv[2];
+    napi_create_int32(g_env, request_id, &argv[0]);
+    napi_create_string_utf8(g_env, path != nullptr ? path : "", NAPI_AUTO_LENGTH, &argv[1]);
+    napi_value result = nullptr;
+    napi_status status = napi_call_function(g_env, sink, sink, 2, argv, &result);
+    return status == napi_ok ? 0 : -1;
+}
+
+// The managed side registers the callback that completes a pending print request.
+extern "C" void ohos_host_print_register_result(void* callback) {
+    g_print_result_listener = (void (*)(int, int, const char*))callback;
+}
+
+// Called by the NAPI notify below: hands the shell's answer back to managed code.
+extern "C" void ohos_host_print_result(int request_id, int code, const char* message) {
+    if (g_print_result_listener != nullptr) {
+        g_print_result_listener(request_id, code, message != nullptr ? message : "");
+    }
+}
+
+// ArkTS calls host.registerPrintSink(fn) to receive print requests.
+napi_value RegisterPrintSink(napi_env env, napi_callback_info info) {
+    size_t argc = 1;
+    napi_value argv[1] = {nullptr};
+    napi_get_cb_info(env, info, &argc, argv, nullptr, nullptr);
+    if (argc >= 1) {
+        napi_valuetype type = napi_undefined;
+        napi_typeof(env, argv[0], &type);
+        if (type == napi_function) {
+            if (g_print_sink_ref != nullptr) {
+                napi_delete_reference(env, g_print_sink_ref);
+            }
+            napi_create_reference(env, argv[0], 1, &g_print_sink_ref);
+            OH_LOG_INFO(LOG_APP, "[openharmony-host] print sink registered");
+        }
+    }
+    napi_value undefined = nullptr;
+    napi_get_undefined(env, &undefined);
+    return undefined;
+}
+
+// ArkTS calls host.notifyPrintResult(requestId, code, message) when a request finished.
+napi_value NotifyPrintResult(napi_env env, napi_callback_info info) {
+    size_t argc = 3;
+    napi_value argv[3] = {nullptr, nullptr, nullptr};
+    napi_get_cb_info(env, info, &argc, argv, nullptr, nullptr);
+    int requestId = 0;
+    int code = -1;
+    std::string message;
+    if (argc >= 1) napi_get_value_int32(env, argv[0], &requestId);
+    if (argc >= 2) napi_get_value_int32(env, argv[1], &code);
+    if (argc >= 3) message = GetStringArg(env, argv[2]);
+    ohos_host_print_result(requestId, code, message.c_str());
+    napi_value undefined = nullptr;
+    napi_get_undefined(env, &undefined);
+    return undefined;
+}
+
 // App launching: Launcher/Browser/Share forward requests through ohos_host_ability_start; the
 // ArkTS shell's sink (registerAbilitySink) owns the UIAbilityContext.startAbility call.
 // kind 0 = open uri (implicit viewData Want), 1 = share text (implicit sendData Want),
@@ -1243,6 +1398,10 @@ napi_value Init(napi_env env, napi_value exports) {
         {"notifyContactsResult", nullptr, NotifyContactsResult, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"registerCalendarSink", nullptr, RegisterCalendarSink, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"notifyCalendarResult", nullptr, NotifyCalendarResult, nullptr, nullptr, nullptr, napi_default, nullptr},
+        {"registerBluetoothSink", nullptr, RegisterBluetoothSink, nullptr, nullptr, nullptr, napi_default, nullptr},
+        {"notifyBluetoothResult", nullptr, NotifyBluetoothResult, nullptr, nullptr, nullptr, napi_default, nullptr},
+        {"registerPrintSink", nullptr, RegisterPrintSink, nullptr, nullptr, nullptr, napi_default, nullptr},
+        {"notifyPrintResult", nullptr, NotifyPrintResult, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"registerAbilitySink", nullptr, RegisterAbilitySink, nullptr, nullptr, nullptr, napi_default, nullptr},
 
         {"registerMenuChangedSink", nullptr, RegisterMenuChangedSink, nullptr, nullptr, nullptr, napi_default, nullptr},
