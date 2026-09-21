@@ -294,6 +294,14 @@
              Text="OpenHarmony: staged the Blazor content root (wwwroot) into $(PublishDir)wwwroot; blazor.webview.js was not found in @(StaticWebAsset) or the NuGet cache" />
   </Target>
 
+  <!-- Shared ElfSigner task (sdk-ohos Microsoft.NET.Build.Tasks). Re-signs an ELF64 file in
+       place when its .codesign is missing or does not verify (non-ELF files are skipped).
+       MicrosoftNETBuildTasksAssembly is defined by Microsoft.NET.Sdk.Common.targets, which is
+       imported after this file; UsingTask attributes are evaluated after all imports, so the
+       path is resolved by then. Using the task (rather than the selfsign CLI in scripts/) keeps
+       the pack self-contained: consumers only need the OpenHarmony-enabled .NET SDK. -->
+  <UsingTask TaskName="OpenHarmonyCodesign" AssemblyFile="$(MicrosoftNETBuildTasksAssembly)" />
+
   <Target Name="_OpenHarmonyStageHap"
           AfterTargets="Publish"
           DependsOnTargets="_OpenHarmonyDetectToolchain;_OpenHarmonyResolveHapStageDir;_OpenHarmonyStageBlazorAssets"
@@ -386,6 +394,16 @@
            Text="libc++_shared.so was not found; libopenharmonyhost.so requires it at runtime and the hap loader refuses libs/$(OpenHarmonyAbi)/ without it. Set OpenHarmonySdkRoot (or OHOS_SDK_ROOT) or OHOS_NDK to the matching SDK/NDK root, or pass -p:OpenHarmonyLibCxxShared=&lt;path&gt;." />
     <Copy SourceFiles="@(_OpenHarmonyLibCxxShared)" DestinationFolder="$(_OpenHarmonyHapStageDir)libs/$(OpenHarmonyAbi)/" />
     <Message Importance="high" Text="OpenHarmony: staged libc++_shared.so from @(_OpenHarmonyLibCxxShared->'%(Identity)', '; ')" />
+
+    <!-- The copied lib may carry a vendor .codesign that is not the ElfSigner format the device
+         loader requires (the HarmonyOS SDK's libc++_shared.so ships a PKCS#7 Huawei DevID blob
+         with flags=0). Re-sign the staged libs in place with the shared ElfSigner task, which
+         rewrites any file whose .codesign is missing or does not verify and skips already-valid
+         signatures, so a hap can never carry a non-ElfSigner ELF. A signing failure (or a missing
+         task) fails the build before packing. -->
+    <Error Condition=" !Exists('$(MicrosoftNETBuildTasksAssembly)') "
+           Text="OpenHarmony: the ElfSigner task assembly '$(MicrosoftNETBuildTasksAssembly)' was not found, so $(_OpenHarmonyHapStageDir)libs/$(OpenHarmonyAbi)/ cannot be re-signed; build with an OpenHarmony-enabled .NET SDK." />
+    <OpenHarmonyCodesign Directories="$(_OpenHarmonyHapStageDir)libs" />
 
     <!-- app name substitution + the app descriptor read by the ArkTS shell -->
     <PropertyGroup>
