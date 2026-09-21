@@ -1,6 +1,6 @@
 # Interaction regression suite (headless)
 
-The MAUI-on-OpenHarmony interaction harness (195 interaction checks, a 4-line fuzz tail and a
+The MAUI-on-OpenHarmony interaction harness (203 interaction checks, a 4-line fuzz tail and a
 frame-path performance budget). It builds the platform slice sources from the
 `maui-ohos` working tree and drives the app host without a device: touch/drag/pinch/pointer input,
 overlays, gestures (tap/pan/swipe/pinch/pointer/drag-and-drop), sensors/haptics/notification/picker
@@ -8,8 +8,11 @@ wiring, the app-theme colour-mode handler, the launcher/browser/share ability br
 accessibility shadow tree snapshot, the menu table/activation bridge, the WebView JavaScript
 bridge (script evaluation + `dotnetHost.postMessage`), the contacts/calendar and
 Bluetooth/printing platform extras (off-device degradation plus the delimited payload parsers
-and the text-to-PDF renderer) and the Essentials Battery/DeviceDisplay push bridge (payload
-parsers plus the ModuleInitializer-installed defaults). Before the fuzz tail it runs a frame-path
+and the text-to-PDF renderer), the Essentials Battery/DeviceDisplay push bridge (payload
+parsers plus the ModuleInitializer-installed defaults) and the S-series features (the
+BlazorWebView handler/manager/file-provider path, the accessibility node-count export, the
+flashlight default/degradation and the file-share dispatch/MIME/URI path). Before the fuzz tail
+it runs a frame-path
 performance budget: warm-up plus 200 timed `OpenHarmonyWindowRenderer.Render` frames over a fixed
 401-node tree, reporting average/p50/p95/max frame time and the managed allocation delta and
 failing the suite when the (deliberately loose) budget is exceeded.
@@ -22,7 +25,7 @@ failing the suite when the (deliberately loose) budget is exceeded.
 # (or the MauiSliceDir / HostingDll / OpenHarmonyGraphicsDll MSBuild properties) before building
 # elsewhere; an explicit -p: value wins over the environment and the absolute fallbacks.
 dotnet build -v:q
-dotnet bin/Debug/net11.0/verify.dll | grep -c '\[verify\]'   # expect 200 (195 checks + 4 fuzz + 1 perf)
+dotnet bin/Debug/net11.0/verify.dll | grep -c '\[verify\]'   # expect 208 (203 checks + 4 fuzz + 1 perf)
 ```
 
 The `interaction-regression` workflow (`.github/workflows/interaction-regression.yml`) runs the
@@ -92,7 +95,7 @@ reported average should be well under 1 ms.
   blocks codesigned ELF apphosts on some machines).
 - The suite fails loudly (unhandled exception) when a slice change breaks startup or when an
   assertion for the gesture flows (including the drag-and-drop checks) does not hold; keep it at
-  195 checks plus the 4 fuzz lines plus the 1 perf line (200 `[verify]` lines) when touching the
+  203 checks plus the 4 fuzz lines plus the 1 perf line (208 `[verify]` lines) when touching the
   platform slice.
 - Contacts/calendar coverage: `OpenHarmonyContacts.FindAsync` and
   `OpenHarmonyCalendar.ListUpcomingAsync`/`AddEventAsync` return empty/false without throwing
@@ -180,6 +183,32 @@ reported average should be well under 1 ms.
   the six-parameter `SensorCallback` delegate (pinning the native signature) and checks that
   `(x, y, z, w)` reaches `OrientationSensorData.Orientation` unchanged, with no reconstructed
   scalar part.
+- S-series coverage:
+  - S1 BlazorWebView: the handler/manager source contract is asserted from
+    `OpenHarmonyBlazorWebViewHandler.cs` (the `IBlazorWebViewHandler` shell, the
+    `StartWebViewCoreIfPossible` startup, the platform `OpenHarmonyWebViewManager` and the root
+    component add/remove publishes) together with the gated `IBlazorWebView` entry in
+    `MauiOpenHarmonyExtensions.SliceHandlers`; the file provider is pinned by
+    `OpenHarmonyBlazorFileProvider`/`IFileProvider` and by run-time checks of the unconditionally
+    compiled `OpenHarmonyBlazorWebView` asset mapping the provider delegates to (default host file,
+    `_framework/...`, origin/query/fragment stripping, `../`/`\`/encoded-escape rejection); the
+    handler itself compiles only when `OPENHARMONY_BLAZOR_WEBVIEW` is defined, so the source
+    contract is asserted where this harness cannot reference the Blazor package types.
+  - S2 accessibility node count: `ohos_host_accessibility_node_count` is asserted in
+    `openharmony_host.c`, the shared header and the napi module table
+    (`AccessibilityNodeCount` -> `host.accessibilityNodeCount`, the shell self-check export), and
+    the managed half proves a rebuilt live-page shadow tree has nodes while the publish pass stays
+    a no-op without the host library (guarded, no throw).
+  - S3 flashlight: `Flashlight.Default` is the slice `OpenHarmonyFlashlight`, `IsSupportedAsync`
+    answers false and `TurnOnAsync`/`TurnOffAsync` degrade without throwing off-device; the bridge
+    is pinned reflectively to the `ohos_host_flashlight_set` entry point in
+    `libopenharmonyhost.so` with opcodes 0/1/2 (off/on/probe), and the native source must carry the
+    export plus the `registerFlashlightSink` shell sink.
+  - S4 file sharing: `OpenHarmonyShare.MimeTypeForPath` is checked on the common document/image
+    extensions and `*/*` fallback, `FileUriForPath` on the absolute/relative/scheme-passthrough
+    shapes, and `ShareFileRequest`/`ShareMultipleFilesRequest`/`ShareTextRequest` dispatch through
+    the installed default must complete without throwing when the ability bridge is absent; the
+    want kind for single-file sharing is pinned to 3.
 - CI wiring: `.github/workflows/interaction-regression.yml` builds the slice checkout and the
   hosting assemblies on the runner and gates on the `[verify]` line count (>=199) plus the perf
   `within=True` marker (see "Running it" above).

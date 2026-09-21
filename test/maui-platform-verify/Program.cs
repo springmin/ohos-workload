@@ -2075,6 +2075,215 @@ if (!unchangedQuiet || !valueChangeSeen)
     throw new InvalidOperationException("the accessibility range frame diff assertion failed");
 }
 
+// ---- S-series: BlazorWebView, a11y node count, flashlight, file sharing ------------------------
+// The four feature slices delivered alongside the S-series packs, checked deterministically and
+// off-device safe (no host library is loaded and no device state is assumed). S1 reflects the
+// BlazorWebView managed path out of its source because the handler only compiles when
+// OPENHARMONY_BLAZOR_WEBVIEW is defined (this harness leaves it undefined), and exercises the
+// unconditionally compiled asset mapping the handler's file provider delegates to at run time;
+// S2 probes the accessibility node-count export the shell's self-check reads; S3 pins the torch
+// bridge's host entry point and proves the installed Essentials default degrades without
+// throwing; S4 exercises the share dispatch, MIME map and file:// URI shape. Device-only halves
+// (torch LED, receiver read grant, Blazor start(), a11y provider attach) stay unverifiable
+// off-device and are documented rather than asserted.
+
+// S1a: handler + manager + registration (source contract, no OPENHARMONY_BLAZOR_WEBVIEW here).
+string? s1HandlerPath = FindHostSource("OpenHarmonyBlazorWebViewHandler.cs");
+string s1Handler = s1HandlerPath is null ? string.Empty : File.ReadAllText(s1HandlerPath);
+string? s1ExtensionsPath = FindHostSource("MauiOpenHarmonyExtensions.cs");
+string s1Extensions = s1ExtensionsPath is null ? string.Empty : File.ReadAllText(s1ExtensionsPath);
+bool s1HandlerOk = s1Handler.Contains("OpenHarmonyBlazorWebViewHandler : OpenHarmonyViewHandler<IBlazorWebView>, IBlazorWebViewHandler") &&
+    s1Handler.Contains("StartWebViewCoreIfPossible") &&
+    s1Handler.Contains("OpenHarmonyWebViewManager") &&
+    s1Handler.Contains("AddToWebViewManagerAsync") &&
+    s1Handler.Contains("RemoveFromWebViewManagerAsync");
+bool s1RegistrationOk = s1Extensions.Contains("#if OPENHARMONY_BLAZOR_WEBVIEW") &&
+    s1Extensions.Contains("[typeof(Microsoft.AspNetCore.Components.WebView.Maui.IBlazorWebView)] = typeof(OpenHarmonyBlazorWebViewHandler)");
+bool s1SourceOk = s1HandlerOk && s1RegistrationOk;
+Console.WriteLine($"[verify] s1 blazor handler/manager handler={s1Handler.Length > 0} startup={s1Handler.Contains("StartWebViewCoreIfPossible")} rootComponents={s1Handler.Contains("AddToWebViewManagerAsync")} registered={s1RegistrationOk} gated={s1Extensions.Contains("#if OPENHARMONY_BLAZOR_WEBVIEW")} source='{s1HandlerPath ?? "<missing>"}' assert={s1SourceOk}");
+if (!s1SourceOk)
+{
+    throw new InvalidOperationException("the S1 BlazorWebView handler/manager/registration path is missing from the platform slice sources");
+}
+
+// S1b: file provider + root asset mapping (the file provider resolves every request through
+// OpenHarmonyBlazorWebView.ResolveAssetPath, which is compiled unconditionally and is asserted
+// at run time: origin/query/fragment stripping, the default host file, the framework directory
+// and the escape rejections that keep a resolved asset inside the content root).
+string s1AppDirectory = Path.GetFullPath(Path.Combine(Path.GetTempPath(), "verify-blazor-payload"));
+string? s1ContentRoot = OpenHarmonyBlazorWebView.ResolveContentRoot(s1AppDirectory);
+string? s1IndexAsset = OpenHarmonyBlazorWebView.ResolveAssetPath(s1AppDirectory, "");
+string? s1FrameworkAsset = OpenHarmonyBlazorWebView.ResolveAssetPath(s1AppDirectory, "_framework/blazor.webview.js");
+string? s1UrlAsset = OpenHarmonyBlazorWebView.ResolveAssetPath(s1AppDirectory, "https://0.0.0.0/_framework/blazor.webview.js?v=1#frag");
+bool s1MappingOk = s1ContentRoot == Path.GetFullPath(Path.Combine(s1AppDirectory, OpenHarmonyBlazorWebView.ContentRoot)) &&
+    s1IndexAsset == Path.GetFullPath(Path.Combine(s1AppDirectory, OpenHarmonyBlazorWebView.ContentRoot, OpenHarmonyBlazorWebView.DefaultHostFile)) &&
+    s1FrameworkAsset == Path.GetFullPath(Path.Combine(s1AppDirectory, OpenHarmonyBlazorWebView.ContentRoot, "_framework", "blazor.webview.js")) &&
+    s1UrlAsset == s1FrameworkAsset;
+bool s1SafetyOk = OpenHarmonyBlazorWebView.ResolveAssetPath(s1AppDirectory, "../escape.js") is null &&
+    OpenHarmonyBlazorWebView.ResolveAssetPath(s1AppDirectory, "a/../b.js") is null &&
+    OpenHarmonyBlazorWebView.ResolveAssetPath(s1AppDirectory, "css\\evil.css") is null &&
+    OpenHarmonyBlazorWebView.ResolveAssetPath(s1AppDirectory, "%2e%2e/escape.js") is null &&
+    OpenHarmonyBlazorWebView.ResolveAssetPath(null, "index.html") is null &&
+    OpenHarmonyBlazorWebView.ResolveAssetPath(s1AppDirectory, "index.html", "../root") is null;
+bool s1ConstantsOk = OpenHarmonyBlazorWebView.AppOrigin == "https://0.0.0.0/" &&
+    OpenHarmonyBlazorWebView.DefaultHostFile == "index.html" &&
+    OpenHarmonyBlazorWebView.FrameworkDirectory == "_framework" &&
+    OpenHarmonyBlazorWebView.IsFrameworkRequest("_framework/blazor.webview.js") &&
+    !OpenHarmonyBlazorWebView.IsFrameworkRequest("css/app.css");
+bool s1ProviderOk = s1Handler.Contains("OpenHarmonyBlazorFileProvider") && s1Handler.Contains("IFileProvider");
+bool s1MappingAllOk = s1ProviderOk && s1MappingOk && s1SafetyOk && s1ConstantsOk;
+Console.WriteLine($"[verify] s1 blazor file provider provider={s1ProviderOk} mapping={s1MappingOk} safety={s1SafetyOk} constants={s1ConstantsOk} root={s1ContentRoot} index='{s1IndexAsset}' framework='{s1FrameworkAsset}' assert={s1MappingAllOk}");
+if (!s1MappingAllOk)
+{
+    throw new InvalidOperationException("the S1 BlazorWebView file-provider asset mapping assertion failed");
+}
+
+// S2a: the node-count export the ArkTS accessibility self-check reads
+// (host.accessibilityNodeCount -> ohos_host_accessibility_node_count) is present under its own
+// name in the C source, the header and the napi module table, so the 16-argument publish
+// contract reflection never mistakes it for the publish function.
+string? s2NapiPath = FindHostSource("src/OpenHarmonyHost/host_napi.cpp");
+string s2Napi = s2NapiPath is null ? string.Empty : File.ReadAllText(s2NapiPath);
+bool s2CExportOk = cSource?.Contains("int ohos_host_accessibility_node_count(void)") == true;
+bool s2HeaderOk = hSource?.Contains("int ohos_host_accessibility_node_count(void);") == true;
+bool s2NapiOk = s2Napi.Contains("napi_value AccessibilityNodeCount(") &&
+    s2Napi.Contains("ohos_host_accessibility_node_count()") &&
+    s2Napi.Contains("\"accessibilityNodeCount\"");
+bool s2ExportOk = s2CExportOk && s2HeaderOk && s2NapiOk;
+Console.WriteLine($"[verify] s2 a11y node-count export c={s2CExportOk} header={s2HeaderOk} napi={s2NapiOk} distinct={cSource?.Contains("int ohos_host_accessibility_count(void)") == true} source='{s2NapiPath ?? "<missing>"}' assert={s2ExportOk}");
+if (!s2ExportOk)
+{
+    throw new InvalidOperationException("the S2 accessibility node-count export is missing from the native host sources");
+}
+
+// S2b: managed half of the same count. The shadow tree rebuilt for the live page has nodes, and
+// the publish pass that would hand them to the host stays a guarded no-op without the host
+// library (the count export would return 0), never throwing.
+OpenHarmonyAccessibility.Refresh(navRoot);
+int s2NodeCount = OpenHarmonyAccessibility.Nodes.Count;
+bool s2PublishNoThrow = true;
+try
+{
+    OpenHarmonyAccessibility.Publish();
+}
+catch (Exception ex)
+{
+    s2PublishNoThrow = false;
+    Console.WriteLine($"[verify] s2 a11y node-count publish threw {ex.GetType().Name}: {ex.Message}");
+}
+bool s2RuntimeOk = s2NodeCount > 0 && s2PublishNoThrow &&
+    OpenHarmonyAccessibility.Nodes.Count == s2NodeCount && OpenHarmonyAccessibility.LastPublishedCount == 0;
+Console.WriteLine($"[verify] s2 a11y node-count managed nodes={s2NodeCount} published={OpenHarmonyAccessibility.LastPublishedCount} noThrow={s2PublishNoThrow} assert={s2RuntimeOk}");
+if (!s2RuntimeOk)
+{
+    throw new InvalidOperationException("the S2 accessibility node-count runtime probe failed");
+}
+
+// S3a: the installed Essentials flashlight default is the slice implementation and every call
+// degrades without throwing when the platform path is unavailable (the bridge reports support
+// as false and TurnOn/TurnOff are logged no-ops instead of FeatureNotSupportedException).
+var s3Flashlight = Microsoft.Maui.Devices.Flashlight.Default;
+bool s3InstalledOk = s3Flashlight is OpenHarmonyFlashlight;
+bool s3Supported = true;
+bool s3TurnOnNoThrow = false;
+bool s3TurnOffNoThrow = false;
+try
+{
+    s3Supported = await s3Flashlight.IsSupportedAsync();
+    await s3Flashlight.TurnOnAsync();
+    s3TurnOnNoThrow = true;
+    await s3Flashlight.TurnOffAsync();
+    s3TurnOffNoThrow = true;
+}
+catch (Exception ex)
+{
+    Console.WriteLine($"[verify] s3 flashlight threw {ex.GetType().Name}: {ex.Message}");
+}
+bool s3RuntimeOk = s3InstalledOk && !s3Supported && s3TurnOnNoThrow && s3TurnOffNoThrow;
+Console.WriteLine($"[verify] s3 flashlight default={s3Flashlight.GetType().Name} installed={s3InstalledOk} supported={s3Supported} turnOnNoThrow={s3TurnOnNoThrow} turnOffNoThrow={s3TurnOffNoThrow} assert={s3RuntimeOk}");
+if (!s3RuntimeOk)
+{
+    throw new InvalidOperationException("the S3 flashlight default/degradation assertion failed");
+}
+
+// S3b: the managed bridge's P/Invoke entry point and opcodes are pinned, and the native host's
+// torch export plus the shell sink registration are present in the source the pack is built from.
+MethodInfo? s3FlashlightPinvoke = typeof(OpenHarmonyFlashlightBridge).GetMethod(
+    "FlashlightSet", BindingFlags.NonPublic | BindingFlags.Static);
+DllImportAttribute? s3FlashlightImport = s3FlashlightPinvoke?.GetCustomAttribute<DllImportAttribute>();
+bool s3EntryPointOk = s3FlashlightImport is not null &&
+    s3FlashlightImport.EntryPoint == "ohos_host_flashlight_set" &&
+    s3FlashlightImport.Value == "libopenharmonyhost.so";
+bool s3OpcodesOk = OpenHarmonyFlashlightBridge.OffOp == 0 &&
+    OpenHarmonyFlashlightBridge.OnOp == 1 &&
+    OpenHarmonyFlashlightBridge.ProbeOp == 2;
+bool s3NativeOk = s3EntryPointOk && s3OpcodesOk &&
+    s2Napi.Contains("ohos_host_flashlight_set") && s2Napi.Contains("\"registerFlashlightSink\"");
+Console.WriteLine($"[verify] s3 flashlight export entry='{s3FlashlightImport?.EntryPoint}' lib='{s3FlashlightImport?.Value}' opcodes={OpenHarmonyFlashlightBridge.OffOp}/{OpenHarmonyFlashlightBridge.OnOp}/{OpenHarmonyFlashlightBridge.ProbeOp} sink={s2Napi.Contains("\"registerFlashlightSink\"")} assert={s3NativeOk}");
+if (!s3NativeOk)
+{
+    throw new InvalidOperationException("the S3 flashlight host export/sink contract drifted");
+}
+
+// S4a: the MIME map a file share sends as the Want type (extension, lower-cased; unknown -> */*).
+string s4MimePdf = OpenHarmonyShare.MimeTypeForPath("/tmp/verify.PDF");
+string s4MimePng = OpenHarmonyShare.MimeTypeForPath("verify.PNG");
+string s4MimeTxt = OpenHarmonyShare.MimeTypeForPath("verify.txt");
+string s4MimeDocx = OpenHarmonyShare.MimeTypeForPath("verify.docx");
+string s4MimeUnknown = OpenHarmonyShare.MimeTypeForPath("verify.unknownext");
+bool s4MimeOk = s4MimePdf == "application/pdf" && s4MimePng == "image/png" &&
+    s4MimeTxt == "text/plain" &&
+    s4MimeDocx == "application/vnd.openxmlformats-officedocument.wordprocessingml.document" &&
+    s4MimeUnknown == "*/*";
+Console.WriteLine($"[verify] s4 share mime pdf={s4MimePdf} png={s4MimePng} txt={s4MimeTxt} docx={s4MimeDocx} unknown={s4MimeUnknown} assert={s4MimeOk}");
+if (!s4MimeOk)
+{
+    throw new InvalidOperationException("the S4 share MIME map assertion failed");
+}
+
+// S4b: the file:// URI shape (absolute sandbox path -> file:///..., scheme passes through) and the
+// off-device dispatch of ShareFileRequest / ShareMultipleFilesRequest / ShareTextRequest through
+// the installed IShare default, which must complete without throwing when the ability bridge is
+// absent. The want kind for single-file sharing is pinned to 3 (sendData + read grant in the
+// shell), matching the shell's FLAG_AUTH_READ_URI_PERMISSION handling.
+string s4UriAbsolute = OpenHarmonyShare.FileUriForPath("/data/storage/el2/base/tmp/verify-share.pdf");
+string s4UriRelative = OpenHarmonyShare.FileUriForPath("verify-share.pdf");
+string s4UriPassthrough = OpenHarmonyShare.FileUriForPath("file:///already/there.pdf");
+bool s4UriOk = s4UriAbsolute == "file:///data/storage/el2/base/tmp/verify-share.pdf" &&
+    s4UriRelative == "file:///verify-share.pdf" &&
+    s4UriPassthrough == "file:///already/there.pdf";
+bool s4DefaultOk = shareDefault is OpenHarmonyShare;
+bool s4DispatchNoThrow = true;
+bool s4SingleOk = false;
+bool s4MultipleOk = false;
+bool s4TextOk = false;
+try
+{
+    await shareDefault.RequestAsync(new ShareFileRequest { Title = "verify", File = new ShareFile(probeFile) });
+    s4SingleOk = true;
+    await shareDefault.RequestAsync(new ShareMultipleFilesRequest
+    {
+        Title = "verify",
+        Files = new List<ShareFile> { new(probeFile), new(imagePath) },
+    });
+    s4MultipleOk = true;
+    await shareDefault.RequestAsync(new ShareTextRequest { Text = "verify share" });
+    s4TextOk = true;
+}
+catch (Exception ex)
+{
+    s4DispatchNoThrow = false;
+    Console.WriteLine($"[verify] s4 share dispatch threw {ex.GetType().Name}: {ex.Message}");
+}
+FieldInfo? s4KindField = typeof(OpenHarmonyAbilityBridge).GetField("KindShareFile", BindingFlags.NonPublic | BindingFlags.Static);
+bool s4KindOk = s4KindField?.GetRawConstantValue()?.ToString() == "3";
+bool s4DispatchOk = s4DefaultOk && s4KindOk && s4UriOk && s4DispatchNoThrow && s4SingleOk && s4MultipleOk && s4TextOk;
+Console.WriteLine($"[verify] s4 share uri='{s4UriAbsolute}' relative='{s4UriRelative}' passthrough={s4UriPassthrough == "file:///already/there.pdf"} kind3={s4KindOk} dispatchNoThrow={s4DispatchNoThrow} single={s4SingleOk} multiple={s4MultipleOk} text={s4TextOk} assert={s4DispatchOk}");
+if (!s4DispatchOk)
+{
+    throw new InvalidOperationException("the S4 share dispatch/URI assertion failed");
+}
+
 // ---- Performance budget (bounded, deterministic, seedless) ------------------------------------
 // The frame path (OpenHarmonyWindowRenderer.Render: measure/arrange, the iterative view walk, the
 // accessibility shadow tree rebuild + frame diff and the surface hooks) is timed over a fixed

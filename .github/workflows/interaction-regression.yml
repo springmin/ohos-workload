@@ -12,8 +12,9 @@ name: interaction-regression
 #
 # verify.csproj turns those environment variables into MSBuild default properties (an explicit
 # -p: override still wins), so no other configuration is required. The job fails unless the suite
-# exits 0, reports at least 199 "[verify]" lines (195 interaction checks + 4 fuzz lines + the
-# perf line), logs no "Unhandled" line, and the perf line carries the "within=True" budget marker
+# exits 0, reports at least 199 "[verify]" lines (the gate is a floor below the current count of
+# 208 = 203 interaction checks + 4 fuzz lines + the perf line), logs no "Unhandled" line, and the
+# perf line carries the "within=True" budget marker
 # (the frame-path gate: 200 timed OpenHarmonyWindowRenderer.Render frames over a fixed 401-node
 # tree, average <= 20 ms, max <= 250 ms, max/average <= 100x; see the README "Performance budget"
 # section for the rationale).
