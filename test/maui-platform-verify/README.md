@@ -1,6 +1,6 @@
 # Interaction regression suite (headless)
 
-The MAUI-on-OpenHarmony interaction harness (234 interaction checks, a 4-line fuzz tail, a
+The MAUI-on-OpenHarmony interaction harness (243 interaction checks, a 4-line fuzz tail, a
 frame-path performance budget and an accessibility publish-path budget). It builds the platform
 slice sources from the
 `maui-ohos` working tree and drives the app host without a device: touch/drag/pinch/pointer input,
@@ -29,7 +29,7 @@ below), failing the suite when the (deliberately loose) budgets are exceeded.
 # (or the MauiSliceDir / HostingDll / OpenHarmonyGraphicsDll MSBuild properties) before building
 # elsewhere; an explicit -p: value wins over the environment and the absolute fallbacks.
 dotnet build -v:q
-dotnet bin/Debug/net11.0/verify.dll | grep -c '\[verify\]'   # expect 247 (234 checks + 4 fuzz + 1 frame perf + 8 a11y perf)
+dotnet bin/Debug/net11.0/verify.dll | grep -c '\[verify\]'   # expect 256 (243 checks + 4 fuzz + 1 frame perf + 8 a11y perf)
 ```
 
 The `interaction-regression` workflow (`.github/workflows/interaction-regression.yml`) runs the
@@ -130,8 +130,8 @@ publish pass (skip/republish).
   blocks codesigned ELF apphosts on some machines).
 - The suite fails loudly (unhandled exception) when a slice change breaks startup or when an
   assertion for the gesture flows (including the drag-and-drop checks) does not hold; keep it at
-  234 checks plus the 4 fuzz lines plus the 1 frame-perf line plus the 8 a11y-perf lines
-  (247 `[verify]` lines) when touching the platform slice.
+  243 checks plus the 4 fuzz lines plus the 1 frame-perf line plus the 8 a11y-perf lines
+  (256 `[verify]` lines) when touching the platform slice.
 - Contacts/calendar coverage: `OpenHarmonyContacts.FindAsync` and
   `OpenHarmonyCalendar.ListUpcomingAsync`/`AddEventAsync` return empty/false without throwing
   off-device and report `IsSupported == false` before and after the call (the permission probe
@@ -232,6 +232,26 @@ publish pass (skip/republish).
   re-raised as a `SurfaceChanged` event; a replay of the unchanged snapshot must not re-raise the
   context but must still emit the surface event, and the captured environment/context/surface
   state is restored before the perf blocks. That is 18 `[verify]` lines.
+- Host-boundary lifetime guards (F1: A1/A2/A5/A6/A7/A8) and per-document markers (B3): nine
+  source-contract pins parse the committed sources, so a regression fails this off-device run
+  instead of shipping a pack built from drifted sources. A1 asserts `g_context_mutex` and that
+  the pending-snapshot take, the superseded free, the `g_app` publish and the setter's
+  replacement all sit inside the locked region (the adoption race was an ASan use-after-free in
+  `strdup`); A2 asserts the `g_a11y_mutex` region around begin/node/commit/count/get, the
+  pthread-key per-thread string copies the 17-argument getter fills under the lock and the
+  unchanged 16/17/16 signature counts; A5 asserts `OH_ArkUI_DestoryAccessibilityEventInfo`
+  after `OH_ArkUI_SendAccessibilityAsyncEvent` plus the failure-path destroy (one leaked event
+  info per published event before the fix); A6 asserts the pre-handle lifecycle/NodeContent
+  queue globals, their transfer to the handle inside the A1 critical section and the
+  register_bridge flush; A7 asserts the NAPI `g_launch_lock`/`g_launch_requested`
+  reject-before-allocate guard with both failure-path clears and the native
+  `g_launch_in_progress` guard set/cleared under the lock with the five `OhosHostEndLaunch()`
+  failure calls; A8 asserts `ImeUtf8PrefixLength` backs off to a UTF-8 sequence boundary at both
+  IME call sites (and no `strncpy` call site remains); B3 asserts the shell's
+  `window.__ohHybridId`/`window.__ohBlazorId` stamps in all three preview templates and the
+  marker-checked `'skip'` eval before `SendRawMessage` (hybrid) and `SendMessage` (Blazor),
+  including the skip log. That is 9 `[verify]` lines: 247 + 9 = 256 = 243 interaction checks +
+  4 fuzz + 1 frame perf + 8 a11y perf; the workflow floor stays at 224.
 - Haptics coverage: `HapticFeedback.Default` is the slice implementation, `Perform(Click/LongPress)`
   degrades without throwing off-device, and `IsSupported` is false without the host library. The app
   theme handler is exercised directly (ArkUI colour-mode reports need a device): setting dark/light

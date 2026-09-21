@@ -2928,6 +2928,313 @@ if (!v8RestoredOk)
     throw new InvalidOperationException("the V8 bridge-seam drill did not restore the environment/context/surface state");
 }
 
+// ---- A-series: host-boundary lifetime guards (F1) and B3 per-document markers -----------------
+// The F1 batch fixed the host-boundary lifetime races A1/A2/A5/A6/A7/A8 in the native host and
+// the security batch bound the JS bridge deliveries to the document the shell served (B3).
+// These pins parse the committed sources and assert the structural facts the fixes rely on, so
+// a regression fails this off-device run instead of shipping a pack built from drifted sources.
+// The B3 handler checks parse the Blazor handler source too, because that file only compiles
+// with OPENHARMONY_BLAZOR_WEBVIEW (the S1 pins explain the same constraint).
+
+// Shared structural helpers: a whole locked region (a lock call followed by an unlock call
+// inside [start, end)) and an exact occurrence counter for the "exactly N call sites" checks.
+static bool LockedRegion(string? source, string lockCall, string unlockCall, int start, int end)
+{
+    if (source is null || start < 0 || end <= start)
+    {
+        return false;
+    }
+    int lockAt = source.IndexOf(lockCall, start, StringComparison.Ordinal);
+    if (lockAt < 0 || lockAt >= end)
+    {
+        return false;
+    }
+    int unlockAt = source.LastIndexOf(unlockCall, end - 1, end - start, StringComparison.Ordinal);
+    return unlockAt > lockAt;
+}
+
+static int CountOccurrences(string? source, string needle)
+{
+    if (source is null)
+    {
+        return 0;
+    }
+    int count = 0;
+    for (int at = source.IndexOf(needle, StringComparison.Ordinal); at >= 0;
+         at = source.IndexOf(needle, at + needle.Length, StringComparison.Ordinal))
+    {
+        count++;
+    }
+    return count;
+}
+
+// A1: g_context_mutex serializes the pending/live context slots. start_app takes the pending
+// snapshot out of the slot under the lock (adopting it only when its own context is absent or
+// does not name an appDir), frees a superseded one under the same lock, and publishes g_app
+// before unlocking; ohos_host_set_app_context replaces the pending slot under the same lock
+// (the race was an ASan use-after-free in strdup), and the failed-launch clear holds it too.
+int a1LockAt = cSource?.IndexOf("pthread_mutex_lock(&g_context_mutex);\n    char* adopted_pending = NULL;", StringComparison.Ordinal) ?? -1;
+int a1AdoptAt = a1LockAt < 0 ? -1 : cSource!.IndexOf("adopted_pending = g_pending_context_json;", a1LockAt, StringComparison.Ordinal);
+int a1AdoptClearAt = a1AdoptAt < 0 ? -1 : cSource!.IndexOf("g_pending_context_json = NULL;", a1AdoptAt, StringComparison.Ordinal);
+int a1SupersedeAt = a1LockAt < 0 ? -1 : cSource!.IndexOf("free(g_pending_context_json);", a1LockAt, StringComparison.Ordinal);
+int a1AdoptFreeAt = a1LockAt < 0 ? -1 : cSource!.IndexOf("free(adopted_pending);", a1LockAt, StringComparison.Ordinal);
+int a1PublishAt = a1LockAt < 0 ? -1 : cSource!.IndexOf("g_app = handle;", a1LockAt, StringComparison.Ordinal);
+int a1UnlockAt = a1PublishAt < 0 ? -1 : cSource!.IndexOf("pthread_mutex_unlock(&g_context_mutex);", a1PublishAt, StringComparison.Ordinal);
+int a1SetterAt = cSource?.IndexOf("int ohos_host_set_app_context(const char* json) {", StringComparison.Ordinal) ?? -1;
+int a1SetterLockAt = a1SetterAt < 0 ? -1 : cSource!.IndexOf("pthread_mutex_lock(&g_context_mutex);", a1SetterAt, StringComparison.Ordinal);
+int a1SetterReplaceAt = a1SetterLockAt < 0 ? -1 : cSource!.IndexOf("g_pending_context_json = copy;", a1SetterLockAt, StringComparison.Ordinal);
+int a1SetterUnlockAt = a1SetterReplaceAt < 0 ? -1 : cSource!.IndexOf("pthread_mutex_unlock(&g_context_mutex);", a1SetterReplaceAt, StringComparison.Ordinal);
+bool a1MutexOk = cSource?.Contains("static pthread_mutex_t g_context_mutex = PTHREAD_MUTEX_INITIALIZER;") == true;
+bool a1AdoptTakenOk = a1LockAt >= 0 && a1AdoptAt > a1LockAt && a1AdoptClearAt > a1AdoptAt;
+bool a1AdoptFreedOk = a1AdoptFreeAt > a1AdoptClearAt && a1AdoptFreeAt < a1UnlockAt;
+bool a1SupersedeOk = a1SupersedeAt > a1LockAt && a1SupersedeAt < a1UnlockAt && a1PublishAt > a1SupersedeAt && a1UnlockAt > a1PublishAt;
+bool a1SetterOk = a1SetterLockAt > a1SetterAt && a1SetterReplaceAt > a1SetterLockAt && a1SetterUnlockAt > a1SetterReplaceAt;
+bool a1EndLaunchOk = cSource?.Contains("static void OhosHostEndLaunch(void) {\n    pthread_mutex_lock(&g_context_mutex);\n    g_launch_in_progress = 0;\n    pthread_mutex_unlock(&g_context_mutex);") == true;
+bool a1Ok = a1MutexOk && a1AdoptTakenOk && a1AdoptFreedOk && a1SupersedeOk && a1SetterOk && a1EndLaunchOk;
+Console.WriteLine($"[verify] a1 context mutex mutex={a1MutexOk} adoptTaken={a1AdoptTakenOk} adoptFreed={a1AdoptFreedOk} supersededFreedUnderLock={a1SupersedeOk} publishUnderLock={a1PublishAt > a1SupersedeAt && a1UnlockAt > a1PublishAt} setterReplaceUnderLock={a1SetterOk} endLaunchUnderLock={a1EndLaunchOk} source='{cSourcePath ?? "<missing>"}' assert={a1Ok}");
+if (!a1Ok)
+{
+    throw new InvalidOperationException(
+        $"the A1 g_context_mutex adoption/supersede contract drifted: mutex={a1MutexOk} taken={a1AdoptTakenOk} " +
+        $"freed={a1AdoptFreedOk} supersede={a1SupersedeOk} setter={a1SetterOk} endLaunch={a1EndLaunchOk} " +
+        $"source={cSourcePath ?? "<missing>"}");
+}
+
+// A2: g_a11y_mutex guards the whole node-table API (begin/node/commit/count/get) against the
+// NAPI provider reading on the ArkUI thread; get() copies the interned strings under the lock
+// into per-thread storage hung off a pthread key (freed on thread exit, not __thread/emutls),
+// so begin() can free the table while ArkUI still fills its element. The 16-argument publish
+// and 17-argument getter ABI stay unchanged.
+int a2BeginAt = cSource?.IndexOf("int ohos_host_accessibility_begin(int count) {", StringComparison.Ordinal) ?? -1;
+int a2NodeAt = cSource?.IndexOf("int ohos_host_accessibility_node(int id,", StringComparison.Ordinal) ?? -1;
+int a2CommitAt = cSource?.IndexOf("int ohos_host_accessibility_commit(void) {", StringComparison.Ordinal) ?? -1;
+int a2CountAt = cSource?.IndexOf("int ohos_host_accessibility_count(void) {", StringComparison.Ordinal) ?? -1;
+int a2NodeCountAt = cSource?.IndexOf("int ohos_host_accessibility_node_count(void) {", StringComparison.Ordinal) ?? -1;
+int a2GetAt = cSource?.IndexOf("int ohos_host_accessibility_get(int index,", StringComparison.Ordinal) ?? -1;
+int a2EndAt = a2GetAt < 0 ? -1 : cSource!.IndexOf("#ifdef __cplusplus", a2GetAt, StringComparison.Ordinal);
+const string a2LockCall = "pthread_mutex_lock(&g_a11y_mutex);";
+const string a2UnlockCall = "pthread_mutex_unlock(&g_a11y_mutex);";
+bool a2BeginLock = LockedRegion(cSource, a2LockCall, a2UnlockCall, a2BeginAt, a2NodeAt);
+bool a2NodeLock = LockedRegion(cSource, a2LockCall, a2UnlockCall, a2NodeAt, a2CommitAt);
+bool a2CommitLock = LockedRegion(cSource, a2LockCall, a2UnlockCall, a2CommitAt, a2CountAt);
+bool a2CountLock = LockedRegion(cSource, a2LockCall, a2UnlockCall, a2CountAt, a2NodeCountAt);
+bool a2GetLock = LockedRegion(cSource, a2LockCall, a2UnlockCall, a2GetAt, a2EndAt);
+int a2GetCopyAt = a2GetAt < 0 ? -1 : cSource!.IndexOf("OhosA11yCopySet* copies = OhosA11yCopySetForThread();", a2GetAt, StringComparison.Ordinal);
+int a2GetUnlockAt = a2GetCopyAt < 0 ? -1 : cSource!.IndexOf(a2UnlockCall, a2GetCopyAt, StringComparison.Ordinal);
+bool a2CopyKeyOk = cSource?.Contains("static pthread_key_t g_a11y_copy_key;") == true &&
+    cSource.Contains("pthread_key_create(&g_a11y_copy_key, OhosA11yCopySetDestroy)") &&
+    cSource.Contains("pthread_once(&g_a11y_copy_once, OhosA11yCopyKeyInit)") &&
+    cSource.Contains("pthread_getspecific(g_a11y_copy_key)") &&
+    cSource.Contains("pthread_setspecific(g_a11y_copy_key, set)") &&
+    cSource.Contains("free(set->strings[i]);");
+bool a2CopyFieldsOk = cSource?.Contains("if (role != NULL) *role = OhosA11yCopyString(copies, 0, node->role);") == true &&
+    cSource.Contains("if (text != NULL) *text = OhosA11yCopyString(copies, 1, node->text);") &&
+    cSource.Contains("if (description != NULL) *description = OhosA11yCopyString(copies, 2, node->description);") &&
+    cSource.Contains("if (hint != NULL) *hint = OhosA11yCopyString(copies, 3, node->hint);");
+bool a2CopyInsideLock = a2GetCopyAt > a2GetAt && a2GetCopyAt < a2GetUnlockAt;
+bool a2SignatureOk = nativeNodeParameters.Length == 16 && nativeGetParameters.Length == 17 && headerNodeParameters.Length == 16;
+bool a2Ok = a2BeginLock && a2NodeLock && a2CommitLock && a2CountLock && a2GetLock &&
+    a2CopyKeyOk && a2CopyFieldsOk && a2CopyInsideLock && a2SignatureOk;
+Console.WriteLine($"[verify] a2 a11y table lock begin={a2BeginLock} node={a2NodeLock} commit={a2CommitLock} count={a2CountLock} get={a2GetLock} copyKey={a2CopyKeyOk} copyUnderLock={a2CopyInsideLock} fields={a2CopyFieldsOk} signature={nativeNodeParameters.Length}/{nativeGetParameters.Length}/{headerNodeParameters.Length} assert={a2Ok}");
+if (!a2Ok)
+{
+    throw new InvalidOperationException(
+        $"the A2 a11y table lock/per-thread copy contract drifted: begin={a2BeginLock} node={a2NodeLock} " +
+        $"commit={a2CommitLock} count={a2CountLock} get={a2GetLock} copyKey={a2CopyKeyOk} " +
+        $"copyUnderLock={a2CopyInsideLock} fields={a2CopyFieldsOk} " +
+        $"signatures={nativeNodeParameters.Length}/{nativeGetParameters.Length}/{headerNodeParameters.Length} " +
+        $"source={cSourcePath ?? "<missing>"}");
+}
+
+// A5: the ArkUI_AccessibilityEventInfo created for every published event is destroyed on both
+// exits of ohos_host_accessibility_send_event: the SetEventType failure path and, after the
+// async send, the normal path (the provider serializes during the send; the caller keeps
+// ownership), so a published event no longer leaks one info object.
+int a5SendAt = s2Napi.IndexOf("OH_ArkUI_SendAccessibilityAsyncEvent(g_a11y_provider, event, nullptr);", StringComparison.Ordinal);
+int a5DestroyAfterSendAt = a5SendAt < 0 ? -1 : s2Napi.IndexOf("OH_ArkUI_DestoryAccessibilityEventInfo(event);", a5SendAt, StringComparison.Ordinal);
+int a5DestroyCount = CountOccurrences(s2Napi, "OH_ArkUI_DestoryAccessibilityEventInfo(event);");
+bool a5SendThenDestroy = s2Napi.Contains("OH_ArkUI_SendAccessibilityAsyncEvent(g_a11y_provider, event, nullptr);\n    OH_ArkUI_DestoryAccessibilityEventInfo(event);");
+bool a5FailureDestroy = s2Napi.Contains("if (OH_ArkUI_AccessibilityEventSetEventType(event, (ArkUI_AccessibilityEventType)eventType) != 0) {\n        OH_ArkUI_DestoryAccessibilityEventInfo(event);\n        return 0;\n    }");
+bool a5Ok = a5SendThenDestroy && a5FailureDestroy && a5DestroyCount == 2 && a5DestroyAfterSendAt > a5SendAt;
+Console.WriteLine($"[verify] a5 a11y event destroy sendThenDestroy={a5SendThenDestroy} failurePathDestroy={a5FailureDestroy} destroyCalls={a5DestroyCount} afterSend={a5DestroyAfterSendAt > a5SendAt} source='{s2NapiPath ?? "<missing>"}' assert={a5Ok}");
+if (!a5Ok)
+{
+    throw new InvalidOperationException(
+        $"the A5 accessibility event destroy contract drifted: sendThenDestroy={a5SendThenDestroy} " +
+        $"failure={a5FailureDestroy} destroyCalls={a5DestroyCount} source={s2NapiPath ?? "<missing>"}");
+}
+
+// A6: lifecycle events and the NodeContent that arrive before the app handle exists are queued
+// in the globals under g_context_mutex (a NULL handle is first resolved through g_app), not
+// dropped; start_app transfers both queues to the new handle inside its critical section and
+// register_bridge flushes them to the managed callbacks.
+int a6NotifyAt = cSource?.IndexOf("void ohos_host_notify_lifecycle(OhosHostAppHandle* handle, ohos_lifecycle_event event) {", StringComparison.Ordinal) ?? -1;
+int a6NotifyLockAt = a6NotifyAt < 0 ? -1 : cSource!.IndexOf("pthread_mutex_lock(&g_context_mutex);", a6NotifyAt, StringComparison.Ordinal);
+int a6NotifyQueueAt = a6NotifyLockAt < 0 ? -1 : cSource!.IndexOf("g_pending_lifecycle[g_pending_lifecycle_count++] = (int)event;", a6NotifyLockAt, StringComparison.Ordinal);
+int a6NotifyUnlockAt = a6NotifyQueueAt < 0 ? -1 : cSource!.IndexOf("pthread_mutex_unlock(&g_context_mutex);", a6NotifyQueueAt, StringComparison.Ordinal);
+int a6NodeAt = cSource?.IndexOf("void ohos_host_set_node_content(OhosHostAppHandle* handle, void* node_content) {", StringComparison.Ordinal) ?? -1;
+int a6NodeLockAt = a6NodeAt < 0 ? -1 : cSource!.IndexOf("pthread_mutex_lock(&g_context_mutex);", a6NodeAt, StringComparison.Ordinal);
+int a6NodeQueueAt = a6NodeLockAt < 0 ? -1 : cSource!.IndexOf("g_pending_node_content = node_content;", a6NodeLockAt, StringComparison.Ordinal);
+int a6NodeUnlockAt = a6NodeQueueAt < 0 ? -1 : cSource!.IndexOf("pthread_mutex_unlock(&g_context_mutex);", a6NodeQueueAt, StringComparison.Ordinal);
+int a6TransferAt = a1LockAt < 0 ? -1 : cSource!.IndexOf("handle->pending_count = g_pending_lifecycle_count;", a1LockAt, StringComparison.Ordinal);
+int a6TransferClearAt = a6TransferAt < 0 ? -1 : cSource!.IndexOf("g_pending_lifecycle_count = 0;", a6TransferAt, StringComparison.Ordinal);
+int a6TransferNodeAt = a6TransferClearAt < 0 ? -1 : cSource!.IndexOf("handle->node_content = g_pending_node_content;", a6TransferClearAt, StringComparison.Ordinal);
+int a6TransferNodeClearAt = a6TransferNodeAt < 0 ? -1 : cSource!.IndexOf("g_pending_node_content = NULL;", a6TransferNodeAt, StringComparison.Ordinal);
+int a6RegisterAt = cSource?.IndexOf("void ohos_host_register_bridge(void* lifecycle, void* node, void* surface) {", StringComparison.Ordinal) ?? -1;
+int a6FlushLoopAt = a6RegisterAt < 0 ? -1 : cSource!.IndexOf("g_app->bridge_lifecycle(g_app->pending_lifecycle[i]);", a6RegisterAt, StringComparison.Ordinal);
+int a6FlushClearAt = a6FlushLoopAt < 0 ? -1 : cSource!.IndexOf("g_app->pending_count = 0;", a6FlushLoopAt, StringComparison.Ordinal);
+int a6FlushNodeAt = a6FlushClearAt < 0 ? -1 : cSource!.IndexOf("g_app->bridge_node(g_app->node_content);", a6FlushClearAt, StringComparison.Ordinal);
+bool a6GlobalsOk = cSource?.Contains("static int g_pending_lifecycle[OHOS_MAX_PENDING_LIFECYCLE];\nstatic int g_pending_lifecycle_count = 0;\nstatic void* g_pending_node_content = NULL;") == true;
+bool a6QueueOk = a6NotifyQueueAt > a6NotifyLockAt && a6NotifyQueueAt < a6NotifyUnlockAt &&
+    a6NodeQueueAt > a6NodeLockAt && a6NodeQueueAt < a6NodeUnlockAt;
+bool a6TransferOk = a6TransferAt > a1LockAt && a6TransferClearAt > a6TransferAt &&
+    a6TransferNodeAt > a6TransferClearAt && a6TransferNodeClearAt > a6TransferNodeAt && a6TransferNodeClearAt < a1UnlockAt;
+bool a6FlushOk = a6FlushLoopAt > a6RegisterAt && a6FlushClearAt > a6FlushLoopAt && a6FlushNodeAt > a6FlushClearAt;
+bool a6Ok = a6GlobalsOk && a6QueueOk && a6TransferOk && a6FlushOk;
+Console.WriteLine($"[verify] a6 pending lifecycle globals={a6GlobalsOk} queuedUnderLock={a6QueueOk} transferredToHandle={a6TransferOk} flushedOnRegister={a6FlushOk} lifecycleQueue={a6NotifyQueueAt > a6NotifyLockAt} nodeContentQueue={a6NodeQueueAt > a6NodeLockAt} source='{cSourcePath ?? "<missing>"}' assert={a6Ok}");
+if (!a6Ok)
+{
+    throw new InvalidOperationException(
+        $"the A6 pending lifecycle/node-content queue contract drifted: globals={a6GlobalsOk} queue={a6QueueOk} " +
+        $"transfer={a6TransferOk} flush={a6FlushOk} source={cSourcePath ?? "<missing>"}");
+}
+
+// A7a: the NAPI wrapper guard (g_launch_lock/g_launch_requested) rejects a second startApp
+// before a LaunchRequest or thread is allocated; both failure paths clear the flag under the
+// lock so a failed launch can be retried, while a successful one leaves g_handle set and
+// rejects every later call.
+string a7NapiGlobals = "std::mutex g_launch_lock;\nbool g_launch_requested = false;";
+int a7StartAt = s2Napi.IndexOf("napi_value StartApp(napi_env env, napi_callback_info info) {", StringComparison.Ordinal);
+int a7GuardAt = a7StartAt < 0 ? -1 : s2Napi.IndexOf("std::lock_guard<std::mutex> launch_guard(g_launch_lock);", a7StartAt, StringComparison.Ordinal);
+int a7RejectAt = a7GuardAt < 0 ? -1 : s2Napi.IndexOf("if (g_launch_requested || g_handle != nullptr) {", a7GuardAt, StringComparison.Ordinal);
+int a7SetAt = a7RejectAt < 0 ? -1 : s2Napi.IndexOf("g_launch_requested = true;", a7RejectAt, StringComparison.Ordinal);
+int a7ThreadAt = s2Napi.IndexOf("void* LaunchThread(void* arg) {", StringComparison.Ordinal);
+int a7ThreadGuardAt = a7ThreadAt < 0 ? -1 : s2Napi.IndexOf("std::lock_guard<std::mutex> launch_guard(g_launch_lock);", a7ThreadAt, StringComparison.Ordinal);
+int a7ThreadFailAt = a7ThreadGuardAt < 0 ? -1 : s2Napi.IndexOf("g_launch_requested = false;   // the launch failed: a retry is allowed", a7ThreadGuardAt, StringComparison.Ordinal);
+int a7HandleAt = a7ThreadAt < 0 ? -1 : s2Napi.IndexOf("g_handle = handle;", a7ThreadAt, StringComparison.Ordinal);
+int a7CreateFailAt = a7SetAt < 0 ? -1 : s2Napi.IndexOf("g_launch_requested = false;   // nothing was launched: a retry is allowed", a7SetAt, StringComparison.Ordinal);
+bool a7NapiOk = s2Napi.Contains(a7NapiGlobals) && a7GuardAt > a7StartAt && a7RejectAt > a7GuardAt && a7SetAt > a7RejectAt &&
+    a7ThreadFailAt > a7ThreadGuardAt && a7ThreadFailAt - a7ThreadGuardAt < 200 &&
+    a7ThreadFailAt < a7HandleAt && a7CreateFailAt > a7SetAt;
+Console.WriteLine($"[verify] a7 napi launch guard lock={s2Napi.Contains(a7NapiGlobals)} rejectSecond={a7RejectAt > a7GuardAt && a7SetAt > a7RejectAt} launchFailedCleared={a7ThreadFailAt > a7ThreadGuardAt} createFailedCleared={a7CreateFailAt > a7SetAt} handlePublished={a7ThreadFailAt < a7HandleAt} source='{s2NapiPath ?? "<missing>"}' assert={a7NapiOk}");
+if (!a7NapiOk)
+{
+    throw new InvalidOperationException(
+        $"the A7 NAPI startApp launch guard contract drifted: lock={s2Napi.Contains(a7NapiGlobals)} " +
+        $"reject={a7RejectAt > a7GuardAt} set={a7SetAt > a7RejectAt} threadClear={a7ThreadFailAt > a7ThreadGuardAt} " +
+        $"createClear={a7CreateFailAt > a7SetAt} source={s2NapiPath ?? "<missing>"}");
+}
+
+// A7b: the native entry's guard (g_launch_in_progress under g_context_mutex) rejects a second
+// start before anything is allocated, is set and cleared under the lock and cleared again when
+// the handle is published; every failure path before that runs OhosHostEndLaunch().
+int a7NativeAt = cSource?.IndexOf("int ohos_host_start_app(const char* app_dir,", StringComparison.Ordinal) ?? -1;
+int a7NativeLockAt = a7NativeAt < 0 ? -1 : cSource!.IndexOf("pthread_mutex_lock(&g_context_mutex);", a7NativeAt, StringComparison.Ordinal);
+int a7NativeRejectAt = a7NativeLockAt < 0 ? -1 : cSource!.IndexOf("if (g_app != NULL || g_launch_in_progress) {", a7NativeLockAt, StringComparison.Ordinal);
+int a7NativeSetAt = a7NativeRejectAt < 0 ? -1 : cSource!.IndexOf("g_launch_in_progress = 1;", a7NativeRejectAt, StringComparison.Ordinal);
+int a7NativeUnlockAt = a7NativeSetAt < 0 ? -1 : cSource!.IndexOf("pthread_mutex_unlock(&g_context_mutex);", a7NativeSetAt, StringComparison.Ordinal);
+int a7EndLaunchCalls = CountOccurrences(cSource, "OhosHostEndLaunch();");
+bool a7NativeOk = cSource?.Contains("static int g_launch_in_progress = 0;") == true &&
+    a7NativeRejectAt > a7NativeLockAt && a7NativeSetAt > a7NativeRejectAt && a7NativeUnlockAt > a7NativeSetAt &&
+    cSource.Contains("g_app = handle;\n    g_launch_in_progress = 0;") &&
+    cSource.Contains("static void OhosHostEndLaunch(void) {\n    pthread_mutex_lock(&g_context_mutex);\n    g_launch_in_progress = 0;") &&
+    a7EndLaunchCalls == 5;
+Console.WriteLine($"[verify] a7 native launch guard guard={cSource?.Contains("static int g_launch_in_progress = 0;") == true} rejectSecond={a7NativeRejectAt > a7NativeLockAt && a7NativeSetAt > a7NativeRejectAt} setUnderLock={a7NativeSetAt > a7NativeRejectAt && a7NativeUnlockAt > a7NativeSetAt} clearedOnPublish={cSource?.Contains("g_app = handle;\n    g_launch_in_progress = 0;") == true} failurePaths={a7EndLaunchCalls}/5 source='{cSourcePath ?? "<missing>"}' assert={a7NativeOk}");
+if (!a7NativeOk)
+{
+    throw new InvalidOperationException(
+        $"the A7 native start_app launch guard contract drifted: guard={cSource?.Contains("static int g_launch_in_progress = 0;") == true} " +
+        $"reject={a7NativeRejectAt > a7NativeLockAt} set={a7NativeSetAt > a7NativeRejectAt} " +
+        $"clearOnPublish={cSource?.Contains("g_app = handle;\n    g_launch_in_progress = 0;") == true} " +
+        $"endLaunchCalls={a7EndLaunchCalls} source={cSourcePath ?? "<missing>"}");
+}
+
+// A8: both IME text paths truncate through ImeUtf8PrefixLength, which backs off over UTF-8
+// continuation bytes when the buffer limit cuts a sequence (keyboard_set_text replaces the
+// whole buffer, ImeAppendUtf8 appends), so the managed TextInput contract never receives half
+// of a multi-byte character; the old strncpy call sites are gone.
+int a8HelperAt = cSource?.IndexOf("static size_t ImeUtf8PrefixLength(const char* utf8, size_t limit) {", StringComparison.Ordinal) ?? -1;
+int a8AppendAt = cSource?.IndexOf("static void ImeAppendUtf8(const char* utf8) {", StringComparison.Ordinal) ?? -1;
+int a8SetAt = cSource?.IndexOf("void ohos_host_keyboard_set_text(const char* utf8) {", StringComparison.Ordinal) ?? -1;
+int a8AppendTakeAt = a8AppendAt < 0 ? -1 : cSource!.IndexOf("size_t take = ImeUtf8PrefixLength(utf8, sizeof(g_ime_text) - 1 - used);", a8AppendAt, StringComparison.Ordinal);
+int a8SetTakeAt = a8SetAt < 0 ? -1 : cSource!.IndexOf("size_t take = ImeUtf8PrefixLength(utf8, sizeof(g_ime_text) - 1);", a8SetAt, StringComparison.Ordinal);
+int a8HelperCalls = CountOccurrences(cSource, "ImeUtf8PrefixLength(");
+bool a8HelperOk = cSource?.Contains("if (take > limit) {\n        take = limit;\n        while (take > 0 && ((unsigned char)utf8[take] & 0xC0) == 0x80) {\n            take--;\n        }\n    }") == true;
+bool a8CallSitesOk = a8AppendTakeAt > a8AppendAt && a8SetTakeAt > a8SetAt && a8HelperCalls == 3 &&
+    cSource is not null &&
+    cSource.Contains("memcpy(g_ime_text + used, utf8, take);") && cSource.Contains("memcpy(g_ime_text, utf8, take);") &&
+    cSource.Contains("g_ime_text[used + take] = '\\0';") && cSource.Contains("g_ime_text[take] = '\\0';") &&
+    !cSource.Contains("strncpy(g_ime_text");
+bool a8Ok = cSource != null && a8HelperAt >= 0 && a8HelperOk && a8CallSitesOk;
+Console.WriteLine($"[verify] a8 ime utf8 truncation boundaryBackOff={a8HelperOk} appendCall={a8AppendTakeAt > a8AppendAt} setTextCall={a8SetTakeAt > a8SetAt} callSites={a8HelperCalls}/3 strncpyRemoved={cSource?.Contains("strncpy(g_ime_text") != true} source='{cSourcePath ?? "<missing>"}' assert={a8Ok}");
+if (!a8Ok)
+{
+    throw new InvalidOperationException(
+        $"the A8 IME UTF-8 boundary back-off contract drifted: helper={a8HelperOk} callSites={a8HelperCalls} " +
+        $"append={a8AppendTakeAt > a8AppendAt} setText={a8SetTakeAt > a8SetAt} source={cSourcePath ?? "<missing>"}");
+}
+
+// B3a: the shell stamps the per-registration document id into documents it served for the
+// matching origin only: injectPageBridge (called from onPageEnd) writes window.__ohHybridId /
+// window.__ohBlazorId under the origin + registered + non-empty-id guards, so a document the
+// shell did not stamp carries no id. All three preview templates carry the stamps.
+string[] b3ShellVersions = { "1.0.0-preview.22", "1.0.0-preview.23", "1.0.0-preview.24" };
+bool b3ShellMethod = true;
+bool b3ShellHybridStamp = true;
+bool b3ShellBlazorStamp = true;
+bool b3ShellOriginGuard = true;
+bool b3ShellCallSite = true;
+foreach (string b3Version in b3ShellVersions)
+{
+    string? b3ShellPath = FindHostSource($"packs/Microsoft.OpenHarmony.Sdk/{b3Version}/templates/ets/pages/Index.ets");
+    string b3Shell = b3ShellPath is null ? string.Empty : File.ReadAllText(b3ShellPath);
+    b3ShellMethod &= b3Shell.Contains("private injectPageBridge(pageUrl: string): void {");
+    b3ShellHybridStamp &= b3Shell.Contains("markers += `window.__ohHybridId = ${JSON.stringify(this.hybridDocId)};`;");
+    b3ShellBlazorStamp &= b3Shell.Contains("markers += `window.__ohBlazorId = ${JSON.stringify(this.blazorDocId)};`;");
+    b3ShellOriginGuard &= b3Shell.Contains("if (this.hybridRegistered && this.hybridDocId.length > 0 && pageUrl.startsWith(this.hybridOrigin)) {") &&
+        b3Shell.Contains("if (this.blazorRegistered && this.blazorDocId.length > 0 && pageUrl.startsWith(this.blazorOrigin)) {");
+    b3ShellCallSite &= b3Shell.Contains("this.injectPageBridge(pageUrl);");
+}
+bool b3ShellOk = b3ShellMethod && b3ShellHybridStamp && b3ShellBlazorStamp && b3ShellOriginGuard && b3ShellCallSite;
+Console.WriteLine($"[verify] b3 shell document markers packs=22,23,24 method={b3ShellMethod} hybridStamp={b3ShellHybridStamp} blazorStamp={b3ShellBlazorStamp} originGuard={b3ShellOriginGuard} onPageEnd={b3ShellCallSite} assert={b3ShellOk}");
+if (!b3ShellOk)
+{
+    throw new InvalidOperationException(
+        $"the B3 shell document-marker stamps are missing: method={b3ShellMethod} hybrid={b3ShellHybridStamp} " +
+        $"blazor={b3ShellBlazorStamp} originGuard={b3ShellOriginGuard} callSite={b3ShellCallSite}");
+}
+
+// B3b: both managed handlers only deliver host -> page through a marker-checked eval: the
+// script returns 'skip' unless window.__ohHybridId / window.__ohBlazorId equals the id the
+// shell stamped for that registration (serialized as the eval's first argument), and a skip is
+// logged instead of delivering into a document the handler did not load.
+string? b3HybridPath = FindHostSource("OpenHarmonyHybridWebViewHandler.cs");
+string b3Hybrid = b3HybridPath is null ? string.Empty : File.ReadAllText(b3HybridPath);
+string? b3BlazorPath = FindHostSource("OpenHarmonyBlazorWebViewHandler.cs");
+string b3Blazor = b3BlazorPath is null ? string.Empty : File.ReadAllText(b3BlazorPath);
+bool b3HybridOk = b3Hybrid.Contains("private async Task SendRawMessageCoreAsync(string json)") &&
+    b3Hybrid.Contains("\"if(window.__ohHybridId!==id){return 'skip';}\" +") &&
+    b3Hybrid.Contains("JsonSerializer.Serialize(_pageId) + \",\" + json + \")\"") &&
+    b3Hybrid.Contains("result is not null && result.Trim().Trim('\"') == \"skip\"") &&
+    b3Hybrid.Contains("hybrid raw message skipped: the loaded document is not this handler's page");
+bool b3BlazorOk = b3Blazor.Contains("protected override void SendMessage(string message)") &&
+    b3Blazor.Contains("\"if(window.__ohBlazorId!==id){return 'skip';}\" +") &&
+    b3Blazor.Contains("JsonSerializer.Serialize(_pageDocumentId) + \",\" + JsonSerializer.Serialize(message) + \")\"") &&
+    b3Blazor.Contains("result is not null && result.Trim().Trim('\"') == \"skip\"") &&
+    b3Blazor.Contains("blazor message skipped: the loaded document is not this handler's page");
+bool b3MarkerChecks = b3Hybrid.Contains("if(window.__ohHybridId!==id){return 'skip';}") &&
+    b3Blazor.Contains("if(window.__ohBlazorId!==id){return 'skip';}");
+bool b3SkipLogs = b3Hybrid.Contains("raw message skipped") && b3Blazor.Contains("message skipped");
+bool b3HandlersOk = b3HybridOk && b3BlazorOk;
+Console.WriteLine($"[verify] b3 handler document markers hybrid={b3HybridOk} blazor={b3BlazorOk} markerChecked={b3MarkerChecks} skipLogged={b3SkipLogs} hybridSource='{b3HybridPath ?? "<missing>"}' blazorSource='{b3BlazorPath ?? "<missing>"}' assert={b3HandlersOk}");
+if (!b3HandlersOk)
+{
+    throw new InvalidOperationException(
+        $"the B3 per-document marker checks are missing from the handlers: hybrid={b3HybridOk} blazor={b3BlazorOk} " +
+        $"markers={b3MarkerChecks} logs={b3SkipLogs} hybridSource={b3HybridPath ?? "<missing>"} " +
+        $"blazorSource={b3BlazorPath ?? "<missing>"}");
+}
+
 // ---- Performance budget (bounded, deterministic, seedless) ------------------------------------
 // The frame path (OpenHarmonyWindowRenderer.Render: measure/arrange, the iterative view walk, the
 // accessibility shadow tree rebuild + frame diff and the surface hooks) is timed over a fixed
