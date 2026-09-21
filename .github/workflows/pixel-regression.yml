@@ -1,5 +1,19 @@
 name: pixel-regression
 
+# CI gate for the headless pixel suite (test/headless-render). The project compiles the MAUI
+# OpenHarmony platform slice sources from the `springmin/maui-ohos` fork and references two
+# assemblies built from this repository, so the job materialises both roots on the runner
+# instead of depending on the development machine layout:
+#
+#   MAUI_SLICE_DIR           <- <workspace>/maui-ohos/src/Core/src/Platform/OpenHarmony
+#   HOSTING_DLL              <- <workspace>/src/Microsoft.OpenHarmony.Hosting/bin/Release/net11.0/Microsoft.OpenHarmony.Hosting.dll
+#   OPENHARMONY_GRAPHICS_DLL <- <workspace>/src/Microsoft.OpenHarmony.Maui.Graphics/bin/Release/net11.0/Microsoft.OpenHarmony.Maui.Graphics.dll
+#
+# headless-render.csproj still hard-codes the /storage/Users/currentUser/springsources roots of
+# the development machine, so the job also re-creates those roots as symlinks into the checkout.
+# The environment variables are exported in addition (mirroring test/maui-platform-verify) and
+# take over as soon as the project reads them; until then they are inert and the symlinks are
+# what the build resolves.
 on:
   push:
     branches: [ master ]
@@ -10,16 +24,47 @@ jobs:
   pixel:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - name: Check out the workload (this repository)
+        uses: actions/checkout@v4
+      - name: Check out the maui-ohos slice sources
+        uses: actions/checkout@v4
+        with:
+          repository: springmin/maui-ohos
+          ref: feature/openharmony
+          path: maui-ohos
+          fetch-depth: 1
       - uses: actions/setup-dotnet@v4
         with:
           dotnet-version: '11.0.x'
           dotnet-quality: 'preview'
-      - name: Run the headless pixel suite
-        run: dotnet run -c Release
-        working-directory: test/headless-render
-      - name: Assert the suite passed
+      - name: Build the hosting assemblies the pixel harness references
         run: |
+          set -euo pipefail
+          dotnet build src/Microsoft.OpenHarmony.Hosting/Microsoft.OpenHarmony.Hosting.csproj -c Release -v:q
+          dotnet build src/Microsoft.OpenHarmony.Maui.Graphics/Microsoft.OpenHarmony.Maui.Graphics.csproj -c Release -v:q
+      - name: Materialise the absolute roots headless-render.csproj expects
+        run: |
+          set -euo pipefail
+          sudo mkdir -p /storage/Users/currentUser/springsources
+          sudo ln -sfnT "${GITHUB_WORKSPACE}" /storage/Users/currentUser/springsources/ohos-workload
+          sudo ln -sfnT "${GITHUB_WORKSPACE}/maui-ohos" /storage/Users/currentUser/springsources/maui-ohos
+          ls -ld /storage/Users/currentUser/springsources/ohos-workload /storage/Users/currentUser/springsources/maui-ohos
+      - name: Run the headless pixel suite
+        working-directory: test/headless-render
+        env:
+          MAUI_SLICE_DIR: ${{ github.workspace }}/maui-ohos/src/Core/src/Platform/OpenHarmony
+          HOSTING_DLL: ${{ github.workspace }}/src/Microsoft.OpenHarmony.Hosting/bin/Release/net11.0/Microsoft.OpenHarmony.Hosting.dll
+          OPENHARMONY_GRAPHICS_DLL: ${{ github.workspace }}/src/Microsoft.OpenHarmony.Maui.Graphics/bin/Release/net11.0/Microsoft.OpenHarmony.Maui.Graphics.dll
+        run: |
+          set -euo pipefail
+          dotnet run -c Release
+      - name: Assert the suite passed
+        working-directory: test/headless-render
+        env:
+          MAUI_SLICE_DIR: ${{ github.workspace }}/maui-ohos/src/Core/src/Platform/OpenHarmony
+          HOSTING_DLL: ${{ github.workspace }}/src/Microsoft.OpenHarmony.Hosting/bin/Release/net11.0/Microsoft.OpenHarmony.Hosting.dll
+          OPENHARMONY_GRAPHICS_DLL: ${{ github.workspace }}/src/Microsoft.OpenHarmony.Maui.Graphics/bin/Release/net11.0/Microsoft.OpenHarmony.Maui.Graphics.dll
+        run: |
+          set -euo pipefail
           dotnet run -c Release --no-build -p:NoBuild=true > result.txt 2>&1 || true
           grep -q "PIXEL ASSERTIONS PASSED" result.txt
-        working-directory: test/headless-render
