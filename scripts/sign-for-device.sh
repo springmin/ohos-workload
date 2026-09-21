@@ -21,6 +21,9 @@
 #                              [--huawei [configDir]]
 # Env:
 #   OHOS_SDK_ROOT   OpenHarmony SDK root (default: the harmonybrew 26.0.0.18_2 install)
+#   OHOS_ENC_PWD    Studio-encrypted password for --huawei, as an alternative to the positional
+#                   encryptedPassword (preferred: argv is world-readable); it is forwarded to
+#                   sign-huawei.sh through the environment
 set -e
 
 log() { printf '[%s] %s\n' "$(date '+%H:%M:%S')" "$*"; }
@@ -158,6 +161,7 @@ if [ "$MODE" = huawei ]; then
   [ "$BUNDLE_SET" = 0 ] || die "--bundle is not available in --huawei mode; the hap must be rebuilt with -p:OpenHarmonyBundleName=<name> so module.json matches the profile"
   [ "$VER_SET" = 0 ] || warn "--version is ignored in --huawei mode (the SDK comes from OHOS_SDK_ROOT)"
   [ -n "$CFG" ] || CFG="$HOME/Documents/ohos/config"
+  [ -n "$HEX" ] || HEX="${OHOS_ENC_PWD:-}"
   HUAWEI="$W/scripts/sign-huawei.sh"
   [ -f "$HUAWEI" ] || die "sign-huawei.sh not found: $HUAWEI"
   [ -f "$UNSIGNED" ] || die "unsigned hap not found: $UNSIGNED"
@@ -168,7 +172,8 @@ if [ "$MODE" = huawei ]; then
   [ "$HB" = "$PF" ] || die "bundle-name mismatch: $UNSIGNED is '$HB' but the Huawei profile $P7B is bound to '$PF'. Rebuild the hap with -p:OpenHarmonyBundleName=$PF (or pass --unsigned with a matching hap), then re-run"
   log "bundle-name check OK: $HB"
   [ -n "$OUT" ] || OUT="$(dirname "$UNSIGNED")/hello-maui-app-huawei.hap"
-  sh "$HUAWEI" "$UNSIGNED" "$OUT" "$CFG" "$HEX"
+  # Hand the encrypted password over in the environment, not in sign-huawei.sh's argv.
+  OHOS_ENC_PWD="$HEX" sh "$HUAWEI" "$UNSIGNED" "$OUT" "$CFG"
   log "Huawei-signed hap: $OUT"
   exit 0
 fi

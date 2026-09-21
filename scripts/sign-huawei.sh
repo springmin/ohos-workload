@@ -5,9 +5,17 @@
 #
 # Usage: sign-huawei.sh <unsigned.hap> <out.hap> [configDir] [encryptedPassword]
 #   configDir default: $HOME/Documents/ohos/config     (Studio writes the material there)
-#   encryptedPassword: the storePassword/keyPassword value from build-profile.json5
+#   encryptedPassword: the storePassword/keyPassword value from build-profile.json5; can also be
+#                      supplied through OHOS_ENC_PWD (preferred: argv is world-readable)
 # Requires: node, the extracted hvigor-ohos-plugin (ARKTS_PLUGIN_DIR or ~/arkts-build/node_modules/@ohos/hvigor-ohos-plugin),
 #           and hap-sign-tool (SDK toolchains/lib).
+#
+# Secrets: the decrypt helper is generated into a private mktemp -d (0700, removed on exit/signal)
+# and the encrypted/decrypted passwords travel via the environment, never argv. The decrypted p12
+# password is kept in this shell only - it is not cached and never written to a predictable path.
+# hap-sign-tool has no stdin/env password input (pwdInputMode=1 requires a real tty), so during the
+# signing call the p12 password is still visible in that child's argv (-keyPwd/-keystorePwd); it is
+# not persisted and disappears with the process.
 set -e
 log()  { printf '[%s] %s\n' "$(date +%H:%M:%S)" "$*"; }
 die()  { printf '[%s] ERROR: %s\n' "$(date +%H:%M:%S)" "$*" >&2; exit 1; }
@@ -26,25 +34,28 @@ TOOL="$SDK/toolchains/lib/hap-sign-tool"
 
 P12=$(ls "$CFG"/*.p12 2>/dev/null | head -1); CER=$(ls "$CFG"/*.cer 2>/dev/null | head -1); P7B=$(ls "$CFG"/*.p7b 2>/dev/null | head -1)
 [ -n "$P12" ] && [ -n "$CER" ] && [ -n "$P7B" ] || die "p12/cer/p7b not all present under $CFG"
-HEX="$4"
-if [ -z "$HEX" ]; then
-  # Reuse the last decrypted password when present, otherwise require the encrypted value.
-  if [ -f /data/storage/el2/base/tmp/opencode/ohos-pwd.txt ]; then
-    PW=$(cat /data/storage/el2/base/tmp/opencode/ohos-pwd.txt)
-    log "using cached decrypted password"
-  else
-    die "no encryptedPassword argument and no cached password; pass the build-profile storePassword value"
-  fi
-else
-  DEC=/data/storage/el2/base/tmp/opencode/decrypt.js
-  [ -f "$DEC" ] || cat > "$DEC" <<'JS'
-const { DecipherUtil } = require(process.argv[2] + '/src/utils/decipher-util.js');
-process.stdout.write(DecipherUtil.decryptPwd(process.argv[3], process.argv[4], 'password'));
+
+HEX="${4:-${OHOS_ENC_PWD:-}}"
+[ -n "$HEX" ] || die "no encryptedPassword argument (OHOS_ENC_PWD is empty or unset); pass the build-profile storePassword value; the decrypted password is no longer cached in shared scratch"
+
+# Private work dir for the generated decrypt helper: unguessable name, 0700, removed on exit/signal.
+WORK=$(umask 077; mktemp -d "${TMPDIR:-/tmp}/ohos-sign.XXXXXX") || die "cannot create a private temp dir for the decrypt helper"
+cleanup() { if [ -n "$WORK" ]; then rm -rf "$WORK"; fi; }
+trap cleanup 0
+trap 'cleanup; exit 130' INT
+trap 'cleanup; exit 143' TERM
+trap 'cleanup; exit 129' HUP
+
+# The helper is generated fresh inside $WORK - never a fixed shared path that another process could
+# replace between runs. Paths go via argv (not secret); the encrypted password goes via the
+# environment (same-UID-only readable) instead of argv (world-readable).
+DEC="$WORK/decrypt.js"
+( umask 077; cat > "$DEC" ) <<'JS'
+const { DecipherUtil } = require(process.env.OHOS_PLUGIN_DIR + '/src/utils/decipher-util.js');
+process.stdout.write(DecipherUtil.decryptPwd(process.env.OHOS_CONFIG_DIR, process.env.OHOS_ENC_PWD, 'password'));
 JS
-  PW=$(node "$DEC" "$PLUGIN" "$CFG" "$HEX") || die "password decryption failed"
-  printf '%s' "$PW" > /data/storage/el2/base/tmp/opencode/ohos-pwd.txt; chmod 600 /data/storage/el2/base/tmp/opencode/ohos-pwd.txt
-  log "password decrypted from the Studio value"
-fi
+PW=$(OHOS_PLUGIN_DIR="$PLUGIN" OHOS_CONFIG_DIR="$CFG" OHOS_ENC_PWD="$HEX" node "$DEC") || die "password decryption failed"
+log "password decrypted from the Studio value"
 
 log "signing $(basename "$IN") with the Huawei material (alias debugKey)"
 "$TOOL" sign-app -keyAlias debugKey -signAlg SHA256withECDSA -mode localSign \
