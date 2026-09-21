@@ -26,14 +26,37 @@
        runtime pack (and the freshly built managed files); the packaged payload then carries
        exactly one canonical .codesign section per ELF, as produced by the runtime build.
 
-       API band: OpenHarmonyMinApiVersion, OpenHarmonyTargetApiVersion and
-       OpenHarmonyApiReleaseType all stay overridable. Their defaults follow the target
-       framework; the numeric band encodes <major><minor:02><patch:02><api:03> (the
-       concatenation's leading zeros are stripped):
+       API band: OpenHarmonyMinApiVersion, OpenHarmonyTargetApiVersion,
+       OpenHarmonyApiReleaseType, OpenHarmonyCompileSdkType and OpenHarmonyCompileSdkVersion
+       all stay overridable. Their defaults follow the target framework; the numeric band
+       encodes <major><minor:02><patch:02><api:03> (the concatenation's leading zeros are
+       stripped):
            net11.0-openharmony20.0 -> platform 6.0.0 / API 20 -> min = target = 60000020
-                                      (Release)
-           net11.0-openharmony26.0 -> platform 6.0.1 / API 21 -> min 60001021 (Beta1)
-                                      platform 6.1.1 / API 24 -> target 60101024 (Beta1)
+                                      (Release); no compileSdk fields (BMS then keeps its
+                                      OpenHarmony default)
+           device band (every other TFM, e.g. net11.0-openharmony26.0) -> the profile the
+           tester's 2in1 device family accepted:
+                                      min 50002014      (platform 5.0.2 / API 14)
+                                      target 60101024   (platform 6.1.1 / API 24)
+                                      apiReleaseType Release
+                                      compileSdkType HarmonyOS, compileSdkVersion 6.0.2.130
+                                      debug: OpenHarmonyHapDebug (still defaults true and
+                                      stays overridable; the tester's profile used false)
+       The compileSdk fields are emitted into module.json only when OpenHarmonyCompileSdkType
+       is non-empty; the API 20 band leaves them empty so its module.json stays exactly as
+       before (and BMS keeps compileSdkType OpenHarmony).
+
+       minAPIVersion is checked at install: it must be <= the device's apiCompatibleVersion or
+       the install fails with bm 9568297 ERR_APPEXECFWK_INSTALL_SDK_INCOMPATIBLE. The tester
+       device family reports apiCompatibleVersion 50002014, so the device band defaults to
+       exactly that value; change it per device with -p:OpenHarmonyMinApiVersion=<value>, but
+       never raise it above the target device's apiCompatibleVersion.
+
+       Bundle name: app.bundleName accepts only letters, digits, '_' and '.'. A name with any
+       other character (a hyphen, say) is rejected at install with bm 9568344 "bundle name or
+       module name is invalid". The OpenHarmonyBundleName default strips hyphens from the
+       assembly name, _OpenHarmonyValidateBundleName fails the build early on any remaining
+       illegal character, and an explicit -p:OpenHarmonyBundleName=<name> is validated too.
 
        Opt-in permissions: set OpenHarmonyExtraPermissions to a ';' or ',' separated list of
        permission names, e.g. (keep the quotes - MSBuild splits an unquoted command-line
@@ -66,22 +89,33 @@
   <PropertyGroup>
     <OpenHarmonyHapPackage Condition=" '$(OpenHarmonyHapPackage)' == '' ">false</OpenHarmonyHapPackage>
     <OpenHarmonyHapSigning Condition=" '$(OpenHarmonyHapSigning)' == '' ">true</OpenHarmonyHapSigning>
-    <OpenHarmonyBundleName Condition=" '$(OpenHarmonyBundleName)' == '' ">com.example.$(AssemblyName)</OpenHarmonyBundleName>
+    <!-- app.bundleName may contain only letters, digits, '_' and '.' (hyphens fail install
+         with 9568344 "bundle name or module name is invalid"), so the default strips hyphens
+         from the assembly name; _OpenHarmonyValidateBundleName below rejects any other
+         illegal character early. OpenHarmonyBundleName overrides the default. -->
+    <OpenHarmonyBundleName Condition=" '$(OpenHarmonyBundleName)' == '' ">com.example.$([System.String]::Copy('$(AssemblyName)').Replace('-', ''))</OpenHarmonyBundleName>
     <OpenHarmonyAppName Condition=" '$(OpenHarmonyAppName)' == '' ">$(AssemblyName)</OpenHarmonyAppName>
     <OpenHarmonyVendor Condition=" '$(OpenHarmonyVendor)' == '' ">openharmony</OpenHarmonyVendor>
     <OpenHarmonyAbilityName Condition=" '$(OpenHarmonyAbilityName)' == '' ">EntryAbility</OpenHarmonyAbilityName>
     <OpenHarmonyVersionName Condition=" '$(OpenHarmonyVersionName)' == '' ">$(Version)</OpenHarmonyVersionName>
     <OpenHarmonyVersionName Condition=" '$(OpenHarmonyVersionName)' == '' ">1.0.0</OpenHarmonyVersionName>
     <OpenHarmonyVersionCode Condition=" '$(OpenHarmonyVersionCode)' == '' ">1</OpenHarmonyVersionCode>
-    <!-- API band per target framework; the decode rule and the mapping are in the file
-         header. openharmony20.0 is the platform 6.0.0 / API 20 release band; every other
-         platform keeps the previous 6.0.1 / 6.1.1 Beta1 defaults. All three stay overridable. -->
+    <!-- API band per target framework; the decode rule, the device constraints and the
+         overrides are in the file header. openharmony20.0 is the platform 6.0.0 / API 20
+         release band; the device band (every other TFM, e.g. net11.0-openharmony26.0)
+         defaults to the profile the tester's device family accepted. All values stay
+         overridable. -->
     <OpenHarmonyMinApiVersion Condition=" '$(OpenHarmonyMinApiVersion)' == '' and '$(TargetPlatformVersion)' == '20.0' ">60000020</OpenHarmonyMinApiVersion>
     <OpenHarmonyTargetApiVersion Condition=" '$(OpenHarmonyTargetApiVersion)' == '' and '$(TargetPlatformVersion)' == '20.0' ">60000020</OpenHarmonyTargetApiVersion>
     <OpenHarmonyApiReleaseType Condition=" '$(OpenHarmonyApiReleaseType)' == '' and '$(TargetPlatformVersion)' == '20.0' ">Release</OpenHarmonyApiReleaseType>
-    <OpenHarmonyMinApiVersion Condition=" '$(OpenHarmonyMinApiVersion)' == '' ">60001021</OpenHarmonyMinApiVersion>
+    <OpenHarmonyMinApiVersion Condition=" '$(OpenHarmonyMinApiVersion)' == '' ">50002014</OpenHarmonyMinApiVersion>
     <OpenHarmonyTargetApiVersion Condition=" '$(OpenHarmonyTargetApiVersion)' == '' ">60101024</OpenHarmonyTargetApiVersion>
-    <OpenHarmonyApiReleaseType Condition=" '$(OpenHarmonyApiReleaseType)' == '' ">Beta1</OpenHarmonyApiReleaseType>
+    <OpenHarmonyApiReleaseType Condition=" '$(OpenHarmonyApiReleaseType)' == '' ">Release</OpenHarmonyApiReleaseType>
+    <!-- compileSdkType/compileSdkVersion are emitted into module.json when the type is set
+         (the API 20 band keeps both empty on purpose; see the file header). The device band
+         defaults to the tester's known-good HarmonyOS 6.0.2.130 identity. Both overridable. -->
+    <OpenHarmonyCompileSdkType Condition=" '$(OpenHarmonyCompileSdkType)' == '' and '$(TargetPlatformVersion)' != '20.0' ">HarmonyOS</OpenHarmonyCompileSdkType>
+    <OpenHarmonyCompileSdkVersion Condition=" '$(OpenHarmonyCompileSdkVersion)' == '' and '$(TargetPlatformVersion)' != '20.0' ">6.0.2.130</OpenHarmonyCompileSdkVersion>
     <OpenHarmonyHapDebug Condition=" '$(OpenHarmonyHapDebug)' == '' ">true</OpenHarmonyHapDebug>
     <OpenHarmonyAbi Condition=" '$(OpenHarmonyAbi)' == '' ">arm64-v8a</OpenHarmonyAbi>
     <!-- Opt-in module.json requestPermissions: ';'/',' separated permission names (see the
@@ -104,6 +138,22 @@
     <_OpenHarmonyHapUnsigned>$(OutputPath)$(RuntimeIdentifier)/$(AssemblyName)-unsigned.hap</_OpenHarmonyHapUnsigned>
     <_OpenHarmonyHapFile>$(OutputPath)$(RuntimeIdentifier)/$(AssemblyName).hap</_OpenHarmonyHapFile>
   </PropertyGroup>
+
+  <!-- Bundle-name validation: app.bundleName accepts only letters, digits, '_' and '.', and a
+       name with any other character (a hyphen, say) is rejected at install with bm 9568344
+       "bundle name or module name is invalid". Runs before every build of an openharmony
+       project and before the hap staging, so the failure surfaces at build time instead of at
+       install time. The default above is legal; an explicit
+       -p:OpenHarmonyBundleName=<name> is validated the same way. -->
+  <Target Name="_OpenHarmonyValidateBundleName"
+          BeforeTargets="PrepareForBuild;_OpenHarmonyStageHap"
+          Condition=" '$(TargetPlatformIdentifier)' == 'openharmony' ">
+    <PropertyGroup>
+      <_OpenHarmonyBundleNameValid>$([System.Text.RegularExpressions.Regex]::IsMatch('$(OpenHarmonyBundleName)', '^[A-Za-z][A-Za-z0-9_]*(\.[A-Za-z0-9_]+)*$'))</_OpenHarmonyBundleNameValid>
+    </PropertyGroup>
+    <Error Condition=" '$(_OpenHarmonyBundleNameValid)' != 'true' "
+           Text="OpenHarmonyBundleName '$(OpenHarmonyBundleName)' is not a legal OpenHarmony bundle name: use only letters, digits, '_' and '.', starting with a letter (a hyphen is rejected at install time with bm 9568344). Pass a legal name with -p:OpenHarmonyBundleName=&lt;name&gt;." />
+  </Target>
 
   <!-- Deterministic payload zip: ordinal entry sort and a fixed entry timestamp, so identical
        payload inputs produce identical bytes. Replaces the SDK ZipDirectory task, whose entry
@@ -265,6 +315,16 @@
       <_OpenHarmonyModuleJson>$(_OpenHarmonyModuleJson.Replace('@API_RELEASE_TYPE@', '$(OpenHarmonyApiReleaseType)'))</_OpenHarmonyModuleJson>
       <_OpenHarmonyModuleJson>$(_OpenHarmonyModuleJson.Replace('@DEBUG@', '$(OpenHarmonyHapDebug)'))</_OpenHarmonyModuleJson>
       <_OpenHarmonyModuleJson>$(_OpenHarmonyModuleJson.Replace('@ABILITY_NAME@', '$(OpenHarmonyAbilityName)'))</_OpenHarmonyModuleJson>
+    </PropertyGroup>
+    <!-- compileSdkType/compileSdkVersion: inserted right after apiReleaseType, only when the
+         effective properties are non-empty. The device band defaults them (see above); the
+         API 20 band leaves both empty, so its module.json stays byte-identical. The fragment
+         is JSON text stored in an MSBuild value, so the double quotes are literal. -->
+    <PropertyGroup>
+      <_OpenHarmonyCompileSdkJson Condition=" '$(OpenHarmonyCompileSdkVersion)' != '' ">"compileSdkVersion":"$(OpenHarmonyCompileSdkVersion)",</_OpenHarmonyCompileSdkJson>
+      <_OpenHarmonyCompileSdkJson Condition=" '$(OpenHarmonyCompileSdkType)' != '' ">$(_OpenHarmonyCompileSdkJson)"compileSdkType":"$(OpenHarmonyCompileSdkType)",</_OpenHarmonyCompileSdkJson>
+      <_OpenHarmonyEmitCompileSdk Condition=" '$(OpenHarmonyCompileSdkType)' != '' or '$(OpenHarmonyCompileSdkVersion)' != '' ">true</_OpenHarmonyEmitCompileSdk>
+      <_OpenHarmonyModuleJson Condition=" '$(_OpenHarmonyEmitCompileSdk)' == 'true' ">$(_OpenHarmonyModuleJson.Replace('"apiReleaseType":"$(OpenHarmonyApiReleaseType)",', '"apiReleaseType":"$(OpenHarmonyApiReleaseType)",$(_OpenHarmonyCompileSdkJson)'))</_OpenHarmonyModuleJson>
     </PropertyGroup>
     <!-- Opt-in requestPermissions: inject only when OpenHarmonyExtraPermissions is set and
          non-empty, so an unset property leaves module.json byte-identical. The list is split

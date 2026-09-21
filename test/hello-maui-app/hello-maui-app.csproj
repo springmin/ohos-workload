@@ -15,6 +15,12 @@
     <!-- The MAUI platform slice lives in the maui-ohos fork; point this at its sources. -->
     <OpenHarmonyMauiPlatformDir Condition=" '$(OpenHarmonyMauiPlatformDir)' == '' ">$(MSBuildThisFileDirectory)../../../maui-ohos/src/Core/src/Platform/OpenHarmony</OpenHarmonyMauiPlatformDir>
     <OpenHarmonyHostingDir Condition=" '$(OpenHarmonyHostingDir)' == '' ">$(MSBuildThisFileDirectory)../../src</OpenHarmonyHostingDir>
+    <!-- HarmonyOS bundle names accept only letters, digits, '_' and '.' (a hyphen is rejected
+         at install with bm 9568344 "bundle name or module name is invalid"), so pin a legal
+         name instead of the pack's assembly-name default (com.example.hello-maui-app, with
+         hyphens). Still overridable: -p:OpenHarmonyBundleName=... wins, and the pack's
+         _OpenHarmonyValidateBundleName fails the build early on an illegal effective value. -->
+    <OpenHarmonyBundleName Condition=" '$(OpenHarmonyBundleName)' == '' ">com.example.hellomauiapp</OpenHarmonyBundleName>
   </PropertyGroup>
   <ItemGroup>
     <PackageReference Include="Microsoft.Maui.Controls" Version="11.0.0-rc.1.26451.6" />
