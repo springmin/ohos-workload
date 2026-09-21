@@ -3,11 +3,13 @@
 #   scripts/prepare-packs.sh [--sha256 <hex>] [--record-sha256] [path-to-Microsoft.NETCore.App.Runtime.openharmony-arm64.nupkg]
 #
 # The BCL runtime pack artifact is verified against an expected sha256 *before* it is
-# unpacked. The expectation is (in order): RUNTIME_PACK_SHA256 / --sha256, the
-# <artifact>.sha256 sidecar recorded by a previous run, then the fixed digest of the
-# released artifact below. A locally built artifact is admitted once with --record-sha256
-# (which writes <artifact>.sha256); every later run must match that record. There is no
-# path that unpacks an artifact without a matching expected digest.
+# unpacked. The expectation is (in order): RUNTIME_PACK_SHA256 / --sha256 (an explicit
+# digest always wins), the <artifact>.sha256 sidecar recorded by a previous run (it only
+# fills the gap when no explicit digest was given), then the fixed digest of the released
+# artifact below. A locally built artifact is admitted once with --record-sha256 (which
+# writes <artifact>.sha256); every later run must match that record. There is no path that
+# unpacks an artifact without a matching expected digest, and a tampered sidecar can never
+# override the digest the caller supplied.
 #
 # Without an argument the released runtime pack is downloaded from the fork's
 # -openharmony release and verified against the expected digest.
@@ -24,8 +26,11 @@ SHA=b9fff88aadd4bbfc73964d0fdb05dc551755fd956332cd7d44cf297e06556f51
 URL="https://github.com/springmin/runtime-ohos/releases/download/v11.0.0-rc.1.26451.109-openharmony/Microsoft.NETCore.App.Runtime.openharmony-arm64.$RTV.nupkg"
 BCL="$W/packs/Microsoft.NETCore.App.Runtime.openharmony-arm64/$RTV"
 
-# Expected digest of whatever artifact gets unpacked (env/flag override; --sha256 wins).
+# Expected digest of whatever artifact gets unpacked. EXPECT_SHA_SRC records where it came
+# from: "explicit" (env or --sha256) always wins, "sidecar" only fills a gap.
 EXPECT_SHA="${RUNTIME_PACK_SHA256:-}"
+EXPECT_SHA_SRC=""
+if [ -n "$EXPECT_SHA" ]; then EXPECT_SHA_SRC=explicit; fi
 RECORD_SHA256=0
 NPKG=""
 while [ $# -gt 0 ]; do
@@ -34,6 +39,7 @@ while [ $# -gt 0 ]; do
             shift
             [ $# -gt 0 ] || { echo "--sha256 needs a sha256 digest" >&2; exit 2; }
             EXPECT_SHA="$1"
+            EXPECT_SHA_SRC=explicit
             ;;
         --record-sha256) RECORD_SHA256=1 ;;
         -h|--help)
@@ -154,10 +160,19 @@ if [ -z "$NPKG" ]; then
     curl -sL -C - --retry 2 --retry-delay 3 --speed-limit 2048 --speed-time 30 -o "$NPKG" "${RUNTIME_PACK_URL:-$URL}" 2>/dev/null || true
   done
 else
-  # Re-use of a path artifact requires the digest recorded when it was admitted.
-  if [ -z "${RUNTIME_PACK_SHA256:-}" ] && [ -f "$NPKG.sha256" ]; then
+  # Re-use of a path artifact requires the digest recorded when it was admitted. The
+  # sidecar only fills a gap: an explicit --sha256 / RUNTIME_PACK_SHA256 always wins, so a
+  # tampered artifact plus a matching tampered sidecar cannot bypass the caller's digest.
+  if [ -z "$EXPECT_SHA" ] && [ -f "$NPKG.sha256" ]; then
     EXPECT_SHA="$(cut -d' ' -f1 < "$NPKG.sha256")"
+    EXPECT_SHA_SRC=sidecar
     echo "   recorded digest from $NPKG.sha256: $EXPECT_SHA"
+  fi
+  if [ "$EXPECT_SHA_SRC" = explicit ] && [ -f "$NPKG.sha256" ]; then
+    _recorded="$(cut -d' ' -f1 < "$NPKG.sha256")"
+    if [ "$_recorded" != "$EXPECT_SHA" ]; then
+      echo "   note: $NPKG.sha256 records $_recorded; the explicit digest wins" >&2
+    fi
   fi
   if [ -z "$EXPECT_SHA" ] && [ "$RECORD_SHA256" = 1 ]; then
     [ -f "$NPKG" ] || { echo "artifact not found: $NPKG" >&2; exit 1; }
