@@ -206,8 +206,9 @@ MD
 fi
 
 if [ -n "$SDK_RELEASE" ]; then
-    log "== attaching the versioned bundle to the SDK release $SDK_RELEASE =="
+    log "== attaching the versioned bundle and SHA256SUMS to the SDK release $SDK_RELEASE =="
     run gh release upload "$SDK_RELEASE" "$BUNDLE" --repo "$REPO" --clobber
+    run gh release upload "$SDK_RELEASE" "$W/dist/SHA256SUMS" --repo "$REPO" --clobber
 fi
 rm -f "$NOTES"
 log "== done =="
