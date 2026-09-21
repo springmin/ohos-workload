@@ -82,6 +82,20 @@ interface HybridInvokeErrorResult {
   ErrorMessage: string;
 }
 
+// One response header for WebResourceResponse.setResponseHeader. The SDK declares Header as
+// an interface, and the ArkTS checker rejects structural typing (arkts-no-structural-typing)
+// for object literals assigned to it, so the payload cache policy below publishes instances of
+// this nominal implementation instead.
+class PayloadHeader implements Header {
+  headerKey: string;
+  headerValue: string;
+
+  constructor(headerKey: string, headerValue: string) {
+    this.headerKey = headerKey;
+    this.headerValue = headerValue;
+  }
+}
+
 // A pending invocation whose intercepted response is held open with setResponseIsReady(false)
 // until the managed handler answers (or the fallback timeout fires).
 interface HybridPendingInvoke {
@@ -1206,18 +1220,52 @@ struct Index {
     return response;
   }
 
-  // ArkWeb needs the intercepted response synchronously, and payload assets are small, so the
-  // file is read inline through @ohos.file.fs (open/read/close). '' (an unknown or unsafe path)
-  // is answered with 404, so both bridges share the read path.
-  private servePayloadFile(filePath: string): WebResourceResponse {
-    if (filePath.length === 0) {
-      return this.hybridErrorResponse(404);
+  // Static web asset fingerprint fallback. .NET static web assets are requested under
+  // fingerprinted names (stem.<8-32 lowercase hex chars>.ext) while the extracted payload
+  // carries the base file; a request whose exact file is missing is retried once with the
+  // suffix stripped (name.<hash>.ext -> name.ext). The grammar is deliberately conservative:
+  // the hex run must be the last stem segment and a non-empty stem must remain, so ordinary
+  // dotted names (app.settings.css) or hidden names (.hidden.css) are never rewritten. The
+  // rewrite can only shorten the final file name - the parent directory is taken from the
+  // already-validated input, so the traversal rejections in *FilePath stay in force. The input
+  // is returned unchanged when the name carries no fingerprint.
+  private staticFingerprintBase(filePath: string): string {
+    const slash: number = filePath.lastIndexOf('/');
+    const nameStart: number = slash + 1;
+    const dot: number = filePath.lastIndexOf('.');
+    if (dot <= nameStart) {
+      return filePath;
     }
+    const stem: string = filePath.substring(nameStart, dot);
+    const extension: string = filePath.substring(dot);
+    const match = /^(.+)\.[0-9a-f]{8,32}$/.exec(stem);
+    if (match === null) {
+      return filePath;
+    }
+    return `${filePath.substring(0, nameStart)}${match[1]}${extension}`;
+  }
+
+  // Cache policy for a served payload file. A fingerprinted request is pinned by its name, so
+  // it is immutable for a year; every other payload file - the framework bootstrap
+  // (blazor.webview.js, hybridwebview.js), the host page and the app assets - is revalidated,
+  // so a refreshed pack is picked up even when the WebView cache is warm. setResponseHeader
+  // takes the SDK's Header interface array (WebResourceResponse, API 9+).
+  private payloadCacheHeaders(fingerprinted: boolean): Header[] {
+    const headers: Header[] = [
+      new PayloadHeader('Cache-Control',
+        fingerprinted ? 'public, max-age=31536000, immutable' : 'no-cache'),
+    ];
+    return headers;
+  }
+
+  // Reads one payload file into a 200 response; undefined means "not a readable file" and the
+  // caller answers 404 (or retries the base name for a fingerprinted request).
+  private readPayloadFile(filePath: string, fingerprinted: boolean): WebResourceResponse | undefined {
     let fd: number = -1;
     try {
       const stat = fileIo.statSync(filePath);
       if (!stat.isFile()) {
-        return this.hybridErrorResponse(404);
+        return undefined;
       }
       const file = fileIo.openSync(filePath, fileIo.OpenMode.READ_ONLY);
       fd = file.fd;
@@ -1228,9 +1276,10 @@ struct Index {
       response.setResponseMimeType(this.hybridMimeType(filePath));
       response.setResponseEncoding('utf-8');
       response.setResponseData(buffer);
+      response.setResponseHeader(this.payloadCacheHeaders(fingerprinted));
       return response;
     } catch (ioError) {
-      return this.hybridErrorResponse(404);
+      return undefined;
     } finally {
       if (fd >= 0) {
         try {
@@ -1240,6 +1289,29 @@ struct Index {
         }
       }
     }
+  }
+
+  // ArkWeb needs the intercepted response synchronously, and payload assets are small, so the
+  // file is read inline through @ohos.file.fs (open/read/close). '' (an unknown or unsafe path)
+  // is answered with 404, so both bridges share the read path. The exact request path always
+  // wins; only a fingerprinted name whose exact file is missing retries the base name once.
+  private servePayloadFile(filePath: string): WebResourceResponse {
+    if (filePath.length === 0) {
+      return this.hybridErrorResponse(404);
+    }
+    const baseFile: string = this.staticFingerprintBase(filePath);
+    const fingerprinted: boolean = baseFile !== filePath;
+    const exact: WebResourceResponse | undefined = this.readPayloadFile(filePath, fingerprinted);
+    if (exact !== undefined) {
+      return exact;
+    }
+    if (fingerprinted) {
+      const fallback: WebResourceResponse | undefined = this.readPayloadFile(baseFile, true);
+      if (fallback !== undefined) {
+        return fallback;
+      }
+    }
+    return this.hybridErrorResponse(404);
   }
 
   // HybridWebView assets live under <base>/<root> (plus the framework script next to the base).
