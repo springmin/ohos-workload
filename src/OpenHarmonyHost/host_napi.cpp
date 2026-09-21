@@ -37,6 +37,13 @@ namespace {
 
 OhosHostAppHandle* g_handle = nullptr;
 
+// startApp re-entry guard. The C entry (ohos_host_start_app) has its own guard; this one
+// rejects a second JS call before it allocates a LaunchRequest or spawns a launch thread, so
+// a duplicate call cannot leak a request or race the first launch. It is cleared when a
+// launch fails (retry allowed); after a success g_handle rejects later calls on its own.
+std::mutex g_launch_lock;
+bool g_launch_requested = false;
+
 // XComponent (surface) support -------------------------------------------------
 napi_env g_env = nullptr;
 napi_ref g_exports_ref = nullptr;
@@ -1537,10 +1544,13 @@ void* LaunchThread(void* arg) {
     LaunchRequest* request = static_cast<LaunchRequest*>(arg);
     OhosHostAppHandle* handle = nullptr;
     int rc = ohos_host_start_app(request->app_dir, request->assembly, nullptr, request->context_json, &handle);
-    g_handle = handle;
     if (rc != 0) {
+        std::lock_guard<std::mutex> launch_guard(g_launch_lock);
+        g_launch_requested = false;   // the launch failed: a retry is allowed
         OH_LOG_ERROR(LOG_APP, "[openharmony-host] start_app failed rc=%{public}d", rc);
     } else {
+        std::lock_guard<std::mutex> launch_guard(g_launch_lock);
+        g_handle = handle;
         OH_LOG_INFO(LOG_APP, "[openharmony-host] app %{public}s started", request->assembly);
     }
     free(request->app_dir);
@@ -1557,6 +1567,18 @@ napi_value StartApp(napi_env env, napi_callback_info info) {
     if (argc < 2) {
         napi_throw_type_error(env, nullptr, "startApp(appDir, assemblyFile, contextJson?) requires two strings");
         return nullptr;
+    }
+
+    // One app per process: reject a second call before any request/thread is allocated, so a
+    // duplicate (or a racing retry) cannot leak a LaunchRequest or start a second host.
+    {
+        std::lock_guard<std::mutex> launch_guard(g_launch_lock);
+        if (g_launch_requested || g_handle != nullptr) {
+            OH_LOG_WARN(LOG_APP, "[openharmony-host] startApp: an app is already starting or running");
+            napi_throw_error(env, nullptr, "startApp: an app is already starting or running");
+            return nullptr;
+        }
+        g_launch_requested = true;
     }
 
     std::string app_dir = GetStringArg(env, argv[0]);
@@ -1583,6 +1605,10 @@ napi_value StartApp(napi_env env, napi_callback_info info) {
         free(request->assembly);
         free(request->context_json);
         delete request;
+        {
+            std::lock_guard<std::mutex> launch_guard(g_launch_lock);
+            g_launch_requested = false;   // nothing was launched: a retry is allowed
+        }
         napi_throw_error(env, nullptr, "failed to start the .NET app thread");
         return nullptr;
     }
@@ -2377,7 +2403,10 @@ extern "C" int ohos_host_accessibility_send_event(int eventType) {
         OH_ArkUI_DestoryAccessibilityEventInfo(event);
         return 0;
     }
+    // The provider serializes the event during the send; the caller still owns the object, so
+    // it is destroyed here instead of leaking one event info per published event.
     OH_ArkUI_SendAccessibilityAsyncEvent(g_a11y_provider, event, nullptr);
+    OH_ArkUI_DestoryAccessibilityEventInfo(event);
     return 1;
 }
 

@@ -205,6 +205,12 @@ typedef int (*ohos_run_app_fn)(void*);
 
 #define OHOS_MAX_PENDING_LIFECYCLE 32
 
+// Serializes the context slots (g_pending_context_json below and the handle's context_json)
+// between the shell thread calling ohos_host_set_app_context and the launch thread running
+// ohos_host_start_app. Without it the launch thread can read or free the pending snapshot
+// while the setter replaces it (and the setter can free it under the reader).
+static pthread_mutex_t g_context_mutex = PTHREAD_MUTEX_INITIALIZER;
+
 // Retired context snapshots: a managed reader may still be copying the pointer returned by
 // ohos_host_get_app_context when ohos_host_set_app_context replaces it, so replaced strings
 // are retired and freed at join instead of being freed under the reader.
@@ -247,8 +253,29 @@ static OhosHostAppHandle* g_app = NULL;
 
 // A context published before the app handle exists (the page can appear before the ability's
 // bootstrap reaches start_app). start_app adopts this snapshot when it has no context of its
-// own; an app-provided context always wins.
+// own; an app-provided context always wins. Guarded by g_context_mutex: start_app takes the
+// snapshot out of this slot before using it, so no reader can race a replacement free.
 static char* g_pending_context_json = NULL;
+
+// Lifecycle events and the NodeContent handle that arrive before an app handle exists (the
+// shell can push ability events while the launch thread is still initializing the runtime).
+// They are queued here and transferred to the handle when start_app publishes it, so the
+// managed bridge still sees them once it registers. Guarded by g_context_mutex.
+static int g_pending_lifecycle[OHOS_MAX_PENDING_LIFECYCLE];
+static int g_pending_lifecycle_count = 0;
+static void* g_pending_node_content = NULL;
+
+// start_app re-entry guard: one bridged application per process, and a second start while the
+// first is still initializing would overwrite g_app and leak the first handle.
+static int g_launch_in_progress = 0;
+
+// Clears the re-entry guard after a failed launch. A successful launch keeps g_app set, which
+// rejects a second start on its own.
+static void OhosHostEndLaunch(void) {
+    pthread_mutex_lock(&g_context_mutex);
+    g_launch_in_progress = 0;
+    pthread_mutex_unlock(&g_context_mutex);
+}
 
 // The XComponent may be created before the application handle exists, so keep the latest
 // surface state here and forward it when the bridge registers.
@@ -298,16 +325,30 @@ static int OhosHostContextNamesAppDir(const char* json) {
 int ohos_host_start_app(const char* app_dir, const char* app_assembly_file,
                         const char* args_json, const char* context_json,
                         OhosHostAppHandle** out_handle) {
+    // Reject a second start up front: one bridged application per process (g_app), and until
+    // the first launch publishes its handle the guard keeps two launch threads from racing
+    // g_app/g_pending_context_json. No state is allocated on a rejected call.
+    pthread_mutex_lock(&g_context_mutex);
+    if (g_app != NULL || g_launch_in_progress) {
+        pthread_mutex_unlock(&g_context_mutex);
+        fprintf(stderr, "[openharmony-host] start_app: an app is already running or launching\n");
+        return -1;
+    }
+    g_launch_in_progress = 1;
+    pthread_mutex_unlock(&g_context_mutex);
+
     char hostfxr_path[4096];
     char app_assembly_path[4096];
     if (path_join(hostfxr_path, sizeof(hostfxr_path), app_dir, "libhostfxr.so") != 0 ||
         path_join(app_assembly_path, sizeof(app_assembly_path), app_dir, app_assembly_file) != 0) {
+        OhosHostEndLaunch();
         return -1;
     }
 
     void* hostfxr = dlopen(hostfxr_path, RTLD_NOW | RTLD_LOCAL);
     if (hostfxr == NULL) {
         fprintf(stderr, "[openharmony-host] dlopen(%s) failed: %s\n", hostfxr_path, dlerror());
+        OhosHostEndLaunch();
         return -1;
     }
 
@@ -322,23 +363,18 @@ int ohos_host_start_app(const char* app_dir, const char* app_assembly_file,
     ohos_run_app_fn run_app = (ohos_run_app_fn)dlsym(hostfxr, "hostfxr_run_app");
     if (initialize == NULL || close_ctx == NULL || run_app == NULL) {
         fprintf(stderr, "[openharmony-host] hostfxr symbols missing\n");
+        OhosHostEndLaunch();
         return -1;
     }
 
     // A context published before this call (ohos_host_set_app_context while no handle
     // existed) supersedes a start context that is absent or does not name a payload
     // directory: the page can publish before the ability's bootstrap reaches start_app, and
-    // the stale start context must not overwrite the explicit publish.
+    // the stale start context must not overwrite the explicit publish. The adoption itself
+    // happens below, after initialize, under g_context_mutex.
     const char* effective_context = context_json;
     if (effective_context != NULL && effective_context[0] == '\0') {
         effective_context = NULL;
-    }
-    if (g_pending_context_json != NULL &&
-        (effective_context == NULL || !OhosHostContextNamesAppDir(effective_context))) {
-        effective_context = g_pending_context_json;
-    }
-    if (effective_context != NULL) {
-        setenv("OHOS_HOST_APP_CONTEXT", effective_context, 1);
     }
 
     const char* argv[1] = {app_assembly_path};
@@ -351,12 +387,14 @@ int ohos_host_start_app(const char* app_dir, const char* app_assembly_file,
     int rc = initialize(1, argv, &params, &ctx);
     if (rc != 0 || ctx == NULL) {
         fprintf(stderr, "[openharmony-host] initialize_for_dotnet_command_line rc=0x%x\n", rc);
+        OhosHostEndLaunch();
         return -1;
     }
 
     OhosHostAppHandle* handle = (OhosHostAppHandle*)calloc(1, sizeof(OhosHostAppHandle));
     if (handle == NULL) {
         close_ctx(ctx);
+        OhosHostEndLaunch();
         return -1;
     }
     handle->hostfxr = hostfxr;
@@ -364,13 +402,45 @@ int ohos_host_start_app(const char* app_dir, const char* app_assembly_file,
     handle->run_app = run_app;
     handle->close_ctx = close_ctx;
     (void)args_json;
+    // Resolve the pending context and publish the handle under one lock: a set_app_context
+    // that ran before this critical section left its snapshot in the pending slot and is
+    // adopted (or freed as superseded) here, one that runs after sees g_app and retires the
+    // handle snapshot instead. The launch thread never touches the pending slot outside the
+    // lock, so no reader can race a replacement free.
+    pthread_mutex_lock(&g_context_mutex);
+    char* adopted_pending = NULL;
+    if (g_pending_context_json != NULL &&
+        (effective_context == NULL || !OhosHostContextNamesAppDir(effective_context))) {
+        adopted_pending = g_pending_context_json;
+        g_pending_context_json = NULL;
+        effective_context = adopted_pending;
+    } else if (g_pending_context_json != NULL) {
+        // Superseded by a start context that names a payload directory; free it here while
+        // the lock guarantees no reader can hold it.
+        free(g_pending_context_json);
+        g_pending_context_json = NULL;
+    }
     if (effective_context != NULL) {
+        setenv("OHOS_HOST_APP_CONTEXT", effective_context, 1);
         handle->context_json = strdup(effective_context);
     }
     // The pending snapshot was adopted or superseded; the handle owns its own copy now.
-    free(g_pending_context_json);
-    g_pending_context_json = NULL;
+    free(adopted_pending);
+    // Events that arrived before the handle existed are transferred to it here (the managed
+    // bridge cannot have registered yet: register_bridge requires g_app), and any later event
+    // goes straight to the handle's own queue.
+    handle->pending_count = g_pending_lifecycle_count;
+    for (int i = 0; i < g_pending_lifecycle_count; i++) {
+        handle->pending_lifecycle[i] = g_pending_lifecycle[i];
+    }
+    g_pending_lifecycle_count = 0;
+    if (g_pending_node_content != NULL) {
+        handle->node_content = g_pending_node_content;
+        g_pending_node_content = NULL;
+    }
     g_app = handle;
+    g_launch_in_progress = 0;
+    pthread_mutex_unlock(&g_context_mutex);
 
     pthread_attr_t attr;
     pthread_attr_init(&attr);
@@ -391,7 +461,9 @@ int ohos_host_start_app(const char* app_dir, const char* app_assembly_file,
     pthread_attr_destroy(&attr);
     if (thread_rc != 0) {
         fprintf(stderr, "[openharmony-host] pthread_create failed: %d\n", thread_rc);
+        pthread_mutex_lock(&g_context_mutex);
         g_app = NULL;
+        pthread_mutex_unlock(&g_context_mutex);
         close_ctx(ctx);
         free(handle->context_json);
         free(handle);
@@ -464,11 +536,18 @@ int ohos_host_set_app_context(const char* json) {
     if (copy == NULL) {
         return -1;
     }
+    // The pending-vs-live decision is taken under g_context_mutex: start_app publishes g_app
+    // under the same lock, so a publish racing the launch either lands in the pending slot the
+    // launch adopts or replaces the handle snapshot, never a mix of both.
+    pthread_mutex_lock(&g_context_mutex);
     if (g_app == NULL) {
         // No handle yet: keep the snapshot for the next start_app, which adopts it only when
-        // it has no context of its own. The pending copy has no concurrent reader.
+        // it has no context of its own. The lock makes this replacement atomic with the
+        // launch thread's adoption in start_app, which takes the pointer out of the slot
+        // before using it, so the pending copy has no concurrent reader here.
         free(g_pending_context_json);
         g_pending_context_json = copy;
+        pthread_mutex_unlock(&g_context_mutex);
         fprintf(stderr, "[openharmony-host] set_app_context: kept %d bytes for the next start_app\n",
                 (int)strlen(copy));
         return 0;
@@ -476,6 +555,7 @@ int ohos_host_set_app_context(const char* json) {
     setenv("OHOS_HOST_APP_CONTEXT", copy, 1);
     OhosHostRetireContextSnapshot(g_app, g_app->context_json);
     g_app->context_json = copy;
+    pthread_mutex_unlock(&g_context_mutex);
     int notified = OhosHostReplaySurfaceNotification();
     fprintf(stderr, "[openharmony-host] set_app_context: %d bytes, notified=%d\n",
             (int)strlen(copy), notified);
@@ -713,14 +793,28 @@ static void ImeForwardText(void) {
     }
 }
 
+// The largest prefix of utf8 that is at most limit bytes and ends on a UTF-8 sequence
+// boundary (walks back over continuation bytes whose lead byte was cut off). The IME paths
+// use it so a truncated buffer is always valid UTF-8 for the managed TextInput contract.
+static size_t ImeUtf8PrefixLength(const char* utf8, size_t limit) {
+    size_t take = strlen(utf8);
+    if (take > limit) {
+        take = limit;
+        while (take > 0 && ((unsigned char)utf8[take] & 0xC0) == 0x80) {
+            take--;
+        }
+    }
+    return take;
+}
+
 static void ImeAppendUtf8(const char* utf8) {
     size_t used = strlen(g_ime_text);
-    size_t incoming = strlen(utf8);
-    if (used + incoming >= sizeof(g_ime_text)) {
+    if (used >= sizeof(g_ime_text) - 1) {
         return;
     }
-    memcpy(g_ime_text + used, utf8, incoming);
-    g_ime_text[used + incoming] = '\0';
+    size_t take = ImeUtf8PrefixLength(utf8, sizeof(g_ime_text) - 1 - used);
+    memcpy(g_ime_text + used, utf8, take);
+    g_ime_text[used + take] = '\0';
 }
 
 static void ImeDeleteBackward(int32_t length) {
@@ -742,20 +836,44 @@ static void OnImeInsertText(InputMethod_TextEditorProxy* proxy, const char16_t* 
     if (text == NULL || length == 0) {
         return;
     }
-    /* UTF-16 -> UTF-8 (BMP only; surrogate pairs are passed through as two characters). */
+    /* UTF-16 -> UTF-8. Surrogate pairs become one 4-byte sequence, and the loop stops before
+       the code point that would not fit together with the terminator, so the buffer never
+       ends inside a sequence nor with half of a surrogate pair (BMP-only lone surrogates keep
+       the historical pass-through). */
     char utf8[1024];
     size_t out = 0;
-    for (size_t i = 0; i < length && out + 4 < sizeof(utf8); i++) {
+    for (size_t i = 0; i < length; i++) {
         uint32_t c = (uint32_t)text[i];
-        if (c < 0x80) {
-            utf8[out++] = (char)c;
+        size_t bytes;
+        if (c >= 0xD800 && c <= 0xDBFF && i + 1 < length &&
+            text[i + 1] >= 0xDC00 && text[i + 1] <= 0xDFFF) {
+            c = 0x10000 + ((c - 0xD800) << 10) + ((uint32_t)text[i + 1] - 0xDC00);
+            i++;
+            bytes = 4;
+        } else if (c < 0x80) {
+            bytes = 1;
         } else if (c < 0x800) {
-            utf8[out++] = (char)(0xC0 | (c >> 6));
-            utf8[out++] = (char)(0x80 | (c & 0x3F));
+            bytes = 2;
         } else {
+            bytes = 3;
+        }
+        if (out + bytes + 1 > sizeof(utf8)) {
+            break;   /* no room for this code point and the terminator */
+        }
+        if (bytes == 4) {
+            utf8[out++] = (char)(0xF0 | (c >> 18));
+            utf8[out++] = (char)(0x80 | ((c >> 12) & 0x3F));
+            utf8[out++] = (char)(0x80 | ((c >> 6) & 0x3F));
+            utf8[out++] = (char)(0x80 | (c & 0x3F));
+        } else if (bytes == 3) {
             utf8[out++] = (char)(0xE0 | (c >> 12));
             utf8[out++] = (char)(0x80 | ((c >> 6) & 0x3F));
             utf8[out++] = (char)(0x80 | (c & 0x3F));
+        } else if (bytes == 2) {
+            utf8[out++] = (char)(0xC0 | (c >> 6));
+            utf8[out++] = (char)(0x80 | (c & 0x3F));
+        } else {
+            utf8[out++] = (char)c;
         }
     }
     utf8[out] = '\0';
@@ -783,8 +901,11 @@ static void OnImeGetTextConfig(InputMethod_TextEditorProxy* proxy, InputMethod_T
 void ohos_host_keyboard_set_text(const char* utf8) {
     g_ime_text[0] = '\0';
     if (utf8 != NULL) {
-        strncpy(g_ime_text, utf8, sizeof(g_ime_text) - 1);
-        g_ime_text[sizeof(g_ime_text) - 1] = '\0';
+        // Truncate to the buffer but back off to a UTF-8 sequence boundary; the old strncpy
+        // could hand the managed side a buffer ending in half of a multi-byte character.
+        size_t take = ImeUtf8PrefixLength(utf8, sizeof(g_ime_text) - 1);
+        memcpy(g_ime_text, utf8, take);
+        g_ime_text[take] = '\0';
     }
 }
 
@@ -1005,7 +1126,20 @@ void ohos_host_notify_lifecycle(OhosHostAppHandle* handle, ohos_lifecycle_event 
             (int)event, (void*)handle, handle ? (handle->bridge_lifecycle != NULL) : -1);
     fflush(stderr);
     if (handle == NULL) {
-        return;
+        // The NAPI g_handle is written only after start_app returns, so an event pushed while
+        // the launch is still initializing arrives with a NULL handle. Resolve it through
+        // g_app, or queue it for the handle that start_app is about to publish, instead of
+        // dropping the event.
+        pthread_mutex_lock(&g_context_mutex);
+        handle = g_app;
+        if (handle == NULL) {
+            if (g_pending_lifecycle_count < OHOS_MAX_PENDING_LIFECYCLE) {
+                g_pending_lifecycle[g_pending_lifecycle_count++] = (int)event;
+            }
+            pthread_mutex_unlock(&g_context_mutex);
+            return;
+        }
+        pthread_mutex_unlock(&g_context_mutex);
     }
     if (handle->bridge_lifecycle != NULL) {
         handle->bridge_lifecycle((int)event);
@@ -1018,7 +1152,18 @@ void ohos_host_notify_lifecycle(OhosHostAppHandle* handle, ohos_lifecycle_event 
 
 void ohos_host_set_node_content(OhosHostAppHandle* handle, void* node_content) {
     if (handle == NULL) {
-        return;
+        // Same pre-handle window as ohos_host_notify_lifecycle: the shell can hand the
+        // NodeContent over before the launch thread publishes the handle. Store it for the
+        // handle start_app creates; register_bridge then forwards it to the managed side
+        // (OHOS_HOST_APP_CONTEXT-style late delivery).
+        pthread_mutex_lock(&g_context_mutex);
+        handle = g_app;
+        if (handle == NULL) {
+            g_pending_node_content = node_content;
+            pthread_mutex_unlock(&g_context_mutex);
+            return;
+        }
+        pthread_mutex_unlock(&g_context_mutex);
     }
     handle->node_content = node_content;
     if (handle->bridge_node != NULL) {
@@ -1630,6 +1775,79 @@ static int g_a11y_capacity = 0;
 static int g_a11y_fill = 0;
 static int g_a11y_count = 0;
 
+// Serializes the shadow node table between the managed publisher (begin/node/commit on the
+// app thread) and the NAPI accessibility provider (count/get on the ArkUI thread).
+static pthread_mutex_t g_a11y_mutex = PTHREAD_MUTEX_INITIALIZER;
+
+// The getter must never hand the interned node strings to the provider: begin frees the whole
+// table while the provider is still forwarding the fields to the ArkUI setters (A11yFillElement
+// in host_napi.cpp). Each get copies the strings under g_a11y_mutex into per-thread storage
+// that stays valid until the next get on that thread, so a concurrent publish can free the
+// table without invalidating the caller's fill. The storage hangs off a pthread key instead of
+// __thread on purpose: the host library is dlopen'ed, and the OpenHarmony toolchain lowers
+// __thread to emulated TLS (libc++_shared's __emutls_get_address), while the key needs no
+// TLS relocations; its destructor frees the copies when the thread exits.
+#define OHOS_A11Y_COPY_SLOTS 4
+
+typedef struct OhosA11yCopySet {
+    char* strings[OHOS_A11Y_COPY_SLOTS];
+    size_t sizes[OHOS_A11Y_COPY_SLOTS];
+} OhosA11yCopySet;
+
+static pthread_key_t g_a11y_copy_key;
+static pthread_once_t g_a11y_copy_once = PTHREAD_ONCE_INIT;
+static int g_a11y_copy_key_ready = 0;
+
+static void OhosA11yCopySetDestroy(void* value) {
+    OhosA11yCopySet* set = (OhosA11yCopySet*)value;
+    if (set == NULL) {
+        return;
+    }
+    for (int i = 0; i < OHOS_A11Y_COPY_SLOTS; i++) {
+        free(set->strings[i]);
+    }
+    free(set);
+}
+
+static void OhosA11yCopyKeyInit(void) {
+    g_a11y_copy_key_ready = pthread_key_create(&g_a11y_copy_key, OhosA11yCopySetDestroy) == 0;
+}
+
+// Caller holds g_a11y_mutex. Returns NULL when the thread cannot have copies (all string
+// outputs then report the field as absent, which is the safe failure mode).
+static OhosA11yCopySet* OhosA11yCopySetForThread(void) {
+    pthread_once(&g_a11y_copy_once, OhosA11yCopyKeyInit);
+    if (!g_a11y_copy_key_ready) {
+        return NULL;
+    }
+    OhosA11yCopySet* set = (OhosA11yCopySet*)pthread_getspecific(g_a11y_copy_key);
+    if (set == NULL) {
+        set = (OhosA11yCopySet*)calloc(1, sizeof(OhosA11yCopySet));
+        if (set == NULL || pthread_setspecific(g_a11y_copy_key, set) != 0) {
+            free(set);
+            return NULL;
+        }
+    }
+    return set;
+}
+
+static const char* OhosA11yCopyString(OhosA11yCopySet* set, int slot, const char* value) {
+    if (set == NULL || value == NULL) {
+        return NULL;
+    }
+    size_t length = strlen(value) + 1;
+    if (set->sizes[slot] < length) {
+        char* grown = (char*)realloc(set->strings[slot], length);
+        if (grown == NULL) {
+            return NULL;   // report the field as absent rather than a dangling pointer
+        }
+        set->strings[slot] = grown;
+        set->sizes[slot] = length;
+    }
+    memcpy(set->strings[slot], value, length);
+    return set->strings[slot];
+}
+
 static char* OhosA11yString(const char* value) {
     if (value == NULL) {
         return NULL;
@@ -1642,6 +1860,7 @@ static char* OhosA11yString(const char* value) {
     return copy;
 }
 
+// Caller holds g_a11y_mutex (begin is the only caller).
 static void OhosA11yFreeNodes(void) {
     if (g_a11y_nodes != NULL) {
         for (int i = 0; i < g_a11y_fill; i++) {
@@ -1659,15 +1878,19 @@ static void OhosA11yFreeNodes(void) {
 }
 
 int ohos_host_accessibility_begin(int count) {
+    pthread_mutex_lock(&g_a11y_mutex);
     OhosA11yFreeNodes();
     if (count <= 0) {
+        pthread_mutex_unlock(&g_a11y_mutex);
         return 0;
     }
     g_a11y_nodes = (OhosAccessibilityNode*)calloc((size_t)count, sizeof(OhosAccessibilityNode));
     if (g_a11y_nodes == NULL) {
+        pthread_mutex_unlock(&g_a11y_mutex);
         return -1;
     }
     g_a11y_capacity = count;
+    pthread_mutex_unlock(&g_a11y_mutex);
     return 0;
 }
 
@@ -1681,7 +1904,9 @@ int ohos_host_accessibility_node(int id, int parent_id, const char* role, const 
                                  int flags, int actions,
                                  double range_min, double range_max, double range_current,
                                  int checked) {
+    pthread_mutex_lock(&g_a11y_mutex);
     if (g_a11y_nodes == NULL || g_a11y_fill >= g_a11y_capacity) {
+        pthread_mutex_unlock(&g_a11y_mutex);
         return -1;
     }
     OhosAccessibilityNode* node = &g_a11y_nodes[g_a11y_fill++];
@@ -1701,43 +1926,55 @@ int ohos_host_accessibility_node(int id, int parent_id, const char* role, const 
     node->range_max = range_max;
     node->range_current = range_current;
     node->checked = checked;
+    pthread_mutex_unlock(&g_a11y_mutex);
     return 0;
 }
 
 int ohos_host_accessibility_commit(void) {
+    pthread_mutex_lock(&g_a11y_mutex);
     g_a11y_count = g_a11y_fill;
-    return g_a11y_count;
+    int count = g_a11y_count;
+    pthread_mutex_unlock(&g_a11y_mutex);
+    return count;
 }
 
 int ohos_host_accessibility_count(void) {
-    return g_a11y_count;
+    pthread_mutex_lock(&g_a11y_mutex);
+    int count = g_a11y_count;
+    pthread_mutex_unlock(&g_a11y_mutex);
+    return count;
 }
 
 // Published node count for the shell's accessibility self-check (host.accessibilityNodeCount).
 // Same value as ohos_host_accessibility_count; the distinct name keeps the publish-contract
 // reflection described above from mistaking this symbol for the 16-argument publish function.
 int ohos_host_accessibility_node_count(void) {
-    return g_a11y_count;
+    return ohos_host_accessibility_count();
 }
 
 // Mirrors ohos_host_accessibility_node: 17 arguments, same order plus the output pointers
-// (index first, then the 16 published fields). See openharmony_host.h.
+// (index first, then the 16 published fields). See openharmony_host.h. The string outputs
+// point at per-thread copies taken under the table lock (OhosA11yCopySetForThread), not at
+// the interned node fields, so begin can free the table while the provider fills its element.
 int ohos_host_accessibility_get(int index, int* id, int* parent_id, const char** role,
                                 const char** text, const char** description, const char** hint,
                                 float* x, float* y, float* width, float* height,
                                 int* flags, int* actions,
                                 double* range_min, double* range_max, double* range_current,
                                 int* checked) {
+    pthread_mutex_lock(&g_a11y_mutex);
     if (g_a11y_nodes == NULL || index < 0 || index >= g_a11y_count) {
+        pthread_mutex_unlock(&g_a11y_mutex);
         return -1;
     }
     OhosAccessibilityNode* node = &g_a11y_nodes[index];
+    OhosA11yCopySet* copies = OhosA11yCopySetForThread();
     if (id != NULL) *id = node->id;
     if (parent_id != NULL) *parent_id = node->parent_id;
-    if (role != NULL) *role = node->role;
-    if (text != NULL) *text = node->text;
-    if (description != NULL) *description = node->description;
-    if (hint != NULL) *hint = node->hint;
+    if (role != NULL) *role = OhosA11yCopyString(copies, 0, node->role);
+    if (text != NULL) *text = OhosA11yCopyString(copies, 1, node->text);
+    if (description != NULL) *description = OhosA11yCopyString(copies, 2, node->description);
+    if (hint != NULL) *hint = OhosA11yCopyString(copies, 3, node->hint);
     if (x != NULL) *x = node->x;
     if (y != NULL) *y = node->y;
     if (width != NULL) *width = node->width;
@@ -1748,6 +1985,7 @@ int ohos_host_accessibility_get(int index, int* id, int* parent_id, const char**
     if (range_max != NULL) *range_max = node->range_max;
     if (range_current != NULL) *range_current = node->range_current;
     if (checked != NULL) *checked = node->checked;
+    pthread_mutex_unlock(&g_a11y_mutex);
     return 0;
 }
 

@@ -157,10 +157,12 @@ typedef enum {
 /// width/height are the surface size in pixels (may be 0 when unknown).
 void ohos_host_set_native_window(void* window, int width, int height, ohos_surface_state state);
 
-/// Pushes a lifecycle event into the managed bridge (queued until registered).
+/// Pushes a lifecycle event into the managed bridge (queued until the handle is published and
+/// the bridge registers; events pushed before the handle exists are transferred to it).
 void ohos_host_notify_lifecycle(OhosHostAppHandle* handle, ohos_lifecycle_event event);
 
-/// Stores the ArkUI NodeContent handle for the managed app (0 clears it).
+/// Stores the ArkUI NodeContent handle for the managed app (0 clears it); a value received
+/// before the app handle exists is queued and delivered when the bridge registers.
 void ohos_host_set_node_content(OhosHostAppHandle* handle, void* node_content);
 
 /// Fills the current XComponent surface with a solid colour (0xAARRGGBB).
@@ -231,6 +233,10 @@ int ohos_host_accessibility_count(void);
 /// reflection (which resolves the 16-argument publish function by its exact name) unambiguous;
 /// this function is not part of that contract.
 int ohos_host_accessibility_node_count(void);
+/// Reads one published node. The string outputs are copies owned by the host (per-thread,
+/// valid until the next get on the same thread), never pointers into the mutable node table,
+/// so a concurrent ohos_host_accessibility_begin/commit cannot free them under the caller.
+/// The caller must not free them. Mirrors the publish argument order.
 int ohos_host_accessibility_get(int index, int* id, int* parent_id, const char** role,
                                 const char** text, const char** description, const char** hint,
                                 float* x, float* y, float* width, float* height,
