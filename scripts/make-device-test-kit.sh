@@ -8,6 +8,7 @@
 #   1 unsigned hap    hello-maui-app-unsigned.hap       (26.0 band, default payload)
 #   8 docs            验收说明.md 快速开始.md 真机操作手册.md 文档索引.md 签名与UDID指南.md
 #                     自签说明.md 最终状态.md README-交付说明.md
+#   0/1 meta          目标设备.txt (only with --sign-external: UDID + profile sha256 + method)
 #   1 verifier        verify-kit.sh                    (tester self-check: sha256sum -c + hap
 #                                                      summary + --tree-digest/--expect-tree-digest)
 #   SHA256SUMS        checksum of every hap + doc + verify-kit.sh in the kit
@@ -23,6 +24,7 @@
 #
 # Usage: scripts/make-device-test-kit.sh [--kit-dir <dir>] [--dist-dir <dir>]
 #          [--out <tar.gz>] [--skip-tar] [--publish]
+#          [--sign-external <profile> <key> <alias> <expect-udid>]
 #
 #   --kit-dir <dir>   kit directory (default $DEVICE_TEST_KIT_DIR, else
 #                     /data/storage/el2/base/tmp/opencode/device-test-kit)
@@ -30,9 +32,19 @@
 #   --out <tar.gz>    tarball (default <kit-dir>.tar.gz)
 #   --skip-tar        assemble the kit directory only
 #   --publish         publish the tarball via scripts/publish-workload-release.sh
+#   --sign-external   pre-sign the assembled haps (including the unsigned variant) with an
+#                     external debug profile/key for one device UDID, via
+#                     scripts/sign-for-device.sh --external: <profile> is the tester's p7b,
+#                     <key> their p12, <alias> the key alias and <expect-udid> the target
+#                     device (the p7b must list it or the build fails before signing). The
+#                     matching app cert chain (*.cer) must sit next to the p7b or be given
+#                     through OHOS_EXT_CERT; the password is asked on the terminal, or
+#                     taken from OHOS_KEY_PWD_FILE / piped on stdin. The kit then carries
+#                     目标设备.txt (UDID + profile sha256 + method, no secrets).
 #
 # Env: DOTNET (dotnet host, default: dotnet), RUNTIME_OHOS_PLANS (runtime-ohos docs/plans,
-#      default: the sibling checkout's docs/plans).
+#      default: the sibling checkout's docs/plans), OHOS_EXT_CERT, OHOS_KEY_PWD_FILE
+#      (--sign-external only).
 #
 # The kit directory is rebuilt from scratch in a staging dir and swapped in, so stale
 # files cannot leak into SHA256SUMS. scripts/verify-kit.sh is always copied in from the
@@ -72,6 +84,11 @@ VERIFY_KIT_SRC="$W/scripts/verify-kit.sh"
 OUT=""
 SKIP_TAR=0
 PUBLISH=0
+SIGN_EXTERNAL=0
+EXT_PROFILE=""
+EXT_KEY=""
+EXT_ALIAS=""
+EXT_UDID=""
 
 # Delivery permissions for the two "permissions" variants (acceptance doc 1b).
 PERMS="ohos.permission.ACCESS_BLUETOOTH;ohos.permission.PRINT;ohos.permission.READ_CONTACTS;ohos.permission.READ_CALENDAR;ohos.permission.WRITE_CALENDAR"
@@ -79,9 +96,13 @@ PERMS="ohos.permission.ACCESS_BLUETOOTH;ohos.permission.PRINT;ohos.permission.RE
 usage() {
     cat <<EOF
 usage: $0 [--kit-dir <dir>] [--dist-dir <dir>] [--out <tar.gz>] [--skip-tar] [--publish]
+          [--sign-external <profile> <key> <alias> <expect-udid>]
 
 Builds the 4 signed + 1 unsigned demo haps, copies the acceptance/signing/operator docs and
 the tester self-check script, writes SHA256SUMS and packs the kit tarball.
+
+--sign-external pre-signs every hap (including the unsigned variant) for one device UDID
+with the tester's own debug profile/key; the kit then also carries 目标设备.txt.
 EOF
 }
 
@@ -90,6 +111,11 @@ while [ $# -gt 0 ]; do
         --kit-dir)  shift; KIT_DIR="$1" ;;
         --dist-dir) shift; DIST_DIR="$1" ;;
         --out)      shift; OUT="$1" ;;
+        --sign-external)
+            [ $# -ge 5 ] || { warn "--sign-external needs <profile> <key> <alias> <expect-udid>"; usage >&2; exit 2; }
+            EXT_PROFILE="$2"; EXT_KEY="$3"; EXT_ALIAS="$4"; EXT_UDID="$5"
+            SIGN_EXTERNAL=1
+            shift 4 ;;
         --skip-tar) SKIP_TAR=1 ;;
         --publish)  PUBLISH=1 ;;
         -h|--help)  usage; exit 0 ;;
@@ -116,6 +142,16 @@ command -v "$DOTNET" >/dev/null 2>&1 || { warn "dotnet not found: $DOTNET (set D
     warn "kit verifier not found: $VERIFY_KIT_SRC (expected in a full checkout)"
     exit 1
 }
+
+if [ "$SIGN_EXTERNAL" = 1 ]; then
+    [ -f "$W/scripts/sign-for-device.sh" ] || { warn "sign-for-device.sh not found under $W/scripts"; exit 1; }
+    [ -f "$EXT_PROFILE" ] || { warn "--sign-external profile not found: $EXT_PROFILE"; exit 1; }
+    [ -f "$EXT_KEY" ] || { warn "--sign-external key not found: $EXT_KEY"; exit 1; }
+    [ -n "$EXT_ALIAS" ] || { warn "--sign-external alias is empty"; exit 1; }
+    [ -n "$EXT_UDID" ] || { warn "--sign-external expect-udid is empty"; exit 1; }
+    [ -z "${OHOS_EXT_CERT:-}" ] || [ -f "$OHOS_EXT_CERT" ] || { warn "OHOS_EXT_CERT not found: $OHOS_EXT_CERT"; exit 1; }
+    [ -z "${OHOS_KEY_PWD_FILE:-}" ] || [ -f "$OHOS_KEY_PWD_FILE" ] || { warn "OHOS_KEY_PWD_FILE not found: $OHOS_KEY_PWD_FILE"; exit 1; }
+fi
 
 # Kit-only docs: the repo source (docs/plans mirrors) wins so doc fixes always ship;
 # a previous kit directory is only a fallback when the checkout is not available.
@@ -216,6 +252,37 @@ publish_variant net11.0-openharmony20.0 "$PERMS"
 check_permissions "$BIN20/hello-maui-app.hap"
 copy_hap "$BIN20/hello-maui-app.hap" "hello-maui-app-api20-permissions.hap"
 
+# Optional: pre-sign every assembled hap (including the unsigned variant) for one tester
+# device, so the kit is installable on their UDID without them self-signing. The external
+# profile must list that UDID (sign-for-device.sh fails closed otherwise) and the app cert
+# chain must sit next to the p7b or come from OHOS_EXT_CERT; the password comes from the
+# terminal, a piped stdin (two lines) or OHOS_KEY_PWD_FILE.
+if [ "$SIGN_EXTERNAL" = 1 ]; then
+    log "== external pre-signing for UDID $(printf '%s' "$EXT_UDID" | cut -c1-8)... =="
+    set -- --external --pwd-input-mode \
+        --profile "$EXT_PROFILE" --key "$EXT_KEY" --key-alias "$EXT_ALIAS" \
+        --expect-udid "$EXT_UDID" --out-dir "$STAGE"
+    [ -z "${OHOS_EXT_CERT:-}" ] || set -- "$@" --cert "$OHOS_EXT_CERT"
+    [ -z "${OHOS_KEY_PWD_FILE:-}" ] || set -- "$@" --key-pwd-file "$OHOS_KEY_PWD_FILE"
+    for _h in "$STAGE"/*.hap; do
+        [ -f "$_h" ] || continue
+        set -- "$@" --unsigned "$_h"
+    done
+    sh "$W/scripts/sign-for-device.sh" "$@"
+
+    _profile_sha="$(sha256sum "$EXT_PROFILE" | cut -d' ' -f1)"
+    {
+        printf '目标设备 UDID: %s\n' "$EXT_UDID"
+        printf '签名方式: 外部材料代签 (hap-sign-tool localSign, alias %s)\n' "$EXT_ALIAS"
+        printf 'profile: %s\n' "$(basename "$EXT_PROFILE")"
+        printf 'profile sha256: %s\n' "$_profile_sha"
+        printf '签名时间: %s\n' "$(date '+%Y-%m-%d %H:%M:%S %z')"
+        printf '范围: 本包内全部 *.hap（含原 unsigned 变体）均已按上述 UDID 预签名\n'
+        printf '说明: 直接按 快速开始.md 安装即可；本文件不含任何密钥、证书或密码\n'
+    } > "$STAGE/目标设备.txt"
+    log "目标设备.txt: UDID $(printf '%s' "$EXT_UDID" | cut -c1-8)..., profile sha256 $(printf '%s' "$_profile_sha" | cut -c1-16)..."
+fi
+
 log "== copying docs =="
 copy_doc "$RUNTIME_PLANS/2026-09-19-ohos-hap-acceptance-for-testers.md" "验收说明.md"
 copy_doc "$RUNTIME_PLANS/2026-09-20-ohos-tester-quickstart.md" "快速开始.md"
@@ -236,6 +303,9 @@ rm -rf "$LOG_DIR"
     LC_ALL=C
     export LC_ALL
     sha256sum *.hap *.md verify-kit.sh > SHA256SUMS
+    if [ -f 目标设备.txt ]; then
+        sha256sum 目标设备.txt >> SHA256SUMS
+    fi
 )
 ( cd "$STAGE" && sha256sum -c SHA256SUMS >/dev/null ) || { warn "SHA256SUMS self-check failed"; exit 1; }
 log "SHA256SUMS: $(wc -l < "$STAGE/SHA256SUMS" | tr -d ' ') entries, sha256sum -c OK"
