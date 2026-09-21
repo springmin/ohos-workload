@@ -231,6 +231,19 @@ struct Index {
     }
   }
 
+  // Keep screen on (DeviceDisplay): the managed setter asks through
+  // ohos_host_keep_screen_on(on) (0 = release, 1 = keep on). The last window is resolved on
+  // demand through the same getLastWindow path the avoid-area report uses and the
+  // asynchronous setWindowKeepScreenOn result is only logged; a rejected call leaves the
+  // managed cached value as it was, since the host call only reports the queueing.
+  private applyKeepScreenOn(on: number): void {
+    window.getLastWindow(getContext(this)).then((win) => {
+      return win.setWindowKeepScreenOn(on === 1);
+    }).catch((keepScreenOnError: Error): void => {
+      console.error(`[maui] keep screen on failed: ${keepScreenOnError.message}`);
+    });
+  }
+
   // Reads the host's current menu table into @State (empty when the sink is unavailable).
   private pullMenu(): void {
     try {
@@ -524,6 +537,16 @@ struct Index {
     this.reportDisplay();
     this.subscribeBatteryEvents();
     this.subscribeDisplayChange();
+    // Keep screen on (DeviceDisplay): the managed setter pushes 0/1 through
+    // ohos_host_keep_screen_on. Best effort: an older host library without the export leaves
+    // the managed cached value unchanged instead of failing the page.
+    try {
+      host.registerKeepScreenOnSink((on: number): void => {
+        this.applyKeepScreenOn(on);
+      });
+    } catch (keepScreenOnSinkError) {
+      console.error(`[maui] keep screen on sink registration failed: ${(keepScreenOnSinkError as Error).message}`);
+    }
     // Essentials (vibration/permissions/geolocation/pickers/connectivity/launcher) need the
     // matching SDK kits, which are not part of this minimal shell project's compilation set yet
     // (see docs/plans/2026-09-18-ohos-arkts-essentials-bridge-plan.md). The sinks stay

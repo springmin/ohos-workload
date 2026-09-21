@@ -1146,6 +1146,39 @@ napi_value NotifyDisplay(napi_env env, napi_callback_info info) {
     return undefined;
 }
 
+// Keep screen on (Basic Services Kit window manager): the managed DeviceDisplay.KeepScreenOn
+// setter calls ohos_host_keep_screen_on(on) (0 = release, 1 = keep on, other values pass
+// through). The ArkTS shell's registerKeepScreenOnSink handler resolves the last window
+// (window.getLastWindow) and applies setWindowKeepScreenOn, which is asynchronous, so this is
+// one-way: the managed getter reflects the last value the host accepted (post succeeded),
+// and no answer travels back. A missing sink, no window or a rejected call degrades silently.
+HostSink g_keep_screen_on_sink("keep screen on", false);
+
+// Called from managed code (P/Invoke): returns 0 when the request was queued for the shell.
+extern "C" int ohos_host_keep_screen_on(int on) {
+    SinkCall* call = new SinkCall();
+    call->AddInt(on);
+    return HostSinkPost(g_keep_screen_on_sink, call) ? 0 : -1;
+}
+
+// ArkTS calls host.registerKeepScreenOnSink(fn) to receive keep-screen-on changes.
+napi_value RegisterKeepScreenOnSink(napi_env env, napi_callback_info info) {
+    size_t argc = 1;
+    napi_value argv[1] = {nullptr};
+    napi_get_cb_info(env, info, &argc, argv, nullptr, nullptr);
+    if (argc >= 1) {
+        napi_valuetype type = napi_undefined;
+        napi_typeof(env, argv[0], &type);
+        if (type == napi_function) {
+            HostSinkRegister(env, g_keep_screen_on_sink, argv[0]);
+            OH_LOG_INFO(LOG_APP, "[openharmony-host] keep screen on sink registered");
+        }
+    }
+    napi_value undefined = nullptr;
+    napi_get_undefined(env, &undefined);
+    return undefined;
+}
+
 // ArkTS calls host.notifyWebEvent(state, url).
 napi_value NotifyWebEvent(napi_env env, napi_callback_info info) {
     size_t argc = 2;
@@ -1647,6 +1680,7 @@ napi_value Init(napi_env env, napi_value exports) {
         {"notifyPrintResult", nullptr, NotifyPrintResult, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"registerAbilitySink", nullptr, RegisterAbilitySink, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"registerFlashlightSink", nullptr, RegisterFlashlightSink, nullptr, nullptr, nullptr, napi_default, nullptr},
+        {"registerKeepScreenOnSink", nullptr, RegisterKeepScreenOnSink, nullptr, nullptr, nullptr, napi_default, nullptr},
 
         {"registerMenuChangedSink", nullptr, RegisterMenuChangedSink, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"menuCount", nullptr, MenuCount, nullptr, nullptr, nullptr, napi_default, nullptr},
