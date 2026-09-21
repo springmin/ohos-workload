@@ -1,6 +1,6 @@
 # Interaction regression suite (headless)
 
-The MAUI-on-OpenHarmony interaction harness (261 interaction checks, a 4-line fuzz tail, a
+The MAUI-on-OpenHarmony interaction harness (262 interaction checks, a 4-line fuzz tail, a
 frame-path performance budget and an accessibility publish-path budget). It builds the platform
 slice sources from the
 `maui-ohos` working tree and drives the app host without a device: touch/drag/pinch/pointer input,
@@ -16,8 +16,10 @@ pasteboard through `@ohos.pasteboard` and network access through the NetworkKit 
 pins plus the fast off-device degradation), the BATCH-2 Essentials real bridges (email/SMS/phone
 dialer through the startAbility `mailto:`/`sms:`/`tel:` URIs, the screenshot host capture with the
 asynchronous PNG poll and the geocoding `ohos_host_geocode_request`/`host.geocodeResult` bridge
-with the GeoAddress parser: source pins plus the fast off-device degradation), the S-series
-features (the
+with the GeoAddress parser: source pins plus the fast off-device degradation), the D1
+screen-reader announce wiring (the text-carrying `ohos_host_accessibility_announce` export with
+its event-kind fallback: managed P/Invoke + host-source pins and an off-device bookkeeping
+probe), the S-series features (the
 BlazorWebView handler/manager/file-provider path, the accessibility node-count export, the
 flashlight default/degradation and the file-share dispatch/MIME/URI path) and the V-series
 on-demand app-context publish (V8: native/NAPI/shell-template checks plus an off-device drill
@@ -36,7 +38,7 @@ below), failing the suite when the (deliberately loose) budgets are exceeded.
 # (or the MauiSliceDir / HostingDll / OpenHarmonyGraphicsDll MSBuild properties) before building
 # elsewhere; an explicit -p: value wins over the environment and the absolute fallbacks.
 dotnet build -v:q
-dotnet bin/Debug/net11.0/verify.dll | grep -c '\[verify\]'   # expect 274 (261 checks + 4 fuzz + 1 frame perf + 8 a11y perf)
+dotnet bin/Debug/net11.0/verify.dll | grep -c '\[verify\]'   # expect 275 (262 checks + 4 fuzz + 1 frame perf + 8 a11y perf)
 ```
 
 The `interaction-regression` workflow (`.github/workflows/interaction-regression.yml`) runs the
@@ -137,8 +139,8 @@ publish pass (skip/republish).
   blocks codesigned ELF apphosts on some machines).
 - The suite fails loudly (unhandled exception) when a slice change breaks startup or when an
   assertion for the gesture flows (including the drag-and-drop checks) does not hold; keep it at
-  261 checks plus the 4 fuzz lines plus the 1 frame-perf line plus the 8 a11y-perf lines
-  (274 `[verify]` lines) when touching the platform slice.
+  262 checks plus the 4 fuzz lines plus the 1 frame-perf line plus the 8 a11y-perf lines
+  (275 `[verify]` lines) when touching the platform slice.
 - Contacts/calendar coverage: `OpenHarmonyContacts.FindAsync` and
   `OpenHarmonyCalendar.ListUpcomingAsync`/`AddEventAsync` return empty/false without throwing
   off-device and report `IsSupported == false` before and after the call (the permission probe
@@ -259,7 +261,7 @@ publish pass (skip/republish).
   marker-checked `'skip'` eval before `SendRawMessage` (hybrid) and `SendMessage` (Blazor),
   including the skip log. That is 9 `[verify]` lines: 253 + 9 = 262, the BATCH-1-era total
   (249 interaction checks + 4 fuzz + 1 frame perf + 8 a11y perf). With the BATCH-2 lines below
-  the suite reports 274 = 261 + 4 + 1 + 8; the workflow floor stays at 224.
+  the suite reports 275 = 262 + 4 + 1 + 8; the workflow floor stays at 224.
 - BATCH-1 Essentials real bridges (permissions / clipboard / connectivity): six `[verify]` lines
   cover both halves of each bridge. Off-device each request fails fast (the 30 s permission and
   5 s clipboard timeouts are never waited out) and degrades to Denied / null / false / Unknown;
@@ -306,6 +308,19 @@ publish pass (skip/republish).
   optional window pin covers the `ohos_host_set_window_title`/`_rect` exports and the shell
   `registerWindowTitleSink`/`registerWindowRectSink` sinks. That is 12 lines: 262 + 12 = 274 =
   261 interaction checks + 4 fuzz + 1 frame perf + 8 a11y perf.
+- D1 screen-reader announce wiring: `OpenHarmonyAccessibility.Announce` prefers the dedicated
+  text-carrying host export `ohos_host_accessibility_announce` over the event-kind-only
+  `ohos_host_accessibility_send_event(EventAnnouncement)` fallback kept for a host library that
+  predates it. The managed P/Invoke is pinned reflectively (EntryPoint exact,
+  `libopenharmonyhost.so`, `CharSet.Ansi`, `int` return, one `LPUTF8Str` string parameter), and
+  the native half is pinned to the shared-header declaration, the `extern "C"` definition,
+  `OH_ArkUI_AccessibilityEventSetTextAnnouncedForAccessibility(announceEvent, text)` and
+  `ARKUI_ACCESSIBILITY_NATIVE_EVENT_TYPE_ANNOUNCE_FOR_ACCESSIBILITY`. Off-device the behavioral
+  probe drives both the static call and the installed `SemanticScreenReader.Default` with the
+  provider-availability flag restored (then put back): no throw, `LastAnnouncement` tracks the
+  text, whitespace stays a no-op, `WouldAnnounce` stays true while the call reaches the host
+  boundary and `AnnouncementsSent` counts only an accepted event. That is 1 line: 274 + 1 = 275 =
+  262 interaction checks + 4 fuzz + 1 frame perf + 8 a11y perf.
 - Haptics coverage: `HapticFeedback.Default` is the slice implementation, `Perform(Click/LongPress)`
   degrades without throwing off-device, and `IsSupported` is false without the host library. The app
   theme handler is exercised directly (ArkUI colour-mode reports need a device): setting dark/light

@@ -3804,6 +3804,67 @@ if (!(b2ScreenReaderOk && b2WindowRegistered && b2WindowMapperKey && b2WindowTit
     throw new InvalidOperationException("the screen reader/window registration pins failed");
 }
 
+// D1: the screen-reader announce integration reported after the BATCH-2 pass. The managed
+// screen reader now prefers the dedicated text-carrying host export
+// ohos_host_accessibility_announce (EntryPoint exact, CharSet.Ansi with the same UTF-8 string
+// marshalling as the node strings, int return) over the event-kind-only
+// ohos_host_accessibility_send_event fallback kept for a host library that predates the export;
+// the host builds an ANNOUNCE_FOR_ACCESSIBILITY event and sets the announced text on it. The
+// behavioral half drives the installed default and the static call with the provider-availability
+// flag restored (the flag is put back afterwards so the run is left as it was).
+FieldInfo d1Availability = typeof(OpenHarmonyAccessibility).GetField("_available", BindingFlags.NonPublic | BindingFlags.Static)
+    ?? throw new InvalidOperationException("OpenHarmonyAccessibility._available was not found; the D1 announce probe needs the provider-availability hook");
+bool d1AvailabilityBefore = (bool)d1Availability.GetValue(null)!;
+MethodInfo? d1AnnouncePinvoke = typeof(OpenHarmonyAccessibility).GetMethod(
+    "AccessibilityAnnounce", BindingFlags.NonPublic | BindingFlags.Static);
+DllImportAttribute? d1AnnounceImport = d1AnnouncePinvoke?.GetCustomAttribute<DllImportAttribute>();
+ParameterInfo[] d1AnnounceParameters = d1AnnouncePinvoke?.GetParameters() ?? Array.Empty<ParameterInfo>();
+bool d1Managed = d1AnnounceImport is not null &&
+    d1AnnounceImport.EntryPoint == "ohos_host_accessibility_announce" &&
+    d1AnnounceImport.Value == "libopenharmonyhost.so" &&
+    d1AnnounceImport.CharSet == CharSet.Ansi &&
+    d1AnnouncePinvoke?.ReturnType == typeof(int) &&
+    d1AnnounceParameters.Length == 1 &&
+    d1AnnounceParameters[0].ParameterType == typeof(string) &&
+    d1AnnounceParameters[0].GetCustomAttribute<MarshalAsAttribute>()?.Value == UnmanagedType.LPUTF8Str;
+bool d1Native = hSource?.Contains("int ohos_host_accessibility_announce(const char* text);") == true &&
+    s2Napi.Contains("extern \"C\" int ohos_host_accessibility_announce(const char* text)") &&
+    s2Napi.Contains("OH_ArkUI_AccessibilityEventSetTextAnnouncedForAccessibility(announceEvent, text)") &&
+    s2Napi.Contains("ARKUI_ACCESSIBILITY_NATIVE_EVENT_TYPE_ANNOUNCE_FOR_ACCESSIBILITY");
+bool d1NoThrow = true;
+bool d1Would = false;
+bool d1SentOk = false;
+bool d1Routed = false;
+bool d1BlankOk = false;
+int d1SentBefore = OpenHarmonyAccessibility.AnnouncementsSent;
+try
+{
+    d1Availability.SetValue(null, true);
+    bool d1Accepted = OpenHarmonyAccessibility.Announce("d1 direct probe");
+    d1Would = OpenHarmonyAccessibility.WouldAnnounce;
+    d1SentOk = OpenHarmonyAccessibility.AnnouncementsSent == d1SentBefore + (d1Accepted ? 1 : 0) &&
+        OpenHarmonyAccessibility.LastAnnouncement == "d1 direct probe";
+    Microsoft.Maui.Accessibility.SemanticScreenReader.Default.Announce("d1 routed probe");
+    d1Routed = OpenHarmonyAccessibility.LastAnnouncement == "d1 routed probe";
+    d1BlankOk = !OpenHarmonyAccessibility.Announce("   ") &&
+        OpenHarmonyAccessibility.LastAnnouncement == "d1 routed probe";
+}
+catch (Exception ex)
+{
+    d1NoThrow = false;
+    Console.WriteLine($"[verify] d1 announce threw {ex.GetType().Name}: {ex.Message}");
+}
+d1Availability.SetValue(null, d1AvailabilityBefore);
+bool d1RouteOk = d1NoThrow && d1Would && d1SentOk && d1Routed && d1BlankOk;
+bool d1AllOk = d1Managed && d1Native && d1RouteOk;
+Console.WriteLine($"[verify] d1 announce contract managed={d1Managed} native={d1Native} route={d1RouteOk} wouldAnnounce={d1Would} sent={OpenHarmonyAccessibility.AnnouncementsSent - d1SentBefore} source='{s2NapiPath ?? "<missing>"}' assert={d1AllOk}");
+if (!d1AllOk)
+{
+    throw new InvalidOperationException(
+        $"the screen-reader announce contract drifted: managed={d1Managed} native={d1Native} route={d1RouteOk} " +
+        $"wouldAnnounce={d1Would} sentOk={d1SentOk} routed={d1Routed} blank={d1BlankOk}");
+}
+
 // BATCH2i: the screenshot bridge contract (managed P/Invoke + C definition + header + NAPI sink
 // + the shell's sink registration/packer call sites).
 MethodInfo? b2ScreenshotPinvoke = typeof(OpenHarmonyScreenshotBridge).GetMethod(
