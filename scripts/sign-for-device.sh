@@ -4,7 +4,9 @@
 # Modes:
 #   device (default): builds a debug profile from the SDK's UnsgnedDebugProfileTemplate.json
 #                     (device-ids replaced with the given UDID(s)) and signs with the SDK
-#                     test keystore; the profile's bundle-name is taken from --bundle.
+#                     test keystore; the profile's bundle-name is taken from --bundle
+#                     (default: the demo bundle com.example.hellomauiapp - override for a
+#                     differently packed hap).
 #   --huawei:         delegates to scripts/sign-huawei.sh, which signs with DevEco Studio's
 #                     auto-signing material (Huawei p12/cer/p7b under <configDir>) and
 #                     decrypts the Studio-encrypted password via the hvigor plugin.
@@ -59,7 +61,10 @@ die() { printf '[%s] ERROR: %s\n' "$(date '+%H:%M:%S')" "$*" >&2; exit 1; }
 W="$(cd "$(dirname "$0")/.." && pwd)"
 VER="$(ls "$W/packs/Microsoft.OpenHarmony.Sdk" | tail -1)"
 UNSIGNED="$W/test/hello-maui-app/bin/Release/net11.0-openharmony26.0/openharmony-arm64/hello-maui-app-unsigned.hap"
-BUNDLE="com.example.hello-maui-app"
+# Demo default; hyphens are illegal in app.bundleName (ohos-workload bbfa03c). Override with
+# --bundle <name> (device mode), or rebuild with -p:OpenHarmonyBundleName=<name> when a profile
+# fixes another identity. Device mode warns when the hap's module.json disagrees.
+BUNDLE="com.example.hellomauiapp"
 OUT=""
 MODE=device
 UDID=""

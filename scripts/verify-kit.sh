@@ -7,9 +7,10 @@
 #   sh verify-kit.sh <kit-dir>       # or point it at the extracted kit
 #
 # It (1) verifies every file against SHA256SUMS with sha256sum -c, (2) summarizes the five
-# haps by reading module.json inside each one (bundleName, min/target API, requestPermissions),
-# (3) prints the install options and the 9568344/self-sign pointer, and (4) lists the log lines
-# to send back.
+# haps by reading module.json inside each one (bundleName, min/target API, requestPermissions)
+# and fails unless they all carry the expected bundle name (KIT_BUNDLE_NAME, default
+# com.example.hellomauiapp), (3) prints the install options and the 9568344/self-sign pointer,
+# and (4) lists the log lines to send back.
 #
 # SHA256SUMS lives inside the same archive it covers, so it can only prove internal
 # consistency, not that the archive (or the extracted tree) is the published one:
@@ -35,9 +36,10 @@
 # makes the run fail.
 #
 # Exit code: 0 = kit OK; 1 = a checksum/anchor/tree-digest failed, a hap is
-# missing/unreadable, or 自签说明.md is absent; 2 = SHA256SUMS not found (wrong directory)
-# or bad usage. The kit's own SHA256SUMS is not in its own list - the outer
-# <kit>.tar.gz.sha256 covers it, and the tree digest covers SHA256SUMS itself.
+# missing/unreadable, a hap carries an unexpected bundleName, or 自签说明.md is absent;
+# 2 = SHA256SUMS not found (wrong directory) or bad usage. The kit's own SHA256SUMS is not
+# in its own list - the outer <kit>.tar.gz.sha256 covers it, and the tree digest covers
+# SHA256SUMS itself.
 set -e
 
 log()  { printf '[%s] %s\n' "$(date '+%H:%M:%S')" "$*"; }
@@ -75,7 +77,7 @@ Without an argument the current directory is used (it must contain SHA256SUMS).
   --expect-tree-digest <hex>
                         fail unless the extracted tree matches this digest (the value comes
                         with the delivery, e.g. the release notes)
-  env: KIT_ANCHOR, KIT_ANCHOR_FILE, KIT_TREE_DIGEST
+  env: KIT_ANCHOR, KIT_ANCHOR_FILE, KIT_TREE_DIGEST, KIT_BUNDLE_NAME
 EOF
 }
 
@@ -84,6 +86,10 @@ ANCHOR="${KIT_ANCHOR:-}"
 ANCHOR_FILE="${KIT_ANCHOR_FILE:-}"
 TREE_MODE=0
 TREE_EXPECT="${KIT_TREE_DIGEST:-}"
+# Expected bundle name of the five haps. Pinned to the demo default (ohos-workload bbfa03c:
+# hyphens are illegal in app.bundleName; kits built before it carry the hyphenated demo name
+# and must be repacked). Override for a kit built with -p:OpenHarmonyBundleName=<other>.
+BUNDLE_EXPECT="${KIT_BUNDLE_NAME:-com.example.hellomauiapp}"
 while [ $# -gt 0 ]; do
     case "$1" in
         -h|--help) usage; exit 0 ;;
@@ -254,10 +260,12 @@ done
 
 log "== 2/4 五个 hap 一览（读 module.json）"
 if command -v python3 >/dev/null 2>&1; then
-    python3 - "$KIT" <<'PY' || FAIL=1
+    python3 - "$KIT" "$BUNDLE_EXPECT" "$TMP/kit-bundle" <<'PY' || FAIL=1
 import json, os, sys, zipfile
 
 kit = sys.argv[1]
+expected = sys.argv[2]
+bundle_file = sys.argv[3]
 haps = [
     ("hello-maui-app.hap",
      "默认包：API 26 波段，无额外权限（UI/交互/手势/IME/通知/安全区/WebView/无障碍/Hybrid）"),
@@ -271,6 +279,7 @@ haps = [
      "未签名（与默认包同一负载）：按 自签说明.md 用你自己的自动签名安装"),
 ]
 fail = 0
+bundles = []
 for name, purpose in haps:
     print("  %s  %s" % (name, purpose))
     path = os.path.join(kit, name)
@@ -287,8 +296,11 @@ for name, purpose in haps:
         continue
     app = data.get("app") or {}
     mod = data.get("module") or {}
+    bundle = app.get("bundleName", "?")
+    if bundle != "?":
+        bundles.append(bundle)
     perms = [p.get("name", "?") for p in (mod.get("requestPermissions") or [])]
-    print("      bundle=%s  versionName=%s" % (app.get("bundleName", "?"), app.get("versionName", "?")))
+    print("      bundle=%s  versionName=%s" % (bundle, app.get("versionName", "?")))
     print("      API    min=%s target=%s (%s)" % (app.get("minAPIVersion", "?"),
                                                   app.get("targetAPIVersion", "?"),
                                                   app.get("apiReleaseType", "?")))
@@ -297,16 +309,30 @@ for name, purpose in haps:
         print("      权限   requestPermissions=%d [%s]" % (len(perms), short))
     else:
         print("      权限   requestPermissions=0")
+
+with open(bundle_file, "w") as f:
+    f.write(bundles[0] if bundles else "")
+
+if sorted(set(bundles)) != [expected]:
+    print("      FAIL  bundleName 期望 %s，实际 %s" % (expected, ", ".join(sorted(set(bundles))) or "无"))
+    print("            旧 bundle 的 hap（bundle 名含连字符）需按 ohos-workload bbfa03c 重新打包")
+    print("            后再交付；确属其他 bundle 时用 KIT_BUNDLE_NAME=<name> 覆盖期望值")
+    fail = 1
+else:
+    print("      bundle 校验 OK：五个 hap 的 bundleName 一致（%s）" % expected)
 sys.exit(1 if fail else 0)
 PY
+    KIT_BUNDLE="$(cat "$TMP/kit-bundle" 2>/dev/null || true)"
+    [ -n "$KIT_BUNDLE" ] || KIT_BUNDLE="$BUNDLE_EXPECT"
 else
-    warn "python3 不可用，跳过 hap 摘要（文件完整性已由 SHA256SUMS 覆盖）"
+    warn "python3 不可用，跳过 hap 摘要与 bundleName 校验（文件完整性已由 SHA256SUMS 覆盖）"
+    KIT_BUNDLE="$BUNDLE_EXPECT"
 fi
 
 log "== 3/4 安装方式"
 log "   文件管理器：把 hap 拷到设备后在文件管理器中打开 → 按提示安装（需开发者模式/允许调试与外部来源安装）"
 log "   hdc：hdc list targets && hdc install hello-maui-app.hap"
-log "        启动：hdc shell aa start -a EntryAbility -b com.example.hello-maui-app"
+log "        启动：hdc shell aa start -a EntryAbility -b $KIT_BUNDLE（bundle 以上方 bundle= 行为准）"
 log "   报 9568344 install parse profile prop check error：调试 profile 只绑了示例设备 UDID"
 log "        二选一：① 按 自签说明.md 用你自己的 DevEco 自动签名；② 回传 UDID（hdc shell bm get -u）由签名方重签"
 log "   设备策略报 E00C001 Operation restricted by the organization → 该设备关闭了 hdc，改用文件管理器安装"
