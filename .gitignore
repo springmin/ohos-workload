@@ -14,3 +14,5 @@ dist/
 .signing/
 # WIP: managed pixel harness (needs the canvas backend getters, see docs)
 .arkts-build/
+**/obj/
+**/bin/
