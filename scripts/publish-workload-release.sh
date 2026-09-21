@@ -13,7 +13,8 @@
 # Usage: scripts/publish-workload-release.sh [--repo owner/name] [--dry-run]
 #          [--skip-versioned] [--skip-latest] [--skip-kit] [--kit <tarball>]
 #          [--kit-tag <tag>] [--also-sdk-release <tag>]
-#          [--bundle-sha256 <hex>] [--kit-sha256 <hex>] [--allow-clobber-mismatch]
+#          [--bundle-sha256 <hex>] [--kit-sha256 <hex>] [--kit-tree-digest <hex>]
+#          [--allow-clobber-mismatch]
 #
 # Digest gate (fail closed): every artifact that is uploaded must match an independent
 # expected sha256 supplied by the caller (local files are never trusted on their own):
@@ -21,6 +22,16 @@
 #   --kit-sha256    / DEVICE_TEST_KIT_SHA256  the device-test kit tarball
 # A real (non --dry-run) publish without the expectation for an artifact it would upload
 # aborts before touching any release.
+#
+# Release checksums are regenerated from the bundle being published on every run
+# (scripts/release-checksums.sh: bare names, the versioned + rolling entries) and then
+# checked line by line against the digests this run gates on. A dist/SHA256SUMS left over
+# from an older build - stale by definition - is therefore never uploaded. --skip-latest
+# drops the rolling entry, matching the assets attached to the versioned release.
+#
+# Optional kit tree digest (--kit-tree-digest / DEVICE_TEST_KIT_TREE_DIGEST): the sha256 of
+# the extracted kit contents, echoed into the kit release notes so a tester can bind the
+# exact tree with `sh verify-kit.sh --expect-tree-digest <hex>`.
 #
 # --clobber is only used when the GitHub API reports the same digest for the existing
 # asset (idempotent re-upload); replacing an asset whose published digest differs -
@@ -54,6 +65,8 @@ KIT_TAG="${DEVICE_TEST_KIT_TAG:-device-test-kit}"
 # Independent expected digests (caller-supplied; never regenerated from the local files).
 BUNDLE_SHA256_EXPECT="${BUNDLE_SHA256:-}"
 KIT_SHA256_EXPECT="${DEVICE_TEST_KIT_SHA256:-}"
+# Optional digest of the extracted kit contents; published in the kit release notes.
+KIT_TREE_DIGEST="${DEVICE_TEST_KIT_TREE_DIGEST:-}"
 ALLOW_CLOBBER_MISMATCH="${ALLOW_CLOBBER_MISMATCH:-0}"
 
 while [ $# -gt 0 ]; do
@@ -68,6 +81,7 @@ while [ $# -gt 0 ]; do
         --also-sdk-release) shift; SDK_RELEASE="$1" ;;
         --bundle-sha256) shift; BUNDLE_SHA256_EXPECT="$1" ;;
         --kit-sha256) shift; KIT_SHA256_EXPECT="$1" ;;
+        --kit-tree-digest) shift; KIT_TREE_DIGEST="$1" ;;
         --allow-clobber-mismatch) ALLOW_CLOBBER_MISMATCH=1 ;;
         *) warn "unknown argument: $1"; exit 2 ;;
     esac
@@ -112,6 +126,21 @@ verify_local_digest() {
         exit 1
     else
         log "$_label: expected sha256 OK ($CHECKED_SHA)"
+    fi
+}
+
+# Fail closed unless the regenerated sums file carries exactly "<digest>  <name>" for an
+# artifact this run publishes (basenames only, as released).
+check_sums_line() {
+    _name="$1"; _want="$2"
+    if [ -f "$SUMS" ] && grep -Fqx "$_want  $_name" "$SUMS"; then
+        log "checksums: $_name expected sha256 OK ($_want)"
+    else
+        warn "refusing to publish $SUMS_NAME: missing or wrong entry for $_name"
+        warn "  expected line: $_want  $_name"
+        if [ -f "$SUMS" ]; then sed 's/^/    /' "$SUMS" >&2; fi
+        warn "  regenerate with scripts/release-checksums.sh (check the manifest version/bundle)"
+        exit 1
     fi
 }
 
@@ -178,11 +207,41 @@ else
     BUNDLE_SHA="$(sha256_of "$BUNDLE")"
 fi
 
+# Release checksums: always regenerated from the bundle being published (never reused from
+# an earlier run - a stale dist/SHA256SUMS would be uploaded next to a fresh bundle) and
+# then checked line by line. A dry run writes the scratch copy only, so dist/ is untouched;
+# a real run replaces dist/SHA256SUMS through scripts/release-checksums.sh (tmp + mv).
+SUMS="$W/dist/SHA256SUMS"
+SUMS_NAME="$(basename "$SUMS")"
+SUMS_SHA=""
+SUMS_SCRATCH=0
+if [ "$NEED_BUNDLE" = 1 ]; then
+    [ -f "$W/scripts/release-checksums.sh" ] || {
+        warn "scripts/release-checksums.sh not found; refusing to publish checksums that cannot be regenerated"
+        exit 1
+    }
+    SUMS_ARGS=""
+    if [ "$SKIP_LATEST" = 1 ]; then SUMS_ARGS="--no-rolling"; fi
+    if [ "$DRY_RUN" = 1 ]; then
+        SUMS_SCRATCH=1
+        SUMS="$(mktemp)"
+        sh "$W/scripts/release-checksums.sh" --out "$SUMS" $SUMS_ARGS >/dev/null
+        if [ -f "$W/dist/SHA256SUMS" ] && ! cmp -s "$SUMS" "$W/dist/SHA256SUMS"; then
+            warn "dist/SHA256SUMS is stale (differs from the bundle being published); a real run regenerates it"
+        fi
+    else
+        sh "$W/scripts/release-checksums.sh" $SUMS_ARGS >/dev/null
+    fi
+    check_sums_line "$(basename "$BUNDLE")" "$BUNDLE_SHA"
+    if [ "$SKIP_LATEST" = 0 ]; then
+        check_sums_line "openharmony-workload-latest.tar.gz" "$BUNDLE_SHA"
+    fi
+    SUMS_SHA="$(sha256_of "$SUMS")"
+fi
+
 # Release notes: prefer the generated changelog (scripts/release-notes.sh) and append the
 # bundle/install guidance; fall back to the static notes when the generator is absent or
 # fails. Dist digests are materialised first so the changelog can carry them.
-[ -f "$W/dist/SHA256SUMS" ] || sh "$W/scripts/release-checksums.sh" >/dev/null
-SUMS_SHA="$(sha256_of "$W/dist/SHA256SUMS")"
 NOTES="$(mktemp)"
 GEN="$W/scripts/release-notes.sh"
 
@@ -232,12 +291,12 @@ if [ "$SKIP_VERSIONED" = 0 ]; then
         guard_clobber "$VERSIONED_TAG" "$(basename "$BUNDLE")" "$BUNDLE_SHA"
         guard_clobber "$VERSIONED_TAG" "SHA256SUMS" "$SUMS_SHA"
         run gh release upload "$VERSIONED_TAG" "$BUNDLE" --repo "$REPO" --clobber
-        run gh release upload "$VERSIONED_TAG" "$W/dist/SHA256SUMS" --repo "$REPO" --clobber
+        run gh release upload "$VERSIONED_TAG" "$SUMS" --repo "$REPO" --clobber
         run gh release edit "$VERSIONED_TAG" --repo "$REPO" --notes-file "$NOTES"
     else
         run gh release create "$VERSIONED_TAG" --repo "$REPO" \
             --title "OpenHarmony platform workload $VER" --notes-file "$NOTES" --latest=false \
-            "$BUNDLE" "$W/dist/SHA256SUMS"
+            "$BUNDLE" "$SUMS"
     fi
 fi
 
@@ -258,7 +317,7 @@ if [ "$SKIP_LATEST" = 0 ]; then
             --notes-file "$NOTES" --latest=false "$LATEST_ASSET"
     fi
     guard_clobber workload-latest "SHA256SUMS" "$SUMS_SHA"
-    run gh release upload workload-latest "$W/dist/SHA256SUMS" --repo "$REPO" --clobber
+    run gh release upload workload-latest "$SUMS" --repo "$REPO" --clobber
 fi
 
 # Device-test kit: signed haps + acceptance/signing docs. Its own release gets the tarball and a
@@ -284,6 +343,20 @@ if [ "$SKIP_KIT" = 0 ]; then
             KIT_SUMS_SHA="$(sha256_of "$KIT_SUMS")"
         fi
 
+        # The extracted-tree digest is optional but binds the exact kit contents (the
+        # tarball anchor only proves the .tar.gz on disk); reject a malformed value.
+        if [ -n "$KIT_TREE_DIGEST" ]; then
+            case "$KIT_TREE_DIGEST" in
+                *[!0-9a-fA-F]*) warn "--kit-tree-digest is not a hex sha256: $KIT_TREE_DIGEST"; exit 2 ;;
+            esac
+            [ "${#KIT_TREE_DIGEST}" -eq 64 ] || { warn "--kit-tree-digest is not 64 hex chars: $KIT_TREE_DIGEST"; exit 2; }
+            KIT_TREE_NOTE="
+Extracted tree digest (bind the exact kit contents, not just the tarball):
+\`sh verify-kit.sh --expect-tree-digest $KIT_TREE_DIGEST\` inside the extracted kit."
+        else
+            KIT_TREE_NOTE=""
+        fi
+
         KIT_NOTES="$(mktemp)"
         cat > "$KIT_NOTES" <<MD
 # OpenHarmony MAUI device-test kit
@@ -291,9 +364,9 @@ if [ "$SKIP_KIT" = 0 ]; then
 Signed \`hello-maui-app\` haps together with the acceptance checklist, the signing/UDID guide
 and the bundle-level \`SHA256SUMS\` (default, permissions and api20 variants).
 
-\`$KIT_NAME.sha256\` is the transfer checksum of this tarball. Extract it and follow
-\`README-交付说明.md\`; on install error \`9568344\` send the device UDID (see
-\`签名与UDID指南.md\`).
+\`$KIT_NAME.sha256\` is the transfer checksum of this tarball; it anchors the \`.tar.gz\` file.
+Extract it and follow \`README-交付说明.md\`; on install error \`9568344\` send the device UDID
+(see \`签名与UDID指南.md\`).$KIT_TREE_NOTE
 MD
 
         if gh release view "$KIT_TAG" --repo "$REPO" >/dev/null 2>&1; then
@@ -323,7 +396,8 @@ if [ -n "$SDK_RELEASE" ]; then
     guard_clobber "$SDK_RELEASE" "$(basename "$BUNDLE")" "$BUNDLE_SHA"
     guard_clobber "$SDK_RELEASE" "SHA256SUMS" "$SUMS_SHA"
     run gh release upload "$SDK_RELEASE" "$BUNDLE" --repo "$REPO" --clobber
-    run gh release upload "$SDK_RELEASE" "$W/dist/SHA256SUMS" --repo "$REPO" --clobber
+    run gh release upload "$SDK_RELEASE" "$SUMS" --repo "$REPO" --clobber
 fi
 rm -f "$NOTES"
+if [ "$SUMS_SCRATCH" = 1 ]; then rm -f "$SUMS"; fi
 log "== done =="
