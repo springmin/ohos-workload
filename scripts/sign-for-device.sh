@@ -16,7 +16,7 @@
 #   scripts/sign-for-device.sh <udid[,udid...]> [--version <packVer>] [--bundle <name>]
 #                              [--unsigned <hap>] [--out <hap>]
 #   scripts/sign-for-device.sh --huawei [configDir] [encryptedPassword]
-#                              [--unsigned <hap>] [--out <hap>]
+#                              [--pwd-input-mode] [--unsigned <hap>] [--out <hap>]
 #   scripts/sign-for-device.sh --show-profile-devices [<p7b>|--config <dir>]
 #                              [--huawei [configDir]]
 # Env:
@@ -24,6 +24,11 @@
 #   OHOS_ENC_PWD    Studio-encrypted password for --huawei, as an alternative to the positional
 #                   encryptedPassword (preferred: argv is world-readable); it is forwarded to
 #                   sign-huawei.sh through the environment
+#   OHOS_PWD_INPUT_MODE  same as --pwd-input-mode (1 = prompt on a real tty; 0 = argv, default)
+# --pwd-input-mode (--huawei only): forwarded to sign-huawei.sh; hap-sign-tool prompts for the p12
+#                   password (-pwdInputMode 1, no -keyPwd/-keystorePwd). Needs a real tty on stdin;
+#                   without one, wrap the whole call: script -qec 'sh scripts/sign-for-device.sh
+#                   --huawei --pwd-input-mode ...' /dev/null
 set -e
 
 log() { printf '[%s] %s\n' "$(date '+%H:%M:%S')" "$*"; }
@@ -43,10 +48,17 @@ SHOW=0
 P7B=""
 VER_SET=0
 BUNDLE_SET=0
+PWD_INTERACTIVE="${OHOS_PWD_INPUT_MODE:-0}"
+case "$PWD_INTERACTIVE" in
+  1) PWD_INTERACTIVE=1 ;;
+  ""|0) PWD_INTERACTIVE=0 ;;
+  *) die "OHOS_PWD_INPUT_MODE must be 0 or 1 (got: $PWD_INTERACTIVE)" ;;
+esac
 
 while [ $# -gt 0 ]; do
   case "$1" in
     --huawei) MODE=huawei; shift ;;
+    --pwd-input-mode) PWD_INTERACTIVE=1; shift ;;
     --show-profile-devices) SHOW=1; shift ;;
     --config)   CFG="$2";  shift 2 ;;
     --password) HEX="$2";  shift 2 ;;
@@ -77,6 +89,11 @@ while [ $# -gt 0 ]; do
       shift ;;
   esac
 done
+
+# --pwd-input-mode selects hap-sign-tool's interactive prompt, which only --huawei drives.
+if [ "$PWD_INTERACTIVE" = 1 ] && [ "$MODE" != huawei ]; then
+  die "--pwd-input-mode / OHOS_PWD_INPUT_MODE=1 is only available with --huawei"
+fi
 
 SDK="${OHOS_SDK_ROOT:-$HOME/.harmonybrew/Cellar/ohos-sdk/26.0.0.18_2}"
 TOOLCHAIN="$SDK/toolchains/lib"
@@ -172,8 +189,15 @@ if [ "$MODE" = huawei ]; then
   [ "$HB" = "$PF" ] || die "bundle-name mismatch: $UNSIGNED is '$HB' but the Huawei profile $P7B is bound to '$PF'. Rebuild the hap with -p:OpenHarmonyBundleName=$PF (or pass --unsigned with a matching hap), then re-run"
   log "bundle-name check OK: $HB"
   [ -n "$OUT" ] || OUT="$(dirname "$UNSIGNED")/hello-maui-app-huawei.hap"
-  # Hand the encrypted password over in the environment, not in sign-huawei.sh's argv.
-  OHOS_ENC_PWD="$HEX" sh "$HUAWEI" "$UNSIGNED" "$OUT" "$CFG"
+  if [ "$PWD_INTERACTIVE" = 1 ]; then
+    # Interactive: hap-sign-tool prompts on the tty (-pwdInputMode 1), so no password is forwarded
+    # at all (neither argv nor OHOS_ENC_PWD) and the hvigor decrypt step is skipped by sign-huawei.sh.
+    [ -z "$HEX" ] || warn "--pwd-input-mode: the supplied encrypted password is ignored (type it at the hap-sign-tool prompt instead)"
+    sh "$HUAWEI" --pwd-input-mode "$UNSIGNED" "$OUT" "$CFG"
+  else
+    # Hand the encrypted password over in the environment, not in sign-huawei.sh's argv.
+    OHOS_ENC_PWD="$HEX" sh "$HUAWEI" "$UNSIGNED" "$OUT" "$CFG"
+  fi
   log "Huawei-signed hap: $OUT"
   exit 0
 fi

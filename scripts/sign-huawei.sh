@@ -3,64 +3,124 @@
 # The Studio-encrypted password (00000020...) is decrypted locally through the hvigor plugin's own
 # DecipherUtil and the signing material in <config>/material/{fd,ac,ce}.
 #
-# Usage: sign-huawei.sh <unsigned.hap> <out.hap> [configDir] [encryptedPassword]
+# Usage: sign-huawei.sh [--pwd-input-mode] <unsigned.hap> <out.hap> [configDir] [encryptedPassword]
 #   configDir default: $HOME/Documents/ohos/config     (Studio writes the material there)
 #   encryptedPassword: the storePassword/keyPassword value from build-profile.json5; can also be
 #                      supplied through OHOS_ENC_PWD (preferred: argv is world-readable)
-# Requires: node, the extracted hvigor-ohos-plugin (ARKTS_PLUGIN_DIR or ~/arkts-build/node_modules/@ohos/hvigor-ohos-plugin),
-#           and hap-sign-tool (SDK toolchains/lib).
+#   --pwd-input-mode (or OHOS_PWD_INPUT_MODE=1): pass -pwdInputMode 1 and omit -keyPwd/-keystorePwd,
+#                      so hap-sign-tool prompts for the p12 password on a real tty. In this mode no
+#                      encryptedPassword / hvigor plugin is needed and the password never enters any
+#                      argv. For callers without a tty, wrap the command with script(1):
+#                        script -qec 'sh scripts/sign-huawei.sh --pwd-input-mode ...' /dev/null
+# Requires: node + the extracted hvigor-ohos-plugin (ARKTS_PLUGIN_DIR or ~/arkts-build/node_modules/@ohos/hvigor-ohos-plugin)
+#           in the default mode only, and hap-sign-tool (SDK toolchains/lib) in both modes.
 #
 # Secrets: the decrypt helper is generated into a private mktemp -d (0700, removed on exit/signal)
 # and the encrypted/decrypted passwords travel via the environment, never argv. The decrypted p12
 # password is kept in this shell only - it is not cached and never written to a predictable path.
-# hap-sign-tool has no stdin/env password input (pwdInputMode=1 requires a real tty), so during the
-# signing call the p12 password is still visible in that child's argv (-keyPwd/-keystorePwd); it is
-# not persisted and disappears with the process.
+# In the default (non-tty/CI) mode hap-sign-tool still needs the p12 password on argv
+# (-keyPwd/-keystorePwd), so it is visible in that child's argv for the duration of the call; it is
+# not persisted and disappears with the process. --pwd-input-mode (pwdInputMode=1) removes that
+# residual entirely: the password is typed at the tty prompt and no password argument is passed.
 set -e
 log()  { printf '[%s] %s\n' "$(date +%H:%M:%S)" "$*"; }
 die()  { printf '[%s] ERROR: %s\n' "$(date +%H:%M:%S)" "$*" >&2; exit 1; }
 
-[ $# -ge 2 ] || { echo "usage: sign-huawei.sh <unsigned.hap> <out.hap> [configDir] [encryptedPassword]" >&2; exit 2; }
-IN="$1"; OUT="$2"
-CFG="${3:-$HOME/Documents/ohos/config}"
+usage() {
+  cat >&2 <<'EOF'
+usage: sign-huawei.sh [--pwd-input-mode] <unsigned.hap> <out.hap> [configDir] [encryptedPassword]
+  --pwd-input-mode (or OHOS_PWD_INPUT_MODE=1): prompt for the p12 password on a real tty
+  (-pwdInputMode 1, no -keyPwd/-keystorePwd); no encryptedPassword / hvigor plugin needed and the
+  password never enters argv. Without a tty, wrap the call: script -qec 'sh scripts/sign-huawei.sh ...' /dev/null
+EOF
+  exit 2
+}
+
+MODE="${OHOS_PWD_INPUT_MODE:-0}"
+case "$MODE" in
+  1) MODE=1 ;;
+  ""|0) MODE=0 ;;
+  *) die "OHOS_PWD_INPUT_MODE must be 0 or 1 (got: $MODE)" ;;
+esac
+
+IN=""; OUT=""; CFG=""; HEX=""; N=0
+pos() {
+  N=$((N + 1))
+  case $N in
+    1) IN="$1" ;;
+    2) OUT="$1" ;;
+    3) CFG="$1" ;;
+    4) HEX="$1" ;;
+    *) usage ;;
+  esac
+}
+
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --pwd-input-mode) MODE=1 ;;
+    --) shift; while [ $# -gt 0 ]; do pos "$1"; shift; done; break ;;
+    --*) printf 'sign-huawei.sh: unknown option: %s\n' "$1" >&2; usage ;;
+    *) pos "$1" ;;
+  esac
+  shift
+done
+
+[ -n "$IN" ] && [ -n "$OUT" ] || usage
+CFG="${CFG:-$HOME/Documents/ohos/config}"
 PLUGIN="${ARKTS_PLUGIN_DIR:-$HOME/arkts-build/node_modules/@ohos/hvigor-ohos-plugin}"
 SDK="${OHOS_SDK_ROOT:-$HOME/.harmonybrew/Cellar/ohos-sdk/26.0.0.18_2}"
 TOOL="$SDK/toolchains/lib/hap-sign-tool"
 
+# Interactive mode: hap-sign-tool reads the password from the controlling terminal, so a tty is
+# mandatory. Piping the password does not work; script(1) can provide a pty when the caller has none.
+if [ "$MODE" = 1 ]; then
+  [ -t 0 ] || die "interactive password mode requested but stdin is not a tty; hap-sign-tool cannot read a piped password. Run in a terminal, or wrap it: script -qec 'sh scripts/sign-huawei.sh --pwd-input-mode ...' /dev/null"
+fi
+
 [ -f "$IN" ]   || die "unsigned hap not found: $IN"
 [ -d "$CFG/material/fd" ] || die "signing material not found under $CFG/material (was the project auto-signed?)"
-[ -f "$PLUGIN/src/utils/decipher-util.js" ] || die "hvigor plugin not found: $PLUGIN (set ARKTS_PLUGIN_DIR)"
+if [ "$MODE" = 0 ]; then
+  [ -f "$PLUGIN/src/utils/decipher-util.js" ] || die "hvigor plugin not found: $PLUGIN (set ARKTS_PLUGIN_DIR)"
+fi
 [ -x "$TOOL" ] || die "hap-sign-tool not found: $TOOL (set OHOS_SDK_ROOT)"
 
 P12=$(ls "$CFG"/*.p12 2>/dev/null | head -1); CER=$(ls "$CFG"/*.cer 2>/dev/null | head -1); P7B=$(ls "$CFG"/*.p7b 2>/dev/null | head -1)
 [ -n "$P12" ] && [ -n "$CER" ] && [ -n "$P7B" ] || die "p12/cer/p7b not all present under $CFG"
 
-HEX="${4:-${OHOS_ENC_PWD:-}}"
-[ -n "$HEX" ] || die "no encryptedPassword argument (OHOS_ENC_PWD is empty or unset); pass the build-profile storePassword value; the decrypted password is no longer cached in shared scratch"
+if [ "$MODE" = 0 ]; then
+  HEX="${HEX:-${OHOS_ENC_PWD:-}}"
+  [ -n "$HEX" ] || die "no encryptedPassword argument (OHOS_ENC_PWD is empty or unset); pass the build-profile storePassword value, or use --pwd-input-mode and type the password at the hap-sign-tool prompt"
 
-# Private work dir for the generated decrypt helper: unguessable name, 0700, removed on exit/signal.
-WORK=$(umask 077; mktemp -d "${TMPDIR:-/tmp}/ohos-sign.XXXXXX") || die "cannot create a private temp dir for the decrypt helper"
-cleanup() { if [ -n "$WORK" ]; then rm -rf "$WORK"; fi; }
-trap cleanup 0
-trap 'cleanup; exit 130' INT
-trap 'cleanup; exit 143' TERM
-trap 'cleanup; exit 129' HUP
+  # Private work dir for the generated decrypt helper: unguessable name, 0700, removed on exit/signal.
+  WORK=$(umask 077; mktemp -d "${TMPDIR:-/tmp}/ohos-sign.XXXXXX") || die "cannot create a private temp dir for the decrypt helper"
+  cleanup() { if [ -n "$WORK" ]; then rm -rf "$WORK"; fi; }
+  trap cleanup 0
+  trap 'cleanup; exit 130' INT
+  trap 'cleanup; exit 143' TERM
+  trap 'cleanup; exit 129' HUP
 
-# The helper is generated fresh inside $WORK - never a fixed shared path that another process could
-# replace between runs. Paths go via argv (not secret); the encrypted password goes via the
-# environment (same-UID-only readable) instead of argv (world-readable).
-DEC="$WORK/decrypt.js"
-( umask 077; cat > "$DEC" ) <<'JS'
+  # The helper is generated fresh inside $WORK - never a fixed shared path that another process could
+  # replace between runs. Paths go via argv (not secret); the encrypted password goes via the
+  # environment (same-UID-only readable) instead of argv (world-readable).
+  DEC="$WORK/decrypt.js"
+  ( umask 077; cat > "$DEC" ) <<'JS'
 const { DecipherUtil } = require(process.env.OHOS_PLUGIN_DIR + '/src/utils/decipher-util.js');
 process.stdout.write(DecipherUtil.decryptPwd(process.env.OHOS_CONFIG_DIR, process.env.OHOS_ENC_PWD, 'password'));
 JS
-PW=$(OHOS_PLUGIN_DIR="$PLUGIN" OHOS_CONFIG_DIR="$CFG" OHOS_ENC_PWD="$HEX" node "$DEC") || die "password decryption failed"
-log "password decrypted from the Studio value"
+  PW=$(OHOS_PLUGIN_DIR="$PLUGIN" OHOS_CONFIG_DIR="$CFG" OHOS_ENC_PWD="$HEX" node "$DEC") || die "password decryption failed"
+  log "password decrypted from the Studio value"
+fi
 
 log "signing $(basename "$IN") with the Huawei material (alias debugKey)"
+if [ "$MODE" = 1 ]; then
+  log "interactive mode: hap-sign-tool will prompt for keystorePwd/keyPwd on the terminal"
+  set -- -pwdInputMode 1
+else
+  set -- -keyPwd "$PW" -keystorePwd "$PW"
+fi
 "$TOOL" sign-app -keyAlias debugKey -signAlg SHA256withECDSA -mode localSign \
   -appCertFile "$CER" -profileFile "$P7B" -inFile "$IN" -outFile "$OUT" \
-  -keystoreFile "$P12" -keyPwd "$PW" -keystorePwd "$PW" >/dev/null
+  -keystoreFile "$P12" "$@" >/dev/null
 T=$(dirname "$OUT")
 "$TOOL" verify-app -inFile "$OUT" -outCertChain "$T/.verify-cert.cer" -outProfile "$T/.verify-profile.p7b" 2>&1 | grep -q "verify-app success" \
   || die "verify-app failed for $OUT"
