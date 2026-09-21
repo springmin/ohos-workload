@@ -326,6 +326,29 @@ struct Index {
     try {
       this.webController.registerJavaScriptProxy({
         postMessage: (payload: string): void => {
+          // ArkWeb registers the proxy into every frame, but the managed side trusts the
+          // __OHORIGIN envelope built below. Drop the call when the calling frame url is a
+          // known non-empty url that is not the main document's; empty/unknown values fail
+          // open and the returned url's exact device semantics still need validation.
+          let callerUrl: string = '';
+          try {
+            if (typeof this.webController.getLastJavascriptProxyCallingFrameUrl === 'function') {
+              callerUrl = this.webController.getLastJavascriptProxyCallingFrameUrl();
+            }
+          } catch (callingError) {
+            callerUrl = '';
+          }
+          if (typeof callerUrl === 'string' && callerUrl.length > 0) {
+            let mainUrl: string = '';
+            try {
+              mainUrl = this.webController.getUrl();
+            } catch (urlError) {
+              mainUrl = '';
+            }
+            if (callerUrl !== mainUrl) {
+              return;
+            }
+          }
           host.notifyJsMessage(this.originEnvelope(payload));
         }
       }, 'dotnetHost', ['postMessage']);
@@ -1617,6 +1640,12 @@ struct Index {
   // existing JS message sink, so __RawMessage / __InvokeJavaScript* records reach the managed
   // HybridWebView handler. The matching __hwvInvokeDotNet endpoint is hybridInvokeResponse.
   private hybridMessageResponse(event: OnInterceptRequestEvent): WebResourceResponse {
+    // The endpoint belongs to the served hybrid document; a request from any other frame
+    // (ArkWeb intercepts iframe requests too) is refused like a malformed one (400), so the
+    // page's fetch rejects cleanly instead of waiting.
+    if (event.request && typeof event.request.isMainFrame === 'function' && !event.request.isMainFrame()) {
+      return this.hybridErrorResponse(400);
+    }
     let body: string = '';
     let token: string = '';
     const headers = event.request.getRequestHeader();
@@ -1675,6 +1704,11 @@ struct Index {
   // failure path (bad request, missing host export, managed error, timeout) completes the
   // response with an error payload, so the page's promise rejects instead of hanging.
   private hybridInvokeResponse(event: OnInterceptRequestEvent): WebResourceResponse {
+    // Same frame check as hybridMessageResponse: only the main document may use the invoke
+    // endpoint, everything else gets the malformed-request response.
+    if (event.request && typeof event.request.isMainFrame === 'function' && !event.request.isMainFrame()) {
+      return this.hybridErrorResponse(400);
+    }
     let body: string = '';
     let token: string = '';
     const headers = event.request.getRequestHeader();
