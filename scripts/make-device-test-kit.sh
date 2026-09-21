@@ -37,11 +37,18 @@
 # files cannot leak into SHA256SUMS. scripts/verify-kit.sh is always copied in from the
 # repo (a tester can run `sh verify-kit.sh` inside the extracted kit; it is covered by
 # SHA256SUMS like every other file). The two kit-only docs (自签说明.md, README-交付说明.md)
-# are reused from the kit directory; when absent there the mirrored docs/plans copies
-# (2026-09-21-ohos-tester-selfsign.md, 2026-09-21-ohos-delivery-kit-readme.md) are used.
-# The operator-facing docs come from docs/plans as well: 2026-09-21-ohos-device-run-playbook.md
-# ships as 真机操作手册.md and 2026-09-21-ohos-final-status.md ships as 最终状态.md; the
-# SHA256SUMS glob below (*.md) picks every shipped doc up, so verify-kit.sh needs no change.
+# come from the repo source in docs/plans (2026-09-21-ohos-tester-selfsign.md,
+# 2026-09-21-ohos-delivery-kit-readme.md); only when that checkout is absent are the kit
+# directory copies of a previous run used, so updated repo docs are never shadowed by
+# stale kit copies. The operator-facing docs come from docs/plans as well:
+# 2026-09-21-ohos-device-run-playbook.md ships as 真机操作手册.md and
+# 2026-09-21-ohos-final-status.md ships as 最终状态.md; the SHA256SUMS glob below (*.md)
+# picks every shipped doc up, so verify-kit.sh needs no change.
+#
+# --publish passes the digests of the artifacts just built (DEVICE_TEST_KIT_SHA256 plus
+# the bundle's) and --allow-clobber-mismatch, because a rebuilt kit intentionally replaces
+# the previously delivered assets; publish-workload-release.sh still verifies each local
+# file against the supplied digest and compares it with the published asset digest.
 set -e
 
 log()  { printf '[%s] %s\n' "$(date '+%H:%M:%S')" "$*"; }
@@ -103,19 +110,14 @@ command -v "$DOTNET" >/dev/null 2>&1 || { warn "dotnet not found: $DOTNET (set D
     exit 1
 }
 
-# Kit-only docs: prefer the kit directory itself (possibly a previous run), fall back to
-# the default kit dir, then to the docs/plans mirrors added for the same purpose.
-KIT_DOC_SRC="$KIT_DIR"
-if [ ! -f "$KIT_DOC_SRC/自签说明.md" ] || [ ! -f "$KIT_DOC_SRC/README-交付说明.md" ]; then
-    if [ "$KIT_DIR" != "$DEFAULT_KIT_DIR" ] &&
-       [ -f "$DEFAULT_KIT_DIR/自签说明.md" ] && [ -f "$DEFAULT_KIT_DIR/README-交付说明.md" ]; then
-        KIT_DOC_SRC="$DEFAULT_KIT_DIR"
-    fi
-fi
-SELF_SIGN_SRC="$KIT_DOC_SRC/自签说明.md"
-[ -f "$SELF_SIGN_SRC" ] || SELF_SIGN_SRC="$RUNTIME_PLANS/2026-09-21-ohos-tester-selfsign.md"
-KIT_README_SRC="$KIT_DOC_SRC/README-交付说明.md"
-[ -f "$KIT_README_SRC" ] || KIT_README_SRC="$RUNTIME_PLANS/2026-09-21-ohos-delivery-kit-readme.md"
+# Kit-only docs: the repo source (docs/plans mirrors) wins so doc fixes always ship;
+# a previous kit directory is only a fallback when the checkout is not available.
+SELF_SIGN_SRC="$RUNTIME_PLANS/2026-09-21-ohos-tester-selfsign.md"
+[ -f "$SELF_SIGN_SRC" ] || SELF_SIGN_SRC="$KIT_DIR/自签说明.md"
+[ -f "$SELF_SIGN_SRC" ] || SELF_SIGN_SRC="$DEFAULT_KIT_DIR/自签说明.md"
+KIT_README_SRC="$RUNTIME_PLANS/2026-09-21-ohos-delivery-kit-readme.md"
+[ -f "$KIT_README_SRC" ] || KIT_README_SRC="$KIT_DIR/README-交付说明.md"
+[ -f "$KIT_README_SRC" ] || KIT_README_SRC="$DEFAULT_KIT_DIR/README-交付说明.md"
 
 need_file() {
     [ -f "$1" ] || { warn "missing input: $1${2:+ ($2)}"; exit 1; }
@@ -250,7 +252,18 @@ fi
 
 if [ "$PUBLISH" = 1 ]; then
     log "== publishing the kit (scripts/publish-workload-release.sh) =="
-    DEVICE_TEST_KIT="$OUT" sh "$W/scripts/publish-workload-release.sh"
+    KIT_SHA="$(sha256sum "$OUT" | cut -d' ' -f1)"
+    BUNDLE_VER="$(python3 -c "import json;print(json.load(open('$W/manifests/${SDK_BAND:-11.0.100-rc.1}/microsoft.net.sdk.openharmony/WorkloadManifest.json'))['version'])")"
+    BUNDLE="$W/dist/openharmony-workload-$BUNDLE_VER.tar.gz"
+    [ -f "$BUNDLE" ] || sh "$W/scripts/pack-workload-bundle.sh" >/dev/null
+    BUNDLE_SHA="$(sha256sum "$BUNDLE" | cut -d' ' -f1)"
+    log "kit    sha256=$KIT_SHA"
+    log "bundle sha256=$BUNDLE_SHA"
+    # The rebuild intentionally replaces the kit/bundle assets on the rolling releases;
+    # the digests above are handed to the publisher as the expected ones.
+    DEVICE_TEST_KIT="$OUT" DEVICE_TEST_KIT_SHA256="$KIT_SHA" BUNDLE_SHA256="$BUNDLE_SHA" \
+        sh "$W/scripts/publish-workload-release.sh" \
+            --kit-sha256 "$KIT_SHA" --bundle-sha256 "$BUNDLE_SHA" --allow-clobber-mismatch
 fi
 
 log "== done =="

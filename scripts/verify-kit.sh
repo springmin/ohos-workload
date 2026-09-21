@@ -11,8 +11,19 @@
 # (3) prints the install options and the 9568344/self-sign pointer, and (4) lists the log lines
 # to send back.
 #
-# Exit code: 0 = kit OK; 1 = a checksum failed, a hap is missing/unreadable, or 自签说明.md is
-# absent; 2 = SHA256SUMS not found (wrong directory).
+# SHA256SUMS lives inside the same archive it covers, so it can only prove internal
+# consistency, not that the archive is the published one. Check the outer transfer checksum
+# (`sha256sum -c <kit>.tar.gz.sha256`) before extracting, and pass it as an anchor to bind
+# the extracted tree to that archive:
+#
+#   sh verify-kit.sh --anchor <sha256 of the .tar.gz> [--anchor-file <path-to.tar.gz>]
+#   KIT_ANCHOR=<hex> sh verify-kit.sh
+#
+# --anchor (or KIT_ANCHOR) fails closed: when requested, a missing/mismatching outer
+# tarball, a non-hex anchor or an absent .tar.gz.sha256 sidecar makes the run fail.
+#
+# Exit code: 0 = kit OK; 1 = a checksum/anchor failed, a hap is missing/unreadable, or
+# 自签说明.md is absent; 2 = SHA256SUMS not found (wrong directory) or bad usage.
 # The kit's own SHA256SUMS is not in its own list - the outer <kit>.tar.gz.sha256 covers it.
 set -e
 
@@ -21,18 +32,44 @@ warn() { printf '[%s] WARN: %s\n' "$(date '+%H:%M:%S')" "$*" >&2; }
 
 usage() {
     cat <<EOF
-usage: $0 [kit-dir]
+usage: $0 [--anchor <sha256-of-tar.gz>] [--anchor-file <path-to.tar.gz>] [kit-dir]
 
 Verifies SHA256SUMS and summarizes the five haps of an extracted device-test kit.
 Without an argument the current directory is used (it must contain SHA256SUMS).
+
+  --anchor <hex>        also check the kit against the sha256 of the outer .tar.gz it was
+                        extracted from (fail closed when it cannot be checked)
+  --anchor-file <path>  the outer tarball used by --anchor (default: <kit-dir>.tar.gz);
+                        without --anchor, the adjacent <path>.sha256 is read
+  env: KIT_ANCHOR, KIT_ANCHOR_FILE
 EOF
 }
 
-case "${1:-}" in
-    -h|--help) usage; exit 0 ;;
-esac
+KIT=""
+ANCHOR="${KIT_ANCHOR:-}"
+ANCHOR_FILE="${KIT_ANCHOR_FILE:-}"
+while [ $# -gt 0 ]; do
+    case "$1" in
+        -h|--help) usage; exit 0 ;;
+        --anchor)
+            shift
+            [ $# -gt 0 ] || { warn "--anchor 需要一个 sha256"; usage >&2; exit 2; }
+            ANCHOR="$1"
+            ;;
+        --anchor-file)
+            shift
+            [ $# -gt 0 ] || { warn "--anchor-file 需要一个 tar.gz 路径"; usage >&2; exit 2; }
+            ANCHOR_FILE="$1"
+            ;;
+        -*) warn "unknown argument: $1"; usage >&2; exit 2 ;;
+        *)
+            [ -z "$KIT" ] || { warn "unexpected extra argument: $1"; usage >&2; exit 2; }
+            KIT="$1"
+            ;;
+    esac
+    shift
+done
 
-KIT="${1:-}"
 if [ -z "$KIT" ]; then
     if [ -f SHA256SUMS ]; then
         KIT=.
@@ -48,6 +85,55 @@ fi
 KIT="$(cd "$KIT" && pwd)"
 [ -f "$KIT/SHA256SUMS" ] || { warn "SHA256SUMS not found in: $KIT"; exit 2; }
 
+FAIL=0
+
+# Optional outer anchor: KIT_ANCHOR/--anchor is the sha256 of the .tar.gz the kit was
+# extracted from. It binds the extracted tree to that archive; without it, SHA256SUMS only
+# proves internal consistency. Requested-but-uncheckable always fails.
+if [ -n "$ANCHOR" ] || [ -n "$ANCHOR_FILE" ]; then
+    log "== 0/4 外层锚点校验（tar.gz sha256）"
+    if [ -z "$ANCHOR_FILE" ]; then
+        for _cand in "$KIT.tar.gz" "$(dirname "$KIT")/$(basename "$KIT").tar.gz"; do
+            if [ -f "$_cand" ]; then ANCHOR_FILE="$_cand"; break; fi
+        done
+    fi
+    if [ -z "$ANCHOR_FILE" ] || [ ! -f "$ANCHOR_FILE" ]; then
+        warn "找不到外层 tar.gz（候选: $KIT.tar.gz）；用 --anchor-file <path> 指定，或先校验外层再运行"
+        FAIL=1
+    else
+        if [ -z "$ANCHOR" ]; then
+            # no digest given: read the published <tarball>.sha256 sidecar
+            if [ -f "$ANCHOR_FILE.sha256" ]; then
+                ANCHOR="$(cut -d' ' -f1 < "$ANCHOR_FILE.sha256")"
+                [ -n "$ANCHOR" ] || { warn "$ANCHOR_FILE.sha256 里没有可用的 sha256"; FAIL=1; }
+            else
+                warn "未给出 --anchor <sha256>，且 $ANCHOR_FILE.sha256 不存在"
+                FAIL=1
+            fi
+        fi
+        case "$ANCHOR" in
+            *[!0-9a-fA-F]*) warn "anchor 不是十六进制 sha256: $ANCHOR"; FAIL=1 ;;
+            "")             warn "anchor 为空"; FAIL=1 ;;
+            *) [ "${#ANCHOR}" -eq 64 ] || { warn "anchor 长度不是 64 个字符: $ANCHOR"; FAIL=1; } ;;
+        esac
+        if [ -n "$ANCHOR" ] && [ "${#ANCHOR}" -eq 64 ]; then
+            case "$ANCHOR" in *[!0-9a-fA-F]*) ;; *)
+                _got="$(sha256sum "$ANCHOR_FILE" | cut -d' ' -f1)"
+                if [ "$_got" = "$ANCHOR" ]; then
+                    log "   anchor OK $ANCHOR_FILE sha256=$_got"
+                else
+                    warn "anchor 不匹配 — 解压内容不属于该 tar.gz（或下载/传输被篡改）"
+                    warn "  expected $ANCHOR"
+                    warn "  actual   $_got"
+                    FAIL=1
+                fi
+            ;; esac
+        fi
+    fi
+else
+    log "== 0/4 外层锚点：未请求（建议先 sha256sum -c <kit>.tar.gz.sha256，再用 --anchor <sha256> 运行）"
+fi
+
 TMP="$(mktemp -d 2>/dev/null || true)"
 if [ -z "$TMP" ]; then
     TMP="${TMPDIR:-/tmp}/verify-kit.$$"
@@ -55,7 +141,6 @@ if [ -z "$TMP" ]; then
 fi
 trap 'rm -rf "$TMP"' 0 1 2 15
 
-FAIL=0
 cd "$KIT"
 
 log "== 1/4 SHA256SUMS 校验（sha256sum -c）"
