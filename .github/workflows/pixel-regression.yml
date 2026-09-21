@@ -17,21 +17,43 @@ on:
     branches: [ master ]
   pull_request:
   workflow_dispatch:
+    inputs:
+      maui_ohos_ref:
+        description: 'maui-ohos commit SHA to compile (defaults to the pinned feature/openharmony tip)'
+        required: false
+        type: string
+        default: '90c8373fe6f127f8f63764f903555f0dbb7753a0'
+
+# Least privilege: the job only reads this repository and the public springmin/maui-ohos fork;
+# no step pushes anywhere.
+permissions:
+  contents: read
+
+# Reproducible cross-repo compile: the MAUI slice is checked out at an exact commit, not the
+# mutable feature/openharmony branch, so a push to the fork cannot change what this gate compiles.
+# The default is the feature/openharmony tip verified with
+# `gh api repos/springmin/maui-ohos/commits/feature/openharmony --jq .sha` on 2026-09-21; advance it
+# deliberately (workflow_dispatch can compile any other commit SHA).
+env:
+  MAUI_OHOS_REF: ${{ github.event.inputs.maui_ohos_ref || '90c8373fe6f127f8f63764f903555f0dbb7753a0' }}
 
 jobs:
   pixel:
     runs-on: ubuntu-latest
     steps:
       - name: Check out the workload (this repository)
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
       - name: Check out the maui-ohos slice sources
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           repository: springmin/maui-ohos
-          ref: feature/openharmony
+          ref: ${{ env.MAUI_OHOS_REF }}
           path: maui-ohos
           fetch-depth: 1
-      - uses: actions/setup-dotnet@v4
+          persist-credentials: false
+      - uses: actions/setup-dotnet@67a3573c9a986a3f9c594539f4ab511d57bb3ce9 # v4.3.1
         with:
           dotnet-version: '11.0.x'
           dotnet-quality: 'preview'
