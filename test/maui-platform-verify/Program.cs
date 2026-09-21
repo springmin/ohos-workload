@@ -1565,11 +1565,15 @@ if (!contactsDegraded)
 }
 
 var contactsParsed = OpenHarmonyContacts.Parse("Ada Lovelace\t+15550100\nGrace Hopper\t+15550101\nNo Phone\n");
-bool contactsParsedOk = contactsParsed.Count == 3 &&
+var contactsEscaped = OpenHarmonyContacts.Parse("Esc\\naped\\tName\t+15550102\n");
+var contactsInjected = OpenHarmonyContacts.Parse("A\nFake\t555");
+bool contactsParsedOk = contactsParsed.Count == 2 &&
     contactsParsed[0] == new OpenHarmonyContact("Ada Lovelace", "+15550100") &&
     contactsParsed[1] == new OpenHarmonyContact("Grace Hopper", "+15550101") &&
-    contactsParsed[2] == new OpenHarmonyContact("No Phone", string.Empty);
-Console.WriteLine($"[verify] contacts parser count={contactsParsed.Count} first='{contactsParsed[0].Name}/{contactsParsed[0].Phone}' second='{contactsParsed[1].Name}/{contactsParsed[1].Phone}' assert={contactsParsedOk}");
+    contactsEscaped.Count == 1 && contactsEscaped[0].Name == "Esc\naped\tName" &&
+    contactsInjected.Count == 1 && contactsInjected[0].Name == "A\nFake" &&
+    contactsInjected[0].Phone == "555";
+Console.WriteLine($"[verify] contacts parser count={contactsParsed.Count} first='{contactsParsed[0].Name}/{contactsParsed[0].Phone}' second='{contactsParsed[1].Name}/{contactsParsed[1].Phone}' escapedDecoded={contactsEscaped[0].Name == "Esc\naped\tName"} injectionGuarded={contactsInjected.Count == 1 && contactsInjected[0].Name == "A\nFake"} assert={contactsParsedOk}");
 if (!contactsParsedOk)
 {
     throw new InvalidOperationException("the contacts payload parser assertion failed");
@@ -1697,11 +1701,11 @@ if (!discoveryDegraded)
 
 var pairedParsed = OpenHarmonyBluetooth.ParsePairedDevices(
     "QuietComfort\tAA:BB:CC:DD:EE:01\n\tAA:BB:CC:DD:EE:02\nNoAddressOnly\n");
-bool pairedParsedOk = pairedParsed.Count == 3 &&
+bool pairedParsedOk = pairedParsed.Count == 2 &&
     pairedParsed[0] == new OpenHarmonyBluetoothDevice("QuietComfort", "AA:BB:CC:DD:EE:01") &&
     pairedParsed[1] == new OpenHarmonyBluetoothDevice(string.Empty, "AA:BB:CC:DD:EE:02") &&
-    pairedParsed[2] == new OpenHarmonyBluetoothDevice(string.Empty, "NoAddressOnly");
-Console.WriteLine($"[verify] bluetooth paired parser count={pairedParsed.Count} first='{pairedParsed[0].Name}/{pairedParsed[0].Address}' nameless='{pairedParsed[1].Address}' assert={pairedParsedOk}");
+    OpenHarmonyBluetooth.ParsePairedDevices("No\\tTab\tAA:BB\n")[0] == new OpenHarmonyBluetoothDevice("No\tTab", "AA:BB");
+Console.WriteLine($"[verify] bluetooth paired parser count={pairedParsed.Count} first='{pairedParsed[0].Name}/{pairedParsed[0].Address}' nameless='{pairedParsed[1].Address}' escapedDecoded={OpenHarmonyBluetooth.ParsePairedDevices("No\\tTab\tAA:BB\n")[0].Name == "No\tTab"} assert={pairedParsedOk}");
 if (!pairedParsedOk)
 {
     throw new InvalidOperationException("the bluetooth paired-device payload parser assertion failed");
@@ -1741,7 +1745,7 @@ if (!discoveredDegraded)
 
 var discoveredParsed = OpenHarmonyBluetooth.ParseDevices(
     "QuietComfort\tAA:BB:CC:DD:EE:01\n\tAA:BB:CC:DD:EE:02\nNoAddressOnly\n");
-bool parseDevicesOk = discoveredParsed.Count == 3 &&
+bool parseDevicesOk = discoveredParsed.Count == 2 &&
     discoveredParsed[0] == new OpenHarmonyBluetoothDevice("QuietComfort", "AA:BB:CC:DD:EE:01") &&
     discoveredParsed[1] == new OpenHarmonyBluetoothDevice(string.Empty, "AA:BB:CC:DD:EE:02") &&
     OpenHarmonyBluetooth.ParsePairedDevices(null).Count == 0 &&
@@ -1777,11 +1781,10 @@ catch (Exception ex)
     Console.WriteLine($"[verify] bluetooth DeviceFound payload threw {ex.GetType().Name}: {ex.Message}");
 }
 OpenHarmonyBluetooth.DeviceFound -= onDeviceFound;
-// The tabless record is a valid address-only entry, so exactly the two non-empty records raise
-// (the second one with an empty name).
-bool deviceFoundOk = !foundThrew && foundCount == 2 && foundName == string.Empty &&
-    foundAddress == "malformed-without-tab-is-still-a-device";
-Console.WriteLine($"[verify] bluetooth DeviceFound event count={foundCount} last='{foundName}/{foundAddress}' noThrow={!foundThrew} assert={deviceFoundOk}");
+// The tabless record is not a valid "name\taddress" pair, so only the complete one raises.
+bool deviceFoundOk = !foundThrew && foundCount == 1 && foundName == "Headset" &&
+    foundAddress == "11:22:33:44:55:66";
+Console.WriteLine($"[verify] bluetooth DeviceFound event count={foundCount} last='{foundName}/{foundAddress}' tablessDropped={foundCount == 1} noThrow={!foundThrew} assert={deviceFoundOk}");
 if (!deviceFoundOk)
 {
     throw new InvalidOperationException("the bluetooth DeviceFound event assertion failed");

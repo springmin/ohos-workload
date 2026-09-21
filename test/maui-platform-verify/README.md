@@ -148,11 +148,14 @@ publish pass (skip/republish).
   `GetPairedDevicesAsync`, `StartDiscoveryAsync`, `StopDiscoveryAsync` and
   `GetDiscoveredDevicesAsync` return false/empty without throwing off-device and `IsSupported`
   stays false; the device parser (`ParseDevices`, which `ParsePairedDevices` delegates to) is
-  exercised with the exact "name\taddress" payload (including a nameless record and a record
-  with no tab), the adapter-state parser with the `access.BluetoothState` values ("2" on,
-  "0"/"1"/garbage off), and the discovered-device push with the native-shaped
-  `OnDeviceFoundPayload` records (a named record and an address-only record raise `DeviceFound`,
-  null/empty payloads raise nothing). The shell half registers
+  exercised with the exact "name\taddress" payload (including a nameless record, while a record
+  with no tab has no address and is dropped), the adapter-state parser with the
+  `access.BluetoothState` values ("2" on, "0"/"1"/garbage off), and the discovered-device push
+  with the native-shaped
+  `OnDeviceFoundPayload` records (a named `name\taddress` record raises `DeviceFound`; a
+  tabless/address-only record and null/empty payloads raise nothing). The escape decoder and the
+  injection guard (a raw LF before the first tab folds into the previous field) are asserted here
+  and on the contacts parser. The shell half registers
   `connection.on('bluetoothDeviceFind')` while discovery runs, pushes each record through
   `host.notifyBluetoothDeviceFound` and answers op 4 with the accumulated table.
   `OpenHarmonyPrinting.PrintFileAsync` returns false for a missing file
