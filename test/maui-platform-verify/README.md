@@ -1,6 +1,6 @@
 # Interaction regression suite (headless)
 
-The MAUI-on-OpenHarmony interaction harness (203 interaction checks, a 4-line fuzz tail, a
+The MAUI-on-OpenHarmony interaction harness (213 interaction checks, a 4-line fuzz tail, a
 frame-path performance budget and an accessibility publish-path budget). It builds the platform
 slice sources from the
 `maui-ohos` working tree and drives the app host without a device: touch/drag/pinch/pointer input,
@@ -27,7 +27,7 @@ below), failing the suite when the (deliberately loose) budgets are exceeded.
 # (or the MauiSliceDir / HostingDll / OpenHarmonyGraphicsDll MSBuild properties) before building
 # elsewhere; an explicit -p: value wins over the environment and the absolute fallbacks.
 dotnet build -v:q
-dotnet bin/Debug/net11.0/verify.dll | grep -c '\[verify\]'   # expect 216 (203 checks + 4 fuzz + 1 frame perf + 8 a11y perf)
+dotnet bin/Debug/net11.0/verify.dll | grep -c '\[verify\]'   # expect 226 (213 checks + 4 fuzz + 1 frame perf + 8 a11y perf)
 ```
 
 The `interaction-regression` workflow (`.github/workflows/interaction-regression.yml`) runs the
@@ -35,7 +35,7 @@ suite on a GitHub runner as a real gate: it checks out this repository plus `spr
 (`feature/openharmony`, the branch carrying `src/Core/src/Platform/OpenHarmony`), builds
 `src/Microsoft.OpenHarmony.Hosting` and `src/Microsoft.OpenHarmony.Maui.Graphics` in Release,
 points `MAUI_SLICE_DIR` / `HOSTING_DLL` / `OPENHARMONY_GRAPHICS_DLL` at those roots, and fails the
-job unless the run exits 0, reports at least 216 `[verify]` lines, both perf lines report
+job unless the run exits 0, reports at least 222 `[verify]` lines, both perf lines report
 `within=True`, and no `Unhandled` line is logged.
 
 ## Fuzz tail
@@ -128,8 +128,8 @@ publish pass (skip/republish).
   blocks codesigned ELF apphosts on some machines).
 - The suite fails loudly (unhandled exception) when a slice change breaks startup or when an
   assertion for the gesture flows (including the drag-and-drop checks) does not hold; keep it at
-  203 checks plus the 4 fuzz lines plus the 1 frame-perf line plus the 8 a11y-perf lines
-  (216 `[verify]` lines) when touching the platform slice.
+  213 checks plus the 4 fuzz lines plus the 1 frame-perf line plus the 8 a11y-perf lines
+  (226 `[verify]` lines) when touching the platform slice.
 - Contacts/calendar coverage: `OpenHarmonyContacts.FindAsync` and
   `OpenHarmonyCalendar.ListUpcomingAsync`/`AddEventAsync` return empty/false without throwing
   off-device and report `IsSupported == false` before and after the call (the permission probe
@@ -175,8 +175,9 @@ publish pass (skip/republish).
   resource name and the `https://0.0.0.1/` origin are asserted) and registers `<AppDir>` + root +
   default file with the shell, which answers app-origin requests from `<AppDir>/<root>/...`,
   serves the bootstrap script from `<AppDir>/_framework/hybridwebview.js` and forwards the script's
-  `__hwvSendMessage` posts into the managed handler. Off-device there is no app context, so
-  registration is a no-op. The JS -> .NET `__hwvInvokeDotNet` endpoint is implemented: the shell
+  `__hwvSendMessage` posts into the managed handler. Off-device (no host library) the shell command
+  itself is a no-op, but the registration path is still exercised (see the late app-context bullet
+  below). The JS -> .NET `__hwvInvokeDotNet` endpoint is implemented: the shell
   intercepts the fetch, returns the response not-ready (`setResponseIsReady(false)` - the SDK
   members are pinned by the typeCheck probe in the workload repo), forwards
   `host.notifyHybridInvoke(requestId, method, argsJson)` and completes the response when the
@@ -187,6 +188,19 @@ publish pass (skip/republish).
   disconnected page all answer the `DotNetInvokeResult` error payload (never a hang), and the
   payload is observed through `HybridInvokeResultSent` because the native export is absent
   off-device. See the slice's `OpenHarmonyHybridWebViewHandler` header.
+- HybridWebView late app-context coverage (U1): the shell can publish `AppDir` (and with it the
+  payload directory) after a HybridWebView connected, so the suite drives the bridge seam directly
+  (it sets `OpenHarmonyBridge`'s private `s_context` field and replays the private
+  Initialized/SurfaceChanged backing delegates, the same path a late host context/surface takes)
+  and asserts ten `[verify]` lines: a connect without `AppDir` is remembered as pending instead of
+  dropped; the late replay registers the pending root exactly once with the expected
+  directory/root/default file and extracts the bootstrap script; replaying the Initialized and
+  SurfaceChanged signals (up to all signals plus repeated mapper passes) stays idempotent; a
+  `HybridRoot` change re-registers once with the new root; the eager path (context already
+  published) still registers immediately at connect; and two pending handlers are both remembered
+  and land one by one when the late context arrives. The scenario pins the slice's registration
+  contract: pending set, `Initialized`/`SurfaceChanged`/first-arrange retries and the
+  exactly-once registration key.
 - Haptics coverage: `HapticFeedback.Default` is the slice implementation, `Perform(Click/LongPress)`
   degrades without throwing off-device, and `IsSupported` is false without the host library. The app
   theme handler is exercised directly (ArkUI colour-mode reports need a device): setting dark/light
@@ -243,7 +257,7 @@ publish pass (skip/republish).
     the installed default must complete without throwing when the ability bridge is absent; the
     want kind for single-file sharing is pinned to 3.
 - CI wiring: `.github/workflows/interaction-regression.yml` builds the slice checkout and the
-  hosting assemblies on the runner and gates on the `[verify]` line count (>=216) plus both perf
+  hosting assemblies on the runner and gates on the `[verify]` line count (>=222) plus both perf
   `within=True` markers (see "Running it" above).
 - Accessibility publish-contract coverage (R2b): the suite reflects
   `OpenHarmonyAccessibility.AccessibilityNode` (16 parameters now that hint, range and checked

@@ -1338,6 +1338,180 @@ if (!invokeBridgeDegraded)
 }
 OpenHarmonyHybridWebViewHandler.HybridInvokeResultSent -= OnHybridInvokeResult;
 
+// Late app context: the shell can publish AppDir (and with it the payload directory) after a
+// HybridWebView connected, so the registration is not dropped: it is remembered as pending and
+// retried from the bridge's Initialized/SurfaceChanged signals (late subscribers get the current
+// context/surface replayed) and from the first arrange, and each pending root lands exactly
+// once. The drill drives that seam directly: OpenHarmonyBridge keeps the context in the private
+// s_context field and the Initialized/SurfaceChanged subscribers in private backing delegates,
+// so a late context publish and every signal replay are reproduced without a device.
+FieldInfo bridgeContextField = typeof(Microsoft.OpenHarmony.Hosting.OpenHarmonyBridge)
+    .GetField("s_context", BindingFlags.NonPublic | BindingFlags.Static)
+    ?? throw new InvalidOperationException("OpenHarmonyBridge.s_context was not found; the late-app-context drill needs the bridge seam");
+FieldInfo bridgeInitializedField = typeof(Microsoft.OpenHarmony.Hosting.OpenHarmonyBridge)
+    .GetField("s_initializedHandlers", BindingFlags.NonPublic | BindingFlags.Static)
+    ?? throw new InvalidOperationException("OpenHarmonyBridge.s_initializedHandlers was not found; the drill replays Initialized like a late context publish");
+FieldInfo bridgeSurfaceField = typeof(Microsoft.OpenHarmony.Hosting.OpenHarmonyBridge)
+    .GetField("s_surfaceHandlers", BindingFlags.NonPublic | BindingFlags.Static)
+    ?? throw new InvalidOperationException("OpenHarmonyBridge.s_surfaceHandlers was not found; the drill replays SurfaceChanged like a late surface publish");
+Microsoft.OpenHarmony.Hosting.OpenHarmonyAppContext? savedBridgeContext =
+    (Microsoft.OpenHarmony.Hosting.OpenHarmonyAppContext?)bridgeContextField.GetValue(null);
+void SetBridgeContext(Microsoft.OpenHarmony.Hosting.OpenHarmonyAppContext? context)
+    => bridgeContextField.SetValue(null, context);
+void ReplayInitialized(Microsoft.OpenHarmony.Hosting.OpenHarmonyAppContext context)
+    => ((Action<Microsoft.OpenHarmony.Hosting.OpenHarmonyAppContext>?)bridgeInitializedField.GetValue(null))?.Invoke(context);
+void ReplaySurface(Microsoft.OpenHarmony.Hosting.OpenHarmonySurfaceInfo surface)
+    => ((Action<Microsoft.OpenHarmony.Hosting.OpenHarmonySurfaceInfo>?)bridgeSurfaceField.GetValue(null))?.Invoke(surface);
+var lateSurface = new Microsoft.OpenHarmony.Hosting.OpenHarmonySurfaceInfo(
+    IntPtr.Zero, 1080, 1920, Microsoft.OpenHarmony.Hosting.OpenHarmonySurfaceState.Changed);
+
+string lateHybridDir = Path.Combine(Path.GetTempPath(), "verify-hybrid-late");
+var lateHybridContext = new Microsoft.OpenHarmony.Hosting.OpenHarmonyAppContext { AppDir = lateHybridDir };
+SetBridgeContext(null);
+
+// (1) A connect without an AppDir is remembered as pending, not dropped.
+var lateHybridOne = new Microsoft.Maui.Controls.HybridWebView { HeightRequest = 200, HybridRoot = "assets", DefaultFile = "main.html" };
+OpenHarmonyHandlerConnector.Connect(lateHybridOne);
+var lateHandlerOne = (OpenHarmonyHybridWebViewHandler)lateHybridOne.Handler!;
+var lateRegistrationsOne = new List<(string Dir, string Root, string File)>();
+lateHandlerOne.HybridAssetsRegistered += (dir, root, file) => lateRegistrationsOne.Add((dir, root, file));
+bool lateConnectPending = lateHandlerOne.IsHybridAssetsRegistrationPending &&
+    lateHandlerOne.RegisteredHybridAssets is null && lateRegistrationsOne.Count == 0;
+Console.WriteLine($"[verify] hybrid late connect without AppDir pending={lateHandlerOne.IsHybridAssetsRegistrationPending} registered={lateHandlerOne.RegisteredHybridAssets ?? "<null>"} dropped={lateRegistrationsOne.Count != 0} assert={lateConnectPending}");
+if (!lateConnectPending)
+{
+    throw new InvalidOperationException("a HybridWebView connected before AppDir was published was not remembered as pending");
+}
+
+// (2) The first replay after the context lands registers exactly once with the payload layout.
+SetBridgeContext(lateHybridContext);
+ReplayInitialized(lateHybridContext);
+(bool lateLandedOnce, string lateDirSeen, string lateRootSeen, string lateFileSeen) = lateRegistrationsOne.Count == 1
+    ? (true, lateRegistrationsOne[0].Dir, lateRegistrationsOne[0].Root, lateRegistrationsOne[0].File)
+    : (false, "<none>", "<none>", "<none>");
+bool lateBootstrapExtracted = File.Exists(Path.Combine(lateHybridDir, "_framework", "hybridwebview.js"));
+bool lateReplayOk = lateLandedOnce && lateDirSeen == lateHybridDir && lateRootSeen == "assets" &&
+    lateFileSeen == "main.html" && lateBootstrapExtracted && !lateHandlerOne.IsHybridAssetsRegistrationPending;
+Console.WriteLine($"[verify] hybrid late replay registrations={lateRegistrationsOne.Count} dir='{lateDirSeen}' root='{lateRootSeen}' defaultFile='{lateFileSeen}' bootstrap={lateBootstrapExtracted} pending={lateHandlerOne.IsHybridAssetsRegistrationPending} assert={lateReplayOk}");
+if (!lateReplayOk)
+{
+    throw new InvalidOperationException("the late AppDir replay did not register the pending hybrid root exactly once with the expected payload layout");
+}
+
+// (3) Replaying Initialized for the same context does not register the root again.
+ReplayInitialized(lateHybridContext);
+bool lateInitializedIdempotent = lateRegistrationsOne.Count == 1;
+Console.WriteLine($"[verify] hybrid late replay Initialized again registrations={lateRegistrationsOne.Count} assert={lateInitializedIdempotent}");
+if (!lateInitializedIdempotent)
+{
+    throw new InvalidOperationException("replaying the Initialized signal re-registered an already registered hybrid root");
+}
+
+// (4) Replaying SurfaceChanged does not register the root again either.
+ReplaySurface(lateSurface);
+bool lateSurfaceIdempotent = lateRegistrationsOne.Count == 1;
+Console.WriteLine($"[verify] hybrid late replay SurfaceChanged registrations={lateRegistrationsOne.Count} assert={lateSurfaceIdempotent}");
+if (!lateSurfaceIdempotent)
+{
+    throw new InvalidOperationException("replaying the SurfaceChanged signal re-registered an already registered hybrid root");
+}
+
+// (5) Every signal plus repeated mapper passes stay idempotent.
+ReplayInitialized(lateHybridContext);
+ReplaySurface(lateSurface);
+OpenHarmonyHybridWebViewHandler.MapHybridAssets(lateHandlerOne, lateHybridOne);
+OpenHarmonyHybridWebViewHandler.MapHybridAssets(lateHandlerOne, lateHybridOne);
+bool lateAllSignalsIdempotent = lateRegistrationsOne.Count == 1;
+Console.WriteLine($"[verify] hybrid late replay all signals registrations={lateRegistrationsOne.Count} assert={lateAllSignalsIdempotent}");
+if (!lateAllSignalsIdempotent)
+{
+    throw new InvalidOperationException("replaying every bridge signal re-registered an already registered hybrid root");
+}
+
+// (6) A HybridRoot change re-registers once (the shell command carries the new root).
+lateHybridOne.HybridRoot = "assets2";
+(bool lateRootOnce, string lateRootDirSeen, string lateRootSeenValue, string lateRootFileSeen) = lateRegistrationsOne.Count == 2
+    ? (true, lateRegistrationsOne[1].Dir, lateRegistrationsOne[1].Root, lateRegistrationsOne[1].File)
+    : (false, "<none>", "<none>", "<none>");
+bool lateRootChangeOk = lateRootOnce && lateRootDirSeen == lateHybridDir &&
+    lateRootSeenValue == "assets2" && lateRootFileSeen == "main.html";
+Console.WriteLine($"[verify] hybrid late HybridRoot change registrations={lateRegistrationsOne.Count} root='{lateRootSeenValue}' assert={lateRootChangeOk}");
+if (!lateRootChangeOk)
+{
+    throw new InvalidOperationException("a HybridRoot change did not re-register the hybrid root exactly once");
+}
+
+// (7) The signals remain idempotent after the root change.
+ReplayInitialized(lateHybridContext);
+ReplaySurface(lateSurface);
+bool lateRootChangeIdempotent = lateRegistrationsOne.Count == 2;
+Console.WriteLine($"[verify] hybrid late replay after root change registrations={lateRegistrationsOne.Count} assert={lateRootChangeIdempotent}");
+if (!lateRootChangeIdempotent)
+{
+    throw new InvalidOperationException("replaying the bridge signals after a HybridRoot change re-registered the root");
+}
+
+// (8) The eager path still registers immediately when the context is already published.
+var lateHybridEager = new Microsoft.Maui.Controls.HybridWebView { HeightRequest = 200, HybridRoot = "eager", DefaultFile = "index.html" };
+var lateHandlerEager = new OpenHarmonyHybridWebViewHandler();
+var lateRegistrationsEager = new List<(string Dir, string Root, string File)>();
+lateHandlerEager.HybridAssetsRegistered += (dir, root, file) => lateRegistrationsEager.Add((dir, root, file));
+((IElementHandler)lateHandlerEager).SetMauiContext(OpenHarmonyHandlerConnector.Context);
+lateHybridEager.Handler = lateHandlerEager;
+bool lateEagerOk = !lateHandlerEager.IsHybridAssetsRegistrationPending && lateRegistrationsEager.Count == 1 &&
+    lateRegistrationsEager[0] == (lateHybridDir, "eager", "index.html");
+Console.WriteLine($"[verify] hybrid late eager connect pending={lateHandlerEager.IsHybridAssetsRegistrationPending} registrations={lateRegistrationsEager.Count} dir='{(lateRegistrationsEager.Count == 1 ? lateRegistrationsEager[0].Dir : "<none>")}' root='{(lateRegistrationsEager.Count == 1 ? lateRegistrationsEager[0].Root : "<none>")}' assert={lateEagerOk}");
+if (!lateEagerOk)
+{
+    throw new InvalidOperationException("the eager hybrid asset registration path no longer registers immediately");
+}
+
+// (9) Two handlers that connected without an AppDir are both remembered.
+SetBridgeContext(null);
+var lateHybridTwo = new Microsoft.Maui.Controls.HybridWebView { HeightRequest = 200 };
+var lateHybridThree = new Microsoft.Maui.Controls.HybridWebView { HeightRequest = 200 };
+OpenHarmonyHandlerConnector.Connect(lateHybridTwo);
+OpenHarmonyHandlerConnector.Connect(lateHybridThree);
+var lateHandlerTwo = (OpenHarmonyHybridWebViewHandler)lateHybridTwo.Handler!;
+var lateHandlerThree = (OpenHarmonyHybridWebViewHandler)lateHybridThree.Handler!;
+var lateRegistrationsTwo = new List<(string Dir, string Root, string File)>();
+var lateRegistrationsThree = new List<(string Dir, string Root, string File)>();
+lateHandlerTwo.HybridAssetsRegistered += (dir, root, file) => lateRegistrationsTwo.Add((dir, root, file));
+lateHandlerThree.HybridAssetsRegistered += (dir, root, file) => lateRegistrationsThree.Add((dir, root, file));
+bool lateTwoRemembered = lateHandlerTwo.IsHybridAssetsRegistrationPending && lateHandlerThree.IsHybridAssetsRegistrationPending &&
+    lateRegistrationsTwo.Count == 0 && lateRegistrationsThree.Count == 0;
+Console.WriteLine($"[verify] hybrid late two pending handlers remembered pending={lateHandlerTwo.IsHybridAssetsRegistrationPending}/{lateHandlerThree.IsHybridAssetsRegistrationPending} registrations={lateRegistrationsTwo.Count}/{lateRegistrationsThree.Count} assert={lateTwoRemembered}");
+if (!lateTwoRemembered)
+{
+    throw new InvalidOperationException("two HybridWebViews connected before AppDir were not both remembered as pending");
+}
+
+// (10) When the context lands, each pending handler registers exactly once (one by one).
+SetBridgeContext(lateHybridContext);
+ReplayInitialized(lateHybridContext);
+bool lateTwoLanded = lateRegistrationsTwo.Count == 1 && lateRegistrationsThree.Count == 1 &&
+    !lateHandlerTwo.IsHybridAssetsRegistrationPending && !lateHandlerThree.IsHybridAssetsRegistrationPending;
+Console.WriteLine($"[verify] hybrid late two pending handlers land registrations={lateRegistrationsTwo.Count}/{lateRegistrationsThree.Count} pending={lateHandlerTwo.IsHybridAssetsRegistrationPending}/{lateHandlerThree.IsHybridAssetsRegistrationPending} assert={lateTwoLanded}");
+if (!lateTwoLanded)
+{
+    throw new InvalidOperationException("the pending hybrid roots did not land one by one when the late AppDir arrived");
+}
+
+foreach (Microsoft.Maui.Controls.HybridWebView lateProbe in new[] { lateHybridOne, lateHybridEager, lateHybridTwo, lateHybridThree })
+{
+    lateProbe.Handler?.DisconnectHandler();
+    lateProbe.Handler = null;
+}
+SetBridgeContext(savedBridgeContext);
+try
+{
+    Directory.Delete(lateHybridDir, true);
+}
+catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+{
+    // The temp payload directory is diagnostic only; leaving it behind must not fail the suite.
+}
+
 static bool PayloadBool(string? payload, string name)
     => !string.IsNullOrEmpty(payload) && JsonDocument.Parse(payload).RootElement.GetProperty(name).GetBoolean();
 
