@@ -1,6 +1,6 @@
 # Interaction regression suite (headless)
 
-The MAUI-on-OpenHarmony interaction harness (231 interaction checks, a 4-line fuzz tail, a
+The MAUI-on-OpenHarmony interaction harness (234 interaction checks, a 4-line fuzz tail, a
 frame-path performance budget and an accessibility publish-path budget). It builds the platform
 slice sources from the
 `maui-ohos` working tree and drives the app host without a device: touch/drag/pinch/pointer input,
@@ -29,7 +29,7 @@ below), failing the suite when the (deliberately loose) budgets are exceeded.
 # (or the MauiSliceDir / HostingDll / OpenHarmonyGraphicsDll MSBuild properties) before building
 # elsewhere; an explicit -p: value wins over the environment and the absolute fallbacks.
 dotnet build -v:q
-dotnet bin/Debug/net11.0/verify.dll | grep -c '\[verify\]'   # expect 244 (231 checks + 4 fuzz + 1 frame perf + 8 a11y perf)
+dotnet bin/Debug/net11.0/verify.dll | grep -c '\[verify\]'   # expect 247 (234 checks + 4 fuzz + 1 frame perf + 8 a11y perf)
 ```
 
 The `interaction-regression` workflow (`.github/workflows/interaction-regression.yml`) runs the
@@ -130,8 +130,8 @@ publish pass (skip/republish).
   blocks codesigned ELF apphosts on some machines).
 - The suite fails loudly (unhandled exception) when a slice change breaks startup or when an
   assertion for the gesture flows (including the drag-and-drop checks) does not hold; keep it at
-  231 checks plus the 4 fuzz lines plus the 1 frame-perf line plus the 8 a11y-perf lines
-  (244 `[verify]` lines) when touching the platform slice.
+  234 checks plus the 4 fuzz lines plus the 1 frame-perf line plus the 8 a11y-perf lines
+  (247 `[verify]` lines) when touching the platform slice.
 - Contacts/calendar coverage: `OpenHarmonyContacts.FindAsync` and
   `OpenHarmonyCalendar.ListUpcomingAsync`/`AddEventAsync` return empty/false without throwing
   off-device and report `IsSupported == false` before and after the call (the permission probe
@@ -193,6 +193,17 @@ publish pass (skip/republish).
   disconnected page all answer the `DotNetInvokeResult` error payload (never a hang), and the
   payload is observed through `HybridInvokeResultSent` because the native export is absent
   off-device. See the slice's `OpenHarmonyHybridWebViewHandler` header.
+- Web navigation allow-list (B6) and status log (B7) coverage: the shell cancels main-frame loads
+  it did not originate and asks the managed handler for a decision over the JS-message channel
+  (`__OHNAV|<url>|<id>`). Three pins keep the flow guarded: an allowed envelope raises
+  `IWebView.Navigating` once and is approved back as the exact `(id, url)` pair, while the
+  page-begin event of the approved reload is suppressed (one-shot: the next started event raises
+  again); a cancelled envelope sends no approval; and the envelope is scoped to its own channel
+  (never fanned out to `JsMessage`) while malformed/unsafe envelopes (empty or relative URL, a
+  control character, an empty id) stay inert. On the status side `SanitizeUrlForLog` drops the
+  query/fragment, flattens control characters and truncates to 2 KiB, and 300 `finished` events
+  keep `dotnet-status.txt` capped at 256 KiB with the newest line present, the oldest dropped and
+  no query text in the file.
 - HybridWebView late app-context coverage (U1): the shell can publish `AppDir` (and with it the
   payload directory) after a HybridWebView connected, so the suite drives the bridge seam directly
   (it sets `OpenHarmonyBridge`'s private `s_context` field and replays the private

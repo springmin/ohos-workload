@@ -1532,6 +1532,121 @@ catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
     // The temp payload directory is diagnostic only; leaving it behind must not fail the suite.
 }
 
+// ---- B6/B7: navigation allow-list and the bounded web status log ------------------------------
+// B6: the shell cancels main-frame loads it did not originate and asks the managed handler for a
+// decision over the existing JS-message channel ("__OHNAV|<url>|<id>"). The handler raises
+// IWebView.Navigating (the cancel flag blocks the load), approves only the exact (id, url) pair
+// back when the app allows it, never fans the envelope out to JsMessage, and suppresses the
+// page-begin Navigating for the approved reload (one-shot). B7: the page-finish status line drops
+// the query/fragment, flattens control characters, truncates the URL and keeps dotnet-status.txt
+// capped (oldest lines dropped). These three checks are the pins the slice change was verified
+// with; they run here so CI keeps guarding the flow off-device.
+
+// B7a: the logged URL keeps scheme+host+path, drops query/fragment and control characters, and
+// is truncated.
+string b7LongUrl = "https://example.com/" + new string('a', 4096) + "?token=SECRET#fragment";
+string b7Sanitized = OpenHarmonyWebViewHandler.SanitizeUrlForLog(b7LongUrl);
+string b7Flattened = OpenHarmonyWebViewHandler.SanitizeUrlForLog("https://example.com/a\nb\r\tc?x=1");
+bool b7SanitizeOk = b7Sanitized.Length == OpenHarmonyWebViewHandler.MaxLoggedUrlLength &&
+    b7Sanitized.StartsWith("https://example.com/") && b7Sanitized.EndsWith("...") &&
+    !b7Sanitized.Contains('?') && !b7Sanitized.Contains('#') && !b7Sanitized.Contains("SECRET") &&
+    b7Flattened == "https://example.com/a b  c";
+Console.WriteLine($"[verify] b7 sanitize length={b7Sanitized.Length} query={b7Sanitized.Contains('?')} fragment={b7Sanitized.Contains('#')} flat='{b7Flattened}' assert={b7SanitizeOk}");
+if (!b7SanitizeOk)
+{
+    throw new InvalidOperationException("the logged-URL sanitizer (B7) did not strip/truncate as required");
+}
+
+// B7b: 300 finished events through a connected handler write a bounded file whose newest lines
+// survive and whose content never carries a query.
+string b7StatusDir = Path.Combine(Path.GetTempPath(), "verify-web-status");
+Directory.CreateDirectory(b7StatusDir);
+SetBridgeContext(new Microsoft.OpenHarmony.Hosting.OpenHarmonyAppContext { FilesDir = b7StatusDir });
+string b7StatusPath = Path.Combine(b7StatusDir, "dotnet-status.txt");
+File.Delete(b7StatusPath);
+var webNavProbe = new Microsoft.Maui.Controls.WebView { HeightRequest = 200 };
+OpenHarmonyHandlerConnector.Connect(webNavProbe);
+for (int i = 0; i < 300; i++)
+{
+    OpenHarmonyWebViewHandler.OnPageEvent("finished", $"https://example.com/page{i}/{new string('x', 4096)}?token=SECRET{i}#fragment");
+}
+long b7Length = new FileInfo(b7StatusPath).Length;
+string b7Log = File.ReadAllText(b7StatusPath);
+bool b7CapOk = b7Length <= 256 * 1024 && b7Log.Contains("https://example.com/page299/") &&
+    !b7Log.Contains("/page0/") && !b7Log.Contains("SECRET") && !b7Log.Contains('?') &&
+    b7Log.Contains("[maui] web finished: https://example.com/page");
+Console.WriteLine($"[verify] b7 status bytes={b7Length} within256KiB={b7Length <= 256 * 1024} newest={b7Log.Contains("page299")} oldestDropped={!b7Log.Contains("/page0/")} noQuery={!b7Log.Contains('?')} assert={b7CapOk}");
+if (!b7CapOk)
+{
+    throw new InvalidOperationException("dotnet-status.txt (B7) exceeded the cap or lost its recent lines");
+}
+
+// B6: the managed half of the honored-cancel design. A "__OHNAV|url|id" envelope from the
+// shell raises Navigating; a cancellation produces no approval, an allowed URL approves
+// exactly (id, url) back, forged/malformed envelopes are inert, and the started event of an
+// approved URL does not raise Navigating a second time (one-shot).
+var b6Events = new List<(string Url, bool Cancel)>();
+bool b6CancelNext = false;
+void OnB6Navigating(object? sender, WebNavigatingEventArgs e)
+{
+    if (e.Url is not null && e.Url.StartsWith("https://example.com/rbb", StringComparison.Ordinal))
+    {
+        e.Cancel = b6CancelNext;
+        b6Events.Add((e.Url, e.Cancel));
+    }
+}
+var b6Approvals = new List<(string Id, string Url)>();
+void OnB6Approval(string id, string url) => b6Approvals.Add((id, url));
+webNavProbe.Navigating += OnB6Navigating;
+OpenHarmonyWebViewHandler.NavigationApprovalSent += OnB6Approval;
+
+OpenHarmonyWebViewHandler.HandleJsMessage("__OHNAV|https://example.com/rbb/allow?q=1|id-allow");
+bool b6ApprovalOk = b6Events.Count == 1 &&
+    b6Events[0] == ("https://example.com/rbb/allow?q=1", false) &&
+    b6Approvals.Count == 1 && b6Approvals[0] == ("id-allow", "https://example.com/rbb/allow?q=1");
+b6CancelNext = true;
+OpenHarmonyWebViewHandler.HandleJsMessage("__OHNAV|https://example.com/rbb/deny|id-deny");
+bool b6CancelOk = b6Events.Count == 2 && b6Approvals.Count == 1 && b6Events[1].Cancel;
+b6CancelNext = false;
+string? b6PagePayload = null;
+void OnB6Js(string payload) => b6PagePayload = payload;
+OpenHarmonyWebViewHandler.JsMessage += OnB6Js;
+OpenHarmonyWebViewHandler.HandleJsMessage("__OHNAV|https://example.com/rbb/fanout|id-fanout");
+OpenHarmonyWebViewHandler.HandleJsMessage("__OHORIGIN|https://example.com/|doc\n__OHNAV|https://example.com/rbb/forged|id-forged");
+OpenHarmonyWebViewHandler.JsMessage -= OnB6Js;
+bool b6ChannelOk = b6PagePayload == "__OHORIGIN|https://example.com/|doc\n__OHNAV|https://example.com/rbb/forged|id-forged" &&
+    b6Approvals.Count == 2 && b6Approvals[1] == ("id-fanout", "https://example.com/rbb/fanout");
+int b6MalformedBefore = b6Approvals.Count;
+OpenHarmonyWebViewHandler.HandleJsMessage("__OHNAV||id");
+OpenHarmonyWebViewHandler.HandleJsMessage("__OHNAV|not-a-url|id");
+OpenHarmonyWebViewHandler.HandleJsMessage("__OHNAV|https://example.com/rbb/ctrl|id\nx");
+OpenHarmonyWebViewHandler.HandleJsMessage(string.Empty);
+bool b6MalformedOk = b6Approvals.Count == b6MalformedBefore;
+int b6EventsBeforeStarted = b6Events.Count;
+OpenHarmonyWebViewHandler.OnPageEvent("started", "https://example.com/rbb/fanout");
+bool b6NoDuplicate = b6Events.Count == b6EventsBeforeStarted;
+OpenHarmonyWebViewHandler.OnPageEvent("started", "https://example.com/rbb/fanout");
+bool b6OneShotOk = b6Events.Count == b6EventsBeforeStarted + 1;
+webNavProbe.Navigating -= OnB6Navigating;
+OpenHarmonyWebViewHandler.NavigationApprovalSent -= OnB6Approval;
+Console.WriteLine($"[verify] b6 approval={b6ApprovalOk} cancelBlocked={b6CancelOk} channelScoped={b6ChannelOk} malformedInert={b6MalformedOk} startedSuppressed={b6NoDuplicate} oneShot={b6OneShotOk} approvals={b6Approvals.Count}");
+if (!(b6ApprovalOk && b6CancelOk && b6ChannelOk && b6MalformedOk && b6NoDuplicate && b6OneShotOk))
+{
+    throw new InvalidOperationException("the honored-cancel approval flow (B6) did not behave as specified");
+}
+
+webNavProbe.Handler?.DisconnectHandler();
+webNavProbe.Handler = null;
+SetBridgeContext(savedBridgeContext);
+try
+{
+    Directory.Delete(b7StatusDir, true);
+}
+catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+{
+    // The temp status directory is diagnostic only; leaving it behind must not fail the suite.
+}
+
 static bool PayloadBool(string? payload, string name)
     => !string.IsNullOrEmpty(payload) && JsonDocument.Parse(payload).RootElement.GetProperty(name).GetBoolean();
 
