@@ -1,5 +1,16 @@
 <Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
+    <!-- Portable roots: override with env vars or MSBuild properties (CI). The pixel workflow sets
+         MAUI_SLICE_DIR / HOSTING_DLL / OPENHARMONY_GRAPHICS_DLL; explicit -p: values still win
+         over both the environment and the absolute fallbacks below, so local runs need no setup. -->
+    <MauiSliceDir Condition="'$(MauiSliceDir)' == ''">$(MAUI_SLICE_DIR)</MauiSliceDir>
+    <HostingDll Condition="'$(HostingDll)' == ''">$(HOSTING_DLL)</HostingDll>
+    <OpenHarmonyGraphicsDll Condition="'$(OpenHarmonyGraphicsDll)' == ''">$(OPENHARMONY_GRAPHICS_DLL)</OpenHarmonyGraphicsDll>
+    <HostingDll Condition="'$(HostingDll)' == ''">/storage/Users/currentUser/springsources/ohos-workload/src/Microsoft.OpenHarmony.Hosting/bin/Release/net11.0/Microsoft.OpenHarmony.Hosting.dll</HostingDll>
+    <OpenHarmonyGraphicsDll Condition="'$(OpenHarmonyGraphicsDll)' == ''">/storage/Users/currentUser/springsources/ohos-workload/src/Microsoft.OpenHarmony.Maui.Graphics/bin/Release/net11.0/Microsoft.OpenHarmony.Maui.Graphics.dll</OpenHarmonyGraphicsDll>
+    <MauiSliceDir Condition="'$(MauiSliceDir)' == ''">/storage/Users/currentUser/springsources/maui-ohos/src/Core/src/Platform/OpenHarmony</MauiSliceDir>
+  </PropertyGroup>
+  <PropertyGroup>
     <OutputType>Exe</OutputType>
     <TargetFramework>net11.0</TargetFramework>
     <Nullable>enable</Nullable>
@@ -16,11 +27,11 @@
     <PackageReference Include="Microsoft.Maui.Controls" Version="11.0.0-rc.1.26451.6" />
     <PackageReference Include="Microsoft.Maui.Graphics" Version="11.0.0-rc.1.26451.6" />
     <Reference Include="Microsoft.OpenHarmony.Hosting">
-      <HintPath>/storage/Users/currentUser/springsources/ohos-workload/src/Microsoft.OpenHarmony.Hosting/bin/Release/net11.0/Microsoft.OpenHarmony.Hosting.dll</HintPath>
+      <HintPath>$(HostingDll)</HintPath>
     </Reference>
     <Reference Include="Microsoft.OpenHarmony.Maui.Graphics">
-      <HintPath>/storage/Users/currentUser/springsources/ohos-workload/src/Microsoft.OpenHarmony.Maui.Graphics/bin/Release/net11.0/Microsoft.OpenHarmony.Maui.Graphics.dll</HintPath>
+      <HintPath>$(OpenHarmonyGraphicsDll)</HintPath>
     </Reference>
-    <Compile Include="/storage/Users/currentUser/springsources/maui-ohos/src/Core/src/Platform/OpenHarmony/*.cs" />
+    <Compile Include="$(MauiSliceDir)/*.cs" />
   </ItemGroup>
 </Project>

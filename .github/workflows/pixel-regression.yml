@@ -2,18 +2,16 @@ name: pixel-regression
 
 # CI gate for the headless pixel suite (test/headless-render). The project compiles the MAUI
 # OpenHarmony platform slice sources from the `springmin/maui-ohos` fork and references two
-# assemblies built from this repository, so the job materialises both roots on the runner
-# instead of depending on the development machine layout:
+# assemblies built from this repository, so the job points the build at the checkout with
+# environment variables instead of depending on the development machine layout:
 #
 #   MAUI_SLICE_DIR           <- <workspace>/maui-ohos/src/Core/src/Platform/OpenHarmony
 #   HOSTING_DLL              <- <workspace>/src/Microsoft.OpenHarmony.Hosting/bin/Release/net11.0/Microsoft.OpenHarmony.Hosting.dll
 #   OPENHARMONY_GRAPHICS_DLL <- <workspace>/src/Microsoft.OpenHarmony.Maui.Graphics/bin/Release/net11.0/Microsoft.OpenHarmony.Maui.Graphics.dll
 #
-# headless-render.csproj still hard-codes the /storage/Users/currentUser/springsources roots of
-# the development machine, so the job also re-creates those roots as symlinks into the checkout.
-# The environment variables are exported in addition (mirroring test/maui-platform-verify) and
-# take over as soon as the project reads them; until then they are inert and the symlinks are
-# what the build resolves.
+# headless-render.csproj turns those environment variables into MSBuild default properties (an
+# explicit -p: override still wins), keeping the /storage/Users/currentUser/springsources absolute
+# paths only as inert fallbacks so local runs need no setup. No runner-side symlinks are required.
 on:
   push:
     branches: [ master ]
@@ -42,13 +40,6 @@ jobs:
           set -euo pipefail
           dotnet build src/Microsoft.OpenHarmony.Hosting/Microsoft.OpenHarmony.Hosting.csproj -c Release -v:q
           dotnet build src/Microsoft.OpenHarmony.Maui.Graphics/Microsoft.OpenHarmony.Maui.Graphics.csproj -c Release -v:q
-      - name: Materialise the absolute roots headless-render.csproj expects
-        run: |
-          set -euo pipefail
-          sudo mkdir -p /storage/Users/currentUser/springsources
-          sudo ln -sfnT "${GITHUB_WORKSPACE}" /storage/Users/currentUser/springsources/ohos-workload
-          sudo ln -sfnT "${GITHUB_WORKSPACE}/maui-ohos" /storage/Users/currentUser/springsources/maui-ohos
-          ls -ld /storage/Users/currentUser/springsources/ohos-workload /storage/Users/currentUser/springsources/maui-ohos
       - name: Run the headless pixel suite
         working-directory: test/headless-render
         env:
