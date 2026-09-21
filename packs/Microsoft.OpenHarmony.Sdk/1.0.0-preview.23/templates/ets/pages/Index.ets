@@ -43,6 +43,10 @@ import type { connection } from '@kit.NetworkKit';
 import type commonEventManager from '@ohos.commonEventManager';
 import type print from '@ohos.print';
 import type { BusinessError } from '@kit.BasicServicesKit';
+// Geocoding (Essentials): the module itself is imported lazily (device-compat, see
+// runGeocode); this type-only import is erased by the compiler and only names the request
+// shapes used in annotations.
+import type geoLocationManager from '@ohos.geoLocationManager';
 
 // Menu bridge: the managed side publishes the current page's menu bars (MenuBarItem/MenuFlyout)
 // as a flat table through the host. registerMenuChangedSink fires after every commit - including
@@ -127,6 +131,22 @@ interface ApprovedNavigation {
   expires: number;
 }
 
+// Geocoding bridge (Essentials): the managed side sends (requestId, op, arg) through
+// ohos_host_geocode_request. op 0 (address -> location) carries a JSON object of one address
+// (GeoCodeRequest fields); op 1 (location -> address) carries "lat,lon". The shell answers
+// host.geocodeResult(requestId, rc, json) with a JSON GeoAddress array on success and rc -1
+// when the module, the permission or the service is unavailable.
+interface GeocodeAddressQuery {
+  description?: string;
+  locale?: string;
+  country?: string;
+  maxItems?: number;
+  minLatitude?: number;
+  minLongitude?: number;
+  maxLatitude?: number;
+  maxLongitude?: number;
+}
+
 @Entry
 @Component
 struct Index {
@@ -185,6 +205,22 @@ struct Index {
   // Connectivity (Essentials): the NetworkKit connection observer registers once per page
   // (lazily imported; see subscribeNetworkChanges).
   private networkObserverRegistered: boolean = false;
+  // Window chrome (Window handler): the managed title/rect setters push through the
+  // registerWindowTitleSink/registerWindowRectSink handlers. The ArkUI window is resolved on
+  // demand; setWindowTitle needs the SessionManager syscap (API 15+) and degrades by logging.
+  // Shell search/flyout (Shell handler): the managed SearchHandler state and the flyout
+  // section text pushed through registerShellSearchChangedSink/registerShellFlyoutChangedSink.
+  // The search field below reports interactions back through host.notifyShellSearch (op 0
+  // query changed, 1 submit, 2 cancel); the header/footer land in the panel labels.
+  @State shellSearchQuery: string = '';
+  @State shellSearchPlaceholder: string = '';
+  @State shellSearchVisible: boolean = false;
+  @State shellSearchEnabled: boolean = true;
+  @State flyoutHeader: string = '';
+  @State flyoutFooter: string = '';
+  // Geocoding (Essentials): the reverse lookup reads the device location, which needs
+  // ohos.permission.APPROXIMATELY_LOCATION (user_grant); the grant is cached once won.
+  private locationGranted: boolean = false;
   // Bluetooth discovery: address -> last known name, from bluetoothDeviceFind. Cleared when a
   // new discovery starts and served to the managed side through op 4.
   private discoveredBluetooth: Map<string, string> = new Map();
@@ -454,6 +490,136 @@ struct Index {
     }).catch((keepScreenOnError: Error): void => {
       console.error(`[maui] keep screen on failed: ${keepScreenOnError.message}`);
     });
+  }
+
+  // Window chrome: the managed title setter pushes through ohos_host_set_window_title. The
+  // main window is resolved on demand (the same getLastWindow path the avoid-area report and
+  // keep-screen-on use). setWindowTitle is a SessionManager API (15+), so a device without the
+  // syscap rejects the promise; that is logged and leaves the shell title in place.
+  private applyWindowTitle(title: string): void {
+    window.getLastWindow(getContext(this)).then((win) => {
+      return win.setWindowTitle(title);
+    }).catch((windowTitleError: Error): void => {
+      console.error(`[maui] set window title failed: ${windowTitleError.message}`);
+    });
+  }
+
+  // Window chrome: the managed rect setter pushes through ohos_host_set_window_rect; the
+  // position and size are applied with moveWindowTo + resize (API 11+), both asynchronous.
+  private applyWindowRect(x: number, y: number, w: number, h: number): void {
+    window.getLastWindow(getContext(this)).then((win) => {
+      return win.moveWindowTo(x, y).then(() => {
+        return win.resize(w, h);
+      });
+    }).catch((windowRectError: Error): void => {
+      console.error(`[maui] set window rect failed: ${windowRectError.message}`);
+    });
+  }
+
+  // Screenshot: the managed side passes an app-owned output path through
+  // ohos_host_screenshot; the shell snapshots the main window and writes it as a PNG. The
+  // image packer is imported lazily (device-compat), and the packer, the file descriptor and
+  // the pixel map are released on every path.
+  private async captureScreenshot(outPath: string): Promise<void> {
+    if (this.lazyUnavailable('imagePacker')) {
+      return;
+    }
+    try {
+      const image = await import('@ohos.multimedia.image');
+      try {
+        const win = await window.getLastWindow(getContext(this));
+        const pixelMap = await win.snapshot();
+        const packer = image.default.createImagePacker();
+        const file = fileIo.openSync(outPath, fileIo.OpenMode.READ_WRITE | fileIo.OpenMode.CREATE
+          | fileIo.OpenMode.TRUNC);
+        try {
+          await packer.packToFile(pixelMap, file.fd, { format: 'image/png', quality: 100 });
+        } finally {
+          fileIo.closeSync(file);
+          await packer.release();
+          await pixelMap.release();
+        }
+      } catch (screenshotError) {
+        console.error(`[maui] screenshot failed: ${(screenshotError as Error).message}`);
+      }
+    } catch (imageImportError) {
+      this.noteLazyFailure('imagePacker', imageImportError as Error);
+    }
+  }
+
+  // Geocoding (Essentials): op 0 (address -> location) parses a JSON object with at least a
+  // description and calls getAddressesFromLocationName; op 1 (location -> address) parses
+  // "lat,lon", asks for the location permission (the device location is user_grant) and calls
+  // getAddressesFromLocation. The module is imported lazily; any failure answers rc -1 with an
+  // empty JSON so the managed caller degrades without throwing.
+  private async runGeocode(requestId: number, op: number, arg: string): Promise<void> {
+    let rc: number = -1;
+    let json: string = '';
+    if (this.lazyUnavailable('geoLocationManager')) {
+      this.answerGeocode(requestId, rc, json);
+      return;
+    }
+    try {
+      const geo = await import('@ohos.geoLocationManager');
+      if (op === 0) {
+        const query = JSON.parse(arg) as GeocodeAddressQuery;
+        if (query.description !== undefined && query.description.length > 0) {
+          const request: geoLocationManager.GeoCodeRequest = { description: query.description };
+          if (query.locale !== undefined) { request.locale = query.locale; }
+          if (query.country !== undefined) { request.country = query.country; }
+          if (query.maxItems !== undefined) { request.maxItems = query.maxItems; }
+          if (query.minLatitude !== undefined) { request.minLatitude = query.minLatitude; }
+          if (query.minLongitude !== undefined) { request.minLongitude = query.minLongitude; }
+          if (query.maxLatitude !== undefined) { request.maxLatitude = query.maxLatitude; }
+          if (query.maxLongitude !== undefined) { request.maxLongitude = query.maxLongitude; }
+          const addresses = await geo.default.getAddressesFromLocationName(request);
+          json = JSON.stringify(addresses);
+          rc = 0;
+        }
+      } else if (op === 1) {
+        const parts: string[] = arg.split(',');
+        const latitude: number = parts.length > 0 ? Number.parseFloat(parts[0]) : Number.NaN;
+        const longitude: number = parts.length > 1 ? Number.parseFloat(parts[1]) : Number.NaN;
+        if (Number.isFinite(latitude) && Number.isFinite(longitude) && await this.ensureLocationPermission()) {
+          const request: geoLocationManager.ReverseGeoCodeRequest = {
+            latitude: latitude,
+            longitude: longitude
+          };
+          const addresses = await geo.default.getAddressesFromLocation(request);
+          json = JSON.stringify(addresses);
+          rc = 0;
+        }
+      }
+    } catch (geocodeError) {
+      console.error(`[maui] geocode op ${op} failed: ${(geocodeError as Error).message}`);
+    }
+    this.answerGeocode(requestId, rc, json);
+  }
+
+  // Geocoding (Essentials): completes the pending managed request through host.geocodeResult.
+  private answerGeocode(requestId: number, rc: number, json: string): void {
+    this.hostCall('geocodeResult', typeof host.geocodeResult === 'function', (): void => {
+      host.geocodeResult(requestId, rc, json);
+    });
+  }
+
+  // Geocoding (Essentials): the reverse lookup needs ohos.permission.APPROXIMATELY_LOCATION
+  // (user_grant), requested on demand and cached once won. A rejected request (for example the
+  // permission is not declared by the app) leaves the feature answering rc -1.
+  private async ensureLocationPermission(): Promise<boolean> {
+    if (this.locationGranted) {
+      return true;
+    }
+    try {
+      const context = getContext(this) as common.UIAbilityContext;
+      const permissions: Permissions[] = ['ohos.permission.APPROXIMATELY_LOCATION'];
+      const atManager = abilityAccessCtrl.createAtManager();
+      const granted = await atManager.requestPermissionsFromUser(context, permissions);
+      this.locationGranted = granted.authResults.length > 0 && granted.authResults[0] === 0;
+    } catch (locationPermissionError) {
+      console.error(`[maui] location permission request failed: ${(locationPermissionError as Error).message}`);
+    }
+    return this.locationGranted;
   }
 
   // Reads the host's current menu table into @State (empty when the sink is unavailable).
@@ -937,6 +1103,55 @@ struct Index {
         this.applyKeepScreenOn(on);
       });
     });
+    // Window chrome (Window handler): the managed title/rect setters arrive here and are
+    // applied to the main window. Both are one-way: the .so's 0/-1 only reports the queueing.
+    this.hostCall('registerWindowTitleSink', typeof host.registerWindowTitleSink === 'function', (): void => {
+      host.registerWindowTitleSink((title: string): void => {
+        this.applyWindowTitle(title);
+      });
+    });
+    this.hostCall('registerWindowRectSink', typeof host.registerWindowRectSink === 'function', (): void => {
+      host.registerWindowRectSink((x: number, y: number, w: number, h: number): void => {
+        this.applyWindowRect(x, y, w, h);
+      });
+    });
+    // Screenshot (Window handler): a one-way request carrying an app-owned output path.
+    this.hostCall('registerScreenshotSink', typeof host.registerScreenshotSink === 'function', (): void => {
+      host.registerScreenshotSink(async (outPath: string): Promise<void> => {
+        await this.captureScreenshot(outPath);
+      });
+    });
+    // Shell search/flyout (Shell handler): the managed SearchHandler state and the flyout
+    // section text. A registration after the managed publish can miss the first push, so the
+    // hosts' stored getters seed the labels; the search field reports user interactions back
+    // through host.notifyShellSearch (0 query, 1 submit, 2 cancel).
+    this.hostCall('registerShellSearchChangedSink', typeof host.registerShellSearchChangedSink === 'function', (): void => {
+      host.registerShellSearchChangedSink((query: string, placeholder: string, visible: number, enabled: number): void => {
+        this.shellSearchQuery = query;
+        this.shellSearchPlaceholder = placeholder;
+        this.shellSearchVisible = visible !== 0;
+        this.shellSearchEnabled = enabled !== 0;
+      });
+    });
+    this.hostCall('registerShellFlyoutChangedSink', typeof host.registerShellFlyoutChangedSink === 'function', (): void => {
+      host.registerShellFlyoutChangedSink((op: number, text: string): void => {
+        if (op === 0) {
+          this.flyoutHeader = text;
+        } else if (op === 1) {
+          this.flyoutFooter = text;
+        }
+      });
+    });
+    this.hostCall('shellSearchQuery', typeof host.shellSearchQuery === 'function', (): void => {
+      this.shellSearchQuery = host.shellSearchQuery() as string;
+      this.shellSearchPlaceholder = host.shellSearchPlaceholder() as string;
+      this.shellSearchVisible = (host.shellSearchVisible() as number) !== 0;
+      this.shellSearchEnabled = (host.shellSearchEnabled() as number) !== 0;
+    });
+    this.hostCall('shellFlyoutHeader', typeof host.shellFlyoutHeader === 'function', (): void => {
+      this.flyoutHeader = host.shellFlyoutHeader() as string;
+      this.flyoutFooter = host.shellFlyoutFooter() as string;
+    });
     // Essentials (vibration/permissions/geolocation/pickers/connectivity/launcher) need the
     // matching SDK kits, which are not part of this minimal shell project's compilation set yet
     // (see docs/plans/2026-09-18-ohos-arkts-essentials-bridge-plan.md). The sinks stay
@@ -1188,6 +1403,16 @@ struct Index {
         console.error(`[maui] clipboard observer unavailable: ${(clipboardObserverError as Error).message}`);
       }
     }
+
+    // Geocoding (Essentials): the managed geolocation service asks through
+    // ohos_host_geocode_request (op 0 address -> location, op 1 location -> address); the shell
+    // runs the lazily imported @ohos.geoLocationManager (permission-aware for the reverse
+    // lookup) and answers host.geocodeResult(requestId, rc, json).
+    this.hostCall('registerGeocodeSink', typeof host.registerGeocodeSink === 'function', (): void => {
+      host.registerGeocodeSink(async (requestId: number, op: number, arg: string): Promise<void> => {
+        await this.runGeocode(requestId, op, arg);
+      });
+    });
 
     // Notifications (H5a): this registration is a sibling of the picker sink, not nested inside
     // it - nested, it only ran after a picker request, so notification events were never
@@ -2331,6 +2556,70 @@ struct Index {
         .height('100%')
 
       ContentSlot(this.content)
+
+      // Shell panel (Shell handler extras): the flyout header/footer text and the managed
+      // search state. It only appears while one of them is present, so an app without shell
+      // chrome keeps the full managed surface. The field reports interactions back through
+      // host.notifyShellSearch (0 query changed, 1 submit, 2 cancel).
+      if (this.flyoutHeader.length > 0 || this.flyoutFooter.length > 0 || this.shellSearchVisible) {
+        Column() {
+          if (this.flyoutHeader.length > 0) {
+            Text(this.flyoutHeader)
+              .fontSize(16)
+              .fontWeight(FontWeight.Bold)
+              .fontColor(Color.White)
+              .width('100%')
+              .padding({ left: 12, right: 12, top: 8, bottom: 8 })
+          }
+          if (this.shellSearchVisible) {
+            TextInput({ text: this.shellSearchQuery, placeholder: this.shellSearchPlaceholder })
+              .id('ohos_shell_search')
+              .enabled(this.shellSearchEnabled)
+              .height(40)
+              .margin({ left: 8, right: 8, bottom: 8 })
+              .onChange((value: string): void => {
+                if (value === this.shellSearchQuery) {
+                  return;
+                }
+                this.shellSearchQuery = value;
+                this.hostCall('notifyShellSearch', typeof host.notifyShellSearch === 'function', (): void => {
+                  host.notifyShellSearch(0, value);
+                });
+              })
+              .onSubmit((): void => {
+                this.hostCall('notifyShellSearch', typeof host.notifyShellSearch === 'function', (): void => {
+                  host.notifyShellSearch(1, this.shellSearchQuery);
+                });
+              })
+            Row() {
+              Button('Cancel')
+                .height(28)
+                .fontSize(12)
+                .onClick(() => {
+                  this.shellSearchQuery = '';
+                  this.hostCall('notifyShellSearch', typeof host.notifyShellSearch === 'function', (): void => {
+                    host.notifyShellSearch(2, '');
+                  });
+                })
+            }
+            .width('100%')
+            .justifyContent(FlexAlign.End)
+            .padding({ right: 8, bottom: 8 })
+          }
+          if (this.flyoutFooter.length > 0) {
+            Text(this.flyoutFooter)
+              .fontSize(12)
+              .fontColor('#DDDDDD')
+              .width('100%')
+              .padding({ left: 12, right: 12, top: 8, bottom: 8 })
+          }
+        }
+        .width(260)
+        .align(Alignment.TopStart)
+        .backgroundColor('#CC101010')
+        .borderRadius(8)
+        .margin({ top: 8, left: 8 })
+      }
 
       // Menu handle: only present while the managed page publishes menu bars. The ArkUI menu is
       // bound to the flat element array; choosing a row calls host.notifyMenuAction(index).

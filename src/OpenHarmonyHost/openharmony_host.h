@@ -136,6 +136,44 @@ void ohos_host_clipboard_notify_changed(void);
 void ohos_host_network_access_register(void* callback);
 void ohos_host_network_access_notify(void);
 
+/// Window chrome: the managed side asks the ArkTS shell to apply the main window's title
+/// (window.setWindowTitle, SessionManager, API 15+) and its rectangle (window.moveWindowTo +
+/// window.resize, API 11+). Both return 0 when the request reached the shell sink and -1 when
+/// there is no shell listener or the argument is invalid (NULL/empty title, non-positive size).
+int ohos_host_set_window_title(const char* utf8);
+int ohos_host_set_window_rect(int x, int y, int w, int h);
+
+/// Shell search: the managed SearchHandler state is published to the shell through
+/// ohos_host_shell_search_set (the shell applies it to its search field); the shell reports
+/// the user's interactions back through ohos_host_shell_search_notify, which invokes the
+/// listener registered by ohos_host_shell_search_set_listener. op: 0 query changed, 1 submit,
+/// 2 cancel (clear).
+int ohos_host_shell_search_set(const char* query, const char* placeholder, int visible, int enabled);
+void ohos_host_shell_search_set_listener(void (*listener)(int op, const char* text));
+void ohos_host_shell_search_notify(int op, const char* text);
+
+/// Shell flyout: the text of the shell flyout panel's header/footer labels. NULL or "" clears
+/// the label. Returns 0 when the text reached the shell sink, -1 when there is none.
+int ohos_host_shell_flyout_header(const char* text);
+int ohos_host_shell_flyout_footer(const char* text);
+
+/// Screenshot: asks the ArkTS shell to snapshot the main window (window.snapshot) and write a
+/// PNG to out_path (an app cache/files path chosen by the caller). Returns 0 when the request
+/// reached the shell sink, -1 when there is none or out_path is NULL/empty. The write is
+/// asynchronous: the shell logs its own failure and the caller reads the file when ready.
+int ohos_host_screenshot(const char* out_path);
+
+/// Geocoding request/response (same shape as the clipboard bridge): the managed side asks
+/// through ohos_host_geocode_request (op 0 = address -> location, arg is a JSON object of one
+/// address; op 1 = location -> address, arg is "lat,lon"); the shell answers through
+/// ohos_host_geocode_complete, delivered to the callback registered by
+/// ohos_host_register_geocode_result. rc 0 = success with a JSON GeoAddress array, -1 =
+/// unavailable (no sink, no permission, no service or malformed argument).
+void ohos_host_geocode_set_listener(void (*listener)(int request_id, int op, const char* arg));
+int ohos_host_geocode_request(int op, const char* arg, int request_id);
+void ohos_host_register_geocode_result(void* callback);
+void ohos_host_geocode_complete(int request_id, int rc, const char* json);
+
 /// Soft keyboard through the input-method NDK (attach + show/hide).
 int ohos_host_keyboard_show(void);
 /// Seeds the IME buffer with the focused editor's current text.
@@ -281,6 +319,13 @@ int ohos_host_accessibility_get(int index, int* id, int* parent_id, const char**
 void ohos_host_accessibility_set_action_listener(void* callback);
 int ohos_host_accessibility_send_event(int event_type);
 int ohos_host_accessibility_provider_status(void);
+/// Announces text through the platform screen reader: creates an accessibility event with
+/// event type ARKUI_ACCESSIBILITY_NATIVE_EVENT_TYPE_ANNOUNCE_FOR_ACCESSIBILITY, sets the
+/// announced text and sends it asynchronously through the attached provider. Same lifetime
+/// discipline as ohos_host_accessibility_send_event (the event is destroyed on every path).
+/// Returns 1 when the event was created and sent, 0 when there is no provider or the text is
+/// NULL/empty.
+int ohos_host_accessibility_announce(const char* text);
 
 /// The ArkUI NodeContent handle previously stored (may be NULL).
 void* ohos_host_get_node_content(OhosHostAppHandle* handle);

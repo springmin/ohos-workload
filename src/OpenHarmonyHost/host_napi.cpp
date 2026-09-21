@@ -1188,6 +1188,326 @@ napi_value RegisterKeepScreenOnSink(napi_env env, napi_callback_info info) {
     return undefined;
 }
 
+// ---------------------------------------------------------------------------
+// Window chrome: the managed window handler calls ohos_host_set_window_title /
+// ohos_host_set_window_rect (P/Invoke); the ArkTS shell's registerWindowTitleSink /
+// registerWindowRectSink handlers apply them to the main window (window.setWindowTitle,
+// SessionManager API 15+; window.moveWindowTo + window.resize, API 11+). One-way like
+// keep-screen-on: the return value only reports whether the request was queued for the shell.
+// ---------------------------------------------------------------------------
+HostSink g_window_title_sink("window title", false);
+HostSink g_window_rect_sink("window rect", false);
+
+// Called from managed code (P/Invoke): returns 0 when the title was queued for the shell.
+extern "C" int ohos_host_set_window_title(const char* utf8) {
+    if (utf8 == nullptr || utf8[0] == '\0') {
+        OH_LOG_WARN(LOG_APP, "[openharmony-host] set_window_title: empty title");
+        return -1;
+    }
+    SinkCall* call = new SinkCall();
+    call->AddString(utf8);
+    if (!HostSinkPost(g_window_title_sink, call)) {
+        OH_LOG_WARN(LOG_APP, "[openharmony-host] set_window_title: no shell window title sink");
+        return -1;
+    }
+    return 0;
+}
+
+// Called from managed code (P/Invoke): returns 0 when the rectangle was queued for the shell.
+extern "C" int ohos_host_set_window_rect(int x, int y, int w, int h) {
+    if (w <= 0 || h <= 0) {
+        OH_LOG_WARN(LOG_APP, "[openharmony-host] set_window_rect: invalid size %{public}dx%{public}d", w, h);
+        return -1;
+    }
+    SinkCall* call = new SinkCall();
+    call->AddInt(x);
+    call->AddInt(y);
+    call->AddInt(w);
+    call->AddInt(h);
+    if (!HostSinkPost(g_window_rect_sink, call)) {
+        OH_LOG_WARN(LOG_APP, "[openharmony-host] set_window_rect: no shell window rect sink");
+        return -1;
+    }
+    return 0;
+}
+
+// ArkTS calls host.registerWindowTitleSink(fn) to receive window title changes.
+napi_value RegisterWindowTitleSink(napi_env env, napi_callback_info info) {
+    size_t argc = 1;
+    napi_value argv[1] = {nullptr};
+    napi_get_cb_info(env, info, &argc, argv, nullptr, nullptr);
+    if (argc >= 1) {
+        napi_valuetype type = napi_undefined;
+        napi_typeof(env, argv[0], &type);
+        if (type == napi_function) {
+            HostSinkRegister(env, g_window_title_sink, argv[0]);
+            OH_LOG_INFO(LOG_APP, "[openharmony-host] window title sink registered");
+        }
+    }
+    napi_value undefined = nullptr;
+    napi_get_undefined(env, &undefined);
+    return undefined;
+}
+
+// ArkTS calls host.registerWindowRectSink(fn) to receive window rectangle changes.
+napi_value RegisterWindowRectSink(napi_env env, napi_callback_info info) {
+    size_t argc = 1;
+    napi_value argv[1] = {nullptr};
+    napi_get_cb_info(env, info, &argc, argv, nullptr, nullptr);
+    if (argc >= 1) {
+        napi_valuetype type = napi_undefined;
+        napi_typeof(env, argv[0], &type);
+        if (type == napi_function) {
+            HostSinkRegister(env, g_window_rect_sink, argv[0]);
+            OH_LOG_INFO(LOG_APP, "[openharmony-host] window rect sink registered");
+        }
+    }
+    napi_value undefined = nullptr;
+    napi_get_undefined(env, &undefined);
+    return undefined;
+}
+
+// ---------------------------------------------------------------------------
+// Screenshot: the managed side asks the ArkTS shell to snapshot the main window and write a
+// PNG to an app-owned path (window.snapshot + image.createImagePacker). One-way: the shell
+// logs a failed write itself and the managed caller reads the file when it is ready.
+// ---------------------------------------------------------------------------
+HostSink g_screenshot_sink("screenshot", false);
+
+// Called from managed code (P/Invoke): returns 0 when the request was queued for the shell.
+extern "C" int ohos_host_screenshot(const char* out_path) {
+    if (out_path == nullptr || out_path[0] == '\0') {
+        OH_LOG_WARN(LOG_APP, "[openharmony-host] screenshot: empty output path");
+        return -1;
+    }
+    SinkCall* call = new SinkCall();
+    call->AddString(out_path);
+    if (!HostSinkPost(g_screenshot_sink, call)) {
+        OH_LOG_WARN(LOG_APP, "[openharmony-host] screenshot: no shell screenshot sink");
+        return -1;
+    }
+    return 0;
+}
+
+// ArkTS calls host.registerScreenshotSink(fn) to receive screenshot requests.
+napi_value RegisterScreenshotSink(napi_env env, napi_callback_info info) {
+    size_t argc = 1;
+    napi_value argv[1] = {nullptr};
+    napi_get_cb_info(env, info, &argc, argv, nullptr, nullptr);
+    if (argc >= 1) {
+        napi_valuetype type = napi_undefined;
+        napi_typeof(env, argv[0], &type);
+        if (type == napi_function) {
+            HostSinkRegister(env, g_screenshot_sink, argv[0]);
+            OH_LOG_INFO(LOG_APP, "[openharmony-host] screenshot sink registered");
+        }
+    }
+    napi_value undefined = nullptr;
+    napi_get_undefined(env, &undefined);
+    return undefined;
+}
+
+// ---------------------------------------------------------------------------
+// Shell search: the managed SearchHandler state (query, placeholder, visible, enabled) goes
+// out through ohos_host_shell_search_set; the sink registered by
+// host.registerShellSearchChangedSink applies it to the shell's search field. The shell
+// reports interactions back through host.notifyShellSearch -> the managed listener registered
+// by ohos_host_shell_search_set_listener (op 0 query changed, 1 submit, 2 cancel).
+// ---------------------------------------------------------------------------
+HostSink g_shell_search_sink("shell search", false);
+std::mutex g_shell_search_lock;
+std::string g_shell_search_query;
+std::string g_shell_search_placeholder;
+int g_shell_search_visible = 0;
+int g_shell_search_enabled = 0;
+
+// Called from managed code (P/Invoke): publishes the state and returns 0 when it reached the
+// shell sink. The stored copy backs the host.shellSearch* getters the shell reads on startup.
+extern "C" int ohos_host_shell_search_set(const char* query, const char* placeholder,
+                                          int visible, int enabled) {
+    SinkCall* call = new SinkCall();
+    {
+        std::lock_guard<std::mutex> guard(g_shell_search_lock);
+        g_shell_search_query = query != nullptr ? query : "";
+        g_shell_search_placeholder = placeholder != nullptr ? placeholder : "";
+        g_shell_search_visible = visible != 0 ? 1 : 0;
+        g_shell_search_enabled = enabled != 0 ? 1 : 0;
+        call->AddString(g_shell_search_query.c_str());
+        call->AddString(g_shell_search_placeholder.c_str());
+        call->AddInt(g_shell_search_visible);
+        call->AddInt(g_shell_search_enabled);
+    }
+    if (!HostSinkPost(g_shell_search_sink, call)) {
+        OH_LOG_WARN(LOG_APP, "[openharmony-host] shell_search_set: no shell search sink");
+        return -1;
+    }
+    return 0;
+}
+
+// ArkTS calls host.registerShellSearchChangedSink(fn) to receive the managed search state.
+napi_value RegisterShellSearchChangedSink(napi_env env, napi_callback_info info) {
+    size_t argc = 1;
+    napi_value argv[1] = {nullptr};
+    napi_get_cb_info(env, info, &argc, argv, nullptr, nullptr);
+    if (argc >= 1) {
+        napi_valuetype type = napi_undefined;
+        napi_typeof(env, argv[0], &type);
+        if (type == napi_function) {
+            HostSinkRegister(env, g_shell_search_sink, argv[0]);
+            OH_LOG_INFO(LOG_APP, "[openharmony-host] shell search sink registered");
+        }
+    }
+    napi_value undefined = nullptr;
+    napi_get_undefined(env, &undefined);
+    return undefined;
+}
+
+// Current search state for the shell (host.shellSearchQuery()/shellSearchPlaceholder()/
+// shellSearchVisible()/shellSearchEnabled()); empty/false before the first publish.
+static napi_value CreateUtf8String(napi_env env, const std::string& value) {
+    napi_value result = nullptr;
+    napi_create_string_utf8(env, value.c_str(), NAPI_AUTO_LENGTH, &result);
+    return result;
+}
+
+napi_value ShellSearchQuery(napi_env env, napi_callback_info info) {
+    (void)info;
+    std::string value;
+    {
+        std::lock_guard<std::mutex> guard(g_shell_search_lock);
+        value = g_shell_search_query;
+    }
+    return CreateUtf8String(env, value);
+}
+
+napi_value ShellSearchPlaceholder(napi_env env, napi_callback_info info) {
+    (void)info;
+    std::string value;
+    {
+        std::lock_guard<std::mutex> guard(g_shell_search_lock);
+        value = g_shell_search_placeholder;
+    }
+    return CreateUtf8String(env, value);
+}
+
+napi_value ShellSearchVisible(napi_env env, napi_callback_info info) {
+    (void)info;
+    int value = 0;
+    {
+        std::lock_guard<std::mutex> guard(g_shell_search_lock);
+        value = g_shell_search_visible;
+    }
+    napi_value result = nullptr;
+    napi_create_int32(env, value, &result);
+    return result;
+}
+
+napi_value ShellSearchEnabled(napi_env env, napi_callback_info info) {
+    (void)info;
+    int value = 0;
+    {
+        std::lock_guard<std::mutex> guard(g_shell_search_lock);
+        value = g_shell_search_enabled;
+    }
+    napi_value result = nullptr;
+    napi_create_int32(env, value, &result);
+    return result;
+}
+
+// ArkTS calls host.notifyShellSearch(op, text) when the shell search field changed/submitted/
+// was cancelled; the managed listener registered through ohos_host_shell_search_set_listener
+// receives it.
+napi_value NotifyShellSearch(napi_env env, napi_callback_info info) {
+    size_t argc = 2;
+    napi_value argv[2] = {nullptr, nullptr};
+    napi_get_cb_info(env, info, &argc, argv, nullptr, nullptr);
+    int32_t op = 0;
+    std::string text;
+    if (argc >= 1) napi_get_value_int32(env, argv[0], &op);
+    if (argc >= 2) text = GetStringArg(env, argv[1]);
+    ohos_host_shell_search_notify(op, text.c_str());
+    napi_value undefined = nullptr;
+    napi_get_undefined(env, &undefined);
+    return undefined;
+}
+
+// ---------------------------------------------------------------------------
+// Shell flyout: the managed Shell publishes the header/footer text of its flyout sections
+// through ohos_host_shell_flyout_header/footer; the sink registered by
+// host.registerShellFlyoutChangedSink applies it to the shell panel labels (op 0 header,
+// 1 footer, empty text clears). The stored copies back host.shellFlyoutHeader()/Footer().
+// ---------------------------------------------------------------------------
+HostSink g_shell_flyout_sink("shell flyout", false);
+std::mutex g_shell_flyout_lock;
+std::string g_shell_flyout_header;
+std::string g_shell_flyout_footer;
+
+static int ShellFlyoutPublish(int op, const char* text) {
+    SinkCall* call = new SinkCall();
+    call->AddInt(op);
+    {
+        std::lock_guard<std::mutex> guard(g_shell_flyout_lock);
+        std::string& slot = op == 0 ? g_shell_flyout_header : g_shell_flyout_footer;
+        slot = text != nullptr ? text : "";
+        call->AddString(slot.c_str());
+    }
+    if (!HostSinkPost(g_shell_flyout_sink, call)) {
+        OH_LOG_WARN(LOG_APP, "[openharmony-host] shell_flyout_%{public}s: no shell flyout sink",
+                    op == 0 ? "header" : "footer");
+        return -1;
+    }
+    return 0;
+}
+
+// Called from managed code (P/Invoke): returns 0 when the text was queued for the shell.
+extern "C" int ohos_host_shell_flyout_header(const char* text) {
+    return ShellFlyoutPublish(0, text);
+}
+
+// Called from managed code (P/Invoke): returns 0 when the text was queued for the shell.
+extern "C" int ohos_host_shell_flyout_footer(const char* text) {
+    return ShellFlyoutPublish(1, text);
+}
+
+// ArkTS calls host.registerShellFlyoutChangedSink(fn) to receive the flyout section text.
+napi_value RegisterShellFlyoutChangedSink(napi_env env, napi_callback_info info) {
+    size_t argc = 1;
+    napi_value argv[1] = {nullptr};
+    napi_get_cb_info(env, info, &argc, argv, nullptr, nullptr);
+    if (argc >= 1) {
+        napi_valuetype type = napi_undefined;
+        napi_typeof(env, argv[0], &type);
+        if (type == napi_function) {
+            HostSinkRegister(env, g_shell_flyout_sink, argv[0]);
+            OH_LOG_INFO(LOG_APP, "[openharmony-host] shell flyout sink registered");
+        }
+    }
+    napi_value undefined = nullptr;
+    napi_get_undefined(env, &undefined);
+    return undefined;
+}
+
+// Current flyout header/footer for the shell (host.shellFlyoutHeader()/shellFlyoutFooter()).
+napi_value ShellFlyoutHeader(napi_env env, napi_callback_info info) {
+    (void)info;
+    std::string value;
+    {
+        std::lock_guard<std::mutex> guard(g_shell_flyout_lock);
+        value = g_shell_flyout_header;
+    }
+    return CreateUtf8String(env, value);
+}
+
+napi_value ShellFlyoutFooter(napi_env env, napi_callback_info info) {
+    (void)info;
+    std::string value;
+    {
+        std::lock_guard<std::mutex> guard(g_shell_flyout_lock);
+        value = g_shell_flyout_footer;
+    }
+    return CreateUtf8String(env, value);
+}
+
 // ArkTS calls host.notifyWebEvent(state, url).
 napi_value NotifyWebEvent(napi_env env, napi_callback_info info) {
     size_t argc = 2;
@@ -1494,6 +1814,57 @@ napi_value NotifyNetworkAccess(napi_env env, napi_callback_info info) {
     (void)env;
     (void)info;
     ohos_host_network_access_notify();
+    napi_value undefined = nullptr;
+    napi_get_undefined(env, &undefined);
+    return undefined;
+}
+
+// Geocoding (Essentials): request/response like the clipboard bridge. The managed side asks
+// through ohos_host_geocode_request (op 0 address -> location with a JSON object of one
+// address as arg, op 1 location -> address with "lat,lon" as arg); the shell's
+// @ohos.geoLocationManager call answers with host.geocodeResult(requestId, rc, json) and the
+// host delivers it to the managed callback registered with ohos_host_register_geocode_result.
+HostSink g_geocode_sink("geocode", false);
+
+void OnGeocodeRequest(int requestId, int op, const char* arg) {
+    SinkCall* call = new SinkCall();
+    call->AddInt(requestId);
+    call->AddInt(op);
+    call->AddString(arg);
+    HostSinkPost(g_geocode_sink, call);
+}
+
+// ArkTS calls host.registerGeocodeSink(fn) to receive geocoding requests.
+napi_value RegisterGeocodeSink(napi_env env, napi_callback_info info) {
+    size_t argc = 1;
+    napi_value argv[1] = {nullptr};
+    napi_get_cb_info(env, info, &argc, argv, nullptr, nullptr);
+    if (argc >= 1) {
+        napi_valuetype type = napi_undefined;
+        napi_typeof(env, argv[0], &type);
+        if (type == napi_function) {
+            HostSinkRegister(env, g_geocode_sink, argv[0]);
+            ohos_host_geocode_set_listener(OnGeocodeRequest);
+            OH_LOG_INFO(LOG_APP, "[openharmony-host] geocode sink registered");
+        }
+    }
+    napi_value undefined = nullptr;
+    napi_get_undefined(env, &undefined);
+    return undefined;
+}
+
+// ArkTS calls host.geocodeResult(requestId, rc, json) with the geocoder's answer.
+napi_value NotifyGeocodeResult(napi_env env, napi_callback_info info) {
+    size_t argc = 3;
+    napi_value argv[3] = {nullptr, nullptr, nullptr};
+    napi_get_cb_info(env, info, &argc, argv, nullptr, nullptr);
+    int32_t requestId = 0;
+    int32_t rc = -1;
+    std::string json;
+    if (argc >= 1) napi_get_value_int32(env, argv[0], &requestId);
+    if (argc >= 2) napi_get_value_int32(env, argv[1], &rc);
+    if (argc >= 3) json = GetStringArg(env, argv[2]);
+    ohos_host_geocode_complete(requestId, rc, json.c_str());
     napi_value undefined = nullptr;
     napi_get_undefined(env, &undefined);
     return undefined;
@@ -1856,6 +2227,18 @@ napi_value Init(napi_env env, napi_value exports) {
         {"registerAbilitySink", nullptr, RegisterAbilitySink, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"registerFlashlightSink", nullptr, RegisterFlashlightSink, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"registerKeepScreenOnSink", nullptr, RegisterKeepScreenOnSink, nullptr, nullptr, nullptr, napi_default, nullptr},
+        {"registerWindowTitleSink", nullptr, RegisterWindowTitleSink, nullptr, nullptr, nullptr, napi_default, nullptr},
+        {"registerWindowRectSink", nullptr, RegisterWindowRectSink, nullptr, nullptr, nullptr, napi_default, nullptr},
+        {"registerScreenshotSink", nullptr, RegisterScreenshotSink, nullptr, nullptr, nullptr, napi_default, nullptr},
+        {"registerShellSearchChangedSink", nullptr, RegisterShellSearchChangedSink, nullptr, nullptr, nullptr, napi_default, nullptr},
+        {"shellSearchQuery", nullptr, ShellSearchQuery, nullptr, nullptr, nullptr, napi_default, nullptr},
+        {"shellSearchPlaceholder", nullptr, ShellSearchPlaceholder, nullptr, nullptr, nullptr, napi_default, nullptr},
+        {"shellSearchVisible", nullptr, ShellSearchVisible, nullptr, nullptr, nullptr, napi_default, nullptr},
+        {"shellSearchEnabled", nullptr, ShellSearchEnabled, nullptr, nullptr, nullptr, napi_default, nullptr},
+        {"notifyShellSearch", nullptr, NotifyShellSearch, nullptr, nullptr, nullptr, napi_default, nullptr},
+        {"registerShellFlyoutChangedSink", nullptr, RegisterShellFlyoutChangedSink, nullptr, nullptr, nullptr, napi_default, nullptr},
+        {"shellFlyoutHeader", nullptr, ShellFlyoutHeader, nullptr, nullptr, nullptr, napi_default, nullptr},
+        {"shellFlyoutFooter", nullptr, ShellFlyoutFooter, nullptr, nullptr, nullptr, napi_default, nullptr},
 
         {"registerMenuChangedSink", nullptr, RegisterMenuChangedSink, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"menuCount", nullptr, MenuCount, nullptr, nullptr, nullptr, napi_default, nullptr},
@@ -1888,6 +2271,8 @@ napi_value Init(napi_env env, napi_value exports) {
         {"clipboardResult", nullptr, NotifyClipboardResult, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"notifyClipboardChanged", nullptr, NotifyClipboardChanged, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"notifyNetworkAccess", nullptr, NotifyNetworkAccess, nullptr, nullptr, nullptr, napi_default, nullptr},
+        {"registerGeocodeSink", nullptr, RegisterGeocodeSink, nullptr, nullptr, nullptr, napi_default, nullptr},
+        {"geocodeResult", nullptr, NotifyGeocodeResult, nullptr, nullptr, nullptr, napi_default, nullptr},
 
         {"notifyKeystoreResult", nullptr, NotifyKeystoreResult, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"startApp", nullptr, StartApp, nullptr, nullptr, nullptr, napi_default, nullptr},
@@ -2530,6 +2915,33 @@ extern "C" int ohos_host_accessibility_send_event(int eventType) {
     // it is destroyed here instead of leaking one event info per published event.
     OH_ArkUI_SendAccessibilityAsyncEvent(g_a11y_provider, event, nullptr);
     OH_ArkUI_DestoryAccessibilityEventInfo(event);
+    return 1;
+}
+
+// Announces text through the attached provider. Same event lifetime discipline as
+// ohos_host_accessibility_send_event: the event is destroyed on every path (including the
+// setter failures) and the provider owns/copies the text during the send. Returns 1 when the
+// event was created and sent, 0 when there is no provider or the text is NULL/empty.
+extern "C" int ohos_host_accessibility_announce(const char* text) {
+    if (text == nullptr || text[0] == '\0') {
+        return 0;
+    }
+    if (g_a11y_provider == nullptr) {
+        return 0;
+    }
+    ArkUI_AccessibilityEventInfo* announceEvent = OH_ArkUI_CreateAccessibilityEventInfo();
+    if (announceEvent == nullptr) {
+        return 0;
+    }
+    if (OH_ArkUI_AccessibilityEventSetEventType(
+            announceEvent, ARKUI_ACCESSIBILITY_NATIVE_EVENT_TYPE_ANNOUNCE_FOR_ACCESSIBILITY) != 0 ||
+        OH_ArkUI_AccessibilityEventSetTextAnnouncedForAccessibility(announceEvent, text) != 0) {
+        OH_LOG_WARN(LOG_APP, "[openharmony-host] accessibility announce: event setup failed");
+        OH_ArkUI_DestoryAccessibilityEventInfo(announceEvent);
+        return 0;
+    }
+    OH_ArkUI_SendAccessibilityAsyncEvent(g_a11y_provider, announceEvent, nullptr);
+    OH_ArkUI_DestoryAccessibilityEventInfo(announceEvent);
     return 1;
 }
 

@@ -248,6 +248,7 @@ struct OhosHostAppHandle {
     void (*bridge_permission_result)(int request_id, int granted);
     void (*bridge_clipboard_result)(int request_id, int rc, const char* text);
     void (*bridge_clipboard_changed)(void);
+    void (*bridge_geocode_result)(int request_id, int rc, const char* json);
     void (*bridge_network_access)(int level);
     void* surface_window;
     int surface_width;
@@ -1217,6 +1218,58 @@ void ohos_host_clipboard_register_changed(void* callback) {
 void ohos_host_clipboard_notify_changed(void) {
     if (g_app != NULL && g_app->bridge_clipboard_changed != NULL) {
         g_app->bridge_clipboard_changed();
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Shell search: the managed side publishes the SearchHandler state through
+// ohos_host_shell_search_set (a one-way command dispatched by the NAPI shell search sink);
+// the shell's search field reports the user's interactions back through
+// ohos_host_shell_search_notify, which invokes the managed listener registered here.
+// ---------------------------------------------------------------------------
+
+static void (*g_shell_search_listener)(int op, const char* text) = NULL;
+
+void ohos_host_shell_search_set_listener(void (*listener)(int, const char*)) {
+    g_shell_search_listener = listener;
+}
+
+void ohos_host_shell_search_notify(int op, const char* text) {
+    if (g_shell_search_listener != NULL) {
+        g_shell_search_listener(op, text != NULL ? text : "");
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Geocoding: requests go to the ArkTS shell (@ohos.geoLocationManager, lazily imported and
+// permission-aware); the answer comes back through host.geocodeResult.
+// ---------------------------------------------------------------------------
+
+static void (*g_geocode_listener)(int request_id, int op, const char* arg) = NULL;
+
+void ohos_host_geocode_set_listener(void (*listener)(int, int, const char*)) {
+    g_geocode_listener = listener;
+}
+
+int ohos_host_geocode_request(int op, const char* arg, int request_id) {
+    if (arg == NULL || g_geocode_listener == NULL) {
+        OH_LOG_WARN(LOG_APP, "[openharmony-host] geocode request dropped: arg=%{public}s listener=%{public}s",
+                    arg == NULL ? "null" : "set", g_geocode_listener == NULL ? "missing" : "set");
+        return -1;
+    }
+    g_geocode_listener(request_id, op, arg);
+    return 0;
+}
+
+void ohos_host_register_geocode_result(void* callback) {
+    if (g_app != NULL) {
+        g_app->bridge_geocode_result = (void (*)(int, int, const char*))callback;
+    }
+}
+
+void ohos_host_geocode_complete(int request_id, int rc, const char* json) {
+    if (g_app != NULL && g_app->bridge_geocode_result != NULL) {
+        g_app->bridge_geocode_result(request_id, rc, json != NULL ? json : "");
     }
 }
 
