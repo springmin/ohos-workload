@@ -6,8 +6,8 @@
 #                     hello-maui-app-api20.hap          (20.0 band, no extra permissions)
 #                     hello-maui-app-api20-permissions.hap
 #   1 unsigned hap    hello-maui-app-unsigned.hap       (26.0 band, default payload)
-#   6 docs            验收说明.md 快速开始.md 文档索引.md 签名与UDID指南.md
-#                     自签说明.md README-交付说明.md
+#   8 docs            验收说明.md 快速开始.md 真机操作手册.md 文档索引.md 签名与UDID指南.md
+#                     自签说明.md 最终状态.md README-交付说明.md
 #   1 verifier        verify-kit.sh                    (tester self-check: sha256sum -c + hap summary)
 #   SHA256SUMS        checksum of every hap + doc + verify-kit.sh in the kit
 #   <out>.tar.gz      the kit root, packed flat (tar -C <kit> .)
@@ -39,6 +39,9 @@
 # SHA256SUMS like every other file). The two kit-only docs (自签说明.md, README-交付说明.md)
 # are reused from the kit directory; when absent there the mirrored docs/plans copies
 # (2026-09-21-ohos-tester-selfsign.md, 2026-09-21-ohos-delivery-kit-readme.md) are used.
+# The operator-facing docs come from docs/plans as well: 2026-09-21-ohos-device-run-playbook.md
+# ships as 真机操作手册.md and 2026-09-21-ohos-final-status.md ships as 最终状态.md; the
+# SHA256SUMS glob below (*.md) picks every shipped doc up, so verify-kit.sh needs no change.
 set -e
 
 log()  { printf '[%s] %s\n' "$(date '+%H:%M:%S')" "$*"; }
@@ -63,7 +66,7 @@ usage() {
     cat <<EOF
 usage: $0 [--kit-dir <dir>] [--dist-dir <dir>] [--out <tar.gz>] [--skip-tar] [--publish]
 
-Builds the 4 signed + 1 unsigned demo haps, copies the acceptance/signing docs and
+Builds the 4 signed + 1 unsigned demo haps, copies the acceptance/signing/operator docs and
 the tester self-check script, writes SHA256SUMS and packs the kit tarball.
 EOF
 }
@@ -207,9 +210,11 @@ copy_hap "$BIN20/hello-maui-app.hap" "hello-maui-app-api20-permissions.hap"
 log "== copying docs =="
 copy_doc "$RUNTIME_PLANS/2026-09-19-ohos-hap-acceptance-for-testers.md" "验收说明.md"
 copy_doc "$RUNTIME_PLANS/2026-09-20-ohos-tester-quickstart.md" "快速开始.md"
+copy_doc "$RUNTIME_PLANS/2026-09-21-ohos-device-run-playbook.md" "真机操作手册.md"
 copy_doc "$RUNTIME_PLANS/README.md" "文档索引.md"
 copy_doc "$RUNTIME_PLANS/2026-09-19-ohos-signing-and-udid-guide.md" "签名与UDID指南.md"
 copy_doc "$SELF_SIGN_SRC" "自签说明.md"
+copy_doc "$RUNTIME_PLANS/2026-09-21-ohos-final-status.md" "最终状态.md"
 copy_doc "$KIT_README_SRC" "README-交付说明.md"
 
 log "== copying the tester self-check =="
