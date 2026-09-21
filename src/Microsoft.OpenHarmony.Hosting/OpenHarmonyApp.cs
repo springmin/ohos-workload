@@ -7,6 +7,7 @@ using System.IO;
 using System.Runtime.InteropServices;
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using System.Threading;
 
 namespace Microsoft.OpenHarmony.Hosting;
 
@@ -190,6 +191,8 @@ public static class OpenHarmonyBridge
 
     private static readonly object s_sync = new();
     private static OpenHarmonyAppContext? s_context;
+    private static int s_contextVersion;
+    private static int s_refreshing;
     private static IntPtr s_nodeContent;
     private static bool s_attached;
     private static NativeLifecycleDelegate? s_lifecycleThunk;
@@ -241,16 +244,31 @@ public static class OpenHarmonyBridge
     private static void OnPinch(int phase, double scale, float x, float y)
         => Pinch?.Invoke(phase, scale, x, y);
 
-    /// <summary>Raised (also for late subscribers) once the host context is available.</summary>
+    /// <summary>Raised (also for late subscribers) whenever the host context is available,
+    /// and again when a re-read shows it changed (the value is the current context).</summary>
     public static event Action<OpenHarmonyAppContext>? Initialized
 
     {
         add
         {
-            OpenHarmonyAppContext? context;
+            int version;
             lock (s_sync)
             {
                 s_initializedHandlers += value;
+                version = s_contextVersion;
+            }
+            // The context can become available after Attach() ran (host/shell startup order,
+            // or a repeated Attach): re-read before replaying so a late subscriber does not
+            // wait for the next surface/lifecycle event. When the refresh publishes, it
+            // already invoked this handler, so the replay below is skipped.
+            RefreshContext();
+            OpenHarmonyAppContext? context;
+            lock (s_sync)
+            {
+                if (s_contextVersion != version)
+                {
+                    return;
+                }
                 context = s_context;
             }
             if (context is not null)
@@ -541,6 +559,9 @@ public static class OpenHarmonyBridge
     {
         add
         {
+            // A ready surface is also the signal that the host is fully up; pick up a context
+            // that landed after Attach() before replaying the last surface to the subscriber.
+            RefreshContext();
             List<OpenHarmonySurfaceInfo> replay;
             lock (s_sync)
             {
@@ -636,66 +657,29 @@ public static class OpenHarmonyBridge
 
     /// <summary>
     /// Reads the host context and registers the managed callbacks. Called
-    /// automatically through a module initializer; calling it again is a no-op.
-    /// Safe to call outside a hap (the DllImport simply fails and is ignored).
+    /// automatically through a module initializer; calling it again only re-checks
+    /// the host context (registration stays one-shot). Safe to call outside a hap
+    /// (the DllImport simply fails and is ignored).
     /// </summary>
     public static void Attach()
     {
+        bool alreadyAttached;
         lock (s_sync)
         {
-            if (s_attached)
-            {
-                return;
-            }
+            alreadyAttached = s_attached;
             s_attached = true;
         }
-
-        // The host publishes the context through the environment before starting the
-        // runtime, so the bridge does not depend on the native call below.
-        string json = Environment.GetEnvironmentVariable("OHOS_HOST_APP_CONTEXT") ?? "{}";
-        if (json == "{}")
+        if (alreadyAttached)
         {
-            try
-            {
-                IntPtr raw = GetAppContextNative();
-                if (raw != IntPtr.Zero)
-                {
-                    json = Marshal.PtrToStringUTF8(raw) ?? "{}";
-                }
-            }
-            catch
-            {
-                // No native host (plain one-shot hosting): keep the defaults.
-            }
+            // The host can publish the context after the module initializer ran (or the
+            // shell can re-send it); re-read and re-raise it when it changed. No-op when
+            // nothing changed, so calling Attach() repeatedly stays idempotent.
+            RefreshContext();
+            return;
         }
 
-        ContextJson? parsed = null;
-        try
-        {
-            parsed = JsonSerializer.Deserialize<ContextJson>(json);
-        }
-        catch
-        {
-            // Keep defaults; the status file then falls back to no-op.
-        }
-
-        var context = new OpenHarmonyAppContext
-        {
-            AppDir = parsed?.AppDir ?? string.Empty,
-            FilesDir = parsed?.FilesDir ?? string.Empty,
-            CacheDir = parsed?.CacheDir ?? string.Empty,
-            BundleName = parsed?.BundleName ?? string.Empty,
-            AbilityName = parsed?.AbilityName ?? string.Empty,
-            NodeContent = parsed?.NodeContent ?? 0,
-        };
-
-        Action<OpenHarmonyAppContext>? initializedHandlers;
-        lock (s_sync)
-        {
-            s_context = context;
-            s_nodeContent = context.NodeContent != 0 ? new IntPtr(context.NodeContent) : IntPtr.Zero;
-            initializedHandlers = s_initializedHandlers;
-        }
+        OpenHarmonyAppContext context = ReadContext(out _);
+        Action<OpenHarmonyAppContext>? initializedHandlers = StoreContext(context);
 
         bool registered = false;
         try
@@ -743,9 +727,198 @@ public static class OpenHarmonyBridge
         initializedHandlers?.Invoke(context);
     }
 
+    /// <summary>
+    /// Re-reads the host context and re-raises <see cref="Initialized"/> when it changed or
+    /// became available after <see cref="Attach"/>. Called when the shell reports a surface
+    /// or lifecycle event, when a late subscriber asks for the context and by a repeated
+    /// <see cref="Attach"/> call. One refresh at a time; an unchanged snapshot (or an empty
+    /// read after a full one) is never re-published, so repeated events stay idempotent.
+    /// Returns true when a changed context was stored and dispatched.
+    /// </summary>
+    private static bool RefreshContext()
+    {
+        if (Interlocked.CompareExchange(ref s_refreshing, 1, 0) != 0)
+        {
+            // A refresh is already running (possibly on this thread through a handler);
+            // it will publish whatever the host currently reports.
+            return false;
+        }
+        try
+        {
+            OpenHarmonyAppContext candidate = ReadContext(out bool fromHost);
+            if (!fromHost)
+            {
+                // No source at all (plain one-shot hosting): keep the defaults/current state.
+                return false;
+            }
+
+            OpenHarmonyAppContext? current;
+            lock (s_sync)
+            {
+                current = s_context;
+            }
+            if (current is not null && SameContext(current, candidate))
+            {
+                return false;
+            }
+            if (current is not null && IsEmptyContext(candidate) && !IsEmptyContext(current))
+            {
+                // A transient empty read (host not ready, library missing) must not clobber
+                // a context that was already published.
+                return false;
+            }
+
+            Action<OpenHarmonyAppContext>? handlers = StoreContext(candidate);
+            if (handlers is not null)
+            {
+                DispatchInitialized(handlers, candidate);
+            }
+            WriteStatus($"context refreshed: appDir={candidate.AppDir} filesDir={candidate.FilesDir}");
+            return true;
+        }
+        finally
+        {
+            Interlocked.Exchange(ref s_refreshing, 0);
+        }
+    }
+
+    /// <summary>
+    /// Stores a context snapshot and returns the current <see cref="Initialized"/> subscribers.
+    /// Bumping the version inside the same lock lets a subscriber that races a concurrent
+    /// publish skip its own replay (the publisher already invoked it).
+    /// </summary>
+    private static Action<OpenHarmonyAppContext>? StoreContext(OpenHarmonyAppContext context)
+    {
+        lock (s_sync)
+        {
+            s_context = context;
+            s_contextVersion++;
+            if (context.NodeContent != 0)
+            {
+                // Never clear a live ArkUI handle with the 0 from the context JSON.
+                s_nodeContent = new IntPtr(context.NodeContent);
+            }
+            return s_initializedHandlers;
+        }
+    }
+
+    /// <summary>
+    /// Reads the host context from the environment first and the native getter second, then
+    /// keeps the snapshot that names the payload directory (the environment copy is taken at
+    /// launch and can be the stale empty one, while the native getter can be refreshed by the
+    /// host). Returns defaults when neither source exists; <paramref name="fromHost"/> then
+    /// reports whether anything was read at all.
+    /// </summary>
+    private static OpenHarmonyAppContext ReadContext(out bool fromHost)
+    {
+        fromHost = false;
+        OpenHarmonyAppContext? context = null;
+
+        // The host publishes the context through the environment before starting the
+        // runtime, so the bridge does not depend on the native call below.
+        string env = Environment.GetEnvironmentVariable("OHOS_HOST_APP_CONTEXT") ?? string.Empty;
+        if (env.Length > 0 && TryParseContext(env, out OpenHarmonyAppContext envContext))
+        {
+            context = envContext;
+            fromHost = true;
+        }
+
+        try
+        {
+            IntPtr raw = GetAppContextNative();
+            if (raw != IntPtr.Zero &&
+                TryParseContext(Marshal.PtrToStringUTF8(raw) ?? string.Empty, out OpenHarmonyAppContext nativeContext))
+            {
+                fromHost = true;
+                if (context is null || (string.IsNullOrEmpty(context.AppDir) && !string.IsNullOrEmpty(nativeContext.AppDir)))
+                {
+                    context = nativeContext;
+                }
+            }
+        }
+        catch
+        {
+            // No native host (plain one-shot hosting): the environment is the only source.
+        }
+
+        return context ?? new OpenHarmonyAppContext();
+    }
+
+    private static bool TryParseContext(string json, out OpenHarmonyAppContext context)
+    {
+        context = new OpenHarmonyAppContext();
+        if (string.IsNullOrEmpty(json))
+        {
+            return false;
+        }
+
+        ContextJson? parsed;
+        try
+        {
+            parsed = JsonSerializer.Deserialize<ContextJson>(json);
+        }
+        catch
+        {
+            return false;
+        }
+        if (parsed is null)
+        {
+            return false;
+        }
+
+        context = new OpenHarmonyAppContext
+        {
+            AppDir = parsed.AppDir ?? string.Empty,
+            FilesDir = parsed.FilesDir ?? string.Empty,
+            CacheDir = parsed.CacheDir ?? string.Empty,
+            BundleName = parsed.BundleName ?? string.Empty,
+            AbilityName = parsed.AbilityName ?? string.Empty,
+            NodeContent = parsed.NodeContent,
+        };
+        return true;
+    }
+
+    private static bool SameContext(OpenHarmonyAppContext a, OpenHarmonyAppContext b) =>
+        string.Equals(a.AppDir, b.AppDir, StringComparison.Ordinal) &&
+        string.Equals(a.FilesDir, b.FilesDir, StringComparison.Ordinal) &&
+        string.Equals(a.CacheDir, b.CacheDir, StringComparison.Ordinal) &&
+        string.Equals(a.BundleName, b.BundleName, StringComparison.Ordinal) &&
+        string.Equals(a.AbilityName, b.AbilityName, StringComparison.Ordinal) &&
+        a.NodeContent == b.NodeContent;
+
+    private static bool IsEmptyContext(OpenHarmonyAppContext context) =>
+        string.IsNullOrEmpty(context.AppDir) &&
+        string.IsNullOrEmpty(context.FilesDir) &&
+        string.IsNullOrEmpty(context.CacheDir) &&
+        string.IsNullOrEmpty(context.BundleName) &&
+        string.IsNullOrEmpty(context.AbilityName) &&
+        context.NodeContent == 0;
+
+    /// <summary>
+    /// Invokes every Initialized subscriber separately: a throwing handler must not take the
+    /// native callback path down or hide the re-published context from the other subscribers.
+    /// </summary>
+    private static void DispatchInitialized(Action<OpenHarmonyAppContext> handlers, OpenHarmonyAppContext context)
+    {
+        foreach (Delegate target in handlers.GetInvocationList())
+        {
+            try
+            {
+                ((Action<OpenHarmonyAppContext>)target)(context);
+            }
+            catch (Exception ex)
+            {
+                WriteStatus($"initialized handler failed: {ex.GetType().Name}: {ex.Message}");
+            }
+        }
+    }
+
     private static void OnLifecycleNative(int evt)
     {
         var lifecycleEvent = (OpenHarmonyLifecycleEvent)evt;
+        // The shell re-sending lifecycle events means the host is up; pick up a context that
+        // landed after Attach() before forwarding to the subscribers.
+        RefreshContext();
         Action<OpenHarmonyLifecycleEvent>? handlers;
         lock (s_sync)
         {
@@ -829,6 +1002,11 @@ public static class OpenHarmonyBridge
     private static void OnSurfaceNative(IntPtr window, int width, int height, int state)
     {
         var info = new OpenHarmonySurfaceInfo(window, width, height, (OpenHarmonySurfaceState)state);
+        // The surface becoming ready is the point where the host (payload extraction, app
+        // context) is fully up; publish a context that landed after Attach() before the
+        // subscribers see the surface, so a retry that reacts to SurfaceChanged also sees
+        // the current Context.
+        RefreshContext();
         Action<OpenHarmonySurfaceInfo>? handlers;
         lock (s_sync)
         {
