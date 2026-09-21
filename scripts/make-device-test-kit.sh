@@ -8,7 +8,8 @@
 #   1 unsigned hap    hello-maui-app-unsigned.hap       (26.0 band, default payload)
 #   6 docs            验收说明.md 快速开始.md 文档索引.md 签名与UDID指南.md
 #                     自签说明.md README-交付说明.md
-#   SHA256SUMS        checksum of every hap + doc in the kit
+#   1 verifier        verify-kit.sh                    (tester self-check: sha256sum -c + hap summary)
+#   SHA256SUMS        checksum of every hap + doc + verify-kit.sh in the kit
 #   <out>.tar.gz      the kit root, packed flat (tar -C <kit> .)
 #
 # The haps are (re)published from test/hello-maui-app for both API bands with and without
@@ -33,7 +34,9 @@
 #      default: the sibling checkout's docs/plans).
 #
 # The kit directory is rebuilt from scratch in a staging dir and swapped in, so stale
-# files cannot leak into SHA256SUMS. The two kit-only docs (自签说明.md, README-交付说明.md)
+# files cannot leak into SHA256SUMS. scripts/verify-kit.sh is always copied in from the
+# repo (a tester can run `sh verify-kit.sh` inside the extracted kit; it is covered by
+# SHA256SUMS like every other file). The two kit-only docs (自签说明.md, README-交付说明.md)
 # are reused from the kit directory; when absent there the mirrored docs/plans copies
 # (2026-09-21-ohos-tester-selfsign.md, 2026-09-21-ohos-delivery-kit-readme.md) are used.
 set -e
@@ -48,6 +51,7 @@ DEFAULT_KIT_DIR=/data/storage/el2/base/tmp/opencode/device-test-kit
 KIT_DIR="${DEVICE_TEST_KIT_DIR:-$DEFAULT_KIT_DIR}"
 DIST_DIR="$W/dist"
 RUNTIME_PLANS="${RUNTIME_OHOS_PLANS:-$(dirname "$W")/runtime-ohos/docs/plans}"
+VERIFY_KIT_SRC="$W/scripts/verify-kit.sh"
 OUT=""
 SKIP_TAR=0
 PUBLISH=0
@@ -59,8 +63,8 @@ usage() {
     cat <<EOF
 usage: $0 [--kit-dir <dir>] [--dist-dir <dir>] [--out <tar.gz>] [--skip-tar] [--publish]
 
-Builds the 4 signed + 1 unsigned demo haps, copies the acceptance/signing docs,
-writes SHA256SUMS and packs the kit tarball.
+Builds the 4 signed + 1 unsigned demo haps, copies the acceptance/signing docs and
+the tester self-check script, writes SHA256SUMS and packs the kit tarball.
 EOF
 }
 
@@ -89,6 +93,10 @@ command -v "$DOTNET" >/dev/null 2>&1 || { warn "dotnet not found: $DOTNET (set D
 [ -d "$PROJ" ] || { warn "demo project not found: $PROJ"; exit 1; }
 [ -f "$DIST_DIR/ets/modules.abc" ] || {
     warn "ArkTS shell not found: $DIST_DIR/ets/modules.abc (run scripts/build-arkts-shell.sh or set --dist-dir)"
+    exit 1
+}
+[ -f "$VERIFY_KIT_SRC" ] || {
+    warn "kit verifier not found: $VERIFY_KIT_SRC (expected in a full checkout)"
     exit 1
 }
 
@@ -171,6 +179,12 @@ copy_doc() {
     log "doc     $2  <- $1"
 }
 
+copy_tool() {
+    need_file "$1"
+    cp -f "$1" "$STAGE/$2"
+    log "script  $2  <- $1"
+}
+
 BIN26="$PROJ/bin/Release/net11.0-openharmony26.0/openharmony-arm64"
 BIN20="$PROJ/bin/Release/net11.0-openharmony20.0/openharmony-arm64"
 
@@ -198,13 +212,16 @@ copy_doc "$RUNTIME_PLANS/2026-09-19-ohos-signing-and-udid-guide.md" "签名与UD
 copy_doc "$SELF_SIGN_SRC" "自签说明.md"
 copy_doc "$KIT_README_SRC" "README-交付说明.md"
 
+log "== copying the tester self-check =="
+copy_tool "$VERIFY_KIT_SRC" "verify-kit.sh"
+
 log "== generating SHA256SUMS =="
 rm -rf "$LOG_DIR"
 (
     cd "$STAGE"
     LC_ALL=C
     export LC_ALL
-    sha256sum *.hap *.md > SHA256SUMS
+    sha256sum *.hap *.md verify-kit.sh > SHA256SUMS
 )
 ( cd "$STAGE" && sha256sum -c SHA256SUMS >/dev/null ) || { warn "SHA256SUMS self-check failed"; exit 1; }
 log "SHA256SUMS: $(wc -l < "$STAGE/SHA256SUMS" | tr -d ' ') entries, sha256sum -c OK"
@@ -232,3 +249,4 @@ if [ "$PUBLISH" = 1 ]; then
 fi
 
 log "== done =="
+log "hint:   tester self-check inside the kit: (cd $KIT_DIR && sh verify-kit.sh)"
