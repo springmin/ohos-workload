@@ -1,4 +1,5 @@
 // A real MAUI application running on the OpenHarmony platform slice.
+using Microsoft.AspNetCore.Components.WebView.Maui;
 using Microsoft.Maui;
 using Microsoft.Maui.Controls;
 using Microsoft.Maui.Controls.Shapes;
@@ -105,6 +106,29 @@ public sealed class App : Application
                 hybridStatus.Text = received;
             }
         };
+
+        // S1: the BlazorWebView half, below the hybrid control. HostPage wwwroot/index.html is
+        // served from the Blazor origin (https://0.0.0.0/) by the ArkTS shell: the handler
+        // registers the app content root over the shell "blazor" command, the shell injects
+        // _framework/blazor.webview.js and calls Blazor.start() on page end. The root component
+        // attaches to #app in that page (the mount point in wwwroot/index.html) and renders
+        // BlazorCounter; its button click round-trips (ArkWeb -> dotnetHost -> WebViewManager ->
+        // event callback -> render batch -> window.__dispatchMessageCallback -> DOM update), so
+        // the count rendered inside the page advances. The component is inline (no Razor SDK in
+        // this project); see BlazorCounter.cs. Registration lives in Program.cs
+        // (AddMauiBlazorWebView + UsePlatformHandler), and UseOpenHarmony's SliceHandlers carries
+        // the IBlazorWebView entry because the csproj defines OPENHARMONY_BLAZOR_WEBVIEW.
+        var blazorHint = new Label { Text = "BlazorWebView (root #app in wwwroot/index.html)", FontSize = 22 };
+        var blazor = new BlazorWebView
+        {
+            HostPage = "wwwroot/index.html",
+            HeightRequest = 400,
+        };
+        blazor.RootComponents.Add(new RootComponent
+        {
+            Selector = "#app",
+            ComponentType = typeof(BlazorCounter),
+        });
 
         var status = new Label { Text = "Tap the counter", FontSize = 28 };
         var counter = new Button { Text = $"Count: {clicks}", FontSize = 40 };
@@ -222,6 +246,8 @@ public sealed class App : Application
         layout.Add(subtitle);
         layout.Add(hybrid);
         layout.Add(hybridStatus);
+        layout.Add(blazorHint);
+        layout.Add(blazor);
         layout.Add(counter);
         layout.Add(entry);
         layout.Add(valueControls);

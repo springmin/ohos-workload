@@ -113,6 +113,13 @@
 </p>
 <p id="status">ready</p>
 <div id="messages"><span class="expect">no inbound messages yet</span></div>
+<!-- S1: BlazorWebView mount point. When this document is the Blazor root document (the
+     hello-maui-app BlazorWebView, HostPage = wwwroot/index.html, root selector #app), blazor.webview.js
+     attaches its BlazorCounter component here; without a matching element it fails with
+     "Could not find any element matching selector '#app'". The same document is also served to the
+     HybridWebView from https://0.0.0.1/, where the div stays empty. The component's button click
+     round-trips through dotnetHost and the count rendered inside this div advances. -->
+<div id="app"></div>
 <noscript><p>JavaScript is required for the probes and the ping (js/app.js).</p></noscript>
 <script src="js/app.js"></script>
 </body>
