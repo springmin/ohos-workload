@@ -10,25 +10,36 @@
 // managed code attaches through OpenHarmonyBridge.NodeContent.
 import { NodeContent } from '@ohos.arkui.node';
 import abilityAccessCtrl, { Permissions } from '@ohos.abilityAccessCtrl';
-import cameraPicker from '@ohos.multimedia.cameraPicker';
-import camera from '@ohos.multimedia.camera';
-import { batteryInfo, BusinessError, commonEventManager, power } from '@kit.BasicServicesKit';
-import { calendarManager } from '@kit.CalendarKit';
-import { access, connection } from '@kit.ConnectivityKit';
-import { contact } from '@kit.ContactsKit';
-import common from '@ohos.app.ability.common';
+import type common from '@ohos.app.ability.common';
 import display from '@ohos.display';
-import print from '@ohos.print';
 import Want from '@ohos.app.ability.Want';
 import wantConstant from '@ohos.app.ability.wantConstant';
 import fileIo from '@ohos.file.fs';
-import notificationManager from '@ohos.notificationManager';
 import host from 'libopenharmonyhost.so';
 import picker from '@ohos.file.picker';
 import fs from '@ohos.file.fs';
 import util from '@ohos.util';
 import web_webview from '@ohos.web.webview';
 import window from '@ohos.window';
+// Device-compat (lazy SDK modules): the optional feature modules are deliberately NOT
+// imported statically. A device whose framework lacks one of them would otherwise fail this
+// page at load time (JsError), taking the whole bridge down. They are pulled in on first use
+// with a guarded dynamic import() and a cached failure (see lazyUnavailable /
+// noteLazyFailure below); the affected feature then keeps answering its existing
+// "unavailable" result. The type-only imports below are erased by the ArkTS compiler
+// (verified: they add no module record to modules.abc), so they only contribute the
+// compile-time types used in annotations:
+//   camera            - Camera Kit (flashlight, picker camera position)
+//   calendarManager   - Calendar Kit
+//   access            - Connectivity Kit (Bluetooth adapter state)
+//   print             - Print Kit
+//   commonEventManager, BusinessError - Basic Services Kit (battery events)
+import type camera from '@ohos.multimedia.camera';
+import type { calendarManager } from '@kit.CalendarKit';
+import type { access } from '@kit.ConnectivityKit';
+import type commonEventManager from '@ohos.commonEventManager';
+import type print from '@ohos.print';
+import type { BusinessError } from '@kit.BasicServicesKit';
 
 // Menu bridge: the managed side publishes the current page's menu bars (MenuBarItem/MenuFlyout)
 // as a flat table through the host. registerMenuChangedSink fires after every commit - including
@@ -174,6 +185,21 @@ struct Index {
   // host asks synchronously and consumes the sink's boolean answer, so the torch call itself
   // must stay synchronous (setTorchMode is).
   private flashlightManager: camera.CameraManager | undefined = undefined;
+  // Device-compat (lazy SDK modules): each lazily imported module is imported once; its
+  // failure is cached here so the feature keeps answering its existing "unavailable" result
+  // without re-importing or re-logging on every request.
+  private lazyFailures: Map<string, string> = new Map();
+  // Camera Kit is preloaded asynchronously (dynamic import) because the flashlight sink is
+  // synchronous: the API surface the sink needs is cached as soon as the module resolves,
+  // and the sink answers false while the module is not there yet (or is unavailable).
+  private cameraGetManager: ((context: common.Context) => camera.CameraManager) | undefined = undefined;
+  private cameraTorchOn: camera.TorchMode | undefined = undefined;
+  private cameraTorchOff: camera.TorchMode | undefined = undefined;
+  private cameraBackPosition: camera.CameraPosition | undefined = undefined;
+  // Host-export guard (device-compat): a libopenharmonyhost.so built by a different SDK can
+  // lack an export. Every guarded call is logged once per API per page, not once per
+  // event/frame, so a repetitive UI path cannot flood the log.
+  private hostUnavailable: Set<string> = new Set();
   // B6 navigation allow-list state: a cancelled external navigation waits for the managed
   // Navigating decision under its unguessable id; navApproved/navProgrammatic are the one-shot
   // markers that let the shell's own reloads pass. All entries are time-bounded and dropped
@@ -185,11 +211,59 @@ struct Index {
   private navPendingTtlMs: number = 5000;
   private navMaxUrlLength: number = 8192;
 
+  // Device-compat (lazy SDK modules): true when the named module failed its guarded dynamic
+  // import on this device; the feature then takes its existing unavailable path.
+  private lazyUnavailable(name: string): boolean {
+    return this.lazyFailures.has(name);
+  }
+
+  // Device-compat (lazy SDK modules): records a dynamic-import failure once and logs the
+  // reason once, so every later use answers "unavailable" without retrying or logging.
+  private noteLazyFailure(name: string, error: Error | undefined): void {
+    if (this.lazyFailures.has(name)) {
+      return;
+    }
+    const detail: string = error !== undefined ? error.message : 'not available';
+    this.lazyFailures.set(name, detail);
+    console.error(`[maui] ${name} unavailable on this device: ${detail}`);
+  }
+
+  // Host-export guard (device-compat): logs a missing/failed host export once per page.
+  private reportHostUnavailable(api: string, error: Error | undefined): void {
+    if (this.hostUnavailable.has(api)) {
+      return;
+    }
+    this.hostUnavailable.add(api);
+    const detail: string = error !== undefined ? ` (${error.message})` : '';
+    console.error(`[maui] host export unavailable: ${api}${detail}`);
+  }
+
+  // Host-export guard (device-compat): runs a host call behind an explicit existence check
+  // and a try/catch so a mismatched .so cannot throw TypeError out of a page callback;
+  // returns false when the call was not delivered. The native bridge core (XComponent
+  // registration, registerJavaScriptProxy and the Web controller calls) is intentionally
+  // not routed through this guard.
+  private hostCall(api: string, available: boolean, call: () => void): boolean {
+    if (!available) {
+      this.reportHostUnavailable(api, undefined);
+      return false;
+    }
+    try {
+      call();
+      return true;
+    } catch (hostError) {
+      this.reportHostUnavailable(api, hostError as Error);
+      return false;
+    }
+  }
+
   // Forwards the current device colour mode (1 = dark, 0 = light) to the managed app.
   private reportTheme(): void {
     try {
       const mode: ColorMode | undefined = AppStorage.get<ColorMode>('colorMode');
-      host.notifyTheme(mode === ColorMode.DARK ? 1 : 0);
+      this.hostCall('notifyTheme', typeof host.notifyTheme === 'function', (): void => {
+        host.notifyTheme(mode === ColorMode.DARK ? 1 : 0);
+      });
     } catch (themeError) {
       // A host library without the theme export leaves the managed default in place.
     }
@@ -203,14 +277,25 @@ struct Index {
   // power.getPowerMode() reports the device power mode. The raw values travel as one tab
   // separated payload ("soc\tchargeState\tpluggedType\tpresent\tpowerMode"); the managed
   // OpenHarmonyBattery maps them to the MAUI enums. Best effort: a host library without the
-  // export leaves the managed defaults in place.
-  private reportBattery(): void {
+  // export leaves the managed defaults in place. Device-compat: the Basic Services Kit is
+  // imported lazily; a missing kit is cached and leaves the managed Unknown defaults.
+  private async reportBattery(): Promise<void> {
+    if (this.lazyUnavailable('basicServices')) {
+      return;
+    }
     try {
-      const present: number = batteryInfo.isBatteryPresent ? 1 : 0;
-      const payload: string = `${batteryInfo.batterySOC}\t${batteryInfo.chargingStatus}\t${batteryInfo.pluggedType}\t${present}\t${power.getPowerMode()}`;
-      host.notifyBattery(payload);
-    } catch (batteryError) {
-      // The managed side keeps its Unknown defaults.
+      const basicServices = await import('@kit.BasicServicesKit');
+      try {
+        const present: number = basicServices.batteryInfo.isBatteryPresent ? 1 : 0;
+        const payload: string = `${basicServices.batteryInfo.batterySOC}\t${basicServices.batteryInfo.chargingStatus}\t${basicServices.batteryInfo.pluggedType}\t${present}\t${basicServices.power.getPowerMode()}`;
+        this.hostCall('notifyBattery', typeof host.notifyBattery === 'function', (): void => {
+          host.notifyBattery(payload);
+        });
+      } catch (batteryError) {
+        // The managed side keeps its Unknown defaults.
+      }
+    } catch (kitError) {
+      this.noteLazyFailure('basicServices', kitError as Error);
     }
   }
 
@@ -221,7 +306,9 @@ struct Index {
     try {
       const info = display.getDefaultDisplaySync();
       const payload: string = `${info.width}\t${info.height}\t${info.densityDPI}\t${info.rotation}\t${info.refreshRate}\t${info.orientation}`;
-      host.notifyDisplay(payload);
+      this.hostCall('notifyDisplay', typeof host.notifyDisplay === 'function', (): void => {
+        host.notifyDisplay(payload);
+      });
     } catch (displayError) {
       // The managed side keeps its empty display info.
     }
@@ -229,28 +316,35 @@ struct Index {
 
   // Battery changes arrive as common events (the platform publishes BATTERY_CHANGED on any
   // level/charging change, plus CHARGING/DISCHARGING/POWER_SAVE_MODE_CHANGED). Subscription is
-  // best effort: a rejected subscription leaves the startup snapshot as the last value.
-  private subscribeBatteryEvents(): void {
-    if (this.batteryEventsRegistered) {
+  // best effort: a rejected subscription leaves the startup snapshot as the last value. The
+  // kit is imported lazily (device-compat), so a missing Basic Services Kit only costs the
+  // event-driven updates, not the page.
+  private async subscribeBatteryEvents(): Promise<void> {
+    if (this.batteryEventsRegistered || this.lazyUnavailable('basicServices')) {
       return;
     }
     try {
-      const subscriber = commonEventManager.createSubscriberSync({
-        events: [
-          commonEventManager.Support.COMMON_EVENT_BATTERY_CHANGED,
-          commonEventManager.Support.COMMON_EVENT_CHARGING,
-          commonEventManager.Support.COMMON_EVENT_DISCHARGING,
-          commonEventManager.Support.COMMON_EVENT_POWER_SAVE_MODE_CHANGED,
-        ],
-      });
-      commonEventManager.subscribe(subscriber, (subscribeError: BusinessError, event: commonEventManager.CommonEventData): void => {
-        if (!subscribeError) {
-          this.reportBattery();
-        }
-      });
-      this.batteryEventsRegistered = true;
-    } catch (batteryEventError) {
-      console.error(`[maui] battery events unavailable: ${(batteryEventError as Error).message}`);
+      const basicServices = await import('@kit.BasicServicesKit');
+      try {
+        const subscriber = basicServices.commonEventManager.createSubscriberSync({
+          events: [
+            basicServices.commonEventManager.Support.COMMON_EVENT_BATTERY_CHANGED,
+            basicServices.commonEventManager.Support.COMMON_EVENT_CHARGING,
+            basicServices.commonEventManager.Support.COMMON_EVENT_DISCHARGING,
+            basicServices.commonEventManager.Support.COMMON_EVENT_POWER_SAVE_MODE_CHANGED,
+          ],
+        });
+        basicServices.commonEventManager.subscribe(subscriber, (subscribeError: BusinessError, event: commonEventManager.CommonEventData): void => {
+          if (!subscribeError) {
+            this.reportBattery();
+          }
+        });
+        this.batteryEventsRegistered = true;
+      } catch (batteryEventError) {
+        console.error(`[maui] battery events unavailable: ${(batteryEventError as Error).message}`);
+      }
+    } catch (kitError) {
+      this.noteLazyFailure('basicServices', kitError as Error);
     }
   }
 
@@ -294,6 +388,7 @@ struct Index {
       this.menuItems = items;
     } catch (menuError) {
       this.menuItems = [];
+      this.reportHostUnavailable('menuCount', menuError as Error);
     }
   }
 
@@ -308,7 +403,9 @@ struct Index {
         value: item.text,
         enabled: item.enabled,
         action: (): void => {
-          host.notifyMenuAction(index);
+          this.hostCall('notifyMenuAction', typeof host.notifyMenuAction === 'function', (): void => {
+            host.notifyMenuAction(index);
+          });
         }
       };
       elements.push(element);
@@ -349,7 +446,9 @@ struct Index {
               return;
             }
           }
-          host.notifyJsMessage(this.originEnvelope(payload));
+          this.hostCall('notifyJsMessage', typeof host.notifyJsMessage === 'function', (): void => {
+            host.notifyJsMessage(this.originEnvelope(payload));
+          });
         }
       }, 'dotnetHost', ['postMessage']);
       this.dotNetHostRegistered = true;
@@ -458,9 +557,10 @@ struct Index {
       id = `${now.toString(16)}-${Math.random().toString(16).substring(2)}`;
     }
     this.navPending.set(id, { url: url, expires: now + this.navPendingTtlMs });
-    try {
+    const delivered: boolean = this.hostCall('notifyJsMessage', typeof host.notifyJsMessage === 'function', (): void => {
       host.notifyJsMessage(`__OHNAV|${url}|${id}`);
-    } catch (navError) {
+    });
+    if (!delivered) {
       // No host channel: nothing can approve the load, so it stays cancelled.
       this.navPending.delete(id);
     }
@@ -657,53 +757,6 @@ struct Index {
     }
   }
 
-  // Bluetooth discovery: bluetoothDeviceFind reports an array of device addresses per callback.
-  // The listener resolves each name with getRemoteDeviceName, keeps the accumulated table for
-  // op 4 and pushes each record to the managed side as "name\taddress". It is registered while
-  // discovery runs (the permission was granted by the sink) and removed on stop.
-  private ensureBluetoothDeviceListener(): void {
-    if (this.bluetoothDeviceRegistered) {
-      return;
-    }
-    try {
-      connection.on('bluetoothDeviceFind', (devices: Array<string>): void => {
-        this.onBluetoothDevicesFound(devices);
-      });
-      this.bluetoothDeviceRegistered = true;
-    } catch (findError) {
-      console.error(`[maui] bluetooth discovery listener failed: ${(findError as Error).message}`);
-    }
-  }
-
-  private unsubscribeBluetoothDeviceListener(): void {
-    if (!this.bluetoothDeviceRegistered) {
-      return;
-    }
-    try {
-      connection.off('bluetoothDeviceFind');
-    } catch (offError) {
-      // Stopping discovery already succeeded; a stale listener is harmless.
-    }
-    this.bluetoothDeviceRegistered = false;
-  }
-
-  private onBluetoothDevicesFound(devices: Array<string>): void {
-    for (const deviceId of devices) {
-      let name: string = '';
-      try {
-        name = connection.getRemoteDeviceName(deviceId);
-      } catch (nameError) {
-        name = '';
-      }
-      this.discoveredBluetooth.set(deviceId, name);
-      try {
-        host.notifyBluetoothDeviceFound(`${this.escapeRecordField(name)}\t${this.escapeRecordField(deviceId)}`);
-      } catch (notifyError) {
-        // An older host library drops the push; op 4 still serves the accumulated table.
-      }
-    }
-  }
-
   // ArkWeb (WebviewController and WebResourceResponse) documents its methods as UI-thread
   // only, but the host delivers its sinks (web, web eval, hybrid invoke result) on the
   // managed app thread: the .NET app runs on its own pthread and the native host calls the
@@ -718,13 +771,33 @@ struct Index {
     }, 0);
   }
 
-  // Flashlight: creates the camera manager (Camera Kit) once and caches it. getCameraManager
-  // throws when the camera service is unavailable; the sink catches and answers false, and
-  // then drops the cached manager so the next request retries from a clean state.
-  private ensureFlashlightManager(): camera.CameraManager {
+  // Device-compat (lazy SDK modules): @ohos.multimedia.camera is imported dynamically (the
+  // device may lack it), so the API surface the synchronous flashlight sink needs is
+  // preloaded once and cached here. A failed import is cached too and the feature degrades.
+  private async preloadCamera(): Promise<void> {
+    if (this.cameraGetManager !== undefined || this.lazyUnavailable('camera')) {
+      return;
+    }
+    try {
+      const cams = await import('@ohos.multimedia.camera');
+      this.cameraGetManager = (context: common.Context): camera.CameraManager => cams.default.getCameraManager(context);
+      this.cameraTorchOn = cams.default.TorchMode.ON;
+      this.cameraTorchOff = cams.default.TorchMode.OFF;
+      this.cameraBackPosition = cams.default.CameraPosition.CAMERA_POSITION_BACK;
+    } catch (cameraLoadError) {
+      this.noteLazyFailure('camera', cameraLoadError as Error);
+    }
+  }
+
+  // Flashlight: creates the camera manager (Camera Kit) once and caches it. The preloaded
+  // factory is undefined until the lazy import resolves (or when the device has no camera
+  // module), and the sink then answers false. getCameraManager throws when the camera service
+  // is unavailable; the sink catches and answers false, and drops the cached manager so the
+  // next request retries from a clean state.
+  private ensureFlashlightManager(): camera.CameraManager | undefined {
     let manager: camera.CameraManager | undefined = this.flashlightManager;
-    if (manager === undefined) {
-      manager = camera.getCameraManager(getContext(this));
+    if (manager === undefined && this.cameraGetManager !== undefined) {
+      manager = this.cameraGetManager(getContext(this));
       this.flashlightManager = manager;
     }
     return manager;
@@ -760,7 +833,9 @@ struct Index {
 
   aboutToAppear(): void {
     // 2 = foreground; the native host forwards it to the managed bridge.
-    host.notifyLifecycle(2);
+    this.hostCall('notifyLifecycle', typeof host.notifyLifecycle === 'function', (): void => {
+      host.notifyLifecycle(2);
+    });
     // App theme: bind the device colour mode into AppStorage (idempotent; the recommended
     // startup point is the first page's aboutToAppear in this shell) and report the initial
     // light/dark state to the managed side. Later changes arrive through onColorModeChanged.
@@ -771,16 +846,17 @@ struct Index {
     this.reportDisplay();
     this.subscribeBatteryEvents();
     this.subscribeDisplayChange();
+    // Device-compat (lazy SDK modules): the camera module is needed by the synchronous
+    // flashlight sink and by the picker's camera position, so it is preloaded once here.
+    this.preloadCamera();
     // Keep screen on (DeviceDisplay): the managed setter pushes 0/1 through
     // ohos_host_keep_screen_on. Best effort: an older host library without the export leaves
     // the managed cached value unchanged instead of failing the page.
-    try {
+    this.hostCall('registerKeepScreenOnSink', typeof host.registerKeepScreenOnSink === 'function', (): void => {
       host.registerKeepScreenOnSink((on: number): void => {
         this.applyKeepScreenOn(on);
       });
-    } catch (keepScreenOnSinkError) {
-      console.error(`[maui] keep screen on sink registration failed: ${(keepScreenOnSinkError as Error).message}`);
-    }
+    });
     // Essentials (vibration/permissions/geolocation/pickers/connectivity/launcher) need the
     // matching SDK kits, which are not part of this minimal shell project's compilation set yet
     // (see docs/plans/2026-09-18-ohos-arkts-essentials-bridge-plan.md). The sinks stay
@@ -795,133 +871,210 @@ struct Index {
     // Safe area: report the system avoid area so the managed layout can inset its content.
     window.getLastWindow(getContext(this)).then((win) => {
       const area = win.getWindowAvoidArea(window.AvoidAreaType.TYPE_SYSTEM);
-      host.notifyAvoidArea(area.topRect.height, area.bottomRect.height,
-                           area.leftRect.width, area.rightRect.width);
+      this.hostCall('notifyAvoidArea', typeof host.notifyAvoidArea === 'function', (): void => {
+        host.notifyAvoidArea(area.topRect.height, area.bottomRect.height,
+                             area.leftRect.width, area.rightRect.width);
+      });
     }).catch(() => {
       // Window information is optional.
     });
 
     // WebView: a hidden ArkWeb component that the managed WebView handler drives.
     // Host callback: every controller call runs on the page's UI thread (see runOnUiThread).
-    host.registerWebSink((op: string, arg: string) => {
-      this.runOnUiThread(() => {
-        try {
-          if (op === 'show') {
-            this.webVisible = true;
-          } else if (op === 'hide') {
-            this.webVisible = false;
-          } else if (op === 'load') {
-            this.webVisible = true;
-            // B6: the app asked for this URL; let this one load through without a round trip.
-            this.navProgrammatic = { url: arg, expires: Date.now() + this.navPendingTtlMs };
-            this.webController.loadUrl(arg);
-          } else if (op === 'nav') {
-            // B6: the managed handler's answer to an intercepted navigation.
-            this.approveNavigation(arg);
-          } else if (op === 'data') {
-            this.webVisible = true;
-            this.webController.loadData(arg, 'text/html', 'UTF-8');
-          } else if (op === 'back') {
-            if (this.webController.accessBackward()) {
-              this.webController.backward();
+    this.hostCall('registerWebSink', typeof host.registerWebSink === 'function', (): void => {
+      host.registerWebSink((op: string, arg: string) => {
+        this.runOnUiThread(() => {
+          try {
+            if (op === 'show') {
+              this.webVisible = true;
+            } else if (op === 'hide') {
+              this.webVisible = false;
+            } else if (op === 'load') {
+              this.webVisible = true;
+              // B6: the app asked for this URL; let this one load through without a round trip.
+              this.navProgrammatic = { url: arg, expires: Date.now() + this.navPendingTtlMs };
+              this.webController.loadUrl(arg);
+            } else if (op === 'nav') {
+              // B6: the managed handler's answer to an intercepted navigation.
+              this.approveNavigation(arg);
+            } else if (op === 'data') {
+              this.webVisible = true;
+              this.webController.loadData(arg, 'text/html', 'UTF-8');
+            } else if (op === 'back') {
+              if (this.webController.accessBackward()) {
+                this.webController.backward();
+              }
+            } else if (op === 'hybrid') {
+              // HybridWebView asset root registration from the managed handler.
+              this.registerHybridAssets(arg);
+            } else if (op === 'blazor') {
+              // BlazorWebView asset root registration from the managed handler (milestone 3).
+              this.registerBlazorAssets(arg);
             }
-          } else if (op === 'hybrid') {
-            // HybridWebView asset root registration from the managed handler.
-            this.registerHybridAssets(arg);
-          } else if (op === 'blazor') {
-            // BlazorWebView asset root registration from the managed handler (milestone 3).
-            this.registerBlazorAssets(arg);
+          } catch (error) {
+            // Web errors never take the app down.
           }
-        } catch (error) {
-          // Web errors never take the app down.
-        }
+        });
       });
     });
 
     // JavaScript bridge: the managed side evaluates scripts through ohos_host_web_eval; the
     // runJavaScript result (or its error) travels back to the awaiting request.
     // Host callback: runJavaScript is UI-thread only (see runOnUiThread).
-    host.registerWebEvalSink((script: string, requestId: number): void => {
-      this.runOnUiThread(() => {
-        try {
-          this.webController.runJavaScript(script, (err, result) => {
-            host.notifyWebEvalResult(requestId, result || '', err ? 1 : 0);
-          });
-        } catch (evalError) {
-          host.notifyWebEvalResult(requestId, '', 1);
-        }
+    this.hostCall('registerWebEvalSink', typeof host.registerWebEvalSink === 'function', (): void => {
+      host.registerWebEvalSink((script: string, requestId: number): void => {
+        this.runOnUiThread(() => {
+          try {
+            this.webController.runJavaScript(script, (err, result) => {
+              this.hostCall('notifyWebEvalResult', typeof host.notifyWebEvalResult === 'function', (): void => {
+                host.notifyWebEvalResult(requestId, result || '', err ? 1 : 0);
+              });
+            });
+          } catch (evalError) {
+            this.hostCall('notifyWebEvalResult', typeof host.notifyWebEvalResult === 'function', (): void => {
+              host.notifyWebEvalResult(requestId, '', 1);
+            });
+          }
+        });
       });
     });
 
     // HybridWebView JS -> .NET invocation results: the managed handler answers a
     // host.notifyHybridInvoke call through ohos_host_hwv_invoke_result, which lands here and
     // completes the delayed __hwvInvokeDotNet response.
-    try {
+    this.hostCall('registerHybridInvokeResultSink', typeof host.registerHybridInvokeResultSink === 'function', (): void => {
       host.registerHybridInvokeResultSink((requestId: number, payload: string): void => {
         this.completeHybridInvoke(requestId, payload);
       });
-    } catch (hybridInvokeSinkError) {
-      console.error(`[maui] hybrid invoke result sink registration failed: ${(hybridInvokeSinkError as Error).message}`);
-    }
+    });
 
     // File/media pickers: the managed side asks for the system picker; the chosen file's name
     // and bytes travel back as base64 (all kinds use the document picker, so the shell needs no
-    // extra UI component).
-    host.registerPickerSink(async (requestId: number, kind: number) => {
-      if (kind === 3 || kind === 4) {
-        try {
-          const mediaType = kind === 3 ? cameraPicker.PickerMediaType.PHOTO : cameraPicker.PickerMediaType.VIDEO;
-          const picked = await cameraPicker.pick(getContext(this), [mediaType], {
-            cameraPosition: camera.CameraPosition.CAMERA_POSITION_BACK,
-          });
-          const captureUri: string = picked.resultUri;
-          const captureName: string = captureUri.substring(captureUri.lastIndexOf('/') + 1);
-          const captureFile = fileIo.openSync(captureUri, fileIo.OpenMode.READ_ONLY);
-          const captureBuffer = new ArrayBuffer(fileIo.statSync(captureUri).size);
-          fileIo.readSync(captureFile.fd, captureBuffer);
-          fileIo.closeSync(captureFile);
-          const captureBase64 = new util.Base64Helper().encodeToStringSync(new Uint8Array(captureBuffer));
-          host.notifyPickerResult(requestId, 0, captureName, captureBase64);
-        } catch (captureError) {
-          console.error(`camera capture failed: ${captureError.message}`);
-          host.notifyPickerResult(requestId, -1, '', '');
-        }
-        return;
-      }
-        host.registerNotificationSink((notificationId: number, notificationTitle: string, notificationText: string): void => {
-            notificationManager.publish({
-                id: notificationId,
-                content: {
-                    notificationContentType: notificationManager.ContentType.NOTIFICATION_CONTENT_BASIC_TEXT,
-                    normal: { title: notificationTitle, text: notificationText, additionalText: '' }
-                }
-            }).catch((publishError: Error): void => {
-                console.error(`notification publish failed: ${publishError.message}`);
+    // extra UI component). Device-compat: the camera module and the camera picker module are
+    // imported lazily; when either is missing the camera branch answers -1 (the managed side
+    // reports IsSupported == false).
+    this.hostCall('registerPickerSink', typeof host.registerPickerSink === 'function', (): void => {
+      host.registerPickerSink(async (requestId: number, kind: number) => {
+        if (kind === 3 || kind === 4) {
+          if (this.lazyUnavailable('camera') || this.lazyUnavailable('cameraPicker')) {
+            this.hostCall('notifyPickerResult', typeof host.notifyPickerResult === 'function', (): void => {
+              host.notifyPickerResult(requestId, -1, '', '');
             });
-        });
-      try {
-        const documentPicker = new picker.DocumentViewPicker();
-        const uris = await documentPicker.select({ maxSelectNumber: 1 });
-        if (!uris || uris.length === 0) {
-          host.notifyPickerResult(requestId, -1, '', '');
+            return;
+          }
+          // The camera position normally comes from the startup preload; a request that
+          // arrives before the preload resolved imports the module here instead, so the
+          // camera branch never loses a pick to the lazy-loading race.
+          let cameraPosition: camera.CameraPosition | undefined = this.cameraBackPosition;
+          if (cameraPosition === undefined) {
+            try {
+              const cams = await import('@ohos.multimedia.camera');
+              cameraPosition = cams.default.CameraPosition.CAMERA_POSITION_BACK;
+              this.cameraBackPosition = cameraPosition;
+            } catch (cameraPickImportError) {
+              this.noteLazyFailure('camera', cameraPickImportError as Error);
+            }
+          }
+          if (cameraPosition === undefined) {
+            this.hostCall('notifyPickerResult', typeof host.notifyPickerResult === 'function', (): void => {
+              host.notifyPickerResult(requestId, -1, '', '');
+            });
+            return;
+          }
+          const backPosition: camera.CameraPosition = cameraPosition;
+          try {
+            const pickers = await import('@ohos.multimedia.cameraPicker');
+            try {
+              const mediaType = kind === 3 ? pickers.default.PickerMediaType.PHOTO : pickers.default.PickerMediaType.VIDEO;
+              const picked = await pickers.default.pick(getContext(this), [mediaType], {
+                cameraPosition: backPosition,
+              });
+              const captureUri: string = picked.resultUri;
+              const captureName: string = captureUri.substring(captureUri.lastIndexOf('/') + 1);
+              const captureFile = fileIo.openSync(captureUri, fileIo.OpenMode.READ_ONLY);
+              const captureBuffer = new ArrayBuffer(fileIo.statSync(captureUri).size);
+              fileIo.readSync(captureFile.fd, captureBuffer);
+              fileIo.closeSync(captureFile);
+              const captureBase64 = new util.Base64Helper().encodeToStringSync(new Uint8Array(captureBuffer));
+              this.hostCall('notifyPickerResult', typeof host.notifyPickerResult === 'function', (): void => {
+                host.notifyPickerResult(requestId, 0, captureName, captureBase64);
+              });
+            } catch (captureError) {
+              console.error(`camera capture failed: ${(captureError as Error).message}`);
+              this.hostCall('notifyPickerResult', typeof host.notifyPickerResult === 'function', (): void => {
+                host.notifyPickerResult(requestId, -1, '', '');
+              });
+            }
+          } catch (pickerImportError) {
+            this.noteLazyFailure('cameraPicker', pickerImportError as Error);
+            this.hostCall('notifyPickerResult', typeof host.notifyPickerResult === 'function', (): void => {
+              host.notifyPickerResult(requestId, -1, '', '');
+            });
+          }
           return;
         }
-        const uri = uris[0];
-        const file = fs.openSync(uri, fs.OpenMode.READ_ONLY);
-        const stat = fs.statSync(file.fd);
-        const buffer = new ArrayBuffer(stat.size);
-        fs.readSync(file.fd, buffer);
-        fs.closeSync(file);
-        const helper = new util.Base64Helper();
-        const encoded = helper.encodeToStringSync(new Uint8Array(buffer));
-        const name = uri.substring(uri.lastIndexOf('/') + 1);
-        host.notifyPickerResult(requestId, 0, name, encoded);
-      } catch (error) {
-        host.notifyPickerResult(requestId, -1, '', '');
-      }
+        // Document picker (kinds other than the camera capture) stays on the static
+        // @ohos.file.picker / @ohos.file.fs imports.
+        try {
+          const documentPicker = new picker.DocumentViewPicker();
+          const uris = await documentPicker.select({ maxSelectNumber: 1 });
+          if (!uris || uris.length === 0) {
+            this.hostCall('notifyPickerResult', typeof host.notifyPickerResult === 'function', (): void => {
+              host.notifyPickerResult(requestId, -1, '', '');
+            });
+            return;
+          }
+          const uri = uris[0];
+          const file = fs.openSync(uri, fs.OpenMode.READ_ONLY);
+          const stat = fs.statSync(file.fd);
+          const buffer = new ArrayBuffer(stat.size);
+          fs.readSync(file.fd, buffer);
+          fs.closeSync(file);
+          const helper = new util.Base64Helper();
+          const encoded = helper.encodeToStringSync(new Uint8Array(buffer));
+          const name = uri.substring(uri.lastIndexOf('/') + 1);
+          this.hostCall('notifyPickerResult', typeof host.notifyPickerResult === 'function', (): void => {
+            host.notifyPickerResult(requestId, 0, name, encoded);
+          });
+        } catch (error) {
+          this.hostCall('notifyPickerResult', typeof host.notifyPickerResult === 'function', (): void => {
+            host.notifyPickerResult(requestId, -1, '', '');
+          });
+        }
+      });
     });
 
-    host.registerVibrationSink((durationMs: number) => {
+    // Notifications (H5a): this registration is a sibling of the picker sink, not nested inside
+    // it - nested, it only ran after a picker request, so notification events were never
+    // registered at page startup. Device-compat: the notification manager is imported lazily; a
+    // missing module is cached and the publish is skipped.
+    this.hostCall('registerNotificationSink', typeof host.registerNotificationSink === 'function', (): void => {
+      host.registerNotificationSink(async (notificationId: number, notificationTitle: string, notificationText: string): Promise<void> => {
+        if (this.lazyUnavailable('notificationManager')) {
+          return;
+        }
+        try {
+          const nm = await import('@ohos.notificationManager');
+          try {
+            await nm.default.publish({
+              id: notificationId,
+              content: {
+                notificationContentType: nm.default.ContentType.NOTIFICATION_CONTENT_BASIC_TEXT,
+                normal: { title: notificationTitle, text: notificationText, additionalText: '' }
+              }
+            });
+          } catch (publishError) {
+            console.error(`notification publish failed: ${(publishError as Error).message}`);
+          }
+        } catch (notificationImportError) {
+          this.noteLazyFailure('notificationManager', notificationImportError as Error);
+        }
+      });
+    });
+
+    this.hostCall('registerVibrationSink', typeof host.registerVibrationSink === 'function', (): void => {
+      host.registerVibrationSink((durationMs: number) => {
+      });
     });
 
     // SecureStorage: the managed side asks HUKS to generate/encrypt/decrypt.
@@ -929,8 +1082,12 @@ struct Index {
     // every request is answered with rc=-1 and the managed side uses its documented file
     // fallback. Enabling the real path means adding the universal keystore kit to the shell
     // project (see docs/plans/2026-09-18-ohos-secure-storage-huks-plan.md).
-    host.registerKeystoreSink((requestId: number, op: string, alias: string, data: string) => {
-      host.notifyKeystoreResult(requestId, -1, '');
+    this.hostCall('registerKeystoreSink', typeof host.registerKeystoreSink === 'function', (): void => {
+      host.registerKeystoreSink((requestId: number, op: string, alias: string, data: string) => {
+        this.hostCall('notifyKeystoreResult', typeof host.notifyKeystoreResult === 'function', (): void => {
+          host.notifyKeystoreResult(requestId, -1, '');
+        });
+      });
     });
 
     // TextToSpeech: speak requests arrive from the managed side (ohos_host_tts_speak). The
@@ -940,92 +1097,145 @@ struct Index {
     // answered with "unavailable" (rc=-1) and the managed side degrades (it never throws).
     // With a Speech Kit SDK: create the engine once (textToSpeech.createEngine), call
     // engine.speak(text, ...) and answer host.notifyTtsResult(requestId, 0) when it finishes.
-    host.registerTtsSink((requestId: number, text: string, locale: string): void => {
-      host.notifyTtsResult(requestId, -1);
+    this.hostCall('registerTtsSink', typeof host.registerTtsSink === 'function', (): void => {
+      host.registerTtsSink((requestId: number, text: string, locale: string): void => {
+        this.hostCall('notifyTtsResult', typeof host.notifyTtsResult === 'function', (): void => {
+          host.notifyTtsResult(requestId, -1);
+        });
+      });
     });
 
     // Contacts (platform extra): the managed side asks through ohos_host_contacts_query. The
     // sink requires ohos.permission.READ_CONTACTS, queries the Contacts Kit
     // (@kit.ContactsKit -> contact.queryContacts) and answers with "name\tphone" lines, capped
     // at the managed limit. A missing kit or a denied permission answers code -1, which the
-    // managed side reports as IsSupported == false instead of guessing.
-    host.registerContactsSink(async (requestId: number, namePrefix: string, limit: number): Promise<void> => {
-      try {
-        const context = getContext(this) as common.UIAbilityContext;
-        const permissions: Permissions[] = ['ohos.permission.READ_CONTACTS'];
-        const atManager = abilityAccessCtrl.createAtManager();
-        const granted = await atManager.requestPermissionsFromUser(context, permissions);
-        if (granted.authResults.length === 0 || granted.authResults[0] !== 0) {
-          host.notifyContactsResult(requestId, -1, '');
+    // managed side reports as IsSupported == false instead of guessing. Device-compat: the
+    // Contacts Kit is imported lazily; a missing kit is cached and every later request
+    // answers -1 without re-importing.
+    this.hostCall('registerContactsSink', typeof host.registerContactsSink === 'function', (): void => {
+      host.registerContactsSink(async (requestId: number, namePrefix: string, limit: number): Promise<void> => {
+        if (this.lazyUnavailable('contactsKit')) {
+          this.hostCall('notifyContactsResult', typeof host.notifyContactsResult === 'function', (): void => {
+            host.notifyContactsResult(requestId, -1, '');
+          });
           return;
         }
-        const all = await contact.queryContacts(context);
-        const rows: string[] = [];
-        for (const item of all) {
-          const name: string = item.name && item.name.fullName ? item.name.fullName : '';
-          if (namePrefix.length > 0 && !name.startsWith(namePrefix)) {
-            continue;
+        try {
+          const kit = await import('@kit.ContactsKit');
+          try {
+            const context = getContext(this) as common.UIAbilityContext;
+            const permissions: Permissions[] = ['ohos.permission.READ_CONTACTS'];
+            const atManager = abilityAccessCtrl.createAtManager();
+            const granted = await atManager.requestPermissionsFromUser(context, permissions);
+            if (granted.authResults.length === 0 || granted.authResults[0] !== 0) {
+              this.hostCall('notifyContactsResult', typeof host.notifyContactsResult === 'function', (): void => {
+                host.notifyContactsResult(requestId, -1, '');
+              });
+              return;
+            }
+            const all = await kit.contact.queryContacts(context);
+            const rows: string[] = [];
+            for (const item of all) {
+              const name: string = item.name && item.name.fullName ? item.name.fullName : '';
+              if (namePrefix.length > 0 && !name.startsWith(namePrefix)) {
+                continue;
+              }
+              const phone: string = item.phoneNumbers && item.phoneNumbers.length > 0
+                ? item.phoneNumbers[0].phoneNumber : '';
+              rows.push(`${this.escapeRecordField(name)}\t${this.escapeRecordField(phone)}`);
+              if (rows.length >= limit) {
+                break;
+              }
+            }
+            this.hostCall('notifyContactsResult', typeof host.notifyContactsResult === 'function', (): void => {
+              host.notifyContactsResult(requestId, 0, rows.join('\n'));
+            });
+          } catch (contactsError) {
+            console.error(`[maui] contacts query failed: ${(contactsError as Error).message}`);
+            this.hostCall('notifyContactsResult', typeof host.notifyContactsResult === 'function', (): void => {
+              host.notifyContactsResult(requestId, -1, '');
+            });
           }
-          const phone: string = item.phoneNumbers && item.phoneNumbers.length > 0
-            ? item.phoneNumbers[0].phoneNumber : '';
-          rows.push(`${this.escapeRecordField(name)}\t${this.escapeRecordField(phone)}`);
-          if (rows.length >= limit) {
-            break;
-          }
+        } catch (contactsImportError) {
+          this.noteLazyFailure('contactsKit', contactsImportError as Error);
+          this.hostCall('notifyContactsResult', typeof host.notifyContactsResult === 'function', (): void => {
+            host.notifyContactsResult(requestId, -1, '');
+          });
         }
-        host.notifyContactsResult(requestId, 0, rows.join('\n'));
-      } catch (contactsError) {
-        console.error(`[maui] contacts query failed: ${(contactsError as Error).message}`);
-        host.notifyContactsResult(requestId, -1, '');
-      }
+      });
     });
 
     // Calendar (platform extra): the managed side asks through ohos_host_calendar_list (op 0,
     // arg1 = days) or ohos_host_calendar_add (op 1, arg1 = title, arg2/arg3 = ISO start/end).
     // Both require the runtime calendar permissions and run through the Calendar Kit
     // (@kit.CalendarKit -> calendarManager.getCalendar -> getEvents / addEvent). A missing kit
-    // or a denied permission answers code -1 (managed IsSupported == false).
-    host.registerCalendarSink(async (requestId: number, op: number, arg1: string, arg2: string, arg3: string): Promise<void> => {
-      try {
-        const context = getContext(this) as common.UIAbilityContext;
-        const permissions: Permissions[] = op === 0
-          ? ['ohos.permission.READ_CALENDAR']
-          : ['ohos.permission.READ_CALENDAR', 'ohos.permission.WRITE_CALENDAR'];
-        const atManager = abilityAccessCtrl.createAtManager();
-        const granted = await atManager.requestPermissionsFromUser(context, permissions);
-        for (let i = 0; i < granted.authResults.length; i++) {
-          if (granted.authResults[i] !== 0) {
+    // or a denied permission answers code -1 (managed IsSupported == false). Device-compat:
+    // the Calendar Kit is imported lazily; a missing kit is cached and answers -1.
+    this.hostCall('registerCalendarSink', typeof host.registerCalendarSink === 'function', (): void => {
+      host.registerCalendarSink(async (requestId: number, op: number, arg1: string, arg2: string, arg3: string): Promise<void> => {
+        if (this.lazyUnavailable('calendarKit')) {
+          this.hostCall('notifyCalendarResult', typeof host.notifyCalendarResult === 'function', (): void => {
             host.notifyCalendarResult(requestId, -1, '');
-            return;
-          }
-        }
-        const manager = calendarManager.getCalendarManager(context);
-        const calendar = await manager.getCalendar();
-        if (op === 0) {
-          const days: number = Number.parseInt(arg1, 10) || 0;
-          const now: number = Date.now();
-          const end: number = now + days * 24 * 60 * 60 * 1000;
-          const events = await calendar.getEvents(calendarManager.EventFilter.filterByTime(now, end));
-          const rows: string[] = [];
-          for (const item of events) {
-            const title: string = item.title ? item.title : '';
-            rows.push(`${this.escapeRecordField(title)}\t${this.escapeRecordField(new Date(item.startTime).toISOString())}\t${this.escapeRecordField(new Date(item.endTime).toISOString())}`);
-          }
-          host.notifyCalendarResult(requestId, 0, rows.join('\n'));
+          });
           return;
         }
-        const event: calendarManager.Event = {
-          type: calendarManager.EventType.NORMAL,
-          title: arg1,
-          startTime: Date.parse(arg2),
-          endTime: Date.parse(arg3),
-        };
-        await calendar.addEvent(event);
-        host.notifyCalendarResult(requestId, 0, '');
-      } catch (calendarError) {
-        console.error(`[maui] calendar request failed: ${(calendarError as Error).message}`);
-        host.notifyCalendarResult(requestId, -1, '');
-      }
+        try {
+          const kit = await import('@kit.CalendarKit');
+          try {
+            const context = getContext(this) as common.UIAbilityContext;
+            const permissions: Permissions[] = op === 0
+              ? ['ohos.permission.READ_CALENDAR']
+              : ['ohos.permission.READ_CALENDAR', 'ohos.permission.WRITE_CALENDAR'];
+            const atManager = abilityAccessCtrl.createAtManager();
+            const granted = await atManager.requestPermissionsFromUser(context, permissions);
+            for (let i = 0; i < granted.authResults.length; i++) {
+              if (granted.authResults[i] !== 0) {
+                this.hostCall('notifyCalendarResult', typeof host.notifyCalendarResult === 'function', (): void => {
+                  host.notifyCalendarResult(requestId, -1, '');
+                });
+                return;
+              }
+            }
+            const manager = kit.calendarManager.getCalendarManager(context);
+            const calendar = await manager.getCalendar();
+            if (op === 0) {
+              const days: number = Number.parseInt(arg1, 10) || 0;
+              const now: number = Date.now();
+              const end: number = now + days * 24 * 60 * 60 * 1000;
+              const events = await calendar.getEvents(kit.calendarManager.EventFilter.filterByTime(now, end));
+              const rows: string[] = [];
+              for (const item of events) {
+                const title: string = item.title ? item.title : '';
+                rows.push(`${this.escapeRecordField(title)}\t${this.escapeRecordField(new Date(item.startTime).toISOString())}\t${this.escapeRecordField(new Date(item.endTime).toISOString())}`);
+              }
+              this.hostCall('notifyCalendarResult', typeof host.notifyCalendarResult === 'function', (): void => {
+                host.notifyCalendarResult(requestId, 0, rows.join('\n'));
+              });
+              return;
+            }
+            const event: calendarManager.Event = {
+              type: kit.calendarManager.EventType.NORMAL,
+              title: arg1,
+              startTime: Date.parse(arg2),
+              endTime: Date.parse(arg3),
+            };
+            await calendar.addEvent(event);
+            this.hostCall('notifyCalendarResult', typeof host.notifyCalendarResult === 'function', (): void => {
+              host.notifyCalendarResult(requestId, 0, '');
+            });
+          } catch (calendarError) {
+            console.error(`[maui] calendar request failed: ${(calendarError as Error).message}`);
+            this.hostCall('notifyCalendarResult', typeof host.notifyCalendarResult === 'function', (): void => {
+              host.notifyCalendarResult(requestId, -1, '');
+            });
+          }
+        } catch (calendarImportError) {
+          this.noteLazyFailure('calendarKit', calendarImportError as Error);
+          this.hostCall('notifyCalendarResult', typeof host.notifyCalendarResult === 'function', (): void => {
+            host.notifyCalendarResult(requestId, -1, '');
+          });
+        }
+      });
     });
 
     // Bluetooth (platform extra): the managed side asks through ohos_host_bluetooth_query.
@@ -1034,74 +1244,131 @@ struct Index {
     // (connection.startBluetoothDiscovery / stopBluetoothDiscovery) and op 4 answers the devices
     // found since the last start (filled by the bluetoothDeviceFind listener). ACCESS_BLUETOOTH
     // is a user_grant permission, so the shell requests it first; a denial answers code -1
-    // (managed IsSupported == false). Devices travel as "name\taddress" lines.
-    host.registerBluetoothSink(async (requestId: number, op: number): Promise<void> => {
-      try {
-        const context = getContext(this) as common.UIAbilityContext;
-        const permissions: Permissions[] = ['ohos.permission.ACCESS_BLUETOOTH'];
-        const atManager = abilityAccessCtrl.createAtManager();
-        const granted = await atManager.requestPermissionsFromUser(context, permissions);
-        if (granted.authResults.length === 0 || granted.authResults[0] !== 0) {
-          host.notifyBluetoothResult(requestId, -1, '');
-          return;
-        }
-        const state: access.BluetoothState = access.getState();
-        if (op === 0) {
-          host.notifyBluetoothResult(requestId, 0, `${state}`);
-          return;
-        }
-        if (op === 4) {
-          // Discovered devices are accumulated locally; no adapter call is needed.
-          const discovered: string[] = [];
-          this.discoveredBluetooth.forEach((name: string, address: string): void => {
-            discovered.push(`${this.escapeRecordField(name)}\t${this.escapeRecordField(address)}`);
+    // (managed IsSupported == false). Devices travel as "name\taddress" lines. Device-compat:
+    // the Connectivity Kit is imported lazily; a missing kit is cached and answers -1.
+    this.hostCall('registerBluetoothSink', typeof host.registerBluetoothSink === 'function', (): void => {
+      host.registerBluetoothSink(async (requestId: number, op: number): Promise<void> => {
+        if (this.lazyUnavailable('connectivityKit')) {
+          this.hostCall('notifyBluetoothResult', typeof host.notifyBluetoothResult === 'function', (): void => {
+            host.notifyBluetoothResult(requestId, -1, '');
           });
-          host.notifyBluetoothResult(requestId, 0, discovered.join('\n'));
           return;
         }
-        if (op === 2 || op === 3) {
-          // Discovery and its stop need a powered adapter; while it is off they would throw
-          // 2900003. That is a transient device state, so it answers code -2 (the managed side
-          // fails the call but keeps IsSupported) instead of -1 (platform unavailable).
-          if (state !== access.BluetoothState.STATE_ON) {
-            host.notifyBluetoothResult(requestId, -2, '');
-            return;
-          }
-          if (op === 2) {
-            // A fresh scan starts an empty result set; the listener is registered once the
-            // permission is in place (the discovery callback needs it too).
-            this.discoveredBluetooth.clear();
-            this.ensureBluetoothDeviceListener();
-            connection.startBluetoothDiscovery();
-          } else {
-            connection.stopBluetoothDiscovery();
-            this.unsubscribeBluetoothDeviceListener();
-          }
-          host.notifyBluetoothResult(requestId, 0, '');
-          return;
-        }
-        // Paired devices need a powered adapter; while it is off the platform throws
-        // 2900003, which is answered as a valid empty list instead of a failure.
-        if (state !== access.BluetoothState.STATE_ON) {
-          host.notifyBluetoothResult(requestId, 0, '');
-          return;
-        }
-        const devices: Array<string> = connection.getPairedDevices();
-        const rows: string[] = [];
-        for (const deviceId of devices) {
-          let name: string = '';
+        try {
+          const kit = await import('@kit.ConnectivityKit');
           try {
-            name = connection.getRemoteDeviceName(deviceId);
-          } catch (nameError) {
-            name = '';
+            const context = getContext(this) as common.UIAbilityContext;
+            const permissions: Permissions[] = ['ohos.permission.ACCESS_BLUETOOTH'];
+            const atManager = abilityAccessCtrl.createAtManager();
+            const granted = await atManager.requestPermissionsFromUser(context, permissions);
+            if (granted.authResults.length === 0 || granted.authResults[0] !== 0) {
+              this.hostCall('notifyBluetoothResult', typeof host.notifyBluetoothResult === 'function', (): void => {
+                host.notifyBluetoothResult(requestId, -1, '');
+              });
+              return;
+            }
+            const state: access.BluetoothState = kit.access.getState();
+            if (op === 0) {
+              this.hostCall('notifyBluetoothResult', typeof host.notifyBluetoothResult === 'function', (): void => {
+                host.notifyBluetoothResult(requestId, 0, `${state}`);
+              });
+              return;
+            }
+            if (op === 4) {
+              // Discovered devices are accumulated locally; no adapter call is needed.
+              const discovered: string[] = [];
+              this.discoveredBluetooth.forEach((name: string, address: string): void => {
+                discovered.push(`${this.escapeRecordField(name)}\t${this.escapeRecordField(address)}`);
+              });
+              this.hostCall('notifyBluetoothResult', typeof host.notifyBluetoothResult === 'function', (): void => {
+                host.notifyBluetoothResult(requestId, 0, discovered.join('\n'));
+              });
+              return;
+            }
+            if (op === 2 || op === 3) {
+              // Discovery and its stop need a powered adapter; while it is off they would throw
+              // 2900003. That is a transient device state, so it answers code -2 (the managed side
+              // fails the call but keeps IsSupported) instead of -1 (platform unavailable).
+              if (state !== kit.access.BluetoothState.STATE_ON) {
+                this.hostCall('notifyBluetoothResult', typeof host.notifyBluetoothResult === 'function', (): void => {
+                  host.notifyBluetoothResult(requestId, -2, '');
+                });
+                return;
+              }
+              if (op === 2) {
+                // A fresh scan starts an empty result set; the listener is registered once the
+                // permission is in place (the discovery callback needs it too) and resolves each
+                // name with getRemoteDeviceName while discovery runs.
+                this.discoveredBluetooth.clear();
+                if (!this.bluetoothDeviceRegistered) {
+                  kit.connection.on('bluetoothDeviceFind', (devices: Array<string>): void => {
+                    for (const deviceId of devices) {
+                      let name: string = '';
+                      try {
+                        name = kit.connection.getRemoteDeviceName(deviceId);
+                      } catch (nameError) {
+                        name = '';
+                      }
+                      this.discoveredBluetooth.set(deviceId, name);
+                      this.hostCall('notifyBluetoothDeviceFound', typeof host.notifyBluetoothDeviceFound === 'function', (): void => {
+                        host.notifyBluetoothDeviceFound(`${this.escapeRecordField(name)}\t${this.escapeRecordField(deviceId)}`);
+                      });
+                    }
+                  });
+                  this.bluetoothDeviceRegistered = true;
+                }
+                kit.connection.startBluetoothDiscovery();
+              } else {
+                kit.connection.stopBluetoothDiscovery();
+                if (this.bluetoothDeviceRegistered) {
+                  try {
+                    kit.connection.off('bluetoothDeviceFind');
+                  } catch (offError) {
+                    // Stopping discovery already succeeded; a stale listener is harmless.
+                  }
+                  this.bluetoothDeviceRegistered = false;
+                }
+              }
+              this.hostCall('notifyBluetoothResult', typeof host.notifyBluetoothResult === 'function', (): void => {
+                host.notifyBluetoothResult(requestId, 0, '');
+              });
+              return;
+            }
+            // Paired devices need a powered adapter; while it is off the platform throws
+            // 2900003, which is answered as a valid empty list instead of a failure.
+            if (state !== kit.access.BluetoothState.STATE_ON) {
+              this.hostCall('notifyBluetoothResult', typeof host.notifyBluetoothResult === 'function', (): void => {
+                host.notifyBluetoothResult(requestId, 0, '');
+              });
+              return;
+            }
+            const devices: Array<string> = kit.connection.getPairedDevices();
+            const rows: string[] = [];
+            for (const deviceId of devices) {
+              let name: string = '';
+              try {
+                name = kit.connection.getRemoteDeviceName(deviceId);
+              } catch (nameError) {
+                name = '';
+              }
+              rows.push(`${this.escapeRecordField(name)}\t${this.escapeRecordField(deviceId)}`);
+            }
+            this.hostCall('notifyBluetoothResult', typeof host.notifyBluetoothResult === 'function', (): void => {
+              host.notifyBluetoothResult(requestId, 0, rows.join('\n'));
+            });
+          } catch (bluetoothError) {
+            console.error(`[maui] bluetooth request failed: ${(bluetoothError as Error).message}`);
+            this.hostCall('notifyBluetoothResult', typeof host.notifyBluetoothResult === 'function', (): void => {
+              host.notifyBluetoothResult(requestId, -1, '');
+            });
           }
-          rows.push(`${this.escapeRecordField(name)}\t${this.escapeRecordField(deviceId)}`);
+        } catch (bluetoothImportError) {
+          this.noteLazyFailure('connectivityKit', bluetoothImportError as Error);
+          this.hostCall('notifyBluetoothResult', typeof host.notifyBluetoothResult === 'function', (): void => {
+            host.notifyBluetoothResult(requestId, -1, '');
+          });
         }
-        host.notifyBluetoothResult(requestId, 0, rows.join('\n'));
-      } catch (bluetoothError) {
-        console.error(`[maui] bluetooth request failed: ${(bluetoothError as Error).message}`);
-        host.notifyBluetoothResult(requestId, -1, '');
-      }
+      });
     });
 
     // Printing (platform extra): the managed side asks through ohos_host_print_file with an
@@ -1109,21 +1376,43 @@ struct Index {
     // ohos.permission.PRINT is system_grant, so there is no runtime prompt: a packaged app
     // that declares it can print. print.print resolves once the system print UI accepted the
     // job; the final page outcome belongs to the print service, so code 0 means "accepted".
-    host.registerPrintSink(async (requestId: number, path: string): Promise<void> => {
-      try {
-        const context = getContext(this) as common.UIAbilityContext;
-        const task: print.PrintTask = await print.print([path], context);
-        task.on('fail', (): void => {
-          console.error('[maui] print task reported failure');
-        });
-        task.on('cancel', (): void => {
-          console.info('[maui] print task cancelled');
-        });
-        host.notifyPrintResult(requestId, 0, '');
-      } catch (printError) {
-        console.error(`[maui] print request failed: ${(printError as Error).message}`);
-        host.notifyPrintResult(requestId, -1, (printError as Error).message);
-      }
+    // Device-compat: the print module is imported lazily; a missing module is cached and
+    // answers -1.
+    this.hostCall('registerPrintSink', typeof host.registerPrintSink === 'function', (): void => {
+      host.registerPrintSink(async (requestId: number, path: string): Promise<void> => {
+        if (this.lazyUnavailable('print')) {
+          this.hostCall('notifyPrintResult', typeof host.notifyPrintResult === 'function', (): void => {
+            host.notifyPrintResult(requestId, -1, '');
+          });
+          return;
+        }
+        try {
+          const printer = await import('@ohos.print');
+          try {
+            const context = getContext(this) as common.UIAbilityContext;
+            const task: print.PrintTask = await printer.default.print([path], context);
+            task.on('fail', (): void => {
+              console.error('[maui] print task reported failure');
+            });
+            task.on('cancel', (): void => {
+              console.info('[maui] print task cancelled');
+            });
+            this.hostCall('notifyPrintResult', typeof host.notifyPrintResult === 'function', (): void => {
+              host.notifyPrintResult(requestId, 0, '');
+            });
+          } catch (printError) {
+            console.error(`[maui] print request failed: ${(printError as Error).message}`);
+            this.hostCall('notifyPrintResult', typeof host.notifyPrintResult === 'function', (): void => {
+              host.notifyPrintResult(requestId, -1, (printError as Error).message);
+            });
+          }
+        } catch (printImportError) {
+          this.noteLazyFailure('print', printImportError as Error);
+          this.hostCall('notifyPrintResult', typeof host.notifyPrintResult === 'function', (): void => {
+            host.notifyPrintResult(requestId, -1, '');
+          });
+        }
+      });
     });
 
     // Launcher/Browser/Share: managed requests arrive through ohos_host_ability_start. kind 0
@@ -1140,37 +1429,39 @@ struct Index {
     // this SDK declares in @ohos.app.ability.wantConstant; it asks the ability manager to grant
     // the receiver read access to the file:// uri. Whether the target app can actually read the
     // sandbox file depends on that app and is not verifiable from this shell.
-    host.registerAbilitySink((kind: number, uri: string, text: string): boolean => {
-      try {
-        const context = getContext(this) as common.UIAbilityContext;
-        if (kind === 2) {
-          return context !== undefined && context !== null;
+    this.hostCall('registerAbilitySink', typeof host.registerAbilitySink === 'function', (): void => {
+      host.registerAbilitySink((kind: number, uri: string, text: string): boolean => {
+        try {
+          const context = getContext(this) as common.UIAbilityContext;
+          if (kind === 2) {
+            return context !== undefined && context !== null;
+          }
+          const want: Want = new Want();
+          if (kind === 1) {
+            want.action = 'ohos.want.action.sendData';
+            want.type = 'text/plain';
+            want.parameters = { 'ohos.extra.param.key.content': text };
+          } else if (kind === 3) {
+            // File share: uri = file:// URI (built by the managed side), text = MIME type.
+            want.action = 'ohos.want.action.sendData';
+            want.uri = uri;
+            want.type = text;
+            want.flags = wantConstant.Flags.FLAG_AUTH_READ_URI_PERMISSION;
+          } else {
+            want.action = 'ohos.want.action.viewData';
+            want.uri = uri;
+          }
+          context.startAbility(want).then((): void => {
+            console.info(`[maui] ability start dispatched: kind=${kind}`);
+          }).catch((startError: Error): void => {
+            console.error(`[maui] ability start failed: kind=${kind} ${startError.message}`);
+          });
+          return true;
+        } catch (startError) {
+          console.error(`[maui] ability start threw: ${(startError as Error).message}`);
+          return false;
         }
-        const want: Want = new Want();
-        if (kind === 1) {
-          want.action = 'ohos.want.action.sendData';
-          want.type = 'text/plain';
-          want.parameters = { 'ohos.extra.param.key.content': text };
-        } else if (kind === 3) {
-          // File share: uri = file:// URI (built by the managed side), text = MIME type.
-          want.action = 'ohos.want.action.sendData';
-          want.uri = uri;
-          want.type = text;
-          want.flags = wantConstant.Flags.FLAG_AUTH_READ_URI_PERMISSION;
-        } else {
-          want.action = 'ohos.want.action.viewData';
-          want.uri = uri;
-        }
-        context.startAbility(want).then((): void => {
-          console.info(`[maui] ability start dispatched: kind=${kind}`);
-        }).catch((startError: Error): void => {
-          console.error(`[maui] ability start failed: kind=${kind} ${startError.message}`);
-        });
-        return true;
-      } catch (startError) {
-        console.error(`[maui] ability start threw: ${(startError as Error).message}`);
-        return false;
-      }
+      });
     });
 
     // Flashlight (Camera Kit torch): the managed side asks through ohos_host_flashlight_set(on)
@@ -1179,45 +1470,54 @@ struct Index {
     // synchronous call that throws (e.g. 7400102 when the camera service does not allow it), so
     // the boolean is the kit's answer, not a visual confirmation of the LED. A missing kit or
     // camera answers false and the managed side degrades without throwing.
-    host.registerFlashlightSink((on: number): boolean => {
-      try {
-        const manager = this.ensureFlashlightManager();
-        if (on === 2) {
-          return manager.isTorchSupported();
-        }
-        if (!manager.isTorchSupported()) {
+    this.hostCall('registerFlashlightSink', typeof host.registerFlashlightSink === 'function', (): void => {
+      host.registerFlashlightSink((on: number): boolean => {
+        try {
+          const manager = this.ensureFlashlightManager();
+          if (manager === undefined) {
+            // The camera module has not finished its lazy load yet, or is unavailable.
+            return false;
+          }
+          if (on === 2) {
+            return manager.isTorchSupported();
+          }
+          if (!manager.isTorchSupported()) {
+            return false;
+          }
+          if (this.cameraTorchOn === undefined || this.cameraTorchOff === undefined) {
+            return false;
+          }
+          manager.setTorchMode(on === 1 ? this.cameraTorchOn : this.cameraTorchOff);
+          return true;
+        } catch (flashlightError) {
+          console.error(`[maui] flashlight request failed: ${(flashlightError as Error).message}`);
+          this.flashlightManager = undefined;
           return false;
         }
-        manager.setTorchMode(on === 1 ? camera.TorchMode.ON : camera.TorchMode.OFF);
-        return true;
-      } catch (flashlightError) {
-        console.error(`[maui] flashlight request failed: ${(flashlightError as Error).message}`);
-        this.flashlightManager = undefined;
-        return false;
-      }
+      });
     });
 
     // The managed Entry asks for the soft keyboard through this sink.
-    host.registerTextInputSink((show: number) => {
-      if (show === 1) {
-        this.controller.caretPosition(0);
-        focusControl.requestFocus('ohos_dotnet_input');
-      } else {
-        focusControl.requestFocus('ohos_dotnet_surface');
-      }
+    this.hostCall('registerTextInputSink', typeof host.registerTextInputSink === 'function', (): void => {
+      host.registerTextInputSink((show: number) => {
+        if (show === 1) {
+          this.controller.caretPosition(0);
+          focusControl.requestFocus('ohos_dotnet_input');
+        } else {
+          focusControl.requestFocus('ohos_dotnet_surface');
+        }
+      });
     });
 
     // Menus: pull the initial table, then refresh on every commit from the managed side.
     // A host library without the menu exports degrades to no menu instead of failing the page.
-    try {
+    this.hostCall('registerMenuChangedSink', typeof host.registerMenuChangedSink === 'function', (): void => {
       host.registerMenuChangedSink((count: number): void => {
         console.info(`[maui] menu table changed: ${count} rows`);
         this.pullMenu();
       });
-      this.pullMenu();
-    } catch (menuError) {
-      this.menuItems = [];
-    }
+    });
+    this.pullMenu();
   }
 
   // Late app-context publish: the native host stores the context JSON once, at startApp time,
@@ -1257,7 +1557,9 @@ struct Index {
   // status 3). onPageShow runs after the page (and its ContentSlot) is mounted; the host
   // caches the created node, so a repeated page show cannot attach it twice.
   onPageShow(): void {
-    host.setNodeContent(this.content);
+    this.hostCall('setNodeContent', typeof host.setNodeContent === 'function', (): void => {
+      host.setNodeContent(this.content);
+    });
   }
 
   // Accessibility self-check: the tiny overlay button in build() reports what the native host
@@ -1660,8 +1962,12 @@ struct Index {
     if (token !== 'HybridWebView' || body.length === 0) {
       return this.hybridErrorResponse(400);
     }
-    host.notifyJsMessage(this.originEnvelope(body));
-    return this.hybridErrorResponse(204);
+    const delivered: boolean = this.hostCall('notifyJsMessage', typeof host.notifyJsMessage === 'function', (): void => {
+      host.notifyJsMessage(this.originEnvelope(body));
+    });
+    // The message could not be handed to the managed side (mismatched host library): answer
+    // the page's fetch with a malformed-request status instead of a success it never got.
+    return this.hybridErrorResponse(delivered ? 204 : 400);
   }
 
   // Error payload for a delayed invocation response. It completes the response with HTTP 200
@@ -1757,6 +2063,7 @@ struct Index {
           this.hybridInvokeErrorPayload('the .NET host is not listening for hybrid invocations'));
       }
     } catch (invokeError) {
+      this.reportHostUnavailable('notifyHybridInvoke', invokeError as Error);
       this.completeHybridInvoke(requestId,
         this.hybridInvokeErrorPayload('the .NET host does not expose the hybrid invocation bridge'));
     }
@@ -1831,11 +2138,15 @@ struct Index {
           const startedUrl: string = event ? event.url : '';
           // B6: the approved/app-requested load started; its one-shot marker is used up.
           this.retireNavigationMarker(startedUrl);
-          host.notifyWebEvent('started', startedUrl);
+          this.hostCall('notifyWebEvent', typeof host.notifyWebEvent === 'function', (): void => {
+            host.notifyWebEvent('started', startedUrl);
+          });
         })
         .onPageEnd((event) => {
           const pageUrl: string = event ? event.url : '';
-          host.notifyWebEvent('finished', pageUrl);
+          this.hostCall('notifyWebEvent', typeof host.notifyWebEvent === 'function', (): void => {
+            host.notifyWebEvent('finished', pageUrl);
+          });
           this.injectPageBridge(pageUrl);
           this.injectBlazorBootstrap(pageUrl);
         })
@@ -1847,11 +2158,16 @@ struct Index {
         .position({ x: 0, y: 0 })
         .onChange((value: string) => {
           this.inputText = value;
-          host.notifyTextInput(value);
+          // Per-keystroke path: a mismatched host logs once, not once per character.
+          this.hostCall('notifyTextInput', typeof host.notifyTextInput === 'function', (): void => {
+            host.notifyTextInput(value);
+          });
         })
         .onSubmit(() => {
           // The managed Entry/SearchBar raises Completed/SearchButtonPressed.
-          host.notifyTextSubmitted(this.inputText);
+          this.hostCall('notifyTextSubmitted', typeof host.notifyTextSubmitted === 'function', (): void => {
+            host.notifyTextSubmitted(this.inputText);
+          });
         })
 
       XComponent({
