@@ -8,10 +8,11 @@
 #   encryptedPassword: the storePassword/keyPassword value from build-profile.json5; can also be
 #                      supplied through OHOS_ENC_PWD (preferred: argv is world-readable)
 #   --pwd-input-mode (or OHOS_PWD_INPUT_MODE=1): pass -pwdInputMode 1 and omit -keyPwd/-keystorePwd,
-#                      so hap-sign-tool prompts for the p12 password on a real tty. In this mode no
-#                      encryptedPassword / hvigor plugin is needed and the password never enters any
-#                      argv. For callers without a tty, wrap the command with script(1):
-#                        script -qec 'sh scripts/sign-huawei.sh --pwd-input-mode ...' /dev/null
+#                      so hap-sign-tool prompts for the p12 password on the controlling terminal. In
+#                      this mode no encryptedPassword / hvigor plugin is needed and the password never
+#                      enters any argv. Without a tty (CI/build scripts) the call is wrapped in
+#                      script(1) automatically, so the password can be fed through stdin to the pty;
+#                      if script(1) is not installed, the mode fails with a clear error.
 # Requires: node + the extracted hvigor-ohos-plugin (ARKTS_PLUGIN_DIR or ~/arkts-build/node_modules/@ohos/hvigor-ohos-plugin)
 #           in the default mode only, and hap-sign-tool (SDK toolchains/lib) in both modes.
 #
@@ -21,7 +22,8 @@
 # In the default (non-tty/CI) mode hap-sign-tool still needs the p12 password on argv
 # (-keyPwd/-keystorePwd), so it is visible in that child's argv for the duration of the call; it is
 # not persisted and disappears with the process. --pwd-input-mode (pwdInputMode=1) removes that
-# residual entirely: the password is typed at the tty prompt and no password argument is passed.
+# residual entirely: the password is read at the tty/pty prompt (fed through stdin when there is no
+# tty) and no password argument is passed.
 set -e
 log()  { printf '[%s] %s\n' "$(date +%H:%M:%S)" "$*"; }
 die()  { printf '[%s] ERROR: %s\n' "$(date +%H:%M:%S)" "$*" >&2; exit 1; }
@@ -29,9 +31,10 @@ die()  { printf '[%s] ERROR: %s\n' "$(date +%H:%M:%S)" "$*" >&2; exit 1; }
 usage() {
   cat >&2 <<'EOF'
 usage: sign-huawei.sh [--pwd-input-mode] <unsigned.hap> <out.hap> [configDir] [encryptedPassword]
-  --pwd-input-mode (or OHOS_PWD_INPUT_MODE=1): prompt for the p12 password on a real tty
+  --pwd-input-mode (or OHOS_PWD_INPUT_MODE=1): prompt for the p12 password on the terminal
   (-pwdInputMode 1, no -keyPwd/-keystorePwd); no encryptedPassword / hvigor plugin needed and the
-  password never enters argv. Without a tty, wrap the call: script -qec 'sh scripts/sign-huawei.sh ...' /dev/null
+  password never enters argv. Without a tty the call is wrapped in script(1) automatically (feed the
+  password on stdin); without tty and without script(1) this mode fails.
 EOF
   exit 2
 }
@@ -71,10 +74,14 @@ PLUGIN="${ARKTS_PLUGIN_DIR:-$HOME/arkts-build/node_modules/@ohos/hvigor-ohos-plu
 SDK="${OHOS_SDK_ROOT:-$HOME/.harmonybrew/Cellar/ohos-sdk/26.0.0.18_2}"
 TOOL="$SDK/toolchains/lib/hap-sign-tool"
 
-# Interactive mode: hap-sign-tool reads the password from the controlling terminal, so a tty is
-# mandatory. Piping the password does not work; script(1) can provide a pty when the caller has none.
-if [ "$MODE" = 1 ]; then
-  [ -t 0 ] || die "interactive password mode requested but stdin is not a tty; hap-sign-tool cannot read a piped password. Run in a terminal, or wrap it: script -qec 'sh scripts/sign-huawei.sh --pwd-input-mode ...' /dev/null"
+# Interactive mode: hap-sign-tool reads the password from the controlling terminal. With a real tty
+# it runs directly; without one (CI/build scripts) script(1) provides a pty, and the password can be
+# fed through stdin to that pty - it never reaches any argv. No script(1): keep the clear error.
+PTY=0
+if [ "$MODE" = 1 ] && ! [ -t 0 ]; then
+  command -v script >/dev/null 2>&1 \
+    || die "interactive password mode requested but stdin is not a tty and script(1) is not available to provide a pty; install util-linux (or busybox) script, or run in a terminal"
+  PTY=1
 fi
 
 [ -f "$IN" ]   || die "unsigned hap not found: $IN"
@@ -111,16 +118,48 @@ JS
   log "password decrypted from the Studio value"
 fi
 
+# Single-quote one word for sh -c. Every character becomes literal; an embedded ' becomes '\''.
+# Only used to rebuild the hap-sign-tool command line for script(1) (interactive mode: no password
+# in any argv), and the result is never logged.
+shquote() {
+  _q="'"; _r=$1
+  while :; do
+    case $_r in
+      *\'*) _q="$_q${_r%%\'*}'\''"; _r=${_r#*\'} ;;
+      *) printf '%s' "$_q$_r'"; return 0 ;;
+    esac
+  done
+}
+
+# Run hap-sign-tool. Directly with a tty (and always in default mode), exactly as before; when
+# PTY=1, script(1) gives it a pty so it can prompt, and the caller feeds the password through
+# stdin - it stays out of every argv. The tool's stdout is dropped as in the direct path.
+run_tool() {
+  if [ "$PTY" = 0 ]; then
+    "$TOOL" "$@" >/dev/null
+    return
+  fi
+  CMD="$(shquote "$TOOL")"
+  for a in "$@"; do
+    CMD="$CMD $(shquote "$a")"
+  done
+  script -qec "$CMD >/dev/null" /dev/null
+}
+
 log "signing $(basename "$IN") with the Huawei material (alias debugKey)"
 if [ "$MODE" = 1 ]; then
-  log "interactive mode: hap-sign-tool will prompt for keystorePwd/keyPwd on the terminal"
+  if [ "$PTY" = 1 ]; then
+    log "interactive mode: no tty, running hap-sign-tool under script(1); feed the password on stdin"
+  else
+    log "interactive mode: hap-sign-tool will prompt for keystorePwd/keyPwd on the terminal"
+  fi
   set -- -pwdInputMode 1
 else
   set -- -keyPwd "$PW" -keystorePwd "$PW"
 fi
-"$TOOL" sign-app -keyAlias debugKey -signAlg SHA256withECDSA -mode localSign \
+run_tool sign-app -keyAlias debugKey -signAlg SHA256withECDSA -mode localSign \
   -appCertFile "$CER" -profileFile "$P7B" -inFile "$IN" -outFile "$OUT" \
-  -keystoreFile "$P12" "$@" >/dev/null
+  -keystoreFile "$P12" "$@"
 T=$(dirname "$OUT")
 "$TOOL" verify-app -inFile "$OUT" -outCertChain "$T/.verify-cert.cer" -outProfile "$T/.verify-profile.p7b" 2>&1 | grep -q "verify-app success" \
   || die "verify-app failed for $OUT"

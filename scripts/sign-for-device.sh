@@ -24,11 +24,11 @@
 #   OHOS_ENC_PWD    Studio-encrypted password for --huawei, as an alternative to the positional
 #                   encryptedPassword (preferred: argv is world-readable); it is forwarded to
 #                   sign-huawei.sh through the environment
-#   OHOS_PWD_INPUT_MODE  same as --pwd-input-mode (1 = prompt on a real tty; 0 = argv, default)
-# --pwd-input-mode (--huawei only): forwarded to sign-huawei.sh; hap-sign-tool prompts for the p12
-#                   password (-pwdInputMode 1, no -keyPwd/-keystorePwd). Needs a real tty on stdin;
-#                   without one, wrap the whole call: script -qec 'sh scripts/sign-for-device.sh
-#                   --huawei --pwd-input-mode ...' /dev/null
+#   OHOS_PWD_INPUT_MODE  same as --pwd-input-mode (1 = interactive prompt; 0 = argv, default)
+# --pwd-input-mode (--huawei only): forwarded to sign-huawei.sh; hap-sign-tool reads the p12
+#                   password from the terminal (-pwdInputMode 1, no -keyPwd/-keystorePwd). Without a
+#                   tty, sign-huawei.sh wraps the tool in script(1) automatically (feed the password
+#                   on stdin); if script(1) is not installed the mode fails.
 set -e
 
 log() { printf '[%s] %s\n' "$(date '+%H:%M:%S')" "$*"; }
