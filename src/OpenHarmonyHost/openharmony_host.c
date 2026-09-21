@@ -245,6 +245,10 @@ struct OhosHostAppHandle {
     void (*bridge_keystore_result)(int request_id, int rc, const char* data_base64);
     void (*bridge_picker_result)(int request_id, int rc, const char* name, const char* data_base64);
     void (*bridge_web_event)(const char* state, const char* url);
+    void (*bridge_permission_result)(int request_id, int granted);
+    void (*bridge_clipboard_result)(int request_id, int rc, const char* text);
+    void (*bridge_clipboard_changed)(void);
+    void (*bridge_network_access)(int level);
     void* surface_window;
     int surface_width;
     int surface_height;
@@ -1143,6 +1147,94 @@ void ohos_host_picker_request(int request_id, int kind) {
 void ohos_host_picker_complete(int request_id, int rc, const char* name, const char* data_base64) {
     if (g_app != NULL && g_app->bridge_picker_result != NULL) {
         g_app->bridge_picker_result(request_id, rc, name, data_base64);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Runtime permissions: requests go to the ArkTS shell (abilityAccessCtrl), the granted/
+// denied answer comes back through host.permissionResult.
+// ---------------------------------------------------------------------------
+
+static void (*g_permission_listener)(const char* permission, int request_id) = NULL;
+
+void ohos_host_permission_set_listener(void (*listener)(const char*, int)) {
+    g_permission_listener = listener;
+}
+
+void ohos_host_register_permission_result(void* callback) {
+    if (g_app != NULL) {
+        g_app->bridge_permission_result = (void (*)(int, int))callback;
+    }
+}
+
+void ohos_host_request_permission(const char* permission, int request_id) {
+    if (g_permission_listener != NULL) {
+        g_permission_listener(permission != NULL ? permission : "", request_id);
+    }
+}
+
+void ohos_host_permission_complete(int request_id, int granted) {
+    if (g_app != NULL && g_app->bridge_permission_result != NULL) {
+        g_app->bridge_permission_result(request_id, granted != 0 ? 1 : 0);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Clipboard: requests go to the ArkTS shell (@ohos.pasteboard); the shell answers through
+// host.clipboardResult and pushes change notifications through host.notifyClipboardChanged.
+// ---------------------------------------------------------------------------
+
+static void (*g_clipboard_listener)(int request_id, int op, const char* text) = NULL;
+
+void ohos_host_clipboard_set_listener(void (*listener)(int, int, const char*)) {
+    g_clipboard_listener = listener;
+}
+
+void ohos_host_clipboard_register_result(void* callback) {
+    if (g_app != NULL) {
+        g_app->bridge_clipboard_result = (void (*)(int, int, const char*))callback;
+    }
+}
+
+void ohos_host_clipboard_request(int request_id, int op, const char* text) {
+    if (g_clipboard_listener != NULL) {
+        g_clipboard_listener(request_id, op, text != NULL ? text : "");
+    }
+}
+
+void ohos_host_clipboard_complete(int request_id, int rc, const char* text) {
+    if (g_app != NULL && g_app->bridge_clipboard_result != NULL) {
+        g_app->bridge_clipboard_result(request_id, rc, text != NULL ? text : "");
+    }
+}
+
+void ohos_host_clipboard_register_changed(void* callback) {
+    if (g_app != NULL) {
+        g_app->bridge_clipboard_changed = (void (*)(void))callback;
+    }
+}
+
+void ohos_host_clipboard_notify_changed(void) {
+    if (g_app != NULL && g_app->bridge_clipboard_changed != NULL) {
+        g_app->bridge_clipboard_changed();
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Connectivity: the shell's network observer calls ohos_host_network_access_notify, which
+// re-reads the level through the same NDK path as ohos_host_network_access and hands it to
+// the managed listener (registered by the managed side).
+// ---------------------------------------------------------------------------
+
+void ohos_host_network_access_register(void* callback) {
+    if (g_app != NULL) {
+        g_app->bridge_network_access = (void (*)(int))callback;
+    }
+}
+
+void ohos_host_network_access_notify(void) {
+    if (g_app != NULL && g_app->bridge_network_access != NULL) {
+        g_app->bridge_network_access(ohos_host_network_access());
     }
 }
 

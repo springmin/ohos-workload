@@ -107,6 +107,35 @@ void ohos_host_picker_register_result(void* callback);
 void ohos_host_picker_request(int request_id, int kind);
 void ohos_host_picker_complete(int request_id, int rc, const char* name, const char* data_base64);
 
+/// Runtime permissions: the managed side asks the ArkTS shell to prompt for one permission
+/// (abilityAccessCtrl.requestPermissionsFromUser); the shell's registerPermissionSink handler
+/// answers through host.permissionResult -> ohos_host_permission_complete. The listener is
+/// registered by the NAPI layer; the result callback by the managed side.
+void ohos_host_permission_set_listener(void (*listener)(const char* permission, int request_id));
+void ohos_host_request_permission(const char* permission, int request_id);
+void ohos_host_register_permission_result(void* callback);
+void ohos_host_permission_complete(int request_id, int granted);
+
+/// Clipboard: the managed side asks the ArkTS shell to run one pasteboard operation through
+/// host.registerClipboardSink. op: 0 has text, 1 get text, 2 set text; `text` carries the
+/// value for set (and for get the shell may ignore it). The answer comes back through
+/// ohos_host_clipboard_complete(request_id, rc, text) with rc 0 = success, -1 = unavailable
+/// (permission denied/pasteboard or sink missing); for op 0 the payload is "1"/"0", for op 1
+/// the clipboard text (possibly empty) and for op 2 empty. The shell's pasteboard 'update'
+/// observer reports changes through ohos_host_clipboard_notify_changed (no request id).
+void ohos_host_clipboard_set_listener(void (*listener)(int request_id, int op, const char* text));
+void ohos_host_clipboard_request(int request_id, int op, const char* text);
+void ohos_host_clipboard_register_result(void* callback);
+void ohos_host_clipboard_complete(int request_id, int rc, const char* text);
+void ohos_host_clipboard_register_changed(void* callback);
+void ohos_host_clipboard_notify_changed(void);
+
+/// Connectivity: the managed side registers a listener for network-access changes (the level
+/// is the same 0 unknown / 1 none / 2 local / 3 internet encoding as ohos_host_network_access)
+/// and the NAPI layer notifies it from host.notifyNetworkAccess, the shell's observer push.
+void ohos_host_network_access_register(void* callback);
+void ohos_host_network_access_notify(void);
+
 /// Soft keyboard through the input-method NDK (attach + show/hide).
 int ohos_host_keyboard_show(void);
 /// Seeds the IME buffer with the focused editor's current text.

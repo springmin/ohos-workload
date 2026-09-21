@@ -1382,6 +1382,123 @@ napi_value NotifyPickerResult(napi_env env, napi_callback_info info) {
     return undefined;
 }
 
+// Runtime permissions: the managed side asks through ohos_host_request_permission; the sink's
+// handler runs abilityAccessCtrl.requestPermissionsFromUser and answers with
+// host.permissionResult(requestId, granted). Argument order matches the C listener
+// (permission first, request id second).
+HostSink g_permission_sink("permission", false);
+
+void OnPermissionRequest(const char* permission, int requestId) {
+    SinkCall* call = new SinkCall();
+    call->AddString(permission);
+    call->AddInt(requestId);
+    HostSinkPost(g_permission_sink, call);
+}
+
+// ArkTS calls host.registerPermissionSink(fn) to receive permission requests.
+napi_value RegisterPermissionSink(napi_env env, napi_callback_info info) {
+    size_t argc = 1;
+    napi_value argv[1] = {nullptr};
+    napi_get_cb_info(env, info, &argc, argv, nullptr, nullptr);
+    if (argc >= 1) {
+        napi_valuetype type = napi_undefined;
+        napi_typeof(env, argv[0], &type);
+        if (type == napi_function) {
+            HostSinkRegister(env, g_permission_sink, argv[0]);
+            ohos_host_permission_set_listener(OnPermissionRequest);
+        }
+    }
+    napi_value undefined = nullptr;
+    napi_get_undefined(env, &undefined);
+    return undefined;
+}
+
+// ArkTS calls host.permissionResult(requestId, granted) when the prompt was answered.
+napi_value NotifyPermissionResult(napi_env env, napi_callback_info info) {
+    size_t argc = 2;
+    napi_value argv[2] = {nullptr, nullptr};
+    napi_get_cb_info(env, info, &argc, argv, nullptr, nullptr);
+    int32_t requestId = 0;
+    int32_t granted = 0;
+    if (argc >= 1) napi_get_value_int32(env, argv[0], &requestId);
+    if (argc >= 2) napi_get_value_int32(env, argv[1], &granted);
+    ohos_host_permission_complete(requestId, granted);
+    napi_value undefined = nullptr;
+    napi_get_undefined(env, &undefined);
+    return undefined;
+}
+
+// Clipboard: the managed side sends (requestId, op, text) through ohos_host_clipboard_request;
+// the sink's handler runs the @ohos.pasteboard call and answers with
+// host.clipboardResult(requestId, rc, text). The pasteboard 'update' observer pushes
+// host.notifyClipboardChanged() through the no-argument notify below.
+HostSink g_clipboard_sink("clipboard", false);
+
+void OnClipboardRequest(int requestId, int op, const char* text) {
+    SinkCall* call = new SinkCall();
+    call->AddInt(requestId);
+    call->AddInt(op);
+    call->AddString(text);
+    HostSinkPost(g_clipboard_sink, call);
+}
+
+// ArkTS calls host.registerClipboardSink(fn) to receive clipboard operations.
+napi_value RegisterClipboardSink(napi_env env, napi_callback_info info) {
+    size_t argc = 1;
+    napi_value argv[1] = {nullptr};
+    napi_get_cb_info(env, info, &argc, argv, nullptr, nullptr);
+    if (argc >= 1) {
+        napi_valuetype type = napi_undefined;
+        napi_typeof(env, argv[0], &type);
+        if (type == napi_function) {
+            HostSinkRegister(env, g_clipboard_sink, argv[0]);
+            ohos_host_clipboard_set_listener(OnClipboardRequest);
+        }
+    }
+    napi_value undefined = nullptr;
+    napi_get_undefined(env, &undefined);
+    return undefined;
+}
+
+// ArkTS calls host.clipboardResult(requestId, rc, text) with the pasteboard answer.
+napi_value NotifyClipboardResult(napi_env env, napi_callback_info info) {
+    size_t argc = 3;
+    napi_value argv[3] = {nullptr, nullptr, nullptr};
+    napi_get_cb_info(env, info, &argc, argv, nullptr, nullptr);
+    int32_t requestId = 0;
+    int32_t rc = -1;
+    std::string text;
+    if (argc >= 1) napi_get_value_int32(env, argv[0], &requestId);
+    if (argc >= 2) napi_get_value_int32(env, argv[1], &rc);
+    if (argc >= 3) text = GetStringArg(env, argv[2]);
+    ohos_host_clipboard_complete(requestId, rc, text.c_str());
+    napi_value undefined = nullptr;
+    napi_get_undefined(env, &undefined);
+    return undefined;
+}
+
+// ArkTS calls host.notifyClipboardChanged() from the pasteboard 'update' observer.
+napi_value NotifyClipboardChanged(napi_env env, napi_callback_info info) {
+    (void)env;
+    (void)info;
+    ohos_host_clipboard_notify_changed();
+    napi_value undefined = nullptr;
+    napi_get_undefined(env, &undefined);
+    return undefined;
+}
+
+// ArkTS calls host.notifyNetworkAccess() after a NetworkKit connection event; the host re-reads
+// the level through the same NDK path as the ohos_host_network_access getter and forwards it to
+// the managed listener.
+napi_value NotifyNetworkAccess(napi_env env, napi_callback_info info) {
+    (void)env;
+    (void)info;
+    ohos_host_network_access_notify();
+    napi_value undefined = nullptr;
+    napi_get_undefined(env, &undefined);
+    return undefined;
+}
+
 // ArkTS calls host.registerVibrationSink(fn) to receive vibration requests (the preferred
 // path is the NDK export ohos_host_vibrate; this sink stays for shells that provide one).
 HostSink g_vibration_sink("vibration", true);
@@ -1721,6 +1838,8 @@ napi_value Init(napi_env env, napi_value exports) {
         {"registerKeystoreSink", nullptr, RegisterKeystoreSink, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"registerVibrationSink", nullptr, RegisterVibrationSink, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"registerPickerSink", nullptr, RegisterPickerSink, nullptr, nullptr, nullptr, napi_default, nullptr},
+        {"registerPermissionSink", nullptr, RegisterPermissionSink, nullptr, nullptr, nullptr, napi_default, nullptr},
+        {"registerClipboardSink", nullptr, RegisterClipboardSink, nullptr, nullptr, nullptr, napi_default, nullptr},
 
         {"registerNotificationSink", nullptr, RegisterNotificationSink, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"registerTtsSink", nullptr, RegisterTtsSink, nullptr, nullptr, nullptr, napi_default, nullptr},
@@ -1765,6 +1884,10 @@ napi_value Init(napi_env env, napi_value exports) {
         {"notifyBattery", nullptr, NotifyBattery, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"notifyDisplay", nullptr, NotifyDisplay, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"notifyPickerResult", nullptr, NotifyPickerResult, nullptr, nullptr, nullptr, napi_default, nullptr},
+        {"permissionResult", nullptr, NotifyPermissionResult, nullptr, nullptr, nullptr, napi_default, nullptr},
+        {"clipboardResult", nullptr, NotifyClipboardResult, nullptr, nullptr, nullptr, napi_default, nullptr},
+        {"notifyClipboardChanged", nullptr, NotifyClipboardChanged, nullptr, nullptr, nullptr, napi_default, nullptr},
+        {"notifyNetworkAccess", nullptr, NotifyNetworkAccess, nullptr, nullptr, nullptr, napi_default, nullptr},
 
         {"notifyKeystoreResult", nullptr, NotifyKeystoreResult, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"startApp", nullptr, StartApp, nullptr, nullptr, nullptr, napi_default, nullptr},

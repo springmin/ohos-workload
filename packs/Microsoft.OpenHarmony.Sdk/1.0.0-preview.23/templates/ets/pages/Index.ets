@@ -17,6 +17,7 @@ import wantConstant from '@ohos.app.ability.wantConstant';
 import fileIo from '@ohos.file.fs';
 import host from 'libopenharmonyhost.so';
 import picker from '@ohos.file.picker';
+import pasteboard from '@ohos.pasteboard';
 import fs from '@ohos.file.fs';
 import util from '@ohos.util';
 import web_webview from '@ohos.web.webview';
@@ -32,11 +33,13 @@ import window from '@ohos.window';
 //   camera            - Camera Kit (flashlight, picker camera position)
 //   calendarManager   - Calendar Kit
 //   access            - Connectivity Kit (Bluetooth adapter state)
+//   connection        - Network Kit (Connectivity change observer)
 //   print             - Print Kit
 //   commonEventManager, BusinessError - Basic Services Kit (battery events)
 import type camera from '@ohos.multimedia.camera';
 import type { calendarManager } from '@kit.CalendarKit';
 import type { access } from '@kit.ConnectivityKit';
+import type { connection } from '@kit.NetworkKit';
 import type commonEventManager from '@ohos.commonEventManager';
 import type print from '@ohos.print';
 import type { BusinessError } from '@kit.BasicServicesKit';
@@ -175,6 +178,13 @@ struct Index {
   // host.notifyDisplay on display.on('change'). Registered once per page.
   private batteryEventsRegistered: boolean = false;
   private displayChangeRegistered: boolean = false;
+  // Clipboard (Essentials): reading the pasteboard needs ohos.permission.READ_PASTEBOARD
+  // (user_grant); once granted it stays cached. The pasteboard 'update' observer registers once.
+  private clipboardReadGranted: boolean = false;
+  private clipboardObserverRegistered: boolean = false;
+  // Connectivity (Essentials): the NetworkKit connection observer registers once per page
+  // (lazily imported; see subscribeNetworkChanges).
+  private networkObserverRegistered: boolean = false;
   // Bluetooth discovery: address -> last known name, from bluetoothDeviceFind. Cleared when a
   // new discovery starts and served to the managed side through op 4.
   private discoveredBluetooth: Map<string, string> = new Map();
@@ -362,6 +372,75 @@ struct Index {
     } catch (displayEventError) {
       console.error(`[maui] display change events unavailable: ${(displayEventError as Error).message}`);
     }
+  }
+
+  // Connectivity (Essentials): the NetworkKit connection observer pushes a no-argument
+  // host.notifyNetworkAccess(); the host re-reads the level through the same NDK path as
+  // ohos_host_network_access and hands it to the managed OpenHarmonyConnectivity implementation.
+  // Device-compat: NetworkKit is imported lazily; a missing kit is cached and only costs the
+  // change events (the managed NetworkAccess property still reads the NDK path directly).
+  private async subscribeNetworkChanges(): Promise<void> {
+    if (this.networkObserverRegistered || this.lazyUnavailable('networkKit')) {
+      return;
+    }
+    try {
+      const kit = await import('@kit.NetworkKit');
+      try {
+        const netConnection = kit.connection.createNetConnection();
+        netConnection.on('netAvailable', (_handle: connection.NetHandle): void => {
+          this.reportNetworkAccess();
+        });
+        netConnection.on('netLost', (_handle: connection.NetHandle): void => {
+          this.reportNetworkAccess();
+        });
+        netConnection.on('netCapabilitiesChange', (_info: connection.NetCapabilityInfo): void => {
+          this.reportNetworkAccess();
+        });
+        netConnection.on('netUnavailable', (): void => {
+          this.reportNetworkAccess();
+        });
+        this.networkObserverRegistered = true;
+      } catch (networkObserverError) {
+        this.noteLazyFailure('networkKit', networkObserverError as Error);
+      }
+    } catch (networkImportError) {
+      this.noteLazyFailure('networkKit', networkImportError as Error);
+    }
+  }
+
+  // Forward one observed network change; the host reads the current level itself.
+  private reportNetworkAccess(): void {
+    this.hostCall('notifyNetworkAccess', typeof host.notifyNetworkAccess === 'function', (): void => {
+      host.notifyNetworkAccess();
+    });
+  }
+
+  // Clipboard (Essentials): reading the pasteboard needs ohos.permission.READ_PASTEBOARD
+  // (user_grant), requested on demand like the contacts/calendar sinks do; the grant is cached
+  // once won. The permission must be declared by the app (the pack's OpenHarmonyExtraPermissions
+  // switch appends it to requestPermissions).
+  private async ensureClipboardReadPermission(): Promise<boolean> {
+    if (this.clipboardReadGranted) {
+      return true;
+    }
+    const context = getContext(this) as common.UIAbilityContext;
+    const permissions: Permissions[] = ['ohos.permission.READ_PASTEBOARD'];
+    const atManager = abilityAccessCtrl.createAtManager();
+    const granted = await atManager.requestPermissionsFromUser(context, permissions);
+    this.clipboardReadGranted = granted.authResults.length > 0 && granted.authResults[0] === 0;
+    return this.clipboardReadGranted;
+  }
+
+  // Reads the primary text of the pasteboard ('' when there is no data or no plain text).
+  private readClipboardText(systemPasteboard: pasteboard.SystemPasteboard): string {
+    if (!systemPasteboard.hasDataSync()) {
+      return '';
+    }
+    const data = systemPasteboard.getDataSync();
+    if (data.getPrimaryMimeType() !== pasteboard.MIMETYPE_TEXT_PLAIN) {
+      return '';
+    }
+    return data.getPrimaryText();
   }
 
   // Keep screen on (DeviceDisplay): the managed setter asks through
@@ -846,6 +925,7 @@ struct Index {
     this.reportDisplay();
     this.subscribeBatteryEvents();
     this.subscribeDisplayChange();
+    this.subscribeNetworkChanges();
     // Device-compat (lazy SDK modules): the camera module is needed by the synchronous
     // flashlight sink and by the picker's camera position, so it is preloaded once here.
     this.preloadCamera();
@@ -1043,6 +1123,71 @@ struct Index {
         }
       });
     });
+
+    // Runtime permissions (Essentials IPermissions.RequestAsync): the managed side asks for one
+    // permission through ohos_host_request_permission; the prompt runs through
+    // abilityAccessCtrl (a core module, imported statically) and the answer travels back as
+    // host.permissionResult(id, granted) so the managed request completes (deny on timeout).
+    this.hostCall('registerPermissionSink', typeof host.registerPermissionSink === 'function', (): void => {
+      host.registerPermissionSink(async (permission: string, requestId: number): Promise<void> => {
+        let granted: boolean = false;
+        try {
+          const context = getContext(this) as common.UIAbilityContext;
+          const permissions: Permissions[] = [permission as Permissions];
+          const atManager = abilityAccessCtrl.createAtManager();
+          const result = await atManager.requestPermissionsFromUser(context, permissions);
+          granted = result.authResults.length > 0 && result.authResults[0] === 0;
+        } catch (permissionError) {
+          console.error(`[maui] permission request failed: ${(permissionError as Error).message}`);
+        }
+        this.hostCall('permissionResult', typeof host.permissionResult === 'function', (): void => {
+          host.permissionResult(requestId, granted ? 1 : 0);
+        });
+      });
+    });
+
+    // Clipboard (Essentials IClipboard): the managed side sends (requestId, op, text) through
+    // ohos_host_clipboard_request (op 0 has / 1 get / 2 set); the shell runs the pasteboard
+    // call and answers with host.clipboardResult(id, rc, text). Reading needs
+    // ohos.permission.READ_PASTEBOARD (requested on demand above), writing none. The 'update'
+    // observer below pushes host.notifyClipboardChanged so ClipboardContentChanged works even
+    // for changes made by other apps.
+    this.hostCall('registerClipboardSink', typeof host.registerClipboardSink === 'function', (): void => {
+      host.registerClipboardSink(async (requestId: number, op: number, text: string): Promise<void> => {
+        let rc: number = -1;
+        let value: string = '';
+        try {
+          const systemPasteboard = pasteboard.getSystemPasteboard();
+          if (op === 0 || op === 1) {
+            if (await this.ensureClipboardReadPermission()) {
+              rc = 0;
+              const clipboardText: string = this.readClipboardText(systemPasteboard);
+              value = op === 0 ? (clipboardText.length > 0 ? '1' : '0') : clipboardText;
+            }
+          } else if (op === 2) {
+            systemPasteboard.setDataSync(pasteboard.createPlainTextData(text));
+            rc = 0;
+          }
+        } catch (clipboardError) {
+          console.error(`[maui] clipboard op ${op} failed: ${(clipboardError as Error).message}`);
+        }
+        this.hostCall('clipboardResult', typeof host.clipboardResult === 'function', (): void => {
+          host.clipboardResult(requestId, rc, value);
+        });
+      });
+    });
+    if (!this.clipboardObserverRegistered) {
+      try {
+        pasteboard.getSystemPasteboard().on('update', (): void => {
+          this.hostCall('notifyClipboardChanged', typeof host.notifyClipboardChanged === 'function', (): void => {
+            host.notifyClipboardChanged();
+          });
+        });
+        this.clipboardObserverRegistered = true;
+      } catch (clipboardObserverError) {
+        console.error(`[maui] clipboard observer unavailable: ${(clipboardObserverError as Error).message}`);
+      }
+    }
 
     // Notifications (H5a): this registration is a sibling of the picker sink, not nested inside
     // it - nested, it only ran after a picker request, so notification events were never

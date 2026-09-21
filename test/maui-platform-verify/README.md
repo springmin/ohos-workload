@@ -1,6 +1,6 @@
 # Interaction regression suite (headless)
 
-The MAUI-on-OpenHarmony interaction harness (243 interaction checks, a 4-line fuzz tail, a
+The MAUI-on-OpenHarmony interaction harness (249 interaction checks, a 4-line fuzz tail, a
 frame-path performance budget and an accessibility publish-path budget). It builds the platform
 slice sources from the
 `maui-ohos` working tree and drives the app host without a device: touch/drag/pinch/pointer input,
@@ -10,7 +10,10 @@ accessibility shadow tree snapshot, the menu table/activation bridge, the WebVie
 bridge (script evaluation + `dotnetHost.postMessage`), the contacts/calendar and
 Bluetooth/printing platform extras (off-device degradation plus the delimited payload parsers
 and the text-to-PDF renderer), the Essentials Battery/DeviceDisplay push bridge (payload
-parsers plus the ModuleInitializer-installed defaults), the S-series features (the
+parsers plus the ModuleInitializer-installed defaults), the BATCH-1 Essentials real bridges
+(runtime permissions through `abilityAccessCtrl.requestPermissionsFromUser`, the system
+pasteboard through `@ohos.pasteboard` and network access through the NetworkKit observer: source
+pins plus the fast off-device degradation), the S-series features (the
 BlazorWebView handler/manager/file-provider path, the accessibility node-count export, the
 flashlight default/degradation and the file-share dispatch/MIME/URI path) and the V-series
 on-demand app-context publish (V8: native/NAPI/shell-template checks plus an off-device drill
@@ -29,7 +32,7 @@ below), failing the suite when the (deliberately loose) budgets are exceeded.
 # (or the MauiSliceDir / HostingDll / OpenHarmonyGraphicsDll MSBuild properties) before building
 # elsewhere; an explicit -p: value wins over the environment and the absolute fallbacks.
 dotnet build -v:q
-dotnet bin/Debug/net11.0/verify.dll | grep -c '\[verify\]'   # expect 256 (243 checks + 4 fuzz + 1 frame perf + 8 a11y perf)
+dotnet bin/Debug/net11.0/verify.dll | grep -c '\[verify\]'   # expect 262 (249 checks + 4 fuzz + 1 frame perf + 8 a11y perf)
 ```
 
 The `interaction-regression` workflow (`.github/workflows/interaction-regression.yml`) runs the
@@ -130,8 +133,8 @@ publish pass (skip/republish).
   blocks codesigned ELF apphosts on some machines).
 - The suite fails loudly (unhandled exception) when a slice change breaks startup or when an
   assertion for the gesture flows (including the drag-and-drop checks) does not hold; keep it at
-  243 checks plus the 4 fuzz lines plus the 1 frame-perf line plus the 8 a11y-perf lines
-  (256 `[verify]` lines) when touching the platform slice.
+  249 checks plus the 4 fuzz lines plus the 1 frame-perf line plus the 8 a11y-perf lines
+  (262 `[verify]` lines) when touching the platform slice.
 - Contacts/calendar coverage: `OpenHarmonyContacts.FindAsync` and
   `OpenHarmonyCalendar.ListUpcomingAsync`/`AddEventAsync` return empty/false without throwing
   off-device and report `IsSupported == false` before and after the call (the permission probe
@@ -250,8 +253,27 @@ publish pass (skip/republish).
   IME call sites (and no `strncpy` call site remains); B3 asserts the shell's
   `window.__ohHybridId`/`window.__ohBlazorId` stamps in all three preview templates and the
   marker-checked `'skip'` eval before `SendRawMessage` (hybrid) and `SendMessage` (Blazor),
-  including the skip log. That is 9 `[verify]` lines: 247 + 9 = 256 = 243 interaction checks +
+  including the skip log. That is 9 `[verify]` lines: 253 + 9 = 262 = 249 interaction checks +
   4 fuzz + 1 frame perf + 8 a11y perf; the workflow floor stays at 224.
+- BATCH-1 Essentials real bridges (permissions / clipboard / connectivity): six `[verify]` lines
+  cover both halves of each bridge. Off-device each request fails fast (the 30 s permission and
+  5 s clipboard timeouts are never waited out) and degrades to Denied / null / false / Unknown;
+  the pasted pasteboard 'update' and NetworkKit change pushes are replayed through the same
+  private native-shaped callbacks the host invokes, raising `ClipboardContentChanged` and
+  `ConnectivityChanged` (the level map 0/1/2/3 -> Unknown/None/Local/Internet is asserted,
+  including the getter's -1). The source pins parse the C definitions and the shared header
+  (`ohos_host_request_permission`, `ohos_host_register_permission_result`,
+  `ohos_host_clipboard_request`, `ohos_host_clipboard_register_result`,
+  `ohos_host_clipboard_register_changed`, `ohos_host_network_access_register`,
+  `ohos_host_network_access_notify`), the NAPI sinks and module-table names
+  (`registerPermissionSink`/`permissionResult`, `registerClipboardSink`/`clipboardResult`/
+  `notifyClipboardChanged`, `notifyNetworkAccess`), and the shell's statically imported
+  `@ohos.pasteboard` sink with the on-demand `ohos.permission.READ_PASTEBOARD` request plus the
+  lazily imported `@kit.NetworkKit` observer (`createNetConnection`); the three preview
+  templates must stay byte-identical. IPermissions keeps the permission-name map and still
+  answers `CheckStatusAsync` from `OH_AT_CheckSelfPermission`; IClipboard no longer has a
+  file-backed store (the old `OpenHarmonyClipboard(string? path)` constructor is gone) and
+  IConnectivity no longer reports a constant Unknown.
 - Haptics coverage: `HapticFeedback.Default` is the slice implementation, `Perform(Click/LongPress)`
   degrades without throwing off-device, and `IsSupported` is false without the host library. The app
   theme handler is exercised directly (ArkUI colour-mode reports need a device): setting dark/light

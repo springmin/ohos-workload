@@ -3252,6 +3252,271 @@ if (!b3HandlersOk)
         $"blazorSource={b3BlazorPath ?? "<missing>"}");
 }
 
+// ---- BATCH-1 Essentials: permissions / clipboard / connectivity real bridges -------------------
+// The three Essentials surfaces that used to degrade now talk to the platform through the
+// established host/ArkTS bridge:
+//   IPermissions.RequestAsync -> ohos_host_request_permission(permission, id) -> the shell's
+//     registerPermissionSink (abilityAccessCtrl.requestPermissionsFromUser) ->
+//     host.permissionResult(id, granted) -> ohos_host_permission_complete -> the managed TCS
+//     (a timeout or a missing shell/host library answers Denied);
+//   IClipboard -> ohos_host_clipboard_request(id, op, text) (op 0 has / 1 get / 2 set) -> the
+//     shell's registerClipboardSink (@ohos.pasteboard; reads ask for READ_PASTEBOARD) ->
+//     host.clipboardResult(id, rc, text); ClipboardContentChanged rides the pasteboard 'update'
+//     observer -> host.notifyClipboardChanged -> ohos_host_clipboard_notify_changed;
+//   IConnectivity.NetworkAccess -> ohos_host_network_access (0 unknown / 1 none / 2 local /
+//     3 internet); ConnectivityChanged rides the NetworkKit observer ->
+//     host.notifyNetworkAccess -> ohos_host_network_access_notify (the host re-reads the level).
+// Off-device there is no libopenharmonyhost.so, so every request must fail fast (no timeout
+// wait), the answers must degrade to Denied / false / null / Unknown, and the source pins must
+// show the managed P/Invoke, the C/header definitions, the NAPI exports and the shell sinks in
+// all three preview templates (which must stay byte-identical).
+string[] b1ShellTexts = new string[b3ShellVersions.Length];
+bool b1ShellIdentical = true;
+for (int i = 0; i < b3ShellVersions.Length; i++)
+{
+    string? b1ShellPath = FindHostSource($"packs/Microsoft.OpenHarmony.Sdk/{b3ShellVersions[i]}/templates/ets/pages/Index.ets");
+    b1ShellTexts[i] = b1ShellPath is null ? string.Empty : File.ReadAllText(b1ShellPath);
+    if (i > 0)
+    {
+        b1ShellIdentical &= b1ShellTexts[i] == b1ShellTexts[0];
+    }
+}
+string b1Shell = b1ShellTexts[0];
+
+// BATCH1a: IPermissions.RequestAsync off-device. The DI default is the slice implementation, the
+// request reaches the host boundary and the missing host library answers Denied immediately (the
+// 30 s request timeout must not be waited out).
+var b1Permissions = app.Services.GetRequiredService<Microsoft.Maui.ApplicationModel.IPermissions>();
+bool b1PermissionsInstalled = b1Permissions is OpenHarmonyPermissions;
+var b1PermissionWatch = System.Diagnostics.Stopwatch.StartNew();
+Microsoft.Maui.ApplicationModel.PermissionStatus b1Camera = Microsoft.Maui.ApplicationModel.PermissionStatus.Unknown;
+Microsoft.Maui.ApplicationModel.PermissionStatus b1Microphone = Microsoft.Maui.ApplicationModel.PermissionStatus.Unknown;
+bool b1PermissionThrew = false;
+try
+{
+    b1Camera = await b1Permissions.RequestAsync<Microsoft.Maui.ApplicationModel.Permissions.Camera>();
+    b1Microphone = await b1Permissions.RequestAsync<Microsoft.Maui.ApplicationModel.Permissions.Microphone>();
+}
+catch (Exception ex)
+{
+    b1PermissionThrew = true;
+    Console.WriteLine($"[verify] permissions request threw {ex.GetType().Name}: {ex.Message}");
+}
+long b1PermissionMs = b1PermissionWatch.ElapsedMilliseconds;
+bool b1PermissionFast = b1PermissionMs < (long)OpenHarmonyPermissionBridge.RequestTimeout.TotalMilliseconds / 2;
+bool b1PermissionOk = b1PermissionsInstalled && !b1PermissionThrew &&
+    b1Camera == Microsoft.Maui.ApplicationModel.PermissionStatus.Denied &&
+    b1Microphone == Microsoft.Maui.ApplicationModel.PermissionStatus.Denied && b1PermissionFast;
+Console.WriteLine($"[verify] permissions request degraded installed={b1PermissionsInstalled} camera={b1Camera} microphone={b1Microphone} elapsedMs={b1PermissionMs} fastFail={b1PermissionFast} timeoutMs={(int)OpenHarmonyPermissionBridge.RequestTimeout.TotalMilliseconds} assert={b1PermissionOk}");
+if (!b1PermissionOk)
+{
+    throw new InvalidOperationException("the IPermissions.RequestAsync bridge did not degrade to Denied off-device");
+}
+
+// BATCH1b: the permission bridge contract (managed P/Invoke + C/header + NAPI + shell). The C
+// definitions, the shared header declarations, the NAPI sink/notify names and the shell's
+// registration/answer calls must all agree, so a rename or a dropped half fails here.
+MethodInfo? b1PermissionRequest = typeof(OpenHarmonyPermissionBridge).GetMethod("RequestPermissionNative", BindingFlags.NonPublic | BindingFlags.Static);
+MethodInfo? b1PermissionRegister = typeof(OpenHarmonyPermissionBridge).GetMethod("RegisterPermissionResultNative", BindingFlags.NonPublic | BindingFlags.Static);
+DllImportAttribute? b1PermissionRequestImport = b1PermissionRequest?.GetCustomAttribute<DllImportAttribute>();
+DllImportAttribute? b1PermissionRegisterImport = b1PermissionRegister?.GetCustomAttribute<DllImportAttribute>();
+bool b1PermissionManaged = b1PermissionRequestImport is not null &&
+    b1PermissionRequestImport.EntryPoint == "ohos_host_request_permission" &&
+    b1PermissionRequestImport.Value == "libopenharmonyhost.so" &&
+    b1PermissionRequest?.GetParameters() is { Length: 2 } b1PermissionParams &&
+    b1PermissionParams[0].ParameterType == typeof(string) && b1PermissionParams[1].ParameterType == typeof(int) &&
+    b1PermissionRegisterImport?.EntryPoint == "ohos_host_register_permission_result";
+bool b1PermissionNative = cSource?.Contains("void ohos_host_request_permission(const char* permission, int request_id)") == true &&
+    cSource.Contains("static void (*g_permission_listener)(const char* permission, int request_id) = NULL;") &&
+    cSource.Contains("void ohos_host_register_permission_result(void* callback)") &&
+    cSource.Contains("g_app->bridge_permission_result = (void (*)(int, int))callback;") &&
+    cSource.Contains("g_app->bridge_permission_result(request_id, granted != 0 ? 1 : 0);") &&
+    hSource?.Contains("void ohos_host_request_permission(const char* permission, int request_id);") == true &&
+    hSource.Contains("void ohos_host_register_permission_result(void* callback);") == true;
+bool b1PermissionNapi = s2Napi.Contains("HostSink g_permission_sink(\"permission\", false);") &&
+    s2Napi.Contains("ohos_host_permission_set_listener(OnPermissionRequest);") &&
+    s2Napi.Contains("ohos_host_permission_complete(requestId, granted);") &&
+    s2Napi.Contains("\"registerPermissionSink\"") && s2Napi.Contains("\"permissionResult\"");
+bool b1PermissionShell = b1Shell.Contains("this.hostCall('registerPermissionSink', typeof host.registerPermissionSink === 'function'") &&
+    b1Shell.Contains("host.registerPermissionSink(async (permission: string, requestId: number): Promise<void>") &&
+    b1Shell.Contains("const permissions: Permissions[] = [permission as Permissions];") &&
+    b1Shell.Contains("atManager.requestPermissionsFromUser(context, permissions)") &&
+    b1Shell.Contains("host.permissionResult(requestId, granted ? 1 : 0);");
+bool b1PermissionContract = b1PermissionManaged && b1PermissionNative && b1PermissionNapi && b1PermissionShell;
+Console.WriteLine($"[verify] permissions bridge contract managed={b1PermissionManaged} native={b1PermissionNative} napi={b1PermissionNapi} shell={b1PermissionShell} source='{cSourcePath ?? "<missing>"}' assert={b1PermissionContract}");
+if (!b1PermissionContract)
+{
+    throw new InvalidOperationException(
+        $"the permission bridge contract drifted: managed={b1PermissionManaged} native={b1PermissionNative} " +
+        $"napi={b1PermissionNapi} shell={b1PermissionShell}");
+}
+
+// BATCH1c: IClipboard off-device. The DI default is the slice implementation; set/get/data
+// package complete without throwing, the missing host library keeps HasText false and answers
+// null, and the pasteboard 'update' push (the same private callback the native host invokes)
+// raises ClipboardContentChanged.
+var b1Clipboard = Microsoft.Maui.ApplicationModel.DataTransfer.Clipboard.Default;
+bool b1ClipboardInstalled = b1Clipboard is OpenHarmonyClipboard;
+int b1ClipboardEvents = 0;
+EventHandler<EventArgs> b1ClipboardHandler = (_, _) => b1ClipboardEvents++;
+b1Clipboard.ClipboardContentChanged += b1ClipboardHandler;
+bool b1ClipboardThrew = false;
+string? b1ClipboardText = null;
+bool b1ClipboardPackage = false;
+var b1ClipboardWatch = System.Diagnostics.Stopwatch.StartNew();
+try
+{
+    await b1Clipboard.SetTextAsync("batch1-clip");
+    b1ClipboardText = await b1Clipboard.GetTextAsync();
+    b1ClipboardPackage = b1Clipboard is OpenHarmonyClipboard b1ClipboardConcrete &&
+        await b1ClipboardConcrete.GetDataPackageAsync() is not null;
+}
+catch (Exception ex)
+{
+    b1ClipboardThrew = true;
+    Console.WriteLine($"[verify] clipboard calls threw {ex.GetType().Name}: {ex.Message}");
+}
+long b1ClipboardMs = b1ClipboardWatch.ElapsedMilliseconds;
+bool b1ClipboardFast = b1ClipboardMs < (long)OpenHarmonyClipboardBridge.RequestTimeout.TotalMilliseconds / 2;
+MethodInfo? b1ClipboardChangedNative = typeof(OpenHarmonyClipboardBridge).GetMethod("OnNativeClipboardChanged", BindingFlags.NonPublic | BindingFlags.Static);
+bool b1ClipboardPush = false;
+try
+{
+    b1ClipboardChangedNative?.Invoke(null, null);
+    b1ClipboardPush = b1ClipboardChangedNative is not null && b1ClipboardEvents == 1;
+}
+catch (Exception ex)
+{
+    Console.WriteLine($"[verify] clipboard push threw {ex.GetType().Name}: {ex.Message}");
+}
+b1Clipboard.ClipboardContentChanged -= b1ClipboardHandler;
+bool b1ClipboardOk = b1ClipboardInstalled && !b1ClipboardThrew && b1ClipboardText is null &&
+    !b1Clipboard.HasText && !b1ClipboardPackage && b1ClipboardFast && b1ClipboardPush;
+Console.WriteLine($"[verify] clipboard degraded installed={b1ClipboardInstalled} text={(b1ClipboardText is null ? "<null>" : "set")} hasText={b1Clipboard.HasText} package={b1ClipboardPackage} elapsedMs={b1ClipboardMs} fastFail={b1ClipboardFast} changedEvents={b1ClipboardEvents} assert={b1ClipboardOk}");
+if (!b1ClipboardOk)
+{
+    throw new InvalidOperationException("the IClipboard pasteboard bridge did not degrade off-device");
+}
+
+// BATCH1d: the clipboard bridge contract (managed P/Invoke ops + C/header + NAPI + shell,
+// including the pasteboard 'update' observer and the READ_PASTEBOARD request).
+bool b1ClipboardOps = OpenHarmonyClipboardBridge.HasOp == 0 &&
+    OpenHarmonyClipboardBridge.GetOp == 1 && OpenHarmonyClipboardBridge.SetOp == 2;
+MethodInfo? b1ClipboardRequest = typeof(OpenHarmonyClipboardBridge).GetMethod("RequestNative", BindingFlags.NonPublic | BindingFlags.Static);
+MethodInfo? b1ClipboardRegister = typeof(OpenHarmonyClipboardBridge).GetMethod("RegisterResultNative", BindingFlags.NonPublic | BindingFlags.Static);
+DllImportAttribute? b1ClipboardRequestImport = b1ClipboardRequest?.GetCustomAttribute<DllImportAttribute>();
+DllImportAttribute? b1ClipboardRegisterImport = b1ClipboardRegister?.GetCustomAttribute<DllImportAttribute>();
+bool b1ClipboardManaged = b1ClipboardOps &&
+    b1ClipboardRequestImport?.EntryPoint == "ohos_host_clipboard_request" &&
+    b1ClipboardRequest?.GetParameters() is { Length: 3 } b1ClipboardParams &&
+    b1ClipboardParams[0].ParameterType == typeof(int) && b1ClipboardParams[1].ParameterType == typeof(int) &&
+    b1ClipboardParams[2].ParameterType == typeof(string) &&
+    b1ClipboardRegisterImport?.EntryPoint == "ohos_host_clipboard_register_result";
+bool b1ClipboardNative = cSource?.Contains("void ohos_host_clipboard_request(int request_id, int op, const char* text)") == true &&
+    cSource.Contains("static void (*g_clipboard_listener)(int request_id, int op, const char* text) = NULL;") &&
+    cSource.Contains("g_app->bridge_clipboard_result = (void (*)(int, int, const char*))callback;") &&
+    cSource.Contains("g_app->bridge_clipboard_changed = (void (*)(void))callback;") &&
+    cSource.Contains("g_app->bridge_clipboard_changed();") &&
+    hSource?.Contains("void ohos_host_clipboard_request(int request_id, int op, const char* text);") == true &&
+    hSource.Contains("void ohos_host_clipboard_register_changed(void* callback);") == true;
+bool b1ClipboardNapi = s2Napi.Contains("HostSink g_clipboard_sink(\"clipboard\", false);") &&
+    s2Napi.Contains("ohos_host_clipboard_set_listener(OnClipboardRequest);") &&
+    s2Napi.Contains("ohos_host_clipboard_complete(requestId, rc, text.c_str());") &&
+    s2Napi.Contains("ohos_host_clipboard_notify_changed();") &&
+    s2Napi.Contains("\"registerClipboardSink\"") && s2Napi.Contains("\"clipboardResult\"") &&
+    s2Napi.Contains("\"notifyClipboardChanged\"");
+bool b1ClipboardShell = b1Shell.Contains("import pasteboard from '@ohos.pasteboard';") &&
+    b1Shell.Contains("this.hostCall('registerClipboardSink', typeof host.registerClipboardSink === 'function'") &&
+    b1Shell.Contains("host.registerClipboardSink(async (requestId: number, op: number, text: string): Promise<void>") &&
+    b1Shell.Contains("systemPasteboard.setDataSync(pasteboard.createPlainTextData(text));") &&
+    b1Shell.Contains("host.clipboardResult(requestId, rc, value);") &&
+    b1Shell.Contains("pasteboard.getSystemPasteboard().on('update'") &&
+    b1Shell.Contains("host.notifyClipboardChanged();") &&
+    b1Shell.Contains("'ohos.permission.READ_PASTEBOARD'");
+bool b1ClipboardContract = b1ClipboardManaged && b1ClipboardNative && b1ClipboardNapi && b1ClipboardShell;
+Console.WriteLine($"[verify] clipboard bridge contract managed={b1ClipboardManaged} native={b1ClipboardNative} napi={b1ClipboardNapi} shell={b1ClipboardShell} ops={OpenHarmonyClipboardBridge.HasOp}/{OpenHarmonyClipboardBridge.GetOp}/{OpenHarmonyClipboardBridge.SetOp} assert={b1ClipboardContract}");
+if (!b1ClipboardContract)
+{
+    throw new InvalidOperationException(
+        $"the clipboard bridge contract drifted: managed={b1ClipboardManaged} native={b1ClipboardNative} " +
+        $"napi={b1ClipboardNapi} shell={b1ClipboardShell}");
+}
+
+// BATCH1e: IConnectivity off-device. The level map covers the documented 0/1/2/3 encoding and
+// anything else (including the getter's -1) is Unknown; the live property stays Unknown without
+// the host library; the NetworkKit push (the same private callback the native host invokes)
+// raises ConnectivityChanged with the mapped level.
+var b1Connectivity = Microsoft.Maui.Networking.Connectivity.Current;
+bool b1ConnectivityInstalled = b1Connectivity is OpenHarmonyConnectivity;
+bool b1ConnectivityMap = OpenHarmonyConnectivity.MapNetworkAccess(0) == Microsoft.Maui.Networking.NetworkAccess.Unknown &&
+    OpenHarmonyConnectivity.MapNetworkAccess(1) == Microsoft.Maui.Networking.NetworkAccess.None &&
+    OpenHarmonyConnectivity.MapNetworkAccess(2) == Microsoft.Maui.Networking.NetworkAccess.Local &&
+    OpenHarmonyConnectivity.MapNetworkAccess(3) == Microsoft.Maui.Networking.NetworkAccess.Internet &&
+    OpenHarmonyConnectivity.MapNetworkAccess(9) == Microsoft.Maui.Networking.NetworkAccess.Unknown &&
+    OpenHarmonyConnectivity.MapNetworkAccess(OpenHarmonyConnectivityBridge.Unavailable) == Microsoft.Maui.Networking.NetworkAccess.Unknown;
+bool b1ConnectivityRead = OpenHarmonyConnectivityBridge.ReadNetworkAccess() == OpenHarmonyConnectivityBridge.Unavailable;
+Microsoft.Maui.Networking.NetworkAccess b1ConnectivitySeen = Microsoft.Maui.Networking.NetworkAccess.Unknown;
+int b1ConnectivityEvents = 0;
+EventHandler<Microsoft.Maui.Networking.ConnectivityChangedEventArgs> b1ConnectivityHandler = (_, e) =>
+{
+    b1ConnectivitySeen = e.NetworkAccess;
+    b1ConnectivityEvents++;
+};
+b1Connectivity.ConnectivityChanged += b1ConnectivityHandler;
+MethodInfo? b1NetworkNative = typeof(OpenHarmonyConnectivityBridge).GetMethod("OnNativeNetworkAccess", BindingFlags.NonPublic | BindingFlags.Static);
+bool b1ConnectivityPush = false;
+try
+{
+    b1NetworkNative?.Invoke(null, new object[] { 2 });
+    b1ConnectivityPush = b1NetworkNative is not null && b1ConnectivityEvents == 1 &&
+        b1ConnectivitySeen == Microsoft.Maui.Networking.NetworkAccess.Local;
+}
+catch (Exception ex)
+{
+    Console.WriteLine($"[verify] connectivity push threw {ex.GetType().Name}: {ex.Message}");
+}
+b1Connectivity.ConnectivityChanged -= b1ConnectivityHandler;
+bool b1ConnectivityOk = b1ConnectivityInstalled && b1ConnectivityMap && b1ConnectivityRead &&
+    b1Connectivity.NetworkAccess == Microsoft.Maui.Networking.NetworkAccess.Unknown && b1ConnectivityPush;
+Console.WriteLine($"[verify] connectivity degraded installed={b1ConnectivityInstalled} map4={OpenHarmonyConnectivity.MapNetworkAccess(1)}/{OpenHarmonyConnectivity.MapNetworkAccess(3)} unknown9={OpenHarmonyConnectivity.MapNetworkAccess(9) == Microsoft.Maui.Networking.NetworkAccess.Unknown} readUnavailable={b1ConnectivityRead} live={b1Connectivity.NetworkAccess} changedEvents={b1ConnectivityEvents} changedAccess={b1ConnectivitySeen} assert={b1ConnectivityOk}");
+if (!b1ConnectivityOk)
+{
+    throw new InvalidOperationException("the IConnectivity bridge did not degrade to Unknown off-device");
+}
+
+// BATCH1f: the connectivity bridge contract (managed P/Invoke + C/header + NAPI + shell) and the
+// three preview templates staying byte-identical.
+MethodInfo? b1NetworkRead = typeof(OpenHarmonyConnectivityBridge).GetMethod("ReadNetworkAccess", BindingFlags.NonPublic | BindingFlags.Static);
+MethodInfo? b1NetworkRegister = typeof(OpenHarmonyConnectivityBridge).GetMethod("NetworkAccessRegisterNative", BindingFlags.NonPublic | BindingFlags.Static);
+DllImportAttribute? b1NetworkReadImport = typeof(OpenHarmonyConnectivityBridge).GetMethod("NetworkAccessNative", BindingFlags.NonPublic | BindingFlags.Static)?.GetCustomAttribute<DllImportAttribute>();
+DllImportAttribute? b1NetworkRegisterImport = b1NetworkRegister?.GetCustomAttribute<DllImportAttribute>();
+bool b1ConnectivityManaged = b1NetworkReadImport?.EntryPoint == "ohos_host_network_access" &&
+    b1NetworkReadImport.Value == "libopenharmonyhost.so" &&
+    b1NetworkRegisterImport?.EntryPoint == "ohos_host_network_access_register" &&
+    b1NetworkRead is not null;
+bool b1ConnectivityNative = cSource?.Contains("ohos_host_network_access_register(void* callback)") == true &&
+    cSource.Contains("g_app->bridge_network_access = (void (*)(int))callback;") &&
+    cSource.Contains("g_app->bridge_network_access(ohos_host_network_access());") &&
+    hSource?.Contains("void ohos_host_network_access_register(void* callback);") == true &&
+    hSource.Contains("void ohos_host_network_access_notify(void);") == true;
+bool b1ConnectivityNapi = s2Napi.Contains("ohos_host_network_access_notify();") &&
+    s2Napi.Contains("\"notifyNetworkAccess\"");
+bool b1ConnectivityShell = b1Shell.Contains("this.subscribeNetworkChanges();") &&
+    b1Shell.Contains("import type { connection } from '@kit.NetworkKit';") &&
+    b1Shell.Contains("const kit = await import('@kit.NetworkKit');") &&
+    b1Shell.Contains("const netConnection = kit.connection.createNetConnection();") &&
+    b1Shell.Contains("netConnection.on('netCapabilitiesChange'") &&
+    b1Shell.Contains("host.notifyNetworkAccess();");
+bool b1ConnectivityContract = b1ConnectivityManaged && b1ConnectivityNative && b1ConnectivityNapi &&
+    b1ConnectivityShell && b1ShellIdentical;
+Console.WriteLine($"[verify] connectivity bridge contract managed={b1ConnectivityManaged} native={b1ConnectivityNative} napi={b1ConnectivityNapi} shell={b1ConnectivityShell} identical={b1ShellIdentical} assert={b1ConnectivityContract}");
+if (!b1ConnectivityContract)
+{
+    throw new InvalidOperationException(
+        $"the connectivity bridge contract drifted: managed={b1ConnectivityManaged} native={b1ConnectivityNative} " +
+        $"napi={b1ConnectivityNapi} shell={b1ConnectivityShell} identical={b1ShellIdentical}");
+}
+
 // ---- Performance budget (bounded, deterministic, seedless) ------------------------------------
 // The frame path (OpenHarmonyWindowRenderer.Render: measure/arrange, the iterative view walk, the
 // accessibility shadow tree rebuild + frame diff and the surface hooks) is timed over a fixed
