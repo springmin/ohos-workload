@@ -96,6 +96,23 @@ interface HybridPendingInvoke {
   timer: number;
 }
 
+// B6 navigation allow-list bridge: a main-frame load the shell did not originate is cancelled
+// in onLoadIntercept and handed to the managed WebView handler for a Navigating decision. The
+// shell keeps the URL it cancelled under an unguessable id; the managed handler approves the
+// id back and only that stored URL may reload.
+interface PendingNavigation {
+  url: string;
+  expires: number;
+}
+
+// One-shot marker that lets exactly one load pass onLoadIntercept without a managed round
+// trip: the reload of an approved navigation, or a load the app requested through the
+// managed WebView (WebCommand "load").
+interface ApprovedNavigation {
+  url: string;
+  expires: number;
+}
+
 @Entry
 @Component
 struct Index {
@@ -157,6 +174,16 @@ struct Index {
   // host asks synchronously and consumes the sink's boolean answer, so the torch call itself
   // must stay synchronous (setTorchMode is).
   private flashlightManager: camera.CameraManager | undefined = undefined;
+  // B6 navigation allow-list state: a cancelled external navigation waits for the managed
+  // Navigating decision under its unguessable id; navApproved/navProgrammatic are the one-shot
+  // markers that let the shell's own reloads pass. All entries are time-bounded and dropped
+  // when they expire.
+  private navPending: Map<string, PendingNavigation> = new Map();
+  private navApproved: ApprovedNavigation | null = null;
+  private navProgrammatic: ApprovedNavigation | null = null;
+  private navPendingLimit: number = 8;
+  private navPendingTtlMs: number = 5000;
+  private navMaxUrlLength: number = 8192;
 
   // Forwards the current device colour mode (1 = dark, 0 = light) to the managed app.
   private reportTheme(): void {
@@ -330,6 +357,113 @@ struct Index {
       documentId = this.blazorDocId;
     }
     return `__OHORIGIN|${url}|${documentId}\n${payload}`;
+  }
+
+  // B6: true for the URLs that belong to the app's own content - the hybrid/Blazor app
+  // origins, local files, inline/in-page documents and relative references - which keep
+  // loading exactly as before (no managed round trip).
+  private isAppNavigation(url: string): boolean {
+    if (url.length === 0 || url.charAt(0) === '/' || url.charAt(0) === '#' || url.charAt(0) === '?') {
+      return true;
+    }
+    if (url.startsWith('about:') || url.startsWith('data:') || url.startsWith('blob:') ||
+        url.startsWith('javascript:') || url.startsWith('file:')) {
+      return true;
+    }
+    if (this.hybridRegistered && url.startsWith(this.hybridOrigin)) {
+      return true;
+    }
+    if (this.blazorRegistered && url.startsWith(this.blazorOrigin)) {
+      return true;
+    }
+    return false;
+  }
+
+  // B6: consumes a one-shot marker for a load the shell itself requested (WebCommand "load")
+  // or one the managed handler approved. The marker lets exactly that reload pass
+  // onLoadIntercept without another managed round trip (loop guard); expired markers are stale.
+  private consumeApprovedNavigation(url: string): boolean {
+    const now: number = Date.now();
+    const programmatic: ApprovedNavigation | null = this.navProgrammatic;
+    if (programmatic !== null && programmatic.expires >= now && programmatic.url === url) {
+      this.navProgrammatic = null;
+      return true;
+    }
+    const approved: ApprovedNavigation | null = this.navApproved;
+    if (approved !== null && approved.expires >= now && approved.url === url) {
+      this.navApproved = null;
+      return true;
+    }
+    return false;
+  }
+
+  // B6: retires a marker once the approved/app-requested load actually started, so a later
+  // page-initiated navigation to the same URL is asked about again.
+  private retireNavigationMarker(url: string): void {
+    const programmatic: ApprovedNavigation | null = this.navProgrammatic;
+    if (programmatic !== null && programmatic.url === url) {
+      this.navProgrammatic = null;
+    }
+    const approved: ApprovedNavigation | null = this.navApproved;
+    if (approved !== null && approved.url === url) {
+      this.navApproved = null;
+    }
+  }
+
+  // B6: asks the managed handler for a Navigating decision on a cancelled main-frame load.
+  // The URL stays with the shell (the managed side only sees it to decide); the id is
+  // unguessable and short-lived, the pending table is bounded, and the oldest entry is
+  // dropped when it is full.
+  private askManagedAboutNavigation(url: string): void {
+    const now: number = Date.now();
+    this.navPending.forEach((pending: PendingNavigation, id: string): void => {
+      if (pending.expires < now) {
+        this.navPending.delete(id);
+      }
+    });
+    while (this.navPending.size >= this.navPendingLimit) {
+      const oldest: string | undefined = this.navPending.keys().next().value;
+      if (oldest === undefined) {
+        break;
+      }
+      this.navPending.delete(oldest);
+    }
+    let id: string = '';
+    try {
+      id = util.generateRandomUUID(true);
+    } catch (uuidError) {
+      id = `${now.toString(16)}-${Math.random().toString(16).substring(2)}`;
+    }
+    this.navPending.set(id, { url: url, expires: now + this.navPendingTtlMs });
+    try {
+      host.notifyJsMessage(`__OHNAV|${url}|${id}`);
+    } catch (navError) {
+      // No host channel: nothing can approve the load, so it stays cancelled.
+      this.navPending.delete(id);
+    }
+  }
+
+  // B6: the managed handler answers an intercepted navigation (WebCommand op "nav"); the
+  // argument is "<id>\n<url>". The URL must be the exact one the shell cancelled for that id,
+  // and the approval is one-shot: only the reload that follows may pass.
+  private approveNavigation(arg: string): void {
+    const separator: number = arg.indexOf('\n');
+    const id: string = separator >= 0 ? arg.substring(0, separator) : arg;
+    const url: string = separator >= 0 ? arg.substring(separator + 1) : '';
+    const pending: PendingNavigation | undefined = this.navPending.get(id);
+    if (pending === undefined) {
+      return;
+    }
+    this.navPending.delete(id);
+    if (pending.expires < Date.now() || pending.url !== url) {
+      return;
+    }
+    this.navApproved = { url: pending.url, expires: Date.now() + this.navPendingTtlMs };
+    try {
+      this.webController.loadUrl(pending.url);
+    } catch (approvalError) {
+      // The reload failed (e.g., the controller detached); the navigation stays cancelled.
+    }
   }
 
   // Registered proxies appear on the next page load, so the documented window.__ohosDotNet
@@ -655,7 +789,12 @@ struct Index {
             this.webVisible = false;
           } else if (op === 'load') {
             this.webVisible = true;
+            // B6: the app asked for this URL; let this one load through without a round trip.
+            this.navProgrammatic = { url: arg, expires: Date.now() + this.navPendingTtlMs };
             this.webController.loadUrl(arg);
+          } else if (op === 'nav') {
+            // B6: the managed handler's answer to an intercepted navigation.
+            this.approveNavigation(arg);
           } else if (op === 'data') {
             this.webVisible = true;
             this.webController.loadData(arg, 'text/html', 'UTF-8');
@@ -1600,6 +1739,33 @@ struct Index {
         .onControllerAttached(() => {
           this.registerDotNetHost();
         })
+        .onLoadIntercept((event) => {
+          // B6 navigation allow-list: a top-level load the app did not originate is cancelled
+          // and decided by the managed WebView handler's Navigating event. Frames and
+          // subresources (isMainFrame false) and the app's own origin/file/data loads keep
+          // loading unchanged. The shell's own reload passes through the one-shot marker.
+          try {
+            if (!event.data.isMainFrame()) {
+              return false;
+            }
+            const url: string = event.data.getRequestUrl();
+            if (this.isAppNavigation(url)) {
+              return false;
+            }
+            if (this.consumeApprovedNavigation(url)) {
+              return false;
+            }
+            if (url.length === 0 || url.length > this.navMaxUrlLength) {
+              // Nothing to hand over (or too large to copy): the load stays blocked.
+              return true;
+            }
+            this.askManagedAboutNavigation(url);
+            return true;
+          } catch (interceptError) {
+            // An unexpected event shape must not take the page down; allow the load.
+            return false;
+          }
+        })
         .onInterceptRequest((event) => {
           try {
             const url: string = event.request.getRequestUrl();
@@ -1628,7 +1794,10 @@ struct Index {
         .onPageBegin((event) => {
           // A new main-frame document gets its own Blazor bootstrap.
           this.blazorBootstrapped = false;
-          host.notifyWebEvent('started', event ? event.url : '');
+          const startedUrl: string = event ? event.url : '';
+          // B6: the approved/app-requested load started; its one-shot marker is used up.
+          this.retireNavigationMarker(startedUrl);
+          host.notifyWebEvent('started', startedUrl);
         })
         .onPageEnd((event) => {
           const pageUrl: string = event ? event.url : '';

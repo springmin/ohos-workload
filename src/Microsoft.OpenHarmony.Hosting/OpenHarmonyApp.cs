@@ -5,6 +5,7 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Runtime.InteropServices;
+using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using System.Threading;
@@ -636,6 +637,14 @@ public static class OpenHarmonyBridge
         }
     }
 
+    /// <summary>Most bytes dotnet-status.txt may reach before the oldest lines are dropped.</summary>
+    private const int StatusFileMaxBytes = 256 * 1024;
+
+    /// <summary>Most characters one status line may carry.</summary>
+    private const int StatusMessageMaxChars = 4 * 1024;
+
+    private static readonly object s_statusSync = new();
+
     public static void WriteStatus(string message)
     {
         string path = StatusFilePath;
@@ -645,14 +654,60 @@ public static class OpenHarmonyBridge
         }
         try
         {
-            // Deliberately no timestamps: DateTime.Now pulls in TimeZoneInfo/globalization
-            // initialization, which is not available in every app sandbox yet.
-            File.AppendAllText(path, message + "\n");
+            if (message.Length > StatusMessageMaxChars)
+            {
+                message = message.Substring(0, StatusMessageMaxChars - 3) + "...";
+            }
+            lock (s_statusSync)
+            {
+                // Deliberately no timestamps: DateTime.Now pulls in TimeZoneInfo/globalization
+                // initialization, which is not available in every app sandbox yet.
+                File.AppendAllText(path, message + "\n");
+                TrimStatusFile(path);
+            }
         }
         catch
         {
             // Diagnostics must never take the application down.
         }
+    }
+
+    /// <summary>
+    /// Keeps dotnet-status.txt bounded: once it grew past the cap, the newest whole lines that
+    /// fit are kept and the oldest ones are dropped (recent diagnostics are the useful ones).
+    /// </summary>
+    private static void TrimStatusFile(string path)
+    {
+        var info = new FileInfo(path);
+        if (!info.Exists || info.Length <= StatusFileMaxBytes)
+        {
+            return;
+        }
+        string[] lines = File.ReadAllLines(path);
+        var keep = new List<string>();
+        int keptBytes = 0;
+        for (int i = lines.Length - 1; i >= 0; i--)
+        {
+            string line = lines[i];
+            // A line written before the per-message cap existed is trimmed from the front.
+            if (line.Length > StatusMessageMaxChars)
+            {
+                line = line.Substring(line.Length - StatusMessageMaxChars);
+            }
+            int lineBytes = Encoding.UTF8.GetByteCount(line) + 1;
+            if (keep.Count > 0 && keptBytes + lineBytes > StatusFileMaxBytes)
+            {
+                break;
+            }
+            keep.Add(line);
+            keptBytes += lineBytes;
+            if (keptBytes >= StatusFileMaxBytes)
+            {
+                break;
+            }
+        }
+        keep.Reverse();
+        File.WriteAllLines(path, keep);
     }
 
     /// <summary>
