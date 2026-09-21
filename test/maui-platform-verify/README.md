@@ -1,7 +1,8 @@
 # Interaction regression suite (headless)
 
-The MAUI-on-OpenHarmony interaction harness (203 interaction checks, a 4-line fuzz tail and a
-frame-path performance budget). It builds the platform slice sources from the
+The MAUI-on-OpenHarmony interaction harness (203 interaction checks, a 4-line fuzz tail, a
+frame-path performance budget and an accessibility publish-path budget). It builds the platform
+slice sources from the
 `maui-ohos` working tree and drives the app host without a device: touch/drag/pinch/pointer input,
 overlays, gestures (tap/pan/swipe/pinch/pointer/drag-and-drop), sensors/haptics/notification/picker
 wiring, the app-theme colour-mode handler, the launcher/browser/share ability bridge, the
@@ -12,10 +13,11 @@ and the text-to-PDF renderer), the Essentials Battery/DeviceDisplay push bridge 
 parsers plus the ModuleInitializer-installed defaults) and the S-series features (the
 BlazorWebView handler/manager/file-provider path, the accessibility node-count export, the
 flashlight default/degradation and the file-share dispatch/MIME/URI path). Before the fuzz tail
-it runs a frame-path
-performance budget: warm-up plus 200 timed `OpenHarmonyWindowRenderer.Render` frames over a fixed
-401-node tree, reporting average/p50/p95/max frame time and the managed allocation delta and
-failing the suite when the (deliberately loose) budget is exceeded.
+it runs a frame-path performance budget (warm-up plus 200 timed
+`OpenHarmonyWindowRenderer.Render` frames over a fixed 401-node tree, reporting
+average/p50/p95/max frame time and the managed allocation delta) and an accessibility
+publish-path budget (unchanged vs mutated frames over the same tree, see "Performance budget"
+below), failing the suite when the (deliberately loose) budgets are exceeded.
 
 ## Running it
 
@@ -25,7 +27,7 @@ failing the suite when the (deliberately loose) budget is exceeded.
 # (or the MauiSliceDir / HostingDll / OpenHarmonyGraphicsDll MSBuild properties) before building
 # elsewhere; an explicit -p: value wins over the environment and the absolute fallbacks.
 dotnet build -v:q
-dotnet bin/Debug/net11.0/verify.dll | grep -c '\[verify\]'   # expect 208 (203 checks + 4 fuzz + 1 perf)
+dotnet bin/Debug/net11.0/verify.dll | grep -c '\[verify\]'   # expect 216 (203 checks + 4 fuzz + 1 frame perf + 8 a11y perf)
 ```
 
 The `interaction-regression` workflow (`.github/workflows/interaction-regression.yml`) runs the
@@ -33,7 +35,7 @@ suite on a GitHub runner as a real gate: it checks out this repository plus `spr
 (`feature/openharmony`, the branch carrying `src/Core/src/Platform/OpenHarmony`), builds
 `src/Microsoft.OpenHarmony.Hosting` and `src/Microsoft.OpenHarmony.Maui.Graphics` in Release,
 points `MAUI_SLICE_DIR` / `HOSTING_DLL` / `OPENHARMONY_GRAPHICS_DLL` at those roots, and fails the
-job unless the run exits 0, reports at least 199 `[verify]` lines, the perf line reports
+job unless the run exits 0, reports at least 216 `[verify]` lines, both perf lines report
 `within=True`, and no `Unhandled` line is logged.
 
 ## Fuzz tail
@@ -81,13 +83,44 @@ suite runs in Debug and the off-device frame keeps one failed native lookup on t
   machine where the absolute ceilings are too loose; single preempted frames (10-30x a
   sub-millisecond average) are tolerated.
 
+The suite then measures the accessibility publish path over the same fixed tree: 8 warm-up and 50
+timed unchanged frames (the skip path), followed by 8 warm-up and 50 timed frames whose label text
+was mutated since the last publish (the republish path). Each pass is reported twice - as the
+render step (`OpenHarmonyAccessibility.Refresh` + `Publish`, what a frame pays) and as the publish
+pass itself (`Publish` alone, where the skip decision and the host boundary live) - with the same
+average/p50/p95/max shape. Off-device there is no host library, so the first publish attempt fails
+and flips the slice's internal provider-availability flag, after which every pass (changed or not)
+returns before the host boundary and the two paths become indistinguishable; the harness restores
+that flag (the same reflection hook the publish-contract checks use) before every measured pass,
+so the republish passes really take the host-boundary branch and fail there while the skip passes
+take the "nothing moved" branch, and restores the previous value when the block ends. The eight
+`[verify] perf a11y` lines report the numbers, the skip/republish decisions
+(`wouldPublish`/`FramesSkipped`/host attempts) and the integrity checks (the skip passes never
+asked the host for a publish; every republish pass detected the mutation and reached the host
+boundary; the shadow-tree snapshot is still well-formed and indexed). The budget is the same
+deliberately loose style as the frame budget:
+
+- `skip avg <= 20 ms`, `skip max <= 250 ms` - the rebuild, the diff and the skip decision are
+  sub-millisecond managed work, so the same loose ceilings as the frame budget apply.
+- `republish avg <= 50 ms`, `republish max <= 500 ms` - the republish pass additionally crosses the
+  host boundary once per pass; the ceilings leave room for the absent-host probe on a loaded host
+  while still catching a genuine hang.
+- `republish/skip >= 1.25x` (render step) and `>= 2x` (publish pass) - the documented relative
+  floors: the skip path must be materially cheaper than a republish pass. CI runners measure
+  ~1.6-1.7x and ~3.8-3.9x; on the OpenHarmony dev host the absent-host probe dominates and the
+  ratios are ~10-15x and ~80-120x, so the floors sit well below the observed values.
+- `elapsed <= 2 s` - the whole block is bounded (measured ~0.1 s on CI and ~0.5-0.9 s on the dev
+  host), so the suite stays inside the ~2 s addition budget.
+
 A violation throws (unhandled exception, non-zero exit) after the numbers are printed, so CI logs
 keep the evidence. Measured on the OpenHarmony dev host (200 frames): avg ~3.5-3.8 ms, p50
 ~3.4-3.7 ms, p95 ~4.5-4.7 ms, max 6.4-7.2 ms, max/avg ~1.7-2.1, ~185 KiB allocated per frame (the
 accessibility frame diff rebuilds the 401-node shadow tree: reported for context, not asserted),
-section wall time ~750-810 ms; the whole suite stayed within ~1 s of the unmodified 199-line run.
-On a normal CI runner the one remaining native lookup inside `Render` is sub-millisecond, so the
-reported average should be well under 1 ms.
+section wall time ~750-810 ms; the a11y block adds ~0.5-0.9 s (50 skip + 50 mutated passes) and the
+whole suite stayed within ~1 s of the unmodified 199-line run. On a normal CI runner the one
+remaining native lookup inside `Render` is sub-millisecond, so the reported average should be well
+under 1 ms, and the a11y block reported ~0.3/0.5 ms for the render step and ~0.07/0.28 ms for the
+publish pass (skip/republish).
 
 ## Notes
 
@@ -95,8 +128,8 @@ reported average should be well under 1 ms.
   blocks codesigned ELF apphosts on some machines).
 - The suite fails loudly (unhandled exception) when a slice change breaks startup or when an
   assertion for the gesture flows (including the drag-and-drop checks) does not hold; keep it at
-  203 checks plus the 4 fuzz lines plus the 1 perf line (208 `[verify]` lines) when touching the
-  platform slice.
+  203 checks plus the 4 fuzz lines plus the 1 frame-perf line plus the 8 a11y-perf lines
+  (216 `[verify]` lines) when touching the platform slice.
 - Contacts/calendar coverage: `OpenHarmonyContacts.FindAsync` and
   `OpenHarmonyCalendar.ListUpcomingAsync`/`AddEventAsync` return empty/false without throwing
   off-device and report `IsSupported == false` before and after the call (the permission probe
@@ -210,8 +243,8 @@ reported average should be well under 1 ms.
     the installed default must complete without throwing when the ability bridge is absent; the
     want kind for single-file sharing is pinned to 3.
 - CI wiring: `.github/workflows/interaction-regression.yml` builds the slice checkout and the
-  hosting assemblies on the runner and gates on the `[verify]` line count (>=199) plus the perf
-  `within=True` marker (see "Running it" above).
+  hosting assemblies on the runner and gates on the `[verify]` line count (>=216) plus both perf
+  `within=True` markers (see "Running it" above).
 - Accessibility publish-contract coverage (R2b): the suite reflects
   `OpenHarmonyAccessibility.AccessibilityNode` (16 parameters now that hint, range and checked
   are published) and parses `ohos_host_accessibility_node`/`_get` out of

@@ -2387,6 +2387,220 @@ if (!perfWarm || !perfWithinBudget)
         $"warmupOk={perfWarm} frames={perfFrames} nodes={perfNodes}");
 }
 
+// ---- Accessibility publish-path budget (skip vs republish) ------------------------------------
+// The frame budget above times the whole render; this block isolates the accessibility step of a
+// frame over the same fixed tree in its two shapes: repeated unchanged frames (the skip path) and
+// a frame whose tree was mutated since the last publish (the republish path). The slice's Publish
+// diffs the rebuilt shadow tree against the previous frame and skips all host traffic when nothing
+// moved; otherwise every pass marshals the whole tree (one P/Invoke plus UTF-8 strings per node).
+// This gate pins that saving so a change that reintroduces per-frame marshalling - or makes the
+// skip decision pathologically expensive - fails here instead of on a device.
+//
+// Two numbers are collected per pass: the render step (Refresh + Publish, what a frame pays) and
+// the publish pass itself (Publish alone). The publish pass is where the skip decision and the host
+// boundary live; the shadow-tree rebuild is shared work and the frame budget already covers it.
+//
+// Off-device there is no host library: the first publish attempt fails and flips the slice's
+// internal provider-availability flag, after which every pass (changed or not) returns before the
+// host boundary and the two paths become indistinguishable. The harness therefore restores that
+// flag through the same reflection hook the publish-contract checks use, so the republish block
+// really takes the host-boundary branch (failing there exactly like the first real publish would
+// off-device) while the skip block takes the "nothing moved" branch. The flag is restored to its
+// previous value when the block ends, so the fuzz tail sees the same state the interaction checks
+// left behind.
+//
+// Budget rationale - deliberately generous, same style as the frame budget: CI runners are shared,
+// the suite runs in Debug, and off-device a republish pass pays one failed native lookup whose cost
+// is host-dependent (~10 ms on the OpenHarmony dev host, sub-ms on a normal CI runner).
+//   * skip avg <= 20 ms and max <= 250 ms (both shapes) - the same loose managed ceilings as the
+//     frame budget: the rebuild, the diff and the skip decision are sub-millisecond managed work,
+//     and a regression (per-frame marshalling, an allocation storm, a blocking wait) has to add far
+//     more than that to trip the ceilings.
+//   * republish avg <= 50 ms and max <= 500 ms (both shapes) - the republish pass additionally
+//     crosses the host boundary once per pass; the ceilings leave room for the absent-host probe on
+//     a loaded host while still catching a genuine hang.
+//   * render republish/skip >= 1.25x and publish republish/skip >= 2x - the documented relative
+//     floors: the skip path must be materially cheaper than a republish pass. Measured on CI
+//     runners the render ratio is ~1.6-1.7x and the publish ratio ~3.8-3.9x; on the OpenHarmony dev
+//     host they are ~10-15x and ~80x. The floors sit well below the observed values so runner noise
+//     and CPU-speed differences cannot trip them.
+// The tree, the mutation sequence, the pass counts and the warm-up split are fixed constants (the
+// mutated text alternates between two fixed values), so every run does identical work; only the
+// wall-clock numbers vary. The whole block must stay inside a 2 s wall-clock bound.
+const int a11yWarmupFrames = 8;
+const int a11ySkipFrames = 50;
+const int a11yRepublishFrames = 50;
+const double a11ySkipAverageCeilingMs = 20.0;
+const double a11ySkipMaxCeilingMs = 250.0;
+const double a11yRepublishAverageCeilingMs = 50.0;
+const double a11yRepublishMaxCeilingMs = 500.0;
+const double a11yRenderRatioFloor = 1.25;
+const double a11yPublishRatioFloor = 2.0;
+const double a11yElapsedCeilingMs = 2000.0;
+var a11yWatch = System.Diagnostics.Stopwatch.StartNew();
+FieldInfo a11yAvailability = typeof(OpenHarmonyAccessibility).GetField("_available", BindingFlags.NonPublic | BindingFlags.Static)
+    ?? throw new InvalidOperationException("OpenHarmonyAccessibility._available was not found; the a11y perf gate needs the provider-availability hook to isolate the skip and republish paths off-device");
+bool a11yAvailabilityBefore = (bool)a11yAvailability.GetValue(null)!;
+void SetA11yAvailability(bool value) => a11yAvailability.SetValue(null, value);
+var a11yPerfLabels = new List<Label>();
+foreach (IView a11yChild in perfRoot.Children)
+{
+    if (a11yChild is HorizontalStackLayout a11yRow)
+    {
+        foreach (IView a11yCell in a11yRow.Children)
+        {
+            if (a11yCell is Label a11yLabel)
+            {
+                a11yPerfLabels.Add(a11yLabel);
+            }
+        }
+    }
+}
+Label a11yMutatedLabel = a11yPerfLabels[0];
+string a11yMutatedBase = a11yMutatedLabel.Text!;
+
+static (double Average, double P50, double P95, double Max) A11yStats(double[] samples)
+{
+    var sorted = (double[])samples.Clone();
+    Array.Sort(sorted);
+    double average = samples.Sum() / samples.Length;
+    double p50 = sorted[samples.Length / 2];
+    double p95 = sorted[Math.Min(samples.Length - 1, (int)Math.Ceiling(samples.Length * 0.95) - 1)];
+    return (average, p50, p95, sorted[^1]);
+}
+
+// A fresh shadow tree for the fixed perf page, so both blocks start from the same snapshot.
+SetA11yAvailability(true);
+OpenHarmonyAccessibility.Refresh(perfPage);
+int a11yNodeCount = OpenHarmonyAccessibility.Nodes.Count;
+
+// Skip path: repeated unchanged frames. Availability is restored before every pass so Publish
+// takes the "nothing moved" branch; off-device the very first republish below would otherwise leave
+// the provider marked unavailable and collapse the two paths into the same early return.
+int a11ySkippedBefore = OpenHarmonyAccessibility.FramesSkipped;
+bool a11ySkipSawWouldPublish = false;
+for (int i = 0; i < a11yWarmupFrames; i++)
+{
+    SetA11yAvailability(true);
+    OpenHarmonyAccessibility.Refresh(perfPage);
+    OpenHarmonyAccessibility.Publish();
+    a11ySkipSawWouldPublish |= OpenHarmonyAccessibility.WouldPublish;
+}
+GC.Collect();
+GC.WaitForPendingFinalizers();
+GC.Collect();
+var a11ySkipRenderTimes = new double[a11ySkipFrames];
+var a11ySkipPublishTimes = new double[a11ySkipFrames];
+for (int i = 0; i < a11ySkipFrames; i++)
+{
+    SetA11yAvailability(true);
+    long renderStart = System.Diagnostics.Stopwatch.GetTimestamp();
+    OpenHarmonyAccessibility.Refresh(perfPage);
+    long publishStart = System.Diagnostics.Stopwatch.GetTimestamp();
+    OpenHarmonyAccessibility.Publish();
+    long publishEnd = System.Diagnostics.Stopwatch.GetTimestamp();
+    a11ySkipRenderTimes[i] = System.Diagnostics.Stopwatch.GetElapsedTime(renderStart, publishEnd).TotalMilliseconds;
+    a11ySkipPublishTimes[i] = System.Diagnostics.Stopwatch.GetElapsedTime(publishStart, publishEnd).TotalMilliseconds;
+    a11ySkipSawWouldPublish |= OpenHarmonyAccessibility.WouldPublish;
+}
+int a11ySkipDelta = OpenHarmonyAccessibility.FramesSkipped - a11ySkippedBefore;
+var a11ySkipRender = A11yStats(a11ySkipRenderTimes);
+var a11ySkipPublish = A11yStats(a11ySkipPublishTimes);
+
+// Republish path: a mutated tree. The mutation is a tree edit (setup, outside the timed region);
+// the measured step is the same Refresh + Publish pair. Alternating between two fixed texts keeps
+// the change detectable on every pass without adding work inside the timed region.
+int a11yRepublishSkippedBefore = OpenHarmonyAccessibility.FramesSkipped;
+int a11yRepublishDetected = 0;
+int a11yHostAttempts = 0;
+for (int i = 0; i < a11yWarmupFrames; i++)
+{
+    a11yMutatedLabel.Text = a11yMutatedBase + (i % 2 == 0 ? " warm A" : " warm B");
+    SetA11yAvailability(true);
+    OpenHarmonyAccessibility.Refresh(perfPage);
+    OpenHarmonyAccessibility.Publish();
+}
+GC.Collect();
+GC.WaitForPendingFinalizers();
+GC.Collect();
+var a11yRepublishRenderTimes = new double[a11yRepublishFrames];
+var a11yRepublishPublishTimes = new double[a11yRepublishFrames];
+for (int i = 0; i < a11yRepublishFrames; i++)
+{
+    a11yMutatedLabel.Text = a11yMutatedBase + (i % 2 == 0 ? " pub A" : " pub B");
+    SetA11yAvailability(true);
+    long renderStart = System.Diagnostics.Stopwatch.GetTimestamp();
+    OpenHarmonyAccessibility.Refresh(perfPage);
+    long publishStart = System.Diagnostics.Stopwatch.GetTimestamp();
+    OpenHarmonyAccessibility.Publish();
+    long publishEnd = System.Diagnostics.Stopwatch.GetTimestamp();
+    a11yRepublishRenderTimes[i] = System.Diagnostics.Stopwatch.GetElapsedTime(renderStart, publishEnd).TotalMilliseconds;
+    a11yRepublishPublishTimes[i] = System.Diagnostics.Stopwatch.GetElapsedTime(publishStart, publishEnd).TotalMilliseconds;
+    if (OpenHarmonyAccessibility.WouldPublish)
+    {
+        a11yRepublishDetected++;
+        if (!(bool)a11yAvailability.GetValue(null)!)
+        {
+            a11yHostAttempts++;
+        }
+    }
+}
+int a11yRepublishSkippedDelta = OpenHarmonyAccessibility.FramesSkipped - a11yRepublishSkippedBefore;
+var a11yRepublishRender = A11yStats(a11yRepublishRenderTimes);
+var a11yRepublishPublish = A11yStats(a11yRepublishPublishTimes);
+SetA11yAvailability(a11yAvailabilityBefore);
+
+double a11yRenderRatio = a11yRepublishRender.Average / Math.Max(a11ySkipRender.Average, 1e-9);
+double a11yPublishRatio = a11yRepublishPublish.Average / Math.Max(a11ySkipPublish.Average, 1e-9);
+bool a11ySkipWithin = a11ySkipRender.Average <= a11ySkipAverageCeilingMs && a11ySkipRender.Max <= a11ySkipMaxCeilingMs
+    && a11ySkipPublish.Average <= a11ySkipAverageCeilingMs && a11ySkipPublish.Max <= a11ySkipMaxCeilingMs;
+bool a11yRepublishWithin = a11yRepublishRender.Average <= a11yRepublishAverageCeilingMs && a11yRepublishRender.Max <= a11yRepublishMaxCeilingMs
+    && a11yRepublishPublish.Average <= a11yRepublishAverageCeilingMs && a11yRepublishPublish.Max <= a11yRepublishMaxCeilingMs;
+bool a11yRatioWithin = a11yRenderRatio >= a11yRenderRatioFloor && a11yPublishRatio >= a11yPublishRatioFloor;
+bool a11yElapsedWithin = a11yWatch.ElapsedMilliseconds <= a11yElapsedCeilingMs;
+
+// Integrity: the skip passes must never have asked the host for a publish; the republish passes
+// must each have detected the mutation and reached the host boundary (which off-device fails and
+// on-device publishes the whole tree), without a single skip. Snapshot indexing is pinned too, so
+// the publish path is measured on a well-formed tree.
+bool a11yIdsOk = a11yNodeCount > 0;
+for (int i = 0; i < a11yNodeCount; i++)
+{
+    a11yIdsOk &= OpenHarmonyAccessibility.Nodes[i].Id == i + 1;
+}
+bool a11yFindOk = a11yNodeCount > 0
+    && OpenHarmonyAccessibility.TryFindNode(OpenHarmonyAccessibility.Nodes[^1].Id, out var a11yFound)
+    && a11yFound?.Id == OpenHarmonyAccessibility.Nodes[^1].Id;
+bool a11ySkipAssert = a11ySkipDelta >= a11ySkipFrames && !a11ySkipSawWouldPublish;
+bool a11yRepublishAssert = a11yRepublishDetected == a11yRepublishFrames
+    && a11yRepublishSkippedDelta == 0
+    && (a11yHostAttempts == 0 || a11yHostAttempts == a11yRepublishFrames)
+    && (OpenHarmonyAccessibility.LastPublishedCount == 0 || OpenHarmonyAccessibility.LastPublishedCount == a11yNodeCount);
+bool a11yIntegrity = a11yIdsOk
+    && a11yFindOk
+    && a11yNodeCount == perfNodes + 1
+    && a11ySkipAssert
+    && a11yRepublishAssert;
+bool a11yAllWithin = a11yIntegrity && a11ySkipWithin && a11yRepublishWithin && a11yRatioWithin && a11yElapsedWithin;
+
+Console.WriteLine($"[verify] perf a11y render skip warmup={a11yWarmupFrames} repeats={a11ySkipFrames} nodes={a11yNodeCount} avg={a11ySkipRender.Average:0.###}ms p50={a11ySkipRender.P50:0.###}ms p95={a11ySkipRender.P95:0.###}ms max={a11ySkipRender.Max:0.###}ms budget=avg<={a11ySkipAverageCeilingMs:0.###}ms,max<={a11ySkipMaxCeilingMs:0.###}ms within={a11ySkipWithin}");
+Console.WriteLine($"[verify] perf a11y render republish warmup={a11yWarmupFrames} repeats={a11yRepublishFrames} nodes={a11yNodeCount} avg={a11yRepublishRender.Average:0.###}ms p50={a11yRepublishRender.P50:0.###}ms p95={a11yRepublishRender.P95:0.###}ms max={a11yRepublishRender.Max:0.###}ms budget=avg<={a11yRepublishAverageCeilingMs:0.###}ms,max<={a11yRepublishMaxCeilingMs:0.###}ms within={a11yRepublishWithin}");
+Console.WriteLine($"[verify] perf a11y publish skip repeats={a11ySkipFrames} avg={a11ySkipPublish.Average:0.###}ms p50={a11ySkipPublish.P50:0.###}ms p95={a11ySkipPublish.P95:0.###}ms max={a11ySkipPublish.Max:0.###}ms within={a11ySkipWithin}");
+Console.WriteLine($"[verify] perf a11y publish republish repeats={a11yRepublishFrames} avg={a11yRepublishPublish.Average:0.###}ms p50={a11yRepublishPublish.P50:0.###}ms p95={a11yRepublishPublish.P95:0.###}ms max={a11yRepublishPublish.Max:0.###}ms within={a11yRepublishWithin}");
+Console.WriteLine($"[verify] perf a11y ratio render={a11yRenderRatio:0.##}x floor={a11yRenderRatioFloor:0.###}x publish={a11yPublishRatio:0.##}x floor={a11yPublishRatioFloor:0.###}x assert={a11yRatioWithin}");
+Console.WriteLine($"[verify] perf a11y skip decision unchanged={a11ySkipFrames} wouldPublish={a11ySkipSawWouldPublish} framesSkipped=+{a11ySkipDelta} published={OpenHarmonyAccessibility.LastPublishedCount} assert={a11ySkipAssert}");
+Console.WriteLine($"[verify] perf a11y republish decision changed={a11yRepublishDetected} framesSkipped=+{a11yRepublishSkippedDelta} hostAttempts={a11yHostAttempts} published={OpenHarmonyAccessibility.LastPublishedCount} pending=0x{OpenHarmonyAccessibility.PendingEventCount:x} assert={a11yRepublishAssert}");
+Console.WriteLine($"[verify] perf a11y budget elapsed={(int)a11yWatch.ElapsedMilliseconds}ms limit={(int)a11yElapsedCeilingMs}ms repeats={a11ySkipFrames + a11yRepublishFrames} warmup={a11yWarmupFrames * 2} skipWithin={a11ySkipWithin} republishWithin={a11yRepublishWithin} ratioWithin={a11yRatioWithin} elapsedWithin={a11yElapsedWithin} integrity nodes={a11yNodeCount} expected={perfNodes + 1} idsSequential={a11yIdsOk} tryFindNode={a11yFindOk} assert={a11yAllWithin}");
+if (!a11yAllWithin)
+{
+    throw new InvalidOperationException(
+        $"the accessibility publish-path performance budget failed: render skip avg={a11ySkipRender.Average:0.###}ms (limit {a11ySkipAverageCeilingMs}ms) max={a11ySkipRender.Max:0.###}ms (limit {a11ySkipMaxCeilingMs}ms) " +
+        $"render republish avg={a11yRepublishRender.Average:0.###}ms (limit {a11yRepublishAverageCeilingMs}ms) max={a11yRepublishRender.Max:0.###}ms (limit {a11yRepublishMaxCeilingMs}ms) " +
+        $"publish skip avg={a11ySkipPublish.Average:0.###}ms publish republish avg={a11yRepublishPublish.Average:0.###}ms " +
+        $"ratio render={a11yRenderRatio:0.##} (floor {a11yRenderRatioFloor}) publish={a11yPublishRatio:0.##} (floor {a11yPublishRatioFloor}) " +
+        $"integrity={a11yIntegrity} elapsed={(int)a11yWatch.ElapsedMilliseconds}ms (limit {(int)a11yElapsedCeilingMs}ms) nodes={a11yNodeCount}");
+}
+
 // ---- Deterministic fuzz (bounded, seeded) -----------------------------------------------------
 // A seeded storm of touch sequences with extreme but finite (mostly out-of-bounds) coordinates,
 // two very long strings through the simulated bridge payloads and a ~300-node deep view tree that
