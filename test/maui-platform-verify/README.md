@@ -1,6 +1,6 @@
 # Interaction regression suite (headless)
 
-The MAUI-on-OpenHarmony interaction harness (249 interaction checks, a 4-line fuzz tail, a
+The MAUI-on-OpenHarmony interaction harness (261 interaction checks, a 4-line fuzz tail, a
 frame-path performance budget and an accessibility publish-path budget). It builds the platform
 slice sources from the
 `maui-ohos` working tree and drives the app host without a device: touch/drag/pinch/pointer input,
@@ -13,7 +13,11 @@ and the text-to-PDF renderer), the Essentials Battery/DeviceDisplay push bridge 
 parsers plus the ModuleInitializer-installed defaults), the BATCH-1 Essentials real bridges
 (runtime permissions through `abilityAccessCtrl.requestPermissionsFromUser`, the system
 pasteboard through `@ohos.pasteboard` and network access through the NetworkKit observer: source
-pins plus the fast off-device degradation), the S-series features (the
+pins plus the fast off-device degradation), the BATCH-2 Essentials real bridges (email/SMS/phone
+dialer through the startAbility `mailto:`/`sms:`/`tel:` URIs, the screenshot host capture with the
+asynchronous PNG poll and the geocoding `ohos_host_geocode_request`/`host.geocodeResult` bridge
+with the GeoAddress parser: source pins plus the fast off-device degradation), the S-series
+features (the
 BlazorWebView handler/manager/file-provider path, the accessibility node-count export, the
 flashlight default/degradation and the file-share dispatch/MIME/URI path) and the V-series
 on-demand app-context publish (V8: native/NAPI/shell-template checks plus an off-device drill
@@ -32,7 +36,7 @@ below), failing the suite when the (deliberately loose) budgets are exceeded.
 # (or the MauiSliceDir / HostingDll / OpenHarmonyGraphicsDll MSBuild properties) before building
 # elsewhere; an explicit -p: value wins over the environment and the absolute fallbacks.
 dotnet build -v:q
-dotnet bin/Debug/net11.0/verify.dll | grep -c '\[verify\]'   # expect 262 (249 checks + 4 fuzz + 1 frame perf + 8 a11y perf)
+dotnet bin/Debug/net11.0/verify.dll | grep -c '\[verify\]'   # expect 274 (261 checks + 4 fuzz + 1 frame perf + 8 a11y perf)
 ```
 
 The `interaction-regression` workflow (`.github/workflows/interaction-regression.yml`) runs the
@@ -133,8 +137,8 @@ publish pass (skip/republish).
   blocks codesigned ELF apphosts on some machines).
 - The suite fails loudly (unhandled exception) when a slice change breaks startup or when an
   assertion for the gesture flows (including the drag-and-drop checks) does not hold; keep it at
-  249 checks plus the 4 fuzz lines plus the 1 frame-perf line plus the 8 a11y-perf lines
-  (262 `[verify]` lines) when touching the platform slice.
+  261 checks plus the 4 fuzz lines plus the 1 frame-perf line plus the 8 a11y-perf lines
+  (274 `[verify]` lines) when touching the platform slice.
 - Contacts/calendar coverage: `OpenHarmonyContacts.FindAsync` and
   `OpenHarmonyCalendar.ListUpcomingAsync`/`AddEventAsync` return empty/false without throwing
   off-device and report `IsSupported == false` before and after the call (the permission probe
@@ -253,8 +257,9 @@ publish pass (skip/republish).
   IME call sites (and no `strncpy` call site remains); B3 asserts the shell's
   `window.__ohHybridId`/`window.__ohBlazorId` stamps in all three preview templates and the
   marker-checked `'skip'` eval before `SendRawMessage` (hybrid) and `SendMessage` (Blazor),
-  including the skip log. That is 9 `[verify]` lines: 253 + 9 = 262 = 249 interaction checks +
-  4 fuzz + 1 frame perf + 8 a11y perf; the workflow floor stays at 224.
+  including the skip log. That is 9 `[verify]` lines: 253 + 9 = 262, the BATCH-1-era total
+  (249 interaction checks + 4 fuzz + 1 frame perf + 8 a11y perf). With the BATCH-2 lines below
+  the suite reports 274 = 261 + 4 + 1 + 8; the workflow floor stays at 224.
 - BATCH-1 Essentials real bridges (permissions / clipboard / connectivity): six `[verify]` lines
   cover both halves of each bridge. Off-device each request fails fast (the 30 s permission and
   5 s clipboard timeouts are never waited out) and degrades to Denied / null / false / Unknown;
@@ -274,6 +279,33 @@ publish pass (skip/republish).
   answers `CheckStatusAsync` from `OH_AT_CheckSelfPermission`; IClipboard no longer has a
   file-backed store (the old `OpenHarmonyClipboard(string? path)` constructor is gone) and
   IConnectivity no longer reports a constant Unknown.
+- BATCH-2 Essentials real bridges (email / SMS / phone dialer, screenshot, geocoding): twelve
+  `[verify]` lines. `Email.Default`, `Sms.Default`, `PhoneDialer.Default`, `Screenshot.Default`
+  and `Geocoding.Default` resolve to the slice implementations from the `UseOpenHarmony` DI
+  registrations; the mailto builder is pinned byte-for-byte against the shipped shared
+  `EmailImplementation.GetMailToUri` shape (`to`/`cc`/`bcc`/`subject`/`body`, every value
+  `Uri.EscapeDataString`'d, `mailto:?` for an empty message) and the SMS builder to
+  `sms:<recipients>?body=...`; the dialer keeps MAUI's `ArgumentNullException` validation and only
+  then dispatches `tel:`. Off-device all five degrade fast (no timeout wait), a compose with an
+  attachment logs the documented drop (one viewData Want cannot carry a file), `CaptureAsync`
+  answers null without leaving a temp PNG, and both geocoding calls answer empty. The screenshot
+  helpers are checked against the harness's 1x1 PNG (IHDR width/height, complete vs truncated
+  IEND, `OpenReadAsync`/`CopyToAsync` round trip, and the documented PNG fallback for a Jpeg
+  request). The geocoding parser is driven with a realistic `@ohos.geoLocationManager` GeoAddress
+  array (placeName -> FeatureName, administrativeArea -> AdminArea, subAdministrativeArea ->
+  SubAdminArea, streetNumber -> SubThoroughfare, ...) and with nested-coordinate/numeric-string
+  locations; malformed payloads answer empty. The source pins parse the managed P/Invokes
+  (`ohos_host_screenshot`, `ohos_host_geocode_request` with its int queued/dropped return,
+  `ohos_host_register_geocode_result`), the C definitions and shared-header declarations, the
+  NAPI sinks/answers (`registerScreenshotSink`, `registerGeocodeSink`/`geocodeResult`), the
+  shell's `window.snapshot` + `packToFile` screenshot sink and the `JSON.parse(arg)` /
+  `getAddressesFromLocationName` / `getAddressesFromLocation` / `host.geocodeResult(...)` call
+  sites in all three byte-identical templates. The registration pass pins the ImageButton handler
+  table entry plus a real `ImageButton` through the connector, the self-installing
+  `SemanticScreenReader` default (no registration added) and the window handler/title mapper; the
+  optional window pin covers the `ohos_host_set_window_title`/`_rect` exports and the shell
+  `registerWindowTitleSink`/`registerWindowRectSink` sinks. That is 12 lines: 262 + 12 = 274 =
+  261 interaction checks + 4 fuzz + 1 frame perf + 8 a11y perf.
 - Haptics coverage: `HapticFeedback.Default` is the slice implementation, `Perform(Click/LongPress)`
   degrades without throwing off-device, and `IsSupported` is false without the host library. The app
   theme handler is exercised directly (ArkUI colour-mode reports need a device): setting dark/light

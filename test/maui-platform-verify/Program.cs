@@ -3517,6 +3517,380 @@ if (!b1ConnectivityContract)
         $"napi={b1ConnectivityNapi} shell={b1ConnectivityShell} identical={b1ShellIdentical}");
 }
 
+// ---- BATCH-2 Essentials: email/SMS/dialer, screenshot and geocoding ---------------------------
+// The second Essentials batch adds five surfaces:
+//   IEmail/Sms/PhoneDialer ride the existing startAbility bridge (kind 0 open URI) with
+//     mailto:/sms:/tel: URIs; the mailto builder mirrors the shared EmailImplementation output;
+//   IScreenshot asks the host for ohos_host_screenshot(out_path) (the shell snapshots the main
+//     window and packs a PNG to the path asynchronously; the managed side polls for a complete
+//     PNG, reads it, deletes the temp file and returns an in-memory result);
+//   IGeocoding sends ohos_host_geocode_request(op, arg, id) (op 0 address -> locations with a
+//     {"description":...} JSON arg, op 1 location -> placemarks with "lat,lon"), the shell
+//     answers host.geocodeResult(id, rc, json) with a JSON GeoAddress array, and the managed
+//     parser maps it into Placemark/Location (timeouts answer empty, like the permission deny).
+// Off-device there is no libopenharmonyhost.so, so the defaults must be the slice
+// implementations, every call must degrade fast (no 30 s/15 s/5 s timeout wait) and the source
+// pins must show the managed P/Invokes, the C/header definitions, the NAPI exports/sinks and the
+// shell call sites in all three preview templates (which must stay byte-identical).
+var b2Email = Microsoft.Maui.ApplicationModel.Communication.Email.Default;
+var b2Sms = Microsoft.Maui.ApplicationModel.Communication.Sms.Default;
+var b2Dialer = Microsoft.Maui.ApplicationModel.Communication.PhoneDialer.Default;
+var b2Screenshot = Microsoft.Maui.Media.Screenshot.Default;
+var b2Geocoding = Microsoft.Maui.Devices.Sensors.Geocoding.Default;
+bool b2DefaultsOk = b2Email is OpenHarmonyEmail && b2Sms is OpenHarmonySms &&
+    b2Dialer is OpenHarmonyPhoneDialer && b2Screenshot is OpenHarmonyScreenshot &&
+    b2Geocoding is OpenHarmonyGeocoding;
+Console.WriteLine($"[verify] batch2 defaults email={b2Email.GetType().Name} sms={b2Sms.GetType().Name} dialer={b2Dialer.GetType().Name} screenshot={b2Screenshot.GetType().Name} geocoding={b2Geocoding.GetType().Name} assert={b2DefaultsOk}");
+if (!b2DefaultsOk)
+{
+    throw new InvalidOperationException("the BATCH-2 Essentials defaults were not installed from DI");
+}
+
+// BATCH2a: the URI builders. The mailto shape is byte-for-byte what the shipped shared
+// EmailImplementation.GetMailToUri produces (probed against Microsoft.Maui.Essentials rc.1:
+// to/cc/bcc/subject/body order, every value Uri.EscapeDataString'd, the "?" kept for an empty
+// message); the sms shape is recipients-then-body; the dialer validates like MAUI (null/empty/
+// whitespace -> ArgumentNullException) and only then builds tel:.
+var b2MailMessage = new Microsoft.Maui.ApplicationModel.Communication.EmailMessage
+{
+    Subject = "Hi there",
+    Body = "Hello & <world>",
+    To = new() { "a@b.c" },
+    Cc = new() { "c@c.c" },
+    Bcc = new() { "b@b.b" },
+};
+string b2Mailto = OpenHarmonyEmail.BuildMailToUri(b2MailMessage);
+string b2MailtoNull = OpenHarmonyEmail.BuildMailToUri(null);
+var b2SmsMessage = new Microsoft.Maui.ApplicationModel.Communication.SmsMessage
+{
+    Body = "ping & pong",
+    Recipients = new() { "+15550001", "+15550002" },
+};
+string b2SmsUri = OpenHarmonySms.BuildSmsUri(b2SmsMessage);
+string b2SmsUriNull = OpenHarmonySms.BuildSmsUri(null);
+bool b2UrisOk = b2Mailto == "mailto:?to=a%40b.c&cc=c%40c.c&bcc=b%40b.b&subject=Hi%20there&body=Hello%20%26%20%3Cworld%3E" &&
+    b2MailtoNull == "mailto:?" &&
+    b2SmsUri == "sms:+15550001,+15550002?body=ping%20%26%20pong" && b2SmsUriNull == "sms:";
+Console.WriteLine($"[verify] batch2 communication uris mailto='{b2Mailto}' mailtoNull='{b2MailtoNull}' sms='{b2SmsUri}' smsNull='{b2SmsUriNull}' assert={b2UrisOk}");
+if (!b2UrisOk)
+{
+    throw new InvalidOperationException("the BATCH-2 communication URI builders drifted");
+}
+
+// BATCH2b: the off-device communication behaviour. Every Is*Supported probe is false without
+// the host library; ComposeAsync completes without throwing (and the attachment drop is logged
+// because one viewData Want cannot carry a file with the mailto compose); the dialer throws
+// ArgumentNullException for a null number (MAUI validation) but not for a real one, which is
+// logged as undispatched instead.
+string b2StatusDir = Path.Combine(Path.GetTempPath(), "verify-batch2-status");
+Directory.CreateDirectory(b2StatusDir);
+SetBridgeContext(new Microsoft.OpenHarmony.Hosting.OpenHarmonyAppContext { FilesDir = b2StatusDir });
+string b2StatusPath = Path.Combine(b2StatusDir, "dotnet-status.txt");
+File.Delete(b2StatusPath);
+bool b2CommSupported = b2Email.IsComposeSupported;
+b2CommSupported |= b2Sms.IsComposeSupported;
+b2CommSupported |= b2Dialer.IsSupported;
+bool b2CommThrew = false;
+bool b2DialerNullThrew = false;
+bool b2DialerOpenThrew = false;
+var b2CommWatch = System.Diagnostics.Stopwatch.StartNew();
+try
+{
+    await b2Email.ComposeAsync(new Microsoft.Maui.ApplicationModel.Communication.EmailMessage
+    {
+        Subject = "s",
+        Body = "b",
+        To = new() { "a@b.c" },
+        Attachments = new() { new Microsoft.Maui.ApplicationModel.Communication.EmailAttachment("/tmp/verify-batch2-attach.png") },
+    });
+    await b2Sms.ComposeAsync(b2SmsMessage);
+    try
+    {
+        b2Dialer.Open("+15550001");
+    }
+    catch (Exception)
+    {
+        b2DialerOpenThrew = true;
+    }
+    try
+    {
+        b2Dialer.Open(null!);
+    }
+    catch (ArgumentNullException)
+    {
+        b2DialerNullThrew = true;
+    }
+}
+catch (Exception ex)
+{
+    b2CommThrew = true;
+    Console.WriteLine($"[verify] batch2 communication threw {ex.GetType().Name}: {ex.Message}");
+}
+long b2CommMs = b2CommWatch.ElapsedMilliseconds;
+string b2StatusLog = File.Exists(b2StatusPath) ? File.ReadAllText(b2StatusPath) : string.Empty;
+SetBridgeContext(savedBridgeContext);
+bool b2CommFast = b2CommMs < 2000;
+bool b2CommOk = !b2CommThrew && !b2CommSupported && !b2DialerOpenThrew && b2DialerNullThrew &&
+    b2CommFast && b2StatusLog.Contains("attachment");
+Console.WriteLine($"[verify] batch2 communication degraded supported={b2CommSupported} composeNoThrow={!b2CommThrew} dialerNullThrows={b2DialerNullThrew} dialerNumberNoThrow={!b2DialerOpenThrew} attachmentDropped={b2StatusLog.Contains("attachment")} elapsedMs={b2CommMs} fastFail={b2CommFast} assert={b2CommOk}");
+if (!b2CommOk)
+{
+    throw new InvalidOperationException("the BATCH-2 email/SMS/dialer degradation assertion failed");
+}
+
+// BATCH2c: IScreenshot off-device. IsCaptureSupported is a NativeLibrary.TryGetExport probe
+// (false without the host library) and CaptureAsync answers null immediately; the 5 s
+// asynchronous-write window must not be waited out and no temp PNG may be left behind.
+bool b2ShotSupported = b2Screenshot.IsCaptureSupported;
+int b2ShotTempBefore = Directory.GetFiles(Path.GetTempPath(), "maui-ohos-screenshot-*.png").Length;
+bool b2ShotThrew = false;
+Microsoft.Maui.Media.IScreenshotResult? b2ShotResult = null;
+var b2ShotWatch = System.Diagnostics.Stopwatch.StartNew();
+try
+{
+    b2ShotResult = await b2Screenshot.CaptureAsync();
+}
+catch (Exception ex)
+{
+    b2ShotThrew = true;
+    Console.WriteLine($"[verify] batch2 screenshot threw {ex.GetType().Name}: {ex.Message}");
+}
+long b2ShotMs = b2ShotWatch.ElapsedMilliseconds;
+int b2ShotTempAfter = Directory.GetFiles(Path.GetTempPath(), "maui-ohos-screenshot-*.png").Length;
+bool b2ShotFast = b2ShotMs < (long)OpenHarmonyScreenshot.CaptureTimeout.TotalMilliseconds / 2;
+bool b2ShotOk = !b2ShotSupported && !b2ShotThrew && b2ShotResult is null && b2ShotFast &&
+    b2ShotTempAfter == b2ShotTempBefore;
+Console.WriteLine($"[verify] batch2 screenshot degraded supported={b2ShotSupported} result={(b2ShotResult is null ? "<null>" : "captured")} noThrow={!b2ShotThrew} elapsedMs={b2ShotMs} fastFail={b2ShotFast} tempFilesBefore={b2ShotTempBefore} tempFilesAfter={b2ShotTempAfter} assert={b2ShotOk}");
+if (!b2ShotOk)
+{
+    throw new InvalidOperationException("the IScreenshot bridge did not degrade off-device");
+}
+
+// BATCH2d: the screenshot result and PNG helpers. The harness's own 1x1 PNG (the file the Image
+// handler checks use) sizes through the IHDR reader, a complete file passes TryReadCompletePng
+// while the same file without its trailing IEND chunk does not, Width/Height come from the IHDR,
+// and OpenReadAsync/CopyToAsync round-trip the exact bytes. A Jpeg request returns the same PNG
+// (the documented no-transcoder fallback) rather than throwing.
+byte[] b2Png = File.ReadAllBytes(imagePath);
+(int b2PngWidth, int b2PngHeight) = OpenHarmonyScreenshot.ReadPngSize(b2Png);
+string b2PngPath = Path.Combine(Path.GetTempPath(), "verify-batch2-shot.png");
+File.WriteAllBytes(b2PngPath, b2Png);
+byte[]? b2CompletePng = OpenHarmonyScreenshot.TryReadCompletePng(b2PngPath);
+File.WriteAllBytes(b2PngPath, b2Png[..^12]);
+byte[]? b2TruncatedPng = OpenHarmonyScreenshot.TryReadCompletePng(b2PngPath);
+File.Delete(b2PngPath);
+var b2Result = new OpenHarmonyScreenshotResult(b2Png, b2PngWidth, b2PngHeight);
+using Stream b2ResultStream = await b2Result.OpenReadAsync(Microsoft.Maui.Media.ScreenshotFormat.Png);
+byte[] b2ReadBack = new byte[b2ResultStream.Length];
+await b2ResultStream.ReadAsync(b2ReadBack);
+using var b2CopyStream = new MemoryStream();
+await b2Result.CopyToAsync(b2CopyStream, Microsoft.Maui.Media.ScreenshotFormat.Jpeg, 42);
+using Stream b2JpegStream = await b2Result.OpenReadAsync(Microsoft.Maui.Media.ScreenshotFormat.Jpeg, 42);
+bool b2ShotResultOk = b2PngWidth == 1 && b2PngHeight == 1 && b2CompletePng is not null &&
+    b2TruncatedPng is null && b2Result.Width == 1 && b2Result.Height == 1 &&
+    b2ReadBack.SequenceEqual(b2Png) && b2CopyStream.ToArray().SequenceEqual(b2Png) &&
+    b2JpegStream.Length == b2Png.Length;
+Console.WriteLine($"[verify] batch2 screenshot result png={b2PngWidth}x{b2PngHeight} complete={b2CompletePng is not null} truncatedRejected={b2TruncatedPng is null} widthHeight={b2Result.Width}x{b2Result.Height} readBack={b2ReadBack.SequenceEqual(b2Png)} copy={b2CopyStream.ToArray().SequenceEqual(b2Png)} jpegFallbackPng={b2JpegStream.Length == b2Png.Length} assert={b2ShotResultOk}");
+if (!b2ShotResultOk)
+{
+    throw new InvalidOperationException("the screenshot result/PNG helper contract drifted");
+}
+
+// BATCH2e: IGeocoding off-device. Both calls answer an empty result immediately (the native
+// request fails before the 15 s timeout) and the op/arg contract is pinned: op 0 is
+// address -> location with the {"description":...} JSON object the shell parses, op 1 is
+// location -> address with "lat,lon"; the escaped forward arg must survive a hostile address.
+var b2GeoWatch = System.Diagnostics.Stopwatch.StartNew();
+IEnumerable<Microsoft.Maui.Devices.Sensors.Placemark> b2GeoPlacemarks = Array.Empty<Microsoft.Maui.Devices.Sensors.Placemark>();
+IEnumerable<Microsoft.Maui.Devices.Sensors.Location> b2GeoLocations = Array.Empty<Microsoft.Maui.Devices.Sensors.Location>();
+bool b2GeoThrew = false;
+try
+{
+    b2GeoPlacemarks = await b2Geocoding.GetPlacemarksAsync(37.5, -122.25);
+    b2GeoLocations = await b2Geocoding.GetLocationsAsync("1 Microsoft Way");
+}
+catch (Exception ex)
+{
+    b2GeoThrew = true;
+    Console.WriteLine($"[verify] batch2 geocoding threw {ex.GetType().Name}: {ex.Message}");
+}
+long b2GeoMs = b2GeoWatch.ElapsedMilliseconds;
+bool b2GeoFast = b2GeoMs < (long)OpenHarmonyGeocodingBridge.RequestTimeout.TotalMilliseconds / 2;
+bool b2GeoArgsOk = OpenHarmonyGeocodingBridge.ForwardOp == 0 && OpenHarmonyGeocodingBridge.ReverseOp == 1 &&
+    OpenHarmonyGeocoding.BuildReverseArg(37.5, -122.25) == "37.5,-122.25";
+if (b2GeoArgsOk)
+{
+    // The forward arg must survive a hostile address: parse it back and compare the description
+    // (the encoder's escaping flavor is not pinned, only that the envelope stays one JSON object).
+    using JsonDocument b2ForwardDoc = JsonDocument.Parse(OpenHarmonyGeocoding.BuildForwardArg("A \"quoted\" \\ address"));
+    b2GeoArgsOk &= b2ForwardDoc.RootElement.ValueKind == JsonValueKind.Object &&
+        b2ForwardDoc.RootElement.GetProperty("description").GetString() == "A \"quoted\" \\ address";
+}
+bool b2GeoOk = !b2GeoThrew && !b2GeoPlacemarks.Any() && !b2GeoLocations.Any() && b2GeoFast && b2GeoArgsOk;
+Console.WriteLine($"[verify] batch2 geocoding degraded placemarks={b2GeoPlacemarks.Count()} locations={b2GeoLocations.Count()} noThrow={!b2GeoThrew} elapsedMs={b2GeoMs} fastFail={b2GeoFast} ops={OpenHarmonyGeocodingBridge.ForwardOp}/{OpenHarmonyGeocodingBridge.ReverseOp} args={b2GeoArgsOk} assert={b2GeoOk}");
+if (!b2GeoOk)
+{
+    throw new InvalidOperationException("the IGeocoding bridge did not degrade off-device");
+}
+
+// BATCH2f: the GeoAddress JSON -> MAUI model parser. A realistic @ohos.geoLocationManager
+// GeoAddress array maps every placemark field (placeName -> FeatureName, administrativeArea ->
+// AdminArea, subAdministrativeArea -> SubAdminArea, streetNumber -> SubThoroughfare, ...); a
+// locations envelope with nested coordinates and numeric strings maps Location (altitude /
+// accuracy included); malformed, truncated and coordinate-less payloads answer empty.
+string b2GeoJson = "[{\"latitude\":47.6399,\"longitude\":-122.1286,\"locale\":\"en-US\",\"placeName\":\"One Microsoft Way\",\"countryCode\":\"US\",\"countryName\":\"United States\",\"administrativeArea\":\"Washington\",\"subAdministrativeArea\":\"King County\",\"locality\":\"Redmond\",\"subLocality\":\"Overlake\",\"thoroughfare\":\"One Microsoft Way\",\"streetNumber\":\"1\",\"postalCode\":\"98052\"}]";
+IReadOnlyList<Microsoft.Maui.Devices.Sensors.Placemark> b2ParsedPlacemarks = OpenHarmonyGeocoding.ParsePlacemarks(b2GeoJson);
+Microsoft.Maui.Devices.Sensors.Placemark? b2Placemark = b2ParsedPlacemarks.FirstOrDefault();
+bool b2PlacemarkOk = b2ParsedPlacemarks.Count == 1 && b2Placemark is not null &&
+    b2Placemark.FeatureName == "One Microsoft Way" && b2Placemark.CountryCode == "US" &&
+    b2Placemark.CountryName == "United States" && b2Placemark.AdminArea == "Washington" &&
+    b2Placemark.SubAdminArea == "King County" && b2Placemark.Locality == "Redmond" &&
+    b2Placemark.SubLocality == "Overlake" && b2Placemark.Thoroughfare == "One Microsoft Way" &&
+    b2Placemark.SubThoroughfare == "1" && b2Placemark.PostalCode == "98052" &&
+    b2Placemark.Location is { Latitude: 47.6399, Longitude: -122.1286 };
+IReadOnlyList<Microsoft.Maui.Devices.Sensors.Location> b2ParsedLocations = OpenHarmonyGeocoding.ParseLocations(
+    "{\"locations\":[{\"coordinates\":{\"latitude\":\"47.6\",\"longitude\":-122.3,\"altitude\":12.5,\"accuracy\":8}},{\"lat\":1.5,\"lon\":2.5}]}");
+Microsoft.Maui.Devices.Sensors.Location? b2Location = b2ParsedLocations.FirstOrDefault();
+bool b2LocationsOk = b2ParsedLocations.Count == 2 && b2Location is { Latitude: 47.6, Longitude: -122.3, Altitude: 12.5, Accuracy: 8 } &&
+    b2ParsedLocations[1] is { Latitude: 1.5, Longitude: 2.5, Altitude: null } &&
+    OpenHarmonyGeocoding.ParseLocations("[{\"lat\":1.5,\"lon\":2.5}]").Count == 1;
+bool b2GeoMalformedOk = OpenHarmonyGeocoding.ParsePlacemarks("{not json").Count == 0 &&
+    OpenHarmonyGeocoding.ParsePlacemarks("{\"placemarks\":[{\"latitude\":1}]}").Count == 0 &&
+    OpenHarmonyGeocoding.ParseLocations(string.Empty).Count == 0;
+bool b2GeoParseOk = b2PlacemarkOk && b2LocationsOk && b2GeoMalformedOk;
+Console.WriteLine($"[verify] batch2 geocoding parse placemark={b2PlacemarkOk} locations={b2LocationsOk} malformed={b2GeoMalformedOk} assert={b2GeoParseOk}");
+if (!b2GeoParseOk)
+{
+    throw new InvalidOperationException("the geocoding JSON parser drifted");
+}
+
+// BATCH2g: the registration consolidation reported by the earlier batches. The ImageButton
+// handler landed as a file; this pass adds its SliceHandlers entry (the concrete control type,
+// like BoxView/Frame), so both the handler table and the connector resolve it and a real
+// ImageButton gets the slice handler. SemanticScreenReader installs itself through its
+// ModuleInitializer (verified, no registration added); the window handler was already
+// registered (verified too).
+bool b2ImageButtonRegistered = MauiOpenHarmonyExtensions.SliceHandlers.TryGetValue(
+        typeof(Microsoft.Maui.Controls.ImageButton), out Type? b2ImageButtonType) &&
+    b2ImageButtonType == typeof(OpenHarmonyImageButtonHandler) &&
+    OpenHarmonyHandlerConnector.FindSliceHandlerType(typeof(Microsoft.Maui.Controls.ImageButton)) == typeof(OpenHarmonyImageButtonHandler);
+var b2ImageButton = new Microsoft.Maui.Controls.ImageButton { HeightRequest = 40, WidthRequest = 40 };
+OpenHarmonyHandlerConnector.Connect(b2ImageButton);
+bool b2ImageButtonConnected = b2ImageButton.Handler is OpenHarmonyImageButtonHandler;
+Console.WriteLine($"[verify] batch2 registration imageButton table={b2ImageButtonRegistered} handler={(b2ImageButton.Handler?.GetType().Name ?? "<null>")} assert={b2ImageButtonRegistered && b2ImageButtonConnected}");
+if (!(b2ImageButtonRegistered && b2ImageButtonConnected))
+{
+    throw new InvalidOperationException("the ImageButton handler registration is missing");
+}
+
+// BATCH2h: the self-installing SemanticScreenReader default (no registration was added) and the
+// window handler registration + title mapper (the window was already registered; the title is
+// recorded because the shell-side setter lands separately). This is the optional window pin.
+bool b2ScreenReaderOk = OpenHarmonySemanticScreenReader.IsInstalled &&
+    Microsoft.Maui.Accessibility.SemanticScreenReader.Default is OpenHarmonySemanticScreenReader;
+bool b2WindowRegistered = MauiOpenHarmonyExtensions.SliceHandlers.TryGetValue(typeof(IWindow), out Type? b2WindowType) &&
+    b2WindowType == typeof(OpenHarmonyWindowHandler) &&
+    OpenHarmonyHandlerConnector.FindSliceHandlerType(typeof(IWindow)) == typeof(OpenHarmonyWindowHandler);
+bool b2WindowMapperKey = OpenHarmonyWindowHandler.Mapper is Microsoft.Maui.IPropertyMapper b2WindowMapper &&
+    b2WindowMapper.GetKeys().Contains(nameof(IWindow.Title));
+var b2WindowProbe = new Microsoft.Maui.Controls.Window { Title = "ohos-verify-title" };
+OpenHarmonyHandlerConnector.Connect(b2WindowProbe);
+var b2WindowProbeHandler = b2WindowProbe.Handler as OpenHarmonyWindowHandler;
+OpenHarmonyWindowHandler.MapTitle(b2WindowProbeHandler!, b2WindowProbe);
+bool b2WindowTitleOk = b2WindowProbeHandler?.Title == "ohos-verify-title";
+Console.WriteLine($"[verify] batch2 registration screenReader={b2ScreenReaderOk} window={b2WindowRegistered} titleMapper={b2WindowMapperKey} titleRecorded={b2WindowTitleOk} assert={b2ScreenReaderOk && b2WindowRegistered && b2WindowMapperKey && b2WindowTitleOk}");
+if (!(b2ScreenReaderOk && b2WindowRegistered && b2WindowMapperKey && b2WindowTitleOk))
+{
+    throw new InvalidOperationException("the screen reader/window registration pins failed");
+}
+
+// BATCH2i: the screenshot bridge contract (managed P/Invoke + C definition + header + NAPI sink
+// + the shell's sink registration/packer call sites).
+MethodInfo? b2ScreenshotPinvoke = typeof(OpenHarmonyScreenshotBridge).GetMethod(
+    "ScreenshotNative", BindingFlags.NonPublic | BindingFlags.Static);
+DllImportAttribute? b2ScreenshotImport = b2ScreenshotPinvoke?.GetCustomAttribute<DllImportAttribute>();
+bool b2ScreenshotManaged = b2ScreenshotImport is not null &&
+    b2ScreenshotImport.EntryPoint == "ohos_host_screenshot" &&
+    b2ScreenshotImport.Value == "libopenharmonyhost.so" &&
+    b2ScreenshotPinvoke?.GetParameters() is { Length: 1 } b2ScreenshotParams &&
+    b2ScreenshotParams[0].ParameterType == typeof(string);
+bool b2ScreenshotNative = s2Napi.Contains("extern \"C\" int ohos_host_screenshot(const char* out_path)") &&
+    s2Napi.Contains("HostSink g_screenshot_sink(\"screenshot\", false);") &&
+    hSource?.Contains("int ohos_host_screenshot(const char* out_path);") == true;
+bool b2ScreenshotShell = b1Shell.Contains("this.hostCall('registerScreenshotSink', typeof host.registerScreenshotSink === 'function'") &&
+    b1Shell.Contains("host.registerScreenshotSink(async (outPath: string): Promise<void>") &&
+    b1Shell.Contains("const pixelMap = await win.snapshot();") &&
+    b1Shell.Contains("await packer.packToFile(pixelMap, file.fd, { format: 'image/png', quality: 100 });");
+bool b2ScreenshotContract = b2ScreenshotManaged && b2ScreenshotNative && b2ScreenshotShell;
+Console.WriteLine($"[verify] batch2 screenshot contract managed={b2ScreenshotManaged} native={b2ScreenshotNative} shell={b2ScreenshotShell} source='{s2NapiPath ?? "<missing>"}' assert={b2ScreenshotContract}");
+if (!b2ScreenshotContract)
+{
+    throw new InvalidOperationException(
+        $"the screenshot bridge contract drifted: managed={b2ScreenshotManaged} native={b2ScreenshotNative} " +
+        $"shell={b2ScreenshotShell}");
+}
+
+// BATCH2j: the geocode bridge contract (managed P/Invoke pair + C definitions + header + NAPI
+// sink/answer + the shell's registerGeocodeSink/geocodeResult call sites). The managed request
+// returns int (0 queued / -1 dropped) and the op map is 0 forward, 1 reverse.
+MethodInfo? b2GeocodeRequest = typeof(OpenHarmonyGeocodingBridge).GetMethod(
+    "GeocodeRequestNative", BindingFlags.NonPublic | BindingFlags.Static);
+MethodInfo? b2GeocodeRegister = typeof(OpenHarmonyGeocodingBridge).GetMethod(
+    "RegisterGeocodeResultNative", BindingFlags.NonPublic | BindingFlags.Static);
+DllImportAttribute? b2GeocodeRequestImport = b2GeocodeRequest?.GetCustomAttribute<DllImportAttribute>();
+DllImportAttribute? b2GeocodeRegisterImport = b2GeocodeRegister?.GetCustomAttribute<DllImportAttribute>();
+bool b2GeocodeManaged = b2GeocodeRequestImport?.EntryPoint == "ohos_host_geocode_request" &&
+    b2GeocodeRequestImport.Value == "libopenharmonyhost.so" &&
+    b2GeocodeRequest?.ReturnType == typeof(int) &&
+    b2GeocodeRequest.GetParameters() is { Length: 3 } b2GeocodeParams &&
+    b2GeocodeParams[0].ParameterType == typeof(int) &&
+    b2GeocodeParams[1].ParameterType == typeof(string) &&
+    b2GeocodeParams[2].ParameterType == typeof(int) &&
+    b2GeocodeRegisterImport?.EntryPoint == "ohos_host_register_geocode_result";
+bool b2GeocodeNative = cSource?.Contains("int ohos_host_geocode_request(int op, const char* arg, int request_id)") == true &&
+    cSource.Contains("static void (*g_geocode_listener)(int request_id, int op, const char* arg) = NULL;") &&
+    cSource.Contains("g_app->bridge_geocode_result = (void (*)(int, int, const char*))callback;") &&
+    cSource.Contains("g_app->bridge_geocode_result(request_id, rc, json != NULL ? json : \"\");") &&
+    hSource?.Contains("int ohos_host_geocode_request(int op, const char* arg, int request_id);") == true &&
+    hSource.Contains("void ohos_host_register_geocode_result(void* callback);") == true &&
+    hSource.Contains("void ohos_host_geocode_complete(int request_id, int rc, const char* json);") == true;
+bool b2GeocodeNapi = s2Napi.Contains("HostSink g_geocode_sink(\"geocode\", false);") &&
+    s2Napi.Contains("ohos_host_geocode_set_listener(OnGeocodeRequest);") &&
+    s2Napi.Contains("ohos_host_geocode_complete(requestId, rc, json.c_str());") &&
+    s2Napi.Contains("\"registerGeocodeSink\"") && s2Napi.Contains("\"geocodeResult\"");
+bool b2GeocodeShell = b1Shell.Contains("this.hostCall('registerGeocodeSink', typeof host.registerGeocodeSink === 'function'") &&
+    b1Shell.Contains("host.registerGeocodeSink(async (requestId: number, op: number, arg: string): Promise<void>") &&
+    b1Shell.Contains("this.hostCall('geocodeResult', typeof host.geocodeResult === 'function'") &&
+    b1Shell.Contains("host.geocodeResult(requestId, rc, json);") &&
+    b1Shell.Contains("const query = JSON.parse(arg) as GeocodeAddressQuery;") &&
+    b1Shell.Contains("geo.default.getAddressesFromLocationName(request)") &&
+    b1Shell.Contains("geo.default.getAddressesFromLocation(request)");
+bool b2GeocodeContract = b2GeocodeManaged && b2GeocodeNative && b2GeocodeNapi && b2GeocodeShell;
+Console.WriteLine($"[verify] batch2 geocode contract managed={b2GeocodeManaged} native={b2GeocodeNative} napi={b2GeocodeNapi} shell={b2GeocodeShell} assert={b2GeocodeContract}");
+if (!b2GeocodeContract)
+{
+    throw new InvalidOperationException(
+        $"the geocode bridge contract drifted: managed={b2GeocodeManaged} native={b2GeocodeNative} " +
+        $"napi={b2GeocodeNapi} shell={b2GeocodeShell}");
+}
+
+// BATCH2k: the optional window pin suggested with the window handler batch - the title/rect host
+// exports and the shell sinks the shell-side window work registers, next to the already-checked
+// managed handler/title mapper. (The managed handler still records the title; the P/Invoke that
+// consumes the export is not part of this batch.)
+bool b2WindowContract = hSource?.Contains("int ohos_host_set_window_title(const char* utf8);") == true &&
+    hSource.Contains("int ohos_host_set_window_rect(int x, int y, int w, int h);") &&
+    s2Napi.Contains("extern \"C\" int ohos_host_set_window_title(const char* utf8)") &&
+    s2Napi.Contains("extern \"C\" int ohos_host_set_window_rect(int x, int y, int w, int h)") &&
+    s2Napi.Contains("\"registerWindowTitleSink\"") && s2Napi.Contains("\"registerWindowRectSink\"") &&
+    b1Shell.Contains("host.registerWindowTitleSink((title: string): void => {") &&
+    b1Shell.Contains("host.registerWindowRectSink((x: number, y: number, w: number, h: number): void => {");
+Console.WriteLine($"[verify] batch2 window contract title={hSource?.Contains("int ohos_host_set_window_title(const char* utf8);") == true} rect={hSource?.Contains("int ohos_host_set_window_rect(int x, int y, int w, int h);") == true} titleSink={s2Napi.Contains("\"registerWindowTitleSink\"")} rectSink={s2Napi.Contains("\"registerWindowRectSink\"")} shell={b1Shell.Contains("registerWindowTitleSink") && b1Shell.Contains("registerWindowRectSink")} assert={b2WindowContract}");
+if (!b2WindowContract)
+{
+    throw new InvalidOperationException("the window title/rect host/shell contract pin failed");
+}
+
 // ---- Performance budget (bounded, deterministic, seedless) ------------------------------------
 // The frame path (OpenHarmonyWindowRenderer.Render: measure/arrange, the iterative view walk, the
 // accessibility shadow tree rebuild + frame diff and the surface hooks) is timed over a fixed
