@@ -75,6 +75,37 @@ public sealed class App : Application
         int clicks = Preferences.Get("demo.clicks", 0);
         var title = new Label { Text = "MAUI on OpenHarmony", FontSize = 44 };
         var subtitle = new Label { Text = "Microsoft.Maui.Controls through the platform slice", FontSize = 24 };
+
+        // T5: the staged hybrid test page (wwwroot/index.html) rendered through HybridWebView,
+        // near the top of the page so a device run sees it immediately. No handler registration
+        // is needed here: UseOpenHarmony maps IHybridWebView to OpenHarmonyHybridWebViewHandler in
+        // its SliceHandlers dictionary, and on connect that handler registers AppDir +
+        // HybridRoot/DefaultFile with the ArkTS shell, which serves the staged wwwroot tree from
+        // the MAUI hybrid origin (https://0.0.0.1/). The page probes the message channel (its
+        // "Send ping" prefers window.external.sendMessage, which reaches RawMessageReceived
+        // through the shell's dotnetHost proxy; the hybrid fallback is
+        // window.HybridWebView.SendRawMessage), so the last raw message is mirrored below the
+        // control; it can arrive off the dispatcher thread.
+        var hybridStatus = new Label { Text = "hybrid page: loading wwwroot/index.html", FontSize = 22 };
+        var hybrid = new HybridWebView
+        {
+            HybridRoot = "wwwroot",
+            DefaultFile = "index.html",
+            HeightRequest = 400,
+        };
+        hybrid.RawMessageReceived += (_, e) =>
+        {
+            string received = $"hybrid raw message: {e.Message}";
+            if (hybrid.Dispatcher is { } dispatcher)
+            {
+                dispatcher.Dispatch(() => hybridStatus.Text = received);
+            }
+            else
+            {
+                hybridStatus.Text = received;
+            }
+        };
+
         var status = new Label { Text = "Tap the counter", FontSize = 28 };
         var counter = new Button { Text = $"Count: {clicks}", FontSize = 40 };
         counter.Clicked += (_, _) =>
@@ -189,6 +220,8 @@ public sealed class App : Application
 
         layout.Add(title);
         layout.Add(subtitle);
+        layout.Add(hybrid);
+        layout.Add(hybridStatus);
         layout.Add(counter);
         layout.Add(entry);
         layout.Add(valueControls);
