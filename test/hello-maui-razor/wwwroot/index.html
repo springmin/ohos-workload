@@ -1,0 +1,47 @@
+<!DOCTYPE html>
+<!--
+  hello-maui-razor host page (opt-in Razor path).
+
+  WHERE THIS LIVES
+  wwwroot/index.html in the app project. With -p:OpenHarmonyHapPackage=true the SDK target
+  _OpenHarmonyStageBlazorAssets copies wwwroot/** (tree intact) into the publish directory, and
+  the hap packer zips that directory into resources/rawfile/dotnet.zip. On device the shell
+  extracts the zip under <AppDir> and serves the Blazor origin https://0.0.0.0/ from
+  <AppDir>/wwwroot with index.html as the default host file, so this document is the Blazor
+  root document.
+
+  MOUNT POINT
+  App.cs registers RootComponent { Selector = "#app", ComponentType = typeof(BlazorCounter) };
+  blazor.webview.js renders BlazorCounter.razor into the div below. Without a matching element
+  it fails with "Could not find any element matching selector '#app'".
+
+  WHY THERE IS NO wwwroot/_framework/blazor.modules.json HERE
+  This is a Razor SDK (static web assets) project: Microsoft.AspNetCore.Components.WebView
+  injects its own fallback _framework/blazor.modules.json (_AddBlazorWebViewModulesFallback).
+  An app-local file on the same route hard-fails the build with "Conflicting assets with the
+  same target path" (W1 evaluation section 3.1), so the package owns that file. Do not add one.
+
+  The shell injects window.external.*, window.dotnetHost, window.__dispatchMessageCallback and
+  _framework/blazor.webview.js after the load event and then calls Blazor.start(); this page
+  does not load the framework itself.
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>hello-maui-razor</title>
+<style>
+  body { font-family: system-ui, sans-serif; margin: 16px; font-size: 16px; }
+  h1 { font-size: 20px; margin: 0 0 8px; }
+  p { margin: 8px 0; }
+  #status { font-family: ui-monospace, monospace; font-size: 13px; white-space: pre-wrap; word-break: break-all; min-height: 3em; }
+</style>
+</head>
+<body>
+<h1>hello-maui-razor</h1>
+<p id="status">host page loaded; waiting for the shell to inject blazor.webview.js</p>
+<div id="app"></div>
+<noscript><p>JavaScript is required (js/app.js).</p></noscript>
+<script src="js/app.js"></script>
+</body>
+</html>

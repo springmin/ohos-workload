@@ -1,0 +1,8 @@
+{
+  "string": [
+    { "name": "app_name", "value": "hello-maui-razor" },
+    { "name": "module_desc", "value": "hello-maui-razor" },
+    { "name": "EntryAbility_desc", "value": "hello-maui-razor" },
+    { "name": "EntryAbility_label", "value": "hello-maui-razor" }
+  ]
+}

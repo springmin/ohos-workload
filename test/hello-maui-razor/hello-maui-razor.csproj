@@ -1,0 +1,56 @@
+<Project Sdk="Microsoft.NET.Sdk.Razor">
+  <!-- Opt-in Razor variant of the S1/T5 demo (the W1 evaluation's recommendation, implemented
+       as the standalone project the evaluation asked for). It is a separate project on purpose:
+       <Project Sdk> is fixed when the project is evaluated, so an MSBuild property cannot switch
+       Microsoft.NET.Sdk to Microsoft.NET.Sdk.Razor in place. The real demo
+       (test/hello-maui-app) stays on Microsoft.NET.Sdk with the inline BlazorCounter.cs and is
+       not built by any script of this project.
+
+       What changes vs the demo:
+         * Microsoft.NET.Sdk.Razor activates the static web assets pipeline, so
+           BlazorCounter.razor compiles (Razor source generator, no extra package reference).
+         * wwwroot must NOT contain _framework/blazor.modules.json: with the pipeline active the
+           Microsoft.AspNetCore.Components.WebView package owns that route through its
+           _AddBlazorWebViewModulesFallback target, and an app-local duplicate hard-fails the
+           build with "Conflicting assets with the same target path" (W1 evaluation section 3.1).
+         * The project root carries the same staging-metadata JSON fixtures as the demo
+           (module.json, resources/**.json) so the published payload entry list can be compared
+           with the evaluation's "after" shape; the Razor default Content glob publishes them.
+       Everything else (TFM band, package references, the platform-slice compile, the
+       OPENHARMONY_BLAZOR_WEBVIEW constant and the host page wiring) is the demo's configuration;
+       the hap publish command is the same. -->
+  <PropertyGroup>
+    <TargetFrameworks>net11.0-openharmony20.0;net11.0-openharmony26.0</TargetFrameworks>
+    <OutputType>Exe</OutputType>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <NoWarn>$(NoWarn);CA1418</NoWarn>
+    <!-- S1: this project compiles the platform slice sources directly (the Compile Include
+         below), and the slice's BlazorWebView handler/registration is behind this constant
+         (OpenHarmonyBlazorWebViewHandler.cs and the IBlazorWebView entry in
+         MauiOpenHarmonyExtensions.SliceHandlers). The slice csproj defines it together with the
+         BlazorWebView package reference; this project needs both or a BlazorWebView control has no
+         OpenHarmony handler and renders nothing. -->
+    <DefineConstants>$(DefineConstants);OPENHARMONY_BLAZOR_WEBVIEW</DefineConstants>
+    <!-- The MAUI platform slice lives in the maui-ohos fork; point this at its sources. -->
+    <OpenHarmonyMauiPlatformDir Condition=" '$(OpenHarmonyMauiPlatformDir)' == '' ">$(MSBuildThisFileDirectory)../../../maui-ohos/src/Core/src/Platform/OpenHarmony</OpenHarmonyMauiPlatformDir>
+    <OpenHarmonyHostingDir Condition=" '$(OpenHarmonyHostingDir)' == '' ">$(MSBuildThisFileDirectory)../../src</OpenHarmonyHostingDir>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="Microsoft.Maui.Controls" Version="11.0.0-rc.1.26451.6" />
+    <PackageReference Include="Microsoft.Maui.Graphics" Version="11.0.0-rc.1.26451.6" />
+    <!-- S1: the BlazorWebView control, IBlazorWebView/RootComponent types and the
+         AddMauiBlazorWebView/UsePlatformHandler registrations used by Program.cs. Same version
+         the platform slice pins; the package's net11.0 lib resolves for both openharmony TFMs. -->
+    <PackageReference Include="Microsoft.AspNetCore.Components.WebView.Maui" Version="11.0.0-rc.1.26451.6" />
+    <Reference Include="Microsoft.OpenHarmony.Hosting">
+      <HintPath>$(OpenHarmonyHostingDir)/Microsoft.OpenHarmony.Hosting/bin/Release/net11.0/Microsoft.OpenHarmony.Hosting.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="Microsoft.OpenHarmony.Maui.Graphics">
+      <HintPath>$(OpenHarmonyHostingDir)/Microsoft.OpenHarmony.Maui.Graphics/bin/Release/net11.0/Microsoft.OpenHarmony.Maui.Graphics.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Compile Include="$(OpenHarmonyMauiPlatformDir)/*.cs" />
+  </ItemGroup>
+</Project>

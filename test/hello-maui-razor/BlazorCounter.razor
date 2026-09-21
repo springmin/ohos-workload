@@ -1,0 +1,18 @@
+@* hello-maui-razor: the opt-in Razor component. It is the semantic equivalent of the demo's
+   inline BlazorCounter.cs (ComponentBase/RenderTreeBuilder), with the same heading, count line
+   and button; @onclick generates exactly the EventCallback.Factory.Create(...) call the inline
+   component builds by hand, so the click exercises the same round trip:
+   ArkWeb click -> window.external.sendMessage -> dotnetHost -> OpenHarmonyWebViewHandler.JsMessage
+   -> OpenHarmonyWebViewManager.MessageReceived -> event callback -> render batch ->
+   window.__dispatchMessageCallback -> DOM update (the count below the button changes). *@
+@namespace HelloMauiRazor
+
+<h2>BlazorWebView component (.razor)</h2>
+<p>count: @_count (each click round-trips through the shell)</p>
+<button @onclick="Increment">Blazor click</button>
+
+@code {
+    private int _count;
+
+    private void Increment() => _count++;
+}
