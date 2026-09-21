@@ -1,6 +1,6 @@
 # Interaction regression suite (headless)
 
-The MAUI-on-OpenHarmony interaction harness (213 interaction checks, a 4-line fuzz tail, a
+The MAUI-on-OpenHarmony interaction harness (231 interaction checks, a 4-line fuzz tail, a
 frame-path performance budget and an accessibility publish-path budget). It builds the platform
 slice sources from the
 `maui-ohos` working tree and drives the app host without a device: touch/drag/pinch/pointer input,
@@ -10,9 +10,11 @@ accessibility shadow tree snapshot, the menu table/activation bridge, the WebVie
 bridge (script evaluation + `dotnetHost.postMessage`), the contacts/calendar and
 Bluetooth/printing platform extras (off-device degradation plus the delimited payload parsers
 and the text-to-PDF renderer), the Essentials Battery/DeviceDisplay push bridge (payload
-parsers plus the ModuleInitializer-installed defaults) and the S-series features (the
+parsers plus the ModuleInitializer-installed defaults), the S-series features (the
 BlazorWebView handler/manager/file-provider path, the accessibility node-count export, the
-flashlight default/degradation and the file-share dispatch/MIME/URI path). Before the fuzz tail
+flashlight default/degradation and the file-share dispatch/MIME/URI path) and the V-series
+on-demand app-context publish (V8: native/NAPI/shell-template checks plus an off-device drill
+of the managed bridge's surface-replay seam). Before the fuzz tail
 it runs a frame-path performance budget (warm-up plus 200 timed
 `OpenHarmonyWindowRenderer.Render` frames over a fixed 401-node tree, reporting
 average/p50/p95/max frame time and the managed allocation delta) and an accessibility
@@ -27,7 +29,7 @@ below), failing the suite when the (deliberately loose) budgets are exceeded.
 # (or the MauiSliceDir / HostingDll / OpenHarmonyGraphicsDll MSBuild properties) before building
 # elsewhere; an explicit -p: value wins over the environment and the absolute fallbacks.
 dotnet build -v:q
-dotnet bin/Debug/net11.0/verify.dll | grep -c '\[verify\]'   # expect 226 (213 checks + 4 fuzz + 1 frame perf + 8 a11y perf)
+dotnet bin/Debug/net11.0/verify.dll | grep -c '\[verify\]'   # expect 244 (231 checks + 4 fuzz + 1 frame perf + 8 a11y perf)
 ```
 
 The `interaction-regression` workflow (`.github/workflows/interaction-regression.yml`) runs the
@@ -35,7 +37,7 @@ suite on a GitHub runner as a real gate: it checks out this repository plus `spr
 (`feature/openharmony`, the branch carrying `src/Core/src/Platform/OpenHarmony`), builds
 `src/Microsoft.OpenHarmony.Hosting` and `src/Microsoft.OpenHarmony.Maui.Graphics` in Release,
 points `MAUI_SLICE_DIR` / `HOSTING_DLL` / `OPENHARMONY_GRAPHICS_DLL` at those roots, and fails the
-job unless the run exits 0, reports at least 222 `[verify]` lines, both perf lines report
+job unless the run exits 0, reports at least 224 `[verify]` lines, both perf lines report
 `within=True`, and no `Unhandled` line is logged.
 
 ## Fuzz tail
@@ -128,8 +130,8 @@ publish pass (skip/republish).
   blocks codesigned ELF apphosts on some machines).
 - The suite fails loudly (unhandled exception) when a slice change breaks startup or when an
   assertion for the gesture flows (including the drag-and-drop checks) does not hold; keep it at
-  213 checks plus the 4 fuzz lines plus the 1 frame-perf line plus the 8 a11y-perf lines
-  (226 `[verify]` lines) when touching the platform slice.
+  231 checks plus the 4 fuzz lines plus the 1 frame-perf line plus the 8 a11y-perf lines
+  (244 `[verify]` lines) when touching the platform slice.
 - Contacts/calendar coverage: `OpenHarmonyContacts.FindAsync` and
   `OpenHarmonyCalendar.ListUpcomingAsync`/`AddEventAsync` return empty/false without throwing
   off-device and report `IsSupported == false` before and after the call (the permission probe
@@ -201,6 +203,21 @@ publish pass (skip/republish).
   and land one by one when the late context arrives. The scenario pins the slice's registration
   contract: pending set, `Initialized`/`SurfaceChanged`/first-arrange retries and the
   exactly-once registration key.
+- On-demand app-context publish (V8): the host entries `ohos_host_set_app_context` /
+  `ohos_host_notify_context` are pinned in `openharmony_host.c` and `openharmony_host.h` (both
+  definitions and declarations, parsed and checked against each other), the napi wrappers and
+  the module-table names `host.setAppContext` / `host.notifyAppContext` are pinned in
+  `host_napi.cpp`, and the `publishAppContext` method with its
+  `typeof host.setAppContext !== 'function'` guard plus its call site inside the XComponent
+  `onLoad` (right after `host.registerXComponent()`) is pinned in the preview.22/23/24
+  `Index.ets` templates. The managed seam is then driven off-device: the `OHOS_HOST_APP_CONTEXT`
+  copy (the same export the native set writes, and the first source `RefreshContext` reads) is
+  swapped between two snapshots and the private `OnSurfaceNative` callback - the delegate
+  `Attach` hands to `ohos_host_register_bridge`, pinned via `s_surfaceThunk` - is invoked through
+  reflection, so a re-published snapshot must be re-read into `Initialized`/`Context` and
+  re-raised as a `SurfaceChanged` event; a replay of the unchanged snapshot must not re-raise the
+  context but must still emit the surface event, and the captured environment/context/surface
+  state is restored before the perf blocks. That is 18 `[verify]` lines.
 - Haptics coverage: `HapticFeedback.Default` is the slice implementation, `Perform(Click/LongPress)`
   degrades without throwing off-device, and `IsSupported` is false without the host library. The app
   theme handler is exercised directly (ArkUI colour-mode reports need a device): setting dark/light
@@ -257,7 +274,7 @@ publish pass (skip/republish).
     the installed default must complete without throwing when the ability bridge is absent; the
     want kind for single-file sharing is pinned to 3.
 - CI wiring: `.github/workflows/interaction-regression.yml` builds the slice checkout and the
-  hosting assemblies on the runner and gates on the `[verify]` line count (>=222) plus both perf
+  hosting assemblies on the runner and gates on the `[verify]` line count (>=224) plus both perf
   `within=True` markers (see "Running it" above).
 - Accessibility publish-contract coverage (R2b): the suite reflects
   `OpenHarmonyAccessibility.AccessibilityNode` (16 parameters now that hint, range and checked

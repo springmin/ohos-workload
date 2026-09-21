@@ -2458,6 +2458,338 @@ if (!s4DispatchOk)
     throw new InvalidOperationException("the S4 share dispatch/URI assertion failed");
 }
 
+// ---- V8: on-demand app-context publish (native -> napi -> shell -> managed bridge) -------------
+// V8 lets the ArkTS page publish the real app-context snapshot after startApp:
+// ohos_host_set_app_context(json) copies the JSON, exports it through OHOS_HOST_APP_CONTEXT,
+// replaces the snapshot ohos_host_get_app_context returns and re-emits it through the stored
+// surface state; ohos_host_notify_context() re-emits the snapshot unchanged. The managed bridge
+// re-reads the context in OpenHarmonyBridge.RefreshContext (environment first, native getter
+// second) and OnSurfaceNative calls it before forwarding the event, so the replayed surface
+// notification is the path a managed reader sees the new snapshot on. The checks below pin the C
+// entries plus their header signatures, the napi wrappers and module-table names, the shell
+// template's guarded XComponent onLoad call site, and then drive the managed seam off-device: the
+// environment copy (the same OHOS_HOST_APP_CONTEXT variable the native export writes) is swapped
+// between two snapshots and the private surface callback is invoked through reflection, so a
+// re-published snapshot must be re-read and re-raised without a device.
+
+// V8a: the native entries and their documented signatures. The definitions live in the C source,
+// the declarations in the shared header; both must agree on argument name/type and the return
+// type, so a rename/arity drift fails here instead of shipping a mismatched pack.
+static string NormalizeNativeSignature(string? parameters) => parameters is null
+    ? "<missing>"
+    : string.Join(",", SplitParameters(parameters).Select(p => string.Concat(p.Where(c => !char.IsWhiteSpace(c)))));
+string? v8SetDefinition = cSource is null ? null : ExtractParameterList(cSource, "ohos_host_set_app_context");
+string? v8SetHeader = hSource is null ? null : ExtractParameterList(hSource, "ohos_host_set_app_context");
+string? v8NotifyDefinition = cSource is null ? null : ExtractParameterList(cSource, "ohos_host_notify_context");
+string? v8NotifyHeader = hSource is null ? null : ExtractParameterList(hSource, "ohos_host_notify_context");
+string v8SetSignature = NormalizeNativeSignature(v8SetDefinition);
+string v8NotifySignature = NormalizeNativeSignature(v8NotifyDefinition);
+string v8SetHeaderSignature = NormalizeNativeSignature(v8SetHeader);
+string v8NotifyHeaderSignature = NormalizeNativeSignature(v8NotifyHeader);
+bool v8DefinitionsOk = cSource?.Contains("int ohos_host_set_app_context(const char* json)") == true &&
+    cSource.Contains("int ohos_host_notify_context(void)") == true;
+bool v8HeaderOk = hSource?.Contains("int ohos_host_set_app_context(const char* json);") == true &&
+    hSource.Contains("int ohos_host_notify_context(void);") == true;
+bool v8SignaturesOk = v8SetSignature == "constchar*json" && v8NotifySignature == "void" &&
+    v8SetHeaderSignature == v8SetSignature && v8NotifyHeaderSignature == v8NotifySignature;
+bool v8NativeContractOk = v8DefinitionsOk && v8HeaderOk && v8SignaturesOk;
+Console.WriteLine($"[verify] v8 native context entries set='{v8SetSignature}' notify='{v8NotifySignature}' definitions={v8DefinitionsOk} header={v8HeaderOk} headerMatch={v8SetHeaderSignature == v8SetSignature && v8NotifyHeaderSignature == v8NotifySignature} source='{cSourcePath ?? "<missing>"}' assert={v8NativeContractOk}");
+if (!v8NativeContractOk)
+{
+    throw new InvalidOperationException(
+        $"the V8 app-context host entries drifted: definitions={v8DefinitionsOk} header={v8HeaderOk} " +
+        $"set='{v8SetSignature}'/'{v8SetHeaderSignature}' notify='{v8NotifySignature}'/'{v8NotifyHeaderSignature}' " +
+        $"source={cSourcePath ?? "<missing>"}");
+}
+
+// V8b: the publish side. set_app_context must export the environment copy (the source
+// RefreshContext reads off-device too) and replace the getter snapshot, retiring the old one so
+// a concurrent managed reader cannot be freed under.
+bool v8ExportOk = cSource?.Contains("setenv(\"OHOS_HOST_APP_CONTEXT\", copy, 1);") == true &&
+    cSource.Contains("OhosHostRetireContextSnapshot(g_app, g_app->context_json)") &&
+    cSource.Contains("g_app->context_json = copy;");
+Console.WriteLine($"[verify] v8 native publish export env={cSource?.Contains("setenv(\"OHOS_HOST_APP_CONTEXT\", copy, 1);") == true} retire={cSource?.Contains("OhosHostRetireContextSnapshot(g_app, g_app->context_json)") == true} replace={cSource?.Contains("g_app->context_json = copy;") == true} assert={v8ExportOk}");
+if (!v8ExportOk)
+{
+    throw new InvalidOperationException("the V8 set_app_context export/replace/retire contract is missing from the native source");
+}
+
+// V8c: the re-emit side. notify_context must route through the stored surface replay, and that
+// replay must only fire for a live created/changed surface - a destroyed one has no managed
+// reader to notify, and the next real surface event re-reads the context anyway.
+bool v8ReplayOk = cSource?.Contains("int ohos_host_notify_context(void) {") == true &&
+    cSource.Contains("return OhosHostReplaySurfaceNotification();") &&
+    cSource.Contains("g_app->bridge_surface(g_surface_window, g_surface_width, g_surface_height, g_surface_state);") &&
+    cSource.Contains("g_surface_state != (int)OHOS_SURFACE_CREATED && g_surface_state != (int)OHOS_SURFACE_CHANGED");
+Console.WriteLine($"[verify] v8 native notify replay notifyExit={cSource?.Contains("return OhosHostReplaySurfaceNotification();") == true} bridgeSurface={cSource?.Contains("g_app->bridge_surface(g_surface_window, g_surface_width, g_surface_height, g_surface_state);") == true} liveSurfaceGuard={cSource?.Contains("g_surface_state != (int)OHOS_SURFACE_CREATED && g_surface_state != (int)OHOS_SURFACE_CHANGED") == true} assert={v8ReplayOk}");
+if (!v8ReplayOk)
+{
+    throw new InvalidOperationException("the V8 ohos_host_notify_context surface-replay contract is missing from the native source");
+}
+
+// V8d: the ownership/ordering guards: a publish before start_app is kept pending and adopted by
+// start_app only when its own context is absent or does not name an appDir (a page publish racing
+// the ability bootstrap must win over the stale start context), and replaced snapshots are freed
+// at join, not under a reader.
+bool v8PendingOk = cSource?.Contains("g_pending_context_json != NULL &&") == true &&
+    cSource.Contains("(effective_context == NULL || !OhosHostContextNamesAppDir(effective_context))") &&
+    cSource.Contains("free(g_pending_context_json);") &&
+    cSource.Contains("OhosHostFreeRetiredContexts(handle);");
+Console.WriteLine($"[verify] v8 native pending adopt={cSource?.Contains("(effective_context == NULL || !OhosHostContextNamesAppDir(effective_context))") == true} pendingFree={cSource?.Contains("free(g_pending_context_json);") == true} retireFreeAtJoin={cSource?.Contains("OhosHostFreeRetiredContexts(handle);") == true} assert={v8PendingOk}");
+if (!v8PendingOk)
+{
+    throw new InvalidOperationException("the V8 pending/retired context ownership contract is missing from the native source");
+}
+
+// V8e: the napi wrappers: both names call the C entries, setAppContext returns the native rc,
+// and both reject before touching the C API when the argument is missing.
+string v8NapiWrappersSet = "napi_value SetAppContext(napi_env env, napi_callback_info info) {";
+string v8NapiWrappersNotify = "napi_value NotifyAppContext(napi_env env, napi_callback_info info) {";
+bool v8NapiWrappersOk = s2Napi.Contains(v8NapiWrappersSet) &&
+    s2Napi.Contains(v8NapiWrappersNotify) &&
+    s2Napi.Contains("int rc = ohos_host_set_app_context(json.c_str());") &&
+    s2Napi.Contains("napi_value result = nullptr;\n    napi_create_int32(env, rc, &result);") &&
+    s2Napi.Contains("napi_create_int32(env, ohos_host_notify_context(), &result);") &&
+    s2Napi.Contains("setAppContext(contextJson) requires a non-empty string");
+Console.WriteLine($"[verify] v8 napi wrappers set={s2Napi.Contains(v8NapiWrappersSet)} notify={s2Napi.Contains(v8NapiWrappersNotify)} rcReturn={s2Napi.Contains("napi_create_int32(env, rc, &result);")} argGuard={s2Napi.Contains("setAppContext(contextJson) requires a non-empty string")} source='{s2NapiPath ?? "<missing>"}' assert={v8NapiWrappersOk}");
+if (!v8NapiWrappersOk)
+{
+    throw new InvalidOperationException("the V8 host.setAppContext/host.notifyAppContext wrappers are missing or do not call the C entries");
+}
+
+// V8f: the module table: both names must be registered on the napi exports the shell imports
+// (a missing entry silently leaves typeof host.setAppContext === 'undefined' and the shell guard
+// degrades to a no-op, so the publish would never reach the host).
+bool v8NapiTableOk = s2Napi.Contains("{\"setAppContext\", nullptr, SetAppContext, nullptr, nullptr, nullptr, napi_default, nullptr}") &&
+    s2Napi.Contains("{\"notifyAppContext\", nullptr, NotifyAppContext, nullptr, nullptr, nullptr, napi_default, nullptr}");
+Console.WriteLine($"[verify] v8 napi module table setAppContext={s2Napi.Contains("{\"setAppContext\", nullptr, SetAppContext")} notifyAppContext={s2Napi.Contains("{\"notifyAppContext\", nullptr, NotifyAppContext")} assert={v8NapiTableOk}");
+if (!v8NapiTableOk)
+{
+    throw new InvalidOperationException("the V8 setAppContext/notifyAppContext names are missing from the napi module table");
+}
+
+// V8g: the shell template (preview.24 is the current pack): publishAppContext is a private
+// method with the typeof guard around the host call, so an older host library degrades to a
+// no-op instead of throwing at page start.
+string? v8ShellPath24 = FindHostSource("packs/Microsoft.OpenHarmony.Sdk/1.0.0-preview.24/templates/ets/pages/Index.ets");
+string v8Shell24 = v8ShellPath24 is null ? string.Empty : File.ReadAllText(v8ShellPath24);
+bool v8ShellMethodOk = v8Shell24.Contains("private publishAppContext(): void {") &&
+    v8Shell24.Contains("if (typeof host.setAppContext !== 'function') {") &&
+    v8Shell24.Contains("} catch (contextError) {");
+Console.WriteLine($"[verify] v8 shell publish method method={v8Shell24.Contains("private publishAppContext(): void {")} typeofGuard={v8Shell24.Contains("if (typeof host.setAppContext !== 'function') {")} guarded={v8Shell24.Contains("} catch (contextError) {")} source='{v8ShellPath24 ?? "<missing>"}' assert={v8ShellMethodOk}");
+if (!v8ShellMethodOk)
+{
+    throw new InvalidOperationException("the shell template's guarded publishAppContext method is missing");
+}
+
+// V8h: the return contract at the call site: the rc is read as a number and a refusal is logged
+// (the C/napi side returns 0 stored/kept, -1 rejected), so a failed publish stays observable.
+bool v8ShellRcOk = v8Shell24.Contains("const rc: number = host.setAppContext(json) as number;") &&
+    v8Shell24.Contains("if (rc !== 0) {") &&
+    v8Shell24.Contains("console.error(`[maui] app context publish declined: ${rc}`);") &&
+    v8Shell24.Contains("console.error(`[maui] app context publish failed: ${(contextError as Error).message}`);");
+Console.WriteLine($"[verify] v8 shell rc rcNumber={v8Shell24.Contains("const rc: number = host.setAppContext(json) as number;")} refusalLog={v8Shell24.Contains("if (rc !== 0) {")} failureLog={v8Shell24.Contains("console.error(`[maui] app context publish failed:")} assert={v8ShellRcOk}");
+if (!v8ShellRcOk)
+{
+    throw new InvalidOperationException("the shell template's setAppContext rc/error handling is missing");
+}
+
+// V8i: the call site: this.publishAppContext() must run from the XComponent onLoad after
+// host.registerXComponent() bound the native surface - the surface becoming ready is what makes
+// the host able to replay the notification the managed bridge re-reads.
+static bool V8CallInsideOnLoad(string shell, string call, out int bindAt, out int callAt, out int onLoadAt, out int componentAt)
+{
+    bindAt = shell.IndexOf("host.registerXComponent();", StringComparison.Ordinal);
+    callAt = shell.IndexOf(call, StringComparison.Ordinal);
+    onLoadAt = bindAt < 0 ? -1 : shell.LastIndexOf(".onLoad(() => {", bindAt, StringComparison.Ordinal);
+    componentAt = onLoadAt < 0 ? -1 : shell.LastIndexOf("XComponent(", onLoadAt, StringComparison.Ordinal);
+    int onLoadEnd = callAt < 0 ? -1 : shell.IndexOf("})", callAt, StringComparison.Ordinal);
+    return bindAt >= 0 && callAt > bindAt && onLoadAt > 0 && componentAt > 0 && onLoadEnd > callAt;
+}
+bool v8ShellCallSiteOk = V8CallInsideOnLoad(v8Shell24, "this.publishAppContext();",
+    out int v8ShellBindAt, out int v8ShellCallAt, out int v8ShellOnLoadAt, out int v8ShellComponentAt);
+Console.WriteLine($"[verify] v8 shell onLoad call site bind={v8ShellBindAt >= 0} publish={v8ShellCallAt > v8ShellBindAt} onLoad={v8ShellOnLoadAt > 0} xComponent={v8ShellComponentAt > 0} assert={v8ShellCallSiteOk}");
+if (!v8ShellCallSiteOk)
+{
+    throw new InvalidOperationException("the shell template does not call publishAppContext inside the XComponent onLoad after registerXComponent");
+}
+
+// V8j: the published payload names the payload directory the hybrid registration extracts into
+// (<filesDir>/dotnet) and carries the ability paths the managed bridge publishes; the keys are
+// the ones OpenHarmonyAppContext parses.
+bool v8ShellPayloadOk = v8Shell24.Contains("const payloadDir = `${context.filesDir}/dotnet`;") &&
+    v8Shell24.Contains("appDir: payloadDir,") &&
+    v8Shell24.Contains("filesDir: context.filesDir,") &&
+    v8Shell24.Contains("cacheDir: context.cacheDir,") &&
+    v8Shell24.Contains("bundleName: context.abilityInfo.bundleName,") &&
+    v8Shell24.Contains("abilityName: context.abilityInfo.name,") &&
+    v8Shell24.Contains("nodeContent: 0,");
+Console.WriteLine($"[verify] v8 shell payload appDirDotnet={v8Shell24.Contains("const payloadDir = `${context.filesDir}/dotnet`;")} abilityPaths={v8Shell24.Contains("bundleName: context.abilityInfo.bundleName,") && v8Shell24.Contains("abilityName: context.abilityInfo.name,")} nodeContent={v8Shell24.Contains("nodeContent: 0,")} assert={v8ShellPayloadOk}");
+if (!v8ShellPayloadOk)
+{
+    throw new InvalidOperationException("the shell template's app-context payload shape drifted");
+}
+
+// V8k: the V-series packs (22/23/24) carry the same shell block - the publish landed in the
+// template the packs are built from, not just the working tree.
+string[] v8ShellPackVersions = { "1.0.0-preview.22", "1.0.0-preview.23", "1.0.0-preview.24" };
+int v8ShellPacksPresent = 0;
+foreach (string v8PackVersion in v8ShellPackVersions)
+{
+    string? v8PackPath = FindHostSource($"packs/Microsoft.OpenHarmony.Sdk/{v8PackVersion}/templates/ets/pages/Index.ets");
+    string v8PackShell = v8PackPath is null ? string.Empty : File.ReadAllText(v8PackPath);
+    v8ShellPacksPresent += v8PackShell.Contains("private publishAppContext(): void {") &&
+        v8PackShell.Contains("this.publishAppContext();") ? 1 : 0;
+}
+bool v8ShellPacksOk = v8ShellPacksPresent == v8ShellPackVersions.Length;
+Console.WriteLine($"[verify] v8 shell packs present={v8ShellPacksPresent}/{v8ShellPackVersions.Length} versions=22,23,24 assert={v8ShellPacksOk}");
+if (!v8ShellPacksOk)
+{
+    throw new InvalidOperationException("the on-demand app-context publish is missing from one of the preview.22/23/24 shell templates");
+}
+
+// V8l: the managed bridge source contract the native replay rides: RefreshContext reads the
+// OHOS_HOST_APP_CONTEXT copy first, the SurfaceChanged add accessor refreshes before it replays
+// the last surface, and OnSurfaceNative refreshes before it forwards the event to its handlers.
+string? v8HostingPath = FindHostSource("src/Microsoft.OpenHarmony.Hosting/OpenHarmonyApp.cs");
+string v8Hosting = v8HostingPath is null ? string.Empty : File.ReadAllText(v8HostingPath);
+int v8SurfaceEventAt = v8Hosting.IndexOf("public static event Action<OpenHarmonySurfaceInfo>? SurfaceChanged", StringComparison.Ordinal);
+int v8SurfaceRefreshAt = v8SurfaceEventAt < 0 ? -1 : v8Hosting.IndexOf("RefreshContext();", v8SurfaceEventAt, StringComparison.Ordinal);
+int v8SurfaceRemoveAt = v8SurfaceEventAt < 0 ? -1 : v8Hosting.IndexOf("remove", v8SurfaceEventAt, StringComparison.Ordinal);
+int v8OnSurfaceAt = v8Hosting.IndexOf("private static void OnSurfaceNative(IntPtr window, int width, int height, int state)", StringComparison.Ordinal);
+int v8OnSurfaceRefreshAt = v8OnSurfaceAt < 0 ? -1 : v8Hosting.IndexOf("RefreshContext();", v8OnSurfaceAt, StringComparison.Ordinal);
+int v8OnSurfaceDispatchAt = v8OnSurfaceAt < 0 ? -1 : v8Hosting.IndexOf("handlers?.Invoke(info);", v8OnSurfaceAt, StringComparison.Ordinal);
+bool v8EnvReadOk = v8Hosting.Contains("string env = Environment.GetEnvironmentVariable(\"OHOS_HOST_APP_CONTEXT\") ?? string.Empty;");
+bool v8SurfaceAddRefreshOk = v8SurfaceEventAt >= 0 && v8SurfaceRefreshAt > v8SurfaceEventAt &&
+    (v8SurfaceRemoveAt < 0 || v8SurfaceRefreshAt < v8SurfaceRemoveAt);
+bool v8OnSurfaceRefreshOk = v8OnSurfaceAt >= 0 && v8OnSurfaceRefreshAt > v8OnSurfaceAt &&
+    v8OnSurfaceRefreshAt < v8OnSurfaceDispatchAt;
+bool v8BridgeContractOk = v8EnvReadOk && v8SurfaceAddRefreshOk && v8OnSurfaceRefreshOk;
+Console.WriteLine($"[verify] v8 bridge contract envRead={v8EnvReadOk} surfaceAddRefresh={v8SurfaceAddRefreshOk} onSurfaceRefreshBeforeDispatch={v8OnSurfaceRefreshOk} source='{v8HostingPath ?? "<missing>"}' assert={v8BridgeContractOk}");
+if (!v8BridgeContractOk)
+{
+    throw new InvalidOperationException("the managed bridge's context-refresh-on-surface contract drifted");
+}
+
+// V8m: the native registration hands the host exactly the surface callback this drill drives:
+// Attach binds s_surfaceThunk to OnSurfaceNative and passes it to ohos_host_register_bridge, so
+// the host's bridge_surface(...) replay ends in the handler below.
+FieldInfo v8SurfaceThunkField = typeof(Microsoft.OpenHarmony.Hosting.OpenHarmonyBridge)
+    .GetField("s_surfaceThunk", BindingFlags.NonPublic | BindingFlags.Static)
+    ?? throw new InvalidOperationException("OpenHarmonyBridge.s_surfaceThunk was not found; the V8 drill pins the native surface callback");
+MethodInfo v8OnSurfaceNativeMethod = typeof(Microsoft.OpenHarmony.Hosting.OpenHarmonyBridge)
+    .GetMethod("OnSurfaceNative", BindingFlags.NonPublic | BindingFlags.Static)
+    ?? throw new InvalidOperationException("OpenHarmonyBridge.OnSurfaceNative was not found; the V8 drill drives it directly");
+Delegate? v8SurfaceThunk = (Delegate?)v8SurfaceThunkField.GetValue(null);
+bool v8SurfaceThunkOk = v8SurfaceThunk?.Method.Name == "OnSurfaceNative";
+Console.WriteLine($"[verify] v8 bridge surface thunk bound={v8SurfaceThunk is not null} target='{v8SurfaceThunk?.Method.Name ?? "<null>"}' assert={v8SurfaceThunkOk}");
+if (!v8SurfaceThunkOk)
+{
+    throw new InvalidOperationException("OpenHarmonyBridge.s_surfaceThunk is not bound to OnSurfaceNative; the native replay would not reach the context refresh");
+}
+
+// V8n: drive the managed seam. The native set_app_context exports the new snapshot through
+// OHOS_HOST_APP_CONTEXT and replays the stored surface event; off-device the environment copy is
+// the same source RefreshContext reads, so swap it between two snapshots, invoke the private
+// surface callback (what the host's bridge_surface call lands on) and require the re-publish to
+// be re-read and re-raised. State is captured first and restored at the end.
+FieldInfo v8SurfaceStateField = typeof(Microsoft.OpenHarmony.Hosting.OpenHarmonyBridge)
+    .GetField("s_surface", BindingFlags.NonPublic | BindingFlags.Static)
+    ?? throw new InvalidOperationException("OpenHarmonyBridge.s_surface was not found; the V8 drill simulates the stored surface state");
+string? v8EnvBefore = Environment.GetEnvironmentVariable("OHOS_HOST_APP_CONTEXT");
+Microsoft.OpenHarmony.Hosting.OpenHarmonyAppContext? v8ContextBefore =
+    (Microsoft.OpenHarmony.Hosting.OpenHarmonyAppContext?)bridgeContextField.GetValue(null);
+Microsoft.OpenHarmony.Hosting.OpenHarmonySurfaceInfo? v8SurfaceBefore =
+    (Microsoft.OpenHarmony.Hosting.OpenHarmonySurfaceInfo?)v8SurfaceStateField.GetValue(null);
+var v8InitializedSeen = new List<Microsoft.OpenHarmony.Hosting.OpenHarmonyAppContext>();
+var v8SurfacesSeen = new List<Microsoft.OpenHarmony.Hosting.OpenHarmonySurfaceInfo>();
+void V8OnInitialized(Microsoft.OpenHarmony.Hosting.OpenHarmonyAppContext context) => v8InitializedSeen.Add(context);
+void V8OnSurface(Microsoft.OpenHarmony.Hosting.OpenHarmonySurfaceInfo surface) => v8SurfacesSeen.Add(surface);
+string v8ContextAAppDir = "/data/storage/el2/base/tmp/verify-v8-context-a";
+string v8ContextBAppDir = "/data/storage/el2/base/tmp/verify-v8-context-b";
+static string V8ContextJson(string appDir) => JsonSerializer.Serialize(new
+{
+    appDir,
+    filesDir = string.Empty,
+    cacheDir = string.Empty,
+    bundleName = "verify.v8",
+    abilityName = "VerifyV8Ability",
+    nodeContent = 0,
+});
+Environment.SetEnvironmentVariable("OHOS_HOST_APP_CONTEXT", string.Empty);
+bridgeContextField.SetValue(null, null);
+v8SurfaceStateField.SetValue(null, null);
+Microsoft.OpenHarmony.Hosting.OpenHarmonyBridge.Initialized += V8OnInitialized;
+Microsoft.OpenHarmony.Hosting.OpenHarmonyBridge.SurfaceChanged += V8OnSurface;
+
+// (1) A snapshot exported after the surface is up is re-read: the Initialized event carries the
+// new appDir and the Context property serves the replaced snapshot.
+Environment.SetEnvironmentVariable("OHOS_HOST_APP_CONTEXT", V8ContextJson(v8ContextAAppDir));
+v8OnSurfaceNativeMethod.Invoke(null, new object[] { IntPtr.Zero, 1080, 1920, (int)Microsoft.OpenHarmony.Hosting.OpenHarmonySurfaceState.Changed });
+bool v8PublishAOk = v8InitializedSeen.Count == 1 && v8InitializedSeen[0].AppDir == v8ContextAAppDir &&
+    Microsoft.OpenHarmony.Hosting.OpenHarmonyBridge.Context?.AppDir == v8ContextAAppDir;
+Console.WriteLine($"[verify] v8 bridge republish A contextEvents={v8InitializedSeen.Count} appDir='{Microsoft.OpenHarmony.Hosting.OpenHarmonyBridge.Context?.AppDir ?? "<null>"}' assert={v8PublishAOk}");
+if (!v8PublishAOk)
+{
+    throw new InvalidOperationException("a surface re-published app context was not re-read into the Initialized event/Context");
+}
+
+// (2) The re-read really rode the surface event: the subscribers saw the stored surface with the
+// XComponent size, and OpenHarmonyBridge.Surface serves it (the renderer's signal).
+bool v8SurfaceAOk = v8SurfacesSeen.Count == 1 && v8SurfacesSeen[0].Width == 1080 &&
+    v8SurfacesSeen[0].Height == 1920 &&
+    v8SurfacesSeen[0].State == Microsoft.OpenHarmony.Hosting.OpenHarmonySurfaceState.Changed &&
+    Microsoft.OpenHarmony.Hosting.OpenHarmonyBridge.Surface is { Width: 1080, Height: 1920 };
+Console.WriteLine($"[verify] v8 bridge republish surface events={v8SurfacesSeen.Count} width={(v8SurfacesSeen.Count > 0 ? v8SurfacesSeen[0].Width : -1)} height={(v8SurfacesSeen.Count > 0 ? v8SurfacesSeen[0].Height : -1)} state={(v8SurfacesSeen.Count > 0 ? v8SurfacesSeen[0].State.ToString() : "<none>")} stored={Microsoft.OpenHarmony.Hosting.OpenHarmonyBridge.Surface is not null} assert={v8SurfaceAOk}");
+if (!v8SurfaceAOk)
+{
+    throw new InvalidOperationException("the re-published context did not arrive on the surface notification path");
+}
+
+// (3) A second, changed snapshot replaces the first and is re-read again (the set_app_context
+// path can run repeatedly; an unchanged snapshot must not re-raise, a changed one must).
+Environment.SetEnvironmentVariable("OHOS_HOST_APP_CONTEXT", V8ContextJson(v8ContextBAppDir));
+v8OnSurfaceNativeMethod.Invoke(null, new object[] { IntPtr.Zero, 1080, 1920, (int)Microsoft.OpenHarmony.Hosting.OpenHarmonySurfaceState.Changed });
+bool v8PublishBOk = v8InitializedSeen.Count == 2 && v8InitializedSeen[0].AppDir == v8ContextAAppDir &&
+    v8InitializedSeen[1].AppDir == v8ContextBAppDir &&
+    Microsoft.OpenHarmony.Hosting.OpenHarmonyBridge.Context?.AppDir == v8ContextBAppDir;
+Console.WriteLine($"[verify] v8 bridge republish B contextEvents={v8InitializedSeen.Count} first='{v8InitializedSeen.FirstOrDefault()?.AppDir ?? "<none>"}' second='{v8InitializedSeen.Skip(1).FirstOrDefault()?.AppDir ?? "<none>"}' appDir='{Microsoft.OpenHarmony.Hosting.OpenHarmonyBridge.Context?.AppDir ?? "<null>"}' assert={v8PublishBOk}");
+if (!v8PublishBOk)
+{
+    throw new InvalidOperationException("a changed re-published snapshot was not re-read after the first one");
+}
+
+// (4) notify_app_context re-emits the stored surface event without changing the snapshot: the
+// context must stay put (no duplicate Initialized, same Context) while the surface event still
+// fires - that is the 0/1 return distinction the shell/NAPI surface sees.
+int v8NotifyEventsBefore = v8InitializedSeen.Count;
+int v8NotifySurfacesBefore = v8SurfacesSeen.Count;
+v8OnSurfaceNativeMethod.Invoke(null, new object[] { IntPtr.Zero, 1080, 1920, (int)Microsoft.OpenHarmony.Hosting.OpenHarmonySurfaceState.Changed });
+bool v8NotifyOk = v8InitializedSeen.Count == v8NotifyEventsBefore &&
+    v8SurfacesSeen.Count == v8NotifySurfacesBefore + 1 &&
+    Microsoft.OpenHarmony.Hosting.OpenHarmonyBridge.Context?.AppDir == v8ContextBAppDir;
+Console.WriteLine($"[verify] v8 bridge notify unchanged contextEvents=+{v8InitializedSeen.Count - v8NotifyEventsBefore} surfaceEvents=+{v8SurfacesSeen.Count - v8NotifySurfacesBefore} appDir='{Microsoft.OpenHarmony.Hosting.OpenHarmonyBridge.Context?.AppDir ?? "<null>"}' assert={v8NotifyOk}");
+if (!v8NotifyOk)
+{
+    throw new InvalidOperationException("replaying an unchanged snapshot re-raised the context or skipped the surface event");
+}
+
+// V8o: restore the captured state (environment copy, stored context, stored surface) so the
+// remaining sections and the fuzz tail see exactly what they would have seen without the drill.
+Microsoft.OpenHarmony.Hosting.OpenHarmonyBridge.Initialized -= V8OnInitialized;
+Microsoft.OpenHarmony.Hosting.OpenHarmonyBridge.SurfaceChanged -= V8OnSurface;
+Environment.SetEnvironmentVariable("OHOS_HOST_APP_CONTEXT", v8EnvBefore);
+bridgeContextField.SetValue(null, v8ContextBefore);
+v8SurfaceStateField.SetValue(null, v8SurfaceBefore);
+bool v8RestoredOk = (Environment.GetEnvironmentVariable("OHOS_HOST_APP_CONTEXT") ?? string.Empty) == (v8EnvBefore ?? string.Empty) &&
+    ReferenceEquals(bridgeContextField.GetValue(null), v8ContextBefore) &&
+    ReferenceEquals(v8SurfaceStateField.GetValue(null), v8SurfaceBefore);
+Console.WriteLine($"[verify] v8 bridge seam restored env={v8RestoredOk} contextEvents={v8InitializedSeen.Count} surfaceEvents={v8SurfacesSeen.Count} assert={v8RestoredOk}");
+if (!v8RestoredOk)
+{
+    throw new InvalidOperationException("the V8 bridge-seam drill did not restore the environment/context/surface state");
+}
+
 // ---- Performance budget (bounded, deterministic, seedless) ------------------------------------
 // The frame path (OpenHarmonyWindowRenderer.Render: measure/arrange, the iterative view walk, the
 // accessibility shadow tree rebuild + frame diff and the surface hooks) is timed over a fixed

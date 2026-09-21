@@ -12,10 +12,10 @@ name: interaction-regression
 #
 # verify.csproj turns those environment variables into MSBuild default properties (an explicit
 # -p: override still wins), so no other configuration is required. The job fails unless the suite
-# exits 0, reports at least 222 "[verify]" lines (213 interaction checks - including the ten
-# late-app-context HybridWebView assertions - plus 4 fuzz lines, the frame-path perf line and the
-# 8 accessibility publish-path perf lines), logs no "Unhandled" line, and both perf lines carry
-# the "within=True" budget marker:
+# exits 0, reports at least 224 "[verify]" lines (231 interaction checks - including the ten
+# late-app-context HybridWebView assertions and the eighteen V8 app-context publish assertions -
+# plus 4 fuzz lines, the frame-path perf line and the 8 accessibility publish-path perf lines),
+# logs no "Unhandled" line, and both perf lines carry the "within=True" budget marker:
 #   * the frame-path gate - 200 timed OpenHarmonyWindowRenderer.Render frames over a fixed 401-node
 #     tree: average <= 20 ms, max <= 250 ms, max/average <= 100x;
 #   * the accessibility publish-path gate - 50 unchanged passes vs 50 mutated passes over the same
@@ -61,8 +61,8 @@ jobs:
           cat out.txt
           checks=$(grep -c '\[verify\]' out.txt || true)
           echo "interaction checks reported: $checks"
-          if [ "$checks" -lt 222 ]; then
-            echo "::error::expected at least 222 [verify] lines, got $checks"
+          if [ "$checks" -lt 224 ]; then
+            echo "::error::expected at least 224 [verify] lines, got $checks"
             exit 1
           fi
           if grep -q Unhandled out.txt; then
