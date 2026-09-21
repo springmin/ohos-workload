@@ -1198,13 +1198,33 @@ catch (Exception ex)
     hybridSendThrew = true;
     Console.WriteLine($"[verify] hybrid send threw {ex.GetType().Name}: {ex.Message}");
 }
-OpenHarmonyHybridWebViewHandler.OnJsMessage("__RawMessage|" + Uri.EscapeDataString("hello <hybrid>"));
+// B2/B3: the shell prepends "__OHORIGIN|<document url>|<document id>\n" to every payload; the
+// handler only accepts messages whose origin is the hybrid page origin and whose document id is
+// its own registration id (the id it sent to the shell and the shell stamped into the page).
+var hybridProbeHandler = (OpenHarmonyHybridWebViewHandler)hybridProbe.Handler!;
+string hybridEnvelope = "__OHORIGIN|" + OpenHarmonyHybridWebViewHandler.HybridAppOrigin + "|" +
+    hybridProbeHandler.PageDocumentId + "\n";
+OpenHarmonyHybridWebViewHandler.OnJsMessage(hybridEnvelope + "__RawMessage|" + Uri.EscapeDataString("hello <hybrid>"));
 string rawPrefixed = hybridRaw ?? "<null>";
 hybridRaw = null;
-OpenHarmonyHybridWebViewHandler.OnJsMessage("plain payload");
+OpenHarmonyHybridWebViewHandler.OnJsMessage(hybridEnvelope + "plain payload");
 string rawPlain = hybridRaw ?? "<null>";
-bool hybridRawOk = !hybridSendThrew && rawPrefixed == "hello <hybrid>" && rawPlain == "plain payload";
-Console.WriteLine($"[verify] hybrid SendRawMessage degrades={!hybridSendThrew} rawMessage prefixed='{rawPrefixed}' plain='{rawPlain}'");
+// Rejection cases keep the channel closed (no dispatch to any handler): a foreign origin, a
+// foreign document id and a payload without the envelope.
+hybridRaw = null;
+OpenHarmonyHybridWebViewHandler.OnJsMessage("__OHORIGIN|https://evil.invalid/|" + hybridProbeHandler.PageDocumentId +
+    "\n__RawMessage|" + Uri.EscapeDataString("evil"));
+string rawEvilOrigin = hybridRaw ?? "<null>";
+hybridRaw = null;
+OpenHarmonyHybridWebViewHandler.OnJsMessage("__OHORIGIN|" + OpenHarmonyHybridWebViewHandler.HybridAppOrigin +
+    "|00000000000000000000000000000000\nplain");
+string rawForeignId = hybridRaw ?? "<null>";
+hybridRaw = null;
+OpenHarmonyHybridWebViewHandler.OnJsMessage("plain payload");
+string rawMissingEnvelope = hybridRaw ?? "<null>";
+bool hybridRawOk = !hybridSendThrew && rawPrefixed == "hello <hybrid>" && rawPlain == "plain payload" &&
+    rawEvilOrigin == "<null>" && rawForeignId == "<null>" && rawMissingEnvelope == "<null>";
+Console.WriteLine($"[verify] hybrid SendRawMessage degrades={!hybridSendThrew} rawMessage prefixed='{rawPrefixed}' plain='{rawPlain}' rejected(origin/id/envelope)={rawEvilOrigin == "<null>" && rawForeignId == "<null>" && rawMissingEnvelope == "<null>"}");
 if (!hybridRawOk)
 {
     throw new InvalidOperationException("the HybridWebView raw message assertion failed");
@@ -3175,13 +3195,14 @@ OpenHarmonyWebViewHandler.JsMessage += FuzzOnJs;
 string fuzzPayloadResult;
 try
 {
-    OpenHarmonyHybridWebViewHandler.OnJsMessage("__RawMessage|" + Uri.EscapeDataString(fuzzLongRaw));
+    OpenHarmonyHybridWebViewHandler.OnJsMessage(hybridEnvelope + "__RawMessage|" + Uri.EscapeDataString(fuzzLongRaw));
     string? fuzzRawAfterHybrid = fuzzRawSeen;
     OpenHarmonyWebViewHandler.HandleJsMessage("{\"pad\":\"" + fuzzLongJson + "\"}");
     string expectedJson = "{\"pad\":\"" + fuzzLongJson + "\"}";
     // The native WebView callback is also fanned out to the HybridWebView raw channel (the shell
-    // routes every dotnetHost.postMessage payload through it), so the raw probe sees the JSON
-    // payload as well after the second call.
+    // routes every dotnetHost.postMessage payload through it), but that JSON carries no
+    // document-origin envelope, so the hybrid channel now rejects it instead of broadcasting it:
+    // the raw probe keeps the last accepted (enveloped) message.
     fuzzPayloadResult = fuzzRawAfterHybrid == fuzzLongRaw && fuzzJsSeen == expectedJson
         ? "round-trip ok"
         : $"hybrid={fuzzRawAfterHybrid?.Length ?? -1} js={fuzzJsSeen?.Length ?? -1} rawAfterJs={fuzzRawSeen?.Length ?? -1}";

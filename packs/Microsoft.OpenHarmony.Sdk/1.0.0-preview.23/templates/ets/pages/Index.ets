@@ -50,6 +50,10 @@ interface HybridAssetsConfig {
   base: string;
   root: string;
   defaultFile: string;
+  // Per-registration document id (B2/B3): the managed handler generates it, the shell stamps it
+  // into the documents it serves (window.__ohHybridId, page end) and echoes it in every message
+  // envelope, so the managed side can match a message to the page that registration loaded.
+  id: string;
 }
 
 // BlazorWebView asset bridge (milestone 3): the managed handler registers the app payload
@@ -66,6 +70,9 @@ interface BlazorAssetsConfig {
   base: string;
   root: string;
   defaultFile: string;
+  // Per-registration document id (B1/B3), the Blazor counterpart of HybridAssetsConfig.id:
+  // stamped into Blazor documents as window.__ohBlazorId and echoed in every message envelope.
+  id: string;
 }
 
 // JS -> .NET invocation payload the stock hybridwebview.js POSTs to __hwvInvokeDotNet:
@@ -103,6 +110,9 @@ struct Index {
   private hybridRoot: string = '';
   private hybridDefaultFile: string = '';
   private hybridRegistered: boolean = false;
+  // Per-registration document id (HybridAssetsConfig.id): stamped into matching documents and
+  // echoed in the message envelope; '' means the page was not served for a registration.
+  private hybridDocId: string = '';
   // MAUI's hybrid origin: HybridWebViewHandler.AppOrigin (https://0.0.0.1/).
   private hybridOrigin: string = 'https://0.0.0.1/';
   // Blazor asset bridge state (registered by the managed handler; empty -> no interception of
@@ -112,6 +122,8 @@ struct Index {
   private blazorRoot: string = '';
   private blazorDefaultFile: string = '';
   private blazorRegistered: boolean = false;
+  // Per-registration document id (BlazorAssetsConfig.id), see hybridDocId.
+  private blazorDocId: string = '';
   // MAUI's Blazor origin: BlazorWebViewHandler.AppOrigin (https://0.0.0.0/).
   private blazorOrigin: string = 'https://0.0.0.0/';
   // One bootstrap per loaded document: reset in onPageBegin, so a navigation/reload runs the
@@ -287,13 +299,37 @@ struct Index {
     try {
       this.webController.registerJavaScriptProxy({
         postMessage: (payload: string): void => {
-          host.notifyJsMessage(payload);
+          host.notifyJsMessage(this.originEnvelope(payload));
         }
       }, 'dotnetHost', ['postMessage']);
       this.dotNetHostRegistered = true;
     } catch (proxyError) {
       console.error(`[maui] dotnetHost proxy registration failed: ${(proxyError as Error).message}`);
     }
+  }
+
+  // Document-origin envelope (B1/B2/B3): the shell prefixes every payload it delivers to the
+  // managed side with "__OHORIGIN|<document url>|<document id>\n". The page cannot write the
+  // header (only this proxy prepends it), so a handler can trust it: the url says whether the
+  // message comes from the handler's own page origin and the id says whether the document is
+  // one the shell served and stamped for that registration (window.__ohHybridId /
+  // window.__ohBlazorId, see injectPageBridge). A document the shell did not stamp carries an
+  // empty id, which every handler treats as a mismatch. getUrl() is synchronous but may throw
+  // before a controller is attached; an unknown url is reported empty and fails the match too.
+  private originEnvelope(payload: string): string {
+    let url: string = '';
+    try {
+      url = this.webController.getUrl();
+    } catch (urlError) {
+      url = '';
+    }
+    let documentId: string = '';
+    if (this.hybridRegistered && this.hybridDocId.length > 0 && url.startsWith(this.hybridOrigin)) {
+      documentId = this.hybridDocId;
+    } else if (this.blazorRegistered && this.blazorDocId.length > 0 && url.startsWith(this.blazorOrigin)) {
+      documentId = this.blazorDocId;
+    }
+    return `__OHORIGIN|${url}|${documentId}\n${payload}`;
   }
 
   // Registered proxies appear on the next page load, so the documented window.__ohosDotNet
@@ -315,10 +351,23 @@ struct Index {
   // Existing members are never replaced, so a page script that installed its own
   // window.external (or its own receiveMessage) keeps it, and pages that use
   // dotnetHost.postMessage directly keep working unchanged.
-  private injectPageBridge(): void {
+  //
+  // Per-document marker (B3): the shell stamps the registration id into documents it served for
+  // the matching origin only. A managed handler refuses host -> page deliveries when the loaded
+  // document no longer carries its id (reload before the stamp, or a navigation by another
+  // page), so scripts never land in a foreign document.
+  private injectPageBridge(pageUrl: string): void {
+    let markers: string = '';
+    if (this.hybridRegistered && this.hybridDocId.length > 0 && pageUrl.startsWith(this.hybridOrigin)) {
+      markers += `window.__ohHybridId = ${JSON.stringify(this.hybridDocId)};`;
+    }
+    if (this.blazorRegistered && this.blazorDocId.length > 0 && pageUrl.startsWith(this.blazorOrigin)) {
+      markers += `window.__ohBlazorId = ${JSON.stringify(this.blazorDocId)};`;
+    }
     try {
       this.webController.runJavaScript(
         `(function () {
+          ${markers}
           var target = window.dotnetHost || window.__ohosDotNet;
           window.__ohosDotNet = target;
           var external = window.external;
@@ -491,7 +540,7 @@ struct Index {
       }
       this.discoveredBluetooth.set(deviceId, name);
       try {
-        host.notifyBluetoothDeviceFound(`${name}\t${deviceId}`);
+        host.notifyBluetoothDeviceFound(`${this.escapeRecordField(name)}\t${this.escapeRecordField(deviceId)}`);
       } catch (notifyError) {
         // An older host library drops the push; op 4 still serves the accumulated table.
       }
@@ -522,6 +571,34 @@ struct Index {
       this.flashlightManager = manager;
     }
     return manager;
+  }
+
+  // B4 (reversible record encoding): the platform extras join kit-provided names and fields
+  // into tab/newline delimited records. A contact name, a calendar title or a device name may
+  // itself contain '\t', '\n', '\r' or '\' (a contact name can be anything), which would forge
+  // or split records at the managed parser; every field is escaped before the join:
+  //   '\' -> '\\'   tab -> '\t'   LF -> '\n'   CR -> '\r'
+  // The managed parsers split on the raw separators first and then decode each field with the
+  // exact reverse mapping (one left-to-right pass over the field). The encoder is injective
+  // (only '\', 't', 'n', 'r' after a backslash are meaningful), so decoding restores the
+  // original string byte-for-byte.
+  private escapeRecordField(value: string): string {
+    let escaped: string = '';
+    for (let i = 0; i < value.length; i++) {
+      const ch: string = value.charAt(i);
+      if (ch === '\\') {
+        escaped += '\\\\';
+      } else if (ch === '\t') {
+        escaped += '\\t';
+      } else if (ch === '\n') {
+        escaped += '\\n';
+      } else if (ch === '\r') {
+        escaped += '\\r';
+      } else {
+        escaped += ch;
+      }
+    }
+    return escaped;
   }
 
   aboutToAppear(): void {
@@ -729,7 +806,7 @@ struct Index {
           }
           const phone: string = item.phoneNumbers && item.phoneNumbers.length > 0
             ? item.phoneNumbers[0].phoneNumber : '';
-          rows.push(`${name}\t${phone}`);
+          rows.push(`${this.escapeRecordField(name)}\t${this.escapeRecordField(phone)}`);
           if (rows.length >= limit) {
             break;
           }
@@ -770,7 +847,7 @@ struct Index {
           const rows: string[] = [];
           for (const item of events) {
             const title: string = item.title ? item.title : '';
-            rows.push(`${title}\t${new Date(item.startTime).toISOString()}\t${new Date(item.endTime).toISOString()}`);
+            rows.push(`${this.escapeRecordField(title)}\t${this.escapeRecordField(new Date(item.startTime).toISOString())}\t${this.escapeRecordField(new Date(item.endTime).toISOString())}`);
           }
           host.notifyCalendarResult(requestId, 0, rows.join('\n'));
           return;
@@ -815,7 +892,7 @@ struct Index {
           // Discovered devices are accumulated locally; no adapter call is needed.
           const discovered: string[] = [];
           this.discoveredBluetooth.forEach((name: string, address: string): void => {
-            discovered.push(`${name}\t${address}`);
+            discovered.push(`${this.escapeRecordField(name)}\t${this.escapeRecordField(address)}`);
           });
           host.notifyBluetoothResult(requestId, 0, discovered.join('\n'));
           return;
@@ -856,7 +933,7 @@ struct Index {
           } catch (nameError) {
             name = '';
           }
-          rows.push(`${name}\t${deviceId}`);
+          rows.push(`${this.escapeRecordField(name)}\t${this.escapeRecordField(deviceId)}`);
         }
         host.notifyBluetoothResult(requestId, 0, rows.join('\n'));
       } catch (bluetoothError) {
@@ -1078,6 +1155,24 @@ struct Index {
     });
   }
 
+  // Registration-time layout guard (B5): the request-path check inside hybridFilePath /
+  // blazorFilePath only protects intercepted requests, so a registered root/defaultFile needs
+  // its own check - each layout part must be made of ordinary relative segments (no '', '.',
+  // '..', '\' and no leading '/'), so the join `<base>/<root>/<path>` can never leave <base>.
+  // The managed handlers mirror this before they register a layout.
+  private isSafeLayoutPart(part: string): boolean {
+    if (part.length === 0 || part.indexOf('\\') >= 0 || part.startsWith('/')) {
+      return false;
+    }
+    const segments: string[] = part.split('/');
+    for (const segment of segments) {
+      if (segment.length === 0 || segment === '.' || segment === '..') {
+        return false;
+      }
+    }
+    return true;
+  }
+
   // HybridWebView: the managed handler registers the payload directory and the hybrid layout
   // through the existing web command channel (op "hybrid"); a successful registration loads
   // the MAUI hybrid origin, whose requests onInterceptRequest answers from the payload.
@@ -1087,7 +1182,13 @@ struct Index {
       this.hybridBase = config.base;
       this.hybridRoot = config.root;
       this.hybridDefaultFile = config.defaultFile;
-      this.hybridRegistered = this.hybridBase.length > 0 && this.hybridRoot.length > 0
+      this.hybridDocId = config.id !== undefined && config.id.length > 0 ? config.id : '';
+      const safeLayout: boolean = this.isSafeLayoutPart(this.hybridRoot)
+        && this.isSafeLayoutPart(this.hybridDefaultFile);
+      if (!safeLayout) {
+        console.error('[maui] hybrid assets registration rejected: root/defaultFile are not safe relative paths');
+      }
+      this.hybridRegistered = safeLayout && this.hybridBase.length > 0 && this.hybridRoot.length > 0
         && this.hybridDefaultFile.length > 0;
       if (this.hybridRegistered) {
         this.webVisible = true;
@@ -1109,11 +1210,17 @@ struct Index {
       this.blazorBase = config.base;
       this.blazorRoot = config.root;
       this.blazorDefaultFile = config.defaultFile;
+      this.blazorDocId = config.id !== undefined && config.id.length > 0 ? config.id : '';
       this.blazorOrigin = config.origin.length > 0 ? config.origin : 'https://0.0.0.0/';
       if (!this.blazorOrigin.endsWith('/')) {
         this.blazorOrigin = `${this.blazorOrigin}/`;
       }
-      this.blazorRegistered = this.blazorBase.length > 0 && this.blazorRoot.length > 0
+      const safeLayout: boolean = this.isSafeLayoutPart(this.blazorRoot)
+        && this.isSafeLayoutPart(this.blazorDefaultFile);
+      if (!safeLayout) {
+        console.error('[maui] blazor assets registration rejected: root/defaultFile are not safe relative paths');
+      }
+      this.blazorRegistered = safeLayout && this.blazorBase.length > 0 && this.blazorRoot.length > 0
         && this.blazorDefaultFile.length > 0;
       if (this.blazorRegistered) {
         this.webVisible = true;
@@ -1385,7 +1492,7 @@ struct Index {
     if (token !== 'HybridWebView' || body.length === 0) {
       return this.hybridErrorResponse(400);
     }
-    host.notifyJsMessage(body);
+    host.notifyJsMessage(this.originEnvelope(body));
     return this.hybridErrorResponse(204);
   }
 
@@ -1526,7 +1633,7 @@ struct Index {
         .onPageEnd((event) => {
           const pageUrl: string = event ? event.url : '';
           host.notifyWebEvent('finished', pageUrl);
-          this.injectPageBridge();
+          this.injectPageBridge(pageUrl);
           this.injectBlazorBootstrap(pageUrl);
         })
 
