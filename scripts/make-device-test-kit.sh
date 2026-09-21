@@ -8,7 +8,8 @@
 #   1 unsigned hap    hello-maui-app-unsigned.hap       (26.0 band, default payload)
 #   8 docs            验收说明.md 快速开始.md 真机操作手册.md 文档索引.md 签名与UDID指南.md
 #                     自签说明.md 最终状态.md README-交付说明.md
-#   1 verifier        verify-kit.sh                    (tester self-check: sha256sum -c + hap summary)
+#   1 verifier        verify-kit.sh                    (tester self-check: sha256sum -c + hap
+#                                                      summary + --tree-digest/--expect-tree-digest)
 #   SHA256SUMS        checksum of every hap + doc + verify-kit.sh in the kit
 #   <out>.tar.gz      the kit root, packed flat (tar -C <kit> .)
 #
@@ -49,6 +50,12 @@
 # the bundle's) and --allow-clobber-mismatch, because a rebuilt kit intentionally replaces
 # the previously delivered assets; publish-workload-release.sh still verifies each local
 # file against the supplied digest and compares it with the published asset digest.
+#
+# The kit contents tree digest (verify-kit.sh --tree-digest: sorted relative paths + per-file
+# sha256 of the assembled kit) is printed here and passed to --publish as
+# --kit-tree-digest, so the kit release notes can carry the value a tester binds with
+# `sh verify-kit.sh --expect-tree-digest <hex>`. The tarball checksum alone binds only the
+# .tar.gz file, not the extracted directory.
 set -e
 
 log()  { printf '[%s] %s\n' "$(date '+%H:%M:%S')" "$*"; }
@@ -239,6 +246,19 @@ mv "$STAGE" "$KIT_DIR"
 trap - 0 1 2 15
 log "kit directory: $KIT_DIR"
 
+# Tree digest of the assembled contents, computed by the shipped verifier itself (so the
+# value a tester compares is produced by the same code). --tree-digest also runs the
+# in-place SHA256SUMS check; only the "tree sha256=" line is captured, and a failing
+# self-check stops the build before anything is packed or published.
+TREE_SHA=""
+VERIFY_RC=0
+VERIFY_OUT="$(sh "$VERIFY_KIT_SRC" --tree-digest "$KIT_DIR" 2>/dev/null)" || VERIFY_RC=$?
+if [ "$VERIFY_RC" -eq 0 ]; then
+    TREE_SHA="$(printf '%s\n' "$VERIFY_OUT" | sed -n 's/^.*tree sha256=//p' | head -n1)"
+fi
+[ -n "$TREE_SHA" ] || { warn "could not compute the kit tree digest (verify-kit.sh rc=$VERIFY_RC)"; exit 1; }
+log "tree:   sha256=$TREE_SHA"
+
 if [ "$SKIP_TAR" = 0 ]; then
     log "== packing the tarball =="
     rm -f "$OUT"
@@ -260,10 +280,13 @@ if [ "$PUBLISH" = 1 ]; then
     log "kit    sha256=$KIT_SHA"
     log "bundle sha256=$BUNDLE_SHA"
     # The rebuild intentionally replaces the kit/bundle assets on the rolling releases;
-    # the digests above are handed to the publisher as the expected ones.
+    # the digests above are handed to the publisher as the expected ones, and the tree
+    # digest lands in the kit release notes.
     DEVICE_TEST_KIT="$OUT" DEVICE_TEST_KIT_SHA256="$KIT_SHA" BUNDLE_SHA256="$BUNDLE_SHA" \
+    DEVICE_TEST_KIT_TREE_DIGEST="$TREE_SHA" \
         sh "$W/scripts/publish-workload-release.sh" \
-            --kit-sha256 "$KIT_SHA" --bundle-sha256 "$BUNDLE_SHA" --allow-clobber-mismatch
+            --kit-sha256 "$KIT_SHA" --bundle-sha256 "$BUNDLE_SHA" \
+            --kit-tree-digest "$TREE_SHA" --allow-clobber-mismatch
 fi
 
 log "== done =="

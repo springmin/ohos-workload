@@ -12,42 +12,78 @@
 # to send back.
 #
 # SHA256SUMS lives inside the same archive it covers, so it can only prove internal
-# consistency, not that the archive is the published one. Check the outer transfer checksum
-# (`sha256sum -c <kit>.tar.gz.sha256`) before extracting, and pass it as an anchor to bind
-# the extracted tree to that archive:
+# consistency, not that the archive (or the extracted tree) is the published one:
 #
-#   sh verify-kit.sh --anchor <sha256 of the .tar.gz> [--anchor-file <path-to.tar.gz>]
-#   KIT_ANCHOR=<hex> sh verify-kit.sh
+#   1. check the transfer checksum of the downloaded .tar.gz:
+#        sha256sum -c <kit>.tar.gz.sha256
+#      or let this script check the tarball on disk (--anchor / --anchor-file / KIT_ANCHOR):
+#        sh verify-kit.sh --anchor <sha256 of the .tar.gz> [--anchor-file <path-to.tar.gz>]
+#   2. extract the kit,
+#   3. bind the exact extracted tree with the digest published by the delivery:
+#        sh verify-kit.sh --expect-tree-digest <sha256>       # or KIT_TREE_DIGEST=<hex>
+#      `--tree-digest` prints the digest, for an out-of-band comparison.
 #
-# --anchor (or KIT_ANCHOR) fails closed: when requested, a missing/mismatching outer
-# tarball, a non-hex anchor or an absent .tar.gz.sha256 sidecar makes the run fail.
+# The tree digest is a sha256 over the sorted kit contents: one "<file sha256>  <relative
+# path>" line per regular file (SHA256SUMS and this script included), hashed again. It is
+# deterministic (independent of mtimes and filesystem order); it catches a tampered
+# extraction whose internal SHA256SUMS was regenerated to match.
 #
-# Exit code: 0 = kit OK; 1 = a checksum/anchor failed, a hap is missing/unreadable, or
-# 自签说明.md is absent; 2 = SHA256SUMS not found (wrong directory) or bad usage.
-# The kit's own SHA256SUMS is not in its own list - the outer <kit>.tar.gz.sha256 covers it.
+# --anchor only checks the .tar.gz file itself; it does NOT bind the extracted tree (the
+# extraction happens outside this script), so it cannot catch a tampered extraction.
+# Both checks fail closed: a missing/mismatching tarball, a non-hex anchor, an absent
+# .tar.gz.sha256 sidecar, a non-hex tree digest or a mismatching expected tree digest
+# makes the run fail.
+#
+# Exit code: 0 = kit OK; 1 = a checksum/anchor/tree-digest failed, a hap is
+# missing/unreadable, or 自签说明.md is absent; 2 = SHA256SUMS not found (wrong directory)
+# or bad usage. The kit's own SHA256SUMS is not in its own list - the outer
+# <kit>.tar.gz.sha256 covers it, and the tree digest covers SHA256SUMS itself.
 set -e
 
 log()  { printf '[%s] %s\n' "$(date '+%H:%M:%S')" "$*"; }
 warn() { printf '[%s] WARN: %s\n' "$(date '+%H:%M:%S')" "$*" >&2; }
 
+# Deterministic digest of the extracted kit contents: every regular file under the kit root
+# (SHA256SUMS and this script included) contributes one "<file sha256>  <relative path>"
+# line, the lines are LC_ALL=C sorted, and the whole block is sha256'd. Independent of
+# mtimes and filesystem order, so publisher and tester compute the same value.
+tree_digest() {
+    (
+        cd "$KIT" || exit 1
+        LC_ALL=C
+        export LC_ALL
+        find . -type f -print | sed 's|^\./||' | LC_ALL=C sort | while IFS= read -r _rel; do
+            printf '%s  %s\n' "$(sha256sum -- "$_rel" | cut -d' ' -f1)" "$_rel"
+        done
+    ) | sha256sum | cut -d' ' -f1
+}
+
 usage() {
     cat <<EOF
-usage: $0 [--anchor <sha256-of-tar.gz>] [--anchor-file <path-to.tar.gz>] [kit-dir]
+usage: $0 [--anchor <sha256-of-tar.gz>] [--anchor-file <path-to.tar.gz>]
+          [--tree-digest] [--expect-tree-digest <sha256>] [kit-dir]
 
 Verifies SHA256SUMS and summarizes the five haps of an extracted device-test kit.
 Without an argument the current directory is used (it must contain SHA256SUMS).
 
-  --anchor <hex>        also check the kit against the sha256 of the outer .tar.gz it was
-                        extracted from (fail closed when it cannot be checked)
+  --anchor <hex>        also check the .tar.gz on disk against this sha256 (fail closed when
+                        it cannot be checked); it does NOT bind the extracted tree
   --anchor-file <path>  the outer tarball used by --anchor (default: <kit-dir>.tar.gz);
                         without --anchor, the adjacent <path>.sha256 is read
-  env: KIT_ANCHOR, KIT_ANCHOR_FILE
+  --tree-digest         print the sha256 of the extracted kit contents (sorted relative
+                        paths + per-file sha256) to compare with the published value
+  --expect-tree-digest <hex>
+                        fail unless the extracted tree matches this digest (the value comes
+                        with the delivery, e.g. the release notes)
+  env: KIT_ANCHOR, KIT_ANCHOR_FILE, KIT_TREE_DIGEST
 EOF
 }
 
 KIT=""
 ANCHOR="${KIT_ANCHOR:-}"
 ANCHOR_FILE="${KIT_ANCHOR_FILE:-}"
+TREE_MODE=0
+TREE_EXPECT="${KIT_TREE_DIGEST:-}"
 while [ $# -gt 0 ]; do
     case "$1" in
         -h|--help) usage; exit 0 ;;
@@ -60,6 +96,12 @@ while [ $# -gt 0 ]; do
             shift
             [ $# -gt 0 ] || { warn "--anchor-file 需要一个 tar.gz 路径"; usage >&2; exit 2; }
             ANCHOR_FILE="$1"
+            ;;
+        --tree-digest) TREE_MODE=1 ;;
+        --expect-tree-digest)
+            shift
+            [ $# -gt 0 ] || { warn "--expect-tree-digest 需要一个 sha256"; usage >&2; exit 2; }
+            TREE_EXPECT="$1"
             ;;
         -*) warn "unknown argument: $1"; usage >&2; exit 2 ;;
         *)
@@ -122,7 +164,8 @@ if [ -n "$ANCHOR" ] || [ -n "$ANCHOR_FILE" ]; then
                 if [ "$_got" = "$ANCHOR" ]; then
                     log "   anchor OK $ANCHOR_FILE sha256=$_got"
                 else
-                    warn "anchor 不匹配 — 解压内容不属于该 tar.gz（或下载/传输被篡改）"
+                    warn "anchor 不匹配 — 磁盘上的 .tar.gz 与发布锚点不一致（下载/传输被篡改）"
+                    warn "  本项只校验 tar.gz 文件本身，不校验解压后的目录"
                     warn "  expected $ANCHOR"
                     warn "  actual   $_got"
                     FAIL=1
@@ -131,7 +174,36 @@ if [ -n "$ANCHOR" ] || [ -n "$ANCHOR_FILE" ]; then
         fi
     fi
 else
-    log "== 0/4 外层锚点：未请求（建议先 sha256sum -c <kit>.tar.gz.sha256，再用 --anchor <sha256> 运行）"
+    log "== 0/4 外层锚点：未请求（建议先 sha256sum -c <kit>.tar.gz.sha256 或 --anchor <sha256>）"
+fi
+
+# Optional tree digest: unlike --anchor (which checks the .tar.gz file), this binds the
+# extracted kit directory itself. --tree-digest prints it; --expect-tree-digest (or
+# KIT_TREE_DIGEST) compares and fails closed.
+TREE_DIGEST=""
+if [ "$TREE_MODE" = 1 ] || [ -n "$TREE_EXPECT" ]; then
+    log "== 0b/4 内容树摘要（tree digest：排序相对路径 + 每文件 sha256）"
+    TREE_DIGEST="$(tree_digest)"
+    log "   tree sha256=$TREE_DIGEST"
+    if [ -n "$TREE_EXPECT" ]; then
+        case "$TREE_EXPECT" in
+            *[!0-9a-fA-F]*) warn "tree digest 不是十六进制 sha256: $TREE_EXPECT"; FAIL=1 ;;
+            "")             warn "tree digest 为空"; FAIL=1 ;;
+            *) [ "${#TREE_EXPECT}" -eq 64 ] || { warn "tree digest 长度不是 64 个字符: $TREE_EXPECT"; FAIL=1; } ;;
+        esac
+        if [ "${#TREE_EXPECT}" -eq 64 ]; then
+            case "$TREE_EXPECT" in *[!0-9a-fA-F]*) ;; *)
+                if [ "$TREE_DIGEST" = "$TREE_EXPECT" ]; then
+                    log "   tree digest OK（解压内容与发布方绑定一致）"
+                else
+                    warn "tree digest 不匹配 — 解压目录被增删改（或不是发布方绑定的那份 kit）"
+                    warn "  expected $TREE_EXPECT"
+                    warn "  actual   $TREE_DIGEST"
+                    FAIL=1
+                fi
+            ;; esac
+        fi
+    fi
 fi
 
 TMP="$(mktemp -d 2>/dev/null || true)"
