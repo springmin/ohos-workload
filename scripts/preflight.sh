@@ -6,7 +6,8 @@
 #   2. npx --yes markdownlint-cli2@0.23.3                 (.github/workflows/markdownlint.yml)
 #   3. interaction suite, test/maui-platform-verify:      (.github/workflows/interaction-regression.yml)
 #        dotnet build -m:1 + run bin/Debug/net11.0/verify.dll
-#        requires exit 0, >= 226 "[verify]" lines and no "Unhandled" line
+#        requires exit 0, >= 226 "[verify]" lines, no "Unhandled" line, and both perf
+#        markers (frame-path + a11y publish-path) reporting within=True
 #   4. pixel suite, test/headless-render:                 (.github/workflows/pixel-regression.yml)
 #        dotnet run -c Release, requires "PIXEL ASSERTIONS PASSED"
 #
@@ -175,7 +176,12 @@ else
         [ -n "$CHECKS" ] || CHECKS=0
         UNHANDLED=0
         grep -q 'Unhandled' "$LOG_DIR/interaction-run.log" && UNHANDLED=1
-        if [ "$RUN_RC" -ne 0 ] || [ "$UNHANDLED" -ne 0 ] || [ "$CHECKS" -lt 226 ]; then
+        # Mirror the CI gate: both perf markers must be present and carry within=True.
+        PERF_FRAME=0
+        grep -q '\[verify\] perf warmup=.*within=True' "$LOG_DIR/interaction-run.log" && PERF_FRAME=1
+        PERF_A11Y=0
+        grep -q '\[verify\] perf a11y .*within=True' "$LOG_DIR/interaction-run.log" && PERF_A11Y=1
+        if [ "$RUN_RC" -ne 0 ] || [ "$UNHANDLED" -ne 0 ] || [ "$CHECKS" -lt 226 ] || [ "$PERF_FRAME" -ne 1 ] || [ "$PERF_A11Y" -ne 1 ]; then
             if [ "$RUN_RC" -ne 0 ]; then
                 warn "interaction suite exited $RUN_RC"
             fi
@@ -186,14 +192,25 @@ else
             if [ "$CHECKS" -lt 226 ]; then
                 warn "expected at least 226 [verify] lines, got $CHECKS"
             fi
+            if [ "$PERF_FRAME" -ne 1 ]; then
+                warn "frame-path perf marker missing or within=False (expected '[verify] perf warmup=... within=True')"
+            fi
+            if [ "$PERF_A11Y" -ne 1 ]; then
+                warn "a11y publish-path perf marker missing or within=False (expected '[verify] perf a11y ... within=True')"
+            fi
+            if [ "$PERF_FRAME" -ne 1 ] || [ "$PERF_A11Y" -ne 1 ]; then
+                grep '\[verify\] perf' "$LOG_DIR/interaction-run.log" | sed 's/^/   /' >&2
+                ST_INTERACTION="FAIL ($CHECKS [verify], rc=$RUN_RC, perf budget)"
+            else
+                ST_INTERACTION="FAIL ($CHECKS [verify], rc=$RUN_RC)"
+            fi
             warn "interaction run failed (full log: $LOG_DIR/interaction-run.log)"
-            ST_INTERACTION="FAIL ($CHECKS [verify], rc=$RUN_RC)"
             FAILED=$((FAILED + 1))
         else
-            # CI also gates the two perf lines on within=True; report them here, verbatim.
+            # CI gates both perf markers on within=True; report the perf lines here, verbatim.
             grep '\[verify\] perf' "$LOG_DIR/interaction-run.log" | sed 's/^/   /'
-            ST_INTERACTION="PASS ($CHECKS [verify], no Unhandled)"
-            log "   $CHECKS [verify] lines (>= 226), no Unhandled"
+            ST_INTERACTION="PASS ($CHECKS [verify], no Unhandled, perf within budget)"
+            log "   $CHECKS [verify] lines (>= 226), no Unhandled, frame + a11y perf within=True"
         fi
     fi
 fi
