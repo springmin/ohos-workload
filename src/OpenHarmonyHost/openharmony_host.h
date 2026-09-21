@@ -33,9 +33,30 @@ int ohos_host_start_app(const char* app_dir, const char* app_assembly_file,
                         const char* args_json, const char* context_json,
                         OhosHostAppHandle** handle);
 
-/// The UTF-8 context JSON passed to start_app (NULL when none). The caller must
-/// not free it; the handle owns it until joined.
+/// The UTF-8 context JSON passed to start_app (NULL when none), or the snapshot published
+/// later through ohos_host_set_app_context. The caller must not free it; the handle owns it
+/// (replaced snapshots stay alive too) until joined.
 const char* ohos_host_get_app_context(void);
+
+/// Re-publishes the application context JSON. The native host otherwise stores the context
+/// once, in ohos_host_start_app; this entry lets the shell publish the real one once the
+/// payload directory is known (or after the surface is ready), so a start_app call with an
+/// empty context is not final.
+/// With a live app handle the snapshot is copied, exported through OHOS_HOST_APP_CONTEXT
+/// and re-emitted through the surface notification path the managed bridge re-reads the
+/// context on (OpenHarmonyBridge.RefreshContext). Before the handle exists the snapshot is
+/// kept for the next start_app, which adopts it when it has no context of its own or that
+/// context does not name a payload directory.
+/// Returns 0 when the JSON was stored (or kept), -1 for a NULL/empty argument or when the
+/// snapshot could not be copied.
+int ohos_host_set_app_context(const char* json);
+
+/// Re-emits the stored snapshot through the same notification path as
+/// ohos_host_set_app_context, without changing it. Returns 1 when the managed bridge was
+/// notified, 0 when there is no live channel (no app handle, no bridge registered or no
+/// created/changed surface to replay; the next surface/lifecycle event re-reads the context
+/// anyway).
+int ohos_host_notify_context(void);
 
 /// Called by the managed side (Microsoft.OpenHarmony.Hosting) once it is ready.
 /// lifecycle: void (*)(int), node: void (*)(void*), surface: void (*)(void*, int, int, int).

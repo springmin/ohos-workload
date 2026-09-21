@@ -981,6 +981,36 @@ struct Index {
     }
   }
 
+  // Late app-context publish: the native host stores the context JSON once, at startApp time,
+  // so a shell whose startApp context carried no payload directory would leave the managed
+  // bridge without a recoverable signal (it can only re-read the host on surface/lifecycle
+  // events). host.setAppContext replaces the stored snapshot and re-emits it through that
+  // same surface notification path; called once the surface is ready, this closes the chain.
+  // Guarded: a host library without the export (or a failed publish) degrades to no-op.
+  private publishAppContext(): void {
+    try {
+      if (typeof host.setAppContext !== 'function') {
+        return;
+      }
+      const context = getContext(this) as common.UIAbilityContext;
+      const payloadDir = `${context.filesDir}/dotnet`;
+      const json = JSON.stringify({
+        appDir: payloadDir,
+        filesDir: context.filesDir,
+        cacheDir: context.cacheDir,
+        bundleName: context.abilityInfo.bundleName,
+        abilityName: context.abilityInfo.name,
+        nodeContent: 0,
+      });
+      const rc: number = host.setAppContext(json) as number;
+      if (rc !== 0) {
+        console.error(`[maui] app context publish declined: ${rc}`);
+      }
+    } catch (contextError) {
+      console.error(`[maui] app context publish failed: ${(contextError as Error).message}`);
+    }
+  }
+
   // Accessibility: host.setNodeContent hands this.content to the native host, which creates
   // the CUSTOM node and calls OH_ArkUI_NodeContent_AddNode on it. The ContentSlot that hosts
   // the NodeContent only exists once build() has mounted the page, so attaching it in
@@ -1522,6 +1552,9 @@ struct Index {
         .onLoad(() => {
           // Binds the native XComponent so libopenharmonyhost receives surface callbacks.
           host.registerXComponent();
+          // Surface ready: publish the app context (payload dir + ability paths) so a
+          // startApp without one can still be completed by the managed bridge.
+          this.publishAppContext();
         })
         .width('100%')
         .height('100%')

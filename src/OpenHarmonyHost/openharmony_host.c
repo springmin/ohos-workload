@@ -205,6 +205,14 @@ typedef int (*ohos_run_app_fn)(void*);
 
 #define OHOS_MAX_PENDING_LIFECYCLE 32
 
+// Retired context snapshots: a managed reader may still be copying the pointer returned by
+// ohos_host_get_app_context when ohos_host_set_app_context replaces it, so replaced strings
+// are retired and freed at join instead of being freed under the reader.
+typedef struct OhosRetiredContext {
+    char* json;
+    struct OhosRetiredContext* next;
+} OhosRetiredContext;
+
 struct OhosHostAppHandle {
     void* hostfxr;
     void* ctx;
@@ -214,6 +222,7 @@ struct OhosHostAppHandle {
     int exit_code;
     int joined;
     char* context_json;
+    OhosRetiredContext* retired_contexts;
     void* node_content;
     void (*bridge_lifecycle)(int);
     void (*bridge_node)(void*);
@@ -236,6 +245,11 @@ struct OhosHostAppHandle {
 // One bridged application per process, matching the ArkTS one-ability model.
 static OhosHostAppHandle* g_app = NULL;
 
+// A context published before the app handle exists (the page can appear before the ability's
+// bootstrap reaches start_app). start_app adopts this snapshot when it has no context of its
+// own; an app-provided context always wins.
+static char* g_pending_context_json = NULL;
+
 // The XComponent may be created before the application handle exists, so keep the latest
 // surface state here and forward it when the bridge registers.
 static void* g_surface_window = NULL;
@@ -252,6 +266,33 @@ static void* OhosAppThread(void* arg) {
     fprintf(stderr, "[openharmony-host] run_app exited: %d\n", handle->exit_code);
     fflush(stderr);
     return NULL;
+}
+
+// Whether a context JSON names a payload directory: the "appDir" key is present and its value
+// is a non-empty string. The shells emit compact JSON (JSON.stringify), so the textual check
+// is enough to tell a real snapshot from the empty/placeholder one; a false negative only
+// keeps the start context (the managed parser still sees both sources).
+static int OhosHostContextNamesAppDir(const char* json) {
+    if (json == NULL) {
+        return 0;
+    }
+    const char* key = strstr(json, "\"appDir\"");
+    if (key == NULL) {
+        return 0;
+    }
+    const char* colon = strchr(key + 8, ':');
+    if (colon == NULL) {
+        return 0;
+    }
+    const char* value = colon + 1;
+    while (*value == ' ' || *value == '\t' || *value == '\n' || *value == '\r') {
+        value++;
+    }
+    if (*value != '"') {
+        return 0;
+    }
+    value++;
+    return *value != '"' && *value != '\0';
 }
 
 int ohos_host_start_app(const char* app_dir, const char* app_assembly_file,
@@ -284,8 +325,20 @@ int ohos_host_start_app(const char* app_dir, const char* app_assembly_file,
         return -1;
     }
 
-    if (context_json != NULL) {
-        setenv("OHOS_HOST_APP_CONTEXT", context_json, 1);
+    // A context published before this call (ohos_host_set_app_context while no handle
+    // existed) supersedes a start context that is absent or does not name a payload
+    // directory: the page can publish before the ability's bootstrap reaches start_app, and
+    // the stale start context must not overwrite the explicit publish.
+    const char* effective_context = context_json;
+    if (effective_context != NULL && effective_context[0] == '\0') {
+        effective_context = NULL;
+    }
+    if (g_pending_context_json != NULL &&
+        (effective_context == NULL || !OhosHostContextNamesAppDir(effective_context))) {
+        effective_context = g_pending_context_json;
+    }
+    if (effective_context != NULL) {
+        setenv("OHOS_HOST_APP_CONTEXT", effective_context, 1);
     }
 
     const char* argv[1] = {app_assembly_path};
@@ -311,9 +364,12 @@ int ohos_host_start_app(const char* app_dir, const char* app_assembly_file,
     handle->run_app = run_app;
     handle->close_ctx = close_ctx;
     (void)args_json;
-    if (context_json != NULL) {
-        handle->context_json = strdup(context_json);
+    if (effective_context != NULL) {
+        handle->context_json = strdup(effective_context);
     }
+    // The pending snapshot was adopted or superseded; the handle owns its own copy now.
+    free(g_pending_context_json);
+    g_pending_context_json = NULL;
     g_app = handle;
 
     pthread_attr_t attr;
@@ -348,6 +404,82 @@ int ohos_host_start_app(const char* app_dir, const char* app_assembly_file,
 
 const char* ohos_host_get_app_context(void) {
     return g_app != NULL ? g_app->context_json : NULL;
+}
+
+// Keeps a replaced snapshot alive until join: a managed reader may be copying the string the
+// getter returned when the replacement lands. If the bookkeeping node cannot be allocated the
+// snapshot is leaked instead of freed under the reader - the safer failure mode.
+static void OhosHostRetireContextSnapshot(OhosHostAppHandle* handle, char* json) {
+    if (handle == NULL || json == NULL) {
+        return;
+    }
+    OhosRetiredContext* retired = (OhosRetiredContext*)malloc(sizeof(OhosRetiredContext));
+    if (retired == NULL) {
+        fprintf(stderr, "[openharmony-host] set_app_context: retire node alloc failed; keeping the old snapshot\n");
+        return;
+    }
+    retired->json = json;
+    retired->next = handle->retired_contexts;
+    handle->retired_contexts = retired;
+}
+
+static void OhosHostFreeRetiredContexts(OhosHostAppHandle* handle) {
+    OhosRetiredContext* retired = handle->retired_contexts;
+    handle->retired_contexts = NULL;
+    while (retired != NULL) {
+        OhosRetiredContext* next = retired->next;
+        free(retired->json);
+        free(retired);
+        retired = next;
+    }
+}
+
+// Replays the stored surface state to the registered managed bridge. The managed surface
+// callback re-reads the app context before it forwards the event
+// (OpenHarmonyBridge.OnSurfaceNative -> RefreshContext), so this is the notification path a
+// context re-publish rides. Returns 1 when the bridge callback was invoked.
+static int OhosHostReplaySurfaceNotification(void) {
+    if (g_app == NULL || g_app->bridge_surface == NULL || !g_surface_valid) {
+        return 0;
+    }
+    if (g_surface_state != (int)OHOS_SURFACE_CREATED && g_surface_state != (int)OHOS_SURFACE_CHANGED) {
+        // Only a live surface carries the event the managed side refreshes on; a destroyed
+        // one must not be replayed, and the next created/changed event re-reads anyway.
+        return 0;
+    }
+    g_app->bridge_surface(g_surface_window, g_surface_width, g_surface_height, g_surface_state);
+    return 1;
+}
+
+int ohos_host_notify_context(void) {
+    return OhosHostReplaySurfaceNotification();
+}
+
+int ohos_host_set_app_context(const char* json) {
+    if (json == NULL || json[0] == '\0') {
+        fprintf(stderr, "[openharmony-host] set_app_context: empty context ignored\n");
+        return -1;
+    }
+    char* copy = strdup(json);
+    if (copy == NULL) {
+        return -1;
+    }
+    if (g_app == NULL) {
+        // No handle yet: keep the snapshot for the next start_app, which adopts it only when
+        // it has no context of its own. The pending copy has no concurrent reader.
+        free(g_pending_context_json);
+        g_pending_context_json = copy;
+        fprintf(stderr, "[openharmony-host] set_app_context: kept %d bytes for the next start_app\n",
+                (int)strlen(copy));
+        return 0;
+    }
+    setenv("OHOS_HOST_APP_CONTEXT", copy, 1);
+    OhosHostRetireContextSnapshot(g_app, g_app->context_json);
+    g_app->context_json = copy;
+    int notified = OhosHostReplaySurfaceNotification();
+    fprintf(stderr, "[openharmony-host] set_app_context: %d bytes, notified=%d\n",
+            (int)strlen(copy), notified);
+    return 0;
 }
 
 void ohos_host_register_bridge(void* lifecycle, void* node, void* surface) {
@@ -913,6 +1045,7 @@ int ohos_host_join_app(OhosHostAppHandle* handle) {
         g_app = NULL;
     }
     free(handle->context_json);
+    OhosHostFreeRetiredContexts(handle);
     free(handle);
     return exit_code;
 }

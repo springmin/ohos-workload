@@ -2,6 +2,8 @@
 // ArkTS side:
 //   import host from 'libopenharmonyhost.so';
 //   host.startApp(appDir, assemblyFile, contextJson);   // async, returns immediately
+//   host.setAppContext(contextJson);                     // (re-)publish the app context
+//   host.notifyAppContext();                             // re-emit the stored snapshot
 //   host.notifyLifecycle(event);                         // 0=create 1=destroy 2=fg 3=bg
 //   host.setNodeContent(nodeContentHandle);              // ArkUI NodeContent
 //   host.stopApp();                                      // sends destroy
@@ -1590,6 +1592,34 @@ napi_value StartApp(napi_env env, napi_callback_info info) {
     return undefined;
 }
 
+// ArkTS calls host.setAppContext(contextJson) once the payload directory is known or the
+// surface is ready. After startApp the host replaces the stored snapshot and re-emits it to
+// the managed bridge; before startApp the snapshot is kept for the next startApp. Returns 0
+// when stored/kept, -1 when the argument is missing/empty or the copy failed.
+napi_value SetAppContext(napi_env env, napi_callback_info info) {
+    size_t argc = 1;
+    napi_value argv[1] = {nullptr};
+    napi_get_cb_info(env, info, &argc, argv, nullptr, nullptr);
+    std::string json;
+    if (argc < 1 || !TryGetStringArg(env, argv[0], &json) || json.empty()) {
+        napi_throw_type_error(env, nullptr, "setAppContext(contextJson) requires a non-empty string");
+        return nullptr;
+    }
+    int rc = ohos_host_set_app_context(json.c_str());
+    napi_value result = nullptr;
+    napi_create_int32(env, rc, &result);
+    return result;
+}
+
+// ArkTS calls host.notifyAppContext() to re-emit the stored snapshot without changing it.
+// Returns 1 when the managed bridge was notified, 0 when there is no live channel.
+napi_value NotifyAppContext(napi_env env, napi_callback_info info) {
+    (void)info;
+    napi_value result = nullptr;
+    napi_create_int32(env, ohos_host_notify_context(), &result);
+    return result;
+}
+
 napi_value NotifyLifecycle(napi_env env, napi_callback_info info) {
     size_t argc = 1;
     napi_value argv[1] = {nullptr};
@@ -1712,6 +1742,8 @@ napi_value Init(napi_env env, napi_value exports) {
 
         {"notifyKeystoreResult", nullptr, NotifyKeystoreResult, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"startApp", nullptr, StartApp, nullptr, nullptr, nullptr, napi_default, nullptr},
+        {"setAppContext", nullptr, SetAppContext, nullptr, nullptr, nullptr, napi_default, nullptr},
+        {"notifyAppContext", nullptr, NotifyAppContext, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"notifyLifecycle", nullptr, NotifyLifecycle, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"setNodeContent", nullptr, SetNodeContent, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"stopApp", nullptr, StopApp, nullptr, nullptr, nullptr, napi_default, nullptr},
