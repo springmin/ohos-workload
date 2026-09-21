@@ -1,0 +1,119 @@
+<!DOCTYPE html>
+<!--
+  OpenHarmony bridge smoke test (S1/R1), page half. Minimal, dependency free, ASCII only.
+
+  WHERE THIS LIVES
+  wwwroot/index.html in the app project. When a hap is published with
+  -p:OpenHarmonyHapPackage=true, the SDK target _OpenHarmonyStageBlazorAssets copies
+  wwwroot/** (tree intact) into the publish directory, and the hap packer zips that
+  directory into resources/rawfile/dotnet.zip. On device the shell extracts the zip
+  under <AppDir> and serves the Blazor origin https://0.0.0.0/ from <AppDir>/wwwroot
+  with index.html as the default host file, so this document is the Blazor root
+  document. No project file change is needed; the staging target owns the copy.
+
+  WHAT THE SHELL ADDS AFTER THE PAGE LOAD EVENT (the ArkTS shell in the SDK pack)
+    1. window.external.sendMessage (forwards to the dotnetHost.postMessage proxy)
+       and window.external.receiveMessage (callback registration shim),
+    2. window.__dispatchMessageCallback (fans out to __receiveMessageCallbacks),
+    3. the dotnetHost JavaScript proxy (postMessage -> host.notifyJsMessage) plus
+       the window.__ohosDotNet alias,
+    4. https://0.0.0.0/_framework/blazor.webview.js and Blazor.start() on this
+       document (the page does not load the framework script itself).
+
+  FRAMEWORK FILE (why _framework/blazor.modules.json exists)
+  Blazor.start() in blazor.webview.js first fetches _framework/blazor.modules.json (the
+  JS initializer list) and only then registers its IPC callback through
+  window.external.receiveMessage and sends the AttachPage message. The SDK staging
+  target stages blazor.webview.js but no modules.json (this app is not a Razor/static
+  web assets project), so wwwroot/_framework/blazor.modules.json carries the empty
+  initializer list. Without it the fetch 404s, Blazor.start() rejects and no __bwv:
+  traffic runs; the probes and the ping below still work because they only need the
+  shell shim, which is installed independently.
+
+  EXPECT LINES (probe table, Blazor root document https://0.0.0.0/):
+    typeof window.external                  -> object
+    typeof window.external.sendMessage      -> function
+    typeof window.external.receiveMessage   -> function
+    typeof window.dotnetHost                -> object
+    typeof window.dotnetHost.postMessage    -> function
+    typeof window.__dispatchMessageCallback -> function
+    typeof window.HybridWebView             -> undefined (see note)
+    typeof window.Blazor                    -> object    (once blazor.webview.js loads)
+    typeof window.__ohosDotNet              -> object
+
+  NOTE (hybrid origin): on a MAUI HybridWebView page served from https://0.0.0.1/ the
+  shell installs the hybrid shim instead: window.HybridWebView is an object (with
+  SendRawMessage), window.external.sendMessage/receiveMessage are functions, and
+  window.__dispatchMessageCallback stays undefined. A plain WebView without any
+  registration leaves every row undefined (also valid: the page then reports that no
+  bridge function was found).
+
+  DEVICE RUN
+    1. The page renders and the probes reach the values above within a few seconds
+       (the shell injects after the load event; the table refreshes for 15 seconds).
+    2. Click "Send ping": the page sends a JSON ping through
+       window.external.sendMessage (fallbacks: dotnetHost.postMessage,
+       __ohosDotNet.postMessage, HybridWebView.SendRawMessage) and shows the channel
+       plus the payload in the status line.
+    3. Watch the message log for a host reply. The stock Blazor IPC ignores payloads
+       without the "__bwv:" prefix by design, so "sent, no reply" is an expected
+       result; the send still exercises the page to host half (JS -> dotnetHost ->
+       host.notifyJsMessage, visible in hilog). An app provided echo arrives through
+       window.__dispatchMessageCallback and is logged.
+    4. Optional "Self test inbound" calls window.__dispatchMessageCallback locally and
+       proves the page side inbound hook; the log line is labelled as a self test, not
+       as a host reply.
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>OpenHarmony bridge test</title>
+<style>
+  body { font-family: system-ui, sans-serif; margin: 16px; font-size: 16px; }
+  h1 { font-size: 20px; margin: 0 0 8px; }
+  p { margin: 8px 0; }
+  table { border-collapse: collapse; width: 100%; margin: 8px 0; }
+  th, td { border: 1px solid #888; padding: 4px 6px; text-align: left; vertical-align: top; }
+  th { font-size: 14px; }
+  code { font-family: ui-monospace, monospace; font-size: 14px; }
+  .expect { opacity: 0.7; }
+  button { font-size: 16px; padding: 10px 14px; margin: 4px 8px 4px 0; }
+  #location { font-family: ui-monospace, monospace; font-size: 13px; word-break: break-all; }
+  #status { font-family: ui-monospace, monospace; font-size: 13px; white-space: pre-wrap; word-break: break-all; min-height: 3em; }
+  #messages { border: 1px solid #888; padding: 6px; min-height: 3em; max-height: 14em; overflow: auto;
+              font-family: ui-monospace, monospace; font-size: 13px; white-space: pre-wrap; word-break: break-all; }
+  .message { margin: 0 0 4px; }
+</style>
+</head>
+<body>
+<h1>OpenHarmony bridge test</h1>
+<p id="location">loading...</p>
+<table>
+  <thead>
+    <tr><th>probe</th><th>expect (Blazor root)</th><th>actual</th></tr>
+  </thead>
+  <tbody>
+    <tr><td><code>typeof window.external</code></td><td class="expect">object</td><td><code id="probe-external">...</code></td></tr>
+    <tr><td><code>typeof window.external.sendMessage</code></td><td class="expect">function</td><td><code id="probe-external-send">...</code></td></tr>
+    <tr><td><code>typeof window.external.receiveMessage</code></td><td class="expect">function</td><td><code id="probe-external-receive">...</code></td></tr>
+    <tr><td><code>typeof window.dotnetHost</code></td><td class="expect">object</td><td><code id="probe-dotnet-host">...</code></td></tr>
+    <tr><td><code>typeof window.dotnetHost.postMessage</code></td><td class="expect">function</td><td><code id="probe-dotnet-host-post">...</code></td></tr>
+    <tr><td><code>typeof window.__dispatchMessageCallback</code></td><td class="expect">function</td><td><code id="probe-dispatch">...</code></td></tr>
+    <tr><td><code>typeof window.HybridWebView</code></td><td class="expect">undefined</td><td><code id="probe-hybrid">...</code></td></tr>
+    <tr><td><code>typeof window.HybridWebView.SendRawMessage</code></td><td class="expect">undefined</td><td><code id="probe-hybrid-send">...</code></td></tr>
+    <tr><td><code>typeof window.Blazor</code></td><td class="expect">object</td><td><code id="probe-blazor">...</code></td></tr>
+    <tr><td><code>typeof window.__ohosDotNet</code></td><td class="expect">object</td><td><code id="probe-ohos-dotnet">...</code></td></tr>
+  </tbody>
+</table>
+<p class="expect">Expect column is for the Blazor root document https://0.0.0.0/; on the hybrid origin https://0.0.0.1/ HybridWebView is an object and __dispatchMessageCallback stays undefined.</p>
+<p>
+  <button id="ping" type="button">Send ping</button>
+  <button id="selftest" type="button">Self test inbound</button>
+</p>
+<p id="status">ready</p>
+<div id="messages"><span class="expect">no inbound messages yet</span></div>
+<noscript><p>JavaScript is required for the probes and the ping (js/app.js).</p></noscript>
+<script src="js/app.js"></script>
+</body>
+</html>
