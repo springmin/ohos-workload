@@ -3067,7 +3067,11 @@ if (!a5Ok)
 // A6: lifecycle events and the NodeContent that arrive before the app handle exists are queued
 // in the globals under g_context_mutex (a NULL handle is first resolved through g_app), not
 // dropped; start_app transfers both queues to the new handle inside its critical section and
-// register_bridge flushes them to the managed callbacks.
+// register_bridge binds through OhosHostBindAndFlushBridge, which takes the lifecycle queue and
+// the node content under the lock (clearing both so a return/clear cannot deliver twice) and
+// runs the managed callbacks after the unlock, so a notify racing the registration cannot slip
+// an event behind the flush. A registration that arrives before g_app exists is queued with the
+// other pending state (g_pending_bridge_*) and bound by start_app.
 int a6NotifyAt = cSource?.IndexOf("void ohos_host_notify_lifecycle(OhosHostAppHandle* handle, ohos_lifecycle_event event) {", StringComparison.Ordinal) ?? -1;
 int a6NotifyLockAt = a6NotifyAt < 0 ? -1 : cSource!.IndexOf("pthread_mutex_lock(&g_context_mutex);", a6NotifyAt, StringComparison.Ordinal);
 int a6NotifyQueueAt = a6NotifyLockAt < 0 ? -1 : cSource!.IndexOf("g_pending_lifecycle[g_pending_lifecycle_count++] = (int)event;", a6NotifyLockAt, StringComparison.Ordinal);
@@ -3081,15 +3085,28 @@ int a6TransferClearAt = a6TransferAt < 0 ? -1 : cSource!.IndexOf("g_pending_life
 int a6TransferNodeAt = a6TransferClearAt < 0 ? -1 : cSource!.IndexOf("handle->node_content = g_pending_node_content;", a6TransferClearAt, StringComparison.Ordinal);
 int a6TransferNodeClearAt = a6TransferNodeAt < 0 ? -1 : cSource!.IndexOf("g_pending_node_content = NULL;", a6TransferNodeAt, StringComparison.Ordinal);
 int a6RegisterAt = cSource?.IndexOf("void ohos_host_register_bridge(void* lifecycle, void* node, void* surface) {", StringComparison.Ordinal) ?? -1;
-int a6FlushLoopAt = a6RegisterAt < 0 ? -1 : cSource!.IndexOf("g_app->bridge_lifecycle(g_app->pending_lifecycle[i]);", a6RegisterAt, StringComparison.Ordinal);
-int a6FlushClearAt = a6FlushLoopAt < 0 ? -1 : cSource!.IndexOf("g_app->pending_count = 0;", a6FlushLoopAt, StringComparison.Ordinal);
-int a6FlushNodeAt = a6FlushClearAt < 0 ? -1 : cSource!.IndexOf("g_app->bridge_node(g_app->node_content);", a6FlushClearAt, StringComparison.Ordinal);
-bool a6GlobalsOk = cSource?.Contains("static int g_pending_lifecycle[OHOS_MAX_PENDING_LIFECYCLE];\nstatic int g_pending_lifecycle_count = 0;\nstatic void* g_pending_node_content = NULL;") == true;
+int a6PendingAt = a6RegisterAt < 0 ? -1 : cSource!.IndexOf("g_pending_bridge_lifecycle = lifecycle;", a6RegisterAt, StringComparison.Ordinal);
+int a6BindCallAt = a6RegisterAt < 0 ? -1 : cSource!.IndexOf("OhosHostBindAndFlushBridge(handle, lifecycle, node, surface);", a6RegisterAt, StringComparison.Ordinal);
+int a6FlushAt = cSource?.IndexOf("static void OhosHostBindAndFlushBridge(OhosHostAppHandle* handle, void* lifecycle, void* node, void* surface) {", StringComparison.Ordinal) ?? -1;
+int a6FlushTakeAt = a6FlushAt < 0 ? -1 : cSource!.IndexOf("pending[i] = handle->pending_lifecycle[i];", a6FlushAt, StringComparison.Ordinal);
+int a6FlushClearAt = a6FlushTakeAt < 0 ? -1 : cSource!.IndexOf("handle->pending_count = 0;", a6FlushTakeAt, StringComparison.Ordinal);
+int a6FlushNodeAt = a6FlushClearAt < 0 ? -1 : cSource!.IndexOf("node_content = handle->node_content;", a6FlushClearAt, StringComparison.Ordinal);
+int a6FlushNodeClearAt = a6FlushNodeAt < 0 ? -1 : cSource!.IndexOf("handle->node_content = NULL;", a6FlushNodeAt, StringComparison.Ordinal);
+int a6FlushUnlockAt = a6FlushNodeClearAt < 0 ? -1 : cSource!.IndexOf("pthread_mutex_unlock(&g_context_mutex);", a6FlushNodeClearAt, StringComparison.Ordinal);
+int a6FlushLoopAt = a6FlushUnlockAt < 0 ? -1 : cSource!.IndexOf("((void (*)(int))lifecycle)(pending[i]);", a6FlushUnlockAt, StringComparison.Ordinal);
+int a6FlushNodeCallAt = a6FlushLoopAt < 0 ? -1 : cSource!.IndexOf("((void (*)(void*))node)(node_content);", a6FlushLoopAt, StringComparison.Ordinal);
+bool a6GlobalsOk = cSource?.Contains("static int g_pending_lifecycle[OHOS_MAX_PENDING_LIFECYCLE];\nstatic int g_pending_lifecycle_count = 0;\nstatic void* g_pending_node_content = NULL;") == true &&
+    cSource.Contains("static void* g_pending_bridge_lifecycle = NULL;") &&
+    cSource.Contains("static void* g_pending_bridge_node = NULL;") &&
+    cSource.Contains("static void* g_pending_bridge_surface = NULL;");
 bool a6QueueOk = a6NotifyQueueAt > a6NotifyLockAt && a6NotifyQueueAt < a6NotifyUnlockAt &&
     a6NodeQueueAt > a6NodeLockAt && a6NodeQueueAt < a6NodeUnlockAt;
 bool a6TransferOk = a6TransferAt > a1LockAt && a6TransferClearAt > a6TransferAt &&
     a6TransferNodeAt > a6TransferClearAt && a6TransferNodeClearAt > a6TransferNodeAt && a6TransferNodeClearAt < a1UnlockAt;
-bool a6FlushOk = a6FlushLoopAt > a6RegisterAt && a6FlushClearAt > a6FlushLoopAt && a6FlushNodeAt > a6FlushClearAt;
+bool a6FlushOk = a6FlushTakeAt > a6FlushAt && a6FlushClearAt > a6FlushTakeAt &&
+    a6FlushNodeAt > a6FlushClearAt && a6FlushNodeClearAt > a6FlushNodeAt &&
+    a6FlushNodeClearAt < a6FlushUnlockAt && a6FlushLoopAt > a6FlushUnlockAt && a6FlushNodeCallAt > a6FlushLoopAt &&
+    a6PendingAt > a6RegisterAt && a6BindCallAt > a6RegisterAt;
 bool a6Ok = a6GlobalsOk && a6QueueOk && a6TransferOk && a6FlushOk;
 Console.WriteLine($"[verify] a6 pending lifecycle globals={a6GlobalsOk} queuedUnderLock={a6QueueOk} transferredToHandle={a6TransferOk} flushedOnRegister={a6FlushOk} lifecycleQueue={a6NotifyQueueAt > a6NotifyLockAt} nodeContentQueue={a6NodeQueueAt > a6NodeLockAt} source='{cSourcePath ?? "<missing>"}' assert={a6Ok}");
 if (!a6Ok)

@@ -265,6 +265,17 @@ static int g_pending_lifecycle[OHOS_MAX_PENDING_LIFECYCLE];
 static int g_pending_lifecycle_count = 0;
 static void* g_pending_node_content = NULL;
 
+// Bridge callbacks registered by the managed side while no app handle exists. start_app binds
+// them to the handle when it publishes g_app (and flushes the queues above to them) instead of
+// dropping the registration: the managed bridge registers once and never retries. Guarded by
+// g_context_mutex like the queues above.
+static void* g_pending_bridge_lifecycle = NULL;
+static void* g_pending_bridge_node = NULL;
+static void* g_pending_bridge_surface = NULL;
+
+// Defined after the context helpers; used by the failed-launch cleanup in start_app.
+static void OhosHostFreeRetiredContexts(OhosHostAppHandle* handle);
+
 // start_app re-entry guard: one bridged application per process, and a second start while the
 // first is still initializing would overwrite g_app and leak the first handle.
 static int g_launch_in_progress = 0;
@@ -320,6 +331,61 @@ static int OhosHostContextNamesAppDir(const char* json) {
     }
     value++;
     return *value != '"' && *value != '\0';
+}
+
+// Binds a bridge registration to a live handle and delivers everything the handle queued
+// before it: the pre-publish lifecycle queue, the pending NodeContent and the current surface.
+// The queue fields are copied and cleared under g_context_mutex; the node content is taken over
+// and its slot cleared, so a second registration (Attach is one-shot, but a re-register must
+// not double-attach) cannot deliver it twice. The managed callbacks run after the unlock: a
+// callback may re-enter any host entry, and g_context_mutex never nests and is never held
+// across a managed callback (the a11y path uses its own g_a11y_mutex, never this one).
+static void OhosHostBindAndFlushBridge(OhosHostAppHandle* handle, void* lifecycle, void* node, void* surface) {
+    int pending[OHOS_MAX_PENDING_LIFECYCLE];
+    int pending_count = 0;
+    void* node_content = NULL;
+    int has_surface = 0;
+    void* surface_window = NULL;
+    int surface_width = 0;
+    int surface_height = 0;
+    int surface_state = -1;
+    pthread_mutex_lock(&g_context_mutex);
+    if (handle == NULL || g_app != handle) {
+        // Joined (or never published): do not touch the handle, it is not ours anymore.
+        pthread_mutex_unlock(&g_context_mutex);
+        return;
+    }
+    handle->bridge_lifecycle = (void (*)(int))lifecycle;
+    handle->bridge_node = (void (*)(void*))node;
+    handle->bridge_surface = (void (*)(void*, int, int, int))surface;
+    pending_count = handle->pending_count;
+    for (int i = 0; i < pending_count; i++) {
+        pending[i] = handle->pending_lifecycle[i];
+    }
+    handle->pending_count = 0;
+    if (node != NULL && handle->node_content != NULL) {
+        node_content = handle->node_content;
+        handle->node_content = NULL;
+    }
+    if (surface != NULL && g_surface_valid) {
+        has_surface = 1;
+        surface_window = g_surface_window;
+        surface_width = g_surface_width;
+        surface_height = g_surface_height;
+        surface_state = g_surface_state;
+    }
+    pthread_mutex_unlock(&g_context_mutex);
+    if (has_surface) {
+        ((void (*)(void*, int, int, int))surface)(surface_window, surface_width, surface_height, surface_state);
+    }
+    for (int i = 0; i < pending_count; i++) {
+        if (lifecycle != NULL) {
+            ((void (*)(int))lifecycle)(pending[i]);
+        }
+    }
+    if (node != NULL && node_content != NULL) {
+        ((void (*)(void*))node)(node_content);
+    }
 }
 
 int ohos_host_start_app(const char* app_dir, const char* app_assembly_file,
@@ -438,6 +504,20 @@ int ohos_host_start_app(const char* app_dir, const char* app_assembly_file,
         handle->node_content = g_pending_node_content;
         g_pending_node_content = NULL;
     }
+    // A bridge registered before this handle existed is bound atomically with the publish, so
+    // a racing notify sees the real callbacks and never queues an event behind a registration
+    // that already happened. The callback values are captured for the post-create flush below
+    // and for the failed-launch path, which hands them back for a retry.
+    void* pending_lifecycle_cb = g_pending_bridge_lifecycle;
+    void* pending_node_cb = g_pending_bridge_node;
+    void* pending_surface_cb = g_pending_bridge_surface;
+    g_pending_bridge_lifecycle = NULL;
+    g_pending_bridge_node = NULL;
+    g_pending_bridge_surface = NULL;
+    handle->bridge_lifecycle = (void (*)(int))pending_lifecycle_cb;
+    handle->bridge_node = (void (*)(void*))pending_node_cb;
+    handle->bridge_surface = (void (*)(void*, int, int, int))pending_surface_cb;
+    int pending_bridge = pending_lifecycle_cb != NULL || pending_node_cb != NULL || pending_surface_cb != NULL;
     g_app = handle;
     g_launch_in_progress = 0;
     pthread_mutex_unlock(&g_context_mutex);
@@ -449,6 +529,9 @@ int ohos_host_start_app(const char* app_dir, const char* app_assembly_file,
     if (run_sync != NULL && run_sync[0] == '1') {
         fprintf(stderr, "[openharmony-host] start_app: running the app on the calling thread\n");
         fflush(stderr);
+        if (pending_bridge) {
+            OhosHostBindAndFlushBridge(handle, pending_lifecycle_cb, pending_node_cb, pending_surface_cb);
+        }
         // Hand the handle out first so the shell can push events while the app runs.
         *out_handle = handle;
         handle->exit_code = run_app(ctx);
@@ -461,13 +544,40 @@ int ohos_host_start_app(const char* app_dir, const char* app_assembly_file,
     pthread_attr_destroy(&attr);
     if (thread_rc != 0) {
         fprintf(stderr, "[openharmony-host] pthread_create failed: %d\n", thread_rc);
+        char* context_json = NULL;
         pthread_mutex_lock(&g_context_mutex);
-        g_app = NULL;
+        if (g_app == handle) {
+            g_app = NULL;
+        }
+        // The launch must not consume what it transferred: hand the queued events and the
+        // NodeContent back to the pending slots the next start_app adopts, and requeue a
+        // pre-launch bridge registration too (the managed side never re-registers it).
+        for (int i = 0; i < handle->pending_count && g_pending_lifecycle_count < OHOS_MAX_PENDING_LIFECYCLE; i++) {
+            g_pending_lifecycle[g_pending_lifecycle_count++] = handle->pending_lifecycle[i];
+        }
+        handle->pending_count = 0;
+        if (handle->node_content != NULL) {
+            g_pending_node_content = handle->node_content;
+            handle->node_content = NULL;
+        }
+        if (pending_bridge) {
+            g_pending_bridge_lifecycle = pending_lifecycle_cb;
+            g_pending_bridge_node = pending_node_cb;
+            g_pending_bridge_surface = pending_surface_cb;
+        }
+        context_json = handle->context_json;
+        handle->context_json = NULL;
+        OhosHostFreeRetiredContexts(handle);
         pthread_mutex_unlock(&g_context_mutex);
         close_ctx(ctx);
-        free(handle->context_json);
+        free(context_json);
         free(handle);
         return -1;
+    }
+    if (pending_bridge) {
+        // The app thread is live: deliver what the handle queued before the registration was
+        // published, exactly like a register_bridge call would.
+        OhosHostBindAndFlushBridge(handle, pending_lifecycle_cb, pending_node_cb, pending_surface_cb);
     }
 
     *out_handle = handle;
@@ -475,7 +585,13 @@ int ohos_host_start_app(const char* app_dir, const char* app_assembly_file,
 }
 
 const char* ohos_host_get_app_context(void) {
-    return g_app != NULL ? g_app->context_json : NULL;
+    // The snapshot is replaced under g_context_mutex (set_app_context) and freed under it at
+    // join, so the getter reads the handle under the same lock. The returned pointer follows
+    // the documented contract: owned by the handle, valid until the next publish or join.
+    pthread_mutex_lock(&g_context_mutex);
+    const char* json = g_app != NULL ? g_app->context_json : NULL;
+    pthread_mutex_unlock(&g_context_mutex);
+    return json;
 }
 
 // Keeps a replaced snapshot alive until join: a managed reader may be copying the string the
@@ -566,24 +682,21 @@ void ohos_host_register_bridge(void* lifecycle, void* node, void* surface) {
     fprintf(stderr, "[openharmony-host] register_bridge lifecycle=%p node=%p surface=%p g_app=%p\n",
             lifecycle, node, surface, (void*)g_app);
     fflush(stderr);
-    if (g_app == NULL) {
+    pthread_mutex_lock(&g_context_mutex);
+    OhosHostAppHandle* handle = g_app;
+    if (handle == NULL) {
+        // The managed side can register before start_app publishes the handle (this used to be
+        // a silent no-op the managed bridge never retries). Queue the callbacks like the
+        // lifecycle/node-content queues; start_app binds and flushes them on publish.
+        g_pending_bridge_lifecycle = lifecycle;
+        g_pending_bridge_node = node;
+        g_pending_bridge_surface = surface;
+        pthread_mutex_unlock(&g_context_mutex);
         return;
     }
-    g_app->bridge_lifecycle = (void (*)(int))lifecycle;
-    g_app->bridge_node = (void (*)(void*))node;
-    g_app->bridge_surface = (void (*)(void*, int, int, int))surface;
-    if (g_app->bridge_surface != NULL && g_surface_valid) {
-        g_app->bridge_surface(g_surface_window, g_surface_width, g_surface_height, g_surface_state);
-    }
-    for (int i = 0; i < g_app->pending_count; i++) {
-        if (g_app->bridge_lifecycle != NULL) {
-            g_app->bridge_lifecycle(g_app->pending_lifecycle[i]);
-        }
-    }
-    g_app->pending_count = 0;
-    if (g_app->bridge_node != NULL && g_app->node_content != NULL) {
-        g_app->bridge_node(g_app->node_content);
-    }
+    pthread_mutex_unlock(&g_context_mutex);
+    // Bind and flush under the queue lock; the callbacks themselves run outside it.
+    OhosHostBindAndFlushBridge(handle, lifecycle, node, surface);
 }
 
 // Draws a frame into the XComponent surface. mode 0 = RGBA gradient (first frame proof),
@@ -1141,13 +1254,21 @@ void ohos_host_notify_lifecycle(OhosHostAppHandle* handle, ohos_lifecycle_event 
         }
         pthread_mutex_unlock(&g_context_mutex);
     }
-    if (handle->bridge_lifecycle != NULL) {
-        handle->bridge_lifecycle((int)event);
+    // The registration check and the append must be atomic against register_bridge's flush
+    // (both under g_context_mutex): an event that reads "not registered yet" and then appends
+    // after the flush would sit in the queue forever, because the managed bridge registers
+    // once and never drains it again. The callback runs after the unlock.
+    pthread_mutex_lock(&g_context_mutex);
+    void (*callback)(int) = handle->bridge_lifecycle;
+    if (callback != NULL) {
+        pthread_mutex_unlock(&g_context_mutex);
+        callback((int)event);
         return;
     }
     if (handle->pending_count < OHOS_MAX_PENDING_LIFECYCLE) {
         handle->pending_lifecycle[handle->pending_count++] = (int)event;
     }
+    pthread_mutex_unlock(&g_context_mutex);
 }
 
 void ohos_host_set_node_content(OhosHostAppHandle* handle, void* node_content) {
@@ -1165,9 +1286,20 @@ void ohos_host_set_node_content(OhosHostAppHandle* handle, void* node_content) {
         }
         pthread_mutex_unlock(&g_context_mutex);
     }
+    // Bind the content under the same lock register_bridge's flush takes, and clear the slot
+    // when a live bridge takes it over: whichever side wins the lock delivers exactly once
+    // (the flush path also clears, see OhosHostBindAndFlushBridge). The callback itself runs
+    // outside the lock; a clear (NULL) still notifies the managed side like before.
+    void (*callback)(void*) = NULL;
+    pthread_mutex_lock(&g_context_mutex);
     handle->node_content = node_content;
     if (handle->bridge_node != NULL) {
-        handle->bridge_node(node_content);
+        callback = handle->bridge_node;
+        handle->node_content = NULL;
+    }
+    pthread_mutex_unlock(&g_context_mutex);
+    if (callback != NULL) {
+        callback(node_content);
     }
 }
 
@@ -1179,10 +1311,17 @@ int ohos_host_join_app(OhosHostAppHandle* handle) {
     if (handle == NULL) {
         return -1;
     }
+    // The join itself stays outside g_context_mutex: the app thread may still be inside a
+    // managed callback that calls a host entry taking the lock, and blocking there would
+    // deadlock the join.
     if (!handle->joined) {
         pthread_join(handle->thread, NULL);
         handle->joined = 1;
     }
+    // Detach and free under the lock get/set_app_context use: a getter that already resolved
+    // g_app is serialized with the free, and a setter that runs after sees g_app == NULL and
+    // parks its snapshot in the pending slot instead of touching the freed handle.
+    pthread_mutex_lock(&g_context_mutex);
     int exit_code = handle->exit_code;
     // The runtime is intentionally not closed here: managed worker threads may still be
     // running and the application process owns the runtime until it exits.
@@ -1192,6 +1331,7 @@ int ohos_host_join_app(OhosHostAppHandle* handle) {
     free(handle->context_json);
     OhosHostFreeRetiredContexts(handle);
     free(handle);
+    pthread_mutex_unlock(&g_context_mutex);
     return exit_code;
 }
 
