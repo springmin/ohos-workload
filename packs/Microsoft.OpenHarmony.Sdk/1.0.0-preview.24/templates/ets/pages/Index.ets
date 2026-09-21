@@ -82,20 +82,6 @@ interface HybridInvokeErrorResult {
   ErrorMessage: string;
 }
 
-// One response header for WebResourceResponse.setResponseHeader. The SDK declares Header as
-// an interface, and the ArkTS checker rejects structural typing (arkts-no-structural-typing)
-// for object literals assigned to it, so the payload cache policy below publishes instances of
-// this nominal implementation instead.
-class PayloadHeader implements Header {
-  headerKey: string;
-  headerValue: string;
-
-  constructor(headerKey: string, headerValue: string) {
-    this.headerKey = headerKey;
-    this.headerValue = headerValue;
-  }
-}
-
 // A pending invocation whose intercepted response is held open with setResponseIsReady(false)
 // until the managed handler answers (or the fallback timeout fires).
 interface HybridPendingInvoke {
@@ -1248,13 +1234,16 @@ struct Index {
   // Cache policy for a served payload file. A fingerprinted request is pinned by its name, so
   // it is immutable for a year; every other payload file - the framework bootstrap
   // (blazor.webview.js, hybridwebview.js), the host page and the app assets - is revalidated,
-  // so a refreshed pack is picked up even when the WebView cache is warm. setResponseHeader
-  // takes the SDK's Header interface array (WebResourceResponse, API 9+).
+  // so a refreshed pack is picked up even when the WebView cache is warm. The status probe ran
+  // on this toolchain: WebResourceResponse.setResponseHeader(Header[]) exists in the SDK
+  // (component/web.d.ts, API 9+) and the object-literal header map below typechecks; a nominal
+  // class is not required (the checker's arkts-no-structural-typing rejection belongs to the
+  // explicit RegExpMatchArray annotation on the strip probe, which is inferred instead).
   private payloadCacheHeaders(fingerprinted: boolean): Header[] {
-    const headers: Header[] = [
-      new PayloadHeader('Cache-Control',
-        fingerprinted ? 'public, max-age=31536000, immutable' : 'no-cache'),
-    ];
+    const headers: Header[] = [{
+      headerKey: 'Cache-Control',
+      headerValue: fingerprinted ? 'public, max-age=31536000, immutable' : 'no-cache',
+    }];
     return headers;
   }
 
