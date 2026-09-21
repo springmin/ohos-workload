@@ -35,6 +35,7 @@
 #include <native_drawing/drawing_types.h>
 #include <native_buffer/native_buffer.h>
 #include <native_window/external_window.h>
+#include <hilog/log.h>
 #include <pthread.h>
 #include <sys/mman.h>
 #include <stdio.h>
@@ -80,7 +81,10 @@ int ohos_host_run_app(const char* app_dir, const char* app_assembly_file, int ar
 
     void* hostfxr = dlopen(hostfxr_path, RTLD_NOW | RTLD_LOCAL);
     if (hostfxr == NULL) {
-        fprintf(stderr, "[openharmony-host] dlopen(%s) failed: %s\n", hostfxr_path, dlerror());
+        const char* dl_error = dlerror();
+        OH_LOG_ERROR(LOG_APP, "[openharmony-host] run_app dlopen(%{public}s) failed: %{public}s",
+                     hostfxr_path, dl_error);
+        fprintf(stderr, "[openharmony-host] dlopen(%s) failed: %s\n", hostfxr_path, dl_error);
         return -1;
     }
 
@@ -108,6 +112,7 @@ int ohos_host_run_app(const char* app_dir, const char* app_assembly_file, int ar
         const char* dotnet_root = getenv("DOTNET_ROOT");
         int exit_code = main_startupinfo(argc + 1, app_argv, app_dir, dotnet_root, app_assembly_path);
         free((void*)app_argv);
+        OH_LOG_INFO(LOG_APP, "[openharmony-host] run_app Main exited rc=%{public}d", exit_code);
         return exit_code;
     }
 
@@ -303,6 +308,7 @@ static void* OhosAppThread(void* arg) {
     handle->exit_code = handle->run_app(handle->ctx);
     fprintf(stderr, "[openharmony-host] run_app exited: %d\n", handle->exit_code);
     fflush(stderr);
+    OH_LOG_INFO(LOG_APP, "[openharmony-host] app Main exited rc=%{public}d", handle->exit_code);
     return NULL;
 }
 
@@ -391,6 +397,7 @@ static void OhosHostBindAndFlushBridge(OhosHostAppHandle* handle, void* lifecycl
 int ohos_host_start_app(const char* app_dir, const char* app_assembly_file,
                         const char* args_json, const char* context_json,
                         OhosHostAppHandle** out_handle) {
+    OH_LOG_INFO(LOG_APP, "[openharmony-host] start_app begin dir=%{public}s", app_dir != NULL ? app_dir : "(null)");
     // Reject a second start up front: one bridged application per process (g_app), and until
     // the first launch publishes its handle the guard keeps two launch threads from racing
     // g_app/g_pending_context_json. No state is allocated on a rejected call.
@@ -413,7 +420,10 @@ int ohos_host_start_app(const char* app_dir, const char* app_assembly_file,
 
     void* hostfxr = dlopen(hostfxr_path, RTLD_NOW | RTLD_LOCAL);
     if (hostfxr == NULL) {
-        fprintf(stderr, "[openharmony-host] dlopen(%s) failed: %s\n", hostfxr_path, dlerror());
+        const char* dl_error = dlerror();
+        OH_LOG_ERROR(LOG_APP, "[openharmony-host] start_app dlopen(%{public}s) failed: %{public}s",
+                     hostfxr_path, dl_error);
+        fprintf(stderr, "[openharmony-host] dlopen(%s) failed: %s\n", hostfxr_path, dl_error);
         OhosHostEndLaunch();
         return -1;
     }
@@ -429,6 +439,7 @@ int ohos_host_start_app(const char* app_dir, const char* app_assembly_file,
     ohos_run_app_fn run_app = (ohos_run_app_fn)dlsym(hostfxr, "hostfxr_run_app");
     if (initialize == NULL || close_ctx == NULL || run_app == NULL) {
         fprintf(stderr, "[openharmony-host] hostfxr symbols missing\n");
+        OH_LOG_ERROR(LOG_APP, "[openharmony-host] start_app: hostfxr symbols missing in %{public}s", hostfxr_path);
         OhosHostEndLaunch();
         return -1;
     }
@@ -453,6 +464,8 @@ int ohos_host_start_app(const char* app_dir, const char* app_assembly_file,
     int rc = initialize(1, argv, &params, &ctx);
     if (rc != 0 || ctx == NULL) {
         fprintf(stderr, "[openharmony-host] initialize_for_dotnet_command_line rc=0x%x\n", rc);
+        OH_LOG_ERROR(LOG_APP, "[openharmony-host] start_app: hostfxr command-line init rc=0x%{public}x dir=%{public}s",
+                     (unsigned)rc, app_dir != NULL ? app_dir : "(null)");
         OhosHostEndLaunch();
         return -1;
     }
@@ -580,6 +593,7 @@ int ohos_host_start_app(const char* app_dir, const char* app_assembly_file,
         OhosHostBindAndFlushBridge(handle, pending_lifecycle_cb, pending_node_cb, pending_surface_cb);
     }
 
+    OH_LOG_INFO(LOG_APP, "[openharmony-host] start_app launched dir=%{public}s", app_dir != NULL ? app_dir : "(null)");
     *out_handle = handle;
     return 0;
 }

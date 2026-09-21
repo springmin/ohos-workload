@@ -1,7 +1,7 @@
 <Project>
   <!-- publish -> .hap packaging for OpenHarmony.
        Stage layout (packed by the OpenHarmony SDK's ohos_packing_tool):
-           module.json, ets/modules.abc, libs/<abi>/libopenharmonyhost.so,
+           module.json, ets/modules.abc, libs/<abi>/{libopenharmonyhost.so,libc++_shared.so},
            resources/base/..., resources/rawfile/{app.json,dotnet.zip}
 
        Staging directory: OpenHarmonyHapStageDir (overridable) selects where the payload above
@@ -13,6 +13,15 @@
        The directory is deleted and recreated for each package, so stale files from an earlier
        publish cannot leak into a hap. The property must point somewhere other than the project
        directory: the packaging writes module.json, ets/, resources/ and libs/ into it.
+
+       C++ runtime: libopenharmonyhost.so links the shared C++ runtime (DT_NEEDED
+       libc++_shared.so) and the device loader refuses a hap whose libs/<abi>/ lacks the
+       dependency, so the staging copies the SDK's libc++_shared.so next to the host. It is
+       looked up under the SDK roots this file already knows - OpenHarmonySdkRoot (or
+       OHOS_SDK_ROOT), both as <root>/native/llvm and as a bare native root, OHOS_NDK, and the
+       harmonybrew Cellar install _OpenHarmonyDetectToolchain falls back to - in the LLVM
+       triple matching OpenHarmonyAbi (arm64-v8a -> aarch64-linux-ohos). A missing library is
+       a hard error; OpenHarmonyLibCxxShared pins an explicit file.
 
        Payload determinism: resources/rawfile/dotnet.zip is written with a fixed entry order
        (ordinal path sort) and a fixed 1980-01-01 entry timestamp (OpenHarmonyDeterministicZip
@@ -350,6 +359,33 @@
     </ItemGroup>
     <Copy SourceFiles="@(_OpenHarmonyHapResource)" DestinationFiles="@(_OpenHarmonyHapResource->'$(_OpenHarmonyHapStageDir)resources/base/%(RecursiveDir)%(Filename)%(Extension)')" />
     <Copy SourceFiles="$(_OpenHarmonyHostDir)libopenharmonyhost.so" DestinationFolder="$(_OpenHarmonyHapStageDir)libs/$(OpenHarmonyAbi)/" />
+
+    <!-- C++ runtime staging: see "C++ runtime" in the file header. Candidates are ordered by
+         increasing preference: the Copy task writes them all to the same file name in
+         libs/$(OpenHarmonyAbi)/, so the last existing source wins (an explicit
+         OpenHarmonyLibCxxShared, else the SDK root, else OHOS_NDK, else the Cellar install). -->
+    <PropertyGroup>
+      <_OpenHarmonyNativeAbi Condition=" '$(OpenHarmonyAbi)' == 'arm64-v8a' ">aarch64-linux-ohos</_OpenHarmonyNativeAbi>
+      <_OpenHarmonyNativeAbi Condition=" '$(OpenHarmonyAbi)' == 'armeabi-v7a' ">arm-linux-ohos</_OpenHarmonyNativeAbi>
+      <_OpenHarmonyNativeAbi Condition=" '$(OpenHarmonyAbi)' == 'x86_64' ">x86_64-linux-ohos</_OpenHarmonyNativeAbi>
+      <_OpenHarmonyNativeAbi Condition=" '$(_OpenHarmonyNativeAbi)' == '' ">$(OpenHarmonyAbi)</_OpenHarmonyNativeAbi>
+      <_OpenHarmonySdkRootDir Condition=" '$(OpenHarmonySdkRoot)' != '' ">$([MSBuild]::EnsureTrailingSlash('$(OpenHarmonySdkRoot)'))</_OpenHarmonySdkRootDir>
+      <_OpenHarmonyNdkRootDir Condition=" '$(OHOS_NDK)' != '' ">$([MSBuild]::EnsureTrailingSlash('$(OHOS_NDK)'))</_OpenHarmonyNdkRootDir>
+    </PropertyGroup>
+    <ItemGroup>
+      <_OpenHarmonyLibCxxShared Include="$([System.Environment]::GetEnvironmentVariable('HOME'))/.harmonybrew/Cellar/ohos-sdk/*/native/llvm/lib/$(_OpenHarmonyNativeAbi)/libc++_shared.so" />
+      <_OpenHarmonyLibCxxShared Condition=" '$(_OpenHarmonyNdkRootDir)' != '' and Exists('$(_OpenHarmonyNdkRootDir)llvm/lib/$(_OpenHarmonyNativeAbi)/libc++_shared.so') " Include="$(_OpenHarmonyNdkRootDir)llvm/lib/$(_OpenHarmonyNativeAbi)/libc++_shared.so" />
+      <_OpenHarmonyLibCxxShared Condition=" '$(_OpenHarmonyNdkRootDir)' != '' and Exists('$(_OpenHarmonyNdkRootDir)native/llvm/lib/$(_OpenHarmonyNativeAbi)/libc++_shared.so') " Include="$(_OpenHarmonyNdkRootDir)native/llvm/lib/$(_OpenHarmonyNativeAbi)/libc++_shared.so" />
+      <_OpenHarmonyLibCxxShared Condition=" '$(_OpenHarmonySdkRootDir)' != '' and Exists('$(_OpenHarmonySdkRootDir)native/llvm/lib/$(_OpenHarmonyNativeAbi)/libc++_shared.so') " Include="$(_OpenHarmonySdkRootDir)native/llvm/lib/$(_OpenHarmonyNativeAbi)/libc++_shared.so" />
+      <_OpenHarmonyLibCxxShared Condition=" '$(_OpenHarmonySdkRootDir)' != '' and Exists('$(_OpenHarmonySdkRootDir)llvm/lib/$(_OpenHarmonyNativeAbi)/libc++_shared.so') " Include="$(_OpenHarmonySdkRootDir)llvm/lib/$(_OpenHarmonyNativeAbi)/libc++_shared.so" />
+      <_OpenHarmonyLibCxxShared Condition=" '$(OpenHarmonyLibCxxShared)' != '' " Include="$(OpenHarmonyLibCxxShared)" />
+    </ItemGroup>
+    <Error Condition=" '$(OpenHarmonyLibCxxShared)' != '' and !Exists('$(OpenHarmonyLibCxxShared)') "
+           Text="OpenHarmonyLibCxxShared '$(OpenHarmonyLibCxxShared)' does not exist." />
+    <Error Condition=" '@(_OpenHarmonyLibCxxShared)' == '' "
+           Text="libc++_shared.so was not found; libopenharmonyhost.so requires it at runtime and the hap loader refuses libs/$(OpenHarmonyAbi)/ without it. Set OpenHarmonySdkRoot (or OHOS_SDK_ROOT) or OHOS_NDK to the matching SDK/NDK root, or pass -p:OpenHarmonyLibCxxShared=&lt;path&gt;." />
+    <Copy SourceFiles="@(_OpenHarmonyLibCxxShared)" DestinationFolder="$(_OpenHarmonyHapStageDir)libs/$(OpenHarmonyAbi)/" />
+    <Message Importance="high" Text="OpenHarmony: staged libc++_shared.so from @(_OpenHarmonyLibCxxShared->'%(Identity)', '; ')" />
 
     <!-- app name substitution + the app descriptor read by the ArkTS shell -->
     <PropertyGroup>

@@ -71,6 +71,12 @@ void ohos_host_register_input(void* touch, void* frame);
 /// Registers the managed text-input callback (optional; apps without text input skip it).
 void ohos_host_register_text_input(void* callback);
 
+/// Registers the managed pinch callback (optional; declared here so the definition in
+/// openharmony_host.c gets C linkage even though the file is compiled as C++):
+/// void (*)(int phase, double scale, float x, float y). The managed side requests the
+/// unmangled export name "ohos_host_register_pinch" (OpenHarmonyApp.RegisterPinch).
+void ohos_host_register_pinch(void* callback);
+
 /// Forwards an XComponent touch event to the managed bridge (type: 0=down 1=up 2=move 3=cancel).
 void ohos_host_notify_touch(int type, float x, float y, int pointerCount, int pointerId);
 
