@@ -27,18 +27,43 @@
        Runtime native libraries: the published .NET runtime ships its shared libraries
        (libhostfxr.so, libhostpolicy.so, libcoreclr.so, libclrjit.so, libclrgc/gcexp.so,
        libmscordaccore/dbi.so, libSystem.*.Native.so, ...) in the publish payload, so they
-       travel inside resources/rawfile/dotnet.zip and the ArkTS shell extracts them into the
-       app data directory before start_app. That extracted copy is NOT covered by the HAP
-       code-signing block (SoInfoSegment/fs-verity protects libs/<abi>/** and *.an), and an
+       would travel inside resources/rawfile/dotnet.zip and the ArkTS shell would extract them
+       into the app data directory before start_app. That extracted copy is NOT covered by the
+       HAP code-signing block (SoInfoSegment/fs-verity protects libs/<abi>/** and *.an), and an
        enforcing device (XPM/fs-verity) rejects a dlopen from the data directory. The staging
-       therefore copies every ELF *.so of the publish directory into libs/<abi>/ as well,
-       where the HAP signature covers it; the files stay in dotnet.zip too. The duplication is
-       deliberate: the extracted payload remains a complete self-contained app (hostfxr's
-       app_dir copy is the host's last-resort fallback) at the cost of one extra copy of the
-       runtime library set in the hap (~14 MB for the arm64 demo publish). The set is
-       enumerated from the publish directory at target execution time; non-ELF *.so entries
-       are skipped, an empty ELF set is a hard error, and the staged libs go through the same
-       OpenHarmonyCodesign pass as the host and libc++_shared.so.
+       therefore copies every ELF *.so of the publish directory into libs/<abi>/ and excludes
+       exactly those file names from dotnet.zip (see OpenHarmonyDeterministicZip below), so
+       each runtime ELF ships once, in the directory the HAP signature covers - no unsigned
+       duplicate is left in the extracted payload for the runtime to pick instead
+       (~14 MB saved per arm64 publish).
+
+       Resolution of the libs-only set (measured on the OHOS host, not assumed):
+         * libhostfxr.so: the host loads it from its own signed libs/ directory (dladdr, see
+           openharmony_host.c), so the libs copy is the one used. For a self-contained app
+           hostfxr then expects libhostpolicy.so next to the app config (hostpolicy_resolver.cpp:
+           muxer mode + self-contained -> 'get_directory(app_candidate)'), i.e. in the extracted
+           app dir, and dlopens it by path - hostpolicy therefore needs the bridge below.
+         * libSystem.*.Native.so, libmscordaccore/dbi.so: dlopen'd by name and resolved from
+           the loader's app search path, which contains libs/<abi>/ - with only these files
+           absent from app_dir a self-contained payload still starts and loads them.
+         * libcoreclr.so: hostpolicy builds the path itself, 'file_exists_in_dir(m_app_dir,
+           LIBCORECLR_NAME)' (deps_resolver.cpp; OpenHarmony apps set GenerateDependencyFile=
+           false, so this is the only route). Missing -> 'Could not resolve CoreCLR path'.
+         * libclrjit.so/libclrgc.so: loaded by coreclr from the directory it was loaded from;
+           missing there -> 'Failed to load JIT compiler'.
+         createdump (diagnostics only) is a separate ELF that needs libmscordaccore/dbi next
+         to it; when it cannot find them the dump path degrades, the app is unaffected.
+         Consequence for a device run: the app dir must expose the four names that are resolved
+         by directory (libhostpolicy.so, libcoreclr.so, libclrjit.so, libclrgc/gcexp.so). The
+         shell extracts only what the zip carries, so before the next device round the host has
+         to bridge libs/<abi>/ into the app directory (symlink the signed file under the same
+         name before start_app) or hostpolicy_resolver/deps_resolver need a libs/<abi> lookup.
+         Until that bridge exists a hap built by this target only starts where the app dir
+         still carries those four files (i.e. a payload that was not excluded).
+
+       The set is enumerated from the publish directory at target execution time; non-ELF *.so
+       entries are skipped (and stay in the zip), an empty ELF set is a hard error, and the
+       staged libs go through the same OpenHarmonyCodesign pass as the host and libc++_shared.so.
 
        Payload determinism: resources/rawfile/dotnet.zip is written with a fixed entry order
        (ordinal path sort) and a fixed 1980-01-01 entry timestamp (OpenHarmonyDeterministicZip
@@ -184,17 +209,33 @@
   <!-- Deterministic payload zip: ordinal entry sort and a fixed entry timestamp, so identical
        payload inputs produce identical bytes. Replaces the SDK ZipDirectory task, whose entry
        order follows the file system enumeration and whose entry timestamps follow the source
-       files (both differ between two otherwise identical publishes). -->
+       files (both differ between two otherwise identical publishes). ExcludeFileNames is a
+       ';'-separated list of file names (no directory part): the runtime ELFs the caller staged
+       into libs/<abi>/ are left out so the payload does not carry an unsigned second copy
+       (see "Runtime native libraries" in the file header); everything else, managed .dll/.json
+       assets included, is packed unchanged. ExcludedCount/IncludedCount are reported for the
+       caller's evidence line. -->
   <UsingTask TaskName="OpenHarmonyDeterministicZip"
              TaskFactory="RoslynCodeTaskFactory"
              AssemblyFile="$(MSBuildToolsPath)/Microsoft.Build.Tasks.Core.dll">
     <ParameterGroup>
       <SourceDirectory ParameterType="System.String" Required="true" />
       <DestinationFile ParameterType="System.String" Required="true" />
+      <ExcludeFileNames ParameterType="System.String" />
+      <ExcludedCount ParameterType="System.Int32" Output="true" />
+      <IncludedCount ParameterType="System.Int32" Output="true" />
     </ParameterGroup>
     <Task>
       <Code Type="Fragment" Language="cs"><![CDATA[
         var fixedTime = new System.DateTimeOffset(1980, 1, 1, 0, 0, 0, System.TimeSpan.Zero);
+        var exclude = new System.Collections.Generic.HashSet<string>(System.StringComparer.Ordinal);
+        if (!System.String.IsNullOrEmpty(ExcludeFileNames))
+        {
+            foreach (var name in ExcludeFileNames.Split(new[] { ';' }, System.StringSplitOptions.RemoveEmptyEntries))
+            {
+                exclude.Add(name.Trim());
+            }
+        }
         var files = System.IO.Directory.GetFiles(SourceDirectory, "*", System.IO.SearchOption.AllDirectories);
         System.Array.Sort(files, System.StringComparer.Ordinal);
         System.IO.Directory.CreateDirectory(System.IO.Path.GetDirectoryName(DestinationFile));
@@ -204,6 +245,11 @@
             foreach (var file in files)
             {
                 var entryName = file.Substring(SourceDirectory.Length).TrimStart('/', '\\').Replace('\\', '/');
+                if (exclude.Contains(System.IO.Path.GetFileName(file)))
+                {
+                    ExcludedCount++;
+                    continue;
+                }
                 var entry = archive.CreateEntry(entryName, System.IO.Compression.CompressionLevel.Optimal);
                 entry.LastWriteTime = fixedTime;
                 using (var entryStream = entry.Open())
@@ -211,6 +257,7 @@
                 {
                     fileStream.CopyTo(entryStream);
                 }
+                IncludedCount++;
             }
         }
       ]]></Code>
@@ -505,11 +552,12 @@
     <!-- Runtime native libraries: see "Runtime native libraries" in the file header. The .so
          files of the publish payload are enumerated here, at target execution time (after the
          publish copy repopulated the directory), validated as ELF and staged next to the host
-         and libc++_shared.so BEFORE the codesign pass below, so the HAP signature block
-         covers them (XPM/fs-verity accepts only libs/<abi>/** in an enforcing app process).
-         They deliberately stay in resources/rawfile/dotnet.zip too: the extracted payload is
-         the complete self-contained app and the host falls back to its app_dir copy when a
-         libs/ copy is unavailable. The staged names are reported with the duplicated size. -->
+         and libc++_shared.so BEFORE the codesign pass below, so the HAP signature block covers
+         them (XPM/fs-verity accepts only libs/<abi>/** in an enforcing app process).
+         The staged names are the exclusion set of the payload zip below: the runtime ELFs
+         travel only in libs/<abi>/ (the same file names are skipped by name, so a nested copy
+         would be skipped as well). The size/name report is the packaging evidence; the
+         resolution constraints behind the exclusion are recorded in the file header. -->
     <PropertyGroup>
       <_OpenHarmonyRuntimePublishDir>$([MSBuild]::NormalizeDirectory('$(MSBuildProjectDirectory)', '$(PublishDir)'))</_OpenHarmonyRuntimePublishDir>
     </PropertyGroup>
@@ -526,7 +574,7 @@
     <Error Condition=" '$(_OpenHarmonyStagedRuntimeLibCount)' == '0' or '$(_OpenHarmonyStagedRuntimeLibCount)' == '' "
            Text="OpenHarmony: no ELF runtime library (*.so) found in the publish payload ('$(_OpenHarmonyRuntimePublishDir)') to stage into libs/$(OpenHarmonyAbi)/; the hap would not carry the .NET runtime libraries the HAP signature has to cover." />
     <Message Importance="high" Condition=" '$(_OpenHarmonyStagedRuntimeLibCount)' != '0' "
-             Text="OpenHarmony: staged $(_OpenHarmonyStagedRuntimeLibCount) runtime native libraries ($([MSBuild]::Divide($(_OpenHarmonyStagedRuntimeLibBytes), 1048576)) MB, also kept in dotnet.zip) into libs/$(OpenHarmonyAbi)/: @(_OpenHarmonyStagedRuntimeLib->'%(Filename)%(Extension)', ' ')" />
+             Text="OpenHarmony: staged $(_OpenHarmonyStagedRuntimeLibCount) runtime native libraries ($([MSBuild]::Divide($(_OpenHarmonyStagedRuntimeLibBytes), 1048576)) MB, excluded from dotnet.zip) into libs/$(OpenHarmonyAbi)/: @(_OpenHarmonyStagedRuntimeLib->'%(Filename)%(Extension)', ' ')" />
 
     <!-- The copied lib may carry a vendor .codesign that is not the ElfSigner format the device
          loader requires (the HarmonyOS SDK's libc++_shared.so ships a PKCS#7 Huawei DevID blob
@@ -560,10 +608,19 @@
 
     <!-- The published .NET app becomes the hap payload, written with a fixed entry order and
          timestamp (see "Payload determinism" in the header). PublishDir is normalized against
-         the project directory because the inline zip task has no MSBuild path resolution. -->
+         the project directory because the inline zip task has no MSBuild path resolution.
+         The runtime native libraries staged into libs/<abi>/ above are passed as the exclusion
+         set, so the payload keeps every managed .dll/.json asset but no unsigned duplicate of
+         a signed runtime ELF (see "Runtime native libraries" in the header for the resolution
+         constraints this implies). -->
     <OpenHarmonyDeterministicZip
         SourceDirectory="$([MSBuild]::NormalizeDirectory('$(MSBuildProjectDirectory)', '$(PublishDir)'))"
-        DestinationFile="$(_OpenHarmonyHapStageDir)resources/rawfile/dotnet.zip" />
+        DestinationFile="$(_OpenHarmonyHapStageDir)resources/rawfile/dotnet.zip"
+        ExcludeFileNames="@(_OpenHarmonyStagedRuntimeLib->'%(Filename)%(Extension)')">
+      <Output TaskParameter="ExcludedCount" PropertyName="_OpenHarmonyPayloadZipExcluded" />
+      <Output TaskParameter="IncludedCount" PropertyName="_OpenHarmonyPayloadZipIncluded" />
+    </OpenHarmonyDeterministicZip>
+    <Message Importance="high" Text="OpenHarmony: dotnet.zip carries $(_OpenHarmonyPayloadZipIncluded) payload entries and excludes $(_OpenHarmonyPayloadZipExcluded) runtime native libraries that ship in libs/$(OpenHarmonyAbi)/ only" />
     <Message Importance="high" Text="OpenHarmony: staged .hap payload at $(_OpenHarmonyHapStageDir)" />
   </Target>
 
