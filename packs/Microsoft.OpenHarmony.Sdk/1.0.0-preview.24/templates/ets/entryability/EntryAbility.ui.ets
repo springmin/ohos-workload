@@ -13,6 +13,7 @@ import host from 'libopenharmonyhost.so';
 
 const DOMAIN = 0x0002;
 const TAG = 'OHOS_DOTNET';
+const LIFECYCLE_CREATE = 0;
 const LIFECYCLE_FOREGROUND = 2;
 const LIFECYCLE_BACKGROUND = 3;
 const LIFECYCLE_DESTROY = 1;
@@ -53,6 +54,12 @@ export default class EntryAbility extends UIAbility {
   }
 
   onCreate(want: Want, launchParam: AbilityConstant.LaunchParam): void {
+    // 0 = create: the ability now exists. The native host queues lifecycle events that arrive
+    // before the managed app is up, so sending it here makes Created/Activated (and the page's
+    // Foreground on first appearance) reach the managed window in order.
+    this.hostCall('notifyLifecycle', typeof host !== 'undefined' && typeof host.notifyLifecycle === 'function', (): void => {
+      host.notifyLifecycle(LIFECYCLE_CREATE);
+    });
     this.bootstrap().catch((error: Error) => {
       hilog.error(DOMAIN, TAG, 'bootstrap failed: %{public}s', error.message);
     });

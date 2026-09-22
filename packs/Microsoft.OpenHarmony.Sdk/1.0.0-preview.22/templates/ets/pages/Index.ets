@@ -1638,6 +1638,12 @@ struct Index {
   }
 
   aboutToAppear(): void {
+    // 0 = create: the ability exists by the time the page appears. The native host queues
+    // lifecycle events that arrive before the managed app is up, so sending it before the
+    // Foreground event below makes the managed window's Created/Activated precede Resumed.
+    this.hostCall('notifyLifecycle', typeof host !== 'undefined' && typeof host.notifyLifecycle === 'function', (): void => {
+      host.notifyLifecycle(0);
+    });
     // 2 = foreground; the native host forwards it to the managed bridge.
     this.hostCall('notifyLifecycle', typeof host !== 'undefined' && typeof host.notifyLifecycle === 'function', (): void => {
       host.notifyLifecycle(2);
