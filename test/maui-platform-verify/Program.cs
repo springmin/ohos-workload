@@ -2711,10 +2711,11 @@ if (!v8NapiTableOk)
 // no-op instead of throwing at page start.
 string? v8ShellPath24 = FindHostSource("packs/Microsoft.OpenHarmony.Sdk/1.0.0-preview.24/templates/ets/pages/Index.ets");
 string v8Shell24 = v8ShellPath24 is null ? string.Empty : File.ReadAllText(v8ShellPath24);
+bool v8ShellHostGuard = v8Shell24.Contains("typeof host !== 'undefined' && typeof host.setAppContext !== 'function'");
 bool v8ShellMethodOk = v8Shell24.Contains("private publishAppContext(): void {") &&
-    v8Shell24.Contains("if (typeof host.setAppContext !== 'function') {") &&
+    v8ShellHostGuard &&
     v8Shell24.Contains("} catch (contextError) {");
-Console.WriteLine($"[verify] v8 shell publish method method={v8Shell24.Contains("private publishAppContext(): void {")} typeofGuard={v8Shell24.Contains("if (typeof host.setAppContext !== 'function') {")} guarded={v8Shell24.Contains("} catch (contextError) {")} source='{v8ShellPath24 ?? "<missing>"}' assert={v8ShellMethodOk}");
+Console.WriteLine($"[verify] v8 shell publish method method={v8Shell24.Contains("private publishAppContext(): void {")} typeofGuard={v8ShellHostGuard} guarded={v8Shell24.Contains("} catch (contextError) {")} source='{v8ShellPath24 ?? "<missing>"}' assert={v8ShellMethodOk}");
 if (!v8ShellMethodOk)
 {
     throw new InvalidOperationException("the shell template's guarded publishAppContext method is missing");
@@ -2777,6 +2778,7 @@ foreach (string v8PackVersion in v8ShellPackVersions)
     string? v8PackPath = FindHostSource($"packs/Microsoft.OpenHarmony.Sdk/{v8PackVersion}/templates/ets/pages/Index.ets");
     string v8PackShell = v8PackPath is null ? string.Empty : File.ReadAllText(v8PackPath);
     v8ShellPacksPresent += v8PackShell.Contains("private publishAppContext(): void {") &&
+        v8PackShell.Contains("typeof host !== 'undefined' && typeof host.setAppContext !== 'function'") &&
         v8PackShell.Contains("this.publishAppContext();") ? 1 : 0;
 }
 bool v8ShellPacksOk = v8ShellPacksPresent == v8ShellPackVersions.Length;
@@ -3337,7 +3339,7 @@ bool b1PermissionNapi = s2Napi.Contains("HostSink g_permission_sink(\"permission
     s2Napi.Contains("ohos_host_permission_set_listener(OnPermissionRequest);") &&
     s2Napi.Contains("ohos_host_permission_complete(requestId, granted);") &&
     s2Napi.Contains("\"registerPermissionSink\"") && s2Napi.Contains("\"permissionResult\"");
-bool b1PermissionShell = b1Shell.Contains("this.hostCall('registerPermissionSink', typeof host.registerPermissionSink === 'function'") &&
+bool b1PermissionShell = b1Shell.Contains("this.hostCall('registerPermissionSink', typeof host !== 'undefined' && typeof host.registerPermissionSink === 'function'") &&
     b1Shell.Contains("host.registerPermissionSink(async (permission: string, requestId: number): Promise<void>") &&
     b1Shell.Contains("const permissions: Permissions[] = [permission as Permissions];") &&
     b1Shell.Contains("atManager.requestPermissionsFromUser(context, permissions)") &&
@@ -3426,7 +3428,7 @@ bool b1ClipboardNapi = s2Napi.Contains("HostSink g_clipboard_sink(\"clipboard\",
     s2Napi.Contains("\"registerClipboardSink\"") && s2Napi.Contains("\"clipboardResult\"") &&
     s2Napi.Contains("\"notifyClipboardChanged\"");
 bool b1ClipboardShell = b1Shell.Contains("import pasteboard from '@ohos.pasteboard';") &&
-    b1Shell.Contains("this.hostCall('registerClipboardSink', typeof host.registerClipboardSink === 'function'") &&
+    b1Shell.Contains("this.hostCall('registerClipboardSink', typeof host !== 'undefined' && typeof host.registerClipboardSink === 'function'") &&
     b1Shell.Contains("host.registerClipboardSink(async (requestId: number, op: number, text: string): Promise<void>") &&
     b1Shell.Contains("systemPasteboard.setDataSync(pasteboard.createPlainTextData(text));") &&
     b1Shell.Contains("host.clipboardResult(requestId, rc, value);") &&
@@ -3878,7 +3880,7 @@ bool b2ScreenshotManaged = b2ScreenshotImport is not null &&
 bool b2ScreenshotNative = s2Napi.Contains("extern \"C\" int ohos_host_screenshot(const char* out_path)") &&
     s2Napi.Contains("HostSink g_screenshot_sink(\"screenshot\", false);") &&
     hSource?.Contains("int ohos_host_screenshot(const char* out_path);") == true;
-bool b2ScreenshotShell = b1Shell.Contains("this.hostCall('registerScreenshotSink', typeof host.registerScreenshotSink === 'function'") &&
+bool b2ScreenshotShell = b1Shell.Contains("this.hostCall('registerScreenshotSink', typeof host !== 'undefined' && typeof host.registerScreenshotSink === 'function'") &&
     b1Shell.Contains("host.registerScreenshotSink(async (outPath: string): Promise<void>") &&
     b1Shell.Contains("const pixelMap = await win.snapshot();") &&
     b1Shell.Contains("await packer.packToFile(pixelMap, file.fd, { format: 'image/png', quality: 100 });");
@@ -3919,9 +3921,9 @@ bool b2GeocodeNapi = s2Napi.Contains("HostSink g_geocode_sink(\"geocode\", false
     s2Napi.Contains("ohos_host_geocode_set_listener(OnGeocodeRequest);") &&
     s2Napi.Contains("ohos_host_geocode_complete(requestId, rc, json.c_str());") &&
     s2Napi.Contains("\"registerGeocodeSink\"") && s2Napi.Contains("\"geocodeResult\"");
-bool b2GeocodeShell = b1Shell.Contains("this.hostCall('registerGeocodeSink', typeof host.registerGeocodeSink === 'function'") &&
+bool b2GeocodeShell = b1Shell.Contains("this.hostCall('registerGeocodeSink', typeof host !== 'undefined' && typeof host.registerGeocodeSink === 'function'") &&
     b1Shell.Contains("host.registerGeocodeSink(async (requestId: number, op: number, arg: string): Promise<void>") &&
-    b1Shell.Contains("this.hostCall('geocodeResult', typeof host.geocodeResult === 'function'") &&
+    b1Shell.Contains("this.hostCall('geocodeResult', typeof host !== 'undefined' && typeof host.geocodeResult === 'function'") &&
     b1Shell.Contains("host.geocodeResult(requestId, rc, json);") &&
     b1Shell.Contains("const query = JSON.parse(arg) as GeocodeAddressQuery;") &&
     b1Shell.Contains("geo.default.getAddressesFromLocationName(request)") &&
