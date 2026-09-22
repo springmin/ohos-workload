@@ -27,9 +27,17 @@
 #      `--tree-digest` prints the digest, for an out-of-band comparison.
 #
 # The tree digest is a sha256 over the sorted kit contents: one "<file sha256>  <relative
-# path>" line per regular file (SHA256SUMS and this script included), hashed again. It is
-# deterministic (independent of mtimes and filesystem order); it catches a tampered
-# extraction whose internal SHA256SUMS was regenerated to match.
+# path>" line per regular file (SHA256SUMS and this script included), LC_ALL=C sorted by
+# relative path and hashed again. The only inputs are the relative path bytes and the file
+# contents: modes, mtimes, owners and directory entries are never read, so an extraction
+# that drops modes/owners (Windows tar, python tarfile, a different umask) still matches.
+# Transport leftovers of the kit itself are not kit content: a root-level archive
+# (*.tar.gz/*.tgz/*.tar/*.tar.bz2/*.tar.xz/*.zip/*.7z) and its checksum sidecar
+# (*.sha256/*.sha1/*.md5/*.sha512) are skipped (and named on stderr), so the common Windows
+# "extract in place" layout (kit files + device-test-kit.tar.gz + .sha256 in one folder)
+# yields the same digest as a clean extraction. Any other file added to the tree (e.g. a
+# .DS_Store/Thumbs.db written by the extraction tool) does change the digest, by design:
+# the digest binds the exact content tree, not a subset of it.
 #
 # --anchor only checks the .tar.gz file itself; it does NOT bind the extracted tree (the
 # extraction happens outside this script), so it cannot catch a tampered extraction.
@@ -50,14 +58,24 @@ warn() { printf '[%s] WARN: %s\n' "$(date '+%H:%M:%S')" "$*" >&2; }
 
 # Deterministic digest of the extracted kit contents: every regular file under the kit root
 # (SHA256SUMS and this script included) contributes one "<file sha256>  <relative path>"
-# line, the lines are LC_ALL=C sorted, and the whole block is sha256'd. Independent of
-# mtimes and filesystem order, so publisher and tester compute the same value.
+# line; only the relative path bytes and the file contents are inputs (LC_ALL=C byte sort,
+# no modes/mtimes/owners/directory entries). Root-level transport leftovers of this kit
+# (the outer .tar.gz/.tgz/.tar/.zip archive and its checksum sidecar) are skipped and named
+# on stderr, so extracting the tarball in place still matches a clean extraction. Any other
+# added file (.DS_Store/Thumbs.db/...) changes the digest. Publisher and tester run this
+# same code, so identical path+content bytes produce the identical value anywhere.
 tree_digest() {
     (
         cd "$KIT" || exit 1
         LC_ALL=C
         export LC_ALL
         find . -type f -print | sed 's|^\./||' | LC_ALL=C sort | while IFS= read -r _rel; do
+            case "$_rel" in
+                */*) ;;  # only files directly in the kit root can be transport leftovers
+                *.tar.gz|*.tgz|*.tar|*.tar.bz2|*.tar.xz|*.zip|*.7z|*.sha256|*.sha1|*.md5|*.sha512)
+                    log "   忽略包外传输文件（不计入 tree digest）: $_rel" >&2
+                    continue ;;
+            esac
             printf '%s  %s\n' "$(sha256sum -- "$_rel" | cut -d' ' -f1)" "$_rel"
         done
     ) | sha256sum | cut -d' ' -f1
@@ -76,7 +94,9 @@ Without an argument the current directory is used (it must contain SHA256SUMS).
   --anchor-file <path>  the outer tarball used by --anchor (default: <kit-dir>.tar.gz);
                         without --anchor, the adjacent <path>.sha256 is read
   --tree-digest         print the sha256 of the extracted kit contents (sorted relative
-                        paths + per-file sha256) to compare with the published value
+                        paths + per-file sha256) to compare with the published value; a
+                        root-level transport archive/sidecar (.tar.gz/.tgz/.tar/.zip/
+                        .sha256/...) is ignored, other added files are not
   --expect-tree-digest <hex>
                         fail unless the extracted tree matches this digest (the value comes
                         with the delivery, e.g. the release notes)

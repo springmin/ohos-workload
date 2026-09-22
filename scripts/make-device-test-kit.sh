@@ -75,7 +75,10 @@
 # sha256 of the assembled kit) is printed here and passed to --publish as
 # --kit-tree-digest, so the kit release notes can carry the value a tester binds with
 # `sh verify-kit.sh --expect-tree-digest <hex>`. The tarball checksum alone binds only the
-# .tar.gz file, not the extracted directory.
+# .tar.gz file, not the extracted directory. The digest reads only relative paths + file
+# contents (no modes/mtimes/owners) and ignores the kit's root-level transport archive and
+# checksum sidecar, so a tester who extracts the tarball in place next to it computes the
+# same value as this build did on the clean kit directory.
 set -e
 
 log()  { printf '[%s] %s\n' "$(date '+%H:%M:%S')" "$*"; }
