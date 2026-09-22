@@ -27,6 +27,10 @@
 
   <Import Project="$(MSBuildThisFileDirectory)../targets/OpenHarmony.Hap.targets" Condition=" '$(TargetPlatformIdentifier)' == 'openharmony' " />
 
+  <!-- Runtime packs are arm64-only by design: OpenHarmony devices are arm64-v8a, the released
+       BCL pack is Microsoft.NETCore.App.Runtime.openharmony-arm64, and there is no
+       openharmony-x64 platform pack. Widen both RuntimePackRuntimeIdentifiers lists below
+       together once an x64 runtime pack is published. -->
   <ItemGroup Condition=" '$(TargetPlatformIdentifier)' == 'openharmony' ">
     <SdkSupportedTargetPlatformIdentifier Include="openharmony" DisplayName="OpenHarmony" />
     <!-- The installed SDK's bundled RID list predates the openharmony rename; the platform
