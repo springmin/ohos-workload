@@ -12,10 +12,10 @@ name: interaction-regression
 #
 # verify.csproj turns those environment variables into MSBuild default properties (an explicit
 # -p: override still wins), so no other configuration is required. The job fails unless the suite
-# exits 0, reports at least 268 "[verify]" lines (288 total: 275 interaction checks - including
-# the ten late-app-context HybridWebView assertions and the eighteen V8 app-context publish
-# assertions - plus 4 fuzz lines, the frame-path perf line and the 8 accessibility publish-path
-# perf lines),
+# exits 0, reports at least 277 "[verify]" lines (297 total: 284 interaction checks - including
+# the ten late-app-context HybridWebView assertions, the eighteen V8 app-context publish
+# assertions and the nine audit-batch-2 source contracts - plus 4 fuzz lines, the frame-path perf
+# line and the 8 accessibility publish-path perf lines),
 # logs no "Unhandled" line, and both perf lines carry the "within=True" budget marker:
 #   * the frame-path gate - 200 timed OpenHarmonyWindowRenderer.Render frames over a fixed 401-node
 #     tree: average <= 20 ms, max <= 250 ms, max/average <= 100x;
@@ -30,7 +30,7 @@ on:
         description: 'maui-ohos commit SHA to compile (defaults to the pinned feature/openharmony tip)'
         required: false
         type: string
-        default: 'c4ac6a5e8c0ed4f2138a7b5d06faf8b92940bdb3'
+        default: '8430ac0614552545c68c9cc80d1add7cdd476440'
   push:
     branches: [ master ]
 
@@ -42,12 +42,12 @@ permissions:
 # Reproducible cross-repo compile: the MAUI slice is checked out at an exact commit, not the
 # mutable feature/openharmony branch, so a push to the fork cannot change what this gate compiles.
 # The default is the feature/openharmony tip verified with
-# `git ls-remote https://github.com/springmin/maui-ohos feature/openharmony` on 2026-09-22
-# (c4ac6a5e, the BLE-GATT/settings/application/list-extras tip; the 288-check suite's
-# shell-search/flyout/window/list pins still hold at this commit); advance it
-# deliberately (workflow_dispatch can compile any other commit SHA).
+# `git ls-remote https://github.com/springmin/maui-ohos feature/openharmony` during the run
+# (8430ac06, the PJ1/PJ2 tip: animation loop/scroll physics/scrollbars/focus ring plus the
+# tooltip/accelerator managers; the 297-line suite's BLE-GATT/settings/lifecycle/list-extras
+# pins hold at this commit); advance it deliberately (workflow_dispatch can compile any commit).
 env:
-  MAUI_OHOS_REF: ${{ github.event.inputs.maui_ohos_ref || 'c4ac6a5e8c0ed4f2138a7b5d06faf8b92940bdb3' }}
+  MAUI_OHOS_REF: ${{ github.event.inputs.maui_ohos_ref || '8430ac0614552545c68c9cc80d1add7cdd476440' }}
 
 jobs:
   interaction:
@@ -86,8 +86,8 @@ jobs:
           cat out.txt
           checks=$(grep -c '\[verify\]' out.txt || true)
           echo "interaction checks reported: $checks"
-          if [ "$checks" -lt 268 ]; then
-            echo "::error::expected at least 268 [verify] lines, got $checks"
+          if [ "$checks" -lt 277 ]; then
+            echo "::error::expected at least 277 [verify] lines, got $checks"
             exit 1
           fi
           if grep -q Unhandled out.txt; then

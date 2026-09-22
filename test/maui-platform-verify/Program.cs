@@ -4226,6 +4226,434 @@ if (!n9SinksOk)
         $"notify={n9SearchNotify} apply={n9WindowApply} identical={b1ShellIdentical}");
 }
 
+// ---- Audit batch 2 pins: BLE/lifecycle/list extras/settings/webauth/soft-input/PE2/PJ ----------
+// The post-PG2 audit found nine shipped surfaces with zero source-contract coverage, so a slice
+// refactor could change them between pack builds without failing this run. Each pin below parses
+// the committed sources (the same style as the audit pins above): the BLE GATT bridge, the
+// IApplication handler and the Created/Activated ordering, the CollectionView extras and the
+// shared materializer, the settings/bundle/PostNotifications bridges, the WebAuthenticator
+// degrade, the soft-input inset + ConnectionProfiles push, the PE2 focus/key files, the Shell
+// TitleView/toolbar chrome, and the PJ1/PJ2 frame-loop managers (animation loop, scroll physics,
+// scrollbars, focus ring, tooltip and keyboard-accelerator managers).
+
+string ShellSource(string version) =>
+    FindHostSource($"packs/Microsoft.OpenHarmony.Sdk/{version}/templates/ets/pages/Index.ets") is { } shellPath
+        ? File.ReadAllText(shellPath)
+        : string.Empty;
+
+// Audit2-1: BLE GATT (platform extra). The managed side declares the request/result/event
+// P/Invokes plus the two callback delegates (ACCESS_BLUETOOTH probe), the shared header declares
+// and the NAPI layer implements the five exports (sink post, result/event dispatch, module-table
+// names), and all three shell templates register the sink (requesting ACCESS_BLUETOOTH with the
+// on-demand Connectivity Kit import) and answer through notifyBluetoothGattResult/Event.
+string? n10GattPath = FindHostSource("OpenHarmonyBluetoothGatt.cs");
+string n10Gatt = n10GattPath is null ? string.Empty : File.ReadAllText(n10GattPath);
+bool n10ManagedOk = n10Gatt.Contains("[DllImport(HostLibrary, EntryPoint = \"ohos_host_bluetooth_gatt_request\", CharSet = CharSet.Ansi)]") &&
+    n10Gatt.Contains("private static extern int BluetoothGattRequest(int requestId, int op, string payload);") &&
+    n10Gatt.Contains("[DllImport(HostLibrary, EntryPoint = \"ohos_host_bluetooth_gatt_register_result\")]") &&
+    n10Gatt.Contains("private static extern void BluetoothGattRegisterResult(IntPtr callback);") &&
+    n10Gatt.Contains("[DllImport(HostLibrary, EntryPoint = \"ohos_host_bluetooth_gatt_register_event\")]") &&
+    n10Gatt.Contains("private static extern void BluetoothGattRegisterEvent(IntPtr callback);") &&
+    n10Gatt.Contains("private delegate void GattResultCallback(int requestId, int code, IntPtr payloadUtf8);") &&
+    n10Gatt.Contains("private delegate void GattEventCallback(IntPtr payloadUtf8);") &&
+    n10Gatt.Contains("OpenHarmonyBridge.CheckSelfPermission(\"ohos.permission.ACCESS_BLUETOOTH\")");
+bool n10HeaderOk = hSource?.Contains("int ohos_host_bluetooth_gatt_request(int request_id, int op, const char* payload);") == true &&
+    hSource.Contains("void ohos_host_bluetooth_gatt_register_result(void* callback);") &&
+    hSource.Contains("void ohos_host_bluetooth_gatt_result(int request_id, int code, const char* payload);") &&
+    hSource.Contains("void ohos_host_bluetooth_gatt_register_event(void* callback);") &&
+    hSource.Contains("void ohos_host_bluetooth_gatt_event(const char* payload);");
+bool n10HostOk = s2Napi.Contains("extern \"C\" int ohos_host_bluetooth_gatt_request(int request_id, int op, const char* payload) {") &&
+    s2Napi.Contains("if (!HostSinkPost(g_bluetooth_gatt_sink, call)) {") &&
+    s2Napi.Contains("extern \"C\" void ohos_host_bluetooth_gatt_result(int request_id, int code, const char* payload) {") &&
+    s2Napi.Contains("extern \"C\" void ohos_host_bluetooth_gatt_event(const char* payload) {") &&
+    s2Napi.Contains("\"registerBluetoothGattSink\"") &&
+    s2Napi.Contains("\"notifyBluetoothGattResult\"") &&
+    s2Napi.Contains("\"notifyBluetoothGattEvent\"");
+bool n10ShellOk = true;
+foreach (string n10Version in b3ShellVersions)
+{
+    string n10Shell = ShellSource(n10Version);
+    n10ShellOk &= n10Shell.Contains("this.hostCall('registerBluetoothGattSink', typeof host !== 'undefined' && typeof host.registerBluetoothGattSink === 'function', (): void => {") &&
+        n10Shell.Contains("host.registerBluetoothGattSink(async (requestId: number, op: number, payload: string): Promise<void> => {") &&
+        n10Shell.Contains("const permissions: Permissions[] = ['ohos.permission.ACCESS_BLUETOOTH'];") &&
+        n10Shell.Contains("host.notifyBluetoothGattResult(requestId, code, payload);") &&
+        n10Shell.Contains("host.notifyBluetoothGattEvent(`mtu\\t${this.escapeRecordField(address)}\\t${mtu}`);");
+}
+bool n10GattOk = n10ManagedOk && n10HeaderOk && n10HostOk && n10ShellOk;
+Console.WriteLine($"[verify] audit2 ble gatt managed={n10ManagedOk} header={n10HeaderOk} host={n10HostOk} shell={n10ShellOk} source='{n10GattPath ?? "<missing>"}' assert={n10GattOk}");
+if (!n10GattOk)
+{
+    throw new InvalidOperationException(
+        $"the BLE GATT contract drifted: managed={n10ManagedOk} header={n10HeaderOk} host={n10HostOk} shell={n10ShellOk}");
+}
+
+// Audit2-2: IApplication/lifecycle. The slice handler is the IApplication ElementHandler with
+// the four command-mapper entries and the single-surface window semantics; the app host raises
+// IWindow.Created before IWindow.Activated for the platform Create event (and Created from Run
+// when the event arrived first) with the once-guards; the hosting enum numbers the platform
+// events (Create=0, Destroy=1, Foreground=2, Background=3); and the shell templates send the
+// Foreground lifecycle (2) from aboutToAppear. NOTE: the Create=0 send is the PI1 follow-up and
+// is reported (createSend) but not required yet - pin what exists.
+string? n11HandlerPath = FindHostSource("OpenHarmonyApplicationHandler.cs");
+string n11Handler = n11HandlerPath is null ? string.Empty : File.ReadAllText(n11HandlerPath);
+string? n11AppHostPath = FindHostSource("OpenHarmonyMauiAppHost.cs");
+string n11AppHost = n11AppHostPath is null ? string.Empty : File.ReadAllText(n11AppHostPath);
+string? n11HostingPath = FindHostSource("src/Microsoft.OpenHarmony.Hosting/OpenHarmonyApp.cs");
+string n11Hosting = n11HostingPath is null ? string.Empty : File.ReadAllText(n11HostingPath);
+bool n11HandlerOk = n11Handler.Contains("public sealed class OpenHarmonyApplicationHandler : ElementHandler<IApplication, OpenHarmonyPlatformApplication>") &&
+    n11Handler.Contains("[TerminateCommandKey] = MapTerminate,") &&
+    n11Handler.Contains("[nameof(IApplication.OpenWindow)] = MapOpenWindow,") &&
+    n11Handler.Contains("[nameof(IApplication.CloseWindow)] = MapCloseWindow,") &&
+    n11Handler.Contains("[nameof(IApplication.ActivateWindow)] = MapActivateWindow,") &&
+    n11Handler.Contains("window.Activated();");
+int n11CreateAt = n11AppHost.IndexOf("case OpenHarmonyLifecycleEvent.Create:", StringComparison.Ordinal);
+int n11CreatedAt = n11CreateAt < 0 ? -1 : n11AppHost.IndexOf("EnsureWindowCreated();", n11CreateAt, StringComparison.Ordinal);
+int n11ActivatedAt = n11CreatedAt < 0 ? -1 : n11AppHost.IndexOf("EnsureWindowActivated();", n11CreatedAt, StringComparison.Ordinal);
+bool n11OrderOk = n11CreateAt >= 0 && n11CreatedAt > n11CreateAt && n11ActivatedAt > n11CreatedAt &&
+    n11AppHost.Contains("EnsureWindowCreated();\n        _dirty = true;") &&
+    n11AppHost.Contains("private void EnsureWindowCreated()") &&
+    n11AppHost.Contains("_created = true;\n        _window.Created();") &&
+    n11AppHost.Contains("private void EnsureWindowActivated()") &&
+    n11AppHost.Contains("_activated = true;\n        _window.Activated();") &&
+    n11AppHost.Contains("_window?.Resumed();") &&
+    n11AppHost.Contains("_window?.Stopped();") &&
+    n11AppHost.Contains("_window?.Destroying();");
+bool n11HostingOk = n11Hosting.Contains("Create = 0,") &&
+    n11Hosting.Contains("Destroy = 1,") &&
+    n11Hosting.Contains("Foreground = 2,") &&
+    n11Hosting.Contains("Background = 3,");
+bool n11ShellOk = true;
+bool n11CreateSend = false;
+foreach (string n11Version in b3ShellVersions)
+{
+    string n11Shell = ShellSource(n11Version);
+    n11ShellOk &= n11Shell.Contains("this.hostCall('notifyLifecycle', typeof host !== 'undefined' && typeof host.notifyLifecycle === 'function', (): void => {") &&
+        n11Shell.Contains("host.notifyLifecycle(2);");
+    n11CreateSend |= n11Shell.Contains("host.notifyLifecycle(0);");
+}
+bool n11LifecycleOk = n11HandlerOk && n11OrderOk && n11HostingOk && n11ShellOk;
+Console.WriteLine($"[verify] audit2 lifecycle handler={n11HandlerOk} createdBeforeActivated={n11OrderOk} enum={n11HostingOk} shellForeground={n11ShellOk} createSend={n11CreateSend} source='{n11AppHostPath ?? "<missing>"}' assert={n11LifecycleOk}");
+if (!n11LifecycleOk)
+{
+    throw new InvalidOperationException(
+        $"the IApplication/lifecycle contract drifted: handler={n11HandlerOk} order={n11OrderOk} enum={n11HostingOk} shell={n11ShellOk}");
+}
+
+// Audit2-3: CollectionView extras. The handler maps EmptyView/EmptyViewTemplate, Header/Footer,
+// SelectedItems/SelectionMode and RemainingItemsThreshold, subscribes ScrollToRequested, and the
+// shared materializer builds header/footer/EmptyView rows, tracks groups for ScrollTo and reports
+// the last visible item for the threshold; multiple selection reads SelectedItems.
+string? n12ListPath = FindHostSource("OpenHarmonyCollectionViewHandler.cs");
+string n12List = n12ListPath is null ? string.Empty : File.ReadAllText(n12ListPath);
+string? n12MatPath = FindHostSource("OpenHarmonyItemListMaterializer.cs");
+string n12Mat = n12MatPath is null ? string.Empty : File.ReadAllText(n12MatPath);
+bool n12MapsOk = n12List.Contains("[nameof(ItemsView.EmptyView)] = MapEmptyView,") &&
+    n12List.Contains("[nameof(ItemsView.EmptyViewTemplate)] = MapEmptyView,") &&
+    n12List.Contains("[nameof(StructuredItemsView.Header)] = MapHeaderFooter,") &&
+    n12List.Contains("[nameof(StructuredItemsView.Footer)] = MapHeaderFooter,") &&
+    n12List.Contains("[nameof(SelectableItemsView.SelectedItems)] = MapSelectedItems,") &&
+    n12List.Contains("[nameof(SelectableItemsView.SelectionMode)] = MapSelectionMode,") &&
+    n12List.Contains("[nameof(ItemsView.RemainingItemsThreshold)] = MapRemainingItemsThreshold,") &&
+    n12List.Contains("collection.ScrollToRequested += OnScrollToRequested;");
+bool n12ExtrasOk = n12List.Contains("emptyViewFactory = CreateEmptyView,") &&
+    n12List.Contains("private View? CreateListHeader()") &&
+    n12List.Contains("private View? CreateListFooter()") &&
+    n12List.Contains("case SelectionMode.Multiple:") &&
+    n12List.Contains("collectionView.SelectedItems?.Contains(context) == true") &&
+    n12List.Contains("collection.SendRemainingItemsThresholdReached();");
+bool n12ScrollOk = n12List.Contains("private void OnScrollToRequested(object? sender, ScrollToRequestEventArgs args)") &&
+    n12List.Contains("materializer.RowForGroupItemIndex(args.GroupIndex, args.Index)") &&
+    n12List.Contains("materializer.ScrollTo(row, args.ScrollToPosition);") &&
+    n12Mat.Contains("internal sealed class OpenHarmonyItemListMaterializer") &&
+    n12Mat.Contains("public Func<View?>? listHeaderFactory;") &&
+    n12Mat.Contains("public Func<View?>? listFooterFactory;") &&
+    n12Mat.Contains("public Func<View?>? emptyViewFactory;") &&
+    n12Mat.Contains("public void ScrollTo(int row, ScrollToPosition position)") &&
+    n12Mat.Contains("public int RowForGroupItemIndex(int groupIndex, int itemIndex)");
+bool n12WindowOk = n12Mat.Contains("public double TotalHeight => _headerHeight + RowCount * SlotHeight + _footerHeight;") &&
+    n12Mat.Contains("public bool HasGroups => _groups.Count > 0;") &&
+    n12Mat.Contains("public double EmptyHeight => _emptyHeight;") &&
+    n12Mat.Contains("public int LastVisibleItemIndex");
+bool n12ListExtrasOk = n12MapsOk && n12ExtrasOk && n12ScrollOk && n12WindowOk;
+Console.WriteLine($"[verify] audit2 listextras maps={n12MapsOk} extras={n12ExtrasOk} scrollto={n12ScrollOk} window={n12WindowOk} source='{n12MatPath ?? "<missing>"}' assert={n12ListExtrasOk}");
+if (!n12ListExtrasOk)
+{
+    throw new InvalidOperationException(
+        $"the CollectionView extras contract drifted: maps={n12MapsOk} extras={n12ExtrasOk} scrollto={n12ScrollOk} window={n12WindowOk}");
+}
+
+// Audit2-4: settings/bundle/PostNotifications. AppInfo opens the settings app through the shared
+// ability-start kind 4 (uri = bundle name, text = ability name) and reads the HAP's bundle
+// metadata from the host's ohos_host_get_bundle_* getters (the shell publishes it once through
+// host.setBundleInfo); Permissions.PostNotifications rides its own enablement bridge
+// (notification_permission_request/register_result, shell isNotificationEnabledSync /
+// requestEnableNotification answe back through host.notificationPermissionResult) because
+// abilityAccessCtrl has no such permission.
+string? n13AppInfoPath = FindHostSource("OpenHarmonyAppInfo.cs");
+string n13AppInfo = n13AppInfoPath is null ? string.Empty : File.ReadAllText(n13AppInfoPath);
+string? n13EssentialsPath = FindHostSource("OpenHarmonyEssentialsUnsupported.cs");
+string n13Essentials = n13EssentialsPath is null ? string.Empty : File.ReadAllText(n13EssentialsPath);
+bool n13SettingsOk = n13AppInfo.Contains("private const int KindSettings = 4;") &&
+    n13AppInfo.Contains("private const string SettingsBundle = \"com.ohos.settings\";") &&
+    n13AppInfo.Contains("private const string SettingsAbility = \"com.ohos.settings.MainAbility\";") &&
+    n13AppInfo.Contains("[DllImport(HostLibrary, EntryPoint = \"ohos_host_ability_start\", CharSet = CharSet.Ansi)]") &&
+    n13AppInfo.Contains("return AbilityStart(KindSettings, SettingsBundle, SettingsAbility) == 0;");
+bool n13BundleOk = n13AppInfo.Contains("[DllImport(HostLibrary, EntryPoint = \"ohos_host_get_bundle_version\")]") &&
+    n13AppInfo.Contains("[DllImport(HostLibrary, EntryPoint = \"ohos_host_get_bundle_build\")]") &&
+    n13AppInfo.Contains("[DllImport(HostLibrary, EntryPoint = \"ohos_host_get_bundle_name\")]") &&
+    n13AppInfo.Contains("public string VersionString => OpenHarmonyBundleInfoBridge.Version ?? FallbackVersion;") &&
+    hSource?.Contains("int ohos_host_set_bundle_info(const char* version, const char* build, const char* name);") == true &&
+    hSource.Contains("const char* ohos_host_get_bundle_version(void);") &&
+    hSource.Contains("const char* ohos_host_get_bundle_build(void);") &&
+    hSource.Contains("const char* ohos_host_get_bundle_name(void);") &&
+    cSource?.Contains("int ohos_host_set_bundle_info(const char* version, const char* build, const char* name) {") == true &&
+    cSource.Contains("static pthread_mutex_t g_bundle_info_mutex = PTHREAD_MUTEX_INITIALIZER;") &&
+    cSource.Contains("const char* ohos_host_get_bundle_name(void) {") &&
+    s2Napi.Contains("napi_value SetBundleInfo(napi_env env, napi_callback_info info) {") &&
+    s2Napi.Contains("\"setBundleInfo\"");
+bool n13NotificationsOk = n13Essentials.Contains("internal static class OpenHarmonyNotificationPermissionBridge") &&
+    n13Essentials.Contains("internal const int QueryOp = 0;") &&
+    n13Essentials.Contains("internal const int RequestOp = 1;") &&
+    n13Essentials.Contains("[DllImport(HostLibrary, EntryPoint = \"ohos_host_notification_permission_request\")]") &&
+    n13Essentials.Contains("private static extern void RequestNative(int op, int requestId);") &&
+    n13Essentials.Contains("typeof(TPermission) == typeof(Permissions.PostNotifications)") &&
+    hSource?.Contains("void ohos_host_notification_permission_set_listener(void (*listener)(int op, int request_id));") == true &&
+    hSource.Contains("void ohos_host_notification_permission_request(int op, int request_id);") &&
+    hSource.Contains("void ohos_host_notification_permission_register_result(void* callback);") &&
+    hSource.Contains("void ohos_host_notification_permission_complete(int request_id, int granted);") &&
+    cSource?.Contains("static void (*g_notification_permission_listener)(int op, int request_id) = NULL;") == true &&
+    cSource.Contains("void ohos_host_notification_permission_complete(int request_id, int granted) {") &&
+    s2Napi.Contains("napi_value RegisterNotificationPermissionSink(napi_env env, napi_callback_info info) {") &&
+    s2Napi.Contains("\"registerNotificationPermissionSink\"") &&
+    s2Napi.Contains("\"notificationPermissionResult\"");
+bool n13ShellOk = true;
+foreach (string n13Version in b3ShellVersions)
+{
+    string n13Shell = ShellSource(n13Version);
+    n13ShellOk &= n13Shell.Contains("getBundleInfoForSelfSync(") &&
+        n13Shell.Contains("host.setBundleInfo(info.versionName, `${info.versionCode}`, info.name);") &&
+        n13Shell.Contains("this.hostCall('registerNotificationPermissionSink', typeof host !== 'undefined' && typeof host.registerNotificationPermissionSink === 'function', (): void => {") &&
+        n13Shell.Contains("host.registerNotificationPermissionSink(async (op: number, requestId: number): Promise<void> => {") &&
+        n13Shell.Contains("await nm.default.requestEnableNotification(context);") &&
+        n13Shell.Contains("granted = nm.default.isNotificationEnabledSync();") &&
+        n13Shell.Contains("host.notificationPermissionResult(requestId, granted ? 1 : 0);");
+}
+bool n13SettingsBundleOk = n13SettingsOk && n13BundleOk && n13NotificationsOk && n13ShellOk;
+Console.WriteLine($"[verify] audit2 settings kind4={n13SettingsOk} bundle={n13BundleOk} notifications={n13NotificationsOk} shell={n13ShellOk} source='{n13AppInfoPath ?? "<missing>"}' assert={n13SettingsBundleOk}");
+if (!n13SettingsBundleOk)
+{
+    throw new InvalidOperationException(
+        $"the settings/bundle/PostNotifications contract drifted: settings={n13SettingsOk} bundle={n13BundleOk} notifications={n13NotificationsOk} shell={n13ShellOk}");
+}
+
+// Audit2-5: WebAuthenticator degrade. The slice implementation is installed both as
+// WebAuthenticator.Default (ModuleInitializer + reflection on the internal defaultImplementation
+// field) and in DI, and AuthenticateAsync fails fast with FeatureNotSupportedException (the
+// documented missing callback-skill/want-forward diagnosis), never the reference-assembly
+// exception.
+string? n14WebAuthPath = FindHostSource("OpenHarmonyWebAuthenticator.cs");
+string n14WebAuth = n14WebAuthPath is null ? string.Empty : File.ReadAllText(n14WebAuthPath);
+string? n14ExtensionsPath = FindHostSource("MauiOpenHarmonyExtensions.cs");
+string n14Extensions = n14ExtensionsPath is null ? string.Empty : File.ReadAllText(n14ExtensionsPath);
+bool n14TypeOk = n14WebAuth.Contains("public sealed class OpenHarmonyWebAuthenticator : IWebAuthenticator") &&
+    n14WebAuth.Contains("public static readonly OpenHarmonyWebAuthenticator Instance = new();") &&
+    n14WebAuth.Contains("new Microsoft.Maui.ApplicationModel.FeatureNotSupportedException(UnsupportedMessage));") &&
+    n14WebAuth.Contains("if (cancellationToken.IsCancellationRequested)") &&
+    n14WebAuth.Contains("return Task.FromCanceled<WebAuthenticatorResult>(cancellationToken);");
+bool n14InstallOk = n14WebAuth.Contains("[ModuleInitializer]") &&
+    n14WebAuth.Contains("internal static void Initialize() => InstallDefault();") &&
+    n14WebAuth.Contains("field.SetValue(null, Instance);") &&
+    n14Extensions.Contains("builder.Services.AddSingleton<Microsoft.Maui.Authentication.IWebAuthenticator>(OpenHarmonyWebAuthenticator.Instance);");
+bool n14WebAuthOk = n14TypeOk && n14InstallOk;
+Console.WriteLine($"[verify] audit2 webauth type={n14TypeOk} install={n14InstallOk} source='{n14WebAuthPath ?? "<missing>"}' assert={n14WebAuthOk}");
+if (!n14WebAuthOk)
+{
+    throw new InvalidOperationException($"the WebAuthenticator contract drifted: type={n14TypeOk} install={n14InstallOk}");
+}
+
+// Audit2-6: soft-input inset + ConnectionProfiles push. The host stores the shell's keyboard
+// height (set/get + optional change callback the slice registers for a redraw) and parses the
+// capped bearer encoding into the network-capabilities mask the managed ConnectionProfiles read;
+// the shell follows avoidAreaChange/TYPE_KEYBOARD and pushes both through notifySoftInputArea /
+// notifyNetworkAccess.
+string? n15SafeAreaPath = FindHostSource("OpenHarmonySafeArea.cs");
+string n15SafeArea = n15SafeAreaPath is null ? string.Empty : File.ReadAllText(n15SafeAreaPath);
+string? n15ExtrasPath = FindHostSource("OpenHarmonyEssentialsExtras.cs");
+string n15Extras = n15ExtrasPath is null ? string.Empty : File.ReadAllText(n15ExtrasPath);
+bool n15SoftInputOk = n15SafeArea.Contains("[DllImport(HostLibrary, EntryPoint = \"ohos_host_get_soft_input_area\")]") &&
+    n15SafeArea.Contains("private static extern int GetSoftInputAreaNative(out int bottom);") &&
+    n15SafeArea.Contains("[DllImport(HostLibrary, EntryPoint = \"ohos_host_register_soft_input_change\")]") &&
+    n15SafeArea.Contains("private static extern void RegisterSoftInputChangeNative(IntPtr callback);") &&
+    n15SafeArea.Contains("private delegate void SoftInputChanged(int bottom);") &&
+    n15SafeArea.Contains("OpenHarmonyBridge.RequestRedraw();") &&
+    hSource?.Contains("void ohos_host_set_soft_input_area(int bottom);") == true &&
+    hSource.Contains("int ohos_host_get_soft_input_area(int* bottom);") &&
+    hSource.Contains("void ohos_host_register_soft_input_change(void* callback);") &&
+    cSource?.Contains("static int g_soft_input_bottom = 0;") == true &&
+    cSource.Contains("void ohos_host_set_soft_input_area(int bottom) {") &&
+    cSource.Contains("if (height == g_soft_input_bottom) {") &&
+    cSource.Contains("int ohos_host_get_soft_input_area(int* bottom) {") &&
+    s2Napi.Contains("napi_value NotifySoftInputArea(napi_env env, napi_callback_info info) {") &&
+    s2Napi.Contains("\"notifySoftInputArea\"");
+bool n15ProfilesOk = n15Extras.Contains("[DllImport(HostLibrary, EntryPoint = \"ohos_host_network_capabilities\")]") &&
+    n15Extras.Contains("private static extern int NetworkCapabilitiesNative();") &&
+    n15Extras.Contains("public IEnumerable<ConnectionProfile> ConnectionProfiles") &&
+    n15Extras.Contains("profiles.Add(ConnectionProfile.WiFi);") &&
+    n15Extras.Contains("profiles.Add(ConnectionProfile.Cellular);") &&
+    hSource?.Contains("void ohos_host_set_network_capabilities(const char* encoded);") == true &&
+    hSource.Contains("int ohos_host_network_capabilities(void);") &&
+    cSource?.Contains("#define OHOS_MAX_NET_BEARER_ENTRIES 8") == true &&
+    cSource.Contains("void ohos_host_set_network_capabilities(const char* encoded) {") &&
+    cSource.Contains("int ohos_host_network_capabilities(void) {") &&
+    s2Napi.Contains("napi_value NotifyNetworkAccess(napi_env env, napi_callback_info info) {") &&
+    s2Napi.Contains("ohos_host_set_network_capabilities(encoded.c_str());") &&
+    s2Napi.Contains("\"notifyNetworkAccess\"");
+bool n15ShellOk = true;
+foreach (string n15Version in b3ShellVersions)
+{
+    string n15Shell = ShellSource(n15Version);
+    n15ShellOk &= n15Shell.Contains("data.type === window.AvoidAreaType.TYPE_KEYBOARD") &&
+        n15Shell.Contains("this.hostCall('notifySoftInputArea', typeof host !== 'undefined' && typeof host.notifySoftInputArea === 'function', (): void => {") &&
+        n15Shell.Contains("host.notifySoftInputArea(height);") &&
+        n15Shell.Contains("host.notifyNetworkAccess(capabilities);");
+}
+bool n15SoftInputProfilesOk = n15SoftInputOk && n15ProfilesOk && n15ShellOk;
+Console.WriteLine($"[verify] audit2 softinput inset={n15SoftInputOk} profiles={n15ProfilesOk} shell={n15ShellOk} source='{n15SafeAreaPath ?? "<missing>"}' assert={n15SoftInputProfilesOk}");
+if (!n15SoftInputProfilesOk)
+{
+    throw new InvalidOperationException(
+        $"the soft-input/ConnectionProfiles contract drifted: inset={n15SoftInputOk} profiles={n15ProfilesOk} shell={n15ShellOk}");
+}
+
+// Audit2-7: PE2 focus hook + key surface. OpenHarmonyFocusManager replaces the shared
+// ViewMapper Focus/Unfocus entries (routing the surface id through ohos_host_request_focus), and
+// OpenHarmonyKeyListener registers ohos_host_register_key_event (down/up callback, no public
+// MAUI key contract at rc.1); both are installed from UseOpenHarmony, the host exports are
+// implemented in openharmony_host.c and consumed by the shell's onKeyEvent through host.keyEvent.
+string? n16FocusPath = FindHostSource("OpenHarmonyFocusManager.cs");
+string n16Focus = n16FocusPath is null ? string.Empty : File.ReadAllText(n16FocusPath);
+string? n16KeyPath = FindHostSource("OpenHarmonyKeyListener.cs");
+string n16Key = n16KeyPath is null ? string.Empty : File.ReadAllText(n16KeyPath);
+bool n16FocusOk = n16Focus.Contains("internal static class OpenHarmonyFocusManager") &&
+    n16Focus.Contains("private const string SurfaceId = \"ohos_dotnet_surface\";") &&
+    n16Focus.Contains("ViewHandler.ViewCommandMapper[\"Focus\"] = OnFocusCommand;") &&
+    n16Focus.Contains("ViewHandler.ViewCommandMapper[\"Unfocus\"] = OnUnfocusCommand;") &&
+    n16Focus.Contains("internal static bool TryGetTargetKey(IView view, out string targetKey)");
+bool n16KeyOk = n16Key.Contains("internal static class OpenHarmonyKeyListener") &&
+    n16Key.Contains("internal const int KeyTypeDown = 0;") &&
+    n16Key.Contains("internal const int KeyTypeUp = 1;") &&
+    n16Key.Contains("private delegate void KeyEventCallback(int keyCode, int eventType);") &&
+    n16Key.Contains("[DllImport(HostLibrary, EntryPoint = \"ohos_host_register_key_event\")]") &&
+    n16Key.Contains("internal static void Dispatch(int keyCode, int eventType)");
+bool n16HostOk = n14Extensions.Contains("OpenHarmonyFocusManager.Install();") &&
+    n14Extensions.Contains("OpenHarmonyKeyListener.Install();") &&
+    hSource?.Contains("void ohos_host_register_key_event(void* callback);") == true &&
+    hSource.Contains("void ohos_host_key_event(int key_code, int event_type);") &&
+    cSource?.Contains("void ohos_host_register_key_event(void* callback) {") == true &&
+    cSource.Contains("g_app->bridge_key_event = (void (*)(int, int))callback;") &&
+    cSource.Contains("void ohos_host_key_event(int key_code, int event_type) {") &&
+    s2Napi.Contains("napi_value KeyEvent(napi_env env, napi_callback_info info) {") &&
+    s2Napi.Contains("ohos_host_key_event(keyCode, eventType);") &&
+    s2Napi.Contains("\"keyEvent\"");
+bool n16ShellOk = true;
+foreach (string n16Version in b3ShellVersions)
+{
+    string n16Shell = ShellSource(n16Version);
+    n16ShellOk &= n16Shell.Contains(".onKeyEvent((event: KeyEvent): void => {") &&
+        n16Shell.Contains("this.hostCall('keyEvent', typeof host !== 'undefined' && typeof host.keyEvent === 'function', (): void => {") &&
+        n16Shell.Contains("host.keyEvent(event.keyCode, event.type === KeyType.Down ? 0 : 1);");
+}
+bool n16FocusKeysOk = n16FocusOk && n16KeyOk && n16HostOk && n16ShellOk;
+Console.WriteLine($"[verify] audit2 focuskeys focus={n16FocusOk} key={n16KeyOk} host={n16HostOk} shell={n16ShellOk} source='{n16KeyPath ?? "<missing>"}' assert={n16FocusKeysOk}");
+if (!n16FocusKeysOk)
+{
+    throw new InvalidOperationException(
+        $"the PE2 focus/key contract drifted: focus={n16FocusOk} key={n16KeyOk} host={n16HostOk} shell={n16ShellOk}");
+}
+
+// Audit2-8: Shell TitleView/toolbar chrome. A visible Label title view publishes its text (a
+// rich view is noted once and the page title stays in the bar), and the current page's
+// ToolbarItems are mirrored into the platform bar with a tap that activates the item (guarded
+// IMenuItemController). The shell handler owns one chrome instance and re-applies it per shell map.
+string? n17ChromePath = FindHostSource("OpenHarmonyShellChrome.cs");
+string n17Chrome = n17ChromePath is null ? string.Empty : File.ReadAllText(n17ChromePath);
+string? n17ShellHandlerPath = FindHostSource("OpenHarmonyShellHandler.cs");
+string n17ShellHandler = n17ShellHandlerPath is null ? string.Empty : File.ReadAllText(n17ShellHandlerPath);
+bool n17TitleOk = n17Chrome.Contains("internal sealed class OpenHarmonyShellChrome") &&
+    n17Chrome.Contains("public void Apply(Shell shell)") &&
+    n17Chrome.Contains("_view.TitleText = ResolveTitleText(shell);") &&
+    n17Chrome.Contains("View? titleView = shell.CurrentPage is { } page ? Shell.GetTitleView(page) : null;") &&
+    n17Chrome.Contains("titleView ??= Shell.GetTitleView(shell);") &&
+    n17Chrome.Contains("LogRichTitleViewOnce()") &&
+    n17Chrome.Contains("the compositor title bar draws text only, so a rich TitleView is not rendered");
+bool n17ToolbarOk = n17Chrome.Contains("UpdateToolbar(shell.CurrentPage);") &&
+    n17Chrome.Contains("private void UpdateToolbar(Page? page)") &&
+    n17Chrome.Contains("_view.ToolbarItems.Add((captured.Text ?? string.Empty, () => ActivateToolbarItem(captured)));") &&
+    n17Chrome.Contains("private static void ActivateToolbarItem(ToolbarItem item)");
+bool n17WiringOk = n17ShellHandler.Contains("private OpenHarmonyShellChrome Chrome =>") &&
+    n17ShellHandler.Contains("_chrome ??= new OpenHarmonyShellChrome(PlatformView, () => OpenHarmonyBridge.RequestRedraw());") &&
+    n17ShellHandler.Contains("handler.Chrome.Apply(shell);");
+bool n17ChromeOk = n17TitleOk && n17ToolbarOk && n17WiringOk;
+Console.WriteLine($"[verify] audit2 shellchrome title={n17TitleOk} toolbar={n17ToolbarOk} wiring={n17WiringOk} source='{n17ChromePath ?? "<missing>"}' assert={n17ChromeOk}");
+if (!n17ChromeOk)
+{
+    throw new InvalidOperationException(
+        $"the Shell TitleView/toolbar contract drifted: title={n17TitleOk} toolbar={n17ToolbarOk} wiring={n17WiringOk}");
+}
+
+// Audit2-9: PJ1/PJ2 frame-loop additions. PJ1: the animation loop (frame subscription, register/
+// unregister, Pump), the scroll physics tunables + the OpenHarmonyView offset hooks, the
+// scrollbars and the focus ring drawn from the platform view. PJ2: the tooltip manager replaces
+// the ViewMapper "ToolTip" entry and chains the renderer present hook, and the keyboard
+// accelerator manager hooks the key listener and matches tracked modifiers.
+string? n18LoopPath = FindHostSource("OpenHarmonyAnimationLoop.cs");
+string n18Loop = n18LoopPath is null ? string.Empty : File.ReadAllText(n18LoopPath);
+string? n18PhysicsPath = FindHostSource("OpenHarmonyScrollPhysics.cs");
+string n18Physics = n18PhysicsPath is null ? string.Empty : File.ReadAllText(n18PhysicsPath);
+string? n18BarsPath = FindHostSource("OpenHarmonyScrollbars.cs");
+string n18Bars = n18BarsPath is null ? string.Empty : File.ReadAllText(n18BarsPath);
+string? n18RingPath = FindHostSource("OpenHarmonyFocusRing.cs");
+string n18Ring = n18RingPath is null ? string.Empty : File.ReadAllText(n18RingPath);
+string? n18ViewPath = FindHostSource("OpenHarmonyView.cs");
+string n18View = n18ViewPath is null ? string.Empty : File.ReadAllText(n18ViewPath);
+string? n18ToolTipPath = FindHostSource("OpenHarmonyToolTipManager.cs");
+string n18ToolTip = n18ToolTipPath is null ? string.Empty : File.ReadAllText(n18ToolTipPath);
+string? n18AccelPath = FindHostSource("OpenHarmonyKeyboardAcceleratorManager.cs");
+string n18Accel = n18AccelPath is null ? string.Empty : File.ReadAllText(n18AccelPath);
+bool n18Pj1Ok = n18Loop.Contains("internal interface IOpenHarmonyAnimation") &&
+    n18Loop.Contains("internal static class OpenHarmonyAnimationLoop") &&
+    n18Loop.Contains("internal static void Register(IOpenHarmonyAnimation animation)") &&
+    n18Loop.Contains("private static void OnFrame(OpenHarmonyFrameEventArgs args) => Pump(NowMs, 0f);") &&
+    n18Physics.Contains("internal static class OpenHarmonyScrollPhysics") &&
+    n18Physics.Contains("internal const float MinFlingVelocity = 320f;") &&
+    n18Physics.Contains("internal const float FrictionPerSecond = 4.5f;") &&
+    n18Physics.Contains("internal const long MaxFlingMs = 4000;") &&
+    n18Bars.Contains("internal static class OpenHarmonyScrollbars") &&
+    n18Bars.Contains("internal const float Thickness = 4f;") &&
+    n18Ring.Contains("internal static class OpenHarmonyFocusRing") &&
+    n18Ring.Contains("internal const float Thickness = 3f;") &&
+    n18View.Contains("OpenHarmonyScrollPhysics.OnOffsetChanged(this, horizontal: true, previous, value);") &&
+    n18View.Contains("OpenHarmonyScrollPhysics.OnOffsetChanged(this, horizontal: false, previous, value);") &&
+    n18View.Contains("OpenHarmonyFocusRing.Draw(canvas, this);") &&
+    n18View.Contains("OpenHarmonyScrollbars.Draw(canvas, this);");
+bool n18Pj2Ok = n18ToolTip.Contains("internal static class OpenHarmonyToolTipManager") &&
+    n18ToolTip.Contains("internal const string MapperKey = \"ToolTip\";") &&
+    n18ToolTip.Contains("internal static int ShowDelayMs { get; set; } = 650;") &&
+    n18ToolTip.Contains("mapper[MapperKey] = OnToolTipMapped;") &&
+    n18ToolTip.Contains("[ModuleInitializer]") &&
+    n18Accel.Contains("internal static class OpenHarmonyKeyboardAcceleratorManager") &&
+    n18Accel.Contains("private const int KeyCodeCtrlLeft = 2072;") &&
+    n18Accel.Contains("private const int KeyCodeMetaRight = 2077;") &&
+    n18Accel.Contains("internal static bool HandleKeyEvent(int keyCode, int eventType)") &&
+    n18Accel.Contains("OpenHarmonyKeyListener.Install();") &&
+    n18Accel.Contains("[ModuleInitializer]");
+bool n18PjOk = n18Pj1Ok && n18Pj2Ok;
+Console.WriteLine($"[verify] audit2 pj pj1={n18Pj1Ok} pj2={n18Pj2Ok} source='{n18ToolTipPath ?? "<missing>"}' assert={n18PjOk}");
+if (!n18PjOk)
+{
+    throw new InvalidOperationException($"the PJ1/PJ2 contract drifted: pj1={n18Pj1Ok} pj2={n18Pj2Ok}");
+}
+
 // ---- PG2: packaging/host invariants (staged runtime libs, libc++, bridge, host guard) ----------
 // The "runtime natives ship only in the signed libs/<abi>/" increment relies on four invariants
 // that this section pins to the committed sources, so a regression fails this off-device run

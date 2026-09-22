@@ -1,6 +1,6 @@
 # Interaction regression suite (headless)
 
-The MAUI-on-OpenHarmony interaction harness (275 interaction checks, a 4-line fuzz tail, a
+The MAUI-on-OpenHarmony interaction harness (284 interaction checks, a 4-line fuzz tail, a
 frame-path performance budget and an accessibility publish-path budget). It builds the platform
 slice sources from the
 `maui-ohos` working tree and drives the app host without a device: touch/drag/pinch/pointer input,
@@ -41,7 +41,7 @@ below), failing the suite when the (deliberately loose) budgets are exceeded.
 # (or the MauiSliceDir / HostingDll / OpenHarmonyGraphicsDll MSBuild properties) before building
 # elsewhere; an explicit -p: value wins over the environment and the absolute fallbacks.
 dotnet build -v:q
-dotnet bin/Debug/net11.0/verify.dll | grep -c '\[verify\]'   # expect 288 (275 checks + 4 fuzz + 1 frame perf + 8 a11y perf)
+dotnet bin/Debug/net11.0/verify.dll | grep -c '\[verify\]'   # expect 297 (284 checks + 4 fuzz + 1 frame perf + 8 a11y perf)
 ```
 
 The `interaction-regression` workflow (`.github/workflows/interaction-regression.yml`) runs the
@@ -49,7 +49,7 @@ suite on a GitHub runner as a real gate: it checks out this repository plus `spr
 (`feature/openharmony`, the branch carrying `src/Core/src/Platform/OpenHarmony`), builds
 `src/Microsoft.OpenHarmony.Hosting` and `src/Microsoft.OpenHarmony.Maui.Graphics` in Release,
 points `MAUI_SLICE_DIR` / `HOSTING_DLL` / `OPENHARMONY_GRAPHICS_DLL` at those roots, and fails the
-job unless the run exits 0, reports at least 268 `[verify]` lines, both perf lines report
+job unless the run exits 0, reports at least 277 `[verify]` lines, both perf lines report
 `within=True`, and no `Unhandled` line is logged.
 
 ## Fuzz tail
@@ -142,8 +142,8 @@ publish pass (skip/republish).
   blocks codesigned ELF apphosts on some machines).
 - The suite fails loudly (unhandled exception) when a slice change breaks startup or when an
   assertion for the gesture flows (including the drag-and-drop checks) does not hold; keep it at
-  275 checks plus the 4 fuzz lines plus the 1 frame-perf line plus the 8 a11y-perf lines
-  (288 `[verify]` lines) when touching the platform slice.
+  284 checks plus the 4 fuzz lines plus the 1 frame-perf line plus the 8 a11y-perf lines
+  (297 `[verify]` lines) when touching the platform slice.
 - Contacts/calendar coverage: `OpenHarmonyContacts.FindAsync` and
   `OpenHarmonyCalendar.ListUpcomingAsync`/`AddEventAsync` return empty/false without throwing
   off-device and report `IsSupported == false` before and after the call (the permission probe
@@ -380,7 +380,7 @@ publish pass (skip/republish).
     the installed default must complete without throwing when the ability bridge is absent; the
     want kind for single-file sharing is pinned to 3.
 - CI wiring: `.github/workflows/interaction-regression.yml` builds the slice checkout and the
-  hosting assemblies on the runner and gates on the `[verify]` line count (>=268) plus both perf
+  hosting assemblies on the runner and gates on the `[verify]` line count (>=277) plus both perf
   `within=True` markers (see "Running it" above).
 - Accessibility publish-contract coverage (R2b): the suite reflects
   `OpenHarmonyAccessibility.AccessibilityNode` (16 parameters now that hint, range and checked
@@ -437,3 +437,35 @@ publish pass (skip/republish).
   position after the link and before the self-sign pass. That is 4 lines: 284 + 4 = 288 = 275
   interaction checks + 4 fuzz + 1 frame perf + 8 a11y perf; the workflow floor moves with the
   total (288 - 20 = 268).
+- Audit batch-2 pins (BLE GATT / lifecycle / list extras / settings / WebAuth / soft input + profiles /
+  PE2 / Shell chrome / PJ): nine `[verify]` lines cover the surfaces the second audit found with
+  zero source-contract coverage. `audit2 ble gatt` pins the managed request/result/event
+  DllImports and callback delegates, the five shared-header declarations and NAPI definitions
+  with their module-table names, and all three templates' `registerBluetoothGattSink` (with the
+  `ohos.permission.ACCESS_BLUETOOTH` request) plus the result/event answers.
+  `audit2 lifecycle` pins the IApplication handler with its four command-mapper entries, the app
+  host's Created-before-Activated ordering for the Create event (once-guards plus the
+  Created-from-Run path), the hosting enum numbering (Create=0/Destroy=1/Foreground=2/
+  Background=3) and the templates' Foreground send; the Create=0 shell send (PI1) is reported as
+  `createSend` but not required yet because it is not in the templates at this pin.
+  `audit2 listextras` pins the CollectionView EmptyView/header-footer/SelectedItems/SelectionMode/
+  RemainingItemsThreshold mappings and the ScrollToRequested wiring plus the shared materializer's
+  header/footer/EmptyView factories, group ScrollTo rows, total/empty height and last-visible
+  window. `audit2 settings` pins AppInfo's settings kind 4 and bundle-metadata getters with the
+  host's set/get exports and the NAPI `setBundleInfo` name, plus the PostNotifications enablement
+  bridge (op 0/1, DllImports, host exports, NAPI names, shell `isNotificationEnabledSync`/
+  `requestEnableNotification`/`notificationPermissionResult`). `audit2 webauth` pins the
+  WebAuthenticator implementation, its `FeatureNotSupportedException`/cancellation contract, the
+  ModuleInitializer install and the DI registration. `audit2 softinput` pins the soft-input
+  set/get/register exports and the managed inset reads, the ConnectionProfiles bearer-mask bridge
+  (host parser, NAPI `notifyNetworkAccess`, managed `ConnectionProfile` mapping) and the shell
+  `avoidAreaChange`/TYPE_KEYBOARD + `notifySoftInputArea`/`notifyNetworkAccess` pushes.
+  `audit2 focuskeys` pins the PE2 focus hook (ViewMapper Focus/Unfocus + the surface id) and the
+  internal key listener (DllImport, down/up constants, dispatch) with the host exports and the
+  shell `onKeyEvent` -> `host.keyEvent` send. `audit2 shellchrome` pins the Shell TitleView
+  resolution (Label text, rich-view note once), the ToolbarItems mirror/activation and the shell
+  handler's chrome instance. `audit2 pj` pins PJ1 (animation loop register/pump/frame hook,
+  scroll-physics tunables, the OpenHarmonyView offset/draw hooks, scrollbars and focus ring) and
+  PJ2 (the tooltip manager's `ToolTip` mapper entry + present hook and the keyboard accelerator
+  manager's key codes/handler/install). That is 9 lines: 288 + 9 = 297 = 284 interaction checks +
+  4 fuzz + 1 frame perf + 8 a11y perf; the workflow floor moves with the total (297 - 20 = 277).
