@@ -1602,17 +1602,25 @@ struct Index {
     this.hostCall('registerNotificationPermissionSink', typeof host.registerNotificationPermissionSink === 'function', (): void => {
       host.registerNotificationPermissionSink(async (op: number, requestId: number): Promise<void> => {
         let granted: boolean = false;
-        try {
-          const nm = await import('@ohos.notificationManager');
-          if (op === 1) {
-            const context = getContext(this) as common.UIAbilityContext;
-            await nm.default.requestEnableNotification(context);
+        if (!this.lazyUnavailable('notificationManager')) {
+          try {
+            const nm = await import('@ohos.notificationManager');
+            try {
+              if (op === 1) {
+                const context = getContext(this) as common.UIAbilityContext;
+                await nm.default.requestEnableNotification(context);
+              }
+              granted = nm.default.isNotificationEnabledSync();
+            } catch (notificationPermissionError) {
+              // A refused dialog (1600004) or a missing service: answer the last known state.
+              // Not a lazy-module failure, so it is not cached.
+              console.error(`[maui] notification enablement ${op === 1 ? 'request' : 'check'} failed: ${(notificationPermissionError as Error).message}`);
+            }
+          } catch (notificationImportError) {
+            // Device-compat: cache the missing module once; later requests answer granted=false
+            // without re-importing or re-logging.
+            this.noteLazyFailure('notificationManager', notificationImportError as Error);
           }
-          granted = nm.default.isNotificationEnabledSync();
-        } catch (notificationPermissionError) {
-          // A refused dialog (1600004) or a missing service leaves granted=false; the final
-          // state is read again on the next op 0 request.
-          console.error(`[maui] notification enablement ${op === 1 ? 'request' : 'check'} failed: ${(notificationPermissionError as Error).message}`);
         }
         this.hostCall('notificationPermissionResult', typeof host.notificationPermissionResult === 'function', (): void => {
           host.notificationPermissionResult(requestId, granted ? 1 : 0);
