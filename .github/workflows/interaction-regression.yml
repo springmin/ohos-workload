@@ -30,7 +30,7 @@ on:
         description: 'maui-ohos commit SHA to compile (defaults to the pinned feature/openharmony tip)'
         required: false
         type: string
-        default: '90b21416a411b71bab3a824691355c7a13653eb4'
+        default: 'c4ac6a5e8c0ed4f2138a7b5d06faf8b92940bdb3'
   push:
     branches: [ master ]
 
@@ -43,10 +43,11 @@ permissions:
 # mutable feature/openharmony branch, so a push to the fork cannot change what this gate compiles.
 # The default is the feature/openharmony tip verified with
 # `git ls-remote https://github.com/springmin/maui-ohos feature/openharmony` on 2026-09-22
-# (90b21416, the NB1 shell-search/flyout/window tip the 284-check suite asserts); advance it
+# (c4ac6a5e, the BLE-GATT/settings/application/list-extras tip; the 284-check suite's
+# shell-search/flyout/window/list pins still hold at this commit); advance it
 # deliberately (workflow_dispatch can compile any other commit SHA).
 env:
-  MAUI_OHOS_REF: ${{ github.event.inputs.maui_ohos_ref || '90b21416a411b71bab3a824691355c7a13653eb4' }}
+  MAUI_OHOS_REF: ${{ github.event.inputs.maui_ohos_ref || 'c4ac6a5e8c0ed4f2138a7b5d06faf8b92940bdb3' }}
 
 jobs:
   interaction:
