@@ -1,11 +1,29 @@
 <Project>
   <!-- Repository-wide C# policy for the workload's own projects (audit follow-up):
        nullable annotations on, recommended analyzers enabled, warnings are not errors so the
-       baseline can be burned down incrementally instead of blocking builds. -->
+       baseline can be burned down incrementally instead of blocking builds.
+
+       TreatWarningsAsErrors=false scope: every C# project in this repository - the src projects
+       (net11.0) and the test projects (net11.0 and net11.0-openharmony20.0/26.0). It is
+       load-bearing for the test projects that compile the maui-ohos platform slice from a
+       partial checkout (headless-render, hello-maui-app, hello-maui-razor, maui-platform-verify):
+       most warnings come from that foreign source tree, not from this repo.
+       Exit condition: once the slice is consumed as a prebuilt workload assembly instead of the
+       cross-repo Compile items, and the first-party projects are warning-clean, delete this line
+       (today it pins the policy; the SDK default is already false). -->
   <PropertyGroup>
     <Nullable>enable</Nullable>
     <AnalysisLevel>latest</AnalysisLevel>
     <TreatWarningsAsErrors>false</TreatWarningsAsErrors>
     <LangVersion>latest</LangVersion>
   </PropertyGroup>
+  <ItemGroup>
+    <!-- CA1418: 'openharmony' is not one of the analyzer's built-in platform names yet. Declare
+         it once for every project (the SDK's SupportedPlatform pattern) instead of repeating a
+         NoWarn CA1418 in each csproj. Needed by the OHOS-TFM projects (the SDK generates
+         [assembly: SupportedOSPlatform("openharmony20.0")]/26.0 in the AssemblyInfo) and by
+         Microsoft.OpenHarmony.Ref (the only hand-written platform string: the assembly attribute
+         plus the IsOSPlatform guard in OpenHarmonyRuntime.cs). -->
+    <SupportedPlatform Include="openharmony" />
+  </ItemGroup>
 </Project>

@@ -4,7 +4,6 @@
     <OutputType>Exe</OutputType>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
-    <NoWarn>$(NoWarn);CA1418</NoWarn>
     <!-- S1: this project compiles the platform slice sources directly (the Compile Include
          below), and the slice's BlazorWebView handler/registration is behind this constant
          (OpenHarmonyBlazorWebViewHandler.cs and the IBlazorWebView entry in

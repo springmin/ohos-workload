@@ -15,7 +15,6 @@
     <TargetFramework>net11.0</TargetFramework>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
-    <NoWarn>$(NoWarn);CA1418</NoWarn>
   </PropertyGroup>
   <ItemGroup>
     <!-- The R2b drift assertion walks up from the slice directory to find the native host source

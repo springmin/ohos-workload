@@ -3,6 +3,5 @@
     <TargetFramework>net11.0-openharmony20.0</TargetFramework>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
-    <NoWarn>$(NoWarn);CA1418</NoWarn>
   </PropertyGroup>
 </Project>

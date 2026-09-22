@@ -4,6 +4,5 @@
     <AssemblyName>Microsoft.OpenHarmony.Hosting</AssemblyName>
     <Nullable>enable</Nullable>
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
-    <NoWarn>$(NoWarn);CA1418</NoWarn>
   </PropertyGroup>
 </Project>
