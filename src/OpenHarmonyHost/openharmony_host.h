@@ -130,6 +130,13 @@ int ohos_host_get_avoid_area(int* top, int* bottom, int* left, int* right);
 void ohos_host_set_soft_input_area(int bottom);
 int ohos_host_get_soft_input_area(int* bottom);
 
+/// Registers the managed soft-input callback (optional): void (*)(int bottom), invoked from
+/// ohos_host_set_soft_input_area for every keyboard height change the shell reports (never for
+/// an unchanged height). The slice's OpenHarmonySafeArea registers a redraw request, so the
+/// keyboard change re-runs the layout and the pages pad above the keyboard without waiting for
+/// another input event.
+void ohos_host_register_soft_input_change(void* callback);
+
 /// WebView: commands (op: show/hide/load/eval/back) go to the shell's ArkWeb component, page
 /// events come back through ohos_host_web_register_event.
 void ohos_host_web_set_listener(void (*listener)(const char* op, const char* arg));

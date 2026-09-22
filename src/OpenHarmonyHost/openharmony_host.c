@@ -252,6 +252,7 @@ struct OhosHostAppHandle {
     void (*bridge_geocode_result)(int request_id, int rc, const char* json);
     void (*bridge_network_access)(int level);
     void (*bridge_key_event)(int key_code, int event_type);
+    void (*bridge_soft_input_change)(int bottom);
     void* surface_window;
     int surface_width;
     int surface_height;
@@ -1161,6 +1162,12 @@ int ohos_host_get_avoid_area(int* top, int* bottom, int* left, int* right) {
 
 static int g_soft_input_bottom = 0;
 
+void ohos_host_register_soft_input_change(void* callback) {
+    if (g_app != NULL) {
+        g_app->bridge_soft_input_change = (void (*)(int))callback;
+    }
+}
+
 void ohos_host_set_soft_input_area(int bottom) {
     int height = bottom > 0 ? bottom : 0;
     if (height == g_soft_input_bottom) {
@@ -1168,6 +1175,11 @@ void ohos_host_set_soft_input_area(int bottom) {
     }
     g_soft_input_bottom = height;
     fprintf(stderr, "[openharmony-host] soft input bottom=%d\n", g_soft_input_bottom);
+    // Forward the change so the managed layout re-runs (the slice asks for a redraw); the
+    // callback runs on the caller's thread, like the other bridge notifications.
+    if (g_app != NULL && g_app->bridge_soft_input_change != NULL) {
+        g_app->bridge_soft_input_change(g_soft_input_bottom);
+    }
 }
 
 int ohos_host_get_soft_input_area(int* bottom) {
