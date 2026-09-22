@@ -7,20 +7,26 @@
 # contents, and that nothing outside the temp dir is touched.
 #
 # Scenarios:
-#   stub contract  the stub itself (list targets, install ok/fail, pidof alive->dead)
+#   stub contract  the stub itself (list targets, install ok/fail, pidof alive->dead,
+#                  hilog -r/stream, "hilog -t kmsg", /proc/sys evidence cats)
 #   S1  dry-run    no action flags, device reachable -> plan only, exit 0, no report
-#   S2  success    --uninstall --install --start --capture 1 (+ --device, --expect-tree-digest)
+#   S2  success    --uninstall --install --start --capture 1 (+ --device, --expect-tree-digest,
+#                  --compare-lib) -> kmsg + ELF-signing evidence assertions
 #   S3  install    a hap named *fail* -> code:9568297, exit 1, archive still produced
 #   S4  probes     --uninstall --probes <dir> --capture 1 (4 probe haps, PROBE1..PROBE4)
 #   S5  crash      pidof alive then dead -> process_alive=no, exit 1
+#   S6  missing    missing /proc evidence paths + missing --compare-lib file are tolerated
 #
 # Stub hdc surface (every subcommand tester-run.sh invokes):
 #   list targets | install -r <hap> | uninstall <bundle> | shell aa start -a EntryAbility -b <b>
 #   shell pidof <b> | shell ps -ef | shell param get <key> | shell bm get -u
-#   shell hilog -r | hilog
+#   shell hilog -r | hilog | shell "hilog -t kmsg" | shell "cat /proc/sys/..."
 # `hdc -t <id>` prefixes are accepted. A hap whose basename contains `fail` is rejected
 # with `code:9568297` on stderr. pidof answers a pid for the first
 # FAKE_HDC_PIDOF_ALIVE_CALLS calls per bundle (default 1), then nothing.
+# FAKE_HDC_MISSING_PROC=1 makes both /proc/sys cats fail (missing path).
+# A stub `binary-sign-tool` lives in $WORK/bin (prepended to PATH for every run) and answers
+# `display-sign` with `code signature is not found`.
 #
 # Kit under test: SELFTEST_KIT_DIR if set; else the local
 # /data/storage/el2/base/tmp/opencode/device-test-kit when it looks complete; else a
@@ -289,6 +295,39 @@ case "$cmd" in
         ;;
     shell)
         shift
+        _cmd="$*"
+        case "$_cmd" in
+            "hilog -t kmsg")
+                cat <<'KMSG_EOF'
+09-22 10:00:01.000 0 0 I [xpm]: /data/app/el1/bundle/public/com.example.hellomauiapp/libs/arm64-v8a/libopenharmonyhost.so is not protected by dmverity
+09-22 10:00:01.100 0 0 I [xpm]: xpm get signature info failed, etype: 1
+09-22 10:00:01.200 0 0 I [xpm]: {"event_type":"unsigned file","filename":"libopenharmonyhost.so"}
+09-22 10:00:01.300 0 0 I [fs_security_verity]: lib_no_signed event waken: -9(E_HM_PERM)
+09-22 10:00:01.400 0 0 I [kernel]: unrelated kmsg line must be filtered out
+KMSG_EOF
+                exit 0
+                ;;
+            "hilog -r")
+                printf 'hilog clear done\n'
+                exit 0
+                ;;
+            "cat /proc/sys/kernel/xpm/xpm_mode")
+                if [ "${FAKE_HDC_MISSING_PROC:-0}" = 1 ]; then
+                    printf 'cat: %s: No such file or directory\n' "$_cmd" >&2
+                    exit 1
+                fi
+                printf '2\n'
+                exit 0
+                ;;
+            "cat /proc/sys/fs/verity/require_signatures")
+                if [ "${FAKE_HDC_MISSING_PROC:-0}" = 1 ]; then
+                    printf 'cat: %s: No such file or directory\n' "$_cmd" >&2
+                    exit 1
+                fi
+                printf '1\n'
+                exit 0
+                ;;
+        esac
         _sub="${1:-}"
         case "$_sub" in
             aa)
@@ -365,6 +404,26 @@ esac
 STUB_HDC_EOF
 chmod 755 "$STUB"
 
+# ---- stub binary-sign-tool ------------------------------------------------------------
+BINTOOL="$WORK/bin/binary-sign-tool"
+cat > "$BINTOOL" <<'STUB_BINTOOL_EOF'
+#!/bin/sh
+# Stub binary-sign-tool for selftest-tester-run.sh: simulates the SDK tool's display-sign
+# on a third-party lib. Not a real tool.
+set -u
+case "${1:-}" in
+    display-sign)
+        printf 'code signature is not found\n'
+        exit 0
+        ;;
+    *)
+        printf 'stub binary-sign-tool: UNHANDLED %s\n' "$*" >&2
+        exit 1
+        ;;
+esac
+STUB_BINTOOL_EOF
+chmod 755 "$BINTOOL"
+
 # ---- fixtures ------------------------------------------------------------------------
 FAIL_HAP="$WORK/haps/hello-maui-app-fail.hap"
 make_hap "$FAIL_HAP" "com.example.hellomauiapp" "entry"
@@ -373,6 +432,18 @@ while [ "$_i" -le 4 ]; do
     make_hap "$WORK/probes/hello-mauiapp-probe$_i-unsigned.hap" "com.example.hellomauiapp.probe$_i" "entry"
     _i=$((_i + 1))
 done
+COMPARE_LIB="$WORK/compare/cc-switch-lib.so"
+mkdir -p "$(dirname "$COMPARE_LIB")"
+printf 'stub third-party lib for --compare-lib (not a real ELF)\n' > "$COMPARE_LIB"
+
+HAVE_PY3=0
+MAIN_HAP_MAGIC=""
+FAIL_HAP_MAGIC=""
+if command -v python3 >/dev/null 2>&1; then
+    HAVE_PY3=1
+    MAIN_HAP_MAGIC="$(python3 -c 'import re,sys; d=open(sys.argv[1],"rb").read(); print(len(re.findall(bytes.fromhex("20e7d20e"), d)))' "$MAIN_HAP" 2>/dev/null || true)"
+    FAIL_HAP_MAGIC="$(python3 -c 'import re,sys; d=open(sys.argv[1],"rb").read(); print(len(re.findall(bytes.fromhex("20e7d20e"), d)))' "$FAIL_HAP" 2>/dev/null || true)"
+fi
 
 KIT_TREE="$(kit_tree_digest "$KIT")"
 MAIN_HAP_SHA="$(sha256sum "$MAIN_HAP" | cut -d' ' -f1)"
@@ -387,7 +458,7 @@ run_tester() {
     RC=0
     # $_extra is intentionally unquoted: it carries zero or more `VAR=value` assignments.
     ( cd "$CWD" && env HDC="$STUB" TMPDIR="$TMPD" FAKE_HDC_STATE="$STATE_DIR/$_tag" \
-        FAKE_HDC_DEVICE="$STUB_DEVICE" $_extra sh "$TESTER" "$@" ) > "$_log" 2>&1 || RC=$?
+        FAKE_HDC_DEVICE="$STUB_DEVICE" PATH="$WORK/bin:$PATH" $_extra sh "$TESTER" "$@" ) > "$_log" 2>&1 || RC=$?
     return 0
 }
 
@@ -457,6 +528,21 @@ assert_contains "stub: hilog streams [maui]" "[maui]" "$HILOG_OUT"
 assert_contains "stub: hilog streams PROBE4|libc.so|ok" "PROBE4|libc.so|ok" "$HILOG_OUT"
 assert_contains "stub: hilog streams AppKilledReporter" "AppKilledReporter" "$HILOG_OUT"
 
+KMSG_OUT="$LOGS/stub-kmsg.out"
+FAKE_HDC_STATE="$STATE_DIR/contract-kmsg" "$STUB" shell "hilog -t kmsg" > "$KMSG_OUT" 2>&1 || true
+assert_contains "stub: kmsg has xpm unsigned file event" "unsigned file" "$KMSG_OUT"
+assert_contains "stub: kmsg has fs_security_verity line" "fs_security_verity" "$KMSG_OUT"
+
+FAKE_HDC_STATE="$STATE_DIR/contract-proc" "$STUB" shell "cat /proc/sys/kernel/xpm/xpm_mode" > "$LOGS/stub-xpm-mode.out" 2>&1 || true
+assert_eq "stub: xpm_mode answers 2" "2" "$(tr -d '\r\n' < "$LOGS/stub-xpm-mode.out")"
+FAKE_HDC_STATE="$STATE_DIR/contract-proc" "$STUB" shell "cat /proc/sys/fs/verity/require_signatures" > "$LOGS/stub-verity.out" 2>&1 || true
+assert_eq "stub: require_signatures answers 1" "1" "$(tr -d '\r\n' < "$LOGS/stub-verity.out")"
+
+STUB_RC=0
+FAKE_HDC_STATE="$STATE_DIR/contract-proc-missing" FAKE_HDC_MISSING_PROC=1 \
+    "$STUB" shell "cat /proc/sys/kernel/xpm/xpm_mode" > "$LOGS/stub-xpm-missing.out" 2>&1 || STUB_RC=$?
+assert_eq "stub: missing /proc path rc=1" "1" "$STUB_RC"
+
 # ---- S1: dry-run plan ----------------------------------------------------------------
 section "S1 dry-run plan (no action flags)"
 run_tester S1 "" --kit-dir "$KIT" --out "$WORK/out-dry"
@@ -471,7 +557,7 @@ assert_scenario_sandbox "S1"
 # ---- S2: success path ----------------------------------------------------------------
 section "S2 success path (--uninstall --install --start --capture 1)"
 run_tester S2 "" --kit-dir "$KIT" --device "$STUB_DEVICE" --expect-tree-digest "$KIT_TREE" \
-    --uninstall --install --start --capture 1 --out "$WORK/out-success"
+    --uninstall --install --start --capture 1 --compare-lib "$COMPARE_LIB" --out "$WORK/out-success"
 assert_eq "S2 exit code 0 (log: $LOGS/S2.log)" "0" "$RC"
 
 ARCHIVE_S2="$(report_archive out-success)"
@@ -507,6 +593,33 @@ if prepare_report "$ARCHIVE_S2" "$WORK/x-success" out-success; then
     assert_eq "S2 summary udid" "$FAKE_UDID" "$(sum_val "$S" udid)"
     assert_gt "S2 summary hilog_full_lines > 0" 0 "$(sum_val "$S" hilog_full_lines)"
     assert_gt "S2 summary hilog_filtered_lines > 0" 0 "$(sum_val "$S" hilog_filtered_lines)"
+
+    # ELF-signing evidence (research doc §6)
+    assert_file "S2 kmsg/kmsg.log in archive" "$REPORT/kmsg/kmsg.log"
+    assert_file "S2 kmsg/kmsg-filtered.log in archive" "$REPORT/kmsg/kmsg-filtered.log"
+    assert_contains "S2 kmsg raw has unsigned file event" "unsigned file" "$REPORT/kmsg/kmsg.log"
+    assert_contains "S2 kmsg raw has fs_security_verity line" "fs_security_verity" "$REPORT/kmsg/kmsg.log"
+    assert_contains "S2 kmsg filtered keeps [xpm]" "[xpm]" "$REPORT/kmsg/kmsg-filtered.log"
+    assert_contains "S2 kmsg filtered keeps libopenharmonyhost" "libopenharmonyhost.so" "$REPORT/kmsg/kmsg-filtered.log"
+    assert_not_contains "S2 kmsg filtered drops unrelated kernel line" "unrelated kmsg line" "$REPORT/kmsg/kmsg-filtered.log"
+    assert_eq "S2 summary kmsg_capture=ok" "ok" "$(sum_val "$S" kmsg_capture)"
+    assert_gt "S2 summary kmsg_lines > 0" 0 "$(sum_val "$S" kmsg_lines)"
+    assert_gt "S2 summary kmsg_filtered_lines > 0" 0 "$(sum_val "$S" kmsg_filtered_lines)"
+    assert_eq "S2 summary xpm_mode=2" "2" "$(sum_val "$S" xpm_mode)"
+    assert_eq "S2 summary verity_require_signatures=1" "1" "$(sum_val "$S" verity_require_signatures)"
+    assert_file "S2 device xpm_mode.txt in archive" "$REPORT/device/xpm_mode.txt"
+    assert_file "S2 device require_signatures.txt in archive" "$REPORT/device/require_signatures.txt"
+    assert_eq "S2 device xpm_mode.txt content" "2" "$(cat "$REPORT/device/xpm_mode.txt" 2>/dev/null)"
+    assert_eq "S2 summary soinfosegment_hap = main hap" "$MAIN_HAP" "$(sum_val "$S" soinfosegment_hap)"
+    if [ "$HAVE_PY3" = 1 ]; then
+        assert_eq "S2 summary soinfosegment_magic_hits = computed" "$MAIN_HAP_MAGIC" "$(sum_val "$S" soinfosegment_magic_hits)"
+    else
+        skip "S2 soinfosegment_magic_hits (python3 not available)"
+    fi
+    assert_file "S2 compare-lib display-sign output in archive" "$REPORT/meta/compare-lib-display-sign.txt"
+    assert_contains "S2 compare-lib output says not found" "code signature is not found" "$REPORT/meta/compare-lib-display-sign.txt"
+    assert_eq "S2 summary compare_lib path" "$COMPARE_LIB" "$(sum_val "$S" compare_lib)"
+    assert_eq "S2 summary compare_lib_display_sign" "code signature is not found" "$(sum_val "$S" compare_lib_display_sign)"
 
     assert_contains "S2 full hilog has [maui]" "[maui]" "$REPORT/hilog/hilog-full.txt"
     assert_contains "S2 full hilog has unrelated line" "A00000/unrelated:" "$REPORT/hilog/hilog-full.txt"
@@ -551,6 +664,9 @@ assert_contains "S2 stub called pidof" "shell pidof com.example.hellomauiapp" "$
 assert_contains "S2 stub called hilog -r" "shell hilog -r" "$CALLS_S2"
 assert_contains "S2 stub called param get" "shell param get const.product.model" "$CALLS_S2"
 assert_contains "S2 stub called bm get -u" "shell bm get -u" "$CALLS_S2"
+assert_contains "S2 stub called kmsg stream" "shell hilog -t kmsg" "$CALLS_S2"
+assert_contains "S2 stub called xpm_mode cat" "shell cat /proc/sys/kernel/xpm/xpm_mode" "$CALLS_S2"
+assert_contains "S2 stub called require_signatures cat" "shell cat /proc/sys/fs/verity/require_signatures" "$CALLS_S2"
 assert_scenario_sandbox "S2"
 
 # ---- S3: install failure path --------------------------------------------------------
@@ -574,6 +690,14 @@ if prepare_report "$ARCHIVE_S3" "$WORK/x-fail" out-fail; then
     assert_file "S3 archive still has hilog capture" "$REPORT/hilog/hilog-full.txt"
     assert_contains "S3 hilog still has PROBE lines" "PROBE4|libc.so|ok" "$REPORT/hilog/hilog-full.txt"
     assert_file "S3 meta/module.json of fail hap" "$REPORT/meta/module.json"
+    assert_file "S3 kmsg evidence file present" "$REPORT/kmsg/kmsg.log"
+    assert_file "S3 kmsg filtered file present" "$REPORT/kmsg/kmsg-filtered.log"
+    assert_eq "S3 summary soinfosegment_hap = --hap file" "$FAIL_HAP" "$(sum_val "$S" soinfosegment_hap)"
+    if [ "$HAVE_PY3" = 1 ]; then
+        assert_eq "S3 summary soinfosegment_magic_hits = --hap count" "$FAIL_HAP_MAGIC" "$(sum_val "$S" soinfosegment_magic_hits)"
+    else
+        skip "S3 soinfosegment_magic_hits (python3 not available)"
+    fi
 else
     bad "S3 report archive could not be extracted ($ARCHIVE_S3)"
 fi
@@ -607,6 +731,10 @@ if prepare_report "$ARCHIVE_S4" "$WORK/x-probes" out-probes; then
     assert_contains "S4 probe-all-lines has PROBE4" "PROBE4|libc.so|ok" "$REPORT/probes/probe-all-lines.txt"
     assert_gt "S4 probe-all-lines has all 4 probes" 3 "$(wc -l < "$REPORT/probes/probe-all-lines.txt" | tr -d ' ' | sed 's/^ *//')"
     assert_contains "S4 probe1 install log success" "install bundle successfully" "$REPORT/probes/probe1-install.txt"
+    assert_file "S4 kmsg evidence file present" "$REPORT/kmsg/kmsg.log"
+    assert_file "S4 kmsg filtered file present" "$REPORT/kmsg/kmsg-filtered.log"
+    assert_gt "S4 summary kmsg_lines > 0" 0 "$(sum_val "$S" kmsg_lines)"
+    assert_eq "S4 summary kmsg_capture=ok" "ok" "$(sum_val "$S" kmsg_capture)"
 else
     bad "S4 report archive could not be extracted ($ARCHIVE_S4)"
 fi
@@ -626,10 +754,36 @@ if prepare_report "$ARCHIVE_S5" "$WORK/x-dead" out-dead; then
     assert_eq "S5 summary process_pid=<none>" "<none>" "$(sum_val "$S" process_pid)"
     assert_gt "S5 summary failures >= 1" 0 "$(sum_val "$S" failures)"
     assert_contains "S5 ps fallback consulted" "shell ps -ef" "$STATE_DIR/S5/calls.log"
+    assert_file "S5 kmsg evidence file present" "$REPORT/kmsg/kmsg.log"
+    assert_gt "S5 summary kmsg_filtered_lines > 0" 0 "$(sum_val "$S" kmsg_filtered_lines)"
 else
     bad "S5 report archive could not be extracted ($ARCHIVE_S5)"
 fi
 assert_scenario_sandbox "S5"
+
+# ---- S6: missing evidence paths tolerated --------------------------------------------
+section "S6 missing /proc paths + missing --compare-lib file tolerated"
+run_tester S6 "FAKE_HDC_MISSING_PROC=1" --kit-dir "$KIT" --install --capture 1 \
+    --compare-lib "$WORK/compare/does-not-exist.so" --out "$WORK/out-missing"
+assert_eq "S6 exit code 0 (log: $LOGS/S6.log)" "0" "$RC"
+
+ARCHIVE_S6="$(report_archive out-missing)"
+assert_file "S6 report archive produced" "$ARCHIVE_S6"
+if prepare_report "$ARCHIVE_S6" "$WORK/x-missing" out-missing; then
+    S="$REPORT/summary.txt"
+    assert_eq "S6 summary xpm_mode <unavailable>" "<unavailable>" "$(sum_val "$S" xpm_mode)"
+    assert_eq "S6 summary verity_require_signatures <unavailable>" "<unavailable>" "$(sum_val "$S" verity_require_signatures)"
+    assert_eq "S6 device xpm_mode.txt <unavailable>" "<unavailable>" "$(cat "$REPORT/device/xpm_mode.txt" 2>/dev/null)"
+    assert_eq "S6 device require_signatures.txt <unavailable>" "<unavailable>" "$(cat "$REPORT/device/require_signatures.txt" 2>/dev/null)"
+    assert_eq "S6 summary compare_lib path recorded" "$WORK/compare/does-not-exist.so" "$(sum_val "$S" compare_lib)"
+    assert_eq "S6 summary compare_lib_display_sign skipped" "skipped(file not found)" "$(sum_val "$S" compare_lib_display_sign)"
+    assert_eq "S6 summary kmsg_capture=ok" "ok" "$(sum_val "$S" kmsg_capture)"
+    assert_file "S6 kmsg evidence file present" "$REPORT/kmsg/kmsg.log"
+    assert_file "S6 kmsg filtered file present" "$REPORT/kmsg/kmsg-filtered.log"
+else
+    bad "S6 report archive could not be extracted ($ARCHIVE_S6)"
+fi
+assert_scenario_sandbox "S6"
 
 # ---- global: nothing outside the temp dir --------------------------------------------
 section "global: no state outside the temp dir"

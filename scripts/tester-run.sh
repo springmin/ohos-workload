@@ -12,12 +12,16 @@
 #   2  start                     aa start -b <module.json bundleName> -a EntryAbility, then
 #                                a process survival check (pidof / ps fallback)
 #   3  capture [<seconds>]       hilog -r, then a filtered hilog recording while the app is
-#                                started/used (default 30 s)
+#                                started/used (default 30 s); the same window also records
+#                                `hilog -t kmsg` -> kmsg/kmsg.log + kmsg-filtered.log
 #   4  probes <dir>              install + run probe1..probe4, per-probe hilog capture of
-#                                the PROBE1..PROBE4 lines
+#                                the PROBE1..PROBE4 lines (kmsg recorded in the same windows)
 #   5  collect + pack            captures, module.json of the installed hap, device info
-#                                (param get outputs + UDID), kit hashes, machine-readable
-#                                summary; tar into tester-report-<timestamp>.tar.gz
+#                                (param get outputs + UDID), ELF-signing evidence (xpm_mode,
+#                                fs-verity require_signatures, hap SoInfoSegment magic count,
+#                                optional --compare-lib display-sign), kit hashes,
+#                                machine-readable summary; tar into
+#                                tester-report-<timestamp>.tar.gz
 #
 # Safety: dry-run by default. Nothing is installed / started / removed / recorded on the
 # device unless the matching flag is given (--install --uninstall --start --capture
@@ -31,7 +35,7 @@
 #
 # Usage: sh tester-run.sh [--kit-dir <dir> | --kit-tar <tar.gz>] [--expect-tree-digest <hex>]
 #          [--hap <hap>]... [--install] [--uninstall] [--start] [--capture [<seconds>]]
-#          [--probes <dir>] [--out <dir>] [--device <id>] [-h|--help]
+#          [--probes <dir>] [--compare-lib <path>] [--out <dir>] [--device <id>] [-h|--help]
 #
 # Env: HDC (default hdc; may be an absolute path), KIT_BUNDLE_NAME (fallback bundleName
 #      when the module.json cannot be read), TMPDIR.
@@ -59,8 +63,15 @@ usage() {
   --hap <hap>                用指定 hap 替代 kit 默认包（可重复；主包取第一个）
   --uninstall                先卸载主应用（显式；加了 --probes 时也卸载 4 个探针）
   --start                    启动应用并做存活检查（aa start -a EntryAbility -b <bundle>）
-  --capture [<seconds>]      录制过滤后的 hilog（默认 30 秒；只启动录制、不做别的）
+  --capture [<seconds>]      录制过滤后的 hilog + kmsg（默认 30 秒；只启动录制、不做别的）
   --probes <dir>             安装并运行 probe1..probe4（目录内含 4 个探针 hap），逐个抓 PROBE1..4
+
+证据（ELF 代码签名，自动采集；判定规则见研究文档 §6）:
+  每个录制窗口同时执行 hdc shell "hilog -t kmsg" -> kmsg/kmsg.log（并过滤出 kmsg-filtered.log）；
+  采集 /proc/sys/kernel/xpm/xpm_mode 与 /proc/sys/fs/verity/require_signatures（路径缺失容忍）；
+  统计所装 hap 的 SoInfoSegment magic（0x20e7d20e）命中数，均写入 summary.txt。
+  --compare-lib <path>       本机对照一个能跑的第三方 app 的 lib：若 PATH 上有
+                             binary-sign-tool，就执行 display-sign -inFile <path> 并收下输出
 
 输出:
   --out <dir>                报告目录（默认 ./tester-report）；归档为 <out>-<时间戳>.tar.gz
@@ -100,13 +111,21 @@ KIT_DIR=""
 KIT_TAR=""
 EXPECT_TREE=""
 HAPS=""
+COMPARE_LIB=""
 FALLBACK_BUNDLE="${KIT_BUNDLE_NAME:-com.example.hellomauiapp}"
 BUNDLE=""
 FILTER_RE='hellomaui|maui|dotnet|openharmonyhost|AppKilledReporter|JsError|appspawn|PROBE'
+FILTER_KMSG_RE='xpm|unsigned file|fs_security_verity|libopenharmonyhost|hellomauiapp'
 DEV_KEYS="const.product.model const.product.brand const.product.name const.product.devicetype const.product.software.version const.ohos.apiversion const.ohos.fullname const.product.cpu.abilist const.build.characteristics"
 FAILURES=0
 TMP=""
 HILOG_PID=""
+KMSG_PID=""
+KMSG_RAW=""
+KMSG_STARTED=0
+KMSG_RESULT="not_captured"
+KMSG_LINES=0
+KMSG_FILTERED_LINES=0
 ARCHIVE=""
 UDID=""
 TREE_DIGEST=""
@@ -119,6 +138,12 @@ START_ALIVE="n/a"
 START_PID=""
 CAPTURE_LINES=0
 INSTALL_RESULT=""
+XPM_MODE="<unavailable>"
+VERITY_REQ="<unavailable>"
+SOINFO_HITS="<unavailable>"
+SOINFO_VERDICT="unavailable"
+SOINFO_HAP=""
+COMPARE_LIB_RESULT=""
 
 while [ $# -gt 0 ]; do
     case "$1" in
@@ -144,6 +169,11 @@ while [ $# -gt 0 ]; do
             [ -f "$1" ] || { warn "--hap 文件不存在: $1"; exit 2; }
             if [ -z "$HAPS" ]; then HAPS="$1"; else HAPS="$HAPS
 $1"; fi
+            ;;
+        --compare-lib)
+            shift
+            [ $# -gt 0 ] || { warn "--compare-lib 需要一个 .so 路径"; usage >&2; exit 2; }
+            COMPARE_LIB="$1"
             ;;
         --install)   INSTALL=1 ;;
         --uninstall) UNINSTALL=1 ;;
@@ -189,6 +219,9 @@ if [ -n "$EXPECT_TREE" ]; then
     case "$EXPECT_TREE" in *[!0-9a-fA-F]*) die "--expect-tree-digest 不是十六进制 sha256: $EXPECT_TREE" ;; esac
     [ "${#EXPECT_TREE}" -eq 64 ] || die "--expect-tree-digest 需要 64 个十六进制字符"
 fi
+
+# kmsg capture target: filled in every recording window (append), scored in step 5
+KMSG_RAW="$OUT/kmsg/kmsg.log"
 
 ACTIONS=0
 if [ "$INSTALL" = 1 ] || [ "$UNINSTALL" = 1 ] || [ "$START" = 1 ] || [ "$CAPTURE" = 1 ] || [ -n "$PROBES_DIR" ]; then
@@ -257,6 +290,7 @@ if [ -z "$TMP" ]; then
 fi
 cleanup() {
     if [ -n "$HILOG_PID" ]; then kill "$HILOG_PID" >/dev/null 2>&1 || true; fi
+    if [ -n "$KMSG_PID" ]; then kill "$KMSG_PID" >/dev/null 2>&1 || true; fi
     if [ -n "$TMP" ] && [ -d "$TMP" ]; then rm -rf "$TMP" || true; fi
 }
 trap cleanup 0 1 2 15
@@ -265,13 +299,15 @@ RESULTS="$TMP/results.txt"
 record() { printf '%s\n' "$*" >> "$RESULTS"; }
 
 stop_hilog() {
-    if [ -n "$HILOG_PID" ]; then
-        kill "$HILOG_PID" >/dev/null 2>&1 || true
+    for _sp in "$HILOG_PID" "$KMSG_PID"; do
+        [ -n "$_sp" ] || continue
+        kill "$_sp" >/dev/null 2>&1 || true
         sleep 1
-        kill -9 "$HILOG_PID" >/dev/null 2>&1 || true
-        wait "$HILOG_PID" >/dev/null 2>&1 || true
-        HILOG_PID=""
-    fi
+        kill -9 "$_sp" >/dev/null 2>&1 || true
+        wait "$_sp" >/dev/null 2>&1 || true
+    done
+    HILOG_PID=""
+    KMSG_PID=""
 }
 
 # ---- kit helpers ---------------------------------------------------------------------
@@ -520,12 +556,42 @@ proc_alive() {
     return 1
 }
 
+# ---- ELF-signing evidence helpers (research doc §6) ----------------------------------
+# kmsg stream in the same window as hilog; first window truncates, later windows append
+kmsg_start() {
+    [ -n "$KMSG_RAW" ] || return 0
+    mkdir -p "$(dirname "$KMSG_RAW")"
+    if [ "$KMSG_STARTED" = 0 ]; then
+        : > "$KMSG_RAW"
+        KMSG_STARTED=1
+    fi
+    hdc_cmd shell "hilog -t kmsg" >> "$KMSG_RAW" 2>&1 &
+    KMSG_PID=$!
+    log "   已开始录制 kmsg -> $KMSG_RAW"
+}
+
+# read a device /proc value; missing path / non-numeric output -> <unavailable>
+proc_value() {
+    _pv="$(hdc_cmd shell "cat $1" 2>/dev/null | tr -d '\r' | sed -n '1{s/^[[:space:]]*//;s/[[:space:]]*$//;p;}')"
+    case "$_pv" in
+        ''|*[!0-9]*) printf '%s' "<unavailable>" ;;
+        *) printf '%s' "$_pv" ;;
+    esac
+}
+
+# SoInfoSegment magic 0x20e7d20e count (research doc §6.3) on a hap; non-numeric/error -> rc!=0
+soinfo_count() {
+    [ -f "$1" ] || return 1
+    python3 -c 'import re,sys; d=open(sys.argv[1],"rb").read(); print(len(re.findall(bytes.fromhex("20e7d20e"), d)))' "$1" 2>/dev/null || return 1
+}
+
 capture_start() {
     _raw="$1"
     mkdir -p "$(dirname "$_raw")"
     hdc_cmd shell hilog -r > "$_raw.clear" 2>&1 || warn "   hilog -r 失败（继续录制）"
     hdc_cmd hilog > "$_raw" 2>&1 &
     HILOG_PID=$!
+    kmsg_start
     log "   已开始录制 hilog -> $_raw"
 }
 
@@ -560,11 +626,12 @@ if [ "$START" = 0 ] && [ "$CAPTURE" = 0 ]; then
     log "   [dry-run] 未加 --start/--capture；将执行:"
     log "     $(hdc_show) shell aa start -a EntryAbility -b $BUNDLE"
     log "     $(hdc_show) shell hilog -r && $(hdc_show) hilog > hilog/hilog-full.txt   # 录 ${CAPTURE_SECS}s"
+    log "     $(hdc_show) shell \"hilog -t kmsg\" >> kmsg/kmsg.log   # 同一窗口（ELF 签名证据）"
     log "     grep -E \"$FILTER_RE\" hilog-full.txt > hilog/hilog-filtered.txt"
     record "start_result=skipped(dry-run)"
     record "capture_result=skipped(dry-run)"
 elif [ "$CAPTURE" = 1 ] && [ "$START" = 1 ]; then
-    log "== 2-3/5 启动 + hilog 录制（--start --capture ${CAPTURE_SECS}s） =="
+    log "== 2-3/5 启动 + hilog/kmsg 录制（--start --capture ${CAPTURE_SECS}s） =="
     log "   先 hilog -r、再开录、再启动（保证抓到启动日志）"
     mkdir -p "$OUT/start" "$OUT/hilog"
     capture_start "$OUT/hilog/hilog-full.txt"
@@ -609,7 +676,7 @@ elif [ "$START" = 1 ]; then
     record "capture_result=skipped(not requested)"
     if [ "$START_RESULT" != ok ] || [ "$START_ALIVE" = no ]; then FAILURES=$((FAILURES + 1)); fi
 else
-    log "== 3/5 hilog 录制（--capture ${CAPTURE_SECS}s，不加 --start） =="
+    log "== 3/5 hilog/kmsg 录制（--capture ${CAPTURE_SECS}s，不加 --start） =="
     log "   录制窗口内请手动启动/操作应用（或加 --start 让脚本启动）"
     mkdir -p "$OUT/hilog"
     capture_start "$OUT/hilog/hilog-full.txt"
@@ -689,10 +756,14 @@ fi
 # ---- step 5: collect + pack ----------------------------------------------------------
 log "== 5/5 采集与打包 =="
 if [ "$DO_DEVICE" = 0 ]; then
-    log "   [dry-run] 将采集: hilog 捕获、module.json、param get + UDID、kit 哈希、summary.txt"
+    log "   [dry-run] 将采集: hilog+kmsg 捕获、module.json、param get + UDID、kit 哈希、summary.txt"
+    log "   [dry-run] 将采集 ELF 签名证据: xpm_mode/require_signatures、SoInfoSegment magic 计数"
+    if [ -n "$COMPARE_LIB" ]; then
+        log "   [dry-run] 本地对照: binary-sign-tool display-sign -inFile $COMPARE_LIB（若工具在 PATH 上）"
+    fi
     log "   [dry-run] 将打包: $(dirname "$OUT")/$(basename "$OUT")-<时间戳>.tar.gz"
 else
-    mkdir -p "$OUT/meta" "$OUT/device" "$OUT/hilog" "$OUT/start" "$OUT/install"
+    mkdir -p "$OUT/meta" "$OUT/device" "$OUT/hilog" "$OUT/kmsg" "$OUT/start" "$OUT/install"
     if extract_module_json "$MAIN_HAP" "$OUT/meta/module.json"; then
         log "   module.json -> $OUT/meta/module.json"
     else
@@ -722,6 +793,80 @@ else
     _soft="$(sed -n 's/^const.product.software.version=//p' "$OUT/device/param-get.txt" | head -n1)"
     log "   设备信息 -> $OUT/device/（model=$_model api=$_api soft=$_soft udid=${UDID:-<未取到>}）"
 
+    # ---- ELF-signing evidence (research doc §6; read-only, missing paths tolerated) ----
+    if [ "$KMSG_STARTED" = 1 ] && [ -s "$KMSG_RAW" ]; then
+        _rc=0
+        grep -Ei "$FILTER_KMSG_RE" "$KMSG_RAW" > "$OUT/kmsg/kmsg-filtered.log" 2>/dev/null || _rc=$?
+        if [ "$_rc" -gt 1 ]; then
+            warn "   kmsg 过滤失败（grep rc=$_rc）"
+            : > "$OUT/kmsg/kmsg-filtered.log"
+        fi
+        KMSG_RESULT="ok"
+        KMSG_LINES="$(line_count "$KMSG_RAW")"
+        KMSG_FILTERED_LINES="$(line_count "$OUT/kmsg/kmsg-filtered.log")"
+        if [ "$KMSG_FILTERED_LINES" -eq 0 ]; then
+            warn "   kmsg 过滤结果为空（未见 xpm/unsigned file/fs_security_verity 等事件）"
+        fi
+        log "   kmsg -> $KMSG_RAW（${KMSG_LINES} 行原始 / ${KMSG_FILTERED_LINES} 行命中）"
+    elif [ "$KMSG_STARTED" = 1 ]; then
+        KMSG_RESULT="empty"
+        : > "$OUT/kmsg/kmsg.log"
+        : > "$OUT/kmsg/kmsg-filtered.log"
+        warn "   kmsg 录制为空（设备可能不暴露 hilog -t kmsg）；保留空证据文件"
+    else
+        KMSG_RESULT="not_captured"
+        : > "$OUT/kmsg/kmsg.log"
+        : > "$OUT/kmsg/kmsg-filtered.log"
+        warn "   kmsg 未捕获（本轮没有 hilog 录制窗口）"
+    fi
+
+    XPM_MODE="$(proc_value /proc/sys/kernel/xpm/xpm_mode)"
+    VERITY_REQ="$(proc_value /proc/sys/fs/verity/require_signatures)"
+    printf '%s\n' "$XPM_MODE" > "$OUT/device/xpm_mode.txt"
+    printf '%s\n' "$VERITY_REQ" > "$OUT/device/require_signatures.txt"
+    log "   强制级别: xpm_mode=$XPM_MODE require_signatures=$VERITY_REQ（缺失路径记为 <unavailable>）"
+
+    SOINFO_HAP="$MAIN_HAP"
+    SOINFO_HITS="<unavailable>"
+    if command -v python3 >/dev/null 2>&1; then
+        SOINFO_HITS="$(soinfo_count "$MAIN_HAP" 2>/dev/null || true)"
+        [ -n "$SOINFO_HITS" ] || SOINFO_HITS="<error>"
+        if [ "$SOINFO_HITS" = 0 ] && [ -z "$HAPS" ]; then
+            # no explicit --hap: fall back to the first signed hap found in the kit
+            for _c in "$KIT_DIR"/*.hap; do
+                [ -f "$_c" ] || continue
+                _hv="$(soinfo_count "$_c" 2>/dev/null || true)"
+                case "$_hv" in ''|*[!0-9]*) continue ;; esac
+                if [ "$_hv" -ge 1 ]; then SOINFO_HITS="$_hv"; SOINFO_HAP="$_c"; break; fi
+            done
+        fi
+    else
+        SOINFO_HITS="<unavailable:python3>"
+    fi
+    case "$SOINFO_HITS" in
+        0)  SOINFO_VERDICT="absent(no code signing)" ;;
+        ''|*[!0-9]*) SOINFO_VERDICT="unavailable" ;;
+        *)  SOINFO_VERDICT="present" ;;
+    esac
+    log "   SoInfoSegment magic: $SOINFO_HITS hit(s) in $SOINFO_HAP（$SOINFO_VERDICT）"
+
+    COMPARE_LIB_RESULT=""
+    if [ -n "$COMPARE_LIB" ]; then
+        if ! command -v binary-sign-tool >/dev/null 2>&1; then
+            COMPARE_LIB_RESULT="skipped(binary-sign-tool not on PATH)"
+            warn "   --compare-lib: PATH 上没有 binary-sign-tool，跳过本地对照（$COMPARE_LIB）"
+        elif [ ! -f "$COMPARE_LIB" ]; then
+            COMPARE_LIB_RESULT="skipped(file not found)"
+            warn "   --compare-lib: 本地文件不存在，跳过对照: $COMPARE_LIB"
+        else
+            _rc=0
+            binary-sign-tool display-sign -inFile "$COMPARE_LIB" > "$OUT/meta/compare-lib-display-sign.txt" 2>&1 || _rc=$?
+            _first="$(sed -n '/[^[:space:]]/{p;q;}' "$OUT/meta/compare-lib-display-sign.txt" 2>/dev/null)"
+            COMPARE_LIB_RESULT="${_first:-<empty output rc=$_rc>}"
+            log "   --compare-lib display-sign: $COMPARE_LIB_RESULT"
+        fi
+    fi
+
     {
         printf '# tester-run.sh 摘要（每行 KEY=value；值取第一个 = 之后的内容）\n'
         printf 'script_version=%s\n' "$SCRIPT_VERSION"
@@ -743,6 +888,18 @@ else
         printf 'bundle=%s\n' "$BUNDLE"
         printf 'main_hap=%s\n' "$MAIN_HAP"
         printf 'main_hap_sha256=%s\n' "$MAIN_HAP_SHA"
+        printf 'kmsg_capture=%s\n' "$KMSG_RESULT"
+        printf 'kmsg_lines=%s\n' "$KMSG_LINES"
+        printf 'kmsg_filtered_lines=%s\n' "$KMSG_FILTERED_LINES"
+        printf 'xpm_mode=%s\n' "$XPM_MODE"
+        printf 'verity_require_signatures=%s\n' "$VERITY_REQ"
+        printf 'soinfosegment_hap=%s\n' "$SOINFO_HAP"
+        printf 'soinfosegment_magic_hits=%s\n' "$SOINFO_HITS"
+        printf 'soinfosegment_magic_verdict=%s\n' "$SOINFO_VERDICT"
+        if [ -n "$COMPARE_LIB" ]; then
+            printf 'compare_lib=%s\n' "$COMPARE_LIB"
+            printf 'compare_lib_display_sign=%s\n' "$COMPARE_LIB_RESULT"
+        fi
         cat "$RESULTS" 2>/dev/null || true
         printf 'failures=%s\n' "$FAILURES"
     } > "$OUT/summary.txt"
@@ -774,7 +931,7 @@ log "归档:   $ARCHIVE"
 log "sha256: $(cut -d' ' -f1 "$ARCHIVE.sha256")"
 log "回传:   把 $ARCHIVE（连同 .sha256）发给交付方 —— 与收到 device-test-kit 相同的渠道"
 log "        （邮件/IM/工单）；GitHub 用户可附到 springmin/sdk-ohos 的 issue。"
-log "        归档内已有：hilog/、probes/、meta/module.json、device/udid.txt、summary.txt。"
+log "        归档内已有：hilog/、kmsg/、probes/、meta/module.json、device/udid.txt、summary.txt。"
 if [ "$FAILURES" -gt 0 ]; then
     warn "本轮有 $FAILURES 项未通过：详情见 $OUT/summary.txt"
     exit 1
