@@ -22,7 +22,7 @@ on:
         description: 'maui-ohos commit SHA to compile (defaults to the pinned feature/openharmony tip)'
         required: false
         type: string
-        default: 'be5d471f4c962c47533cda919fc57c825a932776'
+        default: '6a4062b7264623de26aa18e0b6f69032901a91e6'
 
 # Least privilege: the job only reads this repository and the public springmin/maui-ohos fork;
 # no step pushes anywhere.
@@ -32,10 +32,10 @@ permissions:
 # Reproducible cross-repo compile: the MAUI slice is checked out at an exact commit, not the
 # mutable feature/openharmony branch, so a push to the fork cannot change what this gate compiles.
 # The default is the feature/openharmony tip verified with
-# `gh api repos/springmin/maui-ohos/commits/feature/openharmony --jq .sha` on 2026-09-21
-# (be5d471f); advance it deliberately (workflow_dispatch can compile any other commit SHA).
+# `git ls-remote https://github.com/springmin/maui-ohos feature/openharmony` on 2026-09-22
+# (6a4062b7); advance it deliberately (workflow_dispatch can compile any other commit SHA).
 env:
-  MAUI_OHOS_REF: ${{ github.event.inputs.maui_ohos_ref || 'be5d471f4c962c47533cda919fc57c825a932776' }}
+  MAUI_OHOS_REF: ${{ github.event.inputs.maui_ohos_ref || '6a4062b7264623de26aa18e0b6f69032901a91e6' }}
 
 jobs:
   pixel:

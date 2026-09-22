@@ -12,9 +12,10 @@ name: interaction-regression
 #
 # verify.csproj turns those environment variables into MSBuild default properties (an explicit
 # -p: override still wins), so no other configuration is required. The job fails unless the suite
-# exits 0, reports at least 224 "[verify]" lines (231 interaction checks - including the ten
-# late-app-context HybridWebView assertions and the eighteen V8 app-context publish assertions -
-# plus 4 fuzz lines, the frame-path perf line and the 8 accessibility publish-path perf lines),
+# exits 0, reports at least 255 "[verify]" lines (275 total: 262 interaction checks - including
+# the ten late-app-context HybridWebView assertions and the eighteen V8 app-context publish
+# assertions - plus 4 fuzz lines, the frame-path perf line and the 8 accessibility publish-path
+# perf lines),
 # logs no "Unhandled" line, and both perf lines carry the "within=True" budget marker:
 #   * the frame-path gate - 200 timed OpenHarmonyWindowRenderer.Render frames over a fixed 401-node
 #     tree: average <= 20 ms, max <= 250 ms, max/average <= 100x;
@@ -29,7 +30,7 @@ on:
         description: 'maui-ohos commit SHA to compile (defaults to the pinned feature/openharmony tip)'
         required: false
         type: string
-        default: 'be5d471f4c962c47533cda919fc57c825a932776'
+        default: '6a4062b7264623de26aa18e0b6f69032901a91e6'
   push:
     branches: [ master ]
 
@@ -41,11 +42,11 @@ permissions:
 # Reproducible cross-repo compile: the MAUI slice is checked out at an exact commit, not the
 # mutable feature/openharmony branch, so a push to the fork cannot change what this gate compiles.
 # The default is the feature/openharmony tip verified with
-# `gh api repos/springmin/maui-ohos/commits/feature/openharmony --jq .sha` on 2026-09-21
-# (be5d471f, the B4/B5/B6/B7 harness tip the 256-check suite asserts); advance it
+# `git ls-remote https://github.com/springmin/maui-ohos feature/openharmony` on 2026-09-22
+# (6a4062b7, the BATCH-1/BATCH-2 tip the 275-check suite asserts); advance it
 # deliberately (workflow_dispatch can compile any other commit SHA).
 env:
-  MAUI_OHOS_REF: ${{ github.event.inputs.maui_ohos_ref || 'be5d471f4c962c47533cda919fc57c825a932776' }}
+  MAUI_OHOS_REF: ${{ github.event.inputs.maui_ohos_ref || '6a4062b7264623de26aa18e0b6f69032901a91e6' }}
 
 jobs:
   interaction:
@@ -84,8 +85,8 @@ jobs:
           cat out.txt
           checks=$(grep -c '\[verify\]' out.txt || true)
           echo "interaction checks reported: $checks"
-          if [ "$checks" -lt 224 ]; then
-            echo "::error::expected at least 224 [verify] lines, got $checks"
+          if [ "$checks" -lt 255 ]; then
+            echo "::error::expected at least 255 [verify] lines, got $checks"
             exit 1
           fi
           if grep -q Unhandled out.txt; then
