@@ -1356,13 +1356,28 @@ struct Index {
     });
 
     // File/media pickers: the managed side asks for the system picker; the chosen file's name
-    // and bytes travel back as base64 (all kinds use the document picker, so the shell needs no
-    // extra UI component). Device-compat: the camera module and the camera picker module are
-    // imported lazily; when either is missing the camera branch answers -1 (the managed side
-    // reports IsSupported == false).
+    // and bytes travel back as base64 through host.notifyPickerResult.
+    //
+    // Request kind (managed OpenHarmonyPickerClient.PackKind):
+    //   bits 0-2  mode: 0 documents, 1 photos, 2 videos, 3 capture photo, 4 capture video
+    //   bit 3     multi-select; the legacy kinds 0-4 (bit 3 clear) stay single-select
+    //   bits 4+   requested maxSelectNumber for a multi request (0 = the picker maximum, 500)
+    // Result framing: one rc=0 per file; a multi pick is followed by rc=1 (end marker) so the
+    // managed accumulator can complete, and a cancel/unavailable pick answers rc=-1.
+    //
+    // Modes 1/2 use the photoAccessHelper PhotoViewPicker (media-only gallery UI; the
+    // @ohos.file.picker PhotoViewPicker is deprecated in its favour) and modes 3/4 are the
+    // separate camera-capture path (cameraPicker). Device-compat: photoAccessHelper, camera
+    // and cameraPicker are imported lazily; when camera/cameraPicker is missing the capture
+    // branch answers -1 (the managed side reports IsSupported == false), and when
+    // photoAccessHelper is missing photo/video picking falls back to the document picker.
     this.hostCall('registerPickerSink', typeof host.registerPickerSink === 'function', (): void => {
       host.registerPickerSink(async (requestId: number, kind: number) => {
-        if (kind === 3 || kind === 4) {
+        const mode: number = kind & 7;
+        const multi: boolean = (kind & 8) !== 0;
+        const rawCount: number = kind >> 4;
+        const count: number = multi ? (rawCount === 0 ? 500 : Math.min(rawCount, 500)) : 1;
+        if (mode === 3 || mode === 4) {
           if (this.lazyUnavailable('camera') || this.lazyUnavailable('cameraPicker')) {
             this.hostCall('notifyPickerResult', typeof host.notifyPickerResult === 'function', (): void => {
               host.notifyPickerResult(requestId, -1, '', '');
@@ -1392,7 +1407,7 @@ struct Index {
           try {
             const pickers = await import('@ohos.multimedia.cameraPicker');
             try {
-              const mediaType = kind === 3 ? pickers.default.PickerMediaType.PHOTO : pickers.default.PickerMediaType.VIDEO;
+              const mediaType = mode === 3 ? pickers.default.PickerMediaType.PHOTO : pickers.default.PickerMediaType.VIDEO;
               const picked = await pickers.default.pick(getContext(this), [mediaType], {
                 cameraPosition: backPosition,
               });
@@ -1420,34 +1435,23 @@ struct Index {
           }
           return;
         }
-        // Document picker (kinds other than the camera capture) stays on the static
-        // @ohos.file.picker / @ohos.file.fs imports.
-        try {
-          const documentPicker = new picker.DocumentViewPicker();
-          const uris = await documentPicker.select({ maxSelectNumber: 1 });
-          if (!uris || uris.length === 0) {
-            this.hostCall('notifyPickerResult', typeof host.notifyPickerResult === 'function', (): void => {
-              host.notifyPickerResult(requestId, -1, '', '');
-            });
+        if (mode === 1 || mode === 2) {
+          // Media (photos/videos) goes through the photoAccessHelper PhotoViewPicker first;
+          // null means the module is missing on this device (cached), so the request falls
+          // back to the document picker below - the pre-photoAccessHelper behaviour.
+          const mediaUris: string[] | null = await this.selectMediaUris(mode, count);
+          if (mediaUris !== null) {
+            if (mediaUris.length === 0) {
+              this.answerPickerCancel(requestId);
+            } else {
+              this.answerPickerFiles(requestId, multi, mediaUris);
+            }
             return;
           }
-          const uri = uris[0];
-          const file = fs.openSync(uri, fs.OpenMode.READ_ONLY);
-          const stat = fs.statSync(file.fd);
-          const buffer = new ArrayBuffer(stat.size);
-          fs.readSync(file.fd, buffer);
-          fs.closeSync(file);
-          const helper = new util.Base64Helper();
-          const encoded = helper.encodeToStringSync(new Uint8Array(buffer));
-          const name = uri.substring(uri.lastIndexOf('/') + 1);
-          this.hostCall('notifyPickerResult', typeof host.notifyPickerResult === 'function', (): void => {
-            host.notifyPickerResult(requestId, 0, name, encoded);
-          });
-        } catch (error) {
-          this.hostCall('notifyPickerResult', typeof host.notifyPickerResult === 'function', (): void => {
-            host.notifyPickerResult(requestId, -1, '', '');
-          });
         }
+        // Documents (and the media fallback) stay on the static @ohos.file.picker /
+        // @ohos.file.fs imports, with the caller's maxSelectNumber (1 for single-select).
+        await this.selectDocumentUris(requestId, multi, count);
       });
     });
 
@@ -2004,6 +2008,94 @@ struct Index {
       });
     });
     this.pullMenu();
+  }
+
+  // Picker result framing (managed OpenHarmonyPickerClient.Complete): a cancel/unavailable
+  // answer is rc=-1, each picked file is one rc=0 callback, and a multi pick ends with rc=1.
+  // The callbacks are delivered in order, so the managed accumulator completes on the marker.
+  private answerPickerCancel(requestId: number): void {
+    this.hostCall('notifyPickerResult', typeof host.notifyPickerResult === 'function', (): void => {
+      host.notifyPickerResult(requestId, -1, '', '');
+    });
+  }
+
+  private answerPickerFiles(requestId: number, multi: boolean, uris: string[]): void {
+    for (let i = 0; i < uris.length; i++) {
+      const uri: string = uris[i];
+      let name: string = uri.substring(uri.lastIndexOf('/') + 1);
+      let encoded: string = '';
+      try {
+        const file = fs.openSync(uri, fs.OpenMode.READ_ONLY);
+        try {
+          const stat = fs.statSync(file.fd);
+          const buffer = new ArrayBuffer(stat.size);
+          fs.readSync(file.fd, buffer);
+          encoded = new util.Base64Helper().encodeToStringSync(new Uint8Array(buffer));
+        } finally {
+          fs.closeSync(file);
+        }
+      } catch (readError) {
+        // An unreadable file (or one whose base64 exceeds the host's per-result cap) is
+        // reported with empty data and dropped by the managed side instead of failing the
+        // whole selection.
+        console.error(`[maui] picker read failed: ${(readError as Error).message}`);
+        encoded = '';
+      }
+      this.hostCall('notifyPickerResult', typeof host.notifyPickerResult === 'function', (): void => {
+        host.notifyPickerResult(requestId, 0, name, encoded);
+      });
+    }
+    if (multi) {
+      this.hostCall('notifyPickerResult', typeof host.notifyPickerResult === 'function', (): void => {
+        host.notifyPickerResult(requestId, 1, '', '');
+      });
+    }
+  }
+
+  // Documents: the pre-existing DocumentViewPicker path, extended with the caller-provided
+  // maxSelectNumber (1 for every single-select request, so those keep their exact behaviour).
+  private async selectDocumentUris(requestId: number, multi: boolean, count: number): Promise<void> {
+    try {
+      const documentPicker = new picker.DocumentViewPicker();
+      const uris = await documentPicker.select({ maxSelectNumber: count });
+      if (!uris || uris.length === 0) {
+        this.answerPickerCancel(requestId);
+        return;
+      }
+      this.answerPickerFiles(requestId, multi, uris);
+    } catch (error) {
+      console.error(`[maui] document picker failed: ${(error as Error).message}`);
+      this.answerPickerCancel(requestId);
+    }
+  }
+
+  // Photos/videos: photoAccessHelper PhotoViewPicker (media-only gallery UI). Returns null when
+  // the module is missing on this device (cached) so the caller falls back to the document
+  // picker; an empty array is a user cancel and a pick failure answers like an empty pick.
+  private async selectMediaUris(mode: number, count: number): Promise<string[] | null> {
+    if (this.lazyUnavailable('photoAccessHelper')) {
+      return null;
+    }
+    try {
+      const photoAccess = await import('@ohos.file.photoAccessHelper');
+      try {
+        const selectOptions = new photoAccess.default.PhotoSelectOptions();
+        selectOptions.MIMEType = mode === 1
+          ? photoAccess.default.PhotoViewMIMETypes.IMAGE_TYPE
+          : photoAccess.default.PhotoViewMIMETypes.VIDEO_TYPE;
+        selectOptions.maxSelectNumber = count;
+        const photoPicker = new photoAccess.default.PhotoViewPicker();
+        const picked = await photoPicker.select(selectOptions);
+        const uris: string[] = picked.photoUris;
+        return uris ? uris : [];
+      } catch (pickError) {
+        console.error(`[maui] photo picker failed: ${(pickError as Error).message}`);
+        return [];
+      }
+    } catch (importError) {
+      this.noteLazyFailure('photoAccessHelper', importError as Error);
+      return null;
+    }
   }
 
   // Late app-context publish: the native host stores the context JSON once, at startApp time,
