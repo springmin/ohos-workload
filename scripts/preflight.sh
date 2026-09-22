@@ -229,6 +229,10 @@ elif [ ! -f "$PROJ_PIXEL/headless-render.csproj" ]; then
     ST_PIXEL="FAIL (project missing)"
     FAILED=$((FAILED + 1))
 else
+    # The OpenHarmony codesign target re-signs every ELF under bin/ after each build; with the
+    # installed SDK, rewriting an already-signed apphost fails with "Access to the path is
+    # denied" on a second run. Remove the outputs so the apphost is always signed exactly once.
+    rm -rf "$PROJ_PIXEL/bin"
     (cd "$PROJ_PIXEL" && "$DOTNET" run -c Release) > "$LOG_DIR/pixel.log" 2>&1
     PIXEL_RC=$?
     if [ "$PIXEL_RC" -eq 0 ] && grep -q 'PIXEL ASSERTIONS PASSED' "$LOG_DIR/pixel.log"; then
