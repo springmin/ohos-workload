@@ -18,6 +18,18 @@
 # bundle name of the HAP it is packaged into. The workload demo bundle is
 # com.example.hellomauiapp (OpenHarmonyBundleName default, AssemblyName minus hyphens);
 # override with ARKTS_SHELL_BUNDLE_NAME (or KIT_BUNDLE_NAME) when packaging another app.
+#
+# abc version: the device's ArkTS runtime (HarmonyOS 7.0.0.105) rejects the 24.0.0.0 abc
+# the SDK 26.0.0.18 toolchain emits by default ("export objects of native so is undefined",
+# exit 254); a known-good app on the same device ships 13.0.1.0. hvigor/ets-loader forwards
+# the project's compatibleSdkVersion to `es2abc --target-api-version` (see the SDK's
+# ets-loader/lib/fast_build/ark_compiler/module/module_mode.js), and this SDK maps
+# 18|20 -> 13.0.1.0, 13..16 -> 12.0.6.0, >=24 -> 24.0.0.0. The script therefore keeps
+# compileSdkVersion/targetSdkVersion on the installed platform but sets compatibleSdkVersion
+# to ARKTS_COMPATIBLE_SDK_VERSION (default 18). The emitted version is read back from the
+# abc header (one byte per component at offset 0x0c: magic 8 B, adler32 4 B) and must not
+# exceed ARKTS_MAX_BC_VERSION (default 13.0.1.0); override the latter to build for a newer
+# device runtime.
 if [ -z "${BASH_VERSION:-}" ] && command -v bash >/dev/null 2>&1; then
     exec bash "$0" "$@"
 fi
@@ -39,6 +51,11 @@ OUT_DIR="${OUT_DIR:-$W/dist/ets}"
 # Bundle name compiled into the shell abc; see the useNormalizedOHMUrl note above. Keep it
 # in sync with the HAP's OpenHarmonyBundleName (default com.example.<assembly minus hyphens>).
 BUNDLE_NAME="${ARKTS_SHELL_BUNDLE_NAME:-${KIT_BUNDLE_NAME:-com.example.hellomauiapp}}"
+# compatibleSdkVersion of the generated hvigor project. 18 is the lowest API level whose
+# es2abc output is 13.0.1.0, the newest abc the device runtime accepts (see the abc note
+# in the header). Raise it only together with ARKTS_MAX_BC_VERSION.
+COMPATIBLE_SDK_VERSION="${ARKTS_COMPATIBLE_SDK_VERSION:-18}"
+MAX_BC_VERSION="${ARKTS_MAX_BC_VERSION:-13.0.1.0}"
 
 info() { printf '==> %s\n' "$*"; }
 die() { printf 'ERROR: %s\n' "$*" >&2; exit 1; }
@@ -108,9 +125,9 @@ cp "$TPL/resources/base/element/color.json" "$PROJ/entry/src/main/resources/base
 cp "$TPL/resources/base/media/app_icon.png" "$PROJ/entry/src/main/resources/base/media/"
 cp "$TPL/resources/base/media/app_icon.png" "$PROJ/AppScope/resources/base/media/"
 
-python3 - "$PROJ" "$PLATFORM_VERSION" "$API_VERSION" "$TYPECHECK" "$BUNDLE_NAME" <<'PY'
+python3 - "$PROJ" "$PLATFORM_VERSION" "$API_VERSION" "$TYPECHECK" "$BUNDLE_NAME" "$COMPATIBLE_SDK_VERSION" <<'PY'
 import json, os, sys
-proj, platform_version, api_version, typecheck, bundle_name = sys.argv[1:6]
+proj, platform_version, api_version, typecheck, bundle_name, compatible_sdk_version = sys.argv[1:7]
 typecheck_json = 'true' if typecheck == '1' else 'false'
 def w(rel, text):
     with open(os.path.join(proj, rel), 'w') as f: f.write(text)
@@ -184,7 +201,7 @@ w('build-profile.json5', f"""{{
       {{
         name: 'default',
         compileSdkVersion: '{platform_version}',
-        compatibleSdkVersion: '{platform_version}',
+        compatibleSdkVersion: '{compatible_sdk_version}',
         targetSdkVersion: '{platform_version}',
         runtimeOS: 'OpenHarmony',
         buildOption: {{
@@ -297,5 +314,19 @@ ABC="$(find "$PROJ/entry/build" -name modules.abc | head -1)"
 [ -n "$ABC" ] || die "modules.abc not produced (see .arkts-build/project/.hvigor/outputs/build-logs)"
 mkdir -p "$OUT_DIR"
 cp "$ABC" "$OUT_DIR/modules.abc"
-info "ArkTS shell compiled: $OUT_DIR/modules.abc ($(stat -c%s "$OUT_DIR/modules.abc") bytes)"
+# Read the abc version back from the fixed header: 8 B magic "PANDA\0\0\0", 4 B adler32,
+# then one byte per version component at offset 0x0c. Fail when it is newer than the
+# runtime limit, because the device then refuses to load the module (exit 254).
+BC_VERSION="$(python3 - "$OUT_DIR/modules.abc" "$MAX_BC_VERSION" <<'PY'
+import sys
+abc, maximum = sys.argv[1], sys.argv[2]
+raw = open(abc, 'rb').read(0x10)
+assert raw[:5] == b'PANDA', f'{abc}: not an abc file'
+version = tuple(raw[0x0c:0x10])
+print('.'.join(str(b) for b in version))
+max_version = tuple(int(p) for p in maximum.split('.')) if maximum and maximum != 'any' else ()
+sys.exit(3 if max_version and version > max_version else 0)
+PY
+)" || die "abc version $BC_VERSION is newer than $MAX_BC_VERSION (set ARKTS_MAX_BC_VERSION=any to allow, or ARKTS_COMPATIBLE_SDK_VERSION to a level whose es2abc output the device accepts)"
+info "ArkTS shell compiled: $OUT_DIR/modules.abc ($(stat -c%s "$OUT_DIR/modules.abc") bytes, abc version $BC_VERSION, compatibleSdkVersion $COMPATIBLE_SDK_VERSION)"
 info "package it with: -p:OpenHarmonyUIPage=pages/Index -p:OpenHarmonyArktsModulesAbc=$OUT_DIR/modules.abc"

@@ -347,7 +347,7 @@ struct Index {
   private reportTheme(): void {
     try {
       const mode: ColorMode | undefined = AppStorage.get<ColorMode>('colorMode');
-      this.hostCall('notifyTheme', typeof host.notifyTheme === 'function', (): void => {
+      this.hostCall('notifyTheme', typeof host !== 'undefined' && typeof host.notifyTheme === 'function', (): void => {
         host.notifyTheme(mode === ColorMode.DARK ? 1 : 0);
       });
     } catch (themeError) {
@@ -374,7 +374,7 @@ struct Index {
       try {
         const present: number = basicServices.batteryInfo.isBatteryPresent ? 1 : 0;
         const payload: string = `${basicServices.batteryInfo.batterySOC}\t${basicServices.batteryInfo.chargingStatus}\t${basicServices.batteryInfo.pluggedType}\t${present}\t${basicServices.power.getPowerMode()}`;
-        this.hostCall('notifyBattery', typeof host.notifyBattery === 'function', (): void => {
+        this.hostCall('notifyBattery', typeof host !== 'undefined' && typeof host.notifyBattery === 'function', (): void => {
           host.notifyBattery(payload);
         });
       } catch (batteryError) {
@@ -392,7 +392,7 @@ struct Index {
     try {
       const info = display.getDefaultDisplaySync();
       const payload: string = `${info.width}\t${info.height}\t${info.densityDPI}\t${info.rotation}\t${info.refreshRate}\t${info.orientation}`;
-      this.hostCall('notifyDisplay', typeof host.notifyDisplay === 'function', (): void => {
+      this.hostCall('notifyDisplay', typeof host !== 'undefined' && typeof host.notifyDisplay === 'function', (): void => {
         host.notifyDisplay(payload);
       });
     } catch (displayError) {
@@ -415,7 +415,7 @@ struct Index {
       try {
         const info = modules.default.getBundleInfoForSelfSync(
           modules.default.BundleFlag.GET_BUNDLE_INFO_WITH_APPLICATION);
-        this.hostCall('setBundleInfo', typeof host.setBundleInfo === 'function', (): void => {
+        this.hostCall('setBundleInfo', typeof host !== 'undefined' && typeof host.setBundleInfo === 'function', (): void => {
           host.setBundleInfo(info.versionName, `${info.versionCode}`, info.name);
         });
       } catch (bundleError) {
@@ -512,7 +512,7 @@ struct Index {
 
   // Forward one observed network change; the host reads the current level itself.
   private reportNetworkAccess(): void {
-    this.hostCall('notifyNetworkAccess', typeof host.notifyNetworkAccess === 'function', (): void => {
+    this.hostCall('notifyNetworkAccess', typeof host !== 'undefined' && typeof host.notifyNetworkAccess === 'function', (): void => {
       host.notifyNetworkAccess();
     });
   }
@@ -772,7 +772,7 @@ struct Index {
 
   // Geocoding (Essentials): completes the pending managed request through host.geocodeResult.
   private answerGeocode(requestId: number, rc: number, json: string): void {
-    this.hostCall('geocodeResult', typeof host.geocodeResult === 'function', (): void => {
+    this.hostCall('geocodeResult', typeof host !== 'undefined' && typeof host.geocodeResult === 'function', (): void => {
       host.geocodeResult(requestId, rc, json);
     });
   }
@@ -822,7 +822,7 @@ struct Index {
         value: item.text,
         enabled: item.enabled,
         action: (): void => {
-          this.hostCall('notifyMenuAction', typeof host.notifyMenuAction === 'function', (): void => {
+          this.hostCall('notifyMenuAction', typeof host !== 'undefined' && typeof host.notifyMenuAction === 'function', (): void => {
             host.notifyMenuAction(index);
           });
         }
@@ -865,7 +865,7 @@ struct Index {
               return;
             }
           }
-          this.hostCall('notifyJsMessage', typeof host.notifyJsMessage === 'function', (): void => {
+          this.hostCall('notifyJsMessage', typeof host !== 'undefined' && typeof host.notifyJsMessage === 'function', (): void => {
             host.notifyJsMessage(this.originEnvelope(payload));
           });
         }
@@ -976,7 +976,7 @@ struct Index {
       id = `${now.toString(16)}-${Math.random().toString(16).substring(2)}`;
     }
     this.navPending.set(id, { url: url, expires: now + this.navPendingTtlMs });
-    const delivered: boolean = this.hostCall('notifyJsMessage', typeof host.notifyJsMessage === 'function', (): void => {
+    const delivered: boolean = this.hostCall('notifyJsMessage', typeof host !== 'undefined' && typeof host.notifyJsMessage === 'function', (): void => {
       host.notifyJsMessage(`__OHNAV|${url}|${id}`);
     });
     if (!delivered) {
@@ -1271,7 +1271,7 @@ struct Index {
         console.error(`[maui] bluetooth gatt value encoding failed: ${(encodeError as Error).message}`);
         return;
       }
-      this.hostCall('notifyBluetoothGattEvent', typeof host.notifyBluetoothGattEvent === 'function', (): void => {
+      this.hostCall('notifyBluetoothGattEvent', typeof host !== 'undefined' && typeof host.notifyBluetoothGattEvent === 'function', (): void => {
         host.notifyBluetoothGattEvent(`value\t${this.escapeRecordField(address)}\t${this.escapeRecordField(characteristic.serviceUuid)}\t${this.escapeRecordField(characteristic.characteristicUuid)}\t${value}`);
       });
     });
@@ -1285,7 +1285,7 @@ struct Index {
         }
       }
       const reason: string = change.reason !== undefined ? `${change.reason}` : '';
-      this.hostCall('notifyBluetoothGattEvent', typeof host.notifyBluetoothGattEvent === 'function', (): void => {
+      this.hostCall('notifyBluetoothGattEvent', typeof host !== 'undefined' && typeof host.notifyBluetoothGattEvent === 'function', (): void => {
         host.notifyBluetoothGattEvent(`state\t${this.escapeRecordField(address)}\t${change.state}\t${reason}`);
       });
     });
@@ -1295,7 +1295,7 @@ struct Index {
         this.gattMtuWaiters.delete(address);
         waiter(mtu);
       }
-      this.hostCall('notifyBluetoothGattEvent', typeof host.notifyBluetoothGattEvent === 'function', (): void => {
+      this.hostCall('notifyBluetoothGattEvent', typeof host !== 'undefined' && typeof host.notifyBluetoothGattEvent === 'function', (): void => {
         host.notifyBluetoothGattEvent(`mtu\t${this.escapeRecordField(address)}\t${mtu}`);
       });
     });
@@ -1397,7 +1397,7 @@ struct Index {
   }
 
   private answerBluetoothGatt(requestId: number, code: number, payload: string): void {
-    this.hostCall('notifyBluetoothGattResult', typeof host.notifyBluetoothGattResult === 'function', (): void => {
+    this.hostCall('notifyBluetoothGattResult', typeof host !== 'undefined' && typeof host.notifyBluetoothGattResult === 'function', (): void => {
       host.notifyBluetoothGattResult(requestId, code, payload);
     });
   }
@@ -1549,7 +1549,7 @@ struct Index {
 
   aboutToAppear(): void {
     // 2 = foreground; the native host forwards it to the managed bridge.
-    this.hostCall('notifyLifecycle', typeof host.notifyLifecycle === 'function', (): void => {
+    this.hostCall('notifyLifecycle', typeof host !== 'undefined' && typeof host.notifyLifecycle === 'function', (): void => {
       host.notifyLifecycle(2);
     });
     // App theme: bind the device colour mode into AppStorage (idempotent; the recommended
@@ -1570,25 +1570,25 @@ struct Index {
     // Keep screen on (DeviceDisplay): the managed setter pushes 0/1 through
     // ohos_host_keep_screen_on. Best effort: an older host library without the export leaves
     // the managed cached value unchanged instead of failing the page.
-    this.hostCall('registerKeepScreenOnSink', typeof host.registerKeepScreenOnSink === 'function', (): void => {
+    this.hostCall('registerKeepScreenOnSink', typeof host !== 'undefined' && typeof host.registerKeepScreenOnSink === 'function', (): void => {
       host.registerKeepScreenOnSink((on: number): void => {
         this.applyKeepScreenOn(on);
       });
     });
     // Window chrome (Window handler): the managed title/rect setters arrive here and are
     // applied to the main window. Both are one-way: the .so's 0/-1 only reports the queueing.
-    this.hostCall('registerWindowTitleSink', typeof host.registerWindowTitleSink === 'function', (): void => {
+    this.hostCall('registerWindowTitleSink', typeof host !== 'undefined' && typeof host.registerWindowTitleSink === 'function', (): void => {
       host.registerWindowTitleSink((title: string): void => {
         this.applyWindowTitle(title);
       });
     });
-    this.hostCall('registerWindowRectSink', typeof host.registerWindowRectSink === 'function', (): void => {
+    this.hostCall('registerWindowRectSink', typeof host !== 'undefined' && typeof host.registerWindowRectSink === 'function', (): void => {
       host.registerWindowRectSink((x: number, y: number, w: number, h: number): void => {
         this.applyWindowRect(x, y, w, h);
       });
     });
     // Screenshot (Window handler): a one-way request carrying an app-owned output path.
-    this.hostCall('registerScreenshotSink', typeof host.registerScreenshotSink === 'function', (): void => {
+    this.hostCall('registerScreenshotSink', typeof host !== 'undefined' && typeof host.registerScreenshotSink === 'function', (): void => {
       host.registerScreenshotSink(async (outPath: string): Promise<void> => {
         await this.captureScreenshot(outPath);
       });
@@ -1597,7 +1597,7 @@ struct Index {
     // section text. A registration after the managed publish can miss the first push, so the
     // hosts' stored getters seed the labels; the search field reports user interactions back
     // through host.notifyShellSearch (0 query, 1 submit, 2 cancel).
-    this.hostCall('registerShellSearchChangedSink', typeof host.registerShellSearchChangedSink === 'function', (): void => {
+    this.hostCall('registerShellSearchChangedSink', typeof host !== 'undefined' && typeof host.registerShellSearchChangedSink === 'function', (): void => {
       host.registerShellSearchChangedSink((query: string, placeholder: string, visible: number, enabled: number): void => {
         this.shellSearchQuery = query;
         this.shellSearchPlaceholder = placeholder;
@@ -1605,7 +1605,7 @@ struct Index {
         this.shellSearchEnabled = enabled !== 0;
       });
     });
-    this.hostCall('registerShellFlyoutChangedSink', typeof host.registerShellFlyoutChangedSink === 'function', (): void => {
+    this.hostCall('registerShellFlyoutChangedSink', typeof host !== 'undefined' && typeof host.registerShellFlyoutChangedSink === 'function', (): void => {
       host.registerShellFlyoutChangedSink((op: number, text: string): void => {
         if (op === 0) {
           this.flyoutHeader = text;
@@ -1614,13 +1614,13 @@ struct Index {
         }
       });
     });
-    this.hostCall('shellSearchQuery', typeof host.shellSearchQuery === 'function', (): void => {
+    this.hostCall('shellSearchQuery', typeof host !== 'undefined' && typeof host.shellSearchQuery === 'function', (): void => {
       this.shellSearchQuery = host.shellSearchQuery() as string;
       this.shellSearchPlaceholder = host.shellSearchPlaceholder() as string;
       this.shellSearchVisible = (host.shellSearchVisible() as number) !== 0;
       this.shellSearchEnabled = (host.shellSearchEnabled() as number) !== 0;
     });
-    this.hostCall('shellFlyoutHeader', typeof host.shellFlyoutHeader === 'function', (): void => {
+    this.hostCall('shellFlyoutHeader', typeof host !== 'undefined' && typeof host.shellFlyoutHeader === 'function', (): void => {
       this.flyoutHeader = host.shellFlyoutHeader() as string;
       this.flyoutFooter = host.shellFlyoutFooter() as string;
     });
@@ -1638,7 +1638,7 @@ struct Index {
     // Safe area: report the system avoid area so the managed layout can inset its content.
     window.getLastWindow(getContext(this)).then((win) => {
       const area = win.getWindowAvoidArea(window.AvoidAreaType.TYPE_SYSTEM);
-      this.hostCall('notifyAvoidArea', typeof host.notifyAvoidArea === 'function', (): void => {
+      this.hostCall('notifyAvoidArea', typeof host !== 'undefined' && typeof host.notifyAvoidArea === 'function', (): void => {
         host.notifyAvoidArea(area.topRect.height, area.bottomRect.height,
                              area.leftRect.width, area.rightRect.width);
       });
@@ -1648,7 +1648,7 @@ struct Index {
 
     // WebView: a hidden ArkWeb component that the managed WebView handler drives.
     // Host callback: every controller call runs on the page's UI thread (see runOnUiThread).
-    this.hostCall('registerWebSink', typeof host.registerWebSink === 'function', (): void => {
+    this.hostCall('registerWebSink', typeof host !== 'undefined' && typeof host.registerWebSink === 'function', (): void => {
       host.registerWebSink((op: string, arg: string) => {
         this.runOnUiThread(() => {
           try {
@@ -1688,17 +1688,17 @@ struct Index {
     // JavaScript bridge: the managed side evaluates scripts through ohos_host_web_eval; the
     // runJavaScript result (or its error) travels back to the awaiting request.
     // Host callback: runJavaScript is UI-thread only (see runOnUiThread).
-    this.hostCall('registerWebEvalSink', typeof host.registerWebEvalSink === 'function', (): void => {
+    this.hostCall('registerWebEvalSink', typeof host !== 'undefined' && typeof host.registerWebEvalSink === 'function', (): void => {
       host.registerWebEvalSink((script: string, requestId: number): void => {
         this.runOnUiThread(() => {
           try {
             this.webController.runJavaScript(script, (err, result) => {
-              this.hostCall('notifyWebEvalResult', typeof host.notifyWebEvalResult === 'function', (): void => {
+              this.hostCall('notifyWebEvalResult', typeof host !== 'undefined' && typeof host.notifyWebEvalResult === 'function', (): void => {
                 host.notifyWebEvalResult(requestId, result || '', err ? 1 : 0);
               });
             });
           } catch (evalError) {
-            this.hostCall('notifyWebEvalResult', typeof host.notifyWebEvalResult === 'function', (): void => {
+            this.hostCall('notifyWebEvalResult', typeof host !== 'undefined' && typeof host.notifyWebEvalResult === 'function', (): void => {
               host.notifyWebEvalResult(requestId, '', 1);
             });
           }
@@ -1709,7 +1709,7 @@ struct Index {
     // HybridWebView JS -> .NET invocation results: the managed handler answers a
     // host.notifyHybridInvoke call through ohos_host_hwv_invoke_result, which lands here and
     // completes the delayed __hwvInvokeDotNet response.
-    this.hostCall('registerHybridInvokeResultSink', typeof host.registerHybridInvokeResultSink === 'function', (): void => {
+    this.hostCall('registerHybridInvokeResultSink', typeof host !== 'undefined' && typeof host.registerHybridInvokeResultSink === 'function', (): void => {
       host.registerHybridInvokeResultSink((requestId: number, payload: string): void => {
         this.completeHybridInvoke(requestId, payload);
       });
@@ -1731,7 +1731,7 @@ struct Index {
     // and cameraPicker are imported lazily; when camera/cameraPicker is missing the capture
     // branch answers -1 (the managed side reports IsSupported == false), and when
     // photoAccessHelper is missing photo/video picking falls back to the document picker.
-    this.hostCall('registerPickerSink', typeof host.registerPickerSink === 'function', (): void => {
+    this.hostCall('registerPickerSink', typeof host !== 'undefined' && typeof host.registerPickerSink === 'function', (): void => {
       host.registerPickerSink(async (requestId: number, kind: number) => {
         const mode: number = kind & 7;
         const multi: boolean = (kind & 8) !== 0;
@@ -1739,7 +1739,7 @@ struct Index {
         const count: number = multi ? (rawCount === 0 ? 500 : Math.min(rawCount, 500)) : 1;
         if (mode === 3 || mode === 4) {
           if (this.lazyUnavailable('camera') || this.lazyUnavailable('cameraPicker')) {
-            this.hostCall('notifyPickerResult', typeof host.notifyPickerResult === 'function', (): void => {
+            this.hostCall('notifyPickerResult', typeof host !== 'undefined' && typeof host.notifyPickerResult === 'function', (): void => {
               host.notifyPickerResult(requestId, -1, '', '');
             });
             return;
@@ -1758,7 +1758,7 @@ struct Index {
             }
           }
           if (cameraPosition === undefined) {
-            this.hostCall('notifyPickerResult', typeof host.notifyPickerResult === 'function', (): void => {
+            this.hostCall('notifyPickerResult', typeof host !== 'undefined' && typeof host.notifyPickerResult === 'function', (): void => {
               host.notifyPickerResult(requestId, -1, '', '');
             });
             return;
@@ -1778,18 +1778,18 @@ struct Index {
               fileIo.readSync(captureFile.fd, captureBuffer);
               fileIo.closeSync(captureFile);
               const captureBase64 = new util.Base64Helper().encodeToStringSync(new Uint8Array(captureBuffer));
-              this.hostCall('notifyPickerResult', typeof host.notifyPickerResult === 'function', (): void => {
+              this.hostCall('notifyPickerResult', typeof host !== 'undefined' && typeof host.notifyPickerResult === 'function', (): void => {
                 host.notifyPickerResult(requestId, 0, captureName, captureBase64);
               });
             } catch (captureError) {
               console.error(`camera capture failed: ${(captureError as Error).message}`);
-              this.hostCall('notifyPickerResult', typeof host.notifyPickerResult === 'function', (): void => {
+              this.hostCall('notifyPickerResult', typeof host !== 'undefined' && typeof host.notifyPickerResult === 'function', (): void => {
                 host.notifyPickerResult(requestId, -1, '', '');
               });
             }
           } catch (pickerImportError) {
             this.noteLazyFailure('cameraPicker', pickerImportError as Error);
-            this.hostCall('notifyPickerResult', typeof host.notifyPickerResult === 'function', (): void => {
+            this.hostCall('notifyPickerResult', typeof host !== 'undefined' && typeof host.notifyPickerResult === 'function', (): void => {
               host.notifyPickerResult(requestId, -1, '', '');
             });
           }
@@ -1819,7 +1819,7 @@ struct Index {
     // permission through ohos_host_request_permission; the prompt runs through
     // abilityAccessCtrl (a core module, imported statically) and the answer travels back as
     // host.permissionResult(id, granted) so the managed request completes (deny on timeout).
-    this.hostCall('registerPermissionSink', typeof host.registerPermissionSink === 'function', (): void => {
+    this.hostCall('registerPermissionSink', typeof host !== 'undefined' && typeof host.registerPermissionSink === 'function', (): void => {
       host.registerPermissionSink(async (permission: string, requestId: number): Promise<void> => {
         let granted: boolean = false;
         try {
@@ -1831,7 +1831,7 @@ struct Index {
         } catch (permissionError) {
           console.error(`[maui] permission request failed: ${(permissionError as Error).message}`);
         }
-        this.hostCall('permissionResult', typeof host.permissionResult === 'function', (): void => {
+        this.hostCall('permissionResult', typeof host !== 'undefined' && typeof host.permissionResult === 'function', (): void => {
           host.permissionResult(requestId, granted ? 1 : 0);
         });
       });
@@ -1843,7 +1843,7 @@ struct Index {
     // GetTextAsync) may raise the READ_PASTEBOARD prompt (op === 1 below); the has path never
     // prompts, writing (op 2) needs no permission, and the 'update' observer below only pushes
     // host.notifyClipboardChanged, so HasText/ClipboardContentChanged work without prompts.
-    this.hostCall('registerClipboardSink', typeof host.registerClipboardSink === 'function', (): void => {
+    this.hostCall('registerClipboardSink', typeof host !== 'undefined' && typeof host.registerClipboardSink === 'function', (): void => {
       host.registerClipboardSink(async (requestId: number, op: number, text: string): Promise<void> => {
         let rc: number = -1;
         let value: string = '';
@@ -1862,7 +1862,7 @@ struct Index {
         } catch (clipboardError) {
           console.error(`[maui] clipboard op ${op} failed: ${(clipboardError as Error).message}`);
         }
-        this.hostCall('clipboardResult', typeof host.clipboardResult === 'function', (): void => {
+        this.hostCall('clipboardResult', typeof host !== 'undefined' && typeof host.clipboardResult === 'function', (): void => {
           host.clipboardResult(requestId, rc, value);
         });
       });
@@ -1872,7 +1872,7 @@ struct Index {
         // The observer is stored so aboutToDisappear can unregister exactly this callback; it
         // only reports the change and never prompts (the denial is cached in the sink above).
         const clipboardObserver = (): void => {
-          this.hostCall('notifyClipboardChanged', typeof host.notifyClipboardChanged === 'function', (): void => {
+          this.hostCall('notifyClipboardChanged', typeof host !== 'undefined' && typeof host.notifyClipboardChanged === 'function', (): void => {
             host.notifyClipboardChanged();
           });
         };
@@ -1888,7 +1888,7 @@ struct Index {
     // ohos_host_geocode_request (op 0 address -> location, op 1 location -> address); the shell
     // runs the lazily imported @ohos.geoLocationManager (permission-aware for the reverse
     // lookup) and answers host.geocodeResult(requestId, rc, json).
-    this.hostCall('registerGeocodeSink', typeof host.registerGeocodeSink === 'function', (): void => {
+    this.hostCall('registerGeocodeSink', typeof host !== 'undefined' && typeof host.registerGeocodeSink === 'function', (): void => {
       host.registerGeocodeSink(async (requestId: number, op: number, arg: string): Promise<void> => {
         await this.runGeocode(requestId, op, arg);
       });
@@ -1898,7 +1898,7 @@ struct Index {
     // it - nested, it only ran after a picker request, so notification events were never
     // registered at page startup. Device-compat: the notification manager is imported lazily; a
     // missing module is cached and the publish is skipped.
-    this.hostCall('registerNotificationSink', typeof host.registerNotificationSink === 'function', (): void => {
+    this.hostCall('registerNotificationSink', typeof host !== 'undefined' && typeof host.registerNotificationSink === 'function', (): void => {
       host.registerNotificationSink(async (notificationId: number, notificationTitle: string, notificationText: string): Promise<void> => {
         if (this.lazyUnavailable('notificationManager')) {
           return;
@@ -1928,7 +1928,7 @@ struct Index {
     // host.notificationPermissionResult(requestId, granted). Device-compat: the notification
     // manager is imported lazily like the publish sink above; a missing module is cached and
     // both ops answer 0, so the managed side keeps its documented Unknown/Denied fallback.
-    this.hostCall('registerNotificationPermissionSink', typeof host.registerNotificationPermissionSink === 'function', (): void => {
+    this.hostCall('registerNotificationPermissionSink', typeof host !== 'undefined' && typeof host.registerNotificationPermissionSink === 'function', (): void => {
       host.registerNotificationPermissionSink(async (op: number, requestId: number): Promise<void> => {
         let granted: boolean = false;
         if (!this.lazyUnavailable('notificationManager')) {
@@ -1951,13 +1951,13 @@ struct Index {
             this.noteLazyFailure('notificationManager', notificationImportError as Error);
           }
         }
-        this.hostCall('notificationPermissionResult', typeof host.notificationPermissionResult === 'function', (): void => {
+        this.hostCall('notificationPermissionResult', typeof host !== 'undefined' && typeof host.notificationPermissionResult === 'function', (): void => {
           host.notificationPermissionResult(requestId, granted ? 1 : 0);
         });
       });
     });
 
-    this.hostCall('registerVibrationSink', typeof host.registerVibrationSink === 'function', (): void => {
+    this.hostCall('registerVibrationSink', typeof host !== 'undefined' && typeof host.registerVibrationSink === 'function', (): void => {
       host.registerVibrationSink((durationMs: number) => {
       });
     });
@@ -1967,9 +1967,9 @@ struct Index {
     // every request is answered with rc=-1 and the managed side uses its documented file
     // fallback. Enabling the real path means adding the universal keystore kit to the shell
     // project (see docs/plans/2026-09-18-ohos-secure-storage-huks-plan.md).
-    this.hostCall('registerKeystoreSink', typeof host.registerKeystoreSink === 'function', (): void => {
+    this.hostCall('registerKeystoreSink', typeof host !== 'undefined' && typeof host.registerKeystoreSink === 'function', (): void => {
       host.registerKeystoreSink((requestId: number, op: string, alias: string, data: string) => {
-        this.hostCall('notifyKeystoreResult', typeof host.notifyKeystoreResult === 'function', (): void => {
+        this.hostCall('notifyKeystoreResult', typeof host !== 'undefined' && typeof host.notifyKeystoreResult === 'function', (): void => {
           host.notifyKeystoreResult(requestId, -1, '');
         });
       });
@@ -1982,9 +1982,9 @@ struct Index {
     // answered with "unavailable" (rc=-1) and the managed side degrades (it never throws).
     // With a Speech Kit SDK: create the engine once (textToSpeech.createEngine), call
     // engine.speak(text, ...) and answer host.notifyTtsResult(requestId, 0) when it finishes.
-    this.hostCall('registerTtsSink', typeof host.registerTtsSink === 'function', (): void => {
+    this.hostCall('registerTtsSink', typeof host !== 'undefined' && typeof host.registerTtsSink === 'function', (): void => {
       host.registerTtsSink((requestId: number, text: string, locale: string): void => {
-        this.hostCall('notifyTtsResult', typeof host.notifyTtsResult === 'function', (): void => {
+        this.hostCall('notifyTtsResult', typeof host !== 'undefined' && typeof host.notifyTtsResult === 'function', (): void => {
           host.notifyTtsResult(requestId, -1);
         });
       });
@@ -1997,10 +1997,10 @@ struct Index {
     // managed side reports as IsSupported == false instead of guessing. Device-compat: the
     // Contacts Kit is imported lazily; a missing kit is cached and every later request
     // answers -1 without re-importing.
-    this.hostCall('registerContactsSink', typeof host.registerContactsSink === 'function', (): void => {
+    this.hostCall('registerContactsSink', typeof host !== 'undefined' && typeof host.registerContactsSink === 'function', (): void => {
       host.registerContactsSink(async (requestId: number, namePrefix: string, limit: number): Promise<void> => {
         if (this.lazyUnavailable('contactsKit')) {
-          this.hostCall('notifyContactsResult', typeof host.notifyContactsResult === 'function', (): void => {
+          this.hostCall('notifyContactsResult', typeof host !== 'undefined' && typeof host.notifyContactsResult === 'function', (): void => {
             host.notifyContactsResult(requestId, -1, '');
           });
           return;
@@ -2013,7 +2013,7 @@ struct Index {
             const atManager = abilityAccessCtrl.createAtManager();
             const granted = await atManager.requestPermissionsFromUser(context, permissions);
             if (granted.authResults.length === 0 || granted.authResults[0] !== 0) {
-              this.hostCall('notifyContactsResult', typeof host.notifyContactsResult === 'function', (): void => {
+              this.hostCall('notifyContactsResult', typeof host !== 'undefined' && typeof host.notifyContactsResult === 'function', (): void => {
                 host.notifyContactsResult(requestId, -1, '');
               });
               return;
@@ -2032,18 +2032,18 @@ struct Index {
                 break;
               }
             }
-            this.hostCall('notifyContactsResult', typeof host.notifyContactsResult === 'function', (): void => {
+            this.hostCall('notifyContactsResult', typeof host !== 'undefined' && typeof host.notifyContactsResult === 'function', (): void => {
               host.notifyContactsResult(requestId, 0, rows.join('\n'));
             });
           } catch (contactsError) {
             console.error(`[maui] contacts query failed: ${(contactsError as Error).message}`);
-            this.hostCall('notifyContactsResult', typeof host.notifyContactsResult === 'function', (): void => {
+            this.hostCall('notifyContactsResult', typeof host !== 'undefined' && typeof host.notifyContactsResult === 'function', (): void => {
               host.notifyContactsResult(requestId, -1, '');
             });
           }
         } catch (contactsImportError) {
           this.noteLazyFailure('contactsKit', contactsImportError as Error);
-          this.hostCall('notifyContactsResult', typeof host.notifyContactsResult === 'function', (): void => {
+          this.hostCall('notifyContactsResult', typeof host !== 'undefined' && typeof host.notifyContactsResult === 'function', (): void => {
             host.notifyContactsResult(requestId, -1, '');
           });
         }
@@ -2056,10 +2056,10 @@ struct Index {
     // (@kit.CalendarKit -> calendarManager.getCalendar -> getEvents / addEvent). A missing kit
     // or a denied permission answers code -1 (managed IsSupported == false). Device-compat:
     // the Calendar Kit is imported lazily; a missing kit is cached and answers -1.
-    this.hostCall('registerCalendarSink', typeof host.registerCalendarSink === 'function', (): void => {
+    this.hostCall('registerCalendarSink', typeof host !== 'undefined' && typeof host.registerCalendarSink === 'function', (): void => {
       host.registerCalendarSink(async (requestId: number, op: number, arg1: string, arg2: string, arg3: string): Promise<void> => {
         if (this.lazyUnavailable('calendarKit')) {
-          this.hostCall('notifyCalendarResult', typeof host.notifyCalendarResult === 'function', (): void => {
+          this.hostCall('notifyCalendarResult', typeof host !== 'undefined' && typeof host.notifyCalendarResult === 'function', (): void => {
             host.notifyCalendarResult(requestId, -1, '');
           });
           return;
@@ -2075,7 +2075,7 @@ struct Index {
             const granted = await atManager.requestPermissionsFromUser(context, permissions);
             for (let i = 0; i < granted.authResults.length; i++) {
               if (granted.authResults[i] !== 0) {
-                this.hostCall('notifyCalendarResult', typeof host.notifyCalendarResult === 'function', (): void => {
+                this.hostCall('notifyCalendarResult', typeof host !== 'undefined' && typeof host.notifyCalendarResult === 'function', (): void => {
                   host.notifyCalendarResult(requestId, -1, '');
                 });
                 return;
@@ -2093,7 +2093,7 @@ struct Index {
                 const title: string = item.title ? item.title : '';
                 rows.push(`${this.escapeRecordField(title)}\t${this.escapeRecordField(new Date(item.startTime).toISOString())}\t${this.escapeRecordField(new Date(item.endTime).toISOString())}`);
               }
-              this.hostCall('notifyCalendarResult', typeof host.notifyCalendarResult === 'function', (): void => {
+              this.hostCall('notifyCalendarResult', typeof host !== 'undefined' && typeof host.notifyCalendarResult === 'function', (): void => {
                 host.notifyCalendarResult(requestId, 0, rows.join('\n'));
               });
               return;
@@ -2105,18 +2105,18 @@ struct Index {
               endTime: Date.parse(arg3),
             };
             await calendar.addEvent(event);
-            this.hostCall('notifyCalendarResult', typeof host.notifyCalendarResult === 'function', (): void => {
+            this.hostCall('notifyCalendarResult', typeof host !== 'undefined' && typeof host.notifyCalendarResult === 'function', (): void => {
               host.notifyCalendarResult(requestId, 0, '');
             });
           } catch (calendarError) {
             console.error(`[maui] calendar request failed: ${(calendarError as Error).message}`);
-            this.hostCall('notifyCalendarResult', typeof host.notifyCalendarResult === 'function', (): void => {
+            this.hostCall('notifyCalendarResult', typeof host !== 'undefined' && typeof host.notifyCalendarResult === 'function', (): void => {
               host.notifyCalendarResult(requestId, -1, '');
             });
           }
         } catch (calendarImportError) {
           this.noteLazyFailure('calendarKit', calendarImportError as Error);
-          this.hostCall('notifyCalendarResult', typeof host.notifyCalendarResult === 'function', (): void => {
+          this.hostCall('notifyCalendarResult', typeof host !== 'undefined' && typeof host.notifyCalendarResult === 'function', (): void => {
             host.notifyCalendarResult(requestId, -1, '');
           });
         }
@@ -2131,10 +2131,10 @@ struct Index {
     // is a user_grant permission, so the shell requests it first; a denial answers code -1
     // (managed IsSupported == false). Devices travel as "name\taddress" lines. Device-compat:
     // the Connectivity Kit is imported lazily; a missing kit is cached and answers -1.
-    this.hostCall('registerBluetoothSink', typeof host.registerBluetoothSink === 'function', (): void => {
+    this.hostCall('registerBluetoothSink', typeof host !== 'undefined' && typeof host.registerBluetoothSink === 'function', (): void => {
       host.registerBluetoothSink(async (requestId: number, op: number): Promise<void> => {
         if (this.lazyUnavailable('connectivityKit')) {
-          this.hostCall('notifyBluetoothResult', typeof host.notifyBluetoothResult === 'function', (): void => {
+          this.hostCall('notifyBluetoothResult', typeof host !== 'undefined' && typeof host.notifyBluetoothResult === 'function', (): void => {
             host.notifyBluetoothResult(requestId, -1, '');
           });
           return;
@@ -2147,14 +2147,14 @@ struct Index {
             const atManager = abilityAccessCtrl.createAtManager();
             const granted = await atManager.requestPermissionsFromUser(context, permissions);
             if (granted.authResults.length === 0 || granted.authResults[0] !== 0) {
-              this.hostCall('notifyBluetoothResult', typeof host.notifyBluetoothResult === 'function', (): void => {
+              this.hostCall('notifyBluetoothResult', typeof host !== 'undefined' && typeof host.notifyBluetoothResult === 'function', (): void => {
                 host.notifyBluetoothResult(requestId, -1, '');
               });
               return;
             }
             const state: access.BluetoothState = kit.access.getState();
             if (op === 0) {
-              this.hostCall('notifyBluetoothResult', typeof host.notifyBluetoothResult === 'function', (): void => {
+              this.hostCall('notifyBluetoothResult', typeof host !== 'undefined' && typeof host.notifyBluetoothResult === 'function', (): void => {
                 host.notifyBluetoothResult(requestId, 0, `${state}`);
               });
               return;
@@ -2165,7 +2165,7 @@ struct Index {
               this.discoveredBluetooth.forEach((name: string, address: string): void => {
                 discovered.push(`${this.escapeRecordField(name)}\t${this.escapeRecordField(address)}`);
               });
-              this.hostCall('notifyBluetoothResult', typeof host.notifyBluetoothResult === 'function', (): void => {
+              this.hostCall('notifyBluetoothResult', typeof host !== 'undefined' && typeof host.notifyBluetoothResult === 'function', (): void => {
                 host.notifyBluetoothResult(requestId, 0, discovered.join('\n'));
               });
               return;
@@ -2175,7 +2175,7 @@ struct Index {
               // 2900003. That is a transient device state, so it answers code -2 (the managed side
               // fails the call but keeps IsSupported) instead of -1 (platform unavailable).
               if (state !== kit.access.BluetoothState.STATE_ON) {
-                this.hostCall('notifyBluetoothResult', typeof host.notifyBluetoothResult === 'function', (): void => {
+                this.hostCall('notifyBluetoothResult', typeof host !== 'undefined' && typeof host.notifyBluetoothResult === 'function', (): void => {
                   host.notifyBluetoothResult(requestId, -2, '');
                 });
                 return;
@@ -2195,7 +2195,7 @@ struct Index {
                         name = '';
                       }
                       this.discoveredBluetooth.set(deviceId, name);
-                      this.hostCall('notifyBluetoothDeviceFound', typeof host.notifyBluetoothDeviceFound === 'function', (): void => {
+                      this.hostCall('notifyBluetoothDeviceFound', typeof host !== 'undefined' && typeof host.notifyBluetoothDeviceFound === 'function', (): void => {
                         host.notifyBluetoothDeviceFound(`${this.escapeRecordField(name)}\t${this.escapeRecordField(deviceId)}`);
                       });
                     }
@@ -2214,7 +2214,7 @@ struct Index {
                   this.bluetoothDeviceRegistered = false;
                 }
               }
-              this.hostCall('notifyBluetoothResult', typeof host.notifyBluetoothResult === 'function', (): void => {
+              this.hostCall('notifyBluetoothResult', typeof host !== 'undefined' && typeof host.notifyBluetoothResult === 'function', (): void => {
                 host.notifyBluetoothResult(requestId, 0, '');
               });
               return;
@@ -2222,7 +2222,7 @@ struct Index {
             // Paired devices need a powered adapter; while it is off the platform throws
             // 2900003, which is answered as a valid empty list instead of a failure.
             if (state !== kit.access.BluetoothState.STATE_ON) {
-              this.hostCall('notifyBluetoothResult', typeof host.notifyBluetoothResult === 'function', (): void => {
+              this.hostCall('notifyBluetoothResult', typeof host !== 'undefined' && typeof host.notifyBluetoothResult === 'function', (): void => {
                 host.notifyBluetoothResult(requestId, 0, '');
               });
               return;
@@ -2238,18 +2238,18 @@ struct Index {
               }
               rows.push(`${this.escapeRecordField(name)}\t${this.escapeRecordField(deviceId)}`);
             }
-            this.hostCall('notifyBluetoothResult', typeof host.notifyBluetoothResult === 'function', (): void => {
+            this.hostCall('notifyBluetoothResult', typeof host !== 'undefined' && typeof host.notifyBluetoothResult === 'function', (): void => {
               host.notifyBluetoothResult(requestId, 0, rows.join('\n'));
             });
           } catch (bluetoothError) {
             console.error(`[maui] bluetooth request failed: ${(bluetoothError as Error).message}`);
-            this.hostCall('notifyBluetoothResult', typeof host.notifyBluetoothResult === 'function', (): void => {
+            this.hostCall('notifyBluetoothResult', typeof host !== 'undefined' && typeof host.notifyBluetoothResult === 'function', (): void => {
               host.notifyBluetoothResult(requestId, -1, '');
             });
           }
         } catch (bluetoothImportError) {
           this.noteLazyFailure('connectivityKit', bluetoothImportError as Error);
-          this.hostCall('notifyBluetoothResult', typeof host.notifyBluetoothResult === 'function', (): void => {
+          this.hostCall('notifyBluetoothResult', typeof host !== 'undefined' && typeof host.notifyBluetoothResult === 'function', (): void => {
             host.notifyBluetoothResult(requestId, -1, '');
           });
         }
@@ -2262,7 +2262,7 @@ struct Index {
     // ACCESS_BLUETOOTH per call, runs ble.createGattClientDevice operations and pushes value/
     // state/MTU changes through host.notifyBluetoothGattEvent. Device-compat: the Connectivity
     // Kit is imported lazily by runBluetoothGatt; a missing kit is cached and answers -1.
-    this.hostCall('registerBluetoothGattSink', typeof host.registerBluetoothGattSink === 'function', (): void => {
+    this.hostCall('registerBluetoothGattSink', typeof host !== 'undefined' && typeof host.registerBluetoothGattSink === 'function', (): void => {
       host.registerBluetoothGattSink(async (requestId: number, op: number, payload: string): Promise<void> => {
         if (this.lazyUnavailable('connectivityKit')) {
           this.answerBluetoothGatt(requestId, -1, '');
@@ -2288,10 +2288,10 @@ struct Index {
     // job; the final page outcome belongs to the print service, so code 0 means "accepted".
     // Device-compat: the print module is imported lazily; a missing module is cached and
     // answers -1.
-    this.hostCall('registerPrintSink', typeof host.registerPrintSink === 'function', (): void => {
+    this.hostCall('registerPrintSink', typeof host !== 'undefined' && typeof host.registerPrintSink === 'function', (): void => {
       host.registerPrintSink(async (requestId: number, path: string): Promise<void> => {
         if (this.lazyUnavailable('print')) {
-          this.hostCall('notifyPrintResult', typeof host.notifyPrintResult === 'function', (): void => {
+          this.hostCall('notifyPrintResult', typeof host !== 'undefined' && typeof host.notifyPrintResult === 'function', (): void => {
             host.notifyPrintResult(requestId, -1, '');
           });
           return;
@@ -2307,18 +2307,18 @@ struct Index {
             task.on('cancel', (): void => {
               console.info('[maui] print task cancelled');
             });
-            this.hostCall('notifyPrintResult', typeof host.notifyPrintResult === 'function', (): void => {
+            this.hostCall('notifyPrintResult', typeof host !== 'undefined' && typeof host.notifyPrintResult === 'function', (): void => {
               host.notifyPrintResult(requestId, 0, '');
             });
           } catch (printError) {
             console.error(`[maui] print request failed: ${(printError as Error).message}`);
-            this.hostCall('notifyPrintResult', typeof host.notifyPrintResult === 'function', (): void => {
+            this.hostCall('notifyPrintResult', typeof host !== 'undefined' && typeof host.notifyPrintResult === 'function', (): void => {
               host.notifyPrintResult(requestId, -1, (printError as Error).message);
             });
           }
         } catch (printImportError) {
           this.noteLazyFailure('print', printImportError as Error);
-          this.hostCall('notifyPrintResult', typeof host.notifyPrintResult === 'function', (): void => {
+          this.hostCall('notifyPrintResult', typeof host !== 'undefined' && typeof host.notifyPrintResult === 'function', (): void => {
             host.notifyPrintResult(requestId, -1, '');
           });
         }
@@ -2344,7 +2344,7 @@ struct Index {
     // com.ohos.settings.MainAbility) and falls back to the implicit 'ohos.settings' action when
     // the explicit Want does not resolve, so devices whose settings app uses another bundle id
     // still have a chance to open it.
-    this.hostCall('registerAbilitySink', typeof host.registerAbilitySink === 'function', (): void => {
+    this.hostCall('registerAbilitySink', typeof host !== 'undefined' && typeof host.registerAbilitySink === 'function', (): void => {
       host.registerAbilitySink((kind: number, uri: string, text: string): boolean => {
         try {
           const context = getContext(this) as common.UIAbilityContext;
@@ -2402,7 +2402,7 @@ struct Index {
     // synchronous call that throws (e.g. 7400102 when the camera service does not allow it), so
     // the boolean is the kit's answer, not a visual confirmation of the LED. A missing kit or
     // camera answers false and the managed side degrades without throwing.
-    this.hostCall('registerFlashlightSink', typeof host.registerFlashlightSink === 'function', (): void => {
+    this.hostCall('registerFlashlightSink', typeof host !== 'undefined' && typeof host.registerFlashlightSink === 'function', (): void => {
       host.registerFlashlightSink((on: number): boolean => {
         try {
           const manager = this.ensureFlashlightManager();
@@ -2430,7 +2430,7 @@ struct Index {
     });
 
     // The managed Entry asks for the soft keyboard through this sink.
-    this.hostCall('registerTextInputSink', typeof host.registerTextInputSink === 'function', (): void => {
+    this.hostCall('registerTextInputSink', typeof host !== 'undefined' && typeof host.registerTextInputSink === 'function', (): void => {
       host.registerTextInputSink((show: number) => {
         if (show === 1) {
           this.controller.caretPosition(0);
@@ -2443,7 +2443,7 @@ struct Index {
 
     // Menus: pull the initial table, then refresh on every commit from the managed side.
     // A host library without the menu exports degrades to no menu instead of failing the page.
-    this.hostCall('registerMenuChangedSink', typeof host.registerMenuChangedSink === 'function', (): void => {
+    this.hostCall('registerMenuChangedSink', typeof host !== 'undefined' && typeof host.registerMenuChangedSink === 'function', (): void => {
       host.registerMenuChangedSink((count: number): void => {
         console.info(`[maui] menu table changed: ${count} rows`);
         this.pullMenu();
@@ -2456,7 +2456,7 @@ struct Index {
   // answer is rc=-1, each picked file is one rc=0 callback, and a multi pick ends with rc=1.
   // The callbacks are delivered in order, so the managed accumulator completes on the marker.
   private answerPickerCancel(requestId: number): void {
-    this.hostCall('notifyPickerResult', typeof host.notifyPickerResult === 'function', (): void => {
+    this.hostCall('notifyPickerResult', typeof host !== 'undefined' && typeof host.notifyPickerResult === 'function', (): void => {
       host.notifyPickerResult(requestId, -1, '', '');
     });
   }
@@ -2483,12 +2483,12 @@ struct Index {
         console.error(`[maui] picker read failed: ${(readError as Error).message}`);
         encoded = '';
       }
-      this.hostCall('notifyPickerResult', typeof host.notifyPickerResult === 'function', (): void => {
+      this.hostCall('notifyPickerResult', typeof host !== 'undefined' && typeof host.notifyPickerResult === 'function', (): void => {
         host.notifyPickerResult(requestId, 0, name, encoded);
       });
     }
     if (multi) {
-      this.hostCall('notifyPickerResult', typeof host.notifyPickerResult === 'function', (): void => {
+      this.hostCall('notifyPickerResult', typeof host !== 'undefined' && typeof host.notifyPickerResult === 'function', (): void => {
         host.notifyPickerResult(requestId, 1, '', '');
       });
     }
@@ -2548,7 +2548,7 @@ struct Index {
   // Guarded: a host library without the export (or a failed publish) degrades to no-op.
   private publishAppContext(): void {
     try {
-      if (typeof host.setAppContext !== 'function') {
+      if (typeof host !== 'undefined' && typeof host.setAppContext !== 'function') {
         return;
       }
       const context = getContext(this) as common.UIAbilityContext;
@@ -2577,7 +2577,7 @@ struct Index {
   // status 3). onPageShow runs after the page (and its ContentSlot) is mounted; the host
   // caches the created node, so a repeated page show cannot attach it twice.
   onPageShow(): void {
-    this.hostCall('setNodeContent', typeof host.setNodeContent === 'function', (): void => {
+    this.hostCall('setNodeContent', typeof host !== 'undefined' && typeof host.setNodeContent === 'function', (): void => {
       host.setNodeContent(this.content);
     });
   }
@@ -2648,7 +2648,7 @@ struct Index {
     try {
       // Optional export: only newer host libraries publish it, so it is read behind a
       // runtime typeof check and simply omitted when the library has no such export.
-      if (typeof host.accessibilityNodeCount === 'function') {
+      if (typeof host !== 'undefined' && typeof host.accessibilityNodeCount === 'function') {
         message += `\naccessibilityNodeCount: ${host.accessibilityNodeCount() as number}`;
       }
     } catch (nodeCountError) {
@@ -3009,7 +3009,7 @@ struct Index {
     if (token !== 'HybridWebView' || body.length === 0) {
       return this.hybridErrorResponse(400);
     }
-    const delivered: boolean = this.hostCall('notifyJsMessage', typeof host.notifyJsMessage === 'function', (): void => {
+    const delivered: boolean = this.hostCall('notifyJsMessage', typeof host !== 'undefined' && typeof host.notifyJsMessage === 'function', (): void => {
       host.notifyJsMessage(this.originEnvelope(body));
     });
     // The message could not be handed to the managed side (mismatched host library): answer
@@ -3185,13 +3185,13 @@ struct Index {
           const startedUrl: string = event ? event.url : '';
           // B6: the approved/app-requested load started; its one-shot marker is used up.
           this.retireNavigationMarker(startedUrl);
-          this.hostCall('notifyWebEvent', typeof host.notifyWebEvent === 'function', (): void => {
+          this.hostCall('notifyWebEvent', typeof host !== 'undefined' && typeof host.notifyWebEvent === 'function', (): void => {
             host.notifyWebEvent('started', startedUrl);
           });
         })
         .onPageEnd((event) => {
           const pageUrl: string = event ? event.url : '';
-          this.hostCall('notifyWebEvent', typeof host.notifyWebEvent === 'function', (): void => {
+          this.hostCall('notifyWebEvent', typeof host !== 'undefined' && typeof host.notifyWebEvent === 'function', (): void => {
             host.notifyWebEvent('finished', pageUrl);
           });
           this.injectPageBridge(pageUrl);
@@ -3206,13 +3206,13 @@ struct Index {
         .onChange((value: string) => {
           this.inputText = value;
           // Per-keystroke path: a mismatched host logs once, not once per character.
-          this.hostCall('notifyTextInput', typeof host.notifyTextInput === 'function', (): void => {
+          this.hostCall('notifyTextInput', typeof host !== 'undefined' && typeof host.notifyTextInput === 'function', (): void => {
             host.notifyTextInput(value);
           });
         })
         .onSubmit(() => {
           // The managed Entry/SearchBar raises Completed/SearchButtonPressed.
-          this.hostCall('notifyTextSubmitted', typeof host.notifyTextSubmitted === 'function', (): void => {
+          this.hostCall('notifyTextSubmitted', typeof host !== 'undefined' && typeof host.notifyTextSubmitted === 'function', (): void => {
             host.notifyTextSubmitted(this.inputText);
           });
         })
@@ -3264,12 +3264,12 @@ struct Index {
                   return;
                 }
                 this.shellSearchQuery = value;
-                this.hostCall('notifyShellSearch', typeof host.notifyShellSearch === 'function', (): void => {
+                this.hostCall('notifyShellSearch', typeof host !== 'undefined' && typeof host.notifyShellSearch === 'function', (): void => {
                   host.notifyShellSearch(0, value);
                 });
               })
               .onSubmit((): void => {
-                this.hostCall('notifyShellSearch', typeof host.notifyShellSearch === 'function', (): void => {
+                this.hostCall('notifyShellSearch', typeof host !== 'undefined' && typeof host.notifyShellSearch === 'function', (): void => {
                   host.notifyShellSearch(1, this.shellSearchQuery);
                 });
               })
@@ -3279,7 +3279,7 @@ struct Index {
                 .fontSize(12)
                 .onClick(() => {
                   this.shellSearchQuery = '';
-                  this.hostCall('notifyShellSearch', typeof host.notifyShellSearch === 'function', (): void => {
+                  this.hostCall('notifyShellSearch', typeof host !== 'undefined' && typeof host.notifyShellSearch === 'function', (): void => {
                     host.notifyShellSearch(2, '');
                   });
                 })
