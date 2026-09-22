@@ -23,6 +23,34 @@ interface AppConfig {
 
 export default class EntryAbility extends UIAbility {
   private started: boolean = false;
+  // Host-availability guard (device-compat): a libopenharmonyhost.so that fails to load (for
+  // example an unresolved DT_NEEDED the HAP loader cannot satisfy) leaves the static import
+  // undefined, so every host call is routed through this guard and degrades to a logged
+  // unavailability instead of throwing TypeError out of a lifecycle callback.
+  private hostUnavailable: Set<string> = new Set();
+
+  private reportHostUnavailable(api: string, error: Error | undefined): void {
+    if (this.hostUnavailable.has(api)) {
+      return;
+    }
+    this.hostUnavailable.add(api);
+    const detail: string = error !== undefined ? ` (${error.message})` : '';
+    hilog.error(DOMAIN, TAG, 'host export unavailable: %{public}s%{public}s', api, detail);
+  }
+
+  private hostCall(api: string, available: boolean, call: () => void): boolean {
+    if (!available) {
+      this.reportHostUnavailable(api, undefined);
+      return false;
+    }
+    try {
+      call();
+      return true;
+    } catch (hostError) {
+      this.reportHostUnavailable(api, hostError as Error);
+      return false;
+    }
+  }
 
   onCreate(want: Want, launchParam: AbilityConstant.LaunchParam): void {
     this.bootstrap().catch((error: Error) => {
@@ -40,19 +68,25 @@ export default class EntryAbility extends UIAbility {
 
   onForeground(): void {
     if (this.started) {
-      host.notifyLifecycle(LIFECYCLE_FOREGROUND);
+      this.hostCall('notifyLifecycle', typeof host !== 'undefined' && typeof host.notifyLifecycle === 'function', (): void => {
+        host.notifyLifecycle(LIFECYCLE_FOREGROUND);
+      });
     }
   }
 
   onBackground(): void {
     if (this.started) {
-      host.notifyLifecycle(LIFECYCLE_BACKGROUND);
+      this.hostCall('notifyLifecycle', typeof host !== 'undefined' && typeof host.notifyLifecycle === 'function', (): void => {
+        host.notifyLifecycle(LIFECYCLE_BACKGROUND);
+      });
     }
   }
 
   onDestroy(): void {
     if (this.started) {
-      host.notifyLifecycle(LIFECYCLE_DESTROY);
+      this.hostCall('notifyLifecycle', typeof host !== 'undefined' && typeof host.notifyLifecycle === 'function', (): void => {
+        host.notifyLifecycle(LIFECYCLE_DESTROY);
+      });
     }
   }
 
@@ -72,7 +106,13 @@ export default class EntryAbility extends UIAbility {
       abilityName: this.context.abilityInfo.name,
       nodeContent: 0,
     });
-    host.startApp(payloadDir, config.assembly, context);
+    const started: boolean = this.hostCall('startApp', typeof host !== 'undefined' && typeof host.startApp === 'function', (): void => {
+      host.startApp(payloadDir, config.assembly, context);
+    });
+    if (!started) {
+      hilog.error(DOMAIN, TAG, 'managed app %{public}s not started (UI shell): host unavailable', config.assembly);
+      return;
+    }
     this.started = true;
     hilog.info(DOMAIN, TAG, 'managed app %{public}s started (UI shell)', config.assembly);
   }

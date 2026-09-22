@@ -334,9 +334,10 @@ struct Index {
 
   // Host-export guard (device-compat): runs a host call behind an explicit existence check
   // and a try/catch so a mismatched .so cannot throw TypeError out of a page callback;
-  // returns false when the call was not delivered. The native bridge core (XComponent
-  // registration, registerJavaScriptProxy and the Web controller calls) is intentionally
-  // not routed through this guard.
+  // returns false when the call was not delivered. Every host.<api> access is routed through
+  // this guard, including the XComponent registration that used to be the first unguarded
+  // call in onLoad. registerJavaScriptProxy and the Web controller calls stay bare because
+  // they are controller methods, not host exports.
   private hostCall(api: string, available: boolean, call: () => void): boolean {
     if (!available) {
       this.reportHostUnavailable(api, undefined);
@@ -881,6 +882,12 @@ struct Index {
 
   // Reads the host's current menu table into @State (empty when the sink is unavailable).
   private pullMenu(): void {
+    if (typeof host === 'undefined' || typeof host.menuCount !== 'function' ||
+        typeof host.menuItem !== 'function') {
+      this.menuItems = [];
+      this.reportHostUnavailable('menuCount', undefined);
+      return;
+    }
     try {
       const count: number = host.menuCount() as number;
       const items: HostMenuItem[] = [];
@@ -2673,6 +2680,13 @@ struct Index {
       if (typeof host !== 'undefined' && typeof host.setAppContext !== 'function') {
         return;
       }
+      // A host that never loaded (the NAPI import failed) leaves the default export
+      // undefined: report it through the same once-per-page unavailable set instead of
+      // letting the call below throw and log a misleading "publish failed".
+      if (typeof host === 'undefined') {
+        this.reportHostUnavailable('setAppContext', undefined);
+        return;
+      }
       const context = getContext(this) as common.UIAbilityContext;
       const payloadDir = `${context.filesDir}/dotnet`;
       const json = JSON.stringify({
@@ -3367,7 +3381,12 @@ struct Index {
         })
         .onLoad(() => {
           // Binds the native XComponent so libopenharmonyhost receives surface callbacks.
-          host.registerXComponent();
+          // Guarded like every other host export: a host that failed to load (for example an
+          // unresolved DT_NEEDED in the .so) leaves the surface unattached and logs the
+          // unavailability once instead of throwing TypeError out of the XComponent callback.
+          this.hostCall('registerXComponent', typeof host !== 'undefined' && typeof host.registerXComponent === 'function', (): void => {
+            host.registerXComponent();
+          });
           // Surface ready: publish the app context (payload dir + ability paths) so a
           // startApp without one can still be completed by the managed bridge.
           this.publishAppContext();

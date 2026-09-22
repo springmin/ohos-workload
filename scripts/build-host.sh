@@ -30,6 +30,26 @@ mkdir -p "$OUT"
     -lohvibrator.z -lnet_connection -lability_access_control -llocation_ndk -lohsensor -ldl
 ls -l "$OUT/libopenharmonyhost.so"
 
+# Load-time surface check: the host must carry NO DT_NEEDED on libhostfxr.so. hostfxr lives in
+# the app payload (dotnet.zip, extracted by EntryAbility at start_app time) and is resolved
+# through the dlopen handle in openharmony_host.c, never at link time. A NEEDED entry would be
+# resolved by the HAP loader when the ArkTS module imports libopenharmonyhost.so at ability
+# load - before dotnet.zip is extracted - so the import would fail, `host` would be undefined
+# and the shell's guarded calls would report unavailability. Fail the build instead of shipping
+# such a host; the printed list is the load-time surface that must stay SDK/system-provided.
+READELF="${READELF:-$NATIVE/llvm/bin/llvm-readelf}"
+if [ ! -x "$READELF" ]; then
+    READELF="$(command -v readelf || true)"
+fi
+[ -n "$READELF" ] || { echo "ERROR: no llvm-readelf/readelf found to audit DT_NEEDED" >&2; exit 1; }
+if "$READELF" -d "$OUT/libopenharmonyhost.so" 2>/dev/null | grep -q 'libhostfxr'; then
+    echo "ERROR: libopenharmonyhost.so has DT_NEEDED libhostfxr.so; drop the -lhostfxr link flag" >&2
+    echo "       and route every hostfxr_* call through the existing dlopen/dlsym handle" >&2
+    exit 1
+fi
+echo "== DT_NEEDED (libhostfxr must be absent; all others SDK/system-provided) =="
+"$READELF" -d "$OUT/libopenharmonyhost.so" | sed -n 's/.*(NEEDED).*Shared library: \[\(.*\)\]/    \1/p'
+
 if [ "${SKIP_SIGN:-0}" = "1" ]; then
     echo "== signing skipped (SKIP_SIGN=1) =="
     exit 0

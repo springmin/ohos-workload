@@ -71,6 +71,12 @@ static int path_join(char* dst, size_t dst_size, const char* dir, const char* fi
     return written > 0 && (size_t)written < dst_size ? 0 : -1;
 }
 
+// hostfxr is deliberately resolved at run time, never at link time: libhostfxr.so lives in the
+// app payload (dotnet.zip, extracted by the ArkTS ability before start_app) while the HAP loader
+// resolves DT_NEEDED entries when the shell imports libopenharmonyhost.so at ability load. A
+// -lhostfxr link would therefore make the import fail (host === undefined, every shell call
+// unavailable). Keep every hostfxr_* call routed through this dlopen/dlsym table;
+// scripts/build-host.sh fails the build if a DT_NEEDED on libhostfxr.so appears.
 int ohos_host_run_app(const char* app_dir, const char* app_assembly_file, int argc, const char* const* argv) {
     char hostfxr_path[4096];
     char app_assembly_path[4096];
@@ -125,7 +131,17 @@ int ohos_host_run_app(const char* app_dir, const char* app_assembly_file, int ar
         (ohos_get_runtime_delegate_fn)dlsym(hostfxr, "hostfxr_get_runtime_delegate");
     ohos_close_fn close_ctx = (ohos_close_fn)dlsym(hostfxr, "hostfxr_close");
     if (initialize == NULL || get_delegate == NULL || close_ctx == NULL) {
-        fprintf(stderr, "[openharmony-host] hostfxr symbols missing\n");
+        // Name the missing exports: the dlopen succeeded but the library is not the expected
+        // hostfxr, so the device log has to say which entry points are absent (the dlopen
+        // failure path above already carries dlerror()).
+        fprintf(stderr, "[openharmony-host] hostfxr symbols missing in %s (initialize=%s delegate=%s close=%s)\n",
+                hostfxr_path, initialize == NULL ? "missing" : "ok",
+                get_delegate == NULL ? "missing" : "ok", close_ctx == NULL ? "missing" : "ok");
+        OH_LOG_ERROR(LOG_APP,
+                     "[openharmony-host] run_app: hostfxr exports missing in %{public}s "
+                     "(initialize_for_runtime_config=%{public}s get_runtime_delegate=%{public}s close=%{public}s)",
+                     hostfxr_path, initialize == NULL ? "missing" : "ok",
+                     get_delegate == NULL ? "missing" : "ok", close_ctx == NULL ? "missing" : "ok");
         return -1;
     }
 
@@ -446,8 +462,16 @@ int ohos_host_start_app(const char* app_dir, const char* app_assembly_file,
     ohos_close_fn close_ctx = (ohos_close_fn)dlsym(hostfxr, "hostfxr_close");
     ohos_run_app_fn run_app = (ohos_run_app_fn)dlsym(hostfxr, "hostfxr_run_app");
     if (initialize == NULL || close_ctx == NULL || run_app == NULL) {
-        fprintf(stderr, "[openharmony-host] hostfxr symbols missing\n");
-        OH_LOG_ERROR(LOG_APP, "[openharmony-host] start_app: hostfxr symbols missing in %{public}s", hostfxr_path);
+        // Same contract as run_app: the dlopen handle exists but an entry point is missing, so
+        // the log names every export the bridged launch needs.
+        fprintf(stderr, "[openharmony-host] hostfxr symbols missing in %s (initialize=%s close=%s run_app=%s)\n",
+                hostfxr_path, initialize == NULL ? "missing" : "ok",
+                close_ctx == NULL ? "missing" : "ok", run_app == NULL ? "missing" : "ok");
+        OH_LOG_ERROR(LOG_APP,
+                     "[openharmony-host] start_app: hostfxr exports missing in %{public}s "
+                     "(initialize_for_dotnet_command_line=%{public}s close=%{public}s run_app=%{public}s)",
+                     hostfxr_path, initialize == NULL ? "missing" : "ok",
+                     close_ctx == NULL ? "missing" : "ok", run_app == NULL ? "missing" : "ok");
         OhosHostEndLaunch();
         return -1;
     }
