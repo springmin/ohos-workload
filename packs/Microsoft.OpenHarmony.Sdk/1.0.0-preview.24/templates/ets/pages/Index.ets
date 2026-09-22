@@ -33,12 +33,13 @@ import window from '@ohos.window';
 //   camera            - Camera Kit (flashlight, picker camera position)
 //   calendarManager   - Calendar Kit
 //   access            - Connectivity Kit (Bluetooth adapter state)
+//   ble               - Connectivity Kit (BLE GATT client: createGattClientDevice and friends)
 //   connection        - Network Kit (Connectivity change observer)
 //   print             - Print Kit
 //   commonEventManager, BusinessError - Basic Services Kit (battery events)
 import type camera from '@ohos.multimedia.camera';
 import type { calendarManager } from '@kit.CalendarKit';
-import type { access } from '@kit.ConnectivityKit';
+import type { access, ble } from '@kit.ConnectivityKit';
 import type { connection } from '@kit.NetworkKit';
 import type commonEventManager from '@ohos.commonEventManager';
 import type print from '@ohos.print';
@@ -147,6 +148,22 @@ interface GeocodeAddressQuery {
   maxLongitude?: number;
 }
 
+// Bluetooth GATT (platform extra): one managed GATT request is answered with a result code and
+// an operation-specific payload. The code map is the managed OpenHarmonyGattStatus: 0 = the
+// request completed, -1 = the platform path is unavailable (permission denied or the kit is
+// missing), -2 = a transient kit failure; a failure payload is a diagnostic message. An MTU
+// request additionally reports the value from the BLEMtuChange callback (0 when it did not
+// arrive in time, in which case the managed side returns the requested value).
+interface BluetoothGattAnswer {
+  code: number;
+  payload: string;
+}
+
+interface BluetoothGattMtuAnswer {
+  code: number;
+  mtu: number;
+}
+
 @Entry
 @Component
 struct Index {
@@ -233,6 +250,21 @@ struct Index {
   // new discovery starts and served to the managed side through op 4.
   private discoveredBluetooth: Map<string, string> = new Map();
   private bluetoothDeviceRegistered: boolean = false;
+  // Bluetooth GATT (platform extra): one cached GattClientDevice per device address; the kit
+  // listeners registered with it push value/state/MTU events to the managed side. The
+  // createGattClientDevice factory is cached from the lazily imported Connectivity Kit (the same
+  // pattern as the flashlight's camera factory), and the two waiter maps resolve an in-flight
+  // connect / request-MTU operation from the kit callback.
+  private gattClients: Map<string, ble.GattClientDevice> = new Map();
+  private gattCreateClient: ((address: string) => ble.GattClientDevice) | undefined = undefined;
+  private gattConnectWaiters: Map<string, (connected: boolean) => void> = new Map();
+  private gattMtuWaiters: Map<string, (mtu: number) => void> = new Map();
+  // Last ProfileConnectionState value reported by the kit per address; a repeated connect while
+  // the state is STATE_CONNECTED (2) answers immediately instead of waiting for a state callback
+  // that the platform will not send again.
+  private gattStates: Map<string, number> = new Map();
+  private gattConnectTimeoutMs: number = 10000;
+  private gattMtuTimeoutMs: number = 2000;
   private webController: web_webview.WebviewController = new web_webview.WebviewController();
   private controller: TextInputController = new TextInputController();
   // Flashlight (Camera Kit torch): the camera manager is created on first use and cached. The
@@ -1218,6 +1250,303 @@ struct Index {
     return escaped;
   }
 
+  // --- Bluetooth GATT (platform extra) ---------------------------------------
+  // Managed Ops (the host's ohos_host_bluetooth_gatt_request; see OpenHarmonyBluetoothGatt.cs):
+  //   0 connect, 1 disconnect, 2 get services, 3 read characteristic, 4 write characteristic,
+  //   5 set notifications, 6 read descriptor, 7 write descriptor, 8 request MTU, 9 release.
+  // Request/answer payloads are tab-separated; the managed side rejects any field carrying a
+  // tab/LF/CR before it sends, so the split below cannot be forged from user data.
+
+  // Registers the three kit listeners on a freshly created client. Value and state events are
+  // pushed to the managed side as "kind\taddress\t..." records; the MTU callback also resolves an
+  // in-flight request-MTU waiter and a connected/disconnected state resolves an in-flight connect
+  // waiter. Every push is host-call guarded, so an older host library without
+  // notifyBluetoothGattEvent only loses the events (requests keep working).
+  private gattAttachListeners(client: ble.GattClientDevice, address: string): void {
+    client.on('BLECharacteristicChange', (characteristic: ble.BLECharacteristic): void => {
+      let value: string = '';
+      try {
+        value = new util.Base64Helper().encodeToStringSync(new Uint8Array(characteristic.characteristicValue));
+      } catch (encodeError) {
+        console.error(`[maui] bluetooth gatt value encoding failed: ${(encodeError as Error).message}`);
+        return;
+      }
+      this.hostCall('notifyBluetoothGattEvent', typeof host.notifyBluetoothGattEvent === 'function', (): void => {
+        host.notifyBluetoothGattEvent(`value\t${this.escapeRecordField(address)}\t${this.escapeRecordField(characteristic.serviceUuid)}\t${this.escapeRecordField(characteristic.characteristicUuid)}\t${value}`);
+      });
+    });
+    client.on('BLEConnectionStateChange', (change: ble.BLEConnectionChangeState): void => {
+      this.gattStates.set(address, change.state);
+      if (change.state === 2 || change.state === 0) {
+        const waiter: ((connected: boolean) => void) | undefined = this.gattConnectWaiters.get(address);
+        if (waiter !== undefined) {
+          this.gattConnectWaiters.delete(address);
+          waiter(change.state === 2);
+        }
+      }
+      const reason: string = change.reason !== undefined ? `${change.reason}` : '';
+      this.hostCall('notifyBluetoothGattEvent', typeof host.notifyBluetoothGattEvent === 'function', (): void => {
+        host.notifyBluetoothGattEvent(`state\t${this.escapeRecordField(address)}\t${change.state}\t${reason}`);
+      });
+    });
+    client.on('BLEMtuChange', (mtu: number): void => {
+      const waiter: ((mtu: number) => void) | undefined = this.gattMtuWaiters.get(address);
+      if (waiter !== undefined) {
+        this.gattMtuWaiters.delete(address);
+        waiter(mtu);
+      }
+      this.hostCall('notifyBluetoothGattEvent', typeof host.notifyBluetoothGattEvent === 'function', (): void => {
+        host.notifyBluetoothGattEvent(`mtu\t${this.escapeRecordField(address)}\t${mtu}`);
+      });
+    });
+  }
+
+  // Returns the cached client for an address, creating it and registering its kit listeners on
+  // first use. Throws only when the lazily imported create factory is missing; the sink handler
+  // turns that into the unavailable answer and caches the missing kit.
+  private gattClientFor(address: string): ble.GattClientDevice {
+    let client: ble.GattClientDevice | undefined = this.gattClients.get(address);
+    if (client !== undefined) {
+      return client;
+    }
+    const create: ((address: string) => ble.GattClientDevice) | undefined = this.gattCreateClient;
+    if (create === undefined) {
+      throw new Error('connectivity kit is not available');
+    }
+    client = create(address);
+    this.gattAttachListeners(client, address);
+    this.gattClients.set(address, client);
+    return client;
+  }
+
+  // Connects the client and resolves 0 only once the BLEConnectionStateChange callback reports
+  // STATE_CONNECTED (2). A reported disconnect (0) and the timeout both answer -2; the state
+  // itself is always pushed to the managed side.
+  private async gattConnect(client: ble.GattClientDevice, address: string): Promise<number> {
+    return new Promise<number>((resolve: (value: number) => void): void => {
+      let settled: boolean = false;
+      const finish = (code: number): void => {
+        if (settled) {
+          return;
+        }
+        settled = true;
+        this.gattConnectWaiters.delete(address);
+        resolve(code);
+      };
+      this.gattConnectWaiters.set(address, (connected: boolean): void => {
+        finish(connected ? 0 : -2);
+      });
+      setTimeout((): void => {
+        finish(-2);
+      }, this.gattConnectTimeoutMs);
+      try {
+        client.connect();
+      } catch (connectError) {
+        console.error(`[maui] bluetooth gatt connect failed: ${(connectError as Error).message}`);
+        finish(-2);
+      }
+    });
+  }
+
+  // Requests an MTU (setBLEMtuSize is fire-and-forget) and resolves with the BLEMtuChange value
+  // when it arrives within the MTU timeout; a timeout answers code 0 with mtu 0, which the
+  // managed side reports as "the requested value was not negotiated".
+  private async gattRequestMtu(client: ble.GattClientDevice, address: string, mtu: number): Promise<BluetoothGattMtuAnswer> {
+    return new Promise<BluetoothGattMtuAnswer>((resolve: (value: BluetoothGattMtuAnswer) => void): void => {
+      let settled: boolean = false;
+      const finish = (code: number, negotiated: number): void => {
+        if (settled) {
+          return;
+        }
+        settled = true;
+        this.gattMtuWaiters.delete(address);
+        resolve({ code: code, mtu: negotiated });
+      };
+      this.gattMtuWaiters.set(address, (negotiated: number): void => {
+        finish(0, negotiated);
+      });
+      setTimeout((): void => {
+        finish(0, 0);
+      }, this.gattMtuTimeoutMs);
+      try {
+        client.setBLEMtuSize(mtu);
+      } catch (mtuError) {
+        console.error(`[maui] bluetooth gatt mtu request failed: ${(mtuError as Error).message}`);
+        finish(-2, 0);
+      }
+    });
+  }
+
+  // Packs the optional GattProperties into the decimal bitmask the managed
+  // OpenHarmonyGattProperty mirrors (1 read, 2 write, 4 write without response, 8 notify,
+  // 16 indicate, 32 broadcast, 64 authenticated signed write, 128 extended properties).
+  private gattPropertyFlags(properties: ble.GattProperties | undefined): number {
+    if (properties === undefined) {
+      return 0;
+    }
+    let flags: number = 0;
+    if (properties.read === true) { flags += 1; }
+    if (properties.write === true) { flags += 2; }
+    if (properties.writeNoResponse === true) { flags += 4; }
+    if (properties.notify === true) { flags += 8; }
+    if (properties.indicate === true) { flags += 16; }
+    if (properties.broadcast === true) { flags += 32; }
+    if (properties.authenticatedSignedWrite === true) { flags += 64; }
+    if (properties.extendedProperties === true) { flags += 128; }
+    return flags;
+  }
+
+  private answerBluetoothGatt(requestId: number, code: number, payload: string): void {
+    this.hostCall('notifyBluetoothGattResult', typeof host.notifyBluetoothGattResult === 'function', (): void => {
+      host.notifyBluetoothGattResult(requestId, code, payload);
+    });
+  }
+
+  // Runs one managed GATT request. The lazy import stays outside the inner try so a missing
+  // Connectivity Kit bubbles to the sink handler (cached, answered -1); everything after the
+  // import answers its own code (-1 for a denied permission, -2 for kit/argument failures).
+  private async runBluetoothGatt(op: number, payload: string): Promise<BluetoothGattAnswer> {
+    const kit = await import('@kit.ConnectivityKit');
+    try {
+      const context = getContext(this) as common.UIAbilityContext;
+      const permissions: Permissions[] = ['ohos.permission.ACCESS_BLUETOOTH'];
+      const atManager = abilityAccessCtrl.createAtManager();
+      const granted = await atManager.requestPermissionsFromUser(context, permissions);
+      if (granted.authResults.length === 0 || granted.authResults[0] !== 0) {
+        return { code: -1, payload: 'bluetooth permission denied' };
+      }
+      if (this.gattCreateClient === undefined) {
+        this.gattCreateClient = (address: string): ble.GattClientDevice => kit.ble.createGattClientDevice(address);
+      }
+      const fields: string[] = payload.length > 0 ? payload.split('\t') : [];
+      const address: string = fields.length > 0 ? fields[0] : '';
+      if (address.length === 0) {
+        return { code: -2, payload: 'the device address is required' };
+      }
+      if (op === 0) {
+        if (this.gattStates.get(address) === 2) {
+          return { code: 0, payload: '' };
+        }
+        const code: number = await this.gattConnect(this.gattClientFor(address), address);
+        return { code: code, payload: code === 0 ? '' : 'connect did not reach the connected state' };
+      }
+      if (op === 1) {
+        this.gattClientFor(address).disconnect();
+        return { code: 0, payload: '' };
+      }
+      if (op === 2) {
+        const services: ble.GattService[] = await this.gattClientFor(address).getServices();
+        const rows: string[] = [];
+        for (const service of services) {
+          const primary: number = service.isPrimary ? 1 : 0;
+          if (service.characteristics.length === 0) {
+            // A service without characteristics still appears (characteristic/properties empty).
+            rows.push(`${this.escapeRecordField(service.serviceUuid)}\t${primary}\t\t`);
+          }
+          for (const characteristic of service.characteristics) {
+            rows.push(`${this.escapeRecordField(service.serviceUuid)}\t${primary}\t${this.escapeRecordField(characteristic.characteristicUuid)}\t${this.gattPropertyFlags(characteristic.properties)}`);
+          }
+        }
+        return { code: 0, payload: rows.join('\n') };
+      }
+      if (op === 9) {
+        const client: ble.GattClientDevice | undefined = this.gattClients.get(address);
+        if (client !== undefined) {
+          this.gattClients.delete(address);
+          this.gattConnectWaiters.delete(address);
+          this.gattMtuWaiters.delete(address);
+          this.gattStates.delete(address);
+          client.close();
+        }
+        return { code: 0, payload: '' };
+      }
+      if (op === 8) {
+        if (fields.length < 2) {
+          return { code: -2, payload: 'the MTU value is required' };
+        }
+        const mtu: number = Number.parseInt(fields[1], 10);
+        const answer: BluetoothGattMtuAnswer = await this.gattRequestMtu(this.gattClientFor(address), address, mtu);
+        return { code: answer.code, payload: answer.mtu > 0 ? `${answer.mtu}` : '' };
+      }
+      if (fields.length < 3) {
+        return { code: -2, payload: 'the service and characteristic UUIDs are required' };
+      }
+      const serviceUuid: string = fields[1];
+      const characteristicUuid: string = fields[2];
+      const client: ble.GattClientDevice = this.gattClientFor(address);
+      if (op === 3) {
+        const characteristic: ble.BLECharacteristic = {
+          serviceUuid: serviceUuid,
+          characteristicUuid: characteristicUuid,
+          characteristicValue: new ArrayBuffer(0),
+          descriptors: [],
+        };
+        const read: ble.BLECharacteristic = await client.readCharacteristicValue(characteristic);
+        return { code: 0, payload: new util.Base64Helper().encodeToStringSync(new Uint8Array(read.characteristicValue)) };
+      }
+      if (op === 4) {
+        if (fields.length < 5) {
+          return { code: -2, payload: 'the write type and value are required' };
+        }
+        const value: Uint8Array = new util.Base64Helper().decodeSync(fields[4]);
+        const characteristic: ble.BLECharacteristic = {
+          serviceUuid: serviceUuid,
+          characteristicUuid: characteristicUuid,
+          characteristicValue: value.buffer as ArrayBuffer,
+          descriptors: [],
+        };
+        const writeType: ble.GattWriteType = fields[3] === '2' ? kit.ble.GattWriteType.WRITE_NO_RESPONSE : kit.ble.GattWriteType.WRITE;
+        await client.writeCharacteristicValue(characteristic, writeType);
+        return { code: 0, payload: '' };
+      }
+      if (op === 5) {
+        if (fields.length < 4) {
+          return { code: -2, payload: 'the enable flag is required' };
+        }
+        const characteristic: ble.BLECharacteristic = {
+          serviceUuid: serviceUuid,
+          characteristicUuid: characteristicUuid,
+          characteristicValue: new ArrayBuffer(0),
+          descriptors: [],
+        };
+        await client.setCharacteristicChangeNotification(characteristic, fields[3] === '1');
+        return { code: 0, payload: '' };
+      }
+      if (fields.length < 4) {
+        return { code: -2, payload: 'the descriptor UUID is required' };
+      }
+      const descriptorUuid: string = fields[3];
+      if (op === 6) {
+        const descriptor: ble.BLEDescriptor = {
+          serviceUuid: serviceUuid,
+          characteristicUuid: characteristicUuid,
+          descriptorUuid: descriptorUuid,
+          descriptorValue: new ArrayBuffer(0),
+        };
+        const read: ble.BLEDescriptor = await client.readDescriptorValue(descriptor);
+        return { code: 0, payload: new util.Base64Helper().encodeToStringSync(new Uint8Array(read.descriptorValue)) };
+      }
+      if (op === 7) {
+        if (fields.length < 5) {
+          return { code: -2, payload: 'the descriptor value is required' };
+        }
+        const value: Uint8Array = new util.Base64Helper().decodeSync(fields[4]);
+        const descriptor: ble.BLEDescriptor = {
+          serviceUuid: serviceUuid,
+          characteristicUuid: characteristicUuid,
+          descriptorUuid: descriptorUuid,
+          descriptorValue: value.buffer as ArrayBuffer,
+        };
+        await client.writeDescriptorValue(descriptor);
+        return { code: 0, payload: '' };
+      }
+      return { code: -2, payload: `unsupported bluetooth gatt op ${op}` };
+    } catch (gattError) {
+      console.error(`[maui] bluetooth gatt op ${op} failed: ${(gattError as Error).message}`);
+      return { code: -2, payload: (gattError as Error).message };
+    }
+  }
+
   aboutToAppear(): void {
     // 2 = foreground; the native host forwards it to the managed bridge.
     this.hostCall('notifyLifecycle', typeof host.notifyLifecycle === 'function', (): void => {
@@ -1927,6 +2256,31 @@ struct Index {
       });
     });
 
+    // Bluetooth GATT (platform extra): the managed side asks through
+    // ohos_host_bluetooth_gatt_request with (op, '\t' separated fields) and is answered through
+    // host.notifyBluetoothGattResult(requestId, code, payload). The shell requests
+    // ACCESS_BLUETOOTH per call, runs ble.createGattClientDevice operations and pushes value/
+    // state/MTU changes through host.notifyBluetoothGattEvent. Device-compat: the Connectivity
+    // Kit is imported lazily by runBluetoothGatt; a missing kit is cached and answers -1.
+    this.hostCall('registerBluetoothGattSink', typeof host.registerBluetoothGattSink === 'function', (): void => {
+      host.registerBluetoothGattSink(async (requestId: number, op: number, payload: string): Promise<void> => {
+        if (this.lazyUnavailable('connectivityKit')) {
+          this.answerBluetoothGatt(requestId, -1, '');
+          return;
+        }
+        let code: number = -1;
+        let answer: string = '';
+        try {
+          const result: BluetoothGattAnswer = await this.runBluetoothGatt(op, payload);
+          code = result.code;
+          answer = result.payload;
+        } catch (gattImportError) {
+          this.noteLazyFailure('connectivityKit', gattImportError as Error);
+        }
+        this.answerBluetoothGatt(requestId, code, answer);
+      });
+    });
+
     // Printing (platform extra): the managed side asks through ohos_host_print_file with an
     // absolute path to a PDF/image it rendered (PrintTextAsync writes <cacheDir>/<job>.pdf).
     // ohos.permission.PRINT is system_grant, so there is no runtime prompt: a packaged app
@@ -2230,7 +2584,8 @@ struct Index {
 
   // Clipboard (Essentials): the pasteboard 'update' observer is registered on the page's
   // context and would outlive the page, so it is unregistered with the exact stored callback
-  // when the page disappears; a later page registers again. No other observer is page-scoped.
+  // when the page disappears; a later page registers again. The Bluetooth GATT clients (platform
+  // extra) are closed for the same reason: their kit listeners are bound to this page instance.
   aboutToDisappear(): void {
     if (this.clipboardObserverRegistered && this.clipboardObserver !== null) {
       try {
@@ -2241,6 +2596,17 @@ struct Index {
       this.clipboardObserverRegistered = false;
       this.clipboardObserver = null;
     }
+    this.gattClients.forEach((client: ble.GattClientDevice, address: string): void => {
+      try {
+        client.close();
+      } catch (gattCloseError) {
+        console.error(`[maui] bluetooth gatt close failed for ${address}: ${(gattCloseError as Error).message}`);
+      }
+    });
+    this.gattClients.clear();
+    this.gattConnectWaiters.clear();
+    this.gattMtuWaiters.clear();
+    this.gattStates.clear();
   }
 
   // Accessibility self-check: the tiny overlay button in build() reports what the native host

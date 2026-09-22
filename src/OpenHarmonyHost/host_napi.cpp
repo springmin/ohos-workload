@@ -766,6 +766,112 @@ napi_value NotifyBluetoothDeviceFound(napi_env env, napi_callback_info info) {
     return undefined;
 }
 
+// Bluetooth GATT (platform extra): the managed side forwards one request through
+// ohos_host_bluetooth_gatt_request(requestId, op, payload); the ArkTS shell's
+// registerBluetoothGattSink handler requests ohos.permission.ACCESS_BLUETOOTH (user_grant),
+// lazily imports @kit.ConnectivityKit and runs the GATT client operations on
+// ble.createGattClientDevice(address): connect/disconnect/close, getServices,
+// readCharacteristicValue/writeCharacteristicValue, readDescriptorValue/writeDescriptorValue,
+// setCharacteristicChangeNotification and setBLEMtuSize, with the BLECharacteristicChange/
+// BLEConnectionStateChange/BLEMtuChange listeners pushed as device events. Requests and answers
+// travel as one operation code plus a tab-separated payload; code 0 is a complete answer, -1
+// unavailable, -2 a transient kit failure. The request payload is capped by AddString (a
+// missing shell sink or an over-long payload answers -1 without dispatching). The device-event
+// push lives on its own export so a host without it still serves the request/response half.
+HostSink g_bluetooth_gatt_sink("bluetooth gatt", false);
+static void (*g_bluetooth_gatt_result_listener)(int request_id, int code, const char* payload) = nullptr;
+static void (*g_bluetooth_gatt_event_listener)(const char* payload) = nullptr;
+
+// Called from managed code (P/Invoke): forwards a GATT operation to the ArkTS sink; returns 0
+// when it was dispatched, -1 when there is no sink (or the payload was dropped).
+extern "C" int ohos_host_bluetooth_gatt_request(int request_id, int op, const char* payload) {
+    SinkCall* call = new SinkCall();
+    call->AddInt(request_id);
+    call->AddInt(op);
+    call->AddString(payload);
+    if (!HostSinkPost(g_bluetooth_gatt_sink, call)) {
+        OH_LOG_WARN(LOG_APP, "[openharmony-host] bluetooth gatt: request dropped (no shell sink or over-long payload)");
+        return -1;
+    }
+    return 0;
+}
+
+// The managed side registers the callback that completes a pending GATT request.
+extern "C" void ohos_host_bluetooth_gatt_register_result(void* callback) {
+    g_bluetooth_gatt_result_listener = (void (*)(int, int, const char*))callback;
+}
+
+// Called by the NAPI notify below: hands the shell's answer back to managed code. The listener
+// is invoked outside any sink lock (HostSinkPost/HostSinkDispatch never call back under one).
+extern "C" void ohos_host_bluetooth_gatt_result(int request_id, int code, const char* payload) {
+    if (g_bluetooth_gatt_result_listener != nullptr) {
+        g_bluetooth_gatt_result_listener(request_id, code, payload != nullptr ? payload : "");
+    }
+}
+
+// The managed side registers the callback that receives the unsolicited device events.
+extern "C" void ohos_host_bluetooth_gatt_register_event(void* callback) {
+    g_bluetooth_gatt_event_listener = (void (*)(const char*))callback;
+}
+
+// Called by the NAPI notify below: pushes one device event (value change / connection state /
+// MTU) to managed code, NULL-safe.
+extern "C" void ohos_host_bluetooth_gatt_event(const char* payload) {
+    if (g_bluetooth_gatt_event_listener != nullptr) {
+        g_bluetooth_gatt_event_listener(payload != nullptr ? payload : "");
+    }
+}
+
+// ArkTS calls host.registerBluetoothGattSink(fn) to receive GATT requests.
+napi_value RegisterBluetoothGattSink(napi_env env, napi_callback_info info) {
+    size_t argc = 1;
+    napi_value argv[1] = {nullptr};
+    napi_get_cb_info(env, info, &argc, argv, nullptr, nullptr);
+    if (argc >= 1) {
+        napi_valuetype type = napi_undefined;
+        napi_typeof(env, argv[0], &type);
+        if (type == napi_function) {
+            HostSinkRegister(env, g_bluetooth_gatt_sink, argv[0]);
+            OH_LOG_INFO(LOG_APP, "[openharmony-host] bluetooth gatt sink registered");
+        } else {
+            OH_LOG_WARN(LOG_APP, "[openharmony-host] bluetooth gatt sink: not a function, ignored");
+        }
+    }
+    napi_value undefined = nullptr;
+    napi_get_undefined(env, &undefined);
+    return undefined;
+}
+
+// ArkTS calls host.notifyBluetoothGattResult(requestId, code, payload) when a request finished.
+napi_value NotifyBluetoothGattResult(napi_env env, napi_callback_info info) {
+    size_t argc = 3;
+    napi_value argv[3] = {nullptr, nullptr, nullptr};
+    napi_get_cb_info(env, info, &argc, argv, nullptr, nullptr);
+    int requestId = 0;
+    int code = -1;
+    std::string payload;
+    if (argc >= 1) napi_get_value_int32(env, argv[0], &requestId);
+    if (argc >= 2) napi_get_value_int32(env, argv[1], &code);
+    if (argc >= 3) payload = GetStringArg(env, argv[2]);
+    ohos_host_bluetooth_gatt_result(requestId, code, payload.c_str());
+    napi_value undefined = nullptr;
+    napi_get_undefined(env, &undefined);
+    return undefined;
+}
+
+// ArkTS calls host.notifyBluetoothGattEvent(payload) for one unsolicited device event.
+napi_value NotifyBluetoothGattEvent(napi_env env, napi_callback_info info) {
+    size_t argc = 1;
+    napi_value argv[1] = {nullptr};
+    napi_get_cb_info(env, info, &argc, argv, nullptr, nullptr);
+    std::string payload;
+    if (argc >= 1) payload = GetStringArg(env, argv[0]);
+    ohos_host_bluetooth_gatt_event(payload.c_str());
+    napi_value undefined = nullptr;
+    napi_get_undefined(env, &undefined);
+    return undefined;
+}
+
 // Printing (Print Kit): the managed side forwards a file path through ohos_host_print_file;
 // the ArkTS shell's registerPrintSink handler calls @ohos.print print.print([path], context)
 // (ohos.permission.PRINT is system_grant, so the shell does not prompt) and answers through
@@ -2402,6 +2508,9 @@ napi_value Init(napi_env env, napi_value exports) {
         {"registerBluetoothSink", nullptr, RegisterBluetoothSink, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"notifyBluetoothResult", nullptr, NotifyBluetoothResult, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"notifyBluetoothDeviceFound", nullptr, NotifyBluetoothDeviceFound, nullptr, nullptr, nullptr, napi_default, nullptr},
+        {"registerBluetoothGattSink", nullptr, RegisterBluetoothGattSink, nullptr, nullptr, nullptr, napi_default, nullptr},
+        {"notifyBluetoothGattResult", nullptr, NotifyBluetoothGattResult, nullptr, nullptr, nullptr, napi_default, nullptr},
+        {"notifyBluetoothGattEvent", nullptr, NotifyBluetoothGattEvent, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"registerPrintSink", nullptr, RegisterPrintSink, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"notifyPrintResult", nullptr, NotifyPrintResult, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"registerAbilitySink", nullptr, RegisterAbilitySink, nullptr, nullptr, nullptr, napi_default, nullptr},

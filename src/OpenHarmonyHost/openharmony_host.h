@@ -159,6 +159,26 @@ void ohos_host_clipboard_notify_changed(void);
 void ohos_host_network_access_register(void* callback);
 void ohos_host_network_access_notify(void);
 
+/// Bluetooth GATT (platform extra; BLE has no MAUI counterpart). The managed side asks the
+/// ArkTS shell to run one GATT client operation through host.registerBluetoothGattSink:
+/// request_id/op select the operation (0 connect, 1 disconnect, 2 get services, 3 read
+/// characteristic, 4 write characteristic, 5 set notifications, 6 read descriptor, 7 write
+/// descriptor, 8 request MTU, 9 release) and payload carries the tab-separated arguments
+/// (the managed side never emits a tab/LF/CR inside a field). The answer arrives through
+/// ohos_host_bluetooth_gatt_result(request_id, code, payload): code 0 = success with the
+/// operation-specific payload (service records, base64 value or negotiated MTU), -1 = the
+/// platform path is unavailable (no sink, no Connectivity Kit, ACCESS_BLUETOOTH denied),
+/// -2 = a transient kit failure; a failure payload is a diagnostic message. Unsolicited
+/// device events (characteristic value change, connection state change, MTU change) are
+/// pushed through ohos_host_bluetooth_gatt_event(payload) to the separate
+/// ohos_host_bluetooth_gatt_register_event callback, so a host without that export still
+/// serves the request/response half. The NAPI layer owns the shell sink.
+int ohos_host_bluetooth_gatt_request(int request_id, int op, const char* payload);
+void ohos_host_bluetooth_gatt_register_result(void* callback);
+void ohos_host_bluetooth_gatt_result(int request_id, int code, const char* payload);
+void ohos_host_bluetooth_gatt_register_event(void* callback);
+void ohos_host_bluetooth_gatt_event(const char* payload);
+
 /// Window chrome: the managed side asks the ArkTS shell to apply the main window's title
 /// (window.setWindowTitle, SessionManager, API 15+) and its rectangle (window.moveWindowTo +
 /// window.resize, API 11+). Both return 0 when the request reached the shell sink and -1 when
