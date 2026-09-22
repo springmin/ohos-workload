@@ -199,9 +199,13 @@ struct Index {
   private batteryEventsRegistered: boolean = false;
   private displayChangeRegistered: boolean = false;
   // Clipboard (Essentials): reading the pasteboard needs ohos.permission.READ_PASTEBOARD
-  // (user_grant); once granted it stays cached. The pasteboard 'update' observer registers once.
+  // (user_grant); the grant is cached and only an explicit GetTextAsync (op 1) may prompt. A
+  // denied prompt is cached too, and the pasteboard 'update' observer (registered once, freed
+  // in aboutToDisappear) never prompts.
   private clipboardReadGranted: boolean = false;
+  private clipboardReadDenied: boolean = false;
   private clipboardObserverRegistered: boolean = false;
+  private clipboardObserver: (() => void) | null = null;
   // Connectivity (Essentials): the NetworkKit connection observer registers once per page
   // (lazily imported; see subscribeNetworkChanges).
   private networkObserverRegistered: boolean = false;
@@ -452,19 +456,46 @@ struct Index {
   }
 
   // Clipboard (Essentials): reading the pasteboard needs ohos.permission.READ_PASTEBOARD
-  // (user_grant), requested on demand like the contacts/calendar sinks do; the grant is cached
-  // once won. The permission must be declared by the app (the pack's OpenHarmonyExtraPermissions
-  // switch appends it to requestPermissions).
-  private async ensureClipboardReadPermission(): Promise<boolean> {
-    if (this.clipboardReadGranted) {
+  // (user_grant). Only an explicit get (op 1, GetTextAsync) may raise the system prompt: the
+  // HasText path (op 0) and the pasteboard 'update' observer use the cached grant plus a
+  // non-prompting getSelfPermissionStatus query, and a denied prompt is cached so no background
+  // path can re-ask. The permission must be declared by the app (the pack's
+  // OpenHarmonyExtraPermissions switch appends it to requestPermissions).
+  private async ensureClipboardReadPermission(prompt: boolean): Promise<boolean> {
+    if (this.clipboardReadGranted || this.clipboardPermissionGranted()) {
+      this.clipboardReadGranted = true;
+      this.clipboardReadDenied = false;
       return true;
     }
-    const context = getContext(this) as common.UIAbilityContext;
-    const permissions: Permissions[] = ['ohos.permission.READ_PASTEBOARD'];
-    const atManager = abilityAccessCtrl.createAtManager();
-    const granted = await atManager.requestPermissionsFromUser(context, permissions);
-    this.clipboardReadGranted = granted.authResults.length > 0 && granted.authResults[0] === 0;
-    return this.clipboardReadGranted;
+    if (!prompt || this.clipboardReadDenied) {
+      return false;
+    }
+    try {
+      const context = getContext(this) as common.UIAbilityContext;
+      const permissions: Permissions[] = ['ohos.permission.READ_PASTEBOARD'];
+      const atManager = abilityAccessCtrl.createAtManager();
+      const granted = await atManager.requestPermissionsFromUser(context, permissions);
+      this.clipboardReadGranted = granted.authResults.length > 0 && granted.authResults[0] === 0;
+      this.clipboardReadDenied = !this.clipboardReadGranted;
+      return this.clipboardReadGranted;
+    } catch (clipboardPermissionError) {
+      this.clipboardReadDenied = true;
+      console.error(`[maui] clipboard permission request failed: ${(clipboardPermissionError as Error).message}`);
+      return false;
+    }
+  }
+
+  // Clipboard (Essentials): non-prompting READ_PASTEBOARD query. getSelfPermissionStatus only
+  // reports the current state (API 20+), so a grant made in settings is seen without a prompt;
+  // any failure (including an older device without the query) leaves the cached grant in charge.
+  private clipboardPermissionGranted(): boolean {
+    try {
+      const atManager = abilityAccessCtrl.createAtManager();
+      return atManager.getSelfPermissionStatus('ohos.permission.READ_PASTEBOARD') ===
+        abilityAccessCtrl.PermissionStatus.GRANTED;
+    } catch (clipboardStatusError) {
+      return false;
+    }
   }
 
   // Reads the primary text of the pasteboard ('' when there is no data or no plain text).
@@ -516,13 +547,91 @@ struct Index {
     });
   }
 
+  // Screenshot path containment: canonicalize the requested output path and accept it only
+  // when the canonical form stays under the app's temp or cache dir. '..' segments are rejected
+  // outright, and every existing component below the matched root is lstat'ed, so a symlinked
+  // parent (or a pre-existing symlinked target) cannot redirect the PNG outside the app dirs.
+  // Returns the canonical path, or null when the request must be rejected.
+  private canonicalScreenshotPath(outPath: string): string | null {
+    // The host caps the path at 4 KiB too; reject instead of writing anything surprising.
+    if (outPath.length === 0 || outPath.length > 4096 || !outPath.startsWith('/')) {
+      return null;
+    }
+    const normalized: string[] = [];
+    const segments: string[] = outPath.split('/');
+    for (let i = 0; i < segments.length; i++) {
+      const segment: string = segments[i];
+      if (segment.length === 0 || segment === '.') {
+        continue;
+      }
+      if (segment === '..') {
+        return null;
+      }
+      normalized.push(segment);
+    }
+    if (normalized.length === 0) {
+      return null;
+    }
+    const canonical: string = '/' + normalized.join('/');
+    const context = getContext(this) as common.UIAbilityContext;
+    const roots: string[] = [context.tempDir, context.cacheDir];
+    let root: string = '';
+    for (let i = 0; i < roots.length; i++) {
+      let candidate: string = roots[i];
+      if (!candidate.endsWith('/')) {
+        candidate = candidate + '/';
+      }
+      if (canonical.startsWith(candidate)) {
+        root = candidate;
+        break;
+      }
+    }
+    if (root.length === 0) {
+      return null;
+    }
+    // A missing final component is fine (the capture creates it); a missing parent is not, and a
+    // symlink anywhere on the way to the target (or the target itself when it already exists)
+    // rejects the request.
+    const relative: string[] = canonical.substring(root.length).split('/');
+    let current: string = root;
+    for (let i = 0; i < relative.length; i++) {
+      current = current + relative[i];
+      const isLast: boolean = i === relative.length - 1;
+      try {
+        if (fileIo.lstatSync(current).isSymbolicLink()) {
+          return null;
+        }
+      } catch (pathError) {
+        if (!isLast) {
+          return null;
+        }
+      }
+      if (!isLast) {
+        current = current + '/';
+      }
+    }
+    return canonical;
+  }
+
   // Screenshot: the managed side passes an app-owned output path through
   // ohos_host_screenshot; the shell snapshots the main window and writes it as a PNG. The
+  // output path must resolve under the app temp/cache dirs (see canonicalScreenshotPath). The
   // image packer is imported lazily (device-compat), and the packer, the file descriptor and
-  // the pixel map are released on every path.
-  private async captureScreenshot(outPath: string): Promise<void> {
+  // the pixel map are released on every path. Returns 0 when the PNG was written, -1 otherwise.
+  private async captureScreenshot(outPath: string): Promise<number> {
+    let safePath: string | null = null;
+    try {
+      safePath = this.canonicalScreenshotPath(outPath);
+    } catch (pathError) {
+      console.error(`[maui] screenshot path check failed: ${(pathError as Error).message}`);
+      return -1;
+    }
+    if (safePath === null) {
+      console.error('[maui] screenshot rejected: output path is not under the app temp/cache dir');
+      return -1;
+    }
     if (this.lazyUnavailable('imagePacker')) {
-      return;
+      return -1;
     }
     try {
       const image = await import('@ohos.multimedia.image');
@@ -530,10 +639,11 @@ struct Index {
         const win = await window.getLastWindow(getContext(this));
         const pixelMap = await win.snapshot();
         const packer = image.default.createImagePacker();
-        const file = fileIo.openSync(outPath, fileIo.OpenMode.READ_WRITE | fileIo.OpenMode.CREATE
+        const file = fileIo.openSync(safePath, fileIo.OpenMode.READ_WRITE | fileIo.OpenMode.CREATE
           | fileIo.OpenMode.TRUNC);
         try {
           await packer.packToFile(pixelMap, file.fd, { format: 'image/png', quality: 100 });
+          return 0;
         } finally {
           fileIo.closeSync(file);
           await packer.release();
@@ -541,9 +651,11 @@ struct Index {
         }
       } catch (screenshotError) {
         console.error(`[maui] screenshot failed: ${(screenshotError as Error).message}`);
+        return -1;
       }
     } catch (imageImportError) {
       this.noteLazyFailure('imagePacker', imageImportError as Error);
+      return -1;
     }
   }
 
@@ -1363,10 +1475,10 @@ struct Index {
 
     // Clipboard (Essentials IClipboard): the managed side sends (requestId, op, text) through
     // ohos_host_clipboard_request (op 0 has / 1 get / 2 set); the shell runs the pasteboard
-    // call and answers with host.clipboardResult(id, rc, text). Reading needs
-    // ohos.permission.READ_PASTEBOARD (requested on demand above), writing none. The 'update'
-    // observer below pushes host.notifyClipboardChanged so ClipboardContentChanged works even
-    // for changes made by other apps.
+    // call and answers with host.clipboardResult(id, rc, text). Only an explicit get (op 1,
+    // GetTextAsync) may raise the READ_PASTEBOARD prompt (op === 1 below); the has path never
+    // prompts, writing (op 2) needs no permission, and the 'update' observer below only pushes
+    // host.notifyClipboardChanged, so HasText/ClipboardContentChanged work without prompts.
     this.hostCall('registerClipboardSink', typeof host.registerClipboardSink === 'function', (): void => {
       host.registerClipboardSink(async (requestId: number, op: number, text: string): Promise<void> => {
         let rc: number = -1;
@@ -1374,7 +1486,7 @@ struct Index {
         try {
           const systemPasteboard = pasteboard.getSystemPasteboard();
           if (op === 0 || op === 1) {
-            if (await this.ensureClipboardReadPermission()) {
+            if (await this.ensureClipboardReadPermission(op === 1)) {
               rc = 0;
               const clipboardText: string = this.readClipboardText(systemPasteboard);
               value = op === 0 ? (clipboardText.length > 0 ? '1' : '0') : clipboardText;
@@ -1393,11 +1505,15 @@ struct Index {
     });
     if (!this.clipboardObserverRegistered) {
       try {
-        pasteboard.getSystemPasteboard().on('update', (): void => {
+        // The observer is stored so aboutToDisappear can unregister exactly this callback; it
+        // only reports the change and never prompts (the denial is cached in the sink above).
+        const clipboardObserver = (): void => {
           this.hostCall('notifyClipboardChanged', typeof host.notifyClipboardChanged === 'function', (): void => {
             host.notifyClipboardChanged();
           });
-        });
+        };
+        pasteboard.getSystemPasteboard().on('update', clipboardObserver);
+        this.clipboardObserver = clipboardObserver;
         this.clipboardObserverRegistered = true;
       } catch (clipboardObserverError) {
         console.error(`[maui] clipboard observer unavailable: ${(clipboardObserverError as Error).message}`);
@@ -1930,6 +2046,21 @@ struct Index {
     this.hostCall('setNodeContent', typeof host.setNodeContent === 'function', (): void => {
       host.setNodeContent(this.content);
     });
+  }
+
+  // Clipboard (Essentials): the pasteboard 'update' observer is registered on the page's
+  // context and would outlive the page, so it is unregistered with the exact stored callback
+  // when the page disappears; a later page registers again. No other observer is page-scoped.
+  aboutToDisappear(): void {
+    if (this.clipboardObserverRegistered && this.clipboardObserver !== null) {
+      try {
+        pasteboard.getSystemPasteboard().off('update', this.clipboardObserver);
+      } catch (clipboardOffError) {
+        console.error(`[maui] clipboard observer unregister failed: ${(clipboardOffError as Error).message}`);
+      }
+      this.clipboardObserverRegistered = false;
+      this.clipboardObserver = null;
+    }
   }
 
   // Accessibility self-check: the tiny overlay button in build() reports what the native host
@@ -2560,7 +2691,10 @@ struct Index {
       // Shell panel (Shell handler extras): the flyout header/footer text and the managed
       // search state. It only appears while one of them is present, so an app without shell
       // chrome keeps the full managed surface. The field reports interactions back through
-      // host.notifyShellSearch (0 query changed, 1 submit, 2 cancel).
+      // host.notifyShellSearch (0 query changed, 1 submit, 2 cancel). The header/footer are
+      // capped (2 lines each) and the panel height is clamped so hostile text cannot cover the
+      // managed surface; without the search field the panel is hit-test transparent, so only the
+      // interactive search UI ever intercepts taps.
       if (this.flyoutHeader.length > 0 || this.flyoutFooter.length > 0 || this.shellSearchVisible) {
         Column() {
           if (this.flyoutHeader.length > 0) {
@@ -2569,6 +2703,8 @@ struct Index {
               .fontWeight(FontWeight.Bold)
               .fontColor(Color.White)
               .width('100%')
+              .maxLines(2)
+              .textOverflow({ overflow: TextOverflow.Ellipsis })
               .padding({ left: 12, right: 12, top: 8, bottom: 8 })
           }
           if (this.shellSearchVisible) {
@@ -2611,14 +2747,19 @@ struct Index {
               .fontSize(12)
               .fontColor('#DDDDDD')
               .width('100%')
+              .maxLines(2)
+              .textOverflow({ overflow: TextOverflow.Ellipsis })
               .padding({ left: 12, right: 12, top: 8, bottom: 8 })
           }
         }
         .width(260)
+        .constraintSize({ maxHeight: 240 })
+        .clip(true)
         .align(Alignment.TopStart)
         .backgroundColor('#CC101010')
         .borderRadius(8)
         .margin({ top: 8, left: 8 })
+        .hitTestBehavior(this.shellSearchVisible ? HitTestMode.Default : HitTestMode.None)
       }
 
       // Menu handle: only present while the managed page publishes menu bars. The ArkUI menu is

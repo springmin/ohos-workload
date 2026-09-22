@@ -72,6 +72,14 @@ OH_NativeXComponent* g_xcomponent = nullptr;
 //   typedef void (*napi_threadsafe_function_call_js)(napi_env env, napi_value js_callback,
 //       void* context, void* data);
 
+// Length caps for the strings crossing the bridge. Control strings are the identifiers, paths
+// and UI text the shell applies; results are payloads handed to the managed side. An over-long
+// value is logged and dropped (never delivered truncated).
+constexpr size_t kMaxControlBytes = 64 * 1024;
+constexpr size_t kMaxResultBytes = 1024 * 1024;
+// A screenshot output path is a filesystem path, not a payload: keep it well below PATH_MAX.
+constexpr size_t kMaxScreenshotPathBytes = 4096;
+
 struct SinkArg {
     bool is_string = false;
     int32_t int_value = 0;
@@ -83,6 +91,9 @@ struct SinkCall {
     enum { kMaxArgs = 5 };
     int count = 0;
     SinkArg args[kMaxArgs];
+    // Set when an AddString argument exceeded its cap: a notification with a missing or partial
+    // argument must not be delivered (see HostSinkPost).
+    bool overflow = false;
 
     void AddInt(int32_t value) {
         if (count < kMaxArgs) {
@@ -92,14 +103,38 @@ struct SinkCall {
         }
     }
 
-    void AddString(const char* value) {
+    // Appends one string argument. max_bytes defaults to the result cap; control strings pass
+    // kMaxControlBytes at their call site. Returns false after one log line when the value is
+    // longer than the cap (the argument is not appended and the call is marked as overflow).
+    bool AddString(const char* value, size_t max_bytes = kMaxResultBytes) {
+        size_t length = value != nullptr ? strlen(value) : 0;
+        if (length > max_bytes) {
+            OH_LOG_WARN(LOG_APP, "[openharmony-host] string argument dropped: %{public}d bytes over the %{public}d cap",
+                        (int)length, (int)max_bytes);
+            overflow = true;
+            return false;
+        }
         if (count < kMaxArgs) {
             args[count].is_string = true;
             args[count].string_value = value != nullptr ? value : "";
             count++;
         }
+        return true;
     }
 };
+
+// True when a control string fits the 64 KiB cap; an over-long value is logged against the
+// calling API and must be dropped by the caller (a C setter returns -1/0, a void listener
+// drops the notification).
+static bool ControlStringFits(const char* value, const char* api) {
+    size_t length = value != nullptr ? strlen(value) : 0;
+    if (length <= kMaxControlBytes) {
+        return true;
+    }
+    OH_LOG_WARN(LOG_APP, "[openharmony-host] %{public}s: string argument dropped: %{public}d bytes over the %{public}d cap",
+                api, (int)length, (int)kMaxControlBytes);
+    return false;
+}
 
 // One per registered sink: the threadsafe function bound to the shell callback plus the
 // bookkeeping needed to free queued notifications when the sink is replaced.
@@ -136,12 +171,19 @@ static void HostSinkDispatch(napi_env env, napi_value js_callback, void* context
         }
     }
     if (env != nullptr && js_callback != nullptr) {
-        napi_value argv[SinkCall::kMaxArgs];
+        // Every slot is initialized: an argument whose napi creation fails is replaced by
+        // undefined instead of being passed uninitialized to the shell callback.
+        napi_value argv[SinkCall::kMaxArgs] = {};
         for (int i = 0; i < call->count; i++) {
+            napi_status status = napi_generic_failure;
             if (call->args[i].is_string) {
-                napi_create_string_utf8(env, call->args[i].string_value.c_str(), NAPI_AUTO_LENGTH, &argv[i]);
+                status = napi_create_string_utf8(env, call->args[i].string_value.c_str(), NAPI_AUTO_LENGTH, &argv[i]);
             } else {
-                napi_create_int32(env, call->args[i].int_value, &argv[i]);
+                status = napi_create_int32(env, call->args[i].int_value, &argv[i]);
+            }
+            if (status != napi_ok || argv[i] == nullptr) {
+                argv[i] = nullptr;
+                napi_get_undefined(env, &argv[i]);
             }
         }
         napi_value this_arg = js_callback;
@@ -175,6 +217,12 @@ static void HostSinkReset(HostSink& sink) {
 // always consumed, so callers must not touch it afterwards.
 static bool HostSinkPost(HostSink& sink, SinkCall* call) {
     if (call == nullptr) {
+        return false;
+    }
+    if (call->overflow) {
+        // An argument exceeded its cap (already logged by AddString): never deliver a notification
+        // with a missing or partial argument.
+        delete call;
         return false;
     }
     bool posted = false;
@@ -1204,8 +1252,11 @@ extern "C" int ohos_host_set_window_title(const char* utf8) {
         OH_LOG_WARN(LOG_APP, "[openharmony-host] set_window_title: empty title");
         return -1;
     }
+    if (!ControlStringFits(utf8, "set_window_title")) {
+        return -1;
+    }
     SinkCall* call = new SinkCall();
-    call->AddString(utf8);
+    call->AddString(utf8, kMaxControlBytes);
     if (!HostSinkPost(g_window_title_sink, call)) {
         OH_LOG_WARN(LOG_APP, "[openharmony-host] set_window_title: no shell window title sink");
         return -1;
@@ -1213,11 +1264,39 @@ extern "C" int ohos_host_set_window_title(const char* utf8) {
     return 0;
 }
 
+// Documented window-rect bounds: the shell applies the values to the main window with
+// moveWindowTo + resize and the managed side is not trusted to keep them sane. Width/height
+// are clamped into (0, 16384] and x/y into [-32768, 32768] before the request is queued.
+constexpr int kMaxWindowDimension = 16384;
+constexpr int kMaxWindowOffset = 32768;
+
 // Called from managed code (P/Invoke): returns 0 when the rectangle was queued for the shell.
 extern "C" int ohos_host_set_window_rect(int x, int y, int w, int h) {
     if (w <= 0 || h <= 0) {
         OH_LOG_WARN(LOG_APP, "[openharmony-host] set_window_rect: invalid size %{public}dx%{public}d", w, h);
         return -1;
+    }
+    if (w > kMaxWindowDimension) {
+        OH_LOG_WARN(LOG_APP, "[openharmony-host] set_window_rect: width clamped from %{public}d", w);
+        w = kMaxWindowDimension;
+    }
+    if (h > kMaxWindowDimension) {
+        OH_LOG_WARN(LOG_APP, "[openharmony-host] set_window_rect: height clamped from %{public}d", h);
+        h = kMaxWindowDimension;
+    }
+    if (x > kMaxWindowOffset) {
+        OH_LOG_WARN(LOG_APP, "[openharmony-host] set_window_rect: x clamped from %{public}d", x);
+        x = kMaxWindowOffset;
+    } else if (x < -kMaxWindowOffset) {
+        OH_LOG_WARN(LOG_APP, "[openharmony-host] set_window_rect: x clamped from %{public}d", x);
+        x = -kMaxWindowOffset;
+    }
+    if (y > kMaxWindowOffset) {
+        OH_LOG_WARN(LOG_APP, "[openharmony-host] set_window_rect: y clamped from %{public}d", y);
+        y = kMaxWindowOffset;
+    } else if (y < -kMaxWindowOffset) {
+        OH_LOG_WARN(LOG_APP, "[openharmony-host] set_window_rect: y clamped from %{public}d", y);
+        y = -kMaxWindowOffset;
     }
     SinkCall* call = new SinkCall();
     call->AddInt(x);
@@ -1280,8 +1359,15 @@ extern "C" int ohos_host_screenshot(const char* out_path) {
         OH_LOG_WARN(LOG_APP, "[openharmony-host] screenshot: empty output path");
         return -1;
     }
+    // Filesystem-path cap (well below PATH_MAX; the shell re-validates containment). A path
+    // longer than this is a malformed request, not a payload to carry.
+    if (strlen(out_path) > kMaxScreenshotPathBytes) {
+        OH_LOG_WARN(LOG_APP, "[openharmony-host] screenshot: output path dropped: %{public}d bytes over the %{public}d cap",
+                    (int)strlen(out_path), (int)kMaxScreenshotPathBytes);
+        return -1;
+    }
     SinkCall* call = new SinkCall();
-    call->AddString(out_path);
+    call->AddString(out_path, kMaxScreenshotPathBytes);
     if (!HostSinkPost(g_screenshot_sink, call)) {
         OH_LOG_WARN(LOG_APP, "[openharmony-host] screenshot: no shell screenshot sink");
         return -1;
@@ -1325,6 +1411,9 @@ int g_shell_search_enabled = 0;
 // shell sink. The stored copy backs the host.shellSearch* getters the shell reads on startup.
 extern "C" int ohos_host_shell_search_set(const char* query, const char* placeholder,
                                           int visible, int enabled) {
+    if (!ControlStringFits(query, "shell_search_set") || !ControlStringFits(placeholder, "shell_search_set")) {
+        return -1;
+    }
     SinkCall* call = new SinkCall();
     {
         std::lock_guard<std::mutex> guard(g_shell_search_lock);
@@ -1332,8 +1421,8 @@ extern "C" int ohos_host_shell_search_set(const char* query, const char* placeho
         g_shell_search_placeholder = placeholder != nullptr ? placeholder : "";
         g_shell_search_visible = visible != 0 ? 1 : 0;
         g_shell_search_enabled = enabled != 0 ? 1 : 0;
-        call->AddString(g_shell_search_query.c_str());
-        call->AddString(g_shell_search_placeholder.c_str());
+        call->AddString(g_shell_search_query.c_str(), kMaxControlBytes);
+        call->AddString(g_shell_search_placeholder.c_str(), kMaxControlBytes);
         call->AddInt(g_shell_search_visible);
         call->AddInt(g_shell_search_enabled);
     }
@@ -1443,13 +1532,16 @@ std::string g_shell_flyout_header;
 std::string g_shell_flyout_footer;
 
 static int ShellFlyoutPublish(int op, const char* text) {
+    if (!ControlStringFits(text, op == 0 ? "shell_flyout_header" : "shell_flyout_footer")) {
+        return -1;
+    }
     SinkCall* call = new SinkCall();
     call->AddInt(op);
     {
         std::lock_guard<std::mutex> guard(g_shell_flyout_lock);
         std::string& slot = op == 0 ? g_shell_flyout_header : g_shell_flyout_footer;
         slot = text != nullptr ? text : "";
-        call->AddString(slot.c_str());
+        call->AddString(slot.c_str(), kMaxControlBytes);
     }
     if (!HostSinkPost(g_shell_flyout_sink, call)) {
         OH_LOG_WARN(LOG_APP, "[openharmony-host] shell_flyout_%{public}s: no shell flyout sink",
@@ -1709,8 +1801,11 @@ napi_value NotifyPickerResult(napi_env env, napi_callback_info info) {
 HostSink g_permission_sink("permission", false);
 
 void OnPermissionRequest(const char* permission, int requestId) {
+    if (!ControlStringFits(permission, "permission")) {
+        return;
+    }
     SinkCall* call = new SinkCall();
-    call->AddString(permission);
+    call->AddString(permission, kMaxControlBytes);
     call->AddInt(requestId);
     HostSinkPost(g_permission_sink, call);
 }
@@ -1755,10 +1850,13 @@ napi_value NotifyPermissionResult(napi_env env, napi_callback_info info) {
 HostSink g_clipboard_sink("clipboard", false);
 
 void OnClipboardRequest(int requestId, int op, const char* text) {
+    if (!ControlStringFits(text, "clipboard")) {
+        return;
+    }
     SinkCall* call = new SinkCall();
     call->AddInt(requestId);
     call->AddInt(op);
-    call->AddString(text);
+    call->AddString(text, kMaxControlBytes);
     HostSinkPost(g_clipboard_sink, call);
 }
 
@@ -1827,10 +1925,13 @@ napi_value NotifyNetworkAccess(napi_env env, napi_callback_info info) {
 HostSink g_geocode_sink("geocode", false);
 
 void OnGeocodeRequest(int requestId, int op, const char* arg) {
+    if (!ControlStringFits(arg, "geocode")) {
+        return;
+    }
     SinkCall* call = new SinkCall();
     call->AddInt(requestId);
     call->AddInt(op);
-    call->AddString(arg);
+    call->AddString(arg, kMaxControlBytes);
     HostSinkPost(g_geocode_sink, call);
 }
 
@@ -2013,6 +2114,13 @@ struct LaunchRequest {
 std::string GetStringArg(napi_env env, napi_value value) {
     size_t length = 0;
     napi_get_value_string_utf8(env, value, nullptr, 0, &length);
+    if (length > kMaxResultBytes) {
+        // Results (web eval/picker/clipboard/geocode payloads) are capped; an over-long value is
+        // dropped with a log line and never copied into the host.
+        OH_LOG_WARN(LOG_APP, "[openharmony-host] string argument dropped: %{public}d bytes over the %{public}d cap",
+                    (int)length, (int)kMaxResultBytes);
+        return std::string();
+    }
     std::string result(length, '\0');
     napi_get_value_string_utf8(env, value, result.data(), length + 1, &length);
     return result;
@@ -2924,6 +3032,9 @@ extern "C" int ohos_host_accessibility_send_event(int eventType) {
 // event was created and sent, 0 when there is no provider or the text is NULL/empty.
 extern "C" int ohos_host_accessibility_announce(const char* text) {
     if (text == nullptr || text[0] == '\0') {
+        return 0;
+    }
+    if (!ControlStringFits(text, "accessibility_announce")) {
         return 0;
     }
     if (g_a11y_provider == nullptr) {
