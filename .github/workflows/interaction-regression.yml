@@ -12,7 +12,7 @@ name: interaction-regression
 #
 # verify.csproj turns those environment variables into MSBuild default properties (an explicit
 # -p: override still wins), so no other configuration is required. The job fails unless the suite
-# exits 0, reports at least 255 "[verify]" lines (275 total: 262 interaction checks - including
+# exits 0, reports at least 264 "[verify]" lines (284 total: 271 interaction checks - including
 # the ten late-app-context HybridWebView assertions and the eighteen V8 app-context publish
 # assertions - plus 4 fuzz lines, the frame-path perf line and the 8 accessibility publish-path
 # perf lines),
@@ -30,7 +30,7 @@ on:
         description: 'maui-ohos commit SHA to compile (defaults to the pinned feature/openharmony tip)'
         required: false
         type: string
-        default: '6a4062b7264623de26aa18e0b6f69032901a91e6'
+        default: '90b21416a411b71bab3a824691355c7a13653eb4'
   push:
     branches: [ master ]
 
@@ -43,10 +43,10 @@ permissions:
 # mutable feature/openharmony branch, so a push to the fork cannot change what this gate compiles.
 # The default is the feature/openharmony tip verified with
 # `git ls-remote https://github.com/springmin/maui-ohos feature/openharmony` on 2026-09-22
-# (6a4062b7, the BATCH-1/BATCH-2 tip the 275-check suite asserts); advance it
+# (90b21416, the NB1 shell-search/flyout/window tip the 284-check suite asserts); advance it
 # deliberately (workflow_dispatch can compile any other commit SHA).
 env:
-  MAUI_OHOS_REF: ${{ github.event.inputs.maui_ohos_ref || '6a4062b7264623de26aa18e0b6f69032901a91e6' }}
+  MAUI_OHOS_REF: ${{ github.event.inputs.maui_ohos_ref || '90b21416a411b71bab3a824691355c7a13653eb4' }}
 
 jobs:
   interaction:
@@ -85,8 +85,8 @@ jobs:
           cat out.txt
           checks=$(grep -c '\[verify\]' out.txt || true)
           echo "interaction checks reported: $checks"
-          if [ "$checks" -lt 255 ]; then
-            echo "::error::expected at least 255 [verify] lines, got $checks"
+          if [ "$checks" -lt 264 ]; then
+            echo "::error::expected at least 264 [verify] lines, got $checks"
             exit 1
           fi
           if grep -q Unhandled out.txt; then

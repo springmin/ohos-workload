@@ -3952,6 +3952,278 @@ if (!b2WindowContract)
     throw new InvalidOperationException("the window title/rect host/shell contract pin failed");
 }
 
+// ---- Audit pins: previously unguarded slice features -------------------------------------------
+// The follow-up audit found eight surfaces the suite exercised or referenced but never guarded
+// with a source contract, so a slice refactor could silently change them between pack builds:
+// the safe-area model and its app-host/page-handler usage, the FontImageSource glyph path and
+// its per-source cache, the SwitchCell/EntryCell branches in the legacy ListView handler, the
+// shell SearchHandler publish/listener pair, the flyout header/footer publish, the
+// TabBarIsVisible/FlyoutBehavior chrome, the window title/rect publish with the host's clamp
+// constants, and the shell search/flyout/window sinks in all three preview templates. Each pin
+// parses the committed sources (the same style as the B3/BATCH pins above) so drift fails this
+// off-device run instead of shipping a pack built from mismatched halves.
+
+// Audit-1: safe-area model + usage. The shell's avoid area is read through
+// OpenHarmonyBridge.TryGetAvoidArea, a view without an explicit configuration falls back to
+// SafeAreaEdges.Container, only the overlapping part of a frame is consumed (SoftInput never
+// pads the bottom), and the app host / page handler arrange through the safe-area walk; the
+// host keeps the ohos_host_get_avoid_area getter the bridge wraps.
+string? n1SafeAreaPath = FindHostSource("OpenHarmonySafeArea.cs");
+string n1SafeArea = n1SafeAreaPath is null ? string.Empty : File.ReadAllText(n1SafeAreaPath);
+string? n1SafeAreaArrangePath = FindHostSource("OpenHarmonySafeAreaArrange.cs");
+string n1SafeAreaArrange = n1SafeAreaArrangePath is null ? string.Empty : File.ReadAllText(n1SafeAreaArrangePath);
+string? n1AppHostPath = FindHostSource("OpenHarmonyMauiAppHost.cs");
+string n1AppHost = n1AppHostPath is null ? string.Empty : File.ReadAllText(n1AppHostPath);
+string? n1PageHandlerPath = FindHostSource("OpenHarmonyPageHandler.cs");
+string n1PageHandler = n1PageHandlerPath is null ? string.Empty : File.ReadAllText(n1PageHandlerPath);
+bool n1ModelOk = n1SafeArea.Contains("internal static class OpenHarmonySafeArea") &&
+    n1SafeArea.Contains("OpenHarmonyBridge.TryGetAvoidArea(out int top, out int bottom, out int left, out int right)") &&
+    n1SafeArea.Contains("return SafeAreaEdges.Container;") &&
+    n1SafeArea.Contains("internal static Rect Pad(IView view, Rect frame, Rect windowBounds, Thickness insets)") &&
+    n1SafeArea.Contains("isBottom && region == SafeAreaRegions.SoftInput") &&
+    n1SafeArea.Contains("Math.Clamp(inset - frame.X, 0, inset)");
+bool n1ArrangeOk = n1SafeAreaArrange.Contains("internal static class OpenHarmonySafeAreaArrange") &&
+    n1SafeAreaArrange.Contains("private const int MaxDepth = 4;") &&
+    n1SafeAreaArrange.Contains("OpenHarmonyContentArrange.Arrange(view, frame, depth);") &&
+    n1SafeAreaArrange.Contains("OpenHarmonySafeArea.Pad(view, frame, windowBounds, insets)");
+bool n1UsedOk = n1AppHost.Contains("Thickness insets = OpenHarmonySafeArea.GetWindowInsets();") &&
+    n1AppHost.Contains("OpenHarmonySafeAreaArrange.Arrange(content, bounds, bounds, insets);") &&
+    n1AppHost.Contains("OpenHarmonySafeAreaArrange.Arrange(root, bounds, bounds, insets);") &&
+    n1PageHandler.Contains("OpenHarmonySafeArea.GetWindowInsets();") &&
+    n1PageHandler.Contains("OpenHarmonySafeAreaArrange.Arrange(page, frame,");
+bool n1HostOk = cSource?.Contains("int ohos_host_get_avoid_area(int* top, int* bottom, int* left, int* right)") == true &&
+    hSource?.Contains("int ohos_host_get_avoid_area(int* top, int* bottom, int* left, int* right);") == true;
+bool n1SafeAreaOk = n1ModelOk && n1ArrangeOk && n1UsedOk && n1HostOk;
+Console.WriteLine($"[verify] audit safearea model={n1ModelOk} arrange={n1ArrangeOk} used={n1UsedOk} host={n1HostOk} source='{n1SafeAreaPath ?? "<missing>"}' assert={n1SafeAreaOk}");
+if (!n1SafeAreaOk)
+{
+    throw new InvalidOperationException(
+        $"the safe-area contract drifted: model={n1ModelOk} arrange={n1ArrangeOk} used={n1UsedOk} host={n1HostOk}");
+}
+
+// Audit-2: FontImageSource glyph path. The image source renderer routes a FontImageSource to
+// OpenHarmonyFontImageSource (the compositor draws Text; there is no offscreen rasterizer), the
+// handler's desired size asks it for the glyph metrics, and resolution is cached per unique
+// glyph key (glyph/family/size/colour/scale) under a lock.
+string? n2ImagePath = FindHostSource("OpenHarmonyImageHandler.cs");
+string n2Image = n2ImagePath is null ? string.Empty : File.ReadAllText(n2ImagePath);
+bool n2RendererOk = n2Image.Contains("else if (source is FontImageSource fontSource)") &&
+    n2Image.Contains("OpenHarmonyFontImageSource.Apply(view, fontSource, context);") &&
+    n2Image.Contains("internal static class OpenHarmonyFontImageSource") &&
+    n2Image.Contains("public static Glyph Resolve(FontImageSource source)") &&
+    n2Image.Contains("Size glyph = OpenHarmonyFontImageSource.Measure(fontSource);");
+bool n2CacheOk = n2Image.Contains("private static readonly Dictionary<GlyphKey, Glyph> s_cache = new();") &&
+    n2Image.Contains("if (!s_cache.TryGetValue(key, out Glyph? glyph))") &&
+    n2Image.Contains("s_cache[key] = glyph;") &&
+    n2Image.Contains("(float width, float height) = OpenHarmonyLabelHandler.MeasureText(text, fontSize);");
+bool n2FontOk = n2RendererOk && n2CacheOk;
+Console.WriteLine($"[verify] audit fontimage renderer={n2RendererOk} cache={n2CacheOk} source='{n2ImagePath ?? "<missing>"}' assert={n2FontOk}");
+if (!n2FontOk)
+{
+    throw new InvalidOperationException($"the FontImageSource contract drifted: renderer={n2RendererOk} cache={n2CacheOk}");
+}
+
+// Audit-3: SwitchCell/EntryCell materialisation in the legacy ListView handler. Both branches
+// build a label + interactive control row: the switch writes taps back to On, and the entry
+// keeps the standard Entry keyboard/text path and raises SendCompleted.
+string? n3ListPath = FindHostSource("OpenHarmonyListViewHandler.cs");
+string n3List = n3ListPath is null ? string.Empty : File.ReadAllText(n3ListPath);
+bool n3SwitchOk = n3List.Contains("SwitchCell switchCell => CreateSwitchCell(switchCell),") &&
+    n3List.Contains("private static View CreateSwitchCell(SwitchCell cell)") &&
+    n3List.Contains("toggle.Toggled += (_, e) => cell.On = e.Value;");
+bool n3EntryOk = n3List.Contains("EntryCell entryCell => CreateEntryCell(entryCell),") &&
+    n3List.Contains("private static View CreateEntryCell(EntryCell cell)") &&
+    n3List.Contains("entry.TextChanged += (_, e) => cell.Text = e.NewTextValue;") &&
+    n3List.Contains("entry.Completed += (_, _) => cell.SendCompleted();");
+bool n3CellsOk = n3SwitchOk && n3EntryOk && n3List.Contains("private static View CreateCellRow(View content, View trailing)");
+Console.WriteLine($"[verify] audit listcells switch={n3SwitchOk} entry={n3EntryOk} row={n3List.Contains("CreateCellRow")} source='{n3ListPath ?? "<missing>"}' assert={n3CellsOk}");
+if (!n3CellsOk)
+{
+    throw new InvalidOperationException($"the SwitchCell/EntryCell contract drifted: switch={n3SwitchOk} entry={n3EntryOk}");
+}
+
+// Audit-4: the shell SearchHandler bridge. The managed half declares
+// ohos_host_shell_search_set / ohos_host_shell_search_set_listener (the same probe pattern),
+// publishes a changed query/placeholder/visible/enabled payload (clearing the field on detach)
+// and routes the host's op 0/1/2 back to Query / QueryConfirmed; the handler attaches the
+// current page's search handler (shell fallback) through OpenHarmonyShellExtras.UpdateSearch.
+string? n4ExtrasPath = FindHostSource("OpenHarmonyShellExtras.cs");
+string n4Extras = n4ExtrasPath is null ? string.Empty : File.ReadAllText(n4ExtrasPath);
+string? n4ShellHandlerPath = FindHostSource("OpenHarmonyShellHandler.cs");
+string n4ShellHandler = n4ShellHandlerPath is null ? string.Empty : File.ReadAllText(n4ShellHandlerPath);
+bool n4ManagedOk = n4Extras.Contains("private const string SearchSetEntryPoint = \"ohos_host_shell_search_set\";") &&
+    n4Extras.Contains("private const string SearchListenerEntryPoint = \"ohos_host_shell_search_set_listener\";") &&
+    n4Extras.Contains("[DllImport(HostLibrary, EntryPoint = SearchSetEntryPoint, CharSet = CharSet.Ansi)]") &&
+    n4Extras.Contains("[DllImport(HostLibrary, EntryPoint = SearchListenerEntryPoint)]") &&
+    n4Extras.Contains("private delegate void SearchInteractionCallback(int op, IntPtr text);") &&
+    n4Extras.Contains("private static extern int ShellSearchSetNative(");
+bool n4PublishOk = n4Extras.Contains("private static void PublishSearch(OpenHarmonyShellSearchState state)") &&
+    n4Extras.Contains("ShellSearchSetNative(") &&
+    n4Extras.Contains("state.IsVisible ? state.Query : null,") &&
+    n4Extras.Contains("state.IsVisible ? 1 : 0,") &&
+    n4Extras.Contains("state.IsEnabled ? 1 : 0);") &&
+    n4Extras.Contains("EnsureSearchListener();") &&
+    n4Extras.Contains("ShellSearchSetListenerNative(Marshal.GetFunctionPointerForDelegate(s_searchInteractionThunk));") &&
+    n4Extras.Contains("handler.Query = text;") &&
+    n4Extras.Contains("controller.QueryConfirmed();") &&
+    n4Extras.Contains("handler.Query = string.Empty;");
+bool n4AttachOk = n4Extras.Contains("internal static void UpdateSearch(Microsoft.Maui.Controls.SearchHandler? handler, string? pageTitle)") &&
+    n4ShellHandler.Contains("private void AttachSearchHandler(SearchHandler? handler, Microsoft.Maui.Controls.Page? page)") &&
+    n4ShellHandler.Contains("OpenHarmonyShellExtras.UpdateSearch(handler, page?.Title);") &&
+    n4ShellHandler.Contains("SearchHandler? handler = page is not null ? Shell.GetSearchHandler(page) : null;") &&
+    n4ShellHandler.Contains("handler ??= Shell.GetSearchHandler(shell);") &&
+    n4ShellHandler.Contains("OpenHarmonyShellExtras.UpdateSearch(null, null);");
+bool n4SearchOk = n4ManagedOk && n4PublishOk && n4AttachOk;
+Console.WriteLine($"[verify] audit search managed={n4ManagedOk} publish={n4PublishOk} attach={n4AttachOk} source='{n4ExtrasPath ?? "<missing>"}' assert={n4SearchOk}");
+if (!n4SearchOk)
+{
+    throw new InvalidOperationException(
+        $"the shell search bridge contract drifted: managed={n4ManagedOk} publish={n4PublishOk} attach={n4AttachOk}");
+}
+
+// Audit-5: flyout header/footer publish. A string or Label section crosses
+// ohos_host_shell_flyout_header/footer (NULL/empty clears the shell label), the same text stays
+// the first/last compositor flyout row (selection offset by the leading header row), and a rich
+// View/DataTemplate still has no representation (SectionText returns null).
+string? n5FlyoutPath = n4ExtrasPath;
+string n5Flyout = n4Extras;
+bool n5PublishOk = n5Flyout.Contains("private const string FlyoutHeaderEntryPoint = \"ohos_host_shell_flyout_header\";") &&
+    n5Flyout.Contains("private const string FlyoutFooterEntryPoint = \"ohos_host_shell_flyout_footer\";") &&
+    n5Flyout.Contains("private static extern int ShellFlyoutHeaderNative(") &&
+    n5Flyout.Contains("private static extern int ShellFlyoutFooterNative(") &&
+    n5Flyout.Contains("internal static void SetFlyoutSections(string? header, string? footer)") &&
+    n5Flyout.Contains("PublishFlyoutSection(0, header);") &&
+    n5Flyout.Contains("PublishFlyoutSection(1, footer);") &&
+    n5Flyout.Contains("private static void PublishFlyoutSection(int op, string? text)") &&
+    n5Flyout.Contains("header ? ShellFlyoutHeaderNative(text) : ShellFlyoutFooterNative(text);") &&
+    n5Flyout.Contains("public static string? SectionText(object? section) => section switch");
+bool n5RowsOk = n4ShellHandler.Contains("OpenHarmonyShellExtras.SetFlyoutSections(header, footer);") &&
+    n4ShellHandler.Contains("public static void MapFlyoutSections(OpenHarmonyShellHandler handler, Shell shell)") &&
+    n4ShellHandler.Contains("view.FlyoutItems.Add(header);") &&
+    n4ShellHandler.Contains("handler._flyoutLeadingRows = 1;");
+bool n5FlyoutOk = n5PublishOk && n5RowsOk;
+Console.WriteLine($"[verify] audit flyout publish={n5PublishOk} rows={n5RowsOk} source='{n5FlyoutPath ?? "<missing>"}' assert={n5FlyoutOk}");
+if (!n5FlyoutOk)
+{
+    throw new InvalidOperationException($"the flyout header/footer contract drifted: publish={n5PublishOk} rows={n5RowsOk}");
+}
+
+// Audit-6: Shell.TabBarIsVisible / Shell.FlyoutBehavior. The tab-bar flag resolves the nearest
+// explicit attached property on the current page or an ancestor, then the shell (visible when
+// unset), and re-arranges the content; the flyout behavior hides+closes for Disabled and pins
+// the drawer open for Locked without forcing a full chrome sync on navigation.
+bool n6TabBarOk = n4ShellHandler.Contains("[\"TabBarIsVisible\"] = MapTabBar,") &&
+    n4ShellHandler.Contains("private static bool ResolveTabBarVisible(Shell shell)") &&
+    n4ShellHandler.Contains("element.IsSet(Shell.TabBarIsVisibleProperty)") &&
+    n4ShellHandler.Contains("handler.PlatformView.TabTitlesVisible = ResolveTabBarVisible(shell);") &&
+    n4ShellHandler.Contains("case \"TabBarIsVisible\":");
+bool n6FlyoutOk = n4ShellHandler.Contains("[nameof(Shell.FlyoutBehavior)] = MapFlyoutBehavior,") &&
+    n4ShellHandler.Contains("view.ShowsHamburger = shell.FlyoutBehavior != FlyoutBehavior.Disabled;") &&
+    n4ShellHandler.Contains("if (shell.FlyoutBehavior == FlyoutBehavior.Disabled)") &&
+    n4ShellHandler.Contains("view.FlyoutOpen = false;") &&
+    n4ShellHandler.Contains("else if (shell.FlyoutBehavior == FlyoutBehavior.Locked)") &&
+    n4ShellHandler.Contains("view.FlyoutOpen = true;");
+bool n6ChromeOk = n6TabBarOk && n6FlyoutOk;
+Console.WriteLine($"[verify] audit shellchrome tabbar={n6TabBarOk} flyout={n6FlyoutOk} source='{n4ShellHandlerPath ?? "<missing>"}' assert={n6ChromeOk}");
+if (!n6ChromeOk)
+{
+    throw new InvalidOperationException($"the TabBarIsVisible/FlyoutBehavior contract drifted: tabbar={n6TabBarOk} flyout={n6FlyoutOk}");
+}
+
+// Audit-7: the window chrome publish (NB1). Title and X/Y/Width/Height are forwarded to
+// ohos_host_set_window_title / ohos_host_set_window_rect through the cached export probes, the
+// X/Y/Width/Height mappers keep recording the values, and a rectangle is only published once a
+// usable width/height is known (a non-positive size is rejected by the host).
+string? n7WindowPath = FindHostSource("OpenHarmonyWindowHandler.cs");
+string n7Window = n7WindowPath is null ? string.Empty : File.ReadAllText(n7WindowPath);
+bool n7ImportsOk = n7Window.Contains("private const string TitleEntryPoint = \"ohos_host_set_window_title\";") &&
+    n7Window.Contains("private const string RectEntryPoint = \"ohos_host_set_window_rect\";") &&
+    n7Window.Contains("[DllImport(HostLibrary, EntryPoint = TitleEntryPoint, CharSet = CharSet.Ansi)]") &&
+    n7Window.Contains("[DllImport(HostLibrary, EntryPoint = RectEntryPoint)]") &&
+    n7Window.Contains("private static extern int SetWindowTitleNative(") &&
+    n7Window.Contains("private static extern int SetWindowRectNative(int x, int y, int w, int h);");
+bool n7MappersOk = n7Window.Contains("[nameof(IWindow.X)] = MapX,") &&
+    n7Window.Contains("[nameof(IWindow.Y)] = MapY,") &&
+    n7Window.Contains("[nameof(IWindow.Width)] = MapWidth,") &&
+    n7Window.Contains("[nameof(IWindow.Height)] = MapHeight,") &&
+    n7Window.Contains("PublishTitle(window.Title);");
+bool n7PublishOk = n7Window.Contains("private static void PublishRect(OpenHarmonyWindowHandler handler)") &&
+    n7Window.Contains("if (!(handler.Width > 0) || !(handler.Height > 0))") &&
+    n7Window.Contains("int rc = SetWindowRectNative(x, y, w, h);") &&
+    n7Window.Contains("int rc = SetWindowTitleNative(title);") &&
+    n7Window.Contains("private static bool TryToDevice(double value, out int result)") &&
+    n7Window.Contains("result = (int)Math.Round(value, MidpointRounding.AwayFromZero);");
+bool n7WindowOk = n7ImportsOk && n7MappersOk && n7PublishOk;
+Console.WriteLine($"[verify] audit windowrect imports={n7ImportsOk} mappers={n7MappersOk} publish={n7PublishOk} source='{n7WindowPath ?? "<missing>"}' assert={n7WindowOk}");
+if (!n7WindowOk)
+{
+    throw new InvalidOperationException(
+        $"the window chrome contract drifted: imports={n7ImportsOk} mappers={n7MappersOk} publish={n7PublishOk}");
+}
+
+// Audit-8: the host's window-rect clamps. The shell applies the queued rectangle with
+// moveWindowTo + resize, so the host rejects a non-positive size and clamps width/height into
+// (0, 16384] and x/y into [-32768, 32768] on both bounds before queueing the sink call.
+bool n8ClampOk = s2Napi.Contains("constexpr int kMaxWindowDimension = 16384;") &&
+    s2Napi.Contains("constexpr int kMaxWindowOffset = 32768;") &&
+    s2Napi.Contains("int ohos_host_set_window_rect(int x, int y, int w, int h) {") &&
+    s2Napi.Contains("if (w <= 0 || h <= 0) {") &&
+    s2Napi.Contains("if (w > kMaxWindowDimension) {") && s2Napi.Contains("w = kMaxWindowDimension;") &&
+    s2Napi.Contains("if (h > kMaxWindowDimension) {") && s2Napi.Contains("h = kMaxWindowDimension;") &&
+    s2Napi.Contains("if (x > kMaxWindowOffset) {") && s2Napi.Contains("x = kMaxWindowOffset;") &&
+    s2Napi.Contains("} else if (x < -kMaxWindowOffset) {") && s2Napi.Contains("x = -kMaxWindowOffset;") &&
+    s2Napi.Contains("if (y > kMaxWindowOffset) {") && s2Napi.Contains("y = kMaxWindowOffset;") &&
+    s2Napi.Contains("} else if (y < -kMaxWindowOffset) {") && s2Napi.Contains("y = -kMaxWindowOffset;") &&
+    s2Napi.Contains("HostSinkPost(g_window_rect_sink, call)");
+bool n8HeaderOk = hSource?.Contains("int ohos_host_set_window_rect(int x, int y, int w, int h);") == true;
+bool n8HostOk = n8ClampOk && n8HeaderOk;
+Console.WriteLine($"[verify] audit windowhost clamps={n8ClampOk} header={n8HeaderOk} source='{s2NapiPath ?? "<missing>"}' assert={n8HostOk}");
+if (!n8HostOk)
+{
+    throw new InvalidOperationException($"the host window-rect clamp contract drifted: clamps={n8ClampOk} header={n8HeaderOk}");
+}
+
+// Audit-9: the shell search/flyout/window sinks in all three preview templates. Every template
+// registers the same callbacks (search state assignment, flyout op 0/1, window title/rect
+// apply), reports search edits/submits/cancels back through host.notifyShellSearch and applies
+// the window chrome with setWindowTitle / moveWindowTo+resize; the three files stay identical.
+bool n9SearchSink = true;
+bool n9FlyoutSink = true;
+bool n9WindowSink = true;
+bool n9SearchNotify = true;
+bool n9WindowApply = true;
+foreach (string n9Version in b3ShellVersions)
+{
+    string? n9Path = FindHostSource($"packs/Microsoft.OpenHarmony.Sdk/{n9Version}/templates/ets/pages/Index.ets");
+    string n9Shell = n9Path is null ? string.Empty : File.ReadAllText(n9Path);
+    n9SearchSink &= n9Shell.Contains("host.registerShellSearchChangedSink((query: string, placeholder: string, visible: number, enabled: number): void => {") &&
+        n9Shell.Contains("this.shellSearchQuery = query;") &&
+        n9Shell.Contains("this.shellSearchPlaceholder = placeholder;") &&
+        n9Shell.Contains("this.shellSearchVisible = visible !== 0;") &&
+        n9Shell.Contains("this.shellSearchEnabled = enabled !== 0;");
+    n9FlyoutSink &= n9Shell.Contains("host.registerShellFlyoutChangedSink((op: number, text: string): void => {") &&
+        n9Shell.Contains("if (op === 0) {") &&
+        n9Shell.Contains("} else if (op === 1) {");
+    n9WindowSink &= n9Shell.Contains("host.registerWindowTitleSink((title: string): void => {") &&
+        n9Shell.Contains("this.applyWindowTitle(title);") &&
+        n9Shell.Contains("host.registerWindowRectSink((x: number, y: number, w: number, h: number): void => {") &&
+        n9Shell.Contains("this.applyWindowRect(x, y, w, h);");
+    n9SearchNotify &= n9Shell.Contains("host.notifyShellSearch(0, value);") &&
+        n9Shell.Contains("host.notifyShellSearch(1, this.shellSearchQuery);") &&
+        n9Shell.Contains("host.notifyShellSearch(2, '');");
+    n9WindowApply &= n9Shell.Contains("return win.setWindowTitle(title);") &&
+        n9Shell.Contains("return win.moveWindowTo(x, y).then(() => {") &&
+        n9Shell.Contains("return win.resize(w, h);");
+}
+bool n9SinksOk = n9SearchSink && n9FlyoutSink && n9WindowSink && n9SearchNotify && n9WindowApply && b1ShellIdentical;
+Console.WriteLine($"[verify] audit shell sinks packs=22,23,24 search={n9SearchSink} flyout={n9FlyoutSink} window={n9WindowSink} notify={n9SearchNotify} apply={n9WindowApply} identical={b1ShellIdentical} assert={n9SinksOk}");
+if (!n9SinksOk)
+{
+    throw new InvalidOperationException(
+        $"the shell sink contract drifted: search={n9SearchSink} flyout={n9FlyoutSink} window={n9WindowSink} " +
+        $"notify={n9SearchNotify} apply={n9WindowApply} identical={b1ShellIdentical}");
+}
+
 // ---- Performance budget (bounded, deterministic, seedless) ------------------------------------
 // The frame path (OpenHarmonyWindowRenderer.Render: measure/arrange, the iterative view walk, the
 // accessibility shadow tree rebuild + frame diff and the surface hooks) is timed over a fixed

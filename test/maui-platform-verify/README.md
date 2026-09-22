@@ -1,6 +1,6 @@
 # Interaction regression suite (headless)
 
-The MAUI-on-OpenHarmony interaction harness (262 interaction checks, a 4-line fuzz tail, a
+The MAUI-on-OpenHarmony interaction harness (271 interaction checks, a 4-line fuzz tail, a
 frame-path performance budget and an accessibility publish-path budget). It builds the platform
 slice sources from the
 `maui-ohos` working tree and drives the app host without a device: touch/drag/pinch/pointer input,
@@ -38,7 +38,7 @@ below), failing the suite when the (deliberately loose) budgets are exceeded.
 # (or the MauiSliceDir / HostingDll / OpenHarmonyGraphicsDll MSBuild properties) before building
 # elsewhere; an explicit -p: value wins over the environment and the absolute fallbacks.
 dotnet build -v:q
-dotnet bin/Debug/net11.0/verify.dll | grep -c '\[verify\]'   # expect 275 (262 checks + 4 fuzz + 1 frame perf + 8 a11y perf)
+dotnet bin/Debug/net11.0/verify.dll | grep -c '\[verify\]'   # expect 284 (271 checks + 4 fuzz + 1 frame perf + 8 a11y perf)
 ```
 
 The `interaction-regression` workflow (`.github/workflows/interaction-regression.yml`) runs the
@@ -46,7 +46,7 @@ suite on a GitHub runner as a real gate: it checks out this repository plus `spr
 (`feature/openharmony`, the branch carrying `src/Core/src/Platform/OpenHarmony`), builds
 `src/Microsoft.OpenHarmony.Hosting` and `src/Microsoft.OpenHarmony.Maui.Graphics` in Release,
 points `MAUI_SLICE_DIR` / `HOSTING_DLL` / `OPENHARMONY_GRAPHICS_DLL` at those roots, and fails the
-job unless the run exits 0, reports at least 224 `[verify]` lines, both perf lines report
+job unless the run exits 0, reports at least 264 `[verify]` lines, both perf lines report
 `within=True`, and no `Unhandled` line is logged.
 
 ## Fuzz tail
@@ -139,8 +139,8 @@ publish pass (skip/republish).
   blocks codesigned ELF apphosts on some machines).
 - The suite fails loudly (unhandled exception) when a slice change breaks startup or when an
   assertion for the gesture flows (including the drag-and-drop checks) does not hold; keep it at
-  262 checks plus the 4 fuzz lines plus the 1 frame-perf line plus the 8 a11y-perf lines
-  (275 `[verify]` lines) when touching the platform slice.
+  271 checks plus the 4 fuzz lines plus the 1 frame-perf line plus the 8 a11y-perf lines
+  (284 `[verify]` lines) when touching the platform slice.
 - Contacts/calendar coverage: `OpenHarmonyContacts.FindAsync` and
   `OpenHarmonyCalendar.ListUpcomingAsync`/`AddEventAsync` return empty/false without throwing
   off-device and report `IsSupported == false` before and after the call (the permission probe
@@ -261,7 +261,7 @@ publish pass (skip/republish).
   marker-checked `'skip'` eval before `SendRawMessage` (hybrid) and `SendMessage` (Blazor),
   including the skip log. That is 9 `[verify]` lines: 253 + 9 = 262, the BATCH-1-era total
   (249 interaction checks + 4 fuzz + 1 frame perf + 8 a11y perf). With the BATCH-2 lines below
-  the suite reports 275 = 262 + 4 + 1 + 8; the workflow floor stays at 224.
+  the suite reports 275 = 262 + 4 + 1 + 8; the audit pins below take it to 284.
 - BATCH-1 Essentials real bridges (permissions / clipboard / connectivity): six `[verify]` lines
   cover both halves of each bridge. Off-device each request fails fast (the 30 s permission and
   5 s clipboard timeouts are never waited out) and degrades to Denied / null / false / Unknown;
@@ -377,7 +377,7 @@ publish pass (skip/republish).
     the installed default must complete without throwing when the ability bridge is absent; the
     want kind for single-file sharing is pinned to 3.
 - CI wiring: `.github/workflows/interaction-regression.yml` builds the slice checkout and the
-  hosting assemblies on the runner and gates on the `[verify]` line count (>=224) plus both perf
+  hosting assemblies on the runner and gates on the `[verify]` line count (>=264) plus both perf
   `within=True` markers (see "Running it" above).
 - Accessibility publish-contract coverage (R2b): the suite reflects
   `OpenHarmonyAccessibility.AccessibilityNode` (16 parameters now that hint, range and checked
@@ -388,3 +388,25 @@ publish pass (skip/republish).
   value mapping (slider Minimum/Maximum/Value, progress 0/1/Progress, switch/checkBox 0/1,
   absent range NaN/NaN and checked -1 elsewhere) and that a slider value change with unchanged
   text/bounds raises a page-state update while an unchanged frame stays quiet.
+- Audit pins (safe area / FontImageSource / cells / Shell chrome): nine `[verify]` lines cover
+  the surfaces the follow-up audit found unguarded. `audit safearea` parses
+  `OpenHarmonySafeArea.cs` (the `OpenHarmonyBridge.TryGetAvoidArea` read, the `Container`
+  fallback and the overlap-only `Pad`) and `OpenHarmonySafeAreaArrange.cs` (depth-bounded walk,
+  `OpenHarmonyContentArrange` delegation), pins both the app-host and page-handler usage and the
+  host's `ohos_host_get_avoid_area` getter. `audit fontimage` pins the FontImageSource ->
+  `OpenHarmonyFontImageSource` route, its desired-size read and the per-key glyph cache under
+  the lock. `audit listcells` pins the SwitchCell/EntryCell branches and their two-way bindings
+  (tap -> `On`, text -> `Cell.Text`, completed -> `SendCompleted`). `audit search` pins the
+  `ohos_host_shell_search_set` / `ohos_host_shell_search_set_listener` DllImports, the
+  changed-payload publish (op 0/1/2 routed back onto Query/QueryConfirmed) and the handler's
+  page/shell attach-detach. `audit flyout` pins the `ohos_host_shell_flyout_header`/`_footer`
+  publish, the first/last compositor row and the leading-row selection offset. `audit
+  shellchrome` pins the `TabBarIsVisible` resolution (nearest page/ancestor, then shell) and the
+  Disabled/Locked flyout behavior. `audit windowrect` pins the window title/rect DllImports, the
+  X/Y/Width/Height mappers and the usable-size publish guard; `audit windowhost` pins the
+  host's non-positive-size rejection, both clamp constants (width/height 16384, x/y 32768) and
+  both bounds per axis. `audit shell sinks` pins the search/flyout/window sinks, the three
+  `notifyShellSearch` call sites and the `moveWindowTo`+`resize` apply in all three preview
+  templates (which stay byte-identical). That is 9 lines: 275 + 9 = 284 = 271 interaction
+  checks + 4 fuzz + 1 frame perf + 8 a11y perf; the workflow floor moves with the total
+  (284 - 20 = 264).
