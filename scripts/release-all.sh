@@ -5,8 +5,10 @@
 #
 #   1. pack consistency: repo packs/Microsoft.OpenHarmony.Sdk/<ver> vs the installed
 #      ${DOTNET_ROOT:-~/.dotnet}/packs/... copy for the three files a stale install breaks
-#      (templates/ets/modules.abc, hosts/arm64-v8a/libopenharmonyhost.so,
-#      targets/OpenHarmony.Hap.targets). Reports MATCH / NOTE-DIFF; a diff is a warning,
+#      (templates/ets/modules.ui.abc - the UI shell build-arkts-shell.sh rebuilds and the
+#      current flow syncs into the installed pack; modules.abc is the frozen default stub -
+#      hosts/arm64-v8a/libopenharmonyhost.so, targets/OpenHarmony.Hap.targets).
+#      Reports MATCH / NOTE-DIFF; a diff is a warning,
 #      never an abort (the installed copy may legitimately be ahead or behind - step 6
 #      builds the kit against the installed copy, so a diff deserves a look).
 #   2. scripts/pack-workload-bundle.sh      -> dist/openharmony-workload-<ver>.tar.gz
@@ -211,7 +213,7 @@ else
 fi
 
 DIFFS=0
-for _item in "abc:templates/ets/modules.abc" \
+for _item in "abc:templates/ets/modules.ui.abc" \
              "host:hosts/arm64-v8a/libopenharmonyhost.so" \
              "targets:targets/OpenHarmony.Hap.targets"; do
     _label="${_item%%:*}"; _rel="${_item#*:}"
