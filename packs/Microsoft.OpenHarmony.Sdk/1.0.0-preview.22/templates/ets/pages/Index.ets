@@ -198,6 +198,10 @@ struct Index {
   // host.notifyDisplay on display.on('change'). Registered once per page.
   private batteryEventsRegistered: boolean = false;
   private displayChangeRegistered: boolean = false;
+  // Bundle metadata (Essentials IAppInfo version/build/name): published to the host once at
+  // page load from the bundle manager (see reportBundleInfo), guarded so a page reappearance
+  // does not re-read it.
+  private bundleInfoReported: boolean = false;
   // Clipboard (Essentials): reading the pasteboard needs ohos.permission.READ_PASTEBOARD
   // (user_grant); the grant is cached and only an explicit GetTextAsync (op 1) may prompt. A
   // denied prompt is cached too, and the pasteboard 'update' observer (registered once, freed
@@ -361,6 +365,32 @@ struct Index {
       });
     } catch (displayError) {
       // The managed side keeps its empty display info.
+    }
+  }
+
+  // Bundle metadata (Essentials IAppInfo): the managed side reads VersionString/BuildString
+  // (and PackageName's host fallback) from the stored bundle info, so the HAP's real values
+  // come from bundleManager.getBundleInfoForSelfSync once at page load. Device-compat: the
+  // bundle manager is imported lazily; a missing module is cached and the managed side keeps
+  // its documented fallbacks ("1.0.0" and the context bundle name).
+  private async reportBundleInfo(): Promise<void> {
+    if (this.bundleInfoReported || this.lazyUnavailable('bundleManager')) {
+      return;
+    }
+    this.bundleInfoReported = true;
+    try {
+      const modules = await import('@ohos.bundle.bundleManager');
+      try {
+        const info = modules.default.getBundleInfoForSelfSync(
+          modules.default.BundleFlag.GET_BUNDLE_INFO_WITH_APPLICATION);
+        this.hostCall('setBundleInfo', typeof host.setBundleInfo === 'function', (): void => {
+          host.setBundleInfo(info.versionName, `${info.versionCode}`, info.name);
+        });
+      } catch (bundleError) {
+        console.error(`[maui] bundle info read failed: ${(bundleError as Error).message}`);
+      }
+    } catch (bundleImportError) {
+      this.noteLazyFailure('bundleManager', bundleImportError as Error);
     }
   }
 
@@ -1201,6 +1231,7 @@ struct Index {
     // Battery/DeviceDisplay (Essentials): push the startup snapshots and follow later changes.
     this.reportBattery();
     this.reportDisplay();
+    this.reportBundleInfo();
     this.subscribeBatteryEvents();
     this.subscribeDisplayChange();
     this.subscribeNetworkChanges();
@@ -1562,6 +1593,33 @@ struct Index {
       });
     });
 
+    // Notification enablement (Essentials Permissions.PostNotifications): the managed side asks
+    // through ohos_host_notification_permission_request (op 0 = read the system enable state,
+    // op 1 = show the system enable dialog); the shell answers with
+    // host.notificationPermissionResult(requestId, granted). Device-compat: the notification
+    // manager is imported lazily like the publish sink above; a missing module is cached and
+    // both ops answer 0, so the managed side keeps its documented Unknown/Denied fallback.
+    this.hostCall('registerNotificationPermissionSink', typeof host.registerNotificationPermissionSink === 'function', (): void => {
+      host.registerNotificationPermissionSink(async (op: number, requestId: number): Promise<void> => {
+        let granted: boolean = false;
+        try {
+          const nm = await import('@ohos.notificationManager');
+          if (op === 1) {
+            const context = getContext(this) as common.UIAbilityContext;
+            await nm.default.requestEnableNotification(context);
+          }
+          granted = nm.default.isNotificationEnabledSync();
+        } catch (notificationPermissionError) {
+          // A refused dialog (1600004) or a missing service leaves granted=false; the final
+          // state is read again on the next op 0 request.
+          console.error(`[maui] notification enablement ${op === 1 ? 'request' : 'check'} failed: ${(notificationPermissionError as Error).message}`);
+        }
+        this.hostCall('notificationPermissionResult', typeof host.notificationPermissionResult === 'function', (): void => {
+          host.notificationPermissionResult(requestId, granted ? 1 : 0);
+        });
+      });
+    });
+
     this.hostCall('registerVibrationSink', typeof host.registerVibrationSink === 'function', (): void => {
       host.registerVibrationSink((durationMs: number) => {
       });
@@ -1908,10 +1966,11 @@ struct Index {
     // Launcher/Browser/Share: managed requests arrive through ohos_host_ability_start. kind 0
     // opens a uri (implicit viewData Want), kind 1 shares plain text (implicit sendData Want),
     // kind 2 is the availability probe (never launches), kind 3 shares a file (implicit
-    // sendData Want with uri + MIME type + FLAG_AUTH_READ_URI_PERMISSION). The UIAbilityContext
-    // owns the actual startAbility call; a rejected launch is logged, and only the dispatch
-    // status (true when the request was handed to the system) is reported back to the managed
-    // side.
+    // sendData Want with uri + MIME type + FLAG_AUTH_READ_URI_PERMISSION), kind 4 starts an
+    // explicit Want (uri = bundle name, text = ability name; used by IAppInfo.ShowSettingsUI).
+    // The UIAbilityContext owns the actual startAbility call; a rejected launch is logged, and
+    // only the dispatch status (true when the request was handed to the system) is reported
+    // back to the managed side.
     // Plain text has no wantConstant key in this SDK (Share Kit/systemShare is not part of it),
     // so the text travels under 'ohos.extra.param.key.content', the key used by the
     // pre-Share-Kit samples for ohos.want.action.sendData.
@@ -1919,12 +1978,33 @@ struct Index {
     // this SDK declares in @ohos.app.ability.wantConstant; it asks the ability manager to grant
     // the receiver read access to the file:// uri. Whether the target app can actually read the
     // sandbox file depends on that app and is not verifiable from this shell.
+    // Kind 4 carries the well-known OpenHarmony settings bundle (com.ohos.settings /
+    // com.ohos.settings.MainAbility) and falls back to the implicit 'ohos.settings' action when
+    // the explicit Want does not resolve, so devices whose settings app uses another bundle id
+    // still have a chance to open it.
     this.hostCall('registerAbilitySink', typeof host.registerAbilitySink === 'function', (): void => {
       host.registerAbilitySink((kind: number, uri: string, text: string): boolean => {
         try {
           const context = getContext(this) as common.UIAbilityContext;
           if (kind === 2) {
             return context !== undefined && context !== null;
+          }
+          if (kind === 4) {
+            const explicitWant: Want = new Want();
+            explicitWant.bundleName = uri;
+            explicitWant.abilityName = text;
+            context.startAbility(explicitWant).then((): void => {
+              console.info('[maui] settings ability start dispatched (explicit)');
+            }).catch((explicitError: Error): void => {
+              const implicitWant: Want = new Want();
+              implicitWant.action = 'ohos.settings';
+              context.startAbility(implicitWant).then((): void => {
+                console.info('[maui] settings ability start dispatched (implicit)');
+              }).catch((implicitError: Error): void => {
+                console.error(`[maui] settings ability start failed: explicit=${explicitError.message} implicit=${implicitError.message}`);
+              });
+            });
+            return true;
           }
           const want: Want = new Want();
           if (kind === 1) {

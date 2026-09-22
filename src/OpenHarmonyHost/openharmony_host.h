@@ -58,6 +58,15 @@ int ohos_host_set_app_context(const char* json);
 /// anyway).
 int ohos_host_notify_context(void);
 
+/// Bundle metadata (Essentials IAppInfo): the ArkTS shell reads the HAP's real version/build/
+/// name with bundleManager.getBundleInfoForSelfSync once at page load and forwards it through
+/// the NAPI wrapper (host.setBundleInfo). The native host stores copies; the getters return ""
+/// (never NULL) until the shell publishes. `build` is the versionCode as text.
+int ohos_host_set_bundle_info(const char* version, const char* build, const char* name);
+const char* ohos_host_get_bundle_version(void);
+const char* ohos_host_get_bundle_build(void);
+const char* ohos_host_get_bundle_name(void);
+
 /// Called by the managed side (Microsoft.OpenHarmony.Hosting) once it is ready.
 /// lifecycle: void (*)(int), node: void (*)(void*), surface: void (*)(void*, int, int, int).
 /// Any of them may be NULL.
@@ -115,6 +124,20 @@ void ohos_host_permission_set_listener(void (*listener)(const char* permission, 
 void ohos_host_request_permission(const char* permission, int request_id);
 void ohos_host_register_permission_result(void* callback);
 void ohos_host_permission_complete(int request_id, int granted);
+
+/// Notification enablement for MAUI's Permissions.PostNotifications. OpenHarmony does not gate
+/// notification publishing behind abilityAccessCtrl; the per-app switch is the system enable
+/// dialog, so this rides its own request/response bridge (same shape as the permission one).
+/// op 0 = read the current enable state (notificationManager.isNotificationEnabledSync, no
+/// dialog), op 1 = ask the system to show its enable dialog (requestEnableNotification). The
+/// shell's registerNotificationPermissionSink handler answers through
+/// host.notificationPermissionResult -> ohos_host_notification_permission_complete with the
+/// enable state after the call. The listener is registered by the NAPI layer; the result
+/// callback by the managed side.
+void ohos_host_notification_permission_set_listener(void (*listener)(int op, int request_id));
+void ohos_host_notification_permission_request(int op, int request_id);
+void ohos_host_notification_permission_register_result(void* callback);
+void ohos_host_notification_permission_complete(int request_id, int granted);
 
 /// Clipboard: the managed side asks the ArkTS shell to run one pasteboard operation through
 /// host.registerClipboardSink. op: 0 has text, 1 get text, 2 set text; `text` carries the

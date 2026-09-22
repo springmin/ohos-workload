@@ -832,7 +832,11 @@ napi_value NotifyPrintResult(napi_env env, napi_callback_info info) {
 // App launching: Launcher/Browser/Share forward requests through ohos_host_ability_start; the
 // ArkTS shell's sink (registerAbilitySink) owns the UIAbilityContext.startAbility call.
 // kind 0 = open uri (implicit viewData Want), 1 = share text (implicit sendData Want),
-// 2 = availability probe, answered by the shell without launching anything.
+// 2 = availability probe, answered by the shell without launching anything,
+// 3 = share file (implicit sendData Want; text carries the MIME type),
+// 4 = explicit Want (IAppInfo.ShowSettingsUI): uri carries the bundle name and text the ability
+// name; the shell tries that Want first and falls back to the implicit 'ohos.settings' action
+// when the explicit form does not resolve (a device whose settings bundle differs).
 //
 // This is the one sink that deliberately stays on a direct napi_call_function: the managed side
 // consumes the shell's boolean answer (Launcher.CanOpenAsync / TryOpenAsync return it), and a
@@ -1843,6 +1847,53 @@ napi_value NotifyPermissionResult(napi_env env, napi_callback_info info) {
     return undefined;
 }
 
+// Notification enablement (Essentials Permissions.PostNotifications): the managed side asks
+// through ohos_host_notification_permission_request(op, requestId); the sink's handler runs
+// notificationManager.isNotificationEnabledSync (op 0) or requestEnableNotification (op 1) and
+// answers with host.notificationPermissionResult(requestId, granted). Argument order matches
+// the C listener (op first, request id second).
+HostSink g_notification_permission_sink("notification permission", false);
+
+void OnNotificationPermissionRequest(int op, int requestId) {
+    SinkCall* call = new SinkCall();
+    call->AddInt(op);
+    call->AddInt(requestId);
+    HostSinkPost(g_notification_permission_sink, call);
+}
+
+// ArkTS calls host.registerNotificationPermissionSink(fn) to receive enablement requests.
+napi_value RegisterNotificationPermissionSink(napi_env env, napi_callback_info info) {
+    size_t argc = 1;
+    napi_value argv[1] = {nullptr};
+    napi_get_cb_info(env, info, &argc, argv, nullptr, nullptr);
+    if (argc >= 1) {
+        napi_valuetype type = napi_undefined;
+        napi_typeof(env, argv[0], &type);
+        if (type == napi_function) {
+            HostSinkRegister(env, g_notification_permission_sink, argv[0]);
+            ohos_host_notification_permission_set_listener(OnNotificationPermissionRequest);
+        }
+    }
+    napi_value undefined = nullptr;
+    napi_get_undefined(env, &undefined);
+    return undefined;
+}
+
+// ArkTS calls host.notificationPermissionResult(requestId, granted) when the shell answered.
+napi_value NotifyNotificationPermissionResult(napi_env env, napi_callback_info info) {
+    size_t argc = 2;
+    napi_value argv[2] = {nullptr, nullptr};
+    napi_get_cb_info(env, info, &argc, argv, nullptr, nullptr);
+    int32_t requestId = 0;
+    int32_t granted = 0;
+    if (argc >= 1) napi_get_value_int32(env, argv[0], &requestId);
+    if (argc >= 2) napi_get_value_int32(env, argv[1], &granted);
+    ohos_host_notification_permission_complete(requestId, granted);
+    napi_value undefined = nullptr;
+    napi_get_undefined(env, &undefined);
+    return undefined;
+}
+
 // Clipboard: the managed side sends (requestId, op, text) through ohos_host_clipboard_request;
 // the sink's handler runs the @ohos.pasteboard call and answers with
 // host.clipboardResult(requestId, rc, text). The pasteboard 'update' observer pushes
@@ -2242,6 +2293,26 @@ napi_value NotifyAppContext(napi_env env, napi_callback_info info) {
     return result;
 }
 
+// ArkTS calls host.setBundleInfo(version, build, name) once at page load with the HAP's real
+// values from bundleManager.getBundleInfoForSelfSync; the managed side reads them through
+// ohos_host_get_bundle_{version,build,name}. Returns 0 when stored, -1 for a missing
+// version/build (the shell reads back '' and the managed side keeps its documented fallbacks).
+napi_value SetBundleInfo(napi_env env, napi_callback_info info) {
+    size_t argc = 3;
+    napi_value argv[3] = {nullptr, nullptr, nullptr};
+    napi_get_cb_info(env, info, &argc, argv, nullptr, nullptr);
+    std::string version;
+    std::string build;
+    std::string name;
+    if (argc >= 1) version = GetStringArg(env, argv[0]);
+    if (argc >= 2) build = GetStringArg(env, argv[1]);
+    if (argc >= 3) name = GetStringArg(env, argv[2]);
+    int rc = ohos_host_set_bundle_info(version.c_str(), build.c_str(), name.c_str());
+    napi_value result = nullptr;
+    napi_create_int32(env, rc, &result);
+    return result;
+}
+
 napi_value NotifyLifecycle(napi_env env, napi_callback_info info) {
     size_t argc = 1;
     napi_value argv[1] = {nullptr};
@@ -2318,6 +2389,7 @@ napi_value Init(napi_env env, napi_value exports) {
         {"registerVibrationSink", nullptr, RegisterVibrationSink, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"registerPickerSink", nullptr, RegisterPickerSink, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"registerPermissionSink", nullptr, RegisterPermissionSink, nullptr, nullptr, nullptr, napi_default, nullptr},
+        {"registerNotificationPermissionSink", nullptr, RegisterNotificationPermissionSink, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"registerClipboardSink", nullptr, RegisterClipboardSink, nullptr, nullptr, nullptr, napi_default, nullptr},
 
         {"registerNotificationSink", nullptr, RegisterNotificationSink, nullptr, nullptr, nullptr, napi_default, nullptr},
@@ -2376,6 +2448,7 @@ napi_value Init(napi_env env, napi_value exports) {
         {"notifyDisplay", nullptr, NotifyDisplay, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"notifyPickerResult", nullptr, NotifyPickerResult, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"permissionResult", nullptr, NotifyPermissionResult, nullptr, nullptr, nullptr, napi_default, nullptr},
+        {"notificationPermissionResult", nullptr, NotifyNotificationPermissionResult, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"clipboardResult", nullptr, NotifyClipboardResult, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"notifyClipboardChanged", nullptr, NotifyClipboardChanged, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"notifyNetworkAccess", nullptr, NotifyNetworkAccess, nullptr, nullptr, nullptr, napi_default, nullptr},
@@ -2385,6 +2458,7 @@ napi_value Init(napi_env env, napi_value exports) {
         {"notifyKeystoreResult", nullptr, NotifyKeystoreResult, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"startApp", nullptr, StartApp, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"setAppContext", nullptr, SetAppContext, nullptr, nullptr, nullptr, napi_default, nullptr},
+        {"setBundleInfo", nullptr, SetBundleInfo, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"notifyAppContext", nullptr, NotifyAppContext, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"notifyLifecycle", nullptr, NotifyLifecycle, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"setNodeContent", nullptr, SetNodeContent, nullptr, nullptr, nullptr, napi_default, nullptr},

@@ -246,6 +246,7 @@ struct OhosHostAppHandle {
     void (*bridge_picker_result)(int request_id, int rc, const char* name, const char* data_base64);
     void (*bridge_web_event)(const char* state, const char* url);
     void (*bridge_permission_result)(int request_id, int granted);
+    void (*bridge_notification_permission_result)(int request_id, int granted);
     void (*bridge_clipboard_result)(int request_id, int rc, const char* text);
     void (*bridge_clipboard_changed)(void);
     void (*bridge_geocode_result)(int request_id, int rc, const char* json);
@@ -660,6 +661,63 @@ static int OhosHostReplaySurfaceNotification(void) {
 
 int ohos_host_notify_context(void) {
     return OhosHostReplaySurfaceNotification();
+}
+
+// ---------------------------------------------------------------------------
+// Bundle metadata (Essentials IAppInfo version/build/name): the shell publishes the HAP's
+// real values once at page load; the managed side reads stored copies.
+// ---------------------------------------------------------------------------
+
+static pthread_mutex_t g_bundle_info_mutex = PTHREAD_MUTEX_INITIALIZER;
+static char* g_bundle_version = NULL;
+static char* g_bundle_build = NULL;
+static char* g_bundle_name = NULL;
+
+// Replaces one field. A replaced string is deliberately not freed: the getters return the
+// stored pointer and a managed reader may still be copying it while a re-publish lands. The
+// shell publishes once per page, so the bounded leak (a few bytes) is the safe failure mode.
+static void OhosHostStoreBundleField(char** slot, const char* value) {
+    char* copy = NULL;
+    if (value != NULL && value[0] != '\0') {
+        copy = strdup(value);
+        if (copy == NULL) {
+            return;
+        }
+    }
+    pthread_mutex_lock(&g_bundle_info_mutex);
+    *slot = copy;
+    pthread_mutex_unlock(&g_bundle_info_mutex);
+}
+
+int ohos_host_set_bundle_info(const char* version, const char* build, const char* name) {
+    if (version == NULL || version[0] == '\0' || build == NULL || build[0] == '\0') {
+        fprintf(stderr, "[openharmony-host] set_bundle_info: version/build are required\n");
+        return -1;
+    }
+    OhosHostStoreBundleField(&g_bundle_version, version);
+    OhosHostStoreBundleField(&g_bundle_build, build);
+    OhosHostStoreBundleField(&g_bundle_name, name);
+    fprintf(stderr, "[openharmony-host] set_bundle_info: version=%s build=%s\n", version, build);
+    return 0;
+}
+
+static const char* OhosHostReadBundleField(char** slot) {
+    pthread_mutex_lock(&g_bundle_info_mutex);
+    const char* value = *slot != NULL ? *slot : "";
+    pthread_mutex_unlock(&g_bundle_info_mutex);
+    return value;
+}
+
+const char* ohos_host_get_bundle_version(void) {
+    return OhosHostReadBundleField(&g_bundle_version);
+}
+
+const char* ohos_host_get_bundle_build(void) {
+    return OhosHostReadBundleField(&g_bundle_build);
+}
+
+const char* ohos_host_get_bundle_name(void) {
+    return OhosHostReadBundleField(&g_bundle_name);
 }
 
 int ohos_host_set_app_context(const char* json) {
@@ -1177,6 +1235,36 @@ void ohos_host_request_permission(const char* permission, int request_id) {
 void ohos_host_permission_complete(int request_id, int granted) {
     if (g_app != NULL && g_app->bridge_permission_result != NULL) {
         g_app->bridge_permission_result(request_id, granted != 0 ? 1 : 0);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Notification enablement (MAUI Permissions.PostNotifications): op 0 reads the system enable
+// state, op 1 shows the system enable dialog; the shell answers through
+// host.notificationPermissionResult -> ohos_host_notification_permission_complete.
+// ---------------------------------------------------------------------------
+
+static void (*g_notification_permission_listener)(int op, int request_id) = NULL;
+
+void ohos_host_notification_permission_set_listener(void (*listener)(int, int)) {
+    g_notification_permission_listener = listener;
+}
+
+void ohos_host_notification_permission_register_result(void* callback) {
+    if (g_app != NULL) {
+        g_app->bridge_notification_permission_result = (void (*)(int, int))callback;
+    }
+}
+
+void ohos_host_notification_permission_request(int op, int request_id) {
+    if (g_notification_permission_listener != NULL) {
+        g_notification_permission_listener(op, request_id);
+    }
+}
+
+void ohos_host_notification_permission_complete(int request_id, int granted) {
+    if (g_app != NULL && g_app->bridge_notification_permission_result != NULL) {
+        g_app->bridge_notification_permission_result(request_id, granted != 0 ? 1 : 0);
     }
 }
 
