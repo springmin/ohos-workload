@@ -24,6 +24,10 @@ typedef struct OhosHostAppHandle OhosHostAppHandle;
 
 /// One-shot launch: runs the application's Main and returns its exit code.
 /// Self-contained and framework-dependent publish outputs are both supported.
+/// Before hostfxr is initialized the host ensures app_dir exposes the runtime natives the
+/// runtime resolves by directory (libhostpolicy/libcoreclr/libclrjit/libclrgc) as symlinks onto
+/// the signed libs/<abi>/ copies; that bridge is best effort and never fails the launch (see
+/// OhosHostEnsureRuntimeLibs in openharmony_host.c).
 int ohos_host_run_app(const char* app_dir, const char* app_assembly_file, int argc, const char* const* argv);
 
 /// Bridged launch: initializes the runtime and runs Main on a background thread.

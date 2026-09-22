@@ -19,7 +19,10 @@
 #include <LocationKit/oh_location.h>
 #include <LocationKit/oh_location_type.h>
 
+#include <dirent.h>
 #include <dlfcn.h>
+#include <errno.h>
+#include <fcntl.h>
 #include <multimedia/image_framework/image/image_source_native.h>
 #include <multimedia/image_framework/image/pixelmap_native.h>
 #include <native_buffer/buffer_common.h>
@@ -48,6 +51,8 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
+#include <unistd.h>
 
 // NOTE: signature is (argc, argv, host_path, dotnet_root, app_path) — see native/corehost/hostfxr.h.
 typedef int (*ohos_main_startupinfo_fn)(const int argc, const char* const* argv,
@@ -77,6 +82,268 @@ static int path_join(char* dst, size_t dst_size, const char* dir, const char* fi
     int written = snprintf(dst, dst_size, "%s/%s", dir, file);
     return written > 0 && (size_t)written < dst_size ? 0 : -1;
 }
+
+// --- runtime native library bridge: libs/<abi>/ -> app_dir -----------------------------------
+// The HAP code-signing block (SoInfoSegment/fs-verity) covers libs/<abi>/** only, so the .NET
+// runtime natives ship there and are excluded from the payload zip. The runtime resolves most of
+// them by name through the loader's app search path, but three lookups go by directory (measured;
+// see the "Runtime native libraries" header of OpenHarmony.Hap.targets):
+//   * libhostpolicy.so   - hostfxr looks next to the app config for a self-contained app,
+//   * libcoreclr.so      - hostpolicy builds '<app_dir>/libcoreclr.so' (deps_resolver.cpp),
+//   * libclrjit/libclrgc - coreclr loads them from the directory it was loaded from.
+// This bridge puts symlinks to the signed libs/<abi>/ files into app_dir; following a symlink
+// reads the verity-enabled inode, while the extracted copy the payload used to carry is exactly
+// what an enforcing device refuses to dlopen. A regular file already at the destination is a
+// stale extraction from an older payload and is replaced. When symlinking is unavailable the file
+// is copied instead, with a one-time warning that the copy is not covered by the HAP signing
+// block. Best effort by design: a failure never fails the launch, and the outcome is logged once
+// (hilog + stderr). Idempotent: an existing link to the same target is counted and kept.
+//
+// PF4-LIB-BRIDGE-BEGIN: the off-device toy test extracts this block verbatim (minus the leading
+// `static`) from the source; keep it self-contained (libc + path_join above only).
+//
+// Scan/link bounds so a pathological libs directory can never stall a launch.
+#define OHOS_RUNTIME_LIB_SCAN_MAX 256
+#define OHOS_RUNTIME_LIB_LINK_MAX 64
+
+// Only the runtime natives are bridged; everything else in libs/<abi>/ (the host itself,
+// libc++_shared.so) is not looked up in app_dir and stays out. The names are matched from the libs
+// directory, so the bridge follows whatever the pack staged instead of a second hard-coded list;
+// libclrgc and libclrgcexp are separate builds and both are bridged.
+static int OhosHostRuntimeLibName(const char* name) {
+    static const char* const prefixes[] = {
+        "libhostfxr.", "libhostpolicy.", "libcoreclr.", "libclrjit.", "libclrgc.", "libclrgcexp.",
+        "libmscordaccore.", "libmscordbi.", "libSystem.",
+    };
+    if (name == NULL || name[0] == '.') {
+        return 0;  // "." / ".." / dotfiles are never runtime natives
+    }
+    size_t len = strlen(name);
+    if (len <= 3 || strcmp(name + len - 3, ".so") != 0) {
+        return 0;  // only shared objects; .a/.bak neighbours are not runtime code
+    }
+    for (size_t i = 0; i < sizeof(prefixes) / sizeof(prefixes[0]); i++) {
+        if (strncmp(name, prefixes[i], strlen(prefixes[i])) == 0) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+// Directory this library was loaded from (libs/<abi>/ at runtime), resolved through dladdr on an
+// exported entry point (always in .dynsym, unlike a static helper). Returns 0 on success, -1 when
+// the path is unknown or does not fit.
+static int OhosHostOwnDirectory(char* dir, size_t dir_size) {
+    Dl_info own_info;
+    if (dir == NULL || dir_size == 0 ||
+        dladdr((void*)&ohos_host_run_app, &own_info) == 0 || own_info.dli_fname == NULL) {
+        return -1;
+    }
+    const char* slash = strrchr(own_info.dli_fname, '/');
+    if (slash == NULL) {
+        return -1;
+    }
+    size_t len = (size_t)(slash - own_info.dli_fname);
+    if (len == 0 || len >= dir_size) {
+        return -1;
+    }
+    memcpy(dir, own_info.dli_fname, len);
+    dir[len] = '\0';
+    return 0;
+}
+
+// One failure line (hilog + stderr) with the errno that caused it.
+static void OhosHostLogLibFailure(const char* caller, const char* name, int error) {
+    OH_LOG_WARN(LOG_APP,
+                "[openharmony-host] %{public}s: runtime lib bridge could not link %{public}s (errno=%{public}d)",
+                caller, name, error);
+    fprintf(stderr, "[openharmony-host] %s: runtime lib bridge could not link %s (errno=%d)\n",
+            caller, name, error);
+}
+
+// One-time warning for the copy fallback: an extracted copy is not covered by the HAP signing
+// block, so an enforcing device may refuse to dlopen it.
+static void OhosHostLogLibCopyWarning(const char* caller, const char* dst, int error) {
+    OH_LOG_WARN(LOG_APP,
+                "[openharmony-host] %{public}s: symlink(%{public}s) failed (errno=%{public}d); copied the runtime native instead - the copy is not covered by the HAP signing block and an enforcing device may reject it",
+                caller, dst, error);
+    fprintf(stderr, "[openharmony-host] %s: symlink(%s) failed (errno=%d); copied instead (verity may reject it)\n",
+            caller, dst, error);
+}
+
+// Streaming copy for the symlink fallback: writes <dst>.tmp and renames it over the destination,
+// so a failed copy never leaves a truncated lookalike for the loader to pick. Returns 0 on
+// success, -1 otherwise with errno preserved for the caller's message.
+static int OhosHostRuntimeLibCopy(const char* src, const char* dst) {
+    int in = open(src, O_RDONLY | O_CLOEXEC);
+    if (in < 0) {
+        return -1;
+    }
+    char tmp[4096];
+    int written = snprintf(tmp, sizeof(tmp), "%s.tmp", dst);
+    if (written <= 0 || (size_t)written >= sizeof(tmp)) {
+        close(in);
+        errno = ENAMETOOLONG;
+        return -1;
+    }
+    unlink(tmp);  // leftover of an interrupted earlier copy
+    int out = open(tmp, O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0644);
+    if (out < 0) {
+        close(in);
+        return -1;
+    }
+    int result = 0;
+    int saved_errno = 0;
+    char buffer[32768];
+    while (result == 0) {
+        ssize_t got = read(in, buffer, sizeof(buffer));
+        if (got < 0) {
+            if (errno == EINTR) {
+                continue;
+            }
+            result = -1;
+            saved_errno = errno;
+            break;
+        }
+        if (got == 0) {
+            break;
+        }
+        ssize_t done = 0;
+        while (done < got) {
+            ssize_t put = write(out, buffer + done, (size_t)(got - done));
+            if (put < 0) {
+                if (errno == EINTR) {
+                    continue;
+                }
+                result = -1;
+                saved_errno = errno;
+                break;
+            }
+            done += put;
+        }
+    }
+    if (close(out) != 0 && result == 0) {
+        result = -1;
+        saved_errno = errno;
+    }
+    if (result == 0 && rename(tmp, dst) != 0) {
+        result = -1;
+        saved_errno = errno;
+    }
+    if (result != 0) {
+        unlink(tmp);
+    }
+    close(in);
+    errno = saved_errno;
+    return result;
+}
+
+// The copy warning is emitted once per process; a second line would be noise.
+static int g_runtime_lib_copy_warned = 0;
+
+// Bridges every runtime native found in this library's own directory into app_dir (see the block
+// comment above). Never fails the caller; logs one summary plus one line per failure. Called by
+// both launch paths before hostfxr is initialized.
+static void OhosHostEnsureRuntimeLibs(const char* caller, const char* app_dir) {
+    if (caller == NULL || app_dir == NULL || app_dir[0] == '\0') {
+        return;
+    }
+    char libs_dir[4096];
+    if (OhosHostOwnDirectory(libs_dir, sizeof(libs_dir)) != 0) {
+        return;  // no own directory to bridge from: leave the payload alone
+    }
+    DIR* libs = opendir(libs_dir);
+    if (libs == NULL) {
+        return;
+    }
+
+    int ensured = 0;
+    int copied = 0;
+    int failed = 0;
+    int scanned = 0;
+    char last_failed[128] = "-";
+    int last_errno = 0;
+
+    struct dirent* entry;
+    while ((entry = readdir(libs)) != NULL) {
+        if (++scanned > OHOS_RUNTIME_LIB_SCAN_MAX ||
+            ensured + copied + failed >= OHOS_RUNTIME_LIB_LINK_MAX) {
+            break;
+        }
+        const char* name = entry->d_name;
+        if (!OhosHostRuntimeLibName(name)) {
+            continue;
+        }
+        char src[4096];
+        char dst[4096];
+        if (path_join(src, sizeof(src), libs_dir, name) != 0 ||
+            path_join(dst, sizeof(dst), app_dir, name) != 0) {
+            failed++;
+            snprintf(last_failed, sizeof(last_failed), "%s", name);
+            last_errno = ENAMETOOLONG;
+            OhosHostLogLibFailure(caller, name, ENAMETOOLONG);
+            continue;
+        }
+        if (strcmp(src, dst) == 0) {
+            continue;  // payload directory == libs directory (no staging): nothing to bridge
+        }
+        struct stat src_st;
+        if (stat(src, &src_st) != 0 || !S_ISREG(src_st.st_mode)) {
+            continue;
+        }
+
+        struct stat dst_st;
+        if (lstat(dst, &dst_st) == 0) {
+            if (S_ISLNK(dst_st.st_mode)) {
+                char target[4096];
+                ssize_t target_len = readlink(dst, target, sizeof(target) - 1);
+                if (target_len >= 0) {
+                    target[target_len] = '\0';
+                    if (strcmp(target, src) == 0) {
+                        ensured++;  // already bridged onto the same signed file
+                        continue;
+                    }
+                }
+            }
+            if (unlink(dst) != 0) {  // stale extraction or a foreign link
+                int error = errno;
+                failed++;
+                snprintf(last_failed, sizeof(last_failed), "%s", name);
+                last_errno = error;
+                OhosHostLogLibFailure(caller, name, error);
+                continue;
+            }
+        }
+        if (symlink(src, dst) == 0) {
+            ensured++;
+            continue;
+        }
+        int symlink_error = errno;
+        if (OhosHostRuntimeLibCopy(src, dst) == 0) {
+            copied++;
+            if (!g_runtime_lib_copy_warned) {
+                g_runtime_lib_copy_warned = 1;
+                OhosHostLogLibCopyWarning(caller, dst, symlink_error);
+            }
+            continue;
+        }
+        failed++;
+        last_errno = errno != 0 ? errno : symlink_error;
+        snprintf(last_failed, sizeof(last_failed), "%s", name);
+        OhosHostLogLibFailure(caller, name, last_errno);
+    }
+    closedir(libs);
+
+    OH_LOG_INFO(LOG_APP,
+                "[openharmony-host] %{public}s: runtime lib bridge in %{public}s: "
+                "%{public}d ensured, %{public}d copied, %{public}d failed (last %{public}s errno=%{public}d)",
+                caller, app_dir, ensured, copied, failed, last_failed, last_errno);
+    fprintf(stderr,
+            "[openharmony-host] %s: runtime lib bridge in %s: %d ensured, %d copied, %d failed "
+            "(last %s errno=%d)\n",
+            caller, app_dir, ensured, copied, failed, last_failed, last_errno);
+}
+// PF4-LIB-BRIDGE-END
 
 // Resolves libhostfxr.so. The HAP code-signing block (SoInfoSegment/fs-verity) covers
 // libs/<abi>/** only, so the signed copy staged next to this library (the host itself is
@@ -145,6 +412,11 @@ int ohos_host_run_app(const char* app_dir, const char* app_assembly_file, int ar
     if (path_join(app_assembly_path, sizeof(app_assembly_path), app_dir, app_assembly_file) != 0) {
         return -1;
     }
+
+    // hostpolicy/coreclr resolve libhostpolicy/libcoreclr/libclrjit/libclrgc from app_dir, so the
+    // signed libs/<abi>/ copies are linked in before hostfxr is initialized (best effort, never
+    // fails the launch; see the bridge block above).
+    OhosHostEnsureRuntimeLibs("run_app", app_dir);
 
     void* hostfxr = OhosHostOpenHostfxr("run_app", app_dir, hostfxr_path, sizeof(hostfxr_path));
     if (hostfxr == NULL) {
@@ -500,6 +772,11 @@ int ohos_host_start_app(const char* app_dir, const char* app_assembly_file,
         OhosHostEndLaunch();
         return -1;
     }
+
+    // Same bridge as run_app: hostfxr loads hostpolicy next to the app config and hostpolicy
+    // builds '<app_dir>/libcoreclr.so', so app_dir must expose the signed libs/<abi>/ files
+    // before initialize (best effort, never fails the launch).
+    OhosHostEnsureRuntimeLibs("start_app", app_dir);
 
     void* hostfxr = OhosHostOpenHostfxr("start_app", app_dir, hostfxr_path, sizeof(hostfxr_path));
     if (hostfxr == NULL) {
