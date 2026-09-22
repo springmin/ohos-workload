@@ -251,6 +251,7 @@ struct OhosHostAppHandle {
     void (*bridge_clipboard_changed)(void);
     void (*bridge_geocode_result)(int request_id, int rc, const char* json);
     void (*bridge_network_access)(int level);
+    void (*bridge_key_event)(int key_code, int event_type);
     void* surface_window;
     int surface_width;
     int surface_height;
@@ -1153,6 +1154,28 @@ int ohos_host_get_avoid_area(int* top, int* bottom, int* left, int* right) {
 }
 
 // ---------------------------------------------------------------------------
+// Soft input: the shell reports the keyboard height from the window's
+// avoidAreaChange(TYPE_KEYBOARD) observer; the managed safe-area model consumes it for
+// SafeAreaEdges.SoftInput/All. The system avoid area above is a separate slot.
+// ---------------------------------------------------------------------------
+
+static int g_soft_input_bottom = 0;
+
+void ohos_host_set_soft_input_area(int bottom) {
+    int height = bottom > 0 ? bottom : 0;
+    if (height == g_soft_input_bottom) {
+        return;
+    }
+    g_soft_input_bottom = height;
+    fprintf(stderr, "[openharmony-host] soft input bottom=%d\n", g_soft_input_bottom);
+}
+
+int ohos_host_get_soft_input_area(int* bottom) {
+    if (bottom != NULL) *bottom = g_soft_input_bottom;
+    return 1;
+}
+
+// ---------------------------------------------------------------------------
 // WebView: the shell owns a hidden ArkWeb component; commands drive it and page events come back.
 // ---------------------------------------------------------------------------
 
@@ -1376,6 +1399,98 @@ void ohos_host_network_access_register(void* callback) {
 void ohos_host_network_access_notify(void) {
     if (g_app != NULL && g_app->bridge_network_access != NULL) {
         g_app->bridge_network_access(ohos_host_network_access());
+    }
+}
+
+// Connectivity capabilities: the shell's capped bearer-type encoding is parsed here (the NAPI
+// wrapper drops a NULL/over-cap payload before calling) and read back by the managed
+// ConnectionProfiles through ohos_host_network_capabilities. 0 = unknown/empty.
+static int g_net_bearers = 0;
+static int g_net_bearers_known = 0;
+
+// Caps mirrored from the shell's encoding: at most 8 entries, each 0..4 (NetBearType).
+#define OHOS_MAX_NET_BEARER_ENTRIES 8
+
+void ohos_host_set_network_capabilities(const char* encoded) {
+    int mask = 0;
+    int entries = 0;
+    if (encoded != NULL) {
+        const char* cursor = encoded;
+        while (*cursor != '\0' && entries < OHOS_MAX_NET_BEARER_ENTRIES) {
+            while (*cursor == ',' || *cursor == ' ' || *cursor == '\t') {
+                cursor++;
+            }
+            if (*cursor == '\0') {
+                break;
+            }
+            int value = 0;
+            int digits = 0;
+            while (*cursor >= '0' && *cursor <= '9') {
+                value = (value * 10) + (*cursor - '0');
+                if (value > 255) {
+                    value = 255;  // saturate; any value outside 0..4 is ignored below
+                }
+                digits++;
+                cursor++;
+            }
+            if (digits > 0 && value >= 0 && value <= 4) {
+                mask |= 1 << value;
+            }
+            entries++;
+            while (*cursor != '\0' && *cursor != ',') {
+                cursor++;  // skip a malformed remainder up to the next separator
+            }
+        }
+    }
+    g_net_bearers = mask;
+    g_net_bearers_known = 1;
+    fprintf(stderr, "[openharmony-host] network bearers entries=%d mask=0x%x\n", entries, mask);
+}
+
+int ohos_host_network_capabilities(void) {
+    if (g_net_bearers_known) {
+        return g_net_bearers;
+    }
+    // No shell push yet: read the NDK default network's bearer types (the same path
+    // ohos_host_network_access uses), so a host without the caps-aware shell still answers.
+    int32_t hasDefault = 0;
+    if (OH_NetConn_HasDefaultNet(&hasDefault) != 0 || hasDefault == 0) {
+        return 0;
+    }
+    NetConn_NetHandle handle;
+    if (OH_NetConn_GetDefaultNet(&handle) != 0) {
+        return 0;
+    }
+    NetConn_NetCapabilities capabilities;
+    if (OH_NetConn_GetNetCapabilities(&handle, &capabilities) != 0) {
+        return 0;
+    }
+    int mask = 0;
+    int32_t bearerCount = capabilities.bearerTypesSize;
+    if (bearerCount < 0 || bearerCount > NETCONN_MAX_BEARER_TYPE_SIZE) {
+        // A malformed/foreign struct size must not walk past the fixed array.
+        bearerCount = NETCONN_MAX_BEARER_TYPE_SIZE;
+    }
+    for (int32_t i = 0; i < bearerCount; i++) {
+        int bearer = (int)capabilities.bearerTypes[i];
+        if (bearer >= 0 && bearer <= 4) {
+            mask |= 1 << bearer;
+        }
+    }
+    return mask;
+}
+
+// Hardware key events: the shell forwards the page's onKeyEvent through host.keyEvent; the
+// managed callback registered below receives (keyCode, eventType 0 = down / 1 = up).
+void ohos_host_register_key_event(void* callback) {
+    if (g_app != NULL) {
+        g_app->bridge_key_event = (void (*)(int, int))callback;
+    }
+}
+
+void ohos_host_key_event(int key_code, int event_type) {
+    if (g_app != NULL && g_app->bridge_key_event != NULL) {
+        g_app->bridge_key_event(key_code, event_type);
     }
 }
 

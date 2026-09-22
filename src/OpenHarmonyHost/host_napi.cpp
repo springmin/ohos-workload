@@ -79,6 +79,9 @@ constexpr size_t kMaxControlBytes = 64 * 1024;
 constexpr size_t kMaxResultBytes = 1024 * 1024;
 // A screenshot output path is a filesystem path, not a payload: keep it well below PATH_MAX.
 constexpr size_t kMaxScreenshotPathBytes = 4096;
+// The connectivity capability encoding is a short comma-separated bearer-type list (the shell
+// caps it at 8 entries / 32 characters); NotifyNetworkAccess drops a bigger payload.
+constexpr size_t kMaxNetworkCapabilityBytes = 64;
 
 struct SinkArg {
     bool is_string = false;
@@ -951,22 +954,32 @@ napi_value NotifyPrintResult(napi_env env, napi_callback_info info) {
 // the shell-side deferral covers the JS/UI-thread hop.
 napi_ref g_ability_sink_ref = nullptr;
 
-// Called from managed code (P/Invoke): forwards an ability-start request to the ArkTS shell and
-// returns 0 when the sink handled it (dispatched or, for the probe, available).
-extern "C" int ohos_host_ability_start(int kind, const char* uri, const char* text) {
+// Flags for ohos_host_ability_start_ex: bit 0 is FLAG_AUTH_READ_URI_PERMISSION (the shell asks
+// the ability manager to grant the receiver read access to a file:// uri); the host forwards
+// the bits as-is.
+//
+// Direct-call implementation shared by the three- and five-argument exports (the fifth is the
+// optional title; NULL/"" keeps the previous shape, and the shell only adds
+// wantConstant.Params.CONTENT_TITLE_KEY for a non-empty title).
+static int AbilityStartInternal(int kind, const char* uri, const char* text, const char* title, int flags) {
     if (g_env == nullptr || g_ability_sink_ref == nullptr) {
+        return -1;
+    }
+    if (title != nullptr && !ControlStringFits(title, "ability_start_title")) {
         return -1;
     }
     napi_value sink = nullptr;
     if (napi_get_reference_value(g_env, g_ability_sink_ref, &sink) != napi_ok || sink == nullptr) {
         return -1;
     }
-    napi_value argv[3];
+    napi_value argv[5];
     napi_create_int32(g_env, kind, &argv[0]);
     napi_create_string_utf8(g_env, uri != nullptr ? uri : "", NAPI_AUTO_LENGTH, &argv[1]);
     napi_create_string_utf8(g_env, text != nullptr ? text : "", NAPI_AUTO_LENGTH, &argv[2]);
+    napi_create_string_utf8(g_env, title != nullptr ? title : "", NAPI_AUTO_LENGTH, &argv[3]);
+    napi_create_int32(g_env, flags, &argv[4]);
     napi_value result = nullptr;
-    if (napi_call_function(g_env, sink, sink, 3, argv, &result) != napi_ok) {
+    if (napi_call_function(g_env, sink, sink, 5, argv, &result) != napi_ok) {
         return -1;
     }
     bool handled = false;
@@ -974,6 +987,23 @@ extern "C" int ohos_host_ability_start(int kind, const char* uri, const char* te
         return -1;
     }
     return 0;
+}
+
+// Called from managed code (P/Invoke): forwards an ability-start request to the ArkTS shell and
+// returns 0 when the sink handled it (dispatched or, for the probe, available). The
+// three-argument form stays for a managed side/host library pair that predates the title and
+// flag arguments; it is exactly the five-argument form with title NULL and flags 0.
+extern "C" int ohos_host_ability_start(int kind, const char* uri, const char* text) {
+    return AbilityStartInternal(kind, uri, text, nullptr, 0);
+}
+
+// Called from managed code (P/Invoke): like ohos_host_ability_start with the optional content
+// title (wantConstant.Params.CONTENT_TITLE_KEY, 'ohos.extra.param.key.contentTitle') and Want
+// flags (bit 0 = FLAG_AUTH_READ_URI_PERMISSION). Additive export: the three-argument form above
+// keeps its ABI and behaviour, and a shell sink that ignores the extra arguments still handles
+// the request (the sink signature grew, not the protocol).
+extern "C" int ohos_host_ability_start_ex(int kind, const char* uri, const char* text, const char* title, int flags) {
+    return AbilityStartInternal(kind, uri, text, title, flags);
 }
 
 // ArkTS calls host.registerAbilitySink(fn) to receive launcher/browser/share requests.
@@ -1049,6 +1079,59 @@ napi_value RegisterFlashlightSink(napi_env env, napi_callback_info info) {
             }
             napi_create_reference(env, argv[0], 1, &g_flashlight_sink_ref);
             OH_LOG_INFO(LOG_APP, "[openharmony-host] flashlight sink registered");
+        }
+    }
+    napi_value undefined = nullptr;
+    napi_get_undefined(env, &undefined);
+    return undefined;
+}
+
+// Focus: the managed side (VisualElement.Focus()/Unfocus() on the text handlers) asks the
+// ArkTS shell to hand ArkUI focus to a target id through ohos_host_request_focus; the shell's
+// registerFocusSink handler calls focusControl.requestFocus(id) and answers whether it did.
+// Same direct napi_call_function shape as the ability/flashlight sinks: the managed side
+// consumes the boolean answer (a queued TSFN call cannot report "handled"). The target id is a
+// control string: a NULL/empty/over-cap id is rejected before the call.
+napi_ref g_focus_sink_ref = nullptr;
+
+extern "C" int ohos_host_request_focus(const char* target_id) {
+    if (g_env == nullptr || g_focus_sink_ref == nullptr) {
+        return -1;
+    }
+    if (target_id == nullptr || target_id[0] == '\0' || !ControlStringFits(target_id, "request_focus")) {
+        return -1;
+    }
+    napi_value sink = nullptr;
+    if (napi_get_reference_value(g_env, g_focus_sink_ref, &sink) != napi_ok || sink == nullptr) {
+        return -1;
+    }
+    napi_value argv[1];
+    napi_create_string_utf8(g_env, target_id, NAPI_AUTO_LENGTH, &argv[0]);
+    napi_value result = nullptr;
+    if (napi_call_function(g_env, sink, sink, 1, argv, &result) != napi_ok) {
+        return -1;
+    }
+    bool handled = false;
+    if (result == nullptr || napi_get_value_bool(g_env, result, &handled) != napi_ok || !handled) {
+        return -1;
+    }
+    return 0;
+}
+
+// ArkTS calls host.registerFocusSink(fn) to receive focus requests.
+napi_value RegisterFocusSink(napi_env env, napi_callback_info info) {
+    size_t argc = 1;
+    napi_value argv[1] = {nullptr};
+    napi_get_cb_info(env, info, &argc, argv, nullptr, nullptr);
+    if (argc >= 1) {
+        napi_valuetype type = napi_undefined;
+        napi_typeof(env, argv[0], &type);
+        if (type == napi_function) {
+            if (g_focus_sink_ref != nullptr) {
+                napi_delete_reference(env, g_focus_sink_ref);
+            }
+            napi_create_reference(env, argv[0], 1, &g_focus_sink_ref);
+            OH_LOG_INFO(LOG_APP, "[openharmony-host] focus sink registered");
         }
     }
     napi_value undefined = nullptr;
@@ -1227,6 +1310,23 @@ napi_value NotifyAvoidArea(napi_env env, napi_callback_info info) {
         napi_get_value_int32(env, argv[i], &values[i]);
     }
     ohos_host_set_avoid_area(values[0], values[1], values[2], values[3]);
+    napi_value undefined = nullptr;
+    napi_get_undefined(env, &undefined);
+    return undefined;
+}
+
+// ArkTS calls host.notifySoftInputArea(bottom) from the window's avoidAreaChange observer for
+// the keyboard (AvoidAreaType.TYPE_KEYBOARD); the host stores the height for the managed
+// safe-area model (SafeAreaEdges.SoftInput/All). The system avoid area keeps its own slot.
+napi_value NotifySoftInputArea(napi_env env, napi_callback_info info) {
+    size_t argc = 1;
+    napi_value argv[1] = {nullptr};
+    napi_get_cb_info(env, info, &argc, argv, nullptr, nullptr);
+    int32_t bottom = 0;
+    if (argc >= 1) {
+        napi_get_value_int32(env, argv[0], &bottom);
+    }
+    ohos_host_set_soft_input_area(bottom);
     napi_value undefined = nullptr;
     napi_get_undefined(env, &undefined);
     return undefined;
@@ -2062,13 +2162,55 @@ napi_value NotifyClipboardChanged(napi_env env, napi_callback_info info) {
     return undefined;
 }
 
-// ArkTS calls host.notifyNetworkAccess() after a NetworkKit connection event; the host re-reads
-// the level through the same NDK path as the ohos_host_network_access getter and forwards it to
-// the managed listener.
+// ArkTS calls host.notifyNetworkAccess() (bare, from netAvailable/netLost/netUnavailable) or
+// host.notifyNetworkAccess(encoded) (from netCapabilitiesChange, encoded =
+// NetCapabilityInfo.netCap.bearerTypes) after a NetworkKit connection event; the host parses the
+// capability payload when present, re-reads the level through the same NDK path as the
+// ohos_host_network_access getter and forwards both to the managed listener (the level through
+// the callback, the bearer mask through ohos_host_network_capabilities).
 napi_value NotifyNetworkAccess(napi_env env, napi_callback_info info) {
-    (void)env;
-    (void)info;
+    size_t argc = 1;
+    napi_value argv[1] = {nullptr};
+    napi_get_cb_info(env, info, &argc, argv, nullptr, nullptr);
+    if (argc >= 1) {
+        napi_valuetype type = napi_undefined;
+        napi_typeof(env, argv[0], &type);
+        if (type == napi_string) {
+            std::string encoded = GetStringArg(env, argv[0]);
+            if (encoded.size() > kMaxNetworkCapabilityBytes) {
+                // Same cap rule as the bridge strings: an over-long value is dropped whole
+                // (never parsed partially) instead of misreporting the transports.
+                OH_LOG_WARN(LOG_APP, "[openharmony-host] network capability payload dropped: %{public}d bytes over the %{public}d cap",
+                            (int)encoded.size(), (int)kMaxNetworkCapabilityBytes);
+            } else {
+                ohos_host_set_network_capabilities(encoded.c_str());
+            }
+        }
+    }
     ohos_host_network_access_notify();
+    napi_value undefined = nullptr;
+    napi_get_undefined(env, &undefined);
+    return undefined;
+}
+
+// ArkTS calls host.keyEvent(keyCode, eventType) from the page's onKeyEvent; eventType is the
+// ArkUI KeyType encoding (0 = down, 1 = up). The host forwards both to the managed callback
+// registered with ohos_host_register_key_event. The call is best effort: a shell with the
+// handler but a host library without the export logs the standard missing-export warning on the
+// Shell side (hostCall).
+napi_value KeyEvent(napi_env env, napi_callback_info info) {
+    size_t argc = 2;
+    napi_value argv[2] = {nullptr, nullptr};
+    napi_get_cb_info(env, info, &argc, argv, nullptr, nullptr);
+    int32_t keyCode = 0;
+    int32_t eventType = 0;
+    if (argc >= 1) {
+        napi_get_value_int32(env, argv[0], &keyCode);
+    }
+    if (argc >= 2) {
+        napi_get_value_int32(env, argv[1], &eventType);
+    }
+    ohos_host_key_event(keyCode, eventType);
     napi_value undefined = nullptr;
     napi_get_undefined(env, &undefined);
     return undefined;
@@ -2514,6 +2656,8 @@ napi_value Init(napi_env env, napi_value exports) {
         {"registerPrintSink", nullptr, RegisterPrintSink, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"notifyPrintResult", nullptr, NotifyPrintResult, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"registerAbilitySink", nullptr, RegisterAbilitySink, nullptr, nullptr, nullptr, napi_default, nullptr},
+        {"registerFocusSink", nullptr, RegisterFocusSink, nullptr, nullptr, nullptr, napi_default, nullptr},
+        {"keyEvent", nullptr, KeyEvent, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"registerFlashlightSink", nullptr, RegisterFlashlightSink, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"registerKeepScreenOnSink", nullptr, RegisterKeepScreenOnSink, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"registerWindowTitleSink", nullptr, RegisterWindowTitleSink, nullptr, nullptr, nullptr, napi_default, nullptr},
@@ -2552,6 +2696,7 @@ napi_value Init(napi_env env, napi_value exports) {
         {"notifyHybridInvoke", nullptr, NotifyHybridInvoke, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"registerHybridInvokeResultSink", nullptr, RegisterHybridInvokeResultSink, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"notifyAvoidArea", nullptr, NotifyAvoidArea, nullptr, nullptr, nullptr, napi_default, nullptr},
+        {"notifySoftInputArea", nullptr, NotifySoftInputArea, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"notifyTheme", nullptr, NotifyTheme, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"notifyBattery", nullptr, NotifyBattery, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"notifyDisplay", nullptr, NotifyDisplay, nullptr, nullptr, nullptr, napi_default, nullptr},

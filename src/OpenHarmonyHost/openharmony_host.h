@@ -98,9 +98,37 @@ int ohos_host_vibrate(int duration_ms);
 /// Essentials over the NDK: network access (0 unknown, 1 none, 2 local, 3 internet).
 int ohos_host_network_access(void);
 
+/// Connectivity capabilities (Essentials ConnectionProfiles): the shell's network observer
+/// forwards the capped encoding of NetCapabilityInfo.netCap.bearerTypes with the
+/// host.notifyNetworkAccess push (comma-separated NetBearType values 0..4, at most 8 entries /
+/// 32 bytes; the NAPI wrapper drops an over-cap payload). The host parses it into this mask and
+/// hands it to the managed side; 0 means unknown. While the shell never published one,
+/// ohos_host_network_capabilities reads the NDK default network's bearer types instead (the
+/// same path ohos_host_network_access uses). There is no MAUI ConnectionProfile for a VPN-only
+/// bearer, so the VPN bit is parsed but never mapped.
+typedef enum {
+    OHOS_NET_BEARER_CELLULAR = 1 << 0,   /* NetBearType 0 */
+    OHOS_NET_BEARER_WIFI = 1 << 1,       /* NetBearType 1 */
+    OHOS_NET_BEARER_BLUETOOTH = 1 << 2,  /* NetBearType 2 */
+    OHOS_NET_BEARER_ETHERNET = 1 << 3,   /* NetBearType 3 */
+    OHOS_NET_BEARER_VPN = 1 << 4,        /* NetBearType 4 */
+} ohos_net_bearer;
+
+/// Stores the parsed bearer mask of the last shell push; an empty string stores "no bearers"
+/// (the network went away), it does not fall back to the NDK read.
+void ohos_host_set_network_capabilities(const char* encoded);
+int ohos_host_network_capabilities(void);
+
 /// Safe area: the shell reports the window's avoid area; the host stores it for the app host.
 void ohos_host_set_avoid_area(int top, int bottom, int left, int right);
 int ohos_host_get_avoid_area(int* top, int* bottom, int* left, int* right);
+
+/// Soft input: the shell follows the window's avoid-area change for the keyboard
+/// (avoidAreaChange TYPE_KEYBOARD) and reports its height; the host stores it for the managed
+/// safe-area model, which consumes it for SafeAreaEdges.SoftInput/All on the bottom edge. The
+/// system avoid area above is unaffected; 0 means the keyboard is hidden/unknown.
+void ohos_host_set_soft_input_area(int bottom);
+int ohos_host_get_soft_input_area(int* bottom);
 
 /// WebView: commands (op: show/hide/load/eval/back) go to the shell's ArkWeb component, page
 /// events come back through ohos_host_web_register_event.
@@ -252,6 +280,14 @@ void ohos_host_notify_text_submitted(void);
 
 /// Registers the managed text-submitted callback (optional).
 void ohos_host_register_text_submitted(void* callback);
+
+/// Hardware key events: the shell page's onKeyEvent forwards (keyCode, eventType) through
+/// host.keyEvent (eventType 0 = down, 1 = up, the ArkUI KeyType encoding); the host delivers it
+/// to the callback registered here: void (*)(int keyCode, int eventType). MAUI rc.1 has no
+/// key hook (no IKeyListener/KeyDown/KeyUp), so the managed side documents the surface the
+/// callback can feed instead of routing it into a handler.
+void ohos_host_register_key_event(void* callback);
+void ohos_host_key_event(int key_code, int event_type);
 
 /// Asks the ArkTS shell to show/hide the soft keyboard (the NAPI layer owns the sink).
 void ohos_host_request_text_input(int show);

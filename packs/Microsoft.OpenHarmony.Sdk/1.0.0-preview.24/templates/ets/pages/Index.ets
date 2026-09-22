@@ -230,6 +230,14 @@ struct Index {
   // Connectivity (Essentials): the NetworkKit connection observer registers once per page
   // (lazily imported; see subscribeNetworkChanges).
   private networkObserverRegistered: boolean = false;
+  // Safe area (soft input): the window's avoid-area observer tracks the keyboard
+  // (AvoidAreaType.TYPE_KEYBOARD) and pushes its height through host.notifySoftInputArea so the
+  // managed SafeArea can pad SafeAreaEdges.SoftInput/All above the keyboard. The system avoid
+  // area report above keeps its own slot. Registered once per page; unregistered in
+  // aboutToDisappear with the stored listener.
+  private softInputRegistered: boolean = false;
+  private softInputWindow: window.Window | null = null;
+  private softInputListener: ((data: window.AvoidAreaOptions) => void) | null = null;
   // Window chrome (Window handler): the managed title/rect setters push through the
   // registerWindowTitleSink/registerWindowRectSink handlers. The ArkUI window is resolved on
   // demand; setWindowTitle needs the SessionManager syscap (API 15+) and degrades by logging.
@@ -476,11 +484,13 @@ struct Index {
     }
   }
 
-  // Connectivity (Essentials): the NetworkKit connection observer pushes a no-argument
-  // host.notifyNetworkAccess(); the host re-reads the level through the same NDK path as
-  // ohos_host_network_access and hands it to the managed OpenHarmonyConnectivity implementation.
-  // Device-compat: NetworkKit is imported lazily; a missing kit is cached and only costs the
-  // change events (the managed NetworkAccess property still reads the NDK path directly).
+  // Connectivity (Essentials): the NetworkKit connection observer pushes host.notifyNetworkAccess
+  // (bare on netAvailable/netLost/netUnavailable, with the capped bearer-type encoding on
+  // netCapabilitiesChange); the host re-reads the level through the same NDK path as
+  // ohos_host_network_access, parses the encoding and hands both to the managed
+  // OpenHarmonyConnectivity implementation (ConnectionProfiles). Device-compat: NetworkKit is
+  // imported lazily; a missing kit is cached and only costs the change events (the managed
+  // NetworkAccess property still reads the NDK path directly).
   private async subscribeNetworkChanges(): Promise<void> {
     if (this.networkObserverRegistered || this.lazyUnavailable('networkKit')) {
       return;
@@ -495,8 +505,8 @@ struct Index {
         netConnection.on('netLost', (_handle: connection.NetHandle): void => {
           this.reportNetworkAccess();
         });
-        netConnection.on('netCapabilitiesChange', (_info: connection.NetCapabilityInfo): void => {
-          this.reportNetworkAccess();
+        netConnection.on('netCapabilitiesChange', (info: connection.NetCapabilityInfo): void => {
+          this.reportNetworkAccess(this.encodeBearerTypes(info));
         });
         netConnection.on('netUnavailable', (): void => {
           this.reportNetworkAccess();
@@ -510,10 +520,83 @@ struct Index {
     }
   }
 
-  // Forward one observed network change; the host reads the current level itself.
-  private reportNetworkAccess(): void {
+  // Capped encoding of the transports a NetCapabilityInfo names: the NetBearType values
+  // (0 cellular, 1 wifi, 2 bluetooth, 3 ethernet, 4 vpn), comma-separated, at most 8 entries /
+  // 32 characters. The host parses it into the ohos_net_bearer mask behind
+  // ohos_host_network_capabilities; an unknown/absent shape answers an empty string (no
+  // bearers), which the host stores as "unknown" instead of guessing.
+  private encodeBearerTypes(info: connection.NetCapabilityInfo): string {
+    try {
+      const bearers = info.netCap.bearerTypes;
+      if (bearers === undefined || bearers === null) {
+        return '';
+      }
+      let encoded: string = '';
+      for (let i = 0; i < bearers.length && i < 8; i++) {
+        const value: number = bearers[i] as number;
+        if (value < 0 || value > 4) {
+          continue;
+        }
+        if (encoded.length > 0) {
+          encoded += ',';
+        }
+        encoded += value.toString();
+        if (encoded.length >= 32) {
+          break;
+        }
+      }
+      return encoded;
+    } catch (capabilitiesError) {
+      console.error(`[maui] network capabilities read failed: ${(capabilitiesError as Error).message}`);
+      return '';
+    }
+  }
+
+  // Forward one observed network change; the host reads the current level itself and stores the
+  // bearer mask when the push carries one. The bare call stays for the events without a
+  // NetCapabilityInfo (and for a host library that predates the capability argument).
+  private reportNetworkAccess(capabilities?: string): void {
     this.hostCall('notifyNetworkAccess', typeof host !== 'undefined' && typeof host.notifyNetworkAccess === 'function', (): void => {
-      host.notifyNetworkAccess();
+      if (capabilities !== undefined && capabilities.length > 0) {
+        host.notifyNetworkAccess(capabilities);
+      } else {
+        host.notifyNetworkAccess();
+      }
+    });
+  }
+
+  // Safe area (soft input): the window's avoid-area change for the keyboard reports the
+  // keyboard height; the host stores it for the managed SafeArea (SafeAreaEdges.SoftInput/All).
+  // The system avoid-area report above is unaffected. Best effort: a missing Window API only
+  // costs the soft-input inset, and the managed side keeps its zero default.
+  private subscribeSoftInputArea(): void {
+    window.getLastWindow(getContext(this)).then((win) => {
+      if (this.softInputRegistered) {
+        return;
+      }
+      const listener = (data: window.AvoidAreaOptions): void => {
+        if (data.type === window.AvoidAreaType.TYPE_KEYBOARD) {
+          this.reportSoftInputArea(data.area.bottomRect.height);
+        }
+      };
+      try {
+        win.on('avoidAreaChange', listener);
+        this.softInputWindow = win;
+        this.softInputListener = listener;
+        this.softInputRegistered = true;
+      } catch (softInputError) {
+        console.error(`[maui] soft input observer unavailable: ${(softInputError as Error).message}`);
+      }
+    }).catch((softInputWindowError: Error): void => {
+      console.error(`[maui] soft input window unavailable: ${softInputWindowError.message}`);
+    });
+  }
+
+  // Forwards the keyboard height (pixels, 0 when hidden). The host clamps negatives.
+  private reportSoftInputArea(bottom: number): void {
+    const height: number = bottom > 0 ? Math.floor(bottom) : 0;
+    this.hostCall('notifySoftInputArea', typeof host !== 'undefined' && typeof host.notifySoftInputArea === 'function', (): void => {
+      host.notifySoftInputArea(height);
     });
   }
 
@@ -1635,7 +1718,9 @@ struct Index {
     // buildOption.strictMode { caseSensitiveCheck: true, useNormalizedOHMUrl: true } - the
     // strictMode block is now emitted, the numeric-version + matching staged SDK layout is the
     // next candidate. Verified snippet lives in the ArkTS Essentials plan.
-    // Safe area: report the system avoid area so the managed layout can inset its content.
+    // Safe area: report the system avoid area so the managed layout can inset its content, and
+    // subscribe to the keyboard's avoid-area change so the soft-input inset reaches the managed
+    // SafeArea (SafeAreaEdges.SoftInput/All) through host.notifySoftInputArea.
     window.getLastWindow(getContext(this)).then((win) => {
       const area = win.getWindowAvoidArea(window.AvoidAreaType.TYPE_SYSTEM);
       this.hostCall('notifyAvoidArea', typeof host !== 'undefined' && typeof host.notifyAvoidArea === 'function', (): void => {
@@ -1645,6 +1730,7 @@ struct Index {
     }).catch(() => {
       // Window information is optional.
     });
+    this.subscribeSoftInputArea();
 
     // WebView: a hidden ArkWeb component that the managed WebView handler drives.
     // Host callback: every controller call runs on the page's UI thread (see runOnUiThread).
@@ -2325,10 +2411,10 @@ struct Index {
       });
     });
 
-    // Launcher/Browser/Share: managed requests arrive through ohos_host_ability_start. kind 0
-    // opens a uri (implicit viewData Want), kind 1 shares plain text (implicit sendData Want),
-    // kind 2 is the availability probe (never launches), kind 3 shares a file (implicit
-    // sendData Want with uri + MIME type + FLAG_AUTH_READ_URI_PERMISSION), kind 4 starts an
+    // Launcher/Browser/Share: managed requests arrive through ohos_host_ability_start /
+    // ohos_host_ability_start_ex. kind 0 opens a uri (implicit viewData Want), kind 1 shares
+    // plain text (implicit sendData Want), kind 2 is the availability probe (never launches),
+    // kind 3 shares a file (implicit sendData Want with uri + MIME type), kind 4 starts an
     // explicit Want (uri = bundle name, text = ability name; used by IAppInfo.ShowSettingsUI).
     // The UIAbilityContext owns the actual startAbility call; a rejected launch is logged, and
     // only the dispatch status (true when the request was handed to the system) is reported
@@ -2336,16 +2422,22 @@ struct Index {
     // Plain text has no wantConstant key in this SDK (Share Kit/systemShare is not part of it),
     // so the text travels under 'ohos.extra.param.key.content', the key used by the
     // pre-Share-Kit samples for ohos.want.action.sendData.
-    // The read flag on kind 3 is wantConstant.Flags.FLAG_AUTH_READ_URI_PERMISSION (0x1), which
-    // this SDK declares in @ohos.app.ability.wantConstant; it asks the ability manager to grant
-    // the receiver read access to the file:// uri. Whether the target app can actually read the
+    // Title: the managed side passes ShareTextRequest.Title/Subject and ShareFileRequest.Title
+    // as the fifth/fourth sink argument; it travels under
+    // wantConstant.Params.CONTENT_TITLE_KEY ('ohos.extra.param.key.contentTitle'), which this
+    // SDK declares in @ohos.app.ability.wantConstant. The key is only set when non-empty; a
+    // receiver that ignores it simply shows its own title.
+    // Read grant: wantConstant.Flags.FLAG_AUTH_READ_URI_PERMISSION (0x1) asks the ability manager
+    // to grant the receiver read access to the file:// uri. Kind 3 always sets it, and kind 0
+    // sets it for a file:// uri (the managed launcher's OpenFileRequest path) so opening a
+    // sandbox file can reach its receiver too. Whether the target app can actually read the
     // sandbox file depends on that app and is not verifiable from this shell.
     // Kind 4 carries the well-known OpenHarmony settings bundle (com.ohos.settings /
     // com.ohos.settings.MainAbility) and falls back to the implicit 'ohos.settings' action when
     // the explicit Want does not resolve, so devices whose settings app uses another bundle id
     // still have a chance to open it.
     this.hostCall('registerAbilitySink', typeof host !== 'undefined' && typeof host.registerAbilitySink === 'function', (): void => {
-      host.registerAbilitySink((kind: number, uri: string, text: string): boolean => {
+      host.registerAbilitySink((kind: number, uri: string, text: string, title: string): boolean => {
         try {
           const context = getContext(this) as common.UIAbilityContext;
           if (kind === 2) {
@@ -2373,15 +2465,28 @@ struct Index {
             want.action = 'ohos.want.action.sendData';
             want.type = 'text/plain';
             want.parameters = { 'ohos.extra.param.key.content': text };
+            if (title.length > 0) {
+              want.parameters[wantConstant.Params.CONTENT_TITLE_KEY] = title;
+            }
           } else if (kind === 3) {
             // File share: uri = file:// URI (built by the managed side), text = MIME type.
             want.action = 'ohos.want.action.sendData';
             want.uri = uri;
             want.type = text;
             want.flags = wantConstant.Flags.FLAG_AUTH_READ_URI_PERMISSION;
+            if (title.length > 0) {
+              want.parameters = { 'ohos.extra.param.key.contentTitle': title };
+            }
           } else {
             want.action = 'ohos.want.action.viewData';
             want.uri = uri;
+            // Opening a sandbox file: the receiver needs the read grant for the file:// uri.
+            if (uri.startsWith('file://')) {
+              want.flags = wantConstant.Flags.FLAG_AUTH_READ_URI_PERMISSION;
+            }
+            if (title.length > 0) {
+              want.parameters = { 'ohos.extra.param.key.contentTitle': title };
+            }
           }
           context.startAbility(want).then((): void => {
             console.info(`[maui] ability start dispatched: kind=${kind}`);
@@ -2424,6 +2529,23 @@ struct Index {
         } catch (flashlightError) {
           console.error(`[maui] flashlight request failed: ${(flashlightError as Error).message}`);
           this.flashlightManager = undefined;
+          return false;
+        }
+      });
+    });
+
+    // Focus (managed VisualElement.Focus/Unfocus on the text handlers): the managed side names
+    // an ArkUI id through ohos_host_request_focus; this sink hands it focus. The text-input
+    // sink below keeps focusing the input as the keyboard fallback path (an older host library
+    // without the focus export still focuses when it drives the keyboard through the shell).
+    this.hostCall('registerFocusSink', typeof host !== 'undefined' && typeof host.registerFocusSink === 'function', (): void => {
+      host.registerFocusSink((id: string): boolean => {
+        try {
+          const target: string = id.length > 0 ? id : 'ohos_dotnet_surface';
+          focusControl.requestFocus(target);
+          return true;
+        } catch (focusError) {
+          console.error(`[maui] focus request failed: ${(focusError as Error).message}`);
           return false;
         }
       });
@@ -2586,7 +2708,18 @@ struct Index {
   // context and would outlive the page, so it is unregistered with the exact stored callback
   // when the page disappears; a later page registers again. The Bluetooth GATT clients (platform
   // extra) are closed for the same reason: their kit listeners are bound to this page instance.
+  // The soft-input avoid-area listener is window-scoped and is unregistered the same way.
   aboutToDisappear(): void {
+    if (this.softInputRegistered && this.softInputWindow !== null && this.softInputListener !== null) {
+      try {
+        this.softInputWindow.off('avoidAreaChange', this.softInputListener);
+      } catch (softInputOffError) {
+        console.error(`[maui] soft input observer unregister failed: ${(softInputOffError as Error).message}`);
+      }
+      this.softInputRegistered = false;
+      this.softInputWindow = null;
+      this.softInputListener = null;
+    }
     if (this.clipboardObserverRegistered && this.clipboardObserver !== null) {
       try {
         pasteboard.getSystemPasteboard().off('update', this.clipboardObserver);
@@ -3222,6 +3355,16 @@ struct Index {
         type: XComponentType.SURFACE,
         libraryname: 'openharmonyhost',
       })
+        .focusable(true)
+        .onKeyEvent((event: KeyEvent): void => {
+          // Hardware keys pressed while the .NET surface holds focus: forward the raw ArkUI key
+          // code and the down/up type (KeyType.Down = 0, KeyType.Up = 1) to host.keyEvent ->
+          // ohos_host_register_key_event. MAUI rc.1 exposes no key hook (no IKeyListener), so
+          // the managed bridge keeps the callback as its documented internal surface.
+          this.hostCall('keyEvent', typeof host !== 'undefined' && typeof host.keyEvent === 'function', (): void => {
+            host.keyEvent(event.keyCode, event.type === KeyType.Down ? 0 : 1);
+          });
+        })
         .onLoad(() => {
           // Binds the native XComponent so libopenharmonyhost receives surface callbacks.
           host.registerXComponent();
