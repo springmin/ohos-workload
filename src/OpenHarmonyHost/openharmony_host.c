@@ -1,3 +1,10 @@
+// dladdr() (GNU source) locates libhostfxr.so next to this library in OhosHostOpenHostfxr;
+// the define must precede the first libc header of this translation unit (clang++ already
+// predefines it, hence the guard).
+#ifndef _GNU_SOURCE
+#define _GNU_SOURCE
+#endif
+
 #include "openharmony_host.h"
 
 #include <sensors/vibrator.h>
@@ -71,28 +78,81 @@ static int path_join(char* dst, size_t dst_size, const char* dir, const char* fi
     return written > 0 && (size_t)written < dst_size ? 0 : -1;
 }
 
-// hostfxr is deliberately resolved at run time, never at link time: libhostfxr.so lives in the
-// app payload (dotnet.zip, extracted by the ArkTS ability before start_app) while the HAP loader
-// resolves DT_NEEDED entries when the shell imports libopenharmonyhost.so at ability load. A
-// -lhostfxr link would therefore make the import fail (host === undefined, every shell call
-// unavailable). Keep every hostfxr_* call routed through this dlopen/dlsym table;
-// scripts/build-host.sh fails the build if a DT_NEEDED on libhostfxr.so appears.
+// Resolves libhostfxr.so. The HAP code-signing block (SoInfoSegment/fs-verity) covers
+// libs/<abi>/** only, so the signed copy staged next to this library (the host itself is
+// loaded from libs/<abi>/) is the one an enforcing device accepts; the copy extracted from
+// dotnet.zip into app_dir is not covered and stays the last-resort fallback. Candidate order:
+//   1. <directory of this library>/libhostfxr.so - libs/<abi>/, resolved through dladdr;
+//   2. "libhostfxr.so" - the loader's app library search path, which contains libs/<abi>/;
+//   3. <app_dir>/libhostfxr.so - the extracted payload (pre-staging haps and self-contained
+//      runs from a plain publish directory).
+// `used_path` receives the loaded candidate (or the last candidate tried on failure) for the
+// caller's diagnostics. Returns NULL when no candidate could be loaded.
+static void* OhosHostOpenHostfxr(const char* caller, const char* app_dir, char* used_path, size_t used_path_size) {
+    used_path[0] = '\0';
+
+    char host_dir[4096];
+    host_dir[0] = '\0';
+    Dl_info own_info;
+    if (dladdr((void*)&OhosHostOpenHostfxr, &own_info) != 0 && own_info.dli_fname != NULL) {
+        const char* slash = strrchr(own_info.dli_fname, '/');
+        if (slash != NULL && (size_t)(slash - own_info.dli_fname) < sizeof(host_dir)) {
+            size_t dir_len = (size_t)(slash - own_info.dli_fname);
+            memcpy(host_dir, own_info.dli_fname, dir_len);
+            host_dir[dir_len] = '\0';
+        }
+    }
+
+    char host_dir_path[4096];
+    char app_dir_path[4096];
+    const char* candidates[3];
+    int candidate_count = 0;
+    if (host_dir[0] != '\0' && path_join(host_dir_path, sizeof(host_dir_path), host_dir, "libhostfxr.so") == 0) {
+        candidates[candidate_count++] = host_dir_path;
+    }
+    candidates[candidate_count++] = "libhostfxr.so";
+    if (app_dir != NULL && path_join(app_dir_path, sizeof(app_dir_path), app_dir, "libhostfxr.so") == 0) {
+        candidates[candidate_count++] = app_dir_path;
+    }
+
+    for (int i = 0; i < candidate_count; i++) {
+        void* handle = dlopen(candidates[i], RTLD_NOW | RTLD_LOCAL);
+        if (handle != NULL) {
+            snprintf(used_path, used_path_size, "%s", candidates[i]);
+            return handle;
+        }
+        const char* dl_error = dlerror();
+        fprintf(stderr, "[openharmony-host] %s: dlopen(%s) failed: %s\n", caller, candidates[i],
+                dl_error != NULL ? dl_error : "(no dlerror)");
+    }
+    if (candidate_count > 0) {
+        snprintf(used_path, used_path_size, "%s", candidates[candidate_count - 1]);
+    }
+    return NULL;
+}
+
+// hostfxr is deliberately resolved at run time, never at link time: libhostfxr.so ships both
+// in the hap's libs/<abi>/ (the signed copy the HAP code-signing block covers; loaded first,
+// see OhosHostOpenHostfxr) and in the app payload (dotnet.zip, extracted by the ArkTS ability
+// before start_app; the fallback) while the HAP loader resolves DT_NEEDED entries when the
+// shell imports libopenharmonyhost.so at ability load. A -lhostfxr link would therefore make
+// the import fail (host === undefined, every shell call unavailable). Keep every hostfxr_*
+// call routed through this dlopen/dlsym table; scripts/build-host.sh fails the build if a
+// DT_NEEDED on libhostfxr.so appears.
 int ohos_host_run_app(const char* app_dir, const char* app_assembly_file, int argc, const char* const* argv) {
     char hostfxr_path[4096];
     char app_assembly_path[4096];
-    if (path_join(hostfxr_path, sizeof(hostfxr_path), app_dir, "libhostfxr.so") != 0 ||
-        path_join(app_assembly_path, sizeof(app_assembly_path), app_dir, app_assembly_file) != 0) {
+    if (path_join(app_assembly_path, sizeof(app_assembly_path), app_dir, app_assembly_file) != 0) {
         return -1;
     }
 
-    void* hostfxr = dlopen(hostfxr_path, RTLD_NOW | RTLD_LOCAL);
+    void* hostfxr = OhosHostOpenHostfxr("run_app", app_dir, hostfxr_path, sizeof(hostfxr_path));
     if (hostfxr == NULL) {
-        const char* dl_error = dlerror();
-        OH_LOG_ERROR(LOG_APP, "[openharmony-host] run_app dlopen(%{public}s) failed: %{public}s",
-                     hostfxr_path, dl_error);
-        fprintf(stderr, "[openharmony-host] dlopen(%s) failed: %s\n", hostfxr_path, dl_error);
+        OH_LOG_ERROR(LOG_APP, "[openharmony-host] run_app: could not load libhostfxr.so (last tried %{public}s)",
+                     hostfxr_path);
         return -1;
     }
+    OH_LOG_INFO(LOG_APP, "[openharmony-host] run_app: loaded %{public}s", hostfxr_path);
 
     ohos_set_error_writer_fn set_error_writer =
         (ohos_set_error_writer_fn)dlsym(hostfxr, "hostfxr_set_error_writer");
@@ -436,21 +496,19 @@ int ohos_host_start_app(const char* app_dir, const char* app_assembly_file,
 
     char hostfxr_path[4096];
     char app_assembly_path[4096];
-    if (path_join(hostfxr_path, sizeof(hostfxr_path), app_dir, "libhostfxr.so") != 0 ||
-        path_join(app_assembly_path, sizeof(app_assembly_path), app_dir, app_assembly_file) != 0) {
+    if (path_join(app_assembly_path, sizeof(app_assembly_path), app_dir, app_assembly_file) != 0) {
         OhosHostEndLaunch();
         return -1;
     }
 
-    void* hostfxr = dlopen(hostfxr_path, RTLD_NOW | RTLD_LOCAL);
+    void* hostfxr = OhosHostOpenHostfxr("start_app", app_dir, hostfxr_path, sizeof(hostfxr_path));
     if (hostfxr == NULL) {
-        const char* dl_error = dlerror();
-        OH_LOG_ERROR(LOG_APP, "[openharmony-host] start_app dlopen(%{public}s) failed: %{public}s",
-                     hostfxr_path, dl_error);
-        fprintf(stderr, "[openharmony-host] dlopen(%s) failed: %s\n", hostfxr_path, dl_error);
+        OH_LOG_ERROR(LOG_APP, "[openharmony-host] start_app: could not load libhostfxr.so (last tried %{public}s)",
+                     hostfxr_path);
         OhosHostEndLaunch();
         return -1;
     }
+    OH_LOG_INFO(LOG_APP, "[openharmony-host] start_app: loaded %{public}s", hostfxr_path);
 
     ohos_set_error_writer_fn set_error_writer = (ohos_set_error_writer_fn)dlsym(hostfxr, "hostfxr_set_error_writer");
     if (set_error_writer != NULL) {

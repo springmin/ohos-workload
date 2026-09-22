@@ -1,7 +1,8 @@
 <Project>
   <!-- publish -> .hap packaging for OpenHarmony.
        Stage layout (packed by the OpenHarmony SDK's ohos_packing_tool):
-           module.json, ets/modules.abc, libs/<abi>/{libopenharmonyhost.so,libc++_shared.so},
+           module.json, ets/modules.abc,
+           libs/<abi>/{libopenharmonyhost.so,libc++_shared.so,<.NET runtime *.so>},
            resources/base/..., resources/rawfile/{app.json,dotnet.zip}
 
        Staging directory: OpenHarmonyHapStageDir (overridable) selects where the payload above
@@ -22,6 +23,22 @@
        harmonybrew Cellar install _OpenHarmonyDetectToolchain falls back to - in the LLVM
        triple matching OpenHarmonyAbi (arm64-v8a -> aarch64-linux-ohos). A missing library is
        a hard error; OpenHarmonyLibCxxShared pins an explicit file.
+
+       Runtime native libraries: the published .NET runtime ships its shared libraries
+       (libhostfxr.so, libhostpolicy.so, libcoreclr.so, libclrjit.so, libclrgc/gcexp.so,
+       libmscordaccore/dbi.so, libSystem.*.Native.so, ...) in the publish payload, so they
+       travel inside resources/rawfile/dotnet.zip and the ArkTS shell extracts them into the
+       app data directory before start_app. That extracted copy is NOT covered by the HAP
+       code-signing block (SoInfoSegment/fs-verity protects libs/<abi>/** and *.an), and an
+       enforcing device (XPM/fs-verity) rejects a dlopen from the data directory. The staging
+       therefore copies every ELF *.so of the publish directory into libs/<abi>/ as well,
+       where the HAP signature covers it; the files stay in dotnet.zip too. The duplication is
+       deliberate: the extracted payload remains a complete self-contained app (hostfxr's
+       app_dir copy is the host's last-resort fallback) at the cost of one extra copy of the
+       runtime library set in the hap (~14 MB for the arm64 demo publish). The set is
+       enumerated from the publish directory at target execution time; non-ELF *.so entries
+       are skipped, an empty ELF set is a hard error, and the staged libs go through the same
+       OpenHarmonyCodesign pass as the host and libc++_shared.so.
 
        Payload determinism: resources/rawfile/dotnet.zip is written with a fixed entry order
        (ordinal path sort) and a fixed 1980-01-01 entry timestamp (OpenHarmonyDeterministicZip
@@ -193,6 +210,96 @@
                 using (var fileStream = System.IO.File.OpenRead(file))
                 {
                     fileStream.CopyTo(entryStream);
+                }
+            }
+        }
+      ]]></Code>
+    </Task>
+  </UsingTask>
+
+  <!-- Stages the publish payload's runtime native libraries into libs/<abi>/ (see "Runtime
+       native libraries" in the file header): enumerates the *.so files given by the caller
+       (the publish directory), validates the ELF magic, and copies the ELF files into the
+       destination, skipping names already staged by the SDK (the host and libc++_shared.so).
+       CopiedCount/CopiedBytes/CopiedFiles feed the caller's hard emptiness error and its
+       size/name report; an empty or missing source list returns count 0 instead of failing
+       here so the caller can name the publish directory in the error. -->
+  <UsingTask TaskName="OpenHarmonyStageRuntimeLibs"
+             TaskFactory="RoslynCodeTaskFactory"
+             AssemblyFile="$(MSBuildToolsPath)/Microsoft.Build.Tasks.Core.dll">
+    <Task>
+      <Code Type="Class" Language="cs"><![CDATA[
+        using System;
+        using System.Collections.Generic;
+        using System.IO;
+        using Microsoft.Build.Framework;
+        using Microsoft.Build.Utilities;
+
+        public class OpenHarmonyStageRuntimeLibs : Task
+        {
+            public ITaskItem[] SourceFiles { get; set; }
+            [Required] public string DestinationDirectory { get; set; }
+            public string SkipFileNames { get; set; }
+            [Output] public int CopiedCount { get; set; }
+            [Output] public long CopiedBytes { get; set; }
+            [Output] public ITaskItem[] CopiedFiles { get; set; }
+
+            public override bool Execute()
+            {
+                var skip = new HashSet<string>(StringComparer.Ordinal);
+                if (!string.IsNullOrEmpty(SkipFileNames))
+                {
+                    foreach (var name in SkipFileNames.Split(new[] { ';' }, StringSplitOptions.RemoveEmptyEntries))
+                    {
+                        skip.Add(name.Trim());
+                    }
+                }
+
+                Directory.CreateDirectory(DestinationDirectory);
+                var copied = new List<ITaskItem>();
+                long bytes = 0;
+                if (SourceFiles != null)
+                {
+                    foreach (var item in SourceFiles)
+                    {
+                        var path = item.ItemSpec;
+                        var name = Path.GetFileName(path);
+                        if (skip.Contains(name))
+                        {
+                            Log.LogMessage(MessageImportance.Low, "OpenHarmony runtime libs: keeping the SDK copy of {0}", name);
+                            continue;
+                        }
+                        if (!File.Exists(path))
+                        {
+                            continue;
+                        }
+                        if (!IsElf(path))
+                        {
+                            Log.LogMessage(MessageImportance.Low, "OpenHarmony runtime libs: skipping non-ELF {0}", path);
+                            continue;
+                        }
+                        var destination = Path.Combine(DestinationDirectory, name);
+                        File.Copy(path, destination, true);
+                        copied.Add(new TaskItem(destination));
+                        bytes += new FileInfo(path).Length;
+                    }
+                }
+                CopiedFiles = copied.ToArray();
+                CopiedCount = copied.Count;
+                CopiedBytes = bytes;
+                return true;
+            }
+
+            private static bool IsElf(string path)
+            {
+                using (var stream = File.OpenRead(path))
+                {
+                    var magic = new byte[4];
+                    if (stream.Read(magic, 0, 4) != 4)
+                    {
+                        return false;
+                    }
+                    return magic[0] == 0x7F && magic[1] == (byte)'E' && magic[2] == (byte)'L' && magic[3] == (byte)'F';
                 }
             }
         }
@@ -394,6 +501,32 @@
            Text="libc++_shared.so was not found; libopenharmonyhost.so requires it at runtime and the hap loader refuses libs/$(OpenHarmonyAbi)/ without it. Set OpenHarmonySdkRoot (or OHOS_SDK_ROOT) or OHOS_NDK to the matching SDK/NDK root, or pass -p:OpenHarmonyLibCxxShared=&lt;path&gt;." />
     <Copy SourceFiles="@(_OpenHarmonyLibCxxShared)" DestinationFolder="$(_OpenHarmonyHapStageDir)libs/$(OpenHarmonyAbi)/" />
     <Message Importance="high" Text="OpenHarmony: staged libc++_shared.so from @(_OpenHarmonyLibCxxShared->'%(Identity)', '; ')" />
+
+    <!-- Runtime native libraries: see "Runtime native libraries" in the file header. The .so
+         files of the publish payload are enumerated here, at target execution time (after the
+         publish copy repopulated the directory), validated as ELF and staged next to the host
+         and libc++_shared.so BEFORE the codesign pass below, so the HAP signature block
+         covers them (XPM/fs-verity accepts only libs/<abi>/** in an enforcing app process).
+         They deliberately stay in resources/rawfile/dotnet.zip too: the extracted payload is
+         the complete self-contained app and the host falls back to its app_dir copy when a
+         libs/ copy is unavailable. The staged names are reported with the duplicated size. -->
+    <PropertyGroup>
+      <_OpenHarmonyRuntimePublishDir>$([MSBuild]::NormalizeDirectory('$(MSBuildProjectDirectory)', '$(PublishDir)'))</_OpenHarmonyRuntimePublishDir>
+    </PropertyGroup>
+    <ItemGroup>
+      <_OpenHarmonyPayloadNativeLib Include="$(_OpenHarmonyRuntimePublishDir)*.so" />
+    </ItemGroup>
+    <OpenHarmonyStageRuntimeLibs SourceFiles="@(_OpenHarmonyPayloadNativeLib)"
+                                 DestinationDirectory="$(_OpenHarmonyHapStageDir)libs/$(OpenHarmonyAbi)"
+                                 SkipFileNames="libopenharmonyhost.so;libc++_shared.so">
+      <Output TaskParameter="CopiedFiles" ItemName="_OpenHarmonyStagedRuntimeLib" />
+      <Output TaskParameter="CopiedCount" PropertyName="_OpenHarmonyStagedRuntimeLibCount" />
+      <Output TaskParameter="CopiedBytes" PropertyName="_OpenHarmonyStagedRuntimeLibBytes" />
+    </OpenHarmonyStageRuntimeLibs>
+    <Error Condition=" '$(_OpenHarmonyStagedRuntimeLibCount)' == '0' or '$(_OpenHarmonyStagedRuntimeLibCount)' == '' "
+           Text="OpenHarmony: no ELF runtime library (*.so) found in the publish payload ('$(_OpenHarmonyRuntimePublishDir)') to stage into libs/$(OpenHarmonyAbi)/; the hap would not carry the .NET runtime libraries the HAP signature has to cover." />
+    <Message Importance="high" Condition=" '$(_OpenHarmonyStagedRuntimeLibCount)' != '0' "
+             Text="OpenHarmony: staged $(_OpenHarmonyStagedRuntimeLibCount) runtime native libraries ($([MSBuild]::Divide($(_OpenHarmonyStagedRuntimeLibBytes), 1048576)) MB, also kept in dotnet.zip) into libs/$(OpenHarmonyAbi)/: @(_OpenHarmonyStagedRuntimeLib->'%(Filename)%(Extension)', ' ')" />
 
     <!-- The copied lib may carry a vendor .codesign that is not the ElfSigner format the device
          loader requires (the HarmonyOS SDK's libc++_shared.so ships a PKCS#7 Huawei DevID blob
