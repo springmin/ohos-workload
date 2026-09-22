@@ -1,6 +1,6 @@
 # Interaction regression suite (headless)
 
-The MAUI-on-OpenHarmony interaction harness (271 interaction checks, a 4-line fuzz tail, a
+The MAUI-on-OpenHarmony interaction harness (275 interaction checks, a 4-line fuzz tail, a
 frame-path performance budget and an accessibility publish-path budget). It builds the platform
 slice sources from the
 `maui-ohos` working tree and drives the app host without a device: touch/drag/pinch/pointer input,
@@ -21,9 +21,12 @@ screen-reader announce wiring (the text-carrying `ohos_host_accessibility_announ
 its event-kind fallback: managed P/Invoke + host-source pins and an off-device bookkeeping
 probe), the S-series features (the
 BlazorWebView handler/manager/file-provider path, the accessibility node-count export, the
-flashlight default/degradation and the file-share dispatch/MIME/URI path) and the V-series
+flashlight default/degradation and the file-share dispatch/MIME/URI path), the V-series
 on-demand app-context publish (V8: native/NAPI/shell-template checks plus an off-device drill
-of the managed bridge's surface-replay seam). Before the fuzz tail
+of the managed bridge's surface-replay seam), and the PG2 packaging/host invariants (the runtime
+natives staged into the signed `libs/<abi>/` with their `dotnet.zip` exclusion, the
+`libc++_shared` staging + re-sign pass, the host's `libs/<abi>/` -> app-dir symlink bridge and
+the build-host `DT_NEEDED libhostfxr` guard). Before the fuzz tail
 it runs a frame-path performance budget (warm-up plus 200 timed
 `OpenHarmonyWindowRenderer.Render` frames over a fixed 401-node tree, reporting
 average/p50/p95/max frame time and the managed allocation delta) and an accessibility
@@ -38,7 +41,7 @@ below), failing the suite when the (deliberately loose) budgets are exceeded.
 # (or the MauiSliceDir / HostingDll / OpenHarmonyGraphicsDll MSBuild properties) before building
 # elsewhere; an explicit -p: value wins over the environment and the absolute fallbacks.
 dotnet build -v:q
-dotnet bin/Debug/net11.0/verify.dll | grep -c '\[verify\]'   # expect 284 (271 checks + 4 fuzz + 1 frame perf + 8 a11y perf)
+dotnet bin/Debug/net11.0/verify.dll | grep -c '\[verify\]'   # expect 288 (275 checks + 4 fuzz + 1 frame perf + 8 a11y perf)
 ```
 
 The `interaction-regression` workflow (`.github/workflows/interaction-regression.yml`) runs the
@@ -46,7 +49,7 @@ suite on a GitHub runner as a real gate: it checks out this repository plus `spr
 (`feature/openharmony`, the branch carrying `src/Core/src/Platform/OpenHarmony`), builds
 `src/Microsoft.OpenHarmony.Hosting` and `src/Microsoft.OpenHarmony.Maui.Graphics` in Release,
 points `MAUI_SLICE_DIR` / `HOSTING_DLL` / `OPENHARMONY_GRAPHICS_DLL` at those roots, and fails the
-job unless the run exits 0, reports at least 264 `[verify]` lines, both perf lines report
+job unless the run exits 0, reports at least 268 `[verify]` lines, both perf lines report
 `within=True`, and no `Unhandled` line is logged.
 
 ## Fuzz tail
@@ -139,8 +142,8 @@ publish pass (skip/republish).
   blocks codesigned ELF apphosts on some machines).
 - The suite fails loudly (unhandled exception) when a slice change breaks startup or when an
   assertion for the gesture flows (including the drag-and-drop checks) does not hold; keep it at
-  271 checks plus the 4 fuzz lines plus the 1 frame-perf line plus the 8 a11y-perf lines
-  (284 `[verify]` lines) when touching the platform slice.
+  275 checks plus the 4 fuzz lines plus the 1 frame-perf line plus the 8 a11y-perf lines
+  (288 `[verify]` lines) when touching the platform slice.
 - Contacts/calendar coverage: `OpenHarmonyContacts.FindAsync` and
   `OpenHarmonyCalendar.ListUpcomingAsync`/`AddEventAsync` return empty/false without throwing
   off-device and report `IsSupported == false` before and after the call (the permission probe
@@ -261,7 +264,7 @@ publish pass (skip/republish).
   marker-checked `'skip'` eval before `SendRawMessage` (hybrid) and `SendMessage` (Blazor),
   including the skip log. That is 9 `[verify]` lines: 253 + 9 = 262, the BATCH-1-era total
   (249 interaction checks + 4 fuzz + 1 frame perf + 8 a11y perf). With the BATCH-2 lines below
-  the suite reports 275 = 262 + 4 + 1 + 8; the audit pins below take it to 284.
+  the suite reports 275 = 262 + 4 + 1 + 8; the audit and PG2 pins below take it to 288.
 - BATCH-1 Essentials real bridges (permissions / clipboard / connectivity): six `[verify]` lines
   cover both halves of each bridge. Off-device each request fails fast (the 30 s permission and
   5 s clipboard timeouts are never waited out) and degrades to Denied / null / false / Unknown;
@@ -377,7 +380,7 @@ publish pass (skip/republish).
     the installed default must complete without throwing when the ability bridge is absent; the
     want kind for single-file sharing is pinned to 3.
 - CI wiring: `.github/workflows/interaction-regression.yml` builds the slice checkout and the
-  hosting assemblies on the runner and gates on the `[verify]` line count (>=264) plus both perf
+  hosting assemblies on the runner and gates on the `[verify]` line count (>=268) plus both perf
   `within=True` markers (see "Running it" above).
 - Accessibility publish-contract coverage (R2b): the suite reflects
   `OpenHarmonyAccessibility.AccessibilityNode` (16 parameters now that hint, range and checked
@@ -410,3 +413,27 @@ publish pass (skip/republish).
   templates (which stay byte-identical). That is 9 lines: 275 + 9 = 284 = 271 interaction
   checks + 4 fuzz + 1 frame perf + 8 a11y perf; the workflow floor moves with the total
   (284 - 20 = 264).
+- PG2 packaging/host invariants (staged runtime natives / libc++ / host bridge / build-host
+  guard): four `[verify]` lines, all parsing committed sources. `pg2 pack runtime libs` pins the
+  preview.22/23/24 `OpenHarmony.Hap.targets` files (which stay byte-identical): the publish
+  `*.so` glob (`_OpenHarmonyPayloadNativeLib`), the ELF-magic validation and the host/libc++
+  skip names, the copy into `libs/$(OpenHarmonyAbi)/` with the `_OpenHarmonyStagedRuntimeLib` /
+  `_OpenHarmonyStagedRuntimeLibCount` / `_OpenHarmonyStagedRuntimeLibBytes` outputs, the hard
+  error when the set is empty, and the deterministic zip half: `ExcludeFileNames` receives
+  `@(_OpenHarmonyStagedRuntimeLib->'%(Filename)%(Extension)')` and drops those names
+  (`Path.GetFileName` + `ExcludedCount`), with the staging before the `OpenHarmonyCodesign`
+  pass and the zip after it. `pg2 pack libcxx` pins the `libc++_shared.so` lookup (harmonybrew
+  Cellar, `OHOS_NDK`, `OpenHarmonySdkRoot`, the explicit `OpenHarmonyLibCxxShared` override),
+  the missing-library hard errors, the `libs/<abi>/` copy and the in-place re-sign of the
+  staged libs (the vendor `.codesign` rationale plus the missing
+  `MicrosoftNETBuildTasksAssembly` failure). `pg2 host runtime bridge` parses
+  `openharmony_host.c`: `OhosHostEnsureRuntimeLibs` is called on both the `run_app` and
+  `start_app` paths before their `OhosHostOpenHostfxr`, its libs directory is derived through
+  `dladdr` on `ohos_host_run_app`, the symlink is backed by the tmp+rename copy fallback
+  (warned once per process), the name filter covers the nine runtime prefixes and the
+  scan/link bounds, and the one summary log reports ensured/copied/failed with the last errno.
+  `pg2 build-host guard` pins `scripts/build-host.sh`: the `READELF` default/fallback/no-readelf
+  error, the `grep -q 'libhostfxr'` DT_NEEDED failure with its exit 1 message, and the guard's
+  position after the link and before the self-sign pass. That is 4 lines: 284 + 4 = 288 = 275
+  interaction checks + 4 fuzz + 1 frame perf + 8 a11y perf; the workflow floor moves with the
+  total (288 - 20 = 268).

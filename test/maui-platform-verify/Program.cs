@@ -4226,6 +4226,171 @@ if (!n9SinksOk)
         $"notify={n9SearchNotify} apply={n9WindowApply} identical={b1ShellIdentical}");
 }
 
+// ---- PG2: packaging/host invariants (staged runtime libs, libc++, bridge, host guard) ----------
+// The "runtime natives ship only in the signed libs/<abi>/" increment relies on four invariants
+// that this section pins to the committed sources, so a regression fails this off-device run
+// instead of shipping a pack built from drifted files:
+//   * the preview.22/23/24 hap staging enumerates the publish payload's *.so files, validates the
+//     ELF magic, copies them into libs/<abi>/ (skipping the host and libc++_shared.so the SDK
+//     already staged) and exposes the copied set as the _OpenHarmonyStagedRuntimeLib item, with a
+//     hard error when the set is empty; the deterministic zip receives exactly that set through
+//     ExcludeFileNames (@(...->'%(Filename)%(Extension)')) and drops the names before packing;
+//   * the staged libs are re-signed in place by the shared ElfSigner task, and the libc++_shared
+//     staging keeps its SDK/NDK/harmonybrew lookup, the explicit override and the missing error;
+//   * openharmony_host.c bridges the signed libs/<abi>/ runtime natives into app_dir (symlink,
+//     copy fallback, one summary log) on both launch paths before hostfxr is initialized;
+//   * scripts/build-host.sh fails the build when libhostfxr appears in DT_NEEDED, before signing.
+
+// PG2a: runtime-native staging + the dotnet.zip exclusion (the three packs stay byte-identical).
+string[] pg2PackVersions = { "1.0.0-preview.22", "1.0.0-preview.23", "1.0.0-preview.24" };
+bool pg2StageOk = true;
+bool pg2StageElfOk = true;
+bool pg2ZipOk = true;
+bool pg2StageOrderOk = true;
+bool pg2PackIdentical = true;
+string? pg2PackPath = null;
+string pg2PackFirst = string.Empty;
+foreach (string pg2Version in pg2PackVersions)
+{
+    string? pg2Path = FindHostSource($"packs/Microsoft.OpenHarmony.Sdk/{pg2Version}/targets/OpenHarmony.Hap.targets");
+    pg2PackPath ??= pg2Path;
+    string pg2Text = pg2Path is null ? string.Empty : File.ReadAllText(pg2Path);
+    if (pg2PackFirst.Length == 0)
+    {
+        pg2PackFirst = pg2Text;
+    }
+    pg2PackIdentical &= pg2Text == pg2PackFirst;
+    int pg2StageAt = pg2Text.IndexOf("<OpenHarmonyStageRuntimeLibs SourceFiles=", StringComparison.Ordinal);
+    int pg2CodesignAt = pg2Text.IndexOf("<OpenHarmonyCodesign Directories=\"$(_OpenHarmonyHapStageDir)libs\" />", StringComparison.Ordinal);
+    int pg2ZipAt = pg2Text.IndexOf("<OpenHarmonyDeterministicZip", StringComparison.Ordinal);
+    int pg2ExcludeAt = pg2Text.IndexOf("ExcludeFileNames=\"@(_OpenHarmonyStagedRuntimeLib->'%(Filename)%(Extension)')\"", StringComparison.Ordinal);
+    pg2StageOk &= pg2Text.Contains("<_OpenHarmonyPayloadNativeLib Include=\"$(_OpenHarmonyRuntimePublishDir)*.so\" />") &&
+        pg2Text.Contains("DestinationDirectory=\"$(_OpenHarmonyHapStageDir)libs/$(OpenHarmonyAbi)\"") &&
+        pg2Text.Contains("SkipFileNames=\"libopenharmonyhost.so;libc++_shared.so\"") &&
+        pg2Text.Contains("<Output TaskParameter=\"CopiedFiles\" ItemName=\"_OpenHarmonyStagedRuntimeLib\" />") &&
+        pg2Text.Contains("<Output TaskParameter=\"CopiedCount\" PropertyName=\"_OpenHarmonyStagedRuntimeLibCount\" />") &&
+        pg2Text.Contains("<Output TaskParameter=\"CopiedBytes\" PropertyName=\"_OpenHarmonyStagedRuntimeLibBytes\" />") &&
+        pg2Text.Contains("<Error Condition=\" '$(_OpenHarmonyStagedRuntimeLibCount)' == '0' or '$(_OpenHarmonyStagedRuntimeLibCount)' == '' \"") &&
+        pg2Text.Contains("no ELF runtime library (*.so) found in the publish payload");
+    pg2StageElfOk &= pg2Text.Contains("return magic[0] == 0x7F && magic[1] == (byte)'E' && magic[2] == (byte)'L' && magic[3] == (byte)'F';") &&
+        pg2Text.Contains("OpenHarmony runtime libs: skipping non-ELF");
+    pg2ZipOk &= pg2Text.Contains("<ExcludeFileNames ParameterType=\"System.String\" />") &&
+        pg2Text.Contains("if (exclude.Contains(System.IO.Path.GetFileName(file)))") &&
+        pg2Text.Contains("ExcludedCount++;") &&
+        pg2Text.Contains("runtime native libraries that ship in libs/$(OpenHarmonyAbi)/ only");
+    pg2StageOrderOk &= pg2StageAt >= 0 && pg2CodesignAt > pg2StageAt && pg2ZipAt > pg2CodesignAt &&
+        pg2ExcludeAt > pg2ZipAt && pg2Text.Contains("excluded from dotnet.zip");
+}
+bool pg2PackOk = pg2StageOk && pg2StageElfOk && pg2ZipOk && pg2StageOrderOk && pg2PackIdentical;
+Console.WriteLine($"[verify] pg2 pack runtime libs packs=22,23,24 staged={pg2StageOk} elf={pg2StageElfOk} excluded={pg2ZipOk} order={pg2StageOrderOk} identical={pg2PackIdentical} source='{pg2PackPath ?? "<missing>"}' assert={pg2PackOk}");
+if (!pg2PackOk)
+{
+    throw new InvalidOperationException(
+        $"the PG2 runtime-native staging / dotnet.zip exclusion contract drifted: staged={pg2StageOk} " +
+        $"elf={pg2StageElfOk} excluded={pg2ZipOk} order={pg2StageOrderOk} identical={pg2PackIdentical} " +
+        $"source={pg2PackPath ?? "<missing>"}");
+}
+
+// PG2b: the libc++_shared.so staging and the staged-libs re-sign pass (all three packs).
+bool pg2LibcxxLookupOk = true;
+bool pg2LibcxxErrorsOk = true;
+bool pg2LibcxxCopyOk = true;
+bool pg2ResignOk = true;
+string? pg2LibcxxPath = null;
+foreach (string pg2Version in pg2PackVersions)
+{
+    string? pg2Path = FindHostSource($"packs/Microsoft.OpenHarmony.Sdk/{pg2Version}/targets/OpenHarmony.Hap.targets");
+    pg2LibcxxPath ??= pg2Path;
+    string pg2Text = pg2Path is null ? string.Empty : File.ReadAllText(pg2Path);
+    pg2LibcxxLookupOk &= pg2Text.Contains("<_OpenHarmonyNativeAbi Condition=\" '$(OpenHarmonyAbi)' == 'arm64-v8a' \">aarch64-linux-ohos</_OpenHarmonyNativeAbi>") &&
+        pg2Text.Contains("<_OpenHarmonyLibCxxShared Include=\"$([System.Environment]::GetEnvironmentVariable('HOME'))/.harmonybrew/Cellar/ohos-sdk/*/native/llvm/lib/$(_OpenHarmonyNativeAbi)/libc++_shared.so\" />") &&
+        pg2Text.Contains("<_OpenHarmonyLibCxxShared Condition=\" '$(_OpenHarmonyNdkRootDir)' != '' and Exists('$(_OpenHarmonyNdkRootDir)llvm/lib/$(_OpenHarmonyNativeAbi)/libc++_shared.so') \"") &&
+        pg2Text.Contains("<_OpenHarmonyLibCxxShared Condition=\" '$(OpenHarmonyLibCxxShared)' != '' \" Include=\"$(OpenHarmonyLibCxxShared)\" />");
+    pg2LibcxxErrorsOk &= pg2Text.Contains("<Error Condition=\" '$(OpenHarmonyLibCxxShared)' != '' and !Exists('$(OpenHarmonyLibCxxShared)') \"") &&
+        pg2Text.Contains("libc++_shared.so was not found; libopenharmonyhost.so requires it at runtime");
+    pg2LibcxxCopyOk &= pg2Text.Contains("<Copy SourceFiles=\"@(_OpenHarmonyLibCxxShared)\" DestinationFolder=\"$(_OpenHarmonyHapStageDir)libs/$(OpenHarmonyAbi)/\" />") &&
+        pg2Text.Contains("OpenHarmony: staged libc++_shared.so from @(_OpenHarmonyLibCxxShared->'%(Identity)', '; ')");
+    pg2ResignOk &= pg2Text.Contains("<OpenHarmonyCodesign Directories=\"$(_OpenHarmonyHapStageDir)libs\" />") &&
+        pg2Text.Contains("a vendor .codesign that is not the ElfSigner format") &&
+        pg2Text.Contains("the ElfSigner task assembly '$(MicrosoftNETBuildTasksAssembly)' was not found");
+}
+bool pg2LibcxxOk = pg2LibcxxLookupOk && pg2LibcxxErrorsOk && pg2LibcxxCopyOk && pg2ResignOk;
+Console.WriteLine($"[verify] pg2 pack libcxx staging lookup={pg2LibcxxLookupOk} errors={pg2LibcxxErrorsOk} copy={pg2LibcxxCopyOk} resign={pg2ResignOk} packs=22,23,24 source='{pg2LibcxxPath ?? "<missing>"}' assert={pg2LibcxxOk}");
+if (!pg2LibcxxOk)
+{
+    throw new InvalidOperationException(
+        $"the PG2 libc++_shared staging / re-sign contract drifted: lookup={pg2LibcxxLookupOk} " +
+        $"errors={pg2LibcxxErrorsOk} copy={pg2LibcxxCopyOk} resign={pg2ResignOk} " +
+        $"source={pg2LibcxxPath ?? "<missing>"}");
+}
+
+// PG2c: the host's runtime-lib bridge (openharmony_host.c). The bridge runs on both launch paths
+// before hostfxr is initialized, resolves its own signed libs directory through dladdr, links the
+// runtime natives into app_dir with a copy fallback (warned once), and logs one summary line.
+int pg2RunAt = cSource?.IndexOf("int ohos_host_run_app(const char* app_dir", StringComparison.Ordinal) ?? -1;
+int pg2RunBridgeAt = pg2RunAt < 0 ? -1 : cSource!.IndexOf("OhosHostEnsureRuntimeLibs(\"run_app\", app_dir);", pg2RunAt, StringComparison.Ordinal);
+int pg2RunHostfxrAt = pg2RunBridgeAt < 0 ? -1 : cSource!.IndexOf("OhosHostOpenHostfxr(\"run_app\"", pg2RunBridgeAt, StringComparison.Ordinal);
+int pg2StartAt = cSource?.IndexOf("int ohos_host_start_app(const char* app_dir", StringComparison.Ordinal) ?? -1;
+int pg2StartBridgeAt = pg2StartAt < 0 ? -1 : cSource!.IndexOf("OhosHostEnsureRuntimeLibs(\"start_app\", app_dir);", pg2StartAt, StringComparison.Ordinal);
+int pg2StartHostfxrAt = pg2StartBridgeAt < 0 ? -1 : cSource!.IndexOf("OhosHostOpenHostfxr(\"start_app\"", pg2StartBridgeAt, StringComparison.Ordinal);
+bool pg2BridgeDefOk = cSource?.Contains("static void OhosHostEnsureRuntimeLibs(const char* caller, const char* app_dir) {") == true;
+bool pg2BridgePathsOk = pg2RunAt >= 0 && pg2RunBridgeAt > pg2RunAt && pg2RunHostfxrAt > pg2RunBridgeAt &&
+    pg2StartAt >= 0 && pg2StartBridgeAt > pg2StartAt && pg2StartHostfxrAt > pg2StartBridgeAt;
+bool pg2BridgeDladdrOk = cSource?.Contains("static int OhosHostOwnDirectory(char* dir, size_t dir_size) {") == true &&
+    cSource!.Contains("dladdr((void*)&ohos_host_run_app, &own_info) == 0") &&
+    cSource.Contains("OhosHostOwnDirectory(libs_dir, sizeof(libs_dir)) != 0");
+bool pg2BridgeLinkOk = cSource?.Contains("if (symlink(src, dst) == 0) {") == true &&
+    cSource!.Contains("static int OhosHostRuntimeLibCopy(const char* src, const char* dst) {") &&
+    cSource.Contains("if (OhosHostRuntimeLibCopy(src, dst) == 0) {") &&
+    cSource.Contains("static int g_runtime_lib_copy_warned = 0;") &&
+    cSource.Contains("if (!g_runtime_lib_copy_warned) {") &&
+    cSource.Contains("the copy is not covered by the HAP signing block");
+bool pg2BridgeSummaryOk = cSource?.Contains("runtime lib bridge in %s: %d ensured, %d copied, %d failed ") == true &&
+    cSource!.Contains("%{public}d ensured, %{public}d copied, %{public}d failed") &&
+    cSource.Contains("(last %s errno=%d)\\n");
+bool pg2BridgeFilterOk = cSource?.Contains("\"libhostfxr.\", \"libhostpolicy.\", \"libcoreclr.\", \"libclrjit.\", \"libclrgc.\", \"libclrgcexp.\",") == true &&
+    cSource!.Contains("\"libmscordaccore.\", \"libmscordbi.\", \"libSystem.\",") &&
+    cSource.Contains("#define OHOS_RUNTIME_LIB_SCAN_MAX 256") &&
+    cSource.Contains("#define OHOS_RUNTIME_LIB_LINK_MAX 64") &&
+    cSource.Contains("// PF4-LIB-BRIDGE-BEGIN:") && cSource.Contains("// PF4-LIB-BRIDGE-END");
+bool pg2BridgeOk = pg2BridgeDefOk && pg2BridgePathsOk && pg2BridgeDladdrOk && pg2BridgeLinkOk &&
+    pg2BridgeSummaryOk && pg2BridgeFilterOk;
+Console.WriteLine($"[verify] pg2 host runtime bridge defined={pg2BridgeDefOk} bothPaths={pg2BridgePathsOk} dladdr={pg2BridgeDladdrOk} symlinkCopy={pg2BridgeLinkOk} summary={pg2BridgeSummaryOk} filter={pg2BridgeFilterOk} source='{cSourcePath ?? "<missing>"}' assert={pg2BridgeOk}");
+if (!pg2BridgeOk)
+{
+    throw new InvalidOperationException(
+        $"the PG2 host runtime-lib bridge contract drifted: defined={pg2BridgeDefOk} paths={pg2BridgePathsOk} " +
+        $"dladdr={pg2BridgeDladdrOk} symlinkCopy={pg2BridgeLinkOk} summary={pg2BridgeSummaryOk} " +
+        $"filter={pg2BridgeFilterOk} source={cSourcePath ?? "<missing>"}");
+}
+
+// PG2d: the host build's DT_NEEDED guard (scripts/build-host.sh): the readelf lookup, the
+// libhostfxr NEEDED failure with its exit 1, and the guard's position after the link and before
+// the self-sign pass.
+string? pg2HostScriptPath = FindHostSource("scripts/build-host.sh");
+string pg2HostScript = pg2HostScriptPath is null ? string.Empty : File.ReadAllText(pg2HostScriptPath);
+int pg2ReadelfGuardAt = pg2HostScript.IndexOf("if \"$READELF\" -d \"$OUT/libopenharmonyhost.so\" 2>/dev/null | grep -q 'libhostfxr'; then", StringComparison.Ordinal);
+int pg2LinkAt = pg2HostScript.IndexOf("--ld-path=\"$LLD\"", StringComparison.Ordinal);
+int pg2SelfsignAt = pg2HostScript.IndexOf("selfsign.sh\" \"$OUT/libopenharmonyhost.so\"", StringComparison.Ordinal);
+bool pg2GuardReadelfOk = pg2HostScript.Contains("READELF=\"${READELF:-$NATIVE/llvm/bin/llvm-readelf}\"") &&
+    pg2HostScript.Contains("READELF=\"$(command -v readelf || true)\"") &&
+    pg2HostScript.Contains("[ -n \"$READELF\" ] || { echo \"ERROR: no llvm-readelf/readelf found to audit DT_NEEDED\" >&2; exit 1; }");
+bool pg2GuardFailOk = pg2ReadelfGuardAt > 0 &&
+    pg2HostScript.IndexOf("ERROR: libopenharmonyhost.so has DT_NEEDED libhostfxr.so; drop the -lhostfxr link flag", pg2ReadelfGuardAt, StringComparison.Ordinal) > pg2ReadelfGuardAt &&
+    pg2HostScript.IndexOf("route every hostfxr_* call through the existing dlopen/dlsym handle", pg2ReadelfGuardAt, StringComparison.Ordinal) > pg2ReadelfGuardAt &&
+    pg2HostScript.IndexOf("exit 1\nfi", pg2ReadelfGuardAt, StringComparison.Ordinal) > pg2ReadelfGuardAt;
+bool pg2GuardOrderOk = pg2LinkAt >= 0 && pg2ReadelfGuardAt > pg2LinkAt && pg2SelfsignAt > pg2ReadelfGuardAt;
+bool pg2GuardEvidenceOk = pg2HostScript.Contains("DT_NEEDED (libhostfxr must be absent; all others SDK/system-provided)") &&
+    pg2HostScript.Contains("the host must carry NO DT_NEEDED on libhostfxr.so");
+bool pg2GuardOk = pg2GuardReadelfOk && pg2GuardFailOk && pg2GuardOrderOk && pg2GuardEvidenceOk;
+Console.WriteLine($"[verify] pg2 build-host guard readelf={pg2GuardReadelfOk} fail={pg2GuardFailOk} order={pg2GuardOrderOk} evidence={pg2GuardEvidenceOk} source='{pg2HostScriptPath ?? "<missing>"}' assert={pg2GuardOk}");
+if (!pg2GuardOk)
+{
+    throw new InvalidOperationException(
+        $"the PG2 build-host DT_NEEDED guard drifted: readelf={pg2GuardReadelfOk} fail={pg2GuardFailOk} " +
+        $"order={pg2GuardOrderOk} evidence={pg2GuardEvidenceOk} source={pg2HostScriptPath ?? "<missing>"}");
+}
+
 // ---- Performance budget (bounded, deterministic, seedless) ------------------------------------
 // The frame path (OpenHarmonyWindowRenderer.Render: measure/arrange, the iterative view walk, the
 // accessibility shadow tree rebuild + frame diff and the surface hooks) is timed over a fixed
