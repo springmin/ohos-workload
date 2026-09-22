@@ -38,6 +38,17 @@
 # including the rolling workload-latest and a rebuilt kit - requires the explicit
 # --allow-clobber-mismatch (or ALLOW_CLOBBER_MISMATCH=1). Every check is logged.
 #
+# The SDK release also carries the SDK tarball, nupkgs, selfsign, ... and its SHA256SUMS
+# names them for the installer's L1 resolution. Attaching this workload therefore does not
+# upload the local two-line file blindly: the published SHA256SUMS body is fetched and
+# merged - every line whose basename this run does not publish is kept verbatim, the
+# workload entries (versioned + rolling) are replaced with this run's digests (a rolling
+# line left over from an earlier merge is dropped when --skip-latest refreshes nothing),
+# and the result is sorted by basename. Only when the fetch fails (asset absent, API error)
+# is the local file uploaded unchanged, with a warning (the pre-merge behaviour). The
+# workload-<version> and workload-latest releases are not affected: they keep receiving
+# exactly the two-line file, --clobber included.
+#
 # Release notes: when scripts/release-notes.sh is present it generates the notes body for
 # both the versioned release and workload-latest (invoke it directly as
 #   scripts/release-notes.sh --version <version> [--since <tag-or-commit>]
@@ -181,6 +192,84 @@ guard_clobber() {
         warn "  pass --allow-clobber-mismatch to replace the published asset deliberately"
         exit 1
     fi
+}
+
+# Download the SHA256SUMS body currently attached to a release into the file named by $2.
+# Returns 0 = fetched, 1 = the release has no such asset (or it is empty), 2 = request failed.
+# The _fps_* names keep this helper from clobbering its callers' variables (POSIX sh has no
+# function-local scope).
+fetch_published_sums() {
+    _fps_tag="$1"; _fps_out="$2"
+    rm -f "$_fps_out"
+    _fps_id=""
+    if ! _fps_id="$(gh api --paginate "repos/$REPO/releases/tags/$_fps_tag" \
+        --jq ".assets[] | select(.name == \"$SUMS_NAME\") | .id" 2>/dev/null)"; then
+        return 2
+    fi
+    _fps_id="$(printf '%s\n' "$_fps_id" | head -n1)"
+    [ -n "$_fps_id" ] || return 1
+    if ! gh api "repos/$REPO/releases/assets/$_fps_id" \
+        -H 'Accept: application/octet-stream' > "$_fps_out" 2>/dev/null; then
+        rm -f "$_fps_out"
+        return 2
+    fi
+    [ -s "$_fps_out" ] || { rm -f "$_fps_out"; return 1; }
+    return 0
+}
+
+# Merge the published sums ($1) with the workload sums generated for this run ($2) into $3:
+# every existing line whose basename ("hash  name" or "hash *name", any directory prefix) is
+# not published by this run is kept verbatim, the workload entries are replaced by the local
+# ones, and the result is sorted by basename (LC_ALL=C) so equal inputs give equal bytes.
+merge_sums() {
+    _ms_existing="$1"; _ms_local="$2"; _ms_out="$3"
+    _ms_tmp="$3.merge.$$"
+    {
+        if [ -s "$_ms_existing" ]; then
+            # The rolling name is a workload entry even when this run does not refresh it
+            # (--skip-latest has no local line for it): a stale digest left by an earlier
+            # merge is dropped rather than carried into the new file.
+            awk -v rolling="openharmony-workload-latest.tar.gz" '
+                {
+                    n = $NF
+                    sub(/^\*/, "", n)
+                    sub(/^.*\//, "", n)
+                    gsub(/\r$/, "", n)
+                }
+                NR == FNR { ours[n] = 1; next }
+                !(n in ours) && n != rolling { print }
+            ' "$_ms_local" "$_ms_existing"
+        fi
+        cat "$_ms_local"
+    } > "$_ms_tmp"
+    LC_ALL=C sort -s -k2,2 "$_ms_tmp" > "$_ms_out"
+    rm -f "$_ms_tmp"
+}
+
+# Build the sums file to attach to the SDK release in $3 from the local workload file ($2).
+# Sets SDK_SUMS_MERGED=1 when the published body was merged, 0 when there is nothing to
+# merge (no asset, unreadable API): then the local file is copied unchanged, with a warning
+# - exactly what the script always uploaded before the merge existed.
+prepare_sdk_sums() {
+    _pss_tag="$1"; _pss_local="$2"; _pss_out="$3"
+    SDK_SUMS_MERGED=0
+    _pss_existing="$(mktemp)"
+    _pss_rc=0
+    fetch_published_sums "$_pss_tag" "$_pss_existing" || _pss_rc=$?
+    if [ "$_pss_rc" -eq 0 ]; then
+        merge_sums "$_pss_existing" "$_pss_local" "$_pss_out"
+        SDK_SUMS_MERGED=1
+        log "SHA256SUMS: merged the published $_pss_tag/$SUMS_NAME with this run's workload entries ($(grep -c '' "$_pss_out") lines)"
+    else
+        if [ "$_pss_rc" -eq 1 ]; then
+            warn "SHA256SUMS: no $_pss_tag/$SUMS_NAME asset (or empty); uploading the local workload-only file unchanged"
+        else
+            warn "SHA256SUMS: could not fetch $_pss_tag/$SUMS_NAME (gh api request failed); uploading the local workload-only file unchanged"
+        fi
+        cp -f "$_pss_local" "$_pss_out"
+        log "SHA256SUMS: local workload-only file for the $_pss_tag upload ($(grep -c '' "$_pss_out") lines)"
+    fi
+    rm -f "$_pss_existing"
 }
 
 VER="$(python3 -c "import json;print(json.load(open('$W/manifests/$BAND/microsoft.net.sdk.openharmony/WorkloadManifest.json'))['version'])")"
@@ -393,11 +482,22 @@ fi
 
 if [ -n "$SDK_RELEASE" ]; then
     log "== attaching the versioned bundle and SHA256SUMS to the SDK release $SDK_RELEASE =="
+    # gh names an uploaded asset after the file's basename, so the merged payload must live
+    # in its own scratch directory as SHA256SUMS.
+    SDK_DIR="$(mktemp -d)"
+    SDK_SUMS="$SDK_DIR/SHA256SUMS"
+    SDK_SUMS_MERGED=0
+    prepare_sdk_sums "$SDK_RELEASE" "$SUMS" "$SDK_SUMS"
+    SDK_SUMS_SHA="$(sha256_of "$SDK_SUMS")"
     guard_clobber "$SDK_RELEASE" "$(basename "$BUNDLE")" "$BUNDLE_SHA"
-    guard_clobber "$SDK_RELEASE" "SHA256SUMS" "$SUMS_SHA"
+    # Guard the body actually uploaded: the first merge differs from the published
+    # workload-only file (needs --allow-clobber-mismatch, which release-all.sh passes);
+    # re-running over an already merged file matches and needs no override.
+    guard_clobber "$SDK_RELEASE" "SHA256SUMS" "$SDK_SUMS_SHA"
     run gh release upload "$SDK_RELEASE" "$BUNDLE" --repo "$REPO" --clobber
-    run gh release upload "$SDK_RELEASE" "$SUMS" --repo "$REPO" --clobber
+    run gh release upload "$SDK_RELEASE" "$SDK_SUMS" --repo "$REPO" --clobber
 fi
 rm -f "$NOTES"
 if [ "$SUMS_SCRATCH" = 1 ]; then rm -f "$SUMS"; fi
+if [ -n "$SDK_DIR" ]; then rm -rf "$SDK_DIR"; fi
 log "== done =="
