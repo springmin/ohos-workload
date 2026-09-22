@@ -9,8 +9,10 @@
 # It (1) verifies every file against SHA256SUMS with sha256sum -c, (2) summarizes the five
 # haps by reading module.json inside each one (bundleName, min/target API, requestPermissions)
 # and fails unless they all carry the expected bundle name (KIT_BUNDLE_NAME, default
-# com.example.hellomauiapp), (3) prints the install options and the 9568344/self-sign pointer,
-# and (4) lists the log lines to send back.
+# com.example.hellomauiapp), (3) prints a one-line warning that the four default haps are
+# self-signed and a real device rejects them (9568257/9568344 -> re-sign hello-maui-app-unsigned.hap
+# or use a pre-signed kit), plus the install options and the self-sign pointer, and (4) lists
+# the log lines to send back.
 #
 # SHA256SUMS lives inside the same archive it covers, so it can only prove internal
 # consistency, not that the archive (or the extracted tree) is the published one:
@@ -36,7 +38,8 @@
 # makes the run fail.
 #
 # Exit code: 0 = kit OK; 1 = a checksum/anchor/tree-digest failed, a hap is
-# missing/unreadable, a hap carries an unexpected bundleName, or 自签说明.md is absent;
+# missing/unreadable, a hap carries an unexpected bundleName, or 自签说明.md / 签名说明.txt
+# is absent;
 # 2 = SHA256SUMS not found (wrong directory) or bad usage. The kit's own SHA256SUMS is not
 # in its own list - the outer <kit>.tar.gz.sha256 covers it, and the tree digest covers
 # SHA256SUMS itself.
@@ -257,6 +260,7 @@ do
     grep -Fq "  $h" SHA256SUMS || { warn "SHA256SUMS 未收录 $h"; FAIL=1; }
 done
 [ -f "自签说明.md" ] || { warn "缺少 自签说明.md（9568344 自签流程指向它）"; FAIL=1; }
+[ -f "签名说明.txt" ] || { warn "缺少 签名说明.txt（自签名 hap 的预期拒绝与重签路径说明）"; FAIL=1; }
 
 log "== 2/4 五个 hap 一览（读 module.json）"
 if command -v python3 >/dev/null 2>&1; then
@@ -268,15 +272,16 @@ expected = sys.argv[2]
 bundle_file = sys.argv[3]
 haps = [
     ("hello-maui-app.hap",
-     "默认包：API 26 波段，无额外权限（UI/交互/手势/IME/通知/安全区/WebView/无障碍/Hybrid）"),
+     "默认包：API 26 波段，无额外权限（UI/交互/手势/IME/通知/安全区/WebView/无障碍/Hybrid）；"
+     "自签名，设备会拒绝，需要重签"),
     ("hello-maui-app-permissions.hap",
-     "带权限变体：蓝牙/打印/联系人/日历（验收说明 §4b 的 N1-N4）"),
+     "带权限变体：蓝牙/打印/联系人/日历（验收说明 §4b 的 N1-N4）；自签名，设备会拒绝，需要重签"),
     ("hello-maui-app-api20.hap",
-     "API 20 波段（min=target=60000020，Release）：给 API 20 设备"),
+     "API 20 波段（min=target=60000020，Release）：给 API 20 设备；自签名，设备会拒绝，需要重签"),
     ("hello-maui-app-api20-permissions.hap",
-     "API 20 波段 + 蓝牙/打印/联系人/日历权限"),
+     "API 20 波段 + 蓝牙/打印/联系人/日历权限；自签名，设备会拒绝，需要重签"),
     ("hello-maui-app-unsigned.hap",
-     "未签名（与默认包同一负载）：按 自签说明.md 用你自己的自动签名安装"),
+     "未签名（与默认包同一负载）：本包唯一可重签安装的变体，按 自签说明.md 用你自己的自动签名安装"),
 ]
 fail = 0
 bundles = []
@@ -330,9 +335,15 @@ else
 fi
 
 log "== 3/4 安装方式"
+if [ -f 目标设备.txt ]; then
+    log "   ★ 本包为预签包：全部 hap 已按 目标设备.txt 的 UDID 预签，可直接安装（其他设备仍被拒 9568344）"
+else
+    log "   ★ 警告：包内 4 个默认 hap 为【自签名】（仅绑定我方示例 UDID），真机安装会报 9568257/9568344 被拒；必须重签（自签说明.md，签 hello-maui-app-unsigned.hap）或改用发布方预签包"
+fi
 log "   文件管理器：把 hap 拷到设备后在文件管理器中打开 → 按提示安装（需开发者模式/允许调试与外部来源安装）"
-log "   hdc：hdc list targets && hdc install hello-maui-app.hap"
+log "   hdc：hdc list targets && hdc install <重签后的 hap>"
 log "        启动：hdc shell aa start -a EntryAbility -b $KIT_BUNDLE（bundle 以上方 bundle= 行为准）"
+log "   报 9568257 fail to verify pkcs7 file：自签名包的预期拒绝（见 签名说明.txt）—— 先重签再装"
 log "   报 9568344 install parse profile prop check error：调试 profile 只绑了示例设备 UDID"
 log "        二选一：① 按 自签说明.md 用你自己的 DevEco 自动签名；② 回传 UDID（hdc shell bm get -u）由签名方重签"
 log "   设备策略报 E00C001 Operation restricted by the organization → 该设备关闭了 hdc，改用文件管理器安装"
