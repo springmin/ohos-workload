@@ -294,7 +294,7 @@ OpenHarmony MAUI 设备测试包 — 签名说明（务必先读）
      hello-maui-app-unsigned.hap（与默认包同一负载）
    → 用你自己的华为账号自动签名（完整步骤见 自签说明.md）；签名后的 hap 绑定你的证书与 UDID，
      才能在你的设备上安装。一行示例（路径/密码换成你的）：
-       hap-sign-tool sign-app -keyAlias debugKey -signAlg SHA256withECDSA -mode localSign \
+       hap-sign-tool sign-app -keyAlias debugKey -signAlg SHA256withECDSA -mode localSign -signCode 1 \
          -appCertFile <你的>.cer -profileFile <你的>.p7b \
          -inFile hello-maui-app-unsigned.hap -outFile hello-maui-app-yourself.hap \
          -keystoreFile <你的>.p12 -keyPwd "<key密码>" -keystorePwd "<store密码>"

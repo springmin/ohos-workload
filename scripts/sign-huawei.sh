@@ -157,7 +157,7 @@ if [ "$MODE" = 1 ]; then
 else
   set -- -keyPwd "$PW" -keystorePwd "$PW"
 fi
-run_tool sign-app -keyAlias debugKey -signAlg SHA256withECDSA -mode localSign \
+run_tool sign-app -keyAlias debugKey -signAlg SHA256withECDSA -mode localSign -signCode 1 \
   -appCertFile "$CER" -profileFile "$P7B" -inFile "$IN" -outFile "$OUT" \
   -keystoreFile "$P12" "$@"
 T=$(dirname "$OUT")
