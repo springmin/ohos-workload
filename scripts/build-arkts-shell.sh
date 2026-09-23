@@ -1,53 +1,24 @@
 #!/bin/sh
-# Builds the ArkTS shell (ability + ArkUI page) with the OFFICIAL hvigor toolchain and
-# writes dist/ets/modules.abc. The packaging then consumes it with:
-#   dotnet publish ... -p:OpenHarmonyUIPage=pages/Index \
-#                      -p:OpenHarmonyArktsModulesAbc=$PWD/dist/ets/modules.abc
+# Builds the ArkTS shell (ability + ArkUI page) with the official hvigor toolchain and writes
+# dist/ets/modules.abc; packaging consumes it via -p:OpenHarmonyArktsModulesAbc together with
+# -p:OpenHarmonyUIPage (see the OpenHarmonyUIPage packing doc).
 #
-# No DevEco Studio is required: hvigor and the ohos plugin are installed from the Huawei
-# npm mirror (HVIGOR_MIRROR), and the SDK is exposed to hvigor through a version-nested
-# symlink root (hvigor expects <sdkRoot>/<platformVersion>/<component>). Both tarballs are
-# pinned by sha256 (HVIGOR_SHA256 / HVIGOR_OHOS_PLUGIN_SHA256) and verified on download and
-# before a cached one is unpacked: node executes hvigor.js, so a poisoned mirror or cache
-# must fail the build instead (see section 1). The member list is vetted too (absolute paths
-# and `..` components are refused before the first extraction); `--check-tgz <file>` exposes
-# that gate without unpacking, and scripts/selftest-build-arkts-shell.sh drives its negative
-# cases (the `../` tar-slip residual from the A2 review).
+# No DevEco Studio: hvigor and its ohos plugin come from the Huawei npm mirror
+# (HVIGOR_MIRROR), pinned by sha256 (HVIGOR_SHA256 / HVIGOR_OHOS_PLUGIN_SHA256) and unpacked
+# only after the member list passes the tar-slip gate (section 1; --check-tgz exposes it and
+# scripts/selftest-build-arkts-shell.sh drives its negative cases). The SDK is exposed through
+# a version-nested symlink root. Requirements: node >= 18, an OpenHarmony SDK (OHOS_SDK_ROOT
+# or the harmonybrew default); re-exec under bash when hvigor would abort under toybox sh.
 #
-# Requirements: node >= 18, an OpenHarmony SDK (OHOS_SDK_ROOT or the harmonybrew default).
-# hvigor aborts with a V8 fatal when driven from the device's toybox sh; re-exec under
-# bash when available.
+# useNormalizedOHMUrl stays false: the device resolves the ability entry as
+# <bundleName>/<moduleName>/ets/entryability/EntryAbility against the abc record names, so the
+# non-normalized build carries the HAP's bundle name (ARKTS_SHELL_BUNDLE_NAME / KIT_BUNDLE_NAME;
+# default com.example.hellomauiapp). The normalized records need pkgContextInfo.json, which the
+# HAP does not ship yet (RH1, 2026-09-23); the scaffold note below has the full story.
 #
-# useNormalizedOHMUrl=false: the device resolves the ability entry point as
-#   <bundleName>/<moduleName>/ets/entryability/EntryAbility
-# and matches it against the abc record names, so the non-normalized build carries the
-# bundle name of the HAP it is packaged into (override with ARKTS_SHELL_BUNDLE_NAME /
-# KIT_BUNDLE_NAME; default com.example.hellomauiapp).
-#
-# RH1 tested useNormalizedOHMUrl=true (2026-09-23): the emitted so import becomes
-# '@normalized:Y&&&libopenharmonyhost.so&' (the known-working reference-app shape), but the
-# entry record becomes '&entry/src/main/ets/entryability/EntryAbility&' - byte-identical in
-# shape to the pre-PA1 abc whose entry the device refused ("Cannot find module
-# 'ets/entryability/EntryAbility' , which is application Entry Point", kit #9), and the
-# normalized records do not embed the bundle name at all, so PA1's bundle-name fix cannot be
-# what made an older normalized attempt fail. The ArkTS VM only enters normalized mode when
-# the HAP ships pkgContextInfo.json (EcmaVM::IsNormalizedOhmUrlPack() is 'pkgContextInfoList
-# not empty'), and this workload's HAP packaging (module.json + ets/modules.abc + libs) does
-# not include that file yet, so a normalized abc would regress the entry. Keep the switch off
-# until pkgContextInfo.json rides along; the host library now registers the bare name AND the
-# file name (src/OpenHarmonyHost/host_napi.cpp), so a future normalized build binds either way.
-#
-# abc version: the device's ArkTS runtime (HarmonyOS 7.0.0.105) rejects the 24.0.0.0 abc
-# the SDK 26.0.0.18 toolchain emits by default ("export objects of native so is undefined",
-# exit 254); a known-good app on the same device ships 13.0.1.0. hvigor/ets-loader forwards
-# the project's compatibleSdkVersion to `es2abc --target-api-version` (see the SDK's
-# ets-loader/lib/fast_build/ark_compiler/module/module_mode.js), and this SDK maps
-# 18|20 -> 13.0.1.0, 13..16 -> 12.0.6.0, >=24 -> 24.0.0.0. The script therefore keeps
-# compileSdkVersion/targetSdkVersion on the installed platform but sets compatibleSdkVersion
-# to ARKTS_COMPATIBLE_SDK_VERSION (default 18). The emitted version is read back from the
-# abc header (one byte per component at offset 0x0c: magic 8 B, adler32 4 B) and must not
-# exceed ARKTS_MAX_BC_VERSION (default 13.0.1.0); override the latter to build for a newer
-# device runtime.
+# abc version: the SDK 26 default 24.0.0.0 is rejected by the device runtime; compatibleSdkVersion
+# 18 makes es2abc emit 13.0.1.0. The emitted version is read back from the abc header and must not
+# exceed ARKTS_MAX_BC_VERSION (default 13.0.1.0); raise it with ARKTS_COMPATIBLE_SDK_VERSION.
 if [ -z "${BASH_VERSION:-}" ] && command -v bash >/dev/null 2>&1; then
     exec bash "$0" "$@"
 fi

@@ -1,39 +1,20 @@
 #!/bin/sh
-# Local preflight for the ohos-workload repository: runs the same four gates CI runs, with a
-# clear PASS/FAIL/SKIP per step and a summary at the end.
+# Local preflight for ohos-workload: the four CI gates, with a PASS/FAIL/SKIP per step and a
+# summary at the end.
+#   1. sh -n over scripts/*.sh
+#   2. markdownlint-cli2@0.23.3 (skipped when npx is missing)
+#   3. interaction suite, test/maui-platform-verify: rebuilt from this tree before it runs; its
+#      own "[suite] checks=... floor=... assert=True" line is the only floor (no fallback
+#      literal), so a stale harness fails loudly instead of checking an old threshold
+#   4. pixel suite, test/headless-render: requires "PIXEL ASSERTIONS PASSED"
 #
-#   1. sh -n over scripts/*.sh                            (shell syntax of every repo script)
-#   2. npx --yes markdownlint-cli2@0.23.3                 (.github/workflows/markdownlint.yml)
-#   3. interaction suite, test/maui-platform-verify:      (.github/workflows/interaction-regression.yml)
-#        dotnet build -m:1 + run bin/Debug/net11.0/verify.dll
-#        requires exit 0, the suite's own "[suite] checks=... floor=... assert=True" contract
-#        line (the floor is declared once in Program.cs; this script must not repeat a literal),
-#        a grep count matching the suite-reported count, no "Unhandled" line, and both perf
-#        markers (frame-path + a11y publish-path) reporting within=True
-#   4. pixel suite, test/headless-render:                 (.github/workflows/pixel-regression.yml)
-#        dotnet run -c Release, requires "PIXEL ASSERTIONS PASSED"
-#
-# The interaction suite is rebuilt from this working tree before it runs, so an older harness
-# without the [suite] line makes the gate fail with a clear message instead of silently checking
-# a stale threshold; there is deliberately no fallback literal.
-#
-# The suites need the build prerequisites CI materialises first (it checks out springmin/maui-ohos
-# and builds the two hosting assemblies in Release); this script assumes the development machine
-# already has them, but checks their usual locations and prints the commands when they are missing.
+# The suites need the Release hosting assemblies CI builds first; this script checks their
+# usual locations and prints the build commands when they are missing.
 #
 # Usage: scripts/preflight.sh [--skip-lint] [--skip-interaction] [--skip-pixel] [--quick]
-#
-#   --skip-lint         skip step 2 (markdownlint; also skipped when npx is not installed)
-#   --skip-interaction  skip the test/maui-platform-verify suite
-#   --skip-pixel        skip the test/headless-render suite
-#   --quick             skip both suites (the fast gates: sh -n + markdownlint)
-#
-# Env: DOTNET (dotnet host, default: dotnet), PREFLIGHT_LOG_DIR (default: a fresh mktemp -d;
-#      falls back to /data/storage/el2/base/tmp/opencode/preflight.<pid>). Logs are kept for
-#      inspection and the path is printed at the start.
-#
+#   --skip-* narrows the run (--quick = both suites skipped); never use it to hide a failure.
+# Env: DOTNET (default: dotnet), PREFLIGHT_LOG_DIR (logs are kept and the path is printed).
 # Exit code: 0 = every non-skipped step passed; 1 = at least one step failed; 2 = bad usage.
-# Arguments missing? Run with --skip-* to narrow, never to hide a failure.
 set -u
 
 log()  { printf '[%s] %s\n' "$(date '+%H:%M:%S')" "$*"; }
