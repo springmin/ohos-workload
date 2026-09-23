@@ -5530,12 +5530,14 @@ catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
 // and would swamp the managed frame path and the suite's time budget. A detached tree keeps
 // Render's managed work (measure/arrange, traversal, accessibility) plus the renderer-level
 // canvas calls - the same shape the deep-tree fuzz section uses.
-//   * alloc/frame <= 291,456 B - the fixed tree allocates 72,864 B/frame on this host and
-//     72,056 B/frame on the CI runner after the FIX-P2 allocation work (same Debug codegen,
-//     within 1.1%), so 4x that is the allocation gate; a storm of the kind FIX-P2 removed
-//     (per-frame a11y shadow-tree rebuilds, animation snapshots) lands far above it. The
-//     allocation delta is deterministic per code path (14,572,800 B total on every run here),
-//     so this gate needs none of the slack the wall-clock budgets carry.
+//   * alloc/frame <= 218,592 B - the allocation gate: 3x the post-FIX-P2 baseline (72,864 B/frame
+//     on this host, 72,080-72,056 B/frame on the CI runner - the same Debug codegen within 1.1%).
+//     That is the lower end of the review's suggested 3-4x band, chosen so the measured
+//     pre-FIX-P2 storm (241,688 B/frame = 3.3x) trips it instead of sitting under a 4x ceiling.
+//     The delta is deterministic per code path (14,572,800 B total on every local run,
+//     14,416,000 B on CI), so unlike the wall-clock budgets this gate needs no noise slack; if a
+//     legitimate baseline growth lands near it, raise the constant deliberately rather than
+//     loosening the check silently.
 //   * jitter (p95/avg) <= 2.0 - the frame-to-frame stability gate. The raw max/avg (bounded by
 //     the loose 100x outlier guard above) is not a stable signal on a loaded shared host: a
 //     single preempted frame measured 3.4x here while the frame path was healthy, and the
@@ -5549,7 +5551,7 @@ const double perfAverageCeilingMs = 20.0;
 const double perfMaxCeilingMs = 250.0;
 const double perfMaxAverageRatio = 100.0;
 const double perfJitterCeiling = 2.0;
-const double perfAllocPerFrameCeiling = 291_456.0;
+const double perfAllocPerFrameCeiling = 218_592.0;
 var perfDefaultCanvasFactory = OpenHarmonyWindowRenderer.CanvasFactory;
 OpenHarmonyWindowRenderer.CanvasFactory = () => new PerfCanvas();
 var perfRenderer = new OpenHarmonyWindowRenderer();

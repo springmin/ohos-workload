@@ -114,13 +114,14 @@ because they are the regression signals the loose ceilings miss:
   instead (robust to one or two preempted frames, still catching a sustained regression where at
   least one frame in twenty - or every frame - gets slower). Measured: 1.08x on CI, 1.3-1.7x on
   the dev host (idle and loaded), so 2x keeps a documented margin.
-- `alloc/frame <= 291,456 B` - the allocation gate, 4x the post-FIX-P2 baseline (72,864 B/frame on
-  the dev host, 72,056 B/frame on CI - the same Debug codegen within 1.1%); the delta is
-  deterministic per code path (14,572,800 B total on every local run), so unlike the wall-clock
-  budgets it needs no noise slack. It fails the class of regression the pre-FIX-P2 measurements
-  showed (per-frame accessibility shadow-tree rebuilds, animation snapshots) as soon as a frame
-  path starts allocating a storm; a future, leaner baseline should tighten it deliberately (see
-  the constant comment in `Program.cs`).
+- `alloc/frame <= 218,592 B` - the allocation gate, 3x the post-FIX-P2 baseline (72,864 B/frame
+  on the dev host, 72,080-72,056 B/frame on CI - the same Debug codegen within 1.1%). It is the
+  lower end of the review's suggested 3-4x band, chosen so the measured pre-FIX-P2 storm
+  (241,688 B/frame = 3.3x: per-frame accessibility shadow-tree rebuilds plus animation snapshots)
+  trips it; a 4x ceiling would have let that exact regression back in. The delta is deterministic
+  per code path (14,572,800 B total on every local run, 14,416,000 B on CI), so unlike the
+  wall-clock budgets it needs no noise slack; if a legitimate baseline growth lands near the
+  ceiling, raise the constant deliberately (see the constant comment in `Program.cs`).
 
 The suite then measures the accessibility publish path over the same fixed tree: 8 warm-up and 50
 timed unchanged frames (the skip path), followed by 8 warm-up and 50 timed frames whose label text
