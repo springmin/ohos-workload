@@ -682,9 +682,18 @@ public static class OpenHarmonyBridge
         }
     }
 
+    /// <summary>Bytes of the status file tail read back when the file must be trimmed.</summary>
+    private const int StatusTrimTailBytes = 64 * 1024;
+
     /// <summary>
-    /// Keeps dotnet-status.txt bounded: once it grew past the cap, the newest whole lines that
-    /// fit are kept and the oldest ones are dropped (recent diagnostics are the useful ones).
+    /// Keeps dotnet-status.txt bounded: once it grew past the cap, the newest whole lines are
+    /// kept and the oldest ones are dropped (recent diagnostics are the useful ones).
+    /// Only the file tail is read back and rewritten. One status line is capped by
+    /// <see cref="StatusMessageMaxChars"/> (a few KiB), so the newest line always sits whole
+    /// inside the tail, and the rewrite starts after the first newline in it: the (possibly
+    /// partial) line the tail cuts into is dropped with everything older. The rewrite also
+    /// leaves the file far below the cap, so the next lines are plain appends until it
+    /// crosses the cap again, instead of a full rebuild after every single line.
     /// </summary>
     private static void TrimStatusFile(string path)
     {
@@ -693,6 +702,52 @@ public static class OpenHarmonyBridge
         {
             return;
         }
+
+        long length = info.Length;
+        int tailLength = (int)Math.Min(length, StatusTrimTailBytes);
+        byte[] tail = new byte[tailLength];
+        int read = 0;
+        using (var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite))
+        {
+            stream.Seek(length - tailLength, SeekOrigin.Begin);
+            while (read < tailLength)
+            {
+                int count = stream.Read(tail, read, tailLength - read);
+                if (count <= 0)
+                {
+                    break;
+                }
+                read += count;
+            }
+        }
+
+        int firstNewline = Array.IndexOf(tail, (byte)'\n', 0, read);
+        if (firstNewline < 0 || firstNewline + 1 >= read)
+        {
+            // No whole line inside the tail (only an oversized line written before the
+            // per-message cap existed): fall back to the full rebuild, which trims it from
+            // the front and restores the cap.
+            TrimStatusFileFull(path);
+            return;
+        }
+
+        int keepStart = firstNewline + 1;
+        int keepLength = read - keepStart;
+        using (var stream = new FileStream(path, FileMode.Open, FileAccess.Write, FileShare.Read))
+        {
+            stream.Seek(0, SeekOrigin.Begin);
+            stream.Write(tail, keepStart, keepLength);
+            stream.SetLength(keepLength);
+        }
+    }
+
+    /// <summary>
+    /// Full-file trim, kept for the tail case above: reads every line, keeps the newest whole
+    /// lines that fit the cap and rewrites the file. Its output line format is the same as
+    /// <see cref="WriteStatus"/> writes (one message per line, '\n' terminated).
+    /// </summary>
+    private static void TrimStatusFileFull(string path)
+    {
         string[] lines = File.ReadAllLines(path);
         var keep = new List<string>();
         int keptBytes = 0;
