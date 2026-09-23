@@ -4654,6 +4654,228 @@ if (!n18PjOk)
     throw new InvalidOperationException($"the PJ1/PJ2 contract drifted: pj1={n18Pj1Ok} pj2={n18Pj2Ok}");
 }
 
+// ---- PI1/PI2/RB pins: the newest slice surfaces with zero source-contract coverage -------------
+// The PI1 real-bug fixes, the PI2 additions and the RB review-compliance artifacts are newer than
+// the audit-batch-2 pins above, so each surface gets its own source contract here (one [verify]
+// line per surface, parsing the committed sources in the same style as the pins above).
+
+// PI1-1: the app-package root. FileSystem resolves packaged files against
+// OpenHarmonyPaths.AppPackageDirectory (the context's AppDir = the extracted dotnet.zip payload)
+// instead of the data directory, and the property falls back to the data directory when no host
+// AppDir is published.
+string? n19FsPath = FindHostSource("OpenHarmonyFileSystem.cs");
+string n19Fs = n19FsPath is null ? string.Empty : File.ReadAllText(n19FsPath);
+string? n19PathsPath = FindHostSource("OpenHarmonyPaths.cs");
+string n19Paths = n19PathsPath is null ? string.Empty : File.ReadAllText(n19PathsPath);
+bool n19FsOk = n19Fs.Contains("string path = Path.Combine(OpenHarmonyPaths.AppPackageDirectory, filename);") &&
+    n19Fs.Contains("return Task.FromResult(File.Exists(Path.Combine(OpenHarmonyPaths.AppPackageDirectory, filename)));") &&
+    n19Fs.Contains("throw new FileNotFoundException($\"App package file '{filename}' was not found.\", path);") &&
+    !n19Fs.Contains("Path.Combine(OpenHarmonyPaths.DataDirectory, filename)");
+bool n19PathsOk = n19Paths.Contains("public static string AppPackageDirectory") &&
+    n19Paths.Contains("string? appDir = OpenHarmonyBridge.Context?.AppDir;") &&
+    n19Paths.Contains("return appDir;");
+bool n19AppPackageOk = n19FsOk && n19PathsOk;
+Console.WriteLine($"[verify] pi1 apppackage filesystem={n19FsOk} paths={n19PathsOk} source='{n19FsPath ?? "<missing>"}' assert={n19AppPackageOk}");
+if (!n19AppPackageOk)
+{
+    throw new InvalidOperationException(
+        $"the PI1 app-package root contract drifted: fileSystem={n19FsOk} paths={n19PathsOk}");
+}
+
+// PI1-2: the shell's Create=0 send plus the host's pre-Run completion. All three shell templates
+// send LIFECYCLE_CREATE (0) from both entry-ability variants and the page shell sends 0 before
+// its Foreground (2); the app host records a Create that arrived before Run and completes the
+// window activation when the window exists.
+bool n20CreateSendOk = true;
+foreach (string n20Version in b3ShellVersions)
+{
+    string n20Shell = ShellSource(n20Version);
+    int n20IndexCreateAt = n20Shell.IndexOf("host.notifyLifecycle(0);", StringComparison.Ordinal);
+    int n20IndexForegroundAt = n20Shell.IndexOf("host.notifyLifecycle(2);", StringComparison.Ordinal);
+    n20CreateSendOk &= n20IndexCreateAt >= 0 && n20IndexForegroundAt > n20IndexCreateAt;
+    foreach (string n20Ability in new[] { "EntryAbility.ets", "EntryAbility.ui.ets" })
+    {
+        string? n20AbilityPath = FindHostSource(
+            $"packs/Microsoft.OpenHarmony.Sdk/{n20Version}/templates/ets/entryability/{n20Ability}");
+        string n20AbilityText = n20AbilityPath is null ? string.Empty : File.ReadAllText(n20AbilityPath);
+        n20CreateSendOk &= n20AbilityText.Contains("const LIFECYCLE_CREATE = 0;") &&
+            n20AbilityText.Contains("host.notifyLifecycle(LIFECYCLE_CREATE);");
+    }
+}
+bool n20HostCreateOk = n11AppHost.Contains("private bool _createReceived;") &&
+    n11AppHost.Contains("_createReceived = true;") &&
+    n11AppHost.Contains("if (_createReceived)\n        {\n            EnsureWindowActivated();\n        }");
+bool n20CreateOk = n20CreateSendOk && n20HostCreateOk;
+Console.WriteLine($"[verify] pi1 create templates={n20CreateSendOk} hostPreRun={n20HostCreateOk} source='{n11AppHostPath ?? "<missing>"}' assert={n20CreateOk}");
+if (!n20CreateOk)
+{
+    throw new InvalidOperationException(
+        $"the PI1 Create=0 / pre-Run activation contract drifted: templates={n20CreateSendOk} hostPreRun={n20HostCreateOk}");
+}
+
+// PI1-3: the CarouselView grouping flatten. CarouselView has no group concept, so a grouped
+// ItemsSource (every element a collection) is materialised to its items with a one-time status
+// note, and the page indicator counts the same materialised slides.
+string? n21CarouselPath = FindHostSource("OpenHarmonyCarouselViewHandler.cs");
+string n21Carousel = n21CarouselPath is null ? string.Empty : File.ReadAllText(n21CarouselPath);
+string? n21RendererPath = FindHostSource("OpenHarmonyWindowRenderer.cs");
+string n21Renderer = n21RendererPath is null ? string.Empty : File.ReadAllText(n21RendererPath);
+bool n21FlattenOk = n21Carousel.Contains("internal static List<object?> MaterializeItems(ItemsView itemsView)") &&
+    n21Carousel.Contains("if (items.Count == 0 || !items.All(IsGroup))") &&
+    n21Carousel.Contains("OpenHarmonyStatus.Once(\"carousel.grouped\",") &&
+    n21Carousel.Contains("private static bool IsGroup(object? item)") &&
+    n21Carousel.Contains("=> item is System.Collections.IEnumerable && item is not string;") &&
+    n21Carousel.Contains("foreach (object? item in (System.Collections.IEnumerable)group!)");
+bool n21IndicatorOk = n21Renderer.Contains("int count = OpenHarmonyCarouselViewHandler.MaterializeItems(view).Count;");
+bool n21CarouselOk = n21FlattenOk && n21IndicatorOk;
+Console.WriteLine($"[verify] pi1 carousel flatten={n21FlattenOk} indicator={n21IndicatorOk} source='{n21CarouselPath ?? "<missing>"}' assert={n21CarouselOk}");
+if (!n21CarouselOk)
+{
+    throw new InvalidOperationException(
+        $"the PI1 carousel grouping contract drifted: flatten={n21FlattenOk} indicator={n21IndicatorOk}");
+}
+
+// PI1-4: the shadow mapper + DrawShadow. The renderer draws each platform view's IShadow through
+// the host canvas shadow layer before the view content, and the ViewMapper Shadow entry (installed
+// with the renderer) requests a redraw so a live shadow change repaints.
+int n22ShadowAt = n21Renderer.IndexOf("platform.DrawShadow(_canvas);", StringComparison.Ordinal);
+int n22DrawAt = n22ShadowAt < 0 ? -1 : n21Renderer.IndexOf("platform.Draw(_canvas);", n22ShadowAt, StringComparison.Ordinal);
+bool n22DrawShadowOk = n18View.Contains("public void DrawShadow(MauiCanvas canvas)") &&
+    n18View.Contains("canvas.SetShadow(new SizeF((float)shadow.Offset.X, (float)shadow.Offset.Y), shadow.Radius,") &&
+    n18View.Contains("Microsoft.OpenHarmony.Hosting.OpenHarmonyCanvas.ClearEffects();") &&
+    n18View.Contains("OpenHarmonyStatus.Once(\"shadow.paint.\" + (paint?.GetType().Name ?? \"null\"),");
+bool n22MapperOk = n18View.Contains("internal static class OpenHarmonyShadow") &&
+    n18View.Contains("mapper[nameof(IView.Shadow)] = (handler, view) =>") &&
+    n18View.Contains("Microsoft.OpenHarmony.Hosting.OpenHarmonyBridge.RequestRedraw();");
+bool n22RendererOk = n22ShadowAt >= 0 && n22DrawAt > n22ShadowAt && n21Renderer.Contains("OpenHarmonyShadow.Install();");
+bool n22ShadowOk = n22DrawShadowOk && n22MapperOk && n22RendererOk;
+Console.WriteLine($"[verify] pi1 shadow draw={n22DrawShadowOk} mapper={n22MapperOk} renderer={n22RendererOk} source='{n18ViewPath ?? "<missing>"}' assert={n22ShadowOk}");
+if (!n22ShadowOk)
+{
+    throw new InvalidOperationException(
+        $"the PI1 shadow contract drifted: draw={n22DrawShadowOk} mapper={n22MapperOk} renderer={n22RendererOk}");
+}
+
+// PI1-5: the SecureStorage file-key fallback note (reported once when HUKS is unavailable).
+string? n23StoragePath = FindHostSource("OpenHarmonySecureStorage.cs");
+string n23Storage = n23StoragePath is null ? string.Empty : File.ReadAllText(n23StoragePath);
+bool n23StorageOk = n23Storage.Contains("OpenHarmonyStatus.Once(\"securestorage.filekey\",") &&
+    n23Storage.Contains("\"secure storage is using the per-install file key: HUKS is unavailable, values are obfuscated but not hardware-backed\");");
+Console.WriteLine($"[verify] pi1 securestorage fallbackNote={n23StorageOk} source='{n23StoragePath ?? "<missing>"}' assert={n23StorageOk}");
+if (!n23StorageOk)
+{
+    throw new InvalidOperationException("the PI1 SecureStorage file-key fallback note contract drifted");
+}
+
+// PI2-1: the platform application object. UseOpenHarmony registers OpenHarmonyMauiApplication plus
+// the IMauiInitializeService shim, and the application publishes IPlatformApplication.Current from
+// its constructor (MauiAppBuilder.Build runs the initializer before the host's Run).
+string? n24ApplicationPath = FindHostSource("OpenHarmonyMauiApplication.cs");
+string n24Application = n24ApplicationPath is null ? string.Empty : File.ReadAllText(n24ApplicationPath);
+bool n24InstallOk = n14Extensions.Contains("builder.Services.AddSingleton<OpenHarmonyMauiApplication>();") &&
+    n14Extensions.Contains("builder.Services.AddSingleton<Microsoft.Maui.Hosting.IMauiInitializeService, OpenHarmonyMauiApplicationInitializer>();");
+bool n24ApplicationOk = n24Application.Contains("public sealed class OpenHarmonyMauiApplication : IPlatformApplication") &&
+    n24Application.Contains("IPlatformApplication.Current = this;") &&
+    n24Application.Contains("public static OpenHarmonyMauiApplication? Instance { get; private set; }") &&
+    n24Application.Contains("internal sealed class OpenHarmonyMauiApplicationInitializer : IMauiInitializeService") &&
+    n24Application.Contains("_ = services.GetRequiredService<OpenHarmonyMauiApplication>();") &&
+    n24Application.Contains("OpenHarmonyWindowOverlayHost.Install();");
+bool n24AppObjectOk = n24InstallOk && n24ApplicationOk;
+Console.WriteLine($"[verify] pi2 appobject install={n24InstallOk} application={n24ApplicationOk} source='{n24ApplicationPath ?? "<missing>"}' assert={n24AppObjectOk}");
+if (!n24AppObjectOk)
+{
+    throw new InvalidOperationException(
+        $"the PI2 platform-application contract drifted: install={n24InstallOk} application={n24ApplicationOk}");
+}
+
+// PI2-2: the window-overlay host. The host chains the renderer's existing SurfacePresent seam
+// (draw the visible, initialized overlays, then the previous hook or the hosting present), and
+// OpenHarmonyWindowOverlay registers/unregisters through Initialize/Deinitialize.
+string? n25OverlayPath = FindHostSource("OpenHarmonyWindowOverlay.cs");
+string n25Overlay = n25OverlayPath is null ? string.Empty : File.ReadAllText(n25OverlayPath);
+bool n25OverlayClassOk = n25Overlay.Contains("public class OpenHarmonyWindowOverlay : IWindowOverlay") &&
+    n25Overlay.Contains("OpenHarmonyWindowOverlayHost.Register(this);") &&
+    n25Overlay.Contains("OpenHarmonyWindowOverlayHost.Unregister(this);");
+bool n25ChainOk = n25Overlay.Contains("internal static class OpenHarmonyWindowOverlayHost") &&
+    n25Overlay.Contains("s_presentPrevious = OpenHarmonyWindowRenderer.SurfacePresent;") &&
+    n25Overlay.Contains("OpenHarmonyWindowRenderer.SurfacePresent = s_presentDelegate;") &&
+    n25Overlay.Contains("s_presentPrevious is { } previous") &&
+    n25Overlay.Contains("HostCanvas.Present();");
+bool n25OverlayDrawOk = n25Overlay.Contains("overlay.Draw(canvas, rect);") && n25Overlay.Contains("Draws++;");
+bool n25OverlayOk = n25OverlayClassOk && n25ChainOk && n25OverlayDrawOk;
+Console.WriteLine($"[verify] pi2 overlay class={n25OverlayClassOk} chain={n25ChainOk} draw={n25OverlayDrawOk} source='{n25OverlayPath ?? "<missing>"}' assert={n25OverlayOk}");
+if (!n25OverlayOk)
+{
+    throw new InvalidOperationException(
+        $"the PI2 window-overlay contract drifted: class={n25OverlayClassOk} chain={n25ChainOk} draw={n25OverlayDrawOk}");
+}
+
+// RB-1: the OpenHarmony TFM gating. MultiTargeting.targets removes the slice for every
+// non-OpenHarmony TFM and defines OPENHARMONY for the OpenHarmony TFM; Core.csproj wires the
+// graphics-backend reference the ref pack does not carry inside the OpenHarmony-only block.
+string? n26MultiPath = FindHostSource("src/MultiTargeting.targets");
+string n26Multi = n26MultiPath is null ? string.Empty : File.ReadAllText(n26MultiPath);
+string? n26CorePath = FindHostSource("src/Core/src/Core.csproj");
+string n26Core = n26CorePath is null ? string.Empty : File.ReadAllText(n26CorePath);
+bool n26RemoveOk = n26Multi.Contains("<ItemGroup Condition=\" '$(_MauiTargetPlatformIsOpenHarmony)' != 'True' \">") &&
+    n26Multi.Contains("<Compile Remove=\"**\\OpenHarmony\\**\\*.cs\" />") &&
+    n26Multi.Contains("<None Include=\"**\\OpenHarmony\\**\\*.cs\" Exclude=\"$(DefaultItemExcludes);$(DefaultExcludesInProjectFolder)\" />");
+bool n26DefineOk = n26Multi.Contains("<PropertyGroup Condition=\" '$(_MauiTargetPlatformIsOpenHarmony)' == 'True' \">") &&
+    n26Multi.Contains("<DefineConstants>$(DefineConstants);OPENHARMONY</DefineConstants>");
+bool n26CoreOk = n26Core.Contains("<PropertyGroup Condition=\"$(TargetFramework.Contains('-openharmony'))\">") &&
+    n26Core.Contains("<OpenHarmonyGraphicsAssembly Condition=\" '$(OpenHarmonyGraphicsAssembly)' == '' \">") &&
+    n26Core.Contains("<Reference Include=\"Microsoft.OpenHarmony.Maui.Graphics\">");
+bool n26TfmOk = n26RemoveOk && n26DefineOk && n26CoreOk;
+Console.WriteLine($"[verify] rb tfm remove={n26RemoveOk} define={n26DefineOk} core={n26CoreOk} source='{n26MultiPath ?? "<missing>"}' assert={n26TfmOk}");
+if (!n26TfmOk)
+{
+    throw new InvalidOperationException(
+        $"the RB TFM-gating contract drifted: remove={n26RemoveOk} define={n26DefineOk} core={n26CoreOk}");
+}
+
+// RB-2: the net-openharmony public API baseline exists with its header and carries the PI2 types.
+string? n27ShippedPath = FindHostSource("src/Core/src/PublicAPI/net-openharmony/PublicAPI.Shipped.txt");
+string? n27UnshippedPath = FindHostSource("src/Core/src/PublicAPI/net-openharmony/PublicAPI.Unshipped.txt");
+string n27Shipped = n27ShippedPath is null ? string.Empty : File.ReadAllText(n27ShippedPath);
+string n27Unshipped = n27UnshippedPath is null ? string.Empty : File.ReadAllText(n27UnshippedPath);
+bool n27ExistsOk = n27ShippedPath is not null && n27UnshippedPath is not null &&
+    n27Shipped.StartsWith("#nullable enable", StringComparison.Ordinal) &&
+    n27Unshipped.StartsWith("#nullable enable", StringComparison.Ordinal);
+bool n27SurfaceOk = n27Unshipped.Contains("Microsoft.Maui.Platform.OpenHarmonyMauiApplication") &&
+    n27Unshipped.Contains("Microsoft.Maui.Platform.OpenHarmonyWindowOverlay");
+bool n27ApiOk = n27ExistsOk && n27SurfaceOk;
+Console.WriteLine($"[verify] rb publicapi exists={n27ExistsOk} surface={n27SurfaceOk} source='{n27UnshippedPath ?? "<missing>"}' assert={n27ApiOk}");
+if (!n27ApiOk)
+{
+    throw new InvalidOperationException(
+        $"the RB public-API baseline contract drifted: exists={n27ExistsOk} surface={n27SurfaceOk}");
+}
+
+// RB-3: the SupportedPlatform declaration in this repository's Directory.Build.props (the CA1418
+// fix: one declaration for every project instead of per-project NoWarn suppressions).
+string? n28PropsPath = FindHostSource("Directory.Build.props");
+string n28Props = n28PropsPath is null ? string.Empty : File.ReadAllText(n28PropsPath);
+bool n28PropsOk = n28Props.Contains("<SupportedPlatform Include=\"openharmony\" />") &&
+    n28Props.Contains("it once for every project (the SDK's SupportedPlatform pattern)");
+Console.WriteLine($"[verify] rb supportedplatform declared={n28PropsOk} source='{n28PropsPath ?? "<missing>"}' assert={n28PropsOk}");
+if (!n28PropsOk)
+{
+    throw new InvalidOperationException("the RB SupportedPlatform declaration contract drifted");
+}
+
+// RB-4: the frozen native ABI comment in the slice's standalone csproj.
+string? n29SlicePath = FindHostSource("Microsoft.Maui.Platform.OpenHarmony.csproj");
+string n29Slice = n29SlicePath is null ? string.Empty : File.ReadAllText(n29SlicePath);
+bool n29FreezeOk = n29Slice.Contains("ABI freeze (R5):") &&
+    n29Slice.Contains("frozen compatibility surface") &&
+    n29Slice.Contains("ohos_host_*") &&
+    n29Slice.Contains("OHOS_HOST_APP_CONTEXT");
+Console.WriteLine($"[verify] rb frozenabi comment={n29FreezeOk} source='{n29SlicePath ?? "<missing>"}' assert={n29FreezeOk}");
+if (!n29FreezeOk)
+{
+    throw new InvalidOperationException("the RB frozen-ABI comment contract drifted");
+}
+
 // ---- PG2: packaging/host invariants (staged runtime libs, libc++, bridge, host guard) ----------
 // The "runtime natives ship only in the signed libs/<abi>/" increment relies on four invariants
 // that this section pins to the committed sources, so a regression fails this off-device run

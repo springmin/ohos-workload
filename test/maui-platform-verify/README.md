@@ -1,6 +1,6 @@
 # Interaction regression suite (headless)
 
-The MAUI-on-OpenHarmony interaction harness (284 interaction checks, a 4-line fuzz tail, a
+The MAUI-on-OpenHarmony interaction harness (295 interaction checks, a 4-line fuzz tail, a
 frame-path performance budget and an accessibility publish-path budget). It builds the platform
 slice sources from the
 `maui-ohos` working tree and drives the app host without a device: touch/drag/pinch/pointer input,
@@ -26,7 +26,11 @@ on-demand app-context publish (V8: native/NAPI/shell-template checks plus an off
 of the managed bridge's surface-replay seam), and the PG2 packaging/host invariants (the runtime
 natives staged into the signed `libs/<abi>/` with their `dotnet.zip` exclusion, the
 `libc++_shared` staging + re-sign pass, the host's `libs/<abi>/` -> app-dir symlink bridge and
-the build-host `DT_NEEDED libhostfxr` guard). Before the fuzz tail
+the build-host `DT_NEEDED libhostfxr` guard), plus the PI1/PI2/RB batch (the app-package root,
+the Create=0 send + pre-Run activation, the carousel grouping flatten, the shadow mapper/
+`DrawShadow`, the SecureStorage fallback note, the platform application object, the window-overlay
+host and the TFM gating / public-API baseline / `SupportedPlatform` / frozen-ABI review
+artifacts). Before the fuzz tail
 it runs a frame-path performance budget (warm-up plus 200 timed
 `OpenHarmonyWindowRenderer.Render` frames over a fixed 401-node tree, reporting
 average/p50/p95/max frame time and the managed allocation delta) and an accessibility
@@ -41,7 +45,7 @@ below), failing the suite when the (deliberately loose) budgets are exceeded.
 # (or the MauiSliceDir / HostingDll / OpenHarmonyGraphicsDll MSBuild properties) before building
 # elsewhere; an explicit -p: value wins over the environment and the absolute fallbacks.
 dotnet build -v:q
-dotnet bin/Debug/net11.0/verify.dll | grep -c '\[verify\]'   # expect 297 (284 checks + 4 fuzz + 1 frame perf + 8 a11y perf)
+dotnet bin/Debug/net11.0/verify.dll | grep -c '\[verify\]'   # expect 308 (295 checks + 4 fuzz + 1 frame perf + 8 a11y perf)
 ```
 
 The `interaction-regression` workflow (`.github/workflows/interaction-regression.yml`) runs the
@@ -49,7 +53,7 @@ suite on a GitHub runner as a real gate: it checks out this repository plus `spr
 (`feature/openharmony`, the branch carrying `src/Core/src/Platform/OpenHarmony`), builds
 `src/Microsoft.OpenHarmony.Hosting` and `src/Microsoft.OpenHarmony.Maui.Graphics` in Release,
 points `MAUI_SLICE_DIR` / `HOSTING_DLL` / `OPENHARMONY_GRAPHICS_DLL` at those roots, and fails the
-job unless the run exits 0, reports at least 277 `[verify]` lines, both perf lines report
+job unless the run exits 0, reports at least 288 `[verify]` lines, both perf lines report
 `within=True`, and no `Unhandled` line is logged.
 
 ## Fuzz tail
@@ -142,8 +146,8 @@ publish pass (skip/republish).
   blocks codesigned ELF apphosts on some machines).
 - The suite fails loudly (unhandled exception) when a slice change breaks startup or when an
   assertion for the gesture flows (including the drag-and-drop checks) does not hold; keep it at
-  284 checks plus the 4 fuzz lines plus the 1 frame-perf line plus the 8 a11y-perf lines
-  (297 `[verify]` lines) when touching the platform slice.
+  295 checks plus the 4 fuzz lines plus the 1 frame-perf line plus the 8 a11y-perf lines
+  (308 `[verify]` lines) when touching the platform slice.
 - Contacts/calendar coverage: `OpenHarmonyContacts.FindAsync` and
   `OpenHarmonyCalendar.ListUpcomingAsync`/`AddEventAsync` return empty/false without throwing
   off-device and report `IsSupported == false` before and after the call (the permission probe
@@ -380,7 +384,7 @@ publish pass (skip/republish).
     the installed default must complete without throwing when the ability bridge is absent; the
     want kind for single-file sharing is pinned to 3.
 - CI wiring: `.github/workflows/interaction-regression.yml` builds the slice checkout and the
-  hosting assemblies on the runner and gates on the `[verify]` line count (>=277) plus both perf
+  hosting assemblies on the runner and gates on the `[verify]` line count (>=288) plus both perf
   `within=True` markers (see "Running it" above).
 - Accessibility publish-contract coverage (R2b): the suite reflects
   `OpenHarmonyAccessibility.AccessibilityNode` (16 parameters now that hint, range and checked
@@ -469,3 +473,28 @@ publish pass (skip/republish).
   PJ2 (the tooltip manager's `ToolTip` mapper entry + present hook and the keyboard accelerator
   manager's key codes/handler/install). That is 9 lines: 288 + 9 = 297 = 284 interaction checks +
   4 fuzz + 1 frame perf + 8 a11y perf; the workflow floor moves with the total (297 - 20 = 277).
+- PI1/PI2/RB pins (app-package root / Create=0 + pre-Run activation / carousel grouping /
+  shadows / SecureStorage note / platform application / window overlays / TFM gating / public API /
+  SupportedPlatform / frozen ABI): eleven `[verify]` lines for the newest slice surfaces, which
+  had no source-contract coverage when the audit batch-2 pins were written. `pi1 apppackage` pins
+  the FileSystem reads through `OpenHarmonyPaths.AppPackageDirectory` (the context `AppDir`) with
+  the data-directory fallback and the missing-file `FileNotFoundException`. `pi1 create` pins all
+  three templates' `LIFECYCLE_CREATE = 0` send from both entry-ability variants plus the page
+  shell's 0-before-2 order, and the host's `_createReceived` completion of the activation when
+  Create arrived before Run. `pi1 carousel` pins the grouped-ItemsSource flatten
+  (`MaterializeItems`, `IsGroup`, the one-time `carousel.grouped` note) and the indicator counting
+  the same slides. `pi1 shadow` pins `OpenHarmonyView.DrawShadow` (host shadow layer,
+  `ClearEffects`), the `OpenHarmonyShadow` ViewMapper redraw hook and the renderer's
+  `DrawShadow`-before-`Draw` order. `pi1 securestorage` pins the one-time file-key fallback note.
+  `pi2 appobject` pins `OpenHarmonyMauiApplication` (`IPlatformApplication.Current = this`, the
+  service-provider surface) and its `AddSingleton` + `IMauiInitializeService` registration.
+  `pi2 overlay` pins `OpenHarmonyWindowOverlay` (register/unregister in Initialize/Deinitialize)
+  and the host's `SurfacePresent` chaining (previous hook or `HostCanvas.Present`). `rb tfm` pins
+  the OpenHarmony-only `MultiTargeting.targets` remove/define blocks and the Core.csproj
+  `OpenHarmonyGraphicsAssembly` reference. `rb publicapi` pins the existing
+  `src/Core/src/PublicAPI/net-openharmony` Shipped/Unshipped files, their `#nullable enable`
+  header and the two PI2 types in the baseline. `rb supportedplatform` pins the single
+  `<SupportedPlatform Include="openharmony" />` declaration in this repository's
+  Directory.Build.props. `rb frozenabi` pins the `ohos_host_*`/`OHOS_HOST_APP_CONTEXT` ABI-freeze
+  comment. That is 11 lines: 297 + 11 = 308 = 295 interaction checks + 4 fuzz + 1 frame perf +
+  8 a11y perf; the workflow floor moves with the total (308 - 20 = 288).
