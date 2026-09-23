@@ -164,8 +164,9 @@ frames): avg ~3.1-3.5 ms, p50 ~3.0-3.4 ms, p95 ~4.1-4.5 ms, max ~5.0-5.4 ms (raw
 ~10-15x and publish ratios ~80-120x. On a normal CI runner the one remaining native lookup inside
 `Render` is sub-millisecond: the pre-batch runs reported avg ~0.61-0.63 ms, p95 0.65-0.68 ms,
 jitter ~1.08x and 72,056 B/frame, and the a11y block reported ~0.3/0.5 ms for the render step and
-~0.07/0.28 ms for the publish pass (skip/republish); the post-batch job log carries the new CI
-numbers. Every run ends with the `[suite]` contract line
+~0.07/0.28 ms for the publish pass (skip/republish). The post-batch run (commit a10b73e) reported
+avg 0.488 ms, p95 0.698 ms, jitter 1.43x and 3,720 B/frame, i.e. the ceiling is 3.72x the CI
+baseline. Every run ends with the `[suite]` contract line
 (`checks=315 total=315 floor=295 assert=True`), which the workflow and `scripts/preflight.sh`
 parse.
 
