@@ -557,6 +557,14 @@ public static class OpenHarmonyBridge
     }
 
     /// <summary>Raised on every platform frame callback (vsync-aligned rendering tick).</summary>
+    /// <remarks>The handlers stay in the <c>s_frameHandlers</c> delegate field: dispatch
+    /// snapshots it under the lock and then invokes it outside (a list-based dispatch that
+    /// held the bridge lock across application handlers could deadlock against the animation
+    /// loop, which subscribes while holding its own lock, and the hosting audit pins this
+    /// field as the callback seam). Subscribing/unsubscribing next to resident subscribers
+    /// therefore allocates the combined delegate (measured: 96 B with one resident, 208 B with
+    /// two, 0 B when alone, per register/unregister cycle) - a per-gesture cost, not a
+    /// per-frame one.</remarks>
     public static event Action<OpenHarmonyFrameEventArgs>? Frame
     {
         add { lock (s_sync) { s_frameHandlers += value; } }
@@ -1212,16 +1220,24 @@ public static class OpenHarmonyBridge
 
     private static void OnFrameNative(long timestamp, long targetTimestamp)
     {
-        // Frames are the hottest path: the guard below adds no allocation on the normal path.
+        // Frames are the hottest path: with no subscriber (the idle app before the renderer
+        // subscribes, or after it detaches) the callback returns without allocating the
+        // event args; the args are still per-dispatch because OpenHarmonyFrameEventArgs is a
+        // public immutable type a handler may retain (reusing one instance would hand out
+        // stale timestamps; measured at 32 B / 0.09 us per frame, P19).
         try
         {
-            var args = new OpenHarmonyFrameEventArgs(timestamp, targetTimestamp);
             Action<OpenHarmonyFrameEventArgs>? handlers;
             lock (s_sync)
             {
                 handlers = s_frameHandlers;
             }
-            handlers?.Invoke(args);
+            if (handlers is null)
+            {
+                return;
+            }
+            var args = new OpenHarmonyFrameEventArgs(timestamp, targetTimestamp);
+            handlers(args);
         }
         catch (Exception ex)
         {
