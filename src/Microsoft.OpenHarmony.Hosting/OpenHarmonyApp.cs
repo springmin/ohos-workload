@@ -1298,6 +1298,9 @@ public static class OpenHarmonyCanvas
     [DllImport(HostLibrary, EntryPoint = "ohos_host_draw_polyline")]
     private static extern void PolylineNative(float[] xy, int count, int closed, uint argb, int filled, float strokeWidth);
 
+    [DllImport(HostLibrary, EntryPoint = "ohos_host_draw_polyline")]
+    private static extern unsafe void PolylineNativePtr(float* xy, int count, int closed, uint argb, int filled, float strokeWidth);
+
     [DllImport(HostLibrary, EntryPoint = "ohos_host_measure_text", CharSet = CharSet.Ansi)]
     private static extern int MeasureTextNative(string utf8, float size, out int width, out int height);
 
@@ -1314,6 +1317,9 @@ public static class OpenHarmonyCanvas
 
     [DllImport(HostLibrary, EntryPoint = "ohos_host_draw_clip_polyline")]
     private static extern void ClipPolylineNative(float[] xy, int count);
+
+    [DllImport(HostLibrary, EntryPoint = "ohos_host_draw_clip_polyline")]
+    private static extern unsafe void ClipPolylineNativePtr(float* xy, int count);
 
     [DllImport(HostLibrary, EntryPoint = "ohos_host_draw_image_bytes")]
     private static extern int DrawImageBytesNative(byte[] data, int length, float x, float y, float width, float height);
@@ -1370,11 +1376,27 @@ public static class OpenHarmonyCanvas
         try { PolylineNative(xy, xy.Length / 2, closed ? 1 : 0, argb, filled ? 1 : 0, strokeWidth); } catch { }
     }
 
-    /// <summary>Draws an ellipse approximated by a closed polyline.</summary>
+    /// <summary>Draws a polyline/polygon from a packed x,y span. No managed array is
+    /// materialized, so hot primitive paths (rectangles, rounded rectangles, arcs, ellipses)
+    /// stay allocation-free; the points are pinned for the synchronous native call only and
+    /// the host copies them into its path before returning.</summary>
+    public static void Polyline(ReadOnlySpan<float> xy, bool closed, uint argb, bool filled, float strokeWidth = 1f)
+    {
+        int count = xy.Length / 2;
+        unsafe
+        {
+            fixed (float* points = xy)
+            {
+                try { PolylineNativePtr(points, count, closed ? 1 : 0, argb, filled ? 1 : 0, strokeWidth); } catch { }
+            }
+        }
+    }
+
+    /// <summary>Draws an ellipse approximated by a closed polyline (stack buffer, no array).</summary>
     public static void Ellipse(float cx, float cy, float rx, float ry, uint argb, bool filled, float strokeWidth = 1f)
     {
         const int segments = 48;
-        var pts = new float[segments * 2];
+        Span<float> pts = stackalloc float[segments * 2];
         for (int i = 0; i < segments; i++)
         {
             double a = 2 * Math.PI * i / segments;
@@ -1416,6 +1438,20 @@ public static class OpenHarmonyCanvas
     public static void ClipPolyline(float[] xy)
     {
         try { ClipPolylineNative(xy, xy.Length / 2); } catch { }
+    }
+
+    /// <summary>Clips to a polygon from a packed x,y span (same no-array contract as
+    /// <see cref="Polyline(ReadOnlySpan{float}, bool, uint, bool, float)"/>).</summary>
+    public static void ClipPolyline(ReadOnlySpan<float> xy)
+    {
+        int count = xy.Length / 2;
+        unsafe
+        {
+            fixed (float* points = xy)
+            {
+                try { ClipPolylineNativePtr(points, count); } catch { }
+            }
+        }
     }
 
     /// <summary>Decodes PNG/JPEG bytes and draws them into the destination rectangle.</summary>

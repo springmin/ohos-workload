@@ -60,38 +60,46 @@ public class OpenHarmonyCanvas : ICanvas
 
     private Vector2 P(float x, float y) => Vector2.Transform(new Vector2(x, y), _transform);
 
-    private float[] Points(params (float X, float Y)[] points)
+    /// <summary>Transforms one point into a packed x,y pair of a caller-owned span, so the
+    /// primitive draws never build a params tuple array or a per-call float[].</summary>
+    private void WritePoint(Span<float> xy, int index, float x, float y)
     {
-        var xy = new float[points.Length * 2];
-        for (int i = 0; i < points.Length; i++)
-        {
-            Vector2 p = P(points[i].X, points[i].Y);
-            xy[i * 2] = p.X;
-            xy[i * 2 + 1] = p.Y;
-        }
-        return xy;
+        Vector2 p = P(x, y);
+        xy[index * 2] = p.X;
+        xy[index * 2 + 1] = p.Y;
     }
 
-    private void Stroke(float[] xy, bool closed)
+    private void Stroke(ReadOnlySpan<float> xy, bool closed)
         => HostCanvas.Polyline(xy, closed, ToArgb(_strokeColor, _alpha), filled: false, StrokeSize * DisplayScale);
 
-    private void Fill(float[] xy)
+    private void Fill(ReadOnlySpan<float> xy)
         => HostCanvas.Polyline(xy, closed: true, ToArgb(_fillColor, _alpha), filled: true);
 
     // ---------------------------------------------------------------- paths
+    // The flattened polygon is kept in one buffer sized like the last path. A canvas is drawn
+    // on one thread, every caller hands the buffer to a synchronous native call before the next
+    // Flatten() can run, and no application code (pattern callbacks, subclasses) runs in
+    // between, so the reuse cannot alias a live polygon. A path whose point count changes
+    // reallocates once, then repeats at the new size.
+    private float[] _pathXY = Array.Empty<float>();
+
     private float[] Flatten(PathF path)
     {
         // Flatten curves to a polygon the native canvas can stroke/fill in one path.
         PathF flat = path.GetFlattenedPath(0.25f, false);
-        var xy = new float[flat.Count * 2];
+        int floats = flat.Count * 2;
+        if (_pathXY.Length != floats)
+        {
+            _pathXY = new float[floats];
+        }
         for (int i = 0; i < flat.Count; i++)
         {
             PointF point = flat[i];
             Vector2 p = P(point.X, point.Y);
-            xy[i * 2] = p.X;
-            xy[i * 2 + 1] = p.Y;
+            _pathXY[i * 2] = p.X;
+            _pathXY[i * 2 + 1] = p.Y;
         }
-        return xy;
+        return _pathXY;
     }
 
     public virtual void DrawPath(PathF path) => Stroke(Flatten(path), closed: true);
@@ -158,10 +166,19 @@ public class OpenHarmonyCanvas : ICanvas
 
     // ---------------------------------------------------------------- primitives
     public virtual void DrawLine(float x1, float y1, float x2, float y2)
-        => Stroke(Points((x1, y1), (x2, y2)), closed: false);
+    {
+        Span<float> xy = stackalloc float[4];
+        WritePoint(xy, 0, x1, y1);
+        WritePoint(xy, 1, x2, y2);
+        Stroke(xy, closed: false);
+    }
 
     public virtual void DrawRectangle(float x, float y, float width, float height)
-        => Stroke(Points((x, y), (x + width, y), (x + width, y + height), (x, y + height)), closed: true);
+    {
+        Span<float> xy = stackalloc float[8];
+        WriteRectangle(xy, x, y, width, height);
+        Stroke(xy, closed: true);
+    }
 
     public virtual void FillRectangle(float x, float y, float width, float height)
     {
@@ -169,7 +186,18 @@ public class OpenHarmonyCanvas : ICanvas
         {
             return;
         }
-        Fill(Points((x, y), (x + width, y), (x + width, y + height), (x, y + height)));
+        Span<float> xy = stackalloc float[8];
+        WriteRectangle(xy, x, y, width, height);
+        Fill(xy);
+    }
+
+    /// <summary>Top-left, top-right, bottom-right, bottom-left as packed x,y pairs.</summary>
+    private void WriteRectangle(Span<float> xy, float x, float y, float width, float height)
+    {
+        WritePoint(xy, 0, x, y);
+        WritePoint(xy, 1, x + width, y);
+        WritePoint(xy, 2, x + width, y + height);
+        WritePoint(xy, 3, x, y + height);
     }
 
     public virtual void DrawRoundedRectangle(float x, float y, float width, float height, float cornerRadius)
@@ -178,24 +206,31 @@ public class OpenHarmonyCanvas : ICanvas
     public virtual void FillRoundedRectangle(float x, float y, float width, float height, float cornerRadius)
         => Fill(RoundedPoints(x, y, width, height, cornerRadius));
 
+    private const int RoundedSteps = 6;
+
+    // One buffer per shape family, sized for exactly the points the builder emits. The native
+    // call reads it synchronously and no application code runs between a builder and its call,
+    // so reuse cannot alias a live polygon (same invariant as _pathXY above).
+    private readonly float[] _roundedXY = new float[(RoundedSteps + 1) * 4 * 2];
+
     private float[] RoundedPoints(float x, float y, float width, float height, float radius)
     {
         float r = Math.Min(radius, Math.Min(width, height) / 2f);
-        const int steps = 6;
-        var points = new List<(float, float)>();
-        void Corner(float cx, float cy, double startAngle)
+        int index = 0;
+        Corner(_roundedXY, ref index, x + width - r, y + r, -Math.PI / 2, r);          // top-right
+        Corner(_roundedXY, ref index, x + width - r, y + height - r, 0, r);            // bottom-right
+        Corner(_roundedXY, ref index, x + r, y + height - r, Math.PI / 2, r);          // bottom-left
+        Corner(_roundedXY, ref index, x + r, y + r, Math.PI, r);                       // top-left
+        return _roundedXY;
+    }
+
+    private void Corner(Span<float> xy, ref int index, float cx, float cy, double startAngle, float r)
+    {
+        for (int i = 0; i <= RoundedSteps; i++)
         {
-            for (int i = 0; i <= steps; i++)
-            {
-                double a = startAngle + Math.PI / 2 * i / steps;
-                points.Add((cx + (float)(r * Math.Cos(a)), cy + (float)(r * Math.Sin(a))));
-            }
+            double a = startAngle + Math.PI / 2 * i / RoundedSteps;
+            WritePoint(xy, index++, cx + (float)(r * Math.Cos(a)), cy + (float)(r * Math.Sin(a)));
         }
-        Corner(x + width - r, y + r, -Math.PI / 2);          // top-right
-        Corner(x + width - r, y + height - r, 0);            // bottom-right
-        Corner(x + r, y + height - r, Math.PI / 2);          // bottom-left
-        Corner(x + r, y + r, Math.PI);                       // top-left
-        return Points(points.ToArray());
     }
 
     public virtual void DrawEllipse(float x, float y, float width, float height)
@@ -218,20 +253,22 @@ public class OpenHarmonyCanvas : ICanvas
     public void FillArc(float x, float y, float width, float height, float startAngle, float endAngle, bool clockwise)
         => Fill(ArcPoints(x, y, width, height, startAngle, endAngle, clockwise));
 
+    private const int ArcSteps = 32;
+
+    private readonly float[] _arcXY = new float[(ArcSteps + 1) * 2];
+
     private float[] ArcPoints(float x, float y, float width, float height, float startAngle, float endAngle, bool clockwise)
     {
         float cx = x + width / 2f, cy = y + height / 2f;
         float rx = width / 2f, ry = height / 2f;
         float from = startAngle * MathF.PI / 180f;
         float to = endAngle * MathF.PI / 180f;
-        const int steps = 32;
-        var points = new List<(float, float)>();
-        for (int i = 0; i <= steps; i++)
+        for (int i = 0; i <= ArcSteps; i++)
         {
-            float t = clockwise ? from + (to - from) * i / steps : from - (to - from) * i / steps;
-            points.Add((cx + rx * MathF.Cos(t), cy + ry * MathF.Sin(t)));
+            float t = clockwise ? from + (to - from) * i / ArcSteps : from - (to - from) * i / ArcSteps;
+            WritePoint(_arcXY, i, cx + rx * MathF.Cos(t), cy + ry * MathF.Sin(t));
         }
-        return Points(points.ToArray());
+        return _arcXY;
     }
 
     // ---------------------------------------------------------------- text
