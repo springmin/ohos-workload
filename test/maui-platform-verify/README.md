@@ -53,7 +53,7 @@ suite on a GitHub runner as a real gate: it checks out this repository plus `spr
 (`feature/openharmony`, the branch carrying `src/Core/src/Platform/OpenHarmony`), builds
 `src/Microsoft.OpenHarmony.Hosting` and `src/Microsoft.OpenHarmony.Maui.Graphics` in Release,
 points `MAUI_SLICE_DIR` / `HOSTING_DLL` / `OPENHARMONY_GRAPHICS_DLL` at those roots, and fails the
-job unless the run exits 0, reports at least 288 `[verify]` lines, both perf lines report
+job unless the run exits 0, reports at least 295 `[verify]` lines, both perf lines report
 `within=True`, and no `Unhandled` line is logged.
 
 ## Fuzz tail
@@ -384,7 +384,7 @@ publish pass (skip/republish).
     the installed default must complete without throwing when the ability bridge is absent; the
     want kind for single-file sharing is pinned to 3.
 - CI wiring: `.github/workflows/interaction-regression.yml` builds the slice checkout and the
-  hosting assemblies on the runner and gates on the `[verify]` line count (>=288) plus both perf
+  hosting assemblies on the runner and gates on the `[verify]` line count (>=295) plus both perf
   `within=True` markers (see "Running it" above).
 - Accessibility publish-contract coverage (R2b): the suite reflects
   `OpenHarmonyAccessibility.AccessibilityNode` (16 parameters now that hint, range and checked

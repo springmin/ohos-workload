@@ -12,7 +12,7 @@ name: interaction-regression
 #
 # verify.csproj turns those environment variables into MSBuild default properties (an explicit
 # -p: override still wins), so no other configuration is required. The job fails unless the suite
-# exits 0, reports at least 288 "[verify]" lines (308 total: 295 interaction checks - including
+# exits 0, reports at least 295 "[verify]" lines (315 total: 302 interaction checks - including
 # the ten late-app-context HybridWebView assertions, the eighteen V8 app-context publish
 # assertions, the nine audit-batch-2 source contracts and the eleven PI1/PI2/RB source contracts -
 # plus 4 fuzz lines, the frame-path perf line and the 8 accessibility publish-path perf lines),
@@ -46,7 +46,7 @@ permissions:
 # commits (31daa37c: the audit fixes - app-package root, Create=0/pre-Run activation, carousel
 # grouping, shadows, SecureStorage note - the platform application object and window-overlay host,
 # and the TFM gating / net-openharmony public API baseline / SupportedPlatform / frozen-ABI review
-# artifacts; the 308-line suite's BLE-GATT/settings/lifecycle/list-extras/PI/RB pins hold at this
+# artifacts; the 315-line suite's BLE-GATT/settings/lifecycle/list-extras/PI/RB pins hold at this
 # commit); advance it deliberately (workflow_dispatch can compile any commit).
 env:
   MAUI_OHOS_REF: ${{ github.event.inputs.maui_ohos_ref || 'c730226f93e461506cc567dee5ac51c9f6a35678' }}
@@ -88,8 +88,8 @@ jobs:
           cat out.txt
           checks=$(grep -c '\[verify\]' out.txt || true)
           echo "interaction checks reported: $checks"
-          if [ "$checks" -lt 288 ]; then
-            echo "::error::expected at least 288 [verify] lines, got $checks"
+          if [ "$checks" -lt 295 ]; then
+            echo "::error::expected at least 295 [verify] lines, got $checks"
             exit 1
           fi
           if grep -q Unhandled out.txt; then
