@@ -12,6 +12,24 @@ name: pixel-regression
 # headless-render.csproj turns those environment variables into MSBuild default properties (an
 # explicit -p: override still wins), keeping the /storage/Users/currentUser/springsources absolute
 # paths only as inert fallbacks so local runs need no setup. No runner-side symlinks are required.
+# The suite runs exactly once (the run's stdout is teed to result.txt) and the job fails unless it
+# exits 0 and printed "PIXEL ASSERTIONS PASSED".
+#
+# Pixel-expectation policy (documented so the two special cases below are not changed silently):
+#   * "button rounded corner" is the only Check(...) with tolerance=0: the pixel one step inside
+#     the button's top-left corner must stay exactly the page background (DarkSlateBlue). The
+#     managed rasterizer is deterministic off-device (no GPU/anti-aliasing variance), so exactness
+#     is the intended assertion - a shifted corner radius, a lost clip or an over-drawing border
+#     shows up as a 1/255+ deviation. If the compositor ever changes the corner geometry on
+#     purpose, fix the expectation together with that change and document it here; never loosen
+#     the tolerance to make a failure pass.
+#   * two findings are reported through Known(...) and deliberately not counted as failures yet:
+#     "checkbox box stroke" (the sampled stroke position depends on the inset drawing) and
+#     "selection tint" (measured #3959B3 vs the #395AB3 blend, a 1/255 rounding difference). They
+#     must stay visible in every run and must never be deleted or promoted to silent passes; a
+#     root-cause fix (or a proven environment-independent expectation) converts them to Check(...)
+#     with an explicit tolerance in the same commit. Only real Check()/boolean failures fail the
+#     job, so these two do not weaken the gate.
 on:
   push:
     branches: [ master ]
@@ -38,6 +56,10 @@ permissions:
 # it deliberately (workflow_dispatch can compile any other commit SHA).
 env:
   MAUI_OHOS_REF: ${{ github.event.inputs.maui_ohos_ref || 'c730226f93e461506cc567dee5ac51c9f6a35678' }}
+  # Same as the interaction gate: keep the setup-dotnet preview SDK in a cacheable per-user path
+  # instead of the runner's /usr/share/dotnet; a newer 11.0.x preview is still downloaded (the
+  # action re-resolves the channel), the cache only skips the ~200 MB download when it moved.
+  DOTNET_INSTALL_DIR: ~/.dotnet
 
 jobs:
   pixel:
@@ -55,6 +77,15 @@ jobs:
           path: maui-ohos
           fetch-depth: 1
           persist-credentials: false
+      - name: Cache the .NET SDK and the NuGet global packages
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: |
+            ~/.dotnet
+            ~/.nuget/packages
+          key: dotnet-${{ runner.os }}-${{ github.workflow }}-${{ hashFiles('**/*.csproj', 'Directory.Build.props', 'Directory.Build.targets', 'global.json', 'NuGet.config', 'nuget.config') }}
+          restore-keys: |
+            dotnet-${{ runner.os }}-${{ github.workflow }}-
       - uses: actions/setup-dotnet@67a3573c9a986a3f9c594539f4ab511d57bb3ce9 # v4.3.1
         with:
           dotnet-version: '11.0.x'
@@ -64,7 +95,9 @@ jobs:
           set -euo pipefail
           dotnet build src/Microsoft.OpenHarmony.Hosting/Microsoft.OpenHarmony.Hosting.csproj -c Release -v:q
           dotnet build src/Microsoft.OpenHarmony.Maui.Graphics/Microsoft.OpenHarmony.Maui.Graphics.csproj -c Release -v:q
-      - name: Run the headless pixel suite
+      # One run only: the previous workflow ran the suite twice (once for the exit code, once for
+      # the marker) with `|| true` on the second, which doubled the suite time for no coverage.
+      - name: Run the headless pixel suite (single run)
         working-directory: test/headless-render
         env:
           MAUI_SLICE_DIR: ${{ github.workspace }}/maui-ohos/src/Core/src/Platform/OpenHarmony
@@ -72,14 +105,5 @@ jobs:
           OPENHARMONY_GRAPHICS_DLL: ${{ github.workspace }}/src/Microsoft.OpenHarmony.Maui.Graphics/bin/Release/net11.0/Microsoft.OpenHarmony.Maui.Graphics.dll
         run: |
           set -euo pipefail
-          dotnet run -c Release
-      - name: Assert the suite passed
-        working-directory: test/headless-render
-        env:
-          MAUI_SLICE_DIR: ${{ github.workspace }}/maui-ohos/src/Core/src/Platform/OpenHarmony
-          HOSTING_DLL: ${{ github.workspace }}/src/Microsoft.OpenHarmony.Hosting/bin/Release/net11.0/Microsoft.OpenHarmony.Hosting.dll
-          OPENHARMONY_GRAPHICS_DLL: ${{ github.workspace }}/src/Microsoft.OpenHarmony.Maui.Graphics/bin/Release/net11.0/Microsoft.OpenHarmony.Maui.Graphics.dll
-        run: |
-          set -euo pipefail
-          dotnet run -c Release --no-build -p:NoBuild=true > result.txt 2>&1 || true
+          dotnet run -c Release | tee result.txt
           grep -q "PIXEL ASSERTIONS PASSED" result.txt

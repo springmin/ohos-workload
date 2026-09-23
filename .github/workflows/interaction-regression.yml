@@ -12,17 +12,27 @@ name: interaction-regression
 #
 # verify.csproj turns those environment variables into MSBuild default properties (an explicit
 # -p: override still wins), so no other configuration is required. The job fails unless the suite
-# exits 0, reports at least 295 "[verify]" lines (315 total: 302 interaction checks - including
-# the ten late-app-context HybridWebView assertions, the eighteen V8 app-context publish
-# assertions, the nine audit-batch-2 source contracts and the eleven PI1/PI2/RB source contracts -
-# plus 4 fuzz lines, the frame-path perf line and the 8 accessibility publish-path perf lines),
-# logs no "Unhandled" line, and both perf lines carry the "within=True" budget marker:
+# exits 0, prints its `[suite] checks=... floor=... assert=True` contract line at or above the
+# floor, logs no "Unhandled" line, and both perf lines carry the "within=True" budget marker:
 #   * the frame-path gate - 200 timed OpenHarmonyWindowRenderer.Render frames over a fixed 401-node
-#     tree: average <= 20 ms, max <= 250 ms, max/average <= 100x;
+#     tree: average <= 20 ms, max <= 250 ms, raw max/average <= 100x, p95/average jitter <= 2x and
+#     the managed allocation <= 291,456 B/frame (4x the post-FIX-P2 baseline);
 #   * the accessibility publish-path gate - 50 unchanged passes vs 50 mutated passes over the same
 #     tree (Refresh + Publish render step and Publish-alone pass), skip/republish average/max
 #     ceilings and documented republish/skip ratio floors (render >= 1.25x, publish >= 2x).
-# See the README "Performance budget" section for the rationale.
+#
+# The check-count floor (295 = 315 - 20, the documented convention) is declared once in
+# test/maui-platform-verify/Program.cs, next to the constants that count the executed suite's own
+# [verify] lines; this job reads the `[suite]` line the run prints (and cross-checks it against
+# `grep -c`) instead of repeating a literal, exactly like scripts/preflight.sh, so the local gate
+# cannot pass with a weaker threshold than CI. See the README "Performance budget" section for
+# the allocation/jitter rationale.
+#
+# Triggers: push to master, pull requests and workflow_dispatch. The PR trigger catches an
+# interaction/performance regression before merge (the pixel gate already ran on PRs). Fork PRs
+# are safe here: the job only reads this repository and the public springmin/maui-ohos fork,
+# requests no secrets, runs with the default read-only GITHUB_TOKEN (`contents: read`) and both
+# checkouts set persist-credentials: false; nothing is pushed or published.
 on:
   workflow_dispatch:
     inputs:
@@ -33,6 +43,7 @@ on:
         default: 'c730226f93e461506cc567dee5ac51c9f6a35678'
   push:
     branches: [ master ]
+  pull_request:
 
 # Least privilege: the job only reads this repository and the public springmin/maui-ohos fork;
 # no step pushes anywhere.
@@ -50,6 +61,12 @@ permissions:
 # commit); advance it deliberately (workflow_dispatch can compile any commit).
 env:
   MAUI_OHOS_REF: ${{ github.event.inputs.maui_ohos_ref || 'c730226f93e461506cc567dee5ac51c9f6a35678' }}
+  # setup-dotnet installs the requested 11.0.x preview into DOTNET_INSTALL_DIR; on Linux that
+  # defaults to /usr/share/dotnet, which a per-user cache cannot persist. Point it at ~/.dotnet
+  # (the action resolves the ~ prefix against $HOME) so the cache step below actually avoids the
+  # ~200 MB SDK download on repeat runs; the installed version is still re-resolved every run, so
+  # a newer 11.0.x preview is downloaded instead of silently reusing a stale SDK.
+  DOTNET_INSTALL_DIR: ~/.dotnet
 
 jobs:
   interaction:
@@ -67,6 +84,18 @@ jobs:
           path: maui-ohos
           fetch-depth: 1
           persist-credentials: false
+      - name: Cache the .NET SDK and the NuGet global packages
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          # ~/.dotnet (DOTNET_INSTALL_DIR above), the NuGet global packages and restore state.
+          # Key: OS + workflow + the hash of every dependency-defining file; caches are immutable,
+          # so restore-keys falls back to the most recent prefix on a dependency change.
+          path: |
+            ~/.dotnet
+            ~/.nuget/packages
+          key: dotnet-${{ runner.os }}-${{ github.workflow }}-${{ hashFiles('**/*.csproj', 'Directory.Build.props', 'Directory.Build.targets', 'global.json', 'NuGet.config', 'nuget.config') }}
+          restore-keys: |
+            dotnet-${{ runner.os }}-${{ github.workflow }}-
       - uses: actions/setup-dotnet@67a3573c9a986a3f9c594539f4ab511d57bb3ce9 # v4.3.1
         with:
           dotnet-version: '11.0.x'
@@ -88,8 +117,21 @@ jobs:
           cat out.txt
           checks=$(grep -c '\[verify\]' out.txt || true)
           echo "interaction checks reported: $checks"
-          if [ "$checks" -lt 295 ]; then
-            echo "::error::expected at least 295 [verify] lines, got $checks"
+          # The suite declares its own count/floor contract; the floor is not repeated here.
+          suite=$(grep -E '^\[suite\] checks=[0-9]+ total=[0-9]+ floor=[0-9]+ assert=True$' out.txt | tail -1 || true)
+          if [ -z "$suite" ]; then
+            echo "::error::the interaction suite did not print its [suite] checks/floor contract line or reported assert=False"
+            exit 1
+          fi
+          suite_checks=$(printf '%s\n' "$suite" | sed -E 's/.*checks=([0-9]+).*/\1/')
+          suite_floor=$(printf '%s\n' "$suite" | sed -E 's/.*floor=([0-9]+).*/\1/')
+          echo "interaction suite contract: $suite"
+          if [ "$checks" -ne "$suite_checks" ]; then
+            echo "::error::the [suite] line reports $suite_checks checks but grep counts $checks [verify] lines"
+            exit 1
+          fi
+          if [ "$checks" -lt "$suite_floor" ]; then
+            echo "::error::expected at least $suite_floor [verify] lines (floor declared by the suite), got $checks"
             exit 1
           fi
           if grep -q Unhandled out.txt; then
@@ -104,4 +146,4 @@ jobs:
             echo "::error::the accessibility publish-path budget line is missing or reports within=False"
             exit 1
           fi
-          echo "OK: $checks [verify] lines, frame + a11y perf within budget, no unhandled exception"
+          echo "OK: $checks [verify] lines (floor $suite_floor), frame + a11y perf within budget, no unhandled exception"
