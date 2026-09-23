@@ -1,142 +1,11 @@
 <Project>
-  <!-- publish -> .hap packaging for OpenHarmony.
-       Stage layout (packed by the OpenHarmony SDK's ohos_packing_tool):
-           module.json, ets/modules.abc,
-           libs/<abi>/{libopenharmonyhost.so,libc++_shared.so,<.NET runtime *.so>},
-           resources/base/..., resources/rawfile/{app.json,dotnet.zip}
-
-       Staging directory: OpenHarmonyHapStageDir (overridable) selects where the payload above
-       is staged before packing. It is resolved at target execution time - not at evaluation
-       time, when PublishDir is still empty - with these defaults, in order:
-           $(IntermediateOutputPath)openharmony-hap/      (default; under obj/)
-           $(BaseIntermediateOutputPath)openharmony-hap/  (when IntermediateOutputPath is unset)
-           $(PublishDir)openharmony-hap/                  (publish-only project types)
-       The directory is deleted and recreated for each package, so stale files from an earlier
-       publish cannot leak into a hap. The property must point somewhere other than the project
-       directory: the packaging writes module.json, ets/, resources/ and libs/ into it.
-
-       C++ runtime: libopenharmonyhost.so links the shared C++ runtime (DT_NEEDED
-       libc++_shared.so) and the device loader refuses a hap whose libs/<abi>/ lacks the
-       dependency, so the staging copies the SDK's libc++_shared.so next to the host. It is
-       looked up under the SDK roots this file already knows - OpenHarmonySdkRoot (or
-       OHOS_SDK_ROOT), both as <root>/native/llvm and as a bare native root, OHOS_NDK, and the
-       harmonybrew Cellar install _OpenHarmonyDetectToolchain falls back to - in the LLVM
-       triple matching OpenHarmonyAbi (arm64-v8a -> aarch64-linux-ohos). A missing library is
-       a hard error; OpenHarmonyLibCxxShared pins an explicit file.
-
-       Runtime native libraries: the published .NET runtime ships its shared libraries
-       (libhostfxr.so, libhostpolicy.so, libcoreclr.so, libclrjit.so, libclrgc/gcexp.so,
-       libmscordaccore/dbi.so, libSystem.*.Native.so, ...) in the publish payload, so they
-       would travel inside resources/rawfile/dotnet.zip and the ArkTS shell would extract them
-       into the app data directory before start_app. That extracted copy is NOT covered by the
-       HAP code-signing block (SoInfoSegment/fs-verity protects libs/<abi>/** and *.an), and an
-       enforcing device (XPM/fs-verity) rejects a dlopen from the data directory. The staging
-       therefore copies every ELF *.so of the publish directory into libs/<abi>/ and excludes
-       exactly those file names from dotnet.zip (see OpenHarmonyDeterministicZip below), so
-       each runtime ELF ships once, in the directory the HAP signature covers - no unsigned
-       duplicate is left in the extracted payload for the runtime to pick instead
-       (~14 MB saved per arm64 publish).
-
-       Resolution of the libs-only set (measured on the OHOS host, not assumed):
-         * libhostfxr.so: the host loads it from its own signed libs/ directory (dladdr, see
-           openharmony_host.c), so the libs copy is the one used. For a self-contained app
-           hostfxr then expects libhostpolicy.so next to the app config (hostpolicy_resolver.cpp:
-           muxer mode + self-contained -> 'get_directory(app_candidate)'), i.e. in the extracted
-           app dir, and dlopens it by path - hostpolicy therefore needs the bridge below.
-         * libSystem.*.Native.so, libmscordaccore/dbi.so: dlopen'd by name and resolved from
-           the loader's app search path, which contains libs/<abi>/ - with only these files
-           absent from app_dir a self-contained payload still starts and loads them.
-         * libcoreclr.so: hostpolicy builds the path itself, 'file_exists_in_dir(m_app_dir,
-           LIBCORECLR_NAME)' (deps_resolver.cpp; OpenHarmony apps set GenerateDependencyFile=
-           false, so this is the only route). Missing -> 'Could not resolve CoreCLR path'.
-         * libclrjit.so/libclrgc.so: loaded by coreclr from the directory it was loaded from;
-           missing there -> 'Failed to load JIT compiler'.
-         createdump (diagnostics only) is a separate ELF that needs libmscordaccore/dbi next
-         to it; when it cannot find them the dump path degrades, the app is unaffected.
-         Consequence for a device run: the app dir must expose the four names that are resolved
-         by directory (libhostpolicy.so, libcoreclr.so, libclrjit.so, libclrgc/gcexp.so). The
-         shell extracts only what the zip carries, so before the next device round the host has
-         to bridge libs/<abi>/ into the app directory (symlink the signed file under the same
-         name before start_app) or hostpolicy_resolver/deps_resolver need a libs/<abi> lookup.
-         Until that bridge exists a hap built by this target only starts where the app dir
-         still carries those four files (i.e. a payload that was not excluded).
-
-       The set is enumerated from the publish directory at target execution time; non-ELF *.so
-       entries are skipped (and stay in the zip), an empty ELF set is a hard error, and the
-       staged libs go through the same OpenHarmonyCodesign pass as the host and libc++_shared.so.
-
-       Payload determinism: resources/rawfile/dotnet.zip is written with a fixed entry order
-       (ordinal path sort) and a fixed 1980-01-01 entry timestamp (OpenHarmonyDeterministicZip
-       below), so two publishes of identical inputs produce a byte-identical zip. The OpenHarmony
-       SDK re-signs every ELF under $(TargetDir) after Build and rewrites it with a 4 KB
-       .codesign section plus rebuilt section headers (ElfSigner), and publish/ is a
-       subdirectory of $(TargetDir): on a reused publish directory that pre-staging signing pass
-       appends another page to the stale copies on every publish and the drift ends up in the
-       zip. _OpenHarmonyResetHapPublishOutputs removes the publish directory just before
-       PrepareForPublish so the publish copy always repopulates it from the single-signed
-       runtime pack (and the freshly built managed files); the packaged payload then carries
-       exactly one canonical .codesign section per ELF, as produced by the runtime build.
-
-       API band: OpenHarmonyMinApiVersion, OpenHarmonyTargetApiVersion,
-       OpenHarmonyApiReleaseType, OpenHarmonyCompileSdkType and OpenHarmonyCompileSdkVersion
-       all stay overridable. Their defaults follow the target framework; the numeric band
-       encodes <major><minor:02><patch:02><api:03> (the concatenation's leading zeros are
-       stripped):
-           net11.0-openharmony20.0 -> platform 6.0.0 / API 20 -> min = target = 60000020
-                                      (Release); no compileSdk fields (BMS then keeps its
-                                      OpenHarmony default)
-           device band (every other TFM, e.g. net11.0-openharmony26.0) -> the profile the
-           tester's 2in1 device family accepted:
-                                      min 50002014      (platform 5.0.2 / API 14)
-                                      target 60101024   (platform 6.1.1 / API 24)
-                                      apiReleaseType Release
-                                      compileSdkType HarmonyOS, compileSdkVersion 6.0.2.130
-                                      debug: OpenHarmonyHapDebug (still defaults true and
-                                      stays overridable; the tester's profile used false)
-       The compileSdk fields are emitted into module.json only when OpenHarmonyCompileSdkType
-       is non-empty; the API 20 band leaves them empty so its module.json stays exactly as
-       before (and BMS keeps compileSdkType OpenHarmony).
-
-       minAPIVersion is checked at install: it must be <= the device's apiCompatibleVersion or
-       the install fails with bm 9568297 ERR_APPEXECFWK_INSTALL_SDK_INCOMPATIBLE. The tester
-       device family reports apiCompatibleVersion 50002014, so the device band defaults to
-       exactly that value; change it per device with -p:OpenHarmonyMinApiVersion=<value>, but
-       never raise it above the target device's apiCompatibleVersion.
-
-       Bundle name: app.bundleName accepts only letters, digits, '_' and '.'. A name with any
-       other character (a hyphen, say) is rejected at install with bm 9568344 "bundle name or
-       module name is invalid". The OpenHarmonyBundleName default strips hyphens from the
-       assembly name, _OpenHarmonyValidateBundleName fails the build early on any remaining
-       illegal character, and an explicit -p:OpenHarmonyBundleName=<name> is validated too.
-
-       Opt-in permissions: set OpenHarmonyExtraPermissions to a ';' or ',' separated list of
-       permission names, e.g. (keep the quotes - MSBuild splits an unquoted command-line
-       property value at ';' and ',', or use %3B / %2C):
-           -p:'OpenHarmonyExtraPermissions="ohos.permission.READ_CONTACTS;ohos.permission.READ_CALENDAR"'
-       or set OpenHarmonyExtraPermissions in the project file. When the property is set and
-       non-empty the generated module.json gains the matching minimal
-       "requestPermissions":[{"name":"..."}] array (no usedScene/resources entries).
-       Declaring a permission here does not grant it: the app still has to request it at
-       runtime (abilityAccessCtrl.requestPermissionsFromUser). Unset/empty keeps module.json
-       byte-identical to the build without the property.
-
-       Blazor asset staging (milestone 3.0): when the project directory contains a wwwroot
-       content root, _OpenHarmonyStageBlazorAssets copies it into the publish payload as
-       wwwroot/**, so the hap's resources/rawfile/dotnet.zip extracts to <AppDir>/wwwroot - the
-       exact <base>/<root>/<path> convention the ArkTS shell already serves for the hybrid origin
-       (https://0.0.0.1/): Blazor's origin https://0.0.0.0/ is answered from
-       <AppDir>/<root>/<request path>. The framework script is staged alongside as
-       wwwroot/_framework/blazor.webview.js: the project's static web assets (@(StaticWebAsset))
-       are the canonical source when the Razor/static-web-assets pipeline ran, otherwise it is
-       read from the NuGet cache
-       ($(NuGetPackageRoot)microsoft.aspnetcore.components.webview/*/staticwebassets/); a
-       @(MauiAsset) list with wwwroot/<TargetPath> entries (ConvertStaticWebAssetsToMauiAssets) is
-       consumed too when a MAUI SDK produced it. This is the OpenHarmony port's stand-in for the
-       MauiAsset consumer, which does not exist in this tree. NOTE (native model): the OpenHarmony
-       host runs the managed app in-process on CoreCLR, so Blazor Hybrid here is the native model
-       (like Android/iOS), not the WebAssembly one - the WebView only needs blazor.webview.js and
-       the message transport, and no dotnet.js/dotnet.native.wasm/_*.dll browser assets are
-       staged. A project without wwwroot is untouched, so its payload stays byte-identical. -->
+  <!-- .hap packaging for OpenHarmony. The full contract lives in the packaging doc:
+       docs/openharmony-hap-packaging.md (workload repo) - stage layout, staging-directory rules,
+       C++ runtime/libc++_shared.so lookup, runtime natives shipped only in the signed libs/<abi>/
+       and excluded from resources/rawfile/dotnet.zip, payload determinism, the API bands and the
+       minAPIVersion install limit, bundle-name rules, opt-in permissions, Blazor asset staging.
+       The inline comments below point at the matching section. Keep this file byte-identical
+       across the preview.22/23/24 packs (test/maui-platform-verify PG2a). -->
   <PropertyGroup>
     <OpenHarmonyHapPackage Condition=" '$(OpenHarmonyHapPackage)' == '' ">false</OpenHarmonyHapPackage>
     <OpenHarmonyHapSigning Condition=" '$(OpenHarmonyHapSigning)' == '' ">true</OpenHarmonyHapSigning>
@@ -152,7 +21,7 @@
     <OpenHarmonyVersionName Condition=" '$(OpenHarmonyVersionName)' == '' ">1.0.0</OpenHarmonyVersionName>
     <OpenHarmonyVersionCode Condition=" '$(OpenHarmonyVersionCode)' == '' ">1</OpenHarmonyVersionCode>
     <!-- API band per target framework; the decode rule, the device constraints and the
-         overrides are in the file header. openharmony20.0 is the platform 6.0.0 / API 20
+         overrides are in the packaging doc. openharmony20.0 is the platform 6.0.0 / API 20
          release band; the device band (every other TFM, e.g. net11.0-openharmony26.0)
          defaults to the profile the tester's device family accepted. All values stay
          overridable. -->
@@ -163,14 +32,13 @@
     <OpenHarmonyTargetApiVersion Condition=" '$(OpenHarmonyTargetApiVersion)' == '' ">60101024</OpenHarmonyTargetApiVersion>
     <OpenHarmonyApiReleaseType Condition=" '$(OpenHarmonyApiReleaseType)' == '' ">Release</OpenHarmonyApiReleaseType>
     <!-- compileSdkType/compileSdkVersion are emitted into module.json when the type is set
-         (the API 20 band keeps both empty on purpose; see the file header). The device band
+         (the API 20 band keeps both empty on purpose; see the API band section in the packaging doc). The device band
          defaults to the tester's known-good HarmonyOS 6.0.2.130 identity. Both overridable. -->
     <OpenHarmonyCompileSdkType Condition=" '$(OpenHarmonyCompileSdkType)' == '' and '$(TargetPlatformVersion)' != '20.0' ">HarmonyOS</OpenHarmonyCompileSdkType>
     <OpenHarmonyCompileSdkVersion Condition=" '$(OpenHarmonyCompileSdkVersion)' == '' and '$(TargetPlatformVersion)' != '20.0' ">6.0.2.130</OpenHarmonyCompileSdkVersion>
     <OpenHarmonyHapDebug Condition=" '$(OpenHarmonyHapDebug)' == '' ">true</OpenHarmonyHapDebug>
     <OpenHarmonyAbi Condition=" '$(OpenHarmonyAbi)' == '' ">arm64-v8a</OpenHarmonyAbi>
-    <!-- Opt-in module.json requestPermissions: ';'/',' separated permission names (see the
-         file header). Empty (the default) leaves the generated module.json untouched. -->
+    <!-- Opt-in module.json requestPermissions: ';'/',' separated permission names (see the opt-in permissions section in the packaging doc). Empty (the default) leaves the generated module.json untouched. -->
     <OpenHarmonyExtraPermissions Condition=" '$(OpenHarmonyExtraPermissions)' == '' "></OpenHarmonyExtraPermissions>
     <!-- UI builds: point OpenHarmonyArktsModulesAbc at a modules.abc produced by the ArkTS
          toolchain (ets-loader/hvigor or DevEco Studio, which compiles both the ability and
@@ -212,7 +80,7 @@
        files (both differ between two otherwise identical publishes). ExcludeFileNames is a
        ';'-separated list of file names (no directory part): the runtime ELFs the caller staged
        into libs/<abi>/ are left out so the payload does not carry an unsigned second copy
-       (see "Runtime native libraries" in the file header); everything else, managed .dll/.json
+       (see "Runtime native libraries" in the packaging doc); everything else, managed .dll/.json
        assets included, is packed unchanged. ExcludedCount/IncludedCount are reported for the
        caller's evidence line. -->
   <UsingTask TaskName="OpenHarmonyDeterministicZip"
@@ -265,7 +133,7 @@
   </UsingTask>
 
   <!-- Stages the publish payload's runtime native libraries into libs/<abi>/ (see "Runtime
-       native libraries" in the file header): enumerates the *.so files given by the caller
+       native libraries" in the packaging doc): enumerates the *.so files given by the caller
        (the publish directory), validates the ELF magic, and copies the ELF files into the
        destination, skipping names already staged by the SDK (the host and libc++_shared.so).
        CopiedCount/CopiedBytes/CopiedFiles feed the caller's hard emptiness error and its
@@ -384,7 +252,7 @@
            Text="OpenHarmonyHapStageDir must not be the project directory ('$(MSBuildProjectDirectory)'); the packaging writes module.json, ets/, resources/ and libs/ into the staging directory." />
   </Target>
 
-  <!-- See "Payload determinism" in the header. Runs only for hap packaging and only in the
+  <!-- See "Payload determinism" in the packaging doc. Runs only for hap packaging and only in the
        publish flow (PrepareForPublish is a dependency of every publish alternative); it removes
        the reused publish directory after the SDK's per-Build codesign pass and before the
        publish copy repopulates it. Without this, the codesign pass re-signs the stale publish
@@ -402,7 +270,7 @@
     <RemoveDir Directories="$(_OpenHarmonyResetPublishDir)" />
   </Target>
 
-  <!-- Blazor asset staging: see "Blazor asset staging" in the file header. Runs after the publish
+  <!-- Blazor asset staging: see "Blazor asset staging" in the packaging doc. Runs after the publish
        copy and before _OpenHarmonyStageHap packs PublishDir, so the staged files travel inside
        resources/rawfile/dotnet.zip and land under <AppDir>/wwwroot in the extracted payload.
        Without a wwwroot the target is a no-op (no items, no copies, no output). -->
@@ -488,7 +356,7 @@
       <_OpenHarmonyModuleJson>$(_OpenHarmonyModuleJson.Replace('@ABILITY_NAME@', '$(OpenHarmonyAbilityName)'))</_OpenHarmonyModuleJson>
     </PropertyGroup>
     <!-- compileSdkType/compileSdkVersion: inserted right after apiReleaseType, only when the
-         effective properties are non-empty. The device band defaults them (see above); the
+         effective properties are non-empty. The device band defaults them (see the API band section in the packaging doc); the
          API 20 band leaves both empty, so its module.json stays byte-identical. The fragment
          is JSON text stored in an MSBuild value, so the double quotes are literal. -->
     <PropertyGroup>
@@ -522,7 +390,7 @@
     <Copy SourceFiles="@(_OpenHarmonyHapResource)" DestinationFiles="@(_OpenHarmonyHapResource->'$(_OpenHarmonyHapStageDir)resources/base/%(RecursiveDir)%(Filename)%(Extension)')" />
     <Copy SourceFiles="$(_OpenHarmonyHostDir)libopenharmonyhost.so" DestinationFolder="$(_OpenHarmonyHapStageDir)libs/$(OpenHarmonyAbi)/" />
 
-    <!-- C++ runtime staging: see "C++ runtime" in the file header. Candidates are ordered by
+    <!-- C++ runtime staging: see "C++ runtime" in the packaging doc. Candidates are ordered by
          increasing preference: the Copy task writes them all to the same file name in
          libs/$(OpenHarmonyAbi)/, so the last existing source wins (an explicit
          OpenHarmonyLibCxxShared, else the SDK root, else OHOS_NDK, else the Cellar install). -->
@@ -549,7 +417,7 @@
     <Copy SourceFiles="@(_OpenHarmonyLibCxxShared)" DestinationFolder="$(_OpenHarmonyHapStageDir)libs/$(OpenHarmonyAbi)/" />
     <Message Importance="high" Text="OpenHarmony: staged libc++_shared.so from @(_OpenHarmonyLibCxxShared->'%(Identity)', '; ')" />
 
-    <!-- Runtime native libraries: see "Runtime native libraries" in the file header. The .so
+    <!-- Runtime native libraries: see "Runtime native libraries" in the packaging doc. The .so
          files of the publish payload are enumerated here, at target execution time (after the
          publish copy repopulated the directory), validated as ELF and staged next to the host
          and libc++_shared.so BEFORE the codesign pass below, so the HAP signature block covers
@@ -557,7 +425,7 @@
          The staged names are the exclusion set of the payload zip below: the runtime ELFs
          travel only in libs/<abi>/ (the same file names are skipped by name, so a nested copy
          would be skipped as well). The size/name report is the packaging evidence; the
-         resolution constraints behind the exclusion are recorded in the file header. -->
+         resolution constraints behind the exclusion are recorded in the packaging doc. -->
     <PropertyGroup>
       <_OpenHarmonyRuntimePublishDir>$([MSBuild]::NormalizeDirectory('$(MSBuildProjectDirectory)', '$(PublishDir)'))</_OpenHarmonyRuntimePublishDir>
     </PropertyGroup>
@@ -607,11 +475,11 @@
     <WriteLinesToFile File="$(_OpenHarmonyHapStageDir)resources/rawfile/app.json" Lines="$(_OpenHarmonyAppJson)" Overwrite="true" />
 
     <!-- The published .NET app becomes the hap payload, written with a fixed entry order and
-         timestamp (see "Payload determinism" in the header). PublishDir is normalized against
+         timestamp (see "Payload determinism" in the packaging doc). PublishDir is normalized against
          the project directory because the inline zip task has no MSBuild path resolution.
          The runtime native libraries staged into libs/<abi>/ above are passed as the exclusion
          set, so the payload keeps every managed .dll/.json asset but no unsigned duplicate of
-         a signed runtime ELF (see "Runtime native libraries" in the header for the resolution
+         a signed runtime ELF (see "Runtime native libraries" in the packaging doc for the resolution
          constraints this implies). -->
     <OpenHarmonyDeterministicZip
         SourceDirectory="$([MSBuild]::NormalizeDirectory('$(MSBuildProjectDirectory)', '$(PublishDir)'))"
