@@ -38,6 +38,10 @@ dotnet publish -r openharmony-arm64
 
 The manifest band directory must match the SDK feature band
 (`11.0.100` for release SDKs, `11.0.100-rc.1` for the current preview SDK).
+Both band directories carry the same current pack line (`1.0.0-preview.24`) and
+are bumped together; only the band directory name differs. `SDK_BAND` selects one
+(`scripts/pack-local-workload.sh`, `scripts/pack-workload-bundle.sh`,
+`scripts/release-all.sh` default to the preview band).
 
 ## Install as a workload (no env vars needed)
 
