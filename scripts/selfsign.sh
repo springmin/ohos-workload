@@ -39,7 +39,6 @@ ensure_selfsign_dll() {
     <Nullable>disable</Nullable>
     <AssemblyName>selfsign</AssemblyName>
     <InvariantGlobalization>true</InvariantGlobalization>
-    <NoWarn>$(NoWarn);IDE0073</NoWarn>
     <EnforceCodeStyleInBuild>false</EnforceCodeStyleInBuild>
     <BaseOutputPath>bin/</BaseOutputPath>
     <BaseIntermediateOutputPath>obj/</BaseIntermediateOutputPath>
