@@ -2928,6 +2928,25 @@ static bool A11yReadNode(int index, A11yNodeRecord* out) {
                                        &out->checked) == 0;
 }
 
+// Geometry-only read for the focus-move scans: every string output stays NULL, so a probe
+// does not copy the four interned strings the full record carries.
+static bool A11yReadNodeGeometry(int index, float* x, float* y, float* width, float* height,
+                                 int* flags) {
+    return ohos_host_accessibility_get(index, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr,
+                                       x, y, width, height, flags, nullptr,
+                                       nullptr, nullptr, nullptr, nullptr) == 0;
+}
+
+// Index of the node published under this id, or -1 when it is not in the table. The native
+// table builds its id -> index map while publishing (ohos_host_accessibility_index_of), so
+// this is O(1) instead of the linear scan it used to be.
+static int A11yIndexOfId(int64_t elementId) {
+    if (elementId <= 0) {
+        return -1;
+    }
+    return ohos_host_accessibility_index_of((int)elementId);
+}
+
 static ArkUI_AccessibilityProvider* g_a11y_provider = nullptr;
 // Provider attach state, readable from ArkTS through host.accessibilityStatus() and from the
 // managed side through ohos_host_accessibility_provider_status() (logged as
@@ -3070,15 +3089,11 @@ static void A11ySetGroupAndLevel(ArkUI_AccessibilityElementInfo* info, const A11
     OH_ArkUI_AccessibilityElementInfoSetAccessibilityLevel(info, recognized ? "yes" : "no");
 }
 
-// Fills one ArkUI element from a published record. Shared by the list queries
-// (findAccessibilityNodeInfosById/findByText) and the single-node callbacks
-// (findFocused/findNextFocus), so every path publishes the same fields.
-static int32_t A11yFillElement(int index, ArkUI_AccessibilityElementInfo* info) {
-    if (index < 0 || info == nullptr) {
-        return ARKUI_ACCESSIBILITY_NATIVE_RESULT_FAILED;
-    }
-    A11yNodeRecord node;
-    if (!A11yReadNode(index, &node)) {
+// Fills one ArkUI element from a published record already read by the caller. Shared by the
+// list queries (findAccessibilityNodeInfosById/findByText) and the single-node callbacks
+// (findFocused/findNextFocus), so every path publishes the same fields with one table read.
+static int32_t A11yFillElement(const A11yNodeRecord& node, ArkUI_AccessibilityElementInfo* info) {
+    if (info == nullptr) {
         return ARKUI_ACCESSIBILITY_NATIVE_RESULT_FAILED;
     }
     OH_ArkUI_AccessibilityElementInfoSetElementId(info, node.id);
@@ -3110,16 +3125,20 @@ static int32_t A11yFillElement(int index, ArkUI_AccessibilityElementInfo* info) 
     return ARKUI_ACCESSIBILITY_NATIVE_RESULT_SUCCESSFUL;
 }
 
-static void A11yAddNode(ArkUI_AccessibilityElementInfoList* list, int index) {
-    A11yNodeRecord probe;
-    if (!A11yReadNode(index, &probe)) {
-        return;   // keeps empty elements out of the list for a stale index
-    }
+static void A11yAddNodeRecord(ArkUI_AccessibilityElementInfoList* list, const A11yNodeRecord& node) {
     ArkUI_AccessibilityElementInfo* info = OH_ArkUI_AddAndGetAccessibilityElementInfo(list);
     if (info == nullptr) {
         return;
     }
-    A11yFillElement(index, info);
+    A11yFillElement(node, info);
+}
+
+static void A11yAddNode(ArkUI_AccessibilityElementInfoList* list, int index) {
+    A11yNodeRecord node;
+    if (!A11yReadNode(index, &node)) {
+        return;   // keeps empty elements out of the list for a stale index
+    }
+    A11yAddNodeRecord(list, node);
 }
 
 static int32_t A11yFindById(int64_t elementId, ArkUI_AccessibilitySearchMode mode,
@@ -3133,23 +3152,26 @@ static int32_t A11yFindById(int64_t elementId, ArkUI_AccessibilitySearchMode mod
         A11yAddNode(list, 0);              // root
         return ARKUI_ACCESSIBILITY_NATIVE_RESULT_SUCCESSFUL;
     }
-    for (int i = 0; i < count; i++) {
-        A11yNodeRecord node;
-        if (!A11yReadNode(i, &node) || node.id != (int)elementId) {
-            continue;
-        }
-        A11yAddNode(list, i);
-        if ((int)mode & ARKUI_ACCESSIBILITY_NATIVE_SEARCH_MODE_PREFETCH_CHILDREN) {
-            for (int j = 0; j < count; j++) {
-                A11yNodeRecord child;
-                if (A11yReadNode(j, &child) && child.parent == node.id) {
-                    A11yAddNode(list, j);
-                }
+    int index = A11yIndexOfId(elementId);
+    if (index < 0) {
+        return ARKUI_ACCESSIBILITY_NATIVE_RESULT_FAILED;
+    }
+    A11yNodeRecord node;
+    if (!A11yReadNode(index, &node)) {
+        return ARKUI_ACCESSIBILITY_NATIVE_RESULT_FAILED;
+    }
+    A11yAddNodeRecord(list, node);
+    if ((int)mode & ARKUI_ACCESSIBILITY_NATIVE_SEARCH_MODE_PREFETCH_CHILDREN) {
+        // One pass over the table, each matching child read and filled from that single
+        // record: the nested scan used to read every node once per candidate child (O(N^2)).
+        for (int j = 0; j < count; j++) {
+            A11yNodeRecord child;
+            if (A11yReadNode(j, &child) && child.parent == node.id) {
+                A11yAddNodeRecord(list, child);
             }
         }
-        return ARKUI_ACCESSIBILITY_NATIVE_RESULT_SUCCESSFUL;
     }
-    return ARKUI_ACCESSIBILITY_NATIVE_RESULT_FAILED;
+    return ARKUI_ACCESSIBILITY_NATIVE_RESULT_SUCCESSFUL;
 }
 
 static int32_t A11yFindByText(int64_t elementId, const char* text, int32_t requestId,
@@ -3167,7 +3189,7 @@ static int32_t A11yFindByText(int64_t elementId, const char* text, int32_t reque
         }
         if ((node.text != nullptr && strstr(node.text, text) != nullptr) ||
             (node.description != nullptr && strstr(node.description, text) != nullptr)) {
-            A11yAddNode(list, i);
+            A11yAddNodeRecord(list, node);
             found++;
         }
     }
@@ -3178,8 +3200,8 @@ static int A11yFirstFocusable(int afterIndex) {
     int count = ohos_host_accessibility_count();
     for (int step = 0; step < count; step++) {
         int i = (afterIndex + 1 + step) % count;
-        A11yNodeRecord node;
-        if (A11yReadNode(i, &node) && (node.flags & 2) != 0) {
+        int flags = 0;
+        if (A11yReadNodeGeometry(i, nullptr, nullptr, nullptr, nullptr, &flags) && (flags & 2) != 0) {
             return i;
         }
     }
@@ -3209,35 +3231,21 @@ static const float kA11yFocusPerpendicularPenalty = 2.0f;
 
 // Reads the centre and focusable bit of one table entry; false when the index is not in the table.
 static bool A11yReadNodeGeom(int index, float* centerX, float* centerY, bool* focusable) {
-    A11yNodeRecord node;
-    if (!A11yReadNode(index, &node)) {
+    float x = 0, y = 0, width = 0, height = 0;
+    int flags = 0;
+    if (!A11yReadNodeGeometry(index, &x, &y, &width, &height, &flags)) {
         return false;
     }
     if (centerX != nullptr) {
-        *centerX = node.x + node.width * 0.5f;
+        *centerX = x + width * 0.5f;
     }
     if (centerY != nullptr) {
-        *centerY = node.y + node.height * 0.5f;
+        *centerY = y + height * 0.5f;
     }
     if (focusable != nullptr) {
-        *focusable = (node.flags & 2) != 0;
+        *focusable = (flags & 2) != 0;
     }
     return true;
-}
-
-// Index of the node published under this id, or -1 when it is not in the table.
-static int A11yIndexOfId(int64_t elementId) {
-    if (elementId <= 0) {
-        return -1;
-    }
-    int count = ohos_host_accessibility_count();
-    for (int i = 0; i < count; i++) {
-        A11yNodeRecord node;
-        if (A11yReadNode(i, &node) && node.id == (int)elementId) {
-            return i;
-        }
-    }
-    return -1;
 }
 
 // Nearest focusable node in one of the four geometric directions; -1 when none qualifies.
@@ -3300,8 +3308,8 @@ static int A11yStepFocus(int64_t elementId, bool backward) {
     for (int step = 1; step <= count; step++) {
         int i = backward ? (int)(((start - step) % count + count) % count)
                          : (start + step) % count;
-        A11yNodeRecord node;
-        if (A11yReadNode(i, &node) && (node.flags & 2) != 0) {
+        int flags = 0;
+        if (A11yReadNodeGeometry(i, nullptr, nullptr, nullptr, nullptr, &flags) && (flags & 2) != 0) {
             return i;
         }
     }
@@ -3311,7 +3319,15 @@ static int A11yStepFocus(int64_t elementId, bool backward) {
 static int32_t A11yFocused(int64_t elementId, ArkUI_AccessibilityFocusType focusType,
                            int32_t requestId, ArkUI_AccessibilityElementInfo* info) {
     (void)elementId; (void)focusType; (void)requestId;
-    return A11yFillElement(A11yFirstFocusable(-1), info);
+    int index = A11yFirstFocusable(-1);
+    if (index < 0) {
+        return ARKUI_ACCESSIBILITY_NATIVE_RESULT_FAILED;
+    }
+    A11yNodeRecord node;
+    if (!A11yReadNode(index, &node)) {
+        return ARKUI_ACCESSIBILITY_NATIVE_RESULT_FAILED;
+    }
+    return A11yFillElement(node, info);
 }
 
 static int32_t A11yNextFocus(int64_t elementId, ArkUI_AccessibilityFocusMoveDirection direction,
@@ -3344,7 +3360,11 @@ static int32_t A11yNextFocus(int64_t elementId, ArkUI_AccessibilityFocusMoveDire
     if (index < 0) {
         return ARKUI_ACCESSIBILITY_NATIVE_RESULT_FAILED;
     }
-    return A11yFillElement(index, info);
+    A11yNodeRecord node;
+    if (!A11yReadNode(index, &node)) {
+        return ARKUI_ACCESSIBILITY_NATIVE_RESULT_FAILED;
+    }
+    return A11yFillElement(node, info);
 }
 
 static int32_t A11yExecuteAction(int64_t elementId, ArkUI_Accessibility_ActionType action,

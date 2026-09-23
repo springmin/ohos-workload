@@ -3518,36 +3518,122 @@ static char* OhosA11yString(const char* value) {
     return copy;
 }
 
-// Caller holds g_a11y_mutex (begin is the only caller).
-static void OhosA11yFreeNodes(void) {
+// Caller holds g_a11y_mutex (begin is the only caller). The node array itself is kept: the
+// strings of the previous publish are released here, the slots are overwritten by the next
+// publish and the array is only reallocated when the new count needs more room.
+static void OhosA11yFreeNodeStrings(void) {
     if (g_a11y_nodes != NULL) {
         for (int i = 0; i < g_a11y_fill; i++) {
             free(g_a11y_nodes[i].role);
             free(g_a11y_nodes[i].text);
             free(g_a11y_nodes[i].description);
             free(g_a11y_nodes[i].hint);
+            g_a11y_nodes[i].role = NULL;
+            g_a11y_nodes[i].text = NULL;
+            g_a11y_nodes[i].description = NULL;
+            g_a11y_nodes[i].hint = NULL;
         }
-        free(g_a11y_nodes);
     }
-    g_a11y_nodes = NULL;
-    g_a11y_capacity = 0;
     g_a11y_fill = 0;
     g_a11y_count = 0;
 }
 
+// id -> index map over the published table, filled by ohos_host_accessibility_node as each
+// slot is written, so the provider's id lookups are O(1) instead of a linear scan. Open
+// addressing with linear probing; node ids are positive and 0 marks an empty slot. The arrays
+// are kept for the process lifetime and only grow. If a grow ever fails, the map is marked
+// incomplete and lookups fall back to the scan, so a query never misses a published node.
+static int* g_a11y_id_keys = NULL;
+static int* g_a11y_id_values = NULL;
+static int g_a11y_id_capacity = 0;
+static int g_a11y_id_used = 0;
+static int g_a11y_id_complete = 1;
+
+static size_t OhosA11yIdSlot(int id, int capacity) {
+    return ((size_t)(unsigned int)id * 2654435761u) & (size_t)(capacity - 1);
+}
+
+// Caller holds g_a11y_mutex.
+static void OhosA11yIndexClear(void) {
+    if (g_a11y_id_keys != NULL) {
+        memset(g_a11y_id_keys, 0, (size_t)g_a11y_id_capacity * sizeof(int));
+    }
+    g_a11y_id_used = 0;
+    g_a11y_id_complete = 1;
+}
+
+// Caller holds g_a11y_mutex. Doubles the table once the load factor would pass 1/2.
+static int OhosA11yIndexGrow(void) {
+    int new_capacity = g_a11y_id_capacity == 0 ? 64 : g_a11y_id_capacity * 2;
+    int* keys = (int*)calloc((size_t)new_capacity, sizeof(int));
+    int* values = (int*)malloc((size_t)new_capacity * sizeof(int));
+    if (keys == NULL || values == NULL) {
+        free(keys);
+        free(values);
+        return -1;
+    }
+    for (int i = 0; i < g_a11y_id_capacity; i++) {
+        int id = g_a11y_id_keys[i];
+        if (id == 0) {
+            continue;
+        }
+        size_t slot = OhosA11yIdSlot(id, new_capacity);
+        while (keys[slot] != 0) {
+            slot = (slot + 1) & (size_t)(new_capacity - 1);
+        }
+        keys[slot] = id;
+        values[slot] = g_a11y_id_values[i];
+    }
+    free(g_a11y_id_keys);
+    free(g_a11y_id_values);
+    g_a11y_id_keys = keys;
+    g_a11y_id_values = values;
+    g_a11y_id_capacity = new_capacity;
+    return 0;
+}
+
+// Caller holds g_a11y_mutex. The first node published under an id wins, matching the linear
+// scan this map replaces.
+static void OhosA11yIndexInsert(int id, int index) {
+    if (id <= 0) {
+        return;   // ids are positive; the empty-slot marker is 0
+    }
+    if ((g_a11y_id_used + 1) * 2 > g_a11y_id_capacity && OhosA11yIndexGrow() != 0) {
+        g_a11y_id_complete = 0;
+        return;
+    }
+    size_t slot = OhosA11yIdSlot(id, g_a11y_id_capacity);
+    while (g_a11y_id_keys[slot] != 0) {
+        if (g_a11y_id_keys[slot] == id) {
+            return;
+        }
+        slot = (slot + 1) & (size_t)(g_a11y_id_capacity - 1);
+    }
+    g_a11y_id_keys[slot] = id;
+    g_a11y_id_values[slot] = index;
+    g_a11y_id_used++;
+}
+
 int ohos_host_accessibility_begin(int count) {
     pthread_mutex_lock(&g_a11y_mutex);
-    OhosA11yFreeNodes();
+    // The provider cannot observe the cleared table: g_a11y_count drops to 0 here and is only
+    // raised again by commit, and the getter refuses an index outside [0, count).
+    OhosA11yFreeNodeStrings();
+    OhosA11yIndexClear();
     if (count <= 0) {
         pthread_mutex_unlock(&g_a11y_mutex);
         return 0;
     }
-    g_a11y_nodes = (OhosAccessibilityNode*)calloc((size_t)count, sizeof(OhosAccessibilityNode));
-    if (g_a11y_nodes == NULL) {
-        pthread_mutex_unlock(&g_a11y_mutex);
-        return -1;
+    if (g_a11y_capacity < count) {
+        OhosAccessibilityNode* grown =
+            (OhosAccessibilityNode*)realloc(g_a11y_nodes, (size_t)count * sizeof(OhosAccessibilityNode));
+        if (grown == NULL) {
+            pthread_mutex_unlock(&g_a11y_mutex);
+            return -1;
+        }
+        g_a11y_nodes = grown;
+        g_a11y_capacity = count;
     }
-    g_a11y_capacity = count;
     pthread_mutex_unlock(&g_a11y_mutex);
     return 0;
 }
@@ -3567,7 +3653,8 @@ int ohos_host_accessibility_node(int id, int parent_id, const char* role, const 
         pthread_mutex_unlock(&g_a11y_mutex);
         return -1;
     }
-    OhosAccessibilityNode* node = &g_a11y_nodes[g_a11y_fill++];
+    int index = g_a11y_fill;
+    OhosAccessibilityNode* node = &g_a11y_nodes[index];
     node->id = id;
     node->parent_id = parent_id;
     node->role = OhosA11yString(role);
@@ -3584,6 +3671,8 @@ int ohos_host_accessibility_node(int id, int parent_id, const char* role, const 
     node->range_max = range_max;
     node->range_current = range_current;
     node->checked = checked;
+    g_a11y_fill = index + 1;
+    OhosA11yIndexInsert(id, index);
     pthread_mutex_unlock(&g_a11y_mutex);
     return 0;
 }
@@ -3608,6 +3697,39 @@ int ohos_host_accessibility_count(void) {
 // reflection described above from mistaking this symbol for the 16-argument publish function.
 int ohos_host_accessibility_node_count(void) {
     return ohos_host_accessibility_count();
+}
+
+// Index of the published node with this id, or -1 when no committed node carries it. O(1)
+// through the id map the publisher maintains; when the map could not be grown, this falls
+// back to the linear scan the map replaces. Does not read any node field, so the caller can
+// follow up with exactly one ohos_host_accessibility_get for the record it needs.
+int ohos_host_accessibility_index_of(int id) {
+    pthread_mutex_lock(&g_a11y_mutex);
+    int index = -1;
+    if (id > 0 && g_a11y_count > 0) {
+        if (!g_a11y_id_complete) {
+            for (int i = 0; i < g_a11y_count; i++) {
+                if (g_a11y_nodes[i].id == id) {
+                    index = i;
+                    break;
+                }
+            }
+        } else if (g_a11y_id_capacity > 0) {
+            size_t slot = OhosA11yIdSlot(id, g_a11y_id_capacity);
+            while (g_a11y_id_keys[slot] != 0) {
+                if (g_a11y_id_keys[slot] == id) {
+                    int candidate = g_a11y_id_values[slot];
+                    if (candidate >= 0 && candidate < g_a11y_count) {
+                        index = candidate;
+                    }
+                    break;
+                }
+                slot = (slot + 1) & (size_t)(g_a11y_id_capacity - 1);
+            }
+        }
+    }
+    pthread_mutex_unlock(&g_a11y_mutex);
+    return index;
 }
 
 // Mirrors ohos_host_accessibility_node: 17 arguments, same order plus the output pointers

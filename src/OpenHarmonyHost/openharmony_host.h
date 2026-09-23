@@ -445,6 +445,11 @@ int ohos_host_accessibility_node(int id, int parent_id, const char* role, const 
                                  int checked);
 int ohos_host_accessibility_commit(void);
 int ohos_host_accessibility_count(void);
+/// Index of the committed node published under this id, or -1 when it is not in the table.
+/// O(1): the publisher maintains an id -> index map while it fills the table, so the NAPI
+/// provider (findAccessibilityNodeInfosById/findNextFocus) does not scan the node list per
+/// query. Follow up with one ohos_host_accessibility_get for the record itself.
+int ohos_host_accessibility_index_of(int id);
 /// Published node count (the number of nodes the provider sees after the last commit).
 /// Read by the ArkTS shell through the NAPI accessibilityNodeCount export, which backs the
 /// accessibility self-check dialog. The distinct name keeps the off-device publish-contract
