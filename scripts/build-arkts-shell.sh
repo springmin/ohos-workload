@@ -9,7 +9,10 @@
 # symlink root (hvigor expects <sdkRoot>/<platformVersion>/<component>). Both tarballs are
 # pinned by sha256 (HVIGOR_SHA256 / HVIGOR_OHOS_PLUGIN_SHA256) and verified on download and
 # before a cached one is unpacked: node executes hvigor.js, so a poisoned mirror or cache
-# must fail the build instead (see section 1).
+# must fail the build instead (see section 1). The member list is vetted too (absolute paths
+# and `..` components are refused before the first extraction); `--check-tgz <file>` exposes
+# that gate without unpacking, and scripts/selftest-build-arkts-shell.sh drives its negative
+# cases (the `../` tar-slip residual from the A2 review).
 #
 # Requirements: node >= 18, an OpenHarmony SDK (OHOS_SDK_ROOT or the harmonybrew default).
 # hvigor aborts with a V8 fatal when driven from the device's toybox sh; re-exec under
@@ -75,6 +78,45 @@ MAX_BC_VERSION="${ARKTS_MAX_BC_VERSION:-13.0.1.0}"
 info() { printf '==> %s\n' "$*"; }
 die() { printf 'ERROR: %s\n' "$*" >&2; exit 1; }
 
+# The two hvigor tarballs are unpacked with `tar xzf` and the extracted files are then executed
+# by node, so besides the sha256 pin (section 1) their member list must be safe: an absolute path
+# or a `..` component would write outside node_modules (tar-slip) even when the hash matched an
+# explicitly overridden HVIGOR_SHA256 / HVIGOR_OHOS_PLUGIN_SHA256. rc=0 only when $1 is a
+# readable gzip tarball whose members are all relative and free of `..`; the caller reports why.
+verify_tgz_members() {
+    _tgz="$1"
+    _members="$(tar tzf "$_tgz" 2>/dev/null)" || return 1
+    [ -n "$_members" ] || return 2
+    printf '%s\n' "$_members" | grep -Eq '(^/)|(^\.\.$)|(^\.\./)|(/\.\.$)|(/\.\./)' && return 3
+    return 0
+}
+
+# The offending member names of an unsafe tarball (empty for the other failure modes).
+unsafe_tgz_members() {
+    tar tzf "$1" 2>/dev/null | grep -E '(^/)|(^\.\.$)|(^\.\./)|(/\.\.$)|(/\.\./)' || true
+}
+
+# --check-tgz <file>: run just the member-safety check and exit. It never unpacks anything, so it
+# is safe to point at an untrusted tarball; scripts/selftest-build-arkts-shell.sh drives the
+# negative cases through it.
+if [ "${1:-}" = "--check-tgz" ]; then
+    [ -n "${2:-}" ] || die "usage: $0 --check-tgz <file.tgz>"
+    if verify_tgz_members "$2"; then
+        info "tarball member list is safe: $2"
+        exit 0
+    else
+        # capture the failure reason; `set -e` must not short-circuit the report below
+        _rc=$?
+    fi
+    case "$_rc" in
+        1) die "cannot list $2 as a gzip tarball" ;;
+        2) die "$2 has no members" ;;
+        *) printf 'ERROR: unsafe member names (absolute path or .. traversal) in %s:\n' "$2" >&2
+           unsafe_tgz_members "$2" | sed 's/^/  /' >&2
+           exit 1 ;;
+    esac
+fi
+
 [ -x "$NODE_BIN" ] || die "node not found (set NODE=)"
 # NODE= overrides the host node. The device's /data/service/hnp node (v24.13.0) aborts with a
 # V8 fatal ("Check failed: 12 == (*__errno_location())") before it runs anything, so fall back
@@ -113,7 +155,9 @@ info "SDK $SDK (platform $PLATFORM_VERSION, API $API_VERSION)"
 # 6.26.4: a fresh download on 2026-09-23 had these digests and they matched both the local
 # cache that produced the working device build and the mirror's registry metadata
 # (dist.shasum / dist.integrity). A version bump must update the pins, or pass
-# HVIGOR_SHA256 / HVIGOR_OHOS_PLUGIN_SHA256 explicitly.
+# HVIGOR_SHA256 / HVIGOR_OHOS_PLUGIN_SHA256 explicitly. The sha256 pin covers the bytes; the
+# member-list gate below covers what `tar xzf` would do with them (tar-slip), which matters
+# when the pins are explicitly overridden.
 HVIGOR_SHA256="${HVIGOR_SHA256:-33b2741aca3ee00f6375d6a988b4951875a0c2369d0b0ce3568a6d69249ad82d}"
 HVIGOR_OHOS_PLUGIN_SHA256="${HVIGOR_OHOS_PLUGIN_SHA256:-2f97a309bad4297a478091278ed6372c18330f1159551427529436c3525779b6}"
 HVIGOR_JS="$HVIGOR_DIR/node_modules/@ohos/hvigor/bin/hvigor.js"
@@ -175,6 +219,25 @@ if [ ! -f "$HVIGOR_JS" ]; then
   refusing to unpack/execute it (compromised mirror, or HVIGOR_VERSION bumped without pins?)"
             fi
             mv "$part" "$tgz"
+        fi
+        # Second gate after the sha256 pin: the member list must be safe to unpack. A crafted
+        # tarball (overridden pins, or a poisoned cache whose hash was recomputed) can carry
+        # `../` or absolute members and write outside node_modules via tar-slip; this check runs
+        # after the hash verification and before the first extraction, and never unpacks.
+        if verify_tgz_members "$tgz"; then
+            _mrc=0
+        else
+            _mrc=$?   # captured here so `set -e` cannot skip the report below
+        fi
+        if [ "$_mrc" -ne 0 ]; then
+            case "$_mrc" in
+                1) _why="cannot list it as a gzip tarball" ;;
+                2) _why="it has no members" ;;
+                *) _why="it carries unsafe member names (absolute path or '..' traversal)" ;;
+            esac
+            printf 'ERROR: %s tarball: %s\n  file %s\n' "$pkg" "$_why" "$tgz" >&2
+            unsafe_tgz_members "$tgz" | sed 's/^/    /' >&2
+            die "refusing to unpack it; replace or delete the file and retry"
         fi
         rm -rf "$HVIGOR_DIR/node_modules/@ohos/package" "$HVIGOR_DIR/node_modules/@ohos/$pkg"
         tar xzf "$tgz" -C "$HVIGOR_DIR/node_modules/@ohos" || die "cannot unpack $tgz"
