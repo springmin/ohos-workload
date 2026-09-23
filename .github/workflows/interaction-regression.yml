@@ -40,7 +40,7 @@ on:
         description: 'maui-ohos commit SHA to compile (defaults to the pinned feature/openharmony tip)'
         required: false
         type: string
-        default: 'c730226f93e461506cc567dee5ac51c9f6a35678'
+        default: 'f293741317bd4fd7b1c5334d526692da5b0cff60'
   push:
     branches: [ master ]
   pull_request:
@@ -60,7 +60,7 @@ permissions:
 # artifacts; the 315-line suite's BLE-GATT/settings/lifecycle/list-extras/PI/RB pins hold at this
 # commit); advance it deliberately (workflow_dispatch can compile any commit).
 env:
-  MAUI_OHOS_REF: ${{ github.event.inputs.maui_ohos_ref || 'c730226f93e461506cc567dee5ac51c9f6a35678' }}
+  MAUI_OHOS_REF: ${{ github.event.inputs.maui_ohos_ref || 'f293741317bd4fd7b1c5334d526692da5b0cff60' }}
   # setup-dotnet installs the requested 11.0.x preview into DOTNET_INSTALL_DIR; on Linux that
   # defaults to /usr/share/dotnet, which a per-user cache cannot persist. Point it at ~/.dotnet
   # (the action resolves the ~ prefix against $HOME) so the cache step below actually avoids the
