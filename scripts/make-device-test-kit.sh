@@ -300,12 +300,15 @@ OpenHarmony MAUI 设备测试包 — 签名说明（务必先读）
          -keystoreFile <你的>.p12 -keyPwd "<key密码>" -keystorePwd "<store密码>"
    也可以回传 UDID（hdc shell bm get -u）由我们重签，或改用发布方的预签包（含 目标设备.txt）。
 
-三、重签安装成功后若“启动即退”
-   约 1 秒退出、exit 254，hilog 报
+三、重签安装成功后若“启动即退”（历史缺陷，已修复）
+   早期 kit（PA1 重建壳之前）在重签安装后曾出现 约 1 秒退出、exit 254，hilog 报
      ReferenceError: Cannot find module 'ets/entryability/EntryAbility' , which is application Entry Point
-   这是本版 kit 的 ArkTS 壳 abc 入口 record 缺陷（与宿主/缺库无关），PA1 重建壳后的下一版
-   kit 修复；详见交付方文档 docs/plans/2026-09-22-ohos-startup-crash-rootcause.md。
-   在修复版 kit 发布前，无需对该错误再跑 P1–P4 探针。
+   这是当时 ArkTS 壳 abc 的入口 record 缺陷（与宿主/缺库无关）。PA1 重建壳
+   （useNormalizedOHMUrl=false）已修复，自 kit #10 起随包交付并已获真机确认；
+   当前 kit 不再包含该缺陷，无需再按此条判读启动失败。
+   详见交付方文档 docs/plans/2026-09-22-ohos-startup-crash-rootcause.md。
+   若当前 kit 重签安装后仍报同一错误，请附本包 SHA256SUMS 与该错误的 hilog 回传，
+   无需先跑 P1–P4 探针。
 
 四、校验
    包内 SHA256SUMS 覆盖本文件；整包 sha256 与解压内容树摘要见 release 说明「## Integrity」小节
