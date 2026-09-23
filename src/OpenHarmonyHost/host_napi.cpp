@@ -2718,7 +2718,17 @@ napi_value RunApp(napi_env env, napi_callback_info info) {
 }
 
 napi_value Init(napi_env env, napi_value exports) {
+    // Re-entrant by design: the library registers this same Init under more than one module
+    // name (the alias table at the end of the file), and the loader may call the register
+    // function once per name it binds. Each call returns its own exports object with the same
+    // property table; the newest exports stays the XComponent reference source, and
+    // TryRegisterXComponent retries until it has one (it returns early once bound).
     g_env = env;
+    if (g_exports_ref != nullptr) {
+        napi_delete_reference(env, g_exports_ref);
+        g_exports_ref = nullptr;
+        OH_LOG_INFO(LOG_APP, "[openharmony-host] Init re-entered (module bound under more than one name)");
+    }
     napi_create_reference(env, exports, 1, &g_exports_ref);
     TryRegisterXComponent();
     napi_property_descriptor properties[] = {
@@ -2820,18 +2830,62 @@ napi_value Init(napi_env env, napi_value exports) {
 
 }  // namespace
 
+// Native module registration -------------------------------------------------
+// The device's ArkTS loader binds `import host from 'libopenharmonyhost.so'` to a NAPI module
+// registered by this library, and two spellings of that binding are seen in the field:
+//   * the bare module name "openharmonyhost": the Huawei documentation rule ('lib' prefix and
+//     '.so' suffix stripped), and the name this library has always registered;
+//   * the full file name "libopenharmonyhost.so": an ArkTS toolchain with
+//     useNormalizedOHMUrl=true compiles the import into '@normalized:Y&&&libopenharmonyhost.so&'
+//     and the loader looks the module up by the whole file name (the shape a known-working
+//     device app binds: '@normalized:Y&&&libentry.so&' <-> nm_modname "libentry.so").
+// Registering both names is free when one is unused; whichever name the loader resolves calls
+// Init (safe to run more than once, see there) and logs its alias exactly once, so the device
+// log answers "which name did the loader actually bind" directly.
+static bool g_alias_bare_logged = false;
+static bool g_alias_file_logged = false;
+
+static napi_value HostInitBoundAsBare(napi_env env, napi_value exports) {
+    if (!g_alias_bare_logged) {
+        g_alias_bare_logged = true;
+        OH_LOG_INFO(LOG_APP, "[openharmony-host] native module register function bound via alias '%{public}s'",
+                    "openharmonyhost");
+    }
+    return Init(env, exports);
+}
+
+static napi_value HostInitBoundAsFile(napi_env env, napi_value exports) {
+    if (!g_alias_file_logged) {
+        g_alias_file_logged = true;
+        OH_LOG_INFO(LOG_APP, "[openharmony-host] native module register function bound via alias '%{public}s'",
+                    "libopenharmonyhost.so");
+    }
+    return Init(env, exports);
+}
+
 static napi_module g_hostModule = {
     .nm_version = 1,
     .nm_flags = 0,
     .nm_filename = nullptr,
-    .nm_register_func = Init,
+    .nm_register_func = HostInitBoundAsBare,
     .nm_modname = "openharmonyhost",
+    .nm_priv = nullptr,
+    .reserved = {0},
+};
+
+static napi_module g_hostModuleFileAlias = {
+    .nm_version = 1,
+    .nm_flags = 0,
+    .nm_filename = nullptr,
+    .nm_register_func = HostInitBoundAsFile,
+    .nm_modname = "libopenharmonyhost.so",
     .nm_priv = nullptr,
     .reserved = {0},
 };
 
 extern "C" __attribute__((constructor)) void RegisterHostModule(void) {
     napi_module_register(&g_hostModule);
+    napi_module_register(&g_hostModuleFileAlias);
 }
 
 

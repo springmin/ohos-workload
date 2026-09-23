@@ -14,10 +14,22 @@
 #
 # useNormalizedOHMUrl=false: the device resolves the ability entry point as
 #   <bundleName>/<moduleName>/ets/entryability/EntryAbility
-# and matches it against the abc record names, so the non-normalized build must carry the
-# bundle name of the HAP it is packaged into. The workload demo bundle is
-# com.example.hellomauiapp (OpenHarmonyBundleName default, AssemblyName minus hyphens);
-# override with ARKTS_SHELL_BUNDLE_NAME (or KIT_BUNDLE_NAME) when packaging another app.
+# and matches it against the abc record names, so the non-normalized build carries the
+# bundle name of the HAP it is packaged into (override with ARKTS_SHELL_BUNDLE_NAME /
+# KIT_BUNDLE_NAME; default com.example.hellomauiapp).
+#
+# RH1 tested useNormalizedOHMUrl=true (2026-09-23): the emitted so import becomes
+# '@normalized:Y&&&libopenharmonyhost.so&' (the known-working reference-app shape), but the
+# entry record becomes '&entry/src/main/ets/entryability/EntryAbility&' - byte-identical in
+# shape to the pre-PA1 abc whose entry the device refused ("Cannot find module
+# 'ets/entryability/EntryAbility' , which is application Entry Point", kit #9), and the
+# normalized records do not embed the bundle name at all, so PA1's bundle-name fix cannot be
+# what made an older normalized attempt fail. The ArkTS VM only enters normalized mode when
+# the HAP ships pkgContextInfo.json (EcmaVM::IsNormalizedOhmUrlPack() is 'pkgContextInfoList
+# not empty'), and this workload's HAP packaging (module.json + ets/modules.abc + libs) does
+# not include that file yet, so a normalized abc would regress the entry. Keep the switch off
+# until pkgContextInfo.json rides along; the host library now registers the bare name AND the
+# file name (src/OpenHarmonyHost/host_napi.cpp), so a future normalized build binds either way.
 #
 # abc version: the device's ArkTS runtime (HarmonyOS 7.0.0.105) rejects the 24.0.0.0 abc
 # the SDK 26.0.0.18 toolchain emits by default ("export objects of native so is undefined",
@@ -48,8 +60,8 @@ MIRROR="${HVIGOR_MIRROR:-https://repo.harmonyos.com/npm}"
 TYPECHECK="${TYPECHECK:-0}"
 NODE_BIN="${NODE:-$(command -v node)}"
 OUT_DIR="${OUT_DIR:-$W/dist/ets}"
-# Bundle name compiled into the shell abc; see the useNormalizedOHMUrl note above. Keep it
-# in sync with the HAP's OpenHarmonyBundleName (default com.example.<assembly minus hyphens>).
+# Bundle name of the generated shell app; see the useNormalizedOHMUrl note above. Keep it in
+# sync with the HAP's OpenHarmonyBundleName (default com.example.<assembly minus hyphens>).
 BUNDLE_NAME="${ARKTS_SHELL_BUNDLE_NAME:-${KIT_BUNDLE_NAME:-com.example.hellomauiapp}}"
 # compatibleSdkVersion of the generated hvigor project. 18 is the lowest API level whose
 # es2abc output is 13.0.1.0, the newest abc the device runtime accepts (see the abc note
@@ -209,10 +221,13 @@ w('build-profile.json5', f"""{{
             caseSensitiveCheck: true,
             // The device runtime (HarmonyOS 7.0 / API 26) resolves the ability entry as
             // <bundleName>/entry/ets/entryability/EntryAbility and matches it against the abc
-            // record names. Normalized OHM URLs prefix the records with '&entry/src/main/...&'
-            // and the device then strips <bundleName>/<moduleName>/ and fails to find the
-            // record ("Cannot find module 'ets/entryability/EntryAbility'"). Non-normalized
-            // records are <bundleName>/entry/ets/... and resolve directly.
+            // record names. Normalized OHM URLs ('&entry/src/main/ets/...&') are only resolved
+            // when the HAP ships pkgContextInfo.json (the ArkTS VM's IsNormalizedOhmUrlPack()
+            // gate), which this workload's packaging does not include yet - the pre-PA1
+            // normalized abc failed the entry on the device. Non-normalized records are
+            // <bundleName>/entry/ets/... and resolve directly. The host registers both its
+            // bare name and the file name, so switching back to true is a packaging-side job
+            // (ship pkgContextInfo.json) rather than a host-side one.
             useNormalizedOHMUrl: false,
           }},
         }},
