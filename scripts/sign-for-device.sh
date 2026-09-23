@@ -13,6 +13,9 @@
 #     must match the p7b's, and the app cert chain (--cert <cer>, or a *.cer next to the p7b)
 #     must contain the profile's development-certificate (the p7b has only the leaf;
 #     hap-sign-tool needs the chain). Every signed hap is verify-app checked before it is kept.
+#     sign-app is called with an explicit -signCode 1 (the SDK sign-hap.sh/device path does the
+#     same), so the output carries the HAP code-signing block (SoInfoSegment over libs/<abi>/**)
+#     instead of relying on hap-sign-tool's built-in default.
 # Usage (usage() carries the full surface):
 #   sign-for-device.sh <udid[,udid...]> [--version <packVer>] [--bundle <name>]
 #     [--unsigned <hap>] [--out <hap>]
@@ -492,7 +495,7 @@ if [ "$MODE" = external ]; then
     SIG_LOG="$WORK/sign-$_n.log"
     log "external sign: $(basename "$IN") -> $(basename "$_out") (alias $ALIAS)"
     if ! run_external_tool sign-app -keyAlias "$ALIAS" -signAlg SHA256withECDSA -mode localSign \
-      -appCertFile "$WORK/chain.pem" -profileFile "$P7B" -inFile "$IN" -outFile "$TMP_OUT" \
+      -signCode 1 -appCertFile "$WORK/chain.pem" -profileFile "$P7B" -inFile "$IN" -outFile "$TMP_OUT" \
       -keystoreFile "$KEY" "$@"; then
       if [ "$PTY" = 0 ]; then sed 's/^/    /' "$SIG_LOG" >&2; fi
       die "hap-sign-tool sign-app failed for $IN (wrong p12 password, or the p12 does not match the profile/alias)"
