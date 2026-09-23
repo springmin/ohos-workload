@@ -22,7 +22,7 @@ on:
         description: 'maui-ohos commit SHA to compile (defaults to the pinned feature/openharmony tip)'
         required: false
         type: string
-        default: '6a4062b7264623de26aa18e0b6f69032901a91e6'
+        default: '31daa37cd054a2b1de790ce862dd689631d2d933'
 
 # Least privilege: the job only reads this repository and the public springmin/maui-ohos fork;
 # no step pushes anywhere.
@@ -33,9 +33,11 @@ permissions:
 # mutable feature/openharmony branch, so a push to the fork cannot change what this gate compiles.
 # The default is the feature/openharmony tip verified with
 # `git ls-remote https://github.com/springmin/maui-ohos feature/openharmony` on 2026-09-22
-# (6a4062b7); advance it deliberately (workflow_dispatch can compile any other commit SHA).
+# (31daa37c: the audit fixes and the TFM-gated platform slice / net-openharmony API baseline;
+# the pixel suite passes at this commit), advanced in lockstep with the interaction gate; change
+# it deliberately (workflow_dispatch can compile any other commit SHA).
 env:
-  MAUI_OHOS_REF: ${{ github.event.inputs.maui_ohos_ref || '6a4062b7264623de26aa18e0b6f69032901a91e6' }}
+  MAUI_OHOS_REF: ${{ github.event.inputs.maui_ohos_ref || '31daa37cd054a2b1de790ce862dd689631d2d933' }}
 
 jobs:
   pixel:
