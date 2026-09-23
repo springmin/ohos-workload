@@ -22,7 +22,7 @@ on:
         description: 'maui-ohos commit SHA to compile (defaults to the pinned feature/openharmony tip)'
         required: false
         type: string
-        default: '8e4de06fc974d6ad19b7fe98cffff434afaaceb3'
+        default: 'c730226f93e461506cc567dee5ac51c9f6a35678'
 
 # Least privilege: the job only reads this repository and the public springmin/maui-ohos fork;
 # no step pushes anywhere.
@@ -37,7 +37,7 @@ permissions:
 # the pixel suite passes at this commit), advanced in lockstep with the interaction gate; change
 # it deliberately (workflow_dispatch can compile any other commit SHA).
 env:
-  MAUI_OHOS_REF: ${{ github.event.inputs.maui_ohos_ref || '8e4de06fc974d6ad19b7fe98cffff434afaaceb3' }}
+  MAUI_OHOS_REF: ${{ github.event.inputs.maui_ohos_ref || 'c730226f93e461506cc567dee5ac51c9f6a35678' }}
 
 jobs:
   pixel:

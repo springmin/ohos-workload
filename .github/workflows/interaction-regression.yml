@@ -30,7 +30,7 @@ on:
         description: 'maui-ohos commit SHA to compile (defaults to the pinned feature/openharmony tip)'
         required: false
         type: string
-        default: '8e4de06fc974d6ad19b7fe98cffff434afaaceb3'
+        default: 'c730226f93e461506cc567dee5ac51c9f6a35678'
   push:
     branches: [ master ]
 
@@ -49,7 +49,7 @@ permissions:
 # artifacts; the 308-line suite's BLE-GATT/settings/lifecycle/list-extras/PI/RB pins hold at this
 # commit); advance it deliberately (workflow_dispatch can compile any commit).
 env:
-  MAUI_OHOS_REF: ${{ github.event.inputs.maui_ohos_ref || '8e4de06fc974d6ad19b7fe98cffff434afaaceb3' }}
+  MAUI_OHOS_REF: ${{ github.event.inputs.maui_ohos_ref || 'c730226f93e461506cc567dee5ac51c9f6a35678' }}
 
 jobs:
   interaction:
