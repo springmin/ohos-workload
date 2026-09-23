@@ -40,7 +40,7 @@ on:
         description: 'maui-ohos commit SHA to compile (defaults to the pinned feature/openharmony tip)'
         required: false
         type: string
-        default: 'f293741317bd4fd7b1c5334d526692da5b0cff60'
+        default: '0e9d90cdf6d007507c0574a0021ebfc0306ca5ff'
   push:
     branches: [ master ]
   pull_request:
@@ -53,14 +53,13 @@ permissions:
 # Reproducible cross-repo compile: the MAUI slice is checked out at an exact commit, not the
 # mutable feature/openharmony branch, so a push to the fork cannot change what this gate compiles.
 # The default is the feature/openharmony tip verified with
-# `git ls-remote https://github.com/springmin/maui-ohos feature/openharmony` after the PI1/PI2/RB
-# commits (31daa37c: the audit fixes - app-package root, Create=0/pre-Run activation, carousel
-# grouping, shadows, SecureStorage note - the platform application object and window-overlay host,
-# and the TFM gating / net-openharmony public API baseline / SupportedPlatform / frozen-ABI review
-# artifacts; the 315-line suite's BLE-GATT/settings/lifecycle/list-extras/PI/RB pins hold at this
-# commit); advance it deliberately (workflow_dispatch can compile any commit).
+# `git ls-remote https://github.com/springmin/maui-ohos feature/openharmony` after the audit and
+# performance batches (0e9d90cd: the H7 rawfile byte transport, the trimmed slice headers moved
+# into docs/openharmony-slice-notes.md, and the managed perf batch - text metrics, carousel
+# slides and rawfile answer caches - over 31daa37c's audit fixes; the 315-check suite's pins
+# hold at this commit); advance it deliberately (workflow_dispatch can compile any commit).
 env:
-  MAUI_OHOS_REF: ${{ github.event.inputs.maui_ohos_ref || 'f293741317bd4fd7b1c5334d526692da5b0cff60' }}
+  MAUI_OHOS_REF: ${{ github.event.inputs.maui_ohos_ref || '0e9d90cdf6d007507c0574a0021ebfc0306ca5ff' }}
   # setup-dotnet installs the requested 11.0.x preview into DOTNET_INSTALL_DIR; on Linux that
   # defaults to /usr/share/dotnet, which a per-user cache cannot persist. Point it at ~/.dotnet
   # (the action resolves the ~ prefix against $HOME) so the cache step below actually avoids the
