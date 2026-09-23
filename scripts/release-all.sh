@@ -15,8 +15,15 @@
 #   3. sha256 of that bundle                -> BUNDLE_SHA (the independent digest gate)
 #   4. scripts/release-checksums.sh         -> dist/SHA256SUMS
 #   5. scripts/publish-workload-release.sh --bundle-sha256 <hash> --skip-kit
-#         --also-sdk-release <tag> --allow-clobber-mismatch
+#         --also-sdk-release <tag> [--allow-clobber-mismatch, only when explicitly
+#         requested with ALLOW_CLOBBER_MISMATCH=1 or --allow-clobber-mismatch]
 #      (versioned workload-<ver>, rolling workload-latest, SDK release attachment)
+#      The clobber switch stays opt-in: publish-workload-release.sh's digest guard only
+#      overwrites an existing release asset whose published sha256 differs from this run's
+#      bundle digest when the flag is passed. Rolling tags (workload-latest, device-test-kit)
+#      are refreshed routinely and may legitimately differ; the versioned workload-<ver>
+#      release is meant to be immutable, so the wrapper does not weaken that guard by
+#      default - pass ALLOW_CLOBBER_MISMATCH=1 (or --allow-clobber-mismatch) to do so.
 #   6. scripts/make-device-test-kit.sh --publish
 #      If that fails after (re)building the kit tarball, the fallback uploads the kit and a
 #      freshly written <kit>.tar.gz.sha256 sidecar with `gh release upload --clobber` to
@@ -35,7 +42,7 @@
 # code (no pipelines that could mask it) and aborts with exit 1; bad usage exits 2.
 #
 # Usage: scripts/release-all.sh [--publish] [--skip-preflight] [--sdk-release <tag>]
-#                              [--kit-dir <dir>] [--out <tar.gz>] [-h]
+#                              [--kit-dir <dir>] [--out <tar.gz>] [--allow-clobber-mismatch] [-h]
 #
 #   --publish            execute the chain (uploads); without it: dry-run
 #   --skip-preflight     skip step 7
@@ -44,10 +51,15 @@
 #   --kit-dir <dir>      passthrough to make-device-test-kit.sh (default:
 #                        $DEVICE_TEST_KIT_DIR or /data/storage/el2/base/tmp/opencode/device-test-kit)
 #   --out <tar.gz>       passthrough to make-device-test-kit.sh (default: <kit-dir>.tar.gz)
+#   --allow-clobber-mismatch
+#                        forward publish-workload-release.sh's clobber override (same as
+#                        ALLOW_CLOBBER_MISMATCH=1): an already-published asset with a
+#                        different sha256 is overwritten instead of refusing the release
 #   -h, --help           this help
 #
 # Env: SDK_BAND (default 11.0.100-rc.1), REPO (default springmin/sdk-ohos), DOTNET_ROOT
-#      (default $HOME/.dotnet), DEVICE_TEST_KIT_DIR, GH (default gh).
+#      (default $HOME/.dotnet), DEVICE_TEST_KIT_DIR, GH (default gh),
+#      ALLOW_CLOBBER_MISMATCH (default 0; see --allow-clobber-mismatch).
 set -u
 
 log()  { printf '[%s] %s\n' "$(date '+%H:%M:%S')" "$*"; }
@@ -67,6 +79,7 @@ SKIP_PREFLIGHT=0
 SDK_RELEASE="$DEFAULT_SDK_RELEASE"
 KIT_DIR=""
 KIT_OUT_ARG=""
+ALLOW_CLOBBER_MISMATCH="${ALLOW_CLOBBER_MISMATCH:-0}"
 
 usage() {
     cat <<EOF
@@ -84,9 +97,13 @@ written or uploaded unless --publish is given.
                        $DEFAULT_SDK_RELEASE)
   --kit-dir <dir>      passthrough to make-device-test-kit.sh
   --out <tar.gz>       passthrough to make-device-test-kit.sh
+  --allow-clobber-mismatch
+                       forward publish-workload-release.sh's clobber override (same as
+                       ALLOW_CLOBBER_MISMATCH=1): overwrite an already-published asset
+                       whose sha256 differs instead of refusing the release
   -h, --help           this help
 
-Env: SDK_BAND, REPO, DOTNET_ROOT, DEVICE_TEST_KIT_DIR, GH.
+Env: SDK_BAND, REPO, DOTNET_ROOT, DEVICE_TEST_KIT_DIR, GH, ALLOW_CLOBBER_MISMATCH (0/1).
 Steps 1 and 8 are read-only and also run in dry-run; every step aborts (exit 1) on a
 non-zero exit code, bad usage exits 2.
 EOF
@@ -108,6 +125,7 @@ while [ $# -gt 0 ]; do
             shift
             [ $# -gt 0 ] || { warn "--out needs a tarball path"; usage >&2; exit 2; }
             KIT_OUT_ARG="$1" ;;
+        --allow-clobber-mismatch) ALLOW_CLOBBER_MISMATCH=1 ;;
         -h|--help) usage; exit 0 ;;
         *) warn "unknown argument: $1"; usage >&2; exit 2 ;;
     esac
@@ -266,7 +284,15 @@ run_or_die "step 4: release-checksums.sh" sh "$W/scripts/release-checksums.sh"
 
 # ------------------------------------------------------------------ step 5: publish
 step_begin "publish the versioned + rolling releases (scripts/publish-workload-release.sh)"
-set -- --repo "$REPO" --bundle-sha256 "$BUNDLE_SHA_ARG" --skip-kit --allow-clobber-mismatch
+set -- --repo "$REPO" --bundle-sha256 "$BUNDLE_SHA_ARG" --skip-kit
+# C4: publish-workload-release.sh refuses to clobber an already-published asset whose
+# sha256 differs from this run's bundle digest. That gate is intentional for the versioned
+# workload-<ver> release (immutable); refreshing the rolling tags may legitimately need the
+# override, which is therefore forwarded only when explicitly requested.
+if [ "$ALLOW_CLOBBER_MISMATCH" = 1 ]; then
+    warn "ALLOW_CLOBBER_MISMATCH=1: forwarding --allow-clobber-mismatch (an existing asset with a different digest may be overwritten)"
+    set -- "$@" --allow-clobber-mismatch
+fi
 if [ -n "$SDK_RELEASE" ]; then
     set -- "$@" --also-sdk-release "$SDK_RELEASE"
 fi
