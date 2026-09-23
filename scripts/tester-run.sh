@@ -33,6 +33,10 @@
 # --probes --extra-probes). Without a device (hdc list targets) the script refuses device
 # steps: with an action flag it stops immediately, with no action flag it only verifies the
 # kit locally and prints the plan. --uninstall is explicit and never implied.
+# Every bundle name (from a hap's module.json or KIT_BUNDLE_NAME) is validated before it can
+# reach an hdc command: it must be a dotted, letter-first [A-Za-z0-9_] name, so a crafted
+# hap cannot smuggle shell metacharacters into `hdc shell aa start -b ...` (A1). Uninstall
+# log file names are sanitized on top of that.
 #
 # Exit codes: 0 = ok (or a dry-run plan was printed with a device reachable),
 #             1 = at least one step failed (the archive is still produced),
@@ -47,7 +51,7 @@
 #      when the module.json cannot be read), TMPDIR.
 set -e
 
-SCRIPT_VERSION="3 (2026-09-23)"
+SCRIPT_VERSION="4 (2026-09-23)"
 
 log()  { printf '[%s] %s\n' "$(date '+%H:%M:%S')" "$*"; }
 warn() { printf '[%s] WARN: %s\n' "$(date '+%H:%M:%S')" "$*" >&2; }
@@ -131,6 +135,7 @@ HAPS=""
 COMPARE_LIB=""
 FALLBACK_BUNDLE="${KIT_BUNDLE_NAME:-com.example.hellomauiapp}"
 BUNDLE=""
+BUNDLE_UNSAFE=0
 FILTER_RE='hellomaui|maui|dotnet|openharmonyhost|AppKilledReporter|JsError|appspawn|PROBE'
 FILTER_KMSG_RE='xpm|unsigned file|fs_security_verity|libopenharmonyhost|hellomauiapp'
 FILTER_APPLIB_RE='SetAppLibPath|appLibPathKey|NativeLibPath|lib path'
@@ -250,6 +255,37 @@ $_ep_one"
     esac
     shift
 done
+
+# ---- bundle-name validation (security, A1) -------------------------------------------
+# A bundle name is interpolated into `hdc shell aa start -a EntryAbility -b <bundle>` /
+# `pidof` / `ps` / uninstall commands. hdc joins its argv into one device-side shell command
+# line, so a hap's module.json bundleName (--hap / --extra-probes) or KIT_BUNDLE_NAME with
+# shell metacharacters would run with hdc-shell privileges on the device. The only accepted
+# shape is the dotted, letter-first [A-Za-z0-9_] form used by the kit's haps.
+#
+# The first `case` must stay first: it rejects newlines, carriage returns, tabs, every other
+# control character and spaces byte by byte. grep -E matches line by line, so a name whose
+# second line looks valid would slip through a regex-only check (the PoC payload does).
+is_safe_bundle_name() {
+    case "$1" in
+        ''|*[!A-Za-z0-9._-]*) return 1 ;;
+    esac
+    printf '%s' "$1" | grep -Eq '^[A-Za-z][A-Za-z0-9_]*(\.[A-Za-z0-9_]+)+$'
+}
+
+# A bundle name for logs/errors: never echo the raw value (it can carry control characters
+# or shell metacharacters and turn a log line into the next injection).
+bundle_for_log() {
+    printf '%s' "$1" | tr -c 'A-Za-z0-9._-' '?' | cut -c1-64
+}
+
+# Gate a bundle name right before it reaches an hdc command (start / pidof / uninstall).
+require_safe_bundle_name() {
+    is_safe_bundle_name "$1" || die "拒绝执行：bundleName 未通过安全校验（只允许 [A-Za-z][A-Za-z0-9_]* 的点分段形式）: '$(bundle_for_log "$1")'"
+}
+
+# KIT_BUNDLE_NAME is the second bundle-name source; it must be valid before it can be used.
+require_safe_bundle_name "$FALLBACK_BUNDLE"
 
 # ---- argument validation -------------------------------------------------------------
 # --extra-probes: drop directories named twice (repeatable + comma forms are equivalent)
@@ -385,6 +421,7 @@ stop_hilog() {
 read_bundle() {
     _src="$1"
     BUNDLE=""
+    BUNDLE_UNSAFE=0
     if command -v python3 >/dev/null 2>&1; then
         BUNDLE="$(python3 - "$_src" <<'PY'
 import json, sys, zipfile
@@ -399,6 +436,12 @@ PY
 )" || BUNDLE=""
     elif command -v unzip >/dev/null 2>&1; then
         BUNDLE="$(unzip -p "$_src" module.json 2>/dev/null | sed -n 's/.*"bundleName"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -n1)"
+    fi
+    # Never hand a name from a hap to the rest of the script unvalidated: the callers in
+    # step 0 / --uninstall / --extra-probes treat BUNDLE_UNSAFE=1 as a hard reject.
+    if [ -n "$BUNDLE" ] && ! is_safe_bundle_name "$BUNDLE"; then
+        BUNDLE_UNSAFE=1
+        BUNDLE=""
     fi
 }
 
@@ -525,20 +568,39 @@ else
 fi
 [ -f "$MAIN_HAP" ] || die "主 hap 不存在: $MAIN_HAP（API 20 设备请用 --hap <kit>/hello-maui-app-api20.hap）"
 read_bundle "$MAIN_HAP"
+if [ "$BUNDLE_UNSAFE" = 1 ]; then
+    die "主 hap 的 module.json bundleName 未通过安全校验（含控制字符/空格/shell 元字符）；拒绝安装/启动: $MAIN_HAP"
+fi
 if [ -z "$BUNDLE" ]; then
     warn "无法从主 hap 读出 bundleName（缺 python3/unzip？），回退为 $FALLBACK_BUNDLE（KIT_BUNDLE_NAME 可覆盖）"
     BUNDLE="$FALLBACK_BUNDLE"
 fi
+require_safe_bundle_name "$BUNDLE"
 MAIN_HAP_SHA="$(sha256sum "$MAIN_HAP" | cut -d' ' -f1)"
 log "   主 hap:  $MAIN_HAP"
 log "   bundle:  $BUNDLE"
 
 # ---- step 0b: uninstall (explicit) ---------------------------------------------------
+# Uninstall log file name for a bundle name. The validator above already guarantees the
+# alphabet, but the name still builds a path under $OUT/uninstall: refuse anything that
+# could leave that directory (a '/', an absolute path, '' , '.' or any '..' segment).
+uninstall_log_name() {
+    case "$1" in
+        ''|.|..|/*|*/*|*..*) die "uninstall 日志文件名不安全（拒绝 / 与 ..）: '$(bundle_for_log "$1")'" ;;
+    esac
+    case "$1" in
+        *[!A-Za-z0-9._-]*) die "uninstall 日志文件名含不安全字符: '$(bundle_for_log "$1")'" ;;
+    esac
+    printf '%s.txt' "$1"
+}
+
 uninstall_one() {
     _ub="$1"; _key="$2"
+    require_safe_bundle_name "$_ub"
+    _ulog="$(uninstall_log_name "$_ub")"
     _rc=0
-    hdc_cmd uninstall "$_ub" > "$OUT/uninstall/$_ub.txt" 2>&1 || _rc=$?
-    _out="$(cat "$OUT/uninstall/$_ub.txt" 2>/dev/null || true)"
+    hdc_cmd uninstall "$_ub" > "$OUT/uninstall/$_ulog" 2>&1 || _rc=$?
+    _out="$(cat "$OUT/uninstall/$_ulog" 2>/dev/null || true)"
     case "$_out" in
         *"not installed"*|*"not exist"*|*"not found"*)
             log "   未安装（跳过）: $_ub"
@@ -549,7 +611,7 @@ uninstall_one() {
                 log "   已卸载: $_ub"
                 record "$_key=ok"
             else
-                warn "   卸载结果未确认（hdc rc=$_rc）: $_ub（原文: $OUT/uninstall/$_ub.txt）"
+                warn "   卸载结果未确认（hdc rc=$_rc）: $_ub（原文: $OUT/uninstall/$_ulog）"
                 record "$_key=unknown"
                 FAILURES=$((FAILURES + 1))
             fi
@@ -580,8 +642,12 @@ if [ "$UNINSTALL" = 1 ]; then
                     _save_bundle="$BUNDLE"
                     read_bundle "$_xh"
                     _xbundle="$BUNDLE"
+                    _xunsafe="$BUNDLE_UNSAFE"
                     BUNDLE="$_save_bundle"
-                    if [ -n "$_xbundle" ]; then
+                    if [ "$_xunsafe" = 1 ]; then
+                        warn "   拒绝 $(basename "$_xh") 的 bundleName（含不安全字符），跳过卸载"
+                        record "uninstall_extraprobe_${_xkey}=unsafe_bundle"
+                    elif [ -n "$_xbundle" ]; then
                         uninstall_one "$_xbundle" "uninstall_extraprobe_$_xkey"
                     else
                         warn "   读不出 $(basename "$_xh") 的 bundleName，跳过卸载"
@@ -662,6 +728,7 @@ fi
 # ---- helpers for start / capture -----------------------------------------------------
 start_app() {
     _bundle="$1"; _log="$2"
+    require_safe_bundle_name "$_bundle"
     START_RC=0
     hdc_cmd shell aa start -a EntryAbility -b "$_bundle" > "$_log" 2>&1 || START_RC=$?
     if grep -qi -e 'success' "$_log" 2>/dev/null; then
@@ -675,6 +742,7 @@ start_app() {
 
 proc_alive() {
     _b="$1"
+    require_safe_bundle_name "$_b"
     _p="$(hdc_cmd shell pidof "$_b" 2>/dev/null | tr -d '\r' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
     if [ -z "$_p" ]; then
         _p="$(hdc_cmd shell ps -ef 2>/dev/null | tr -d '\r' | grep -F -e "$_b" | grep -v -e grep | head -n1)"
@@ -930,7 +998,14 @@ $_xkey"
             _save_bundle="$BUNDLE"
             read_bundle "$_xh"
             _xbundle="$BUNDLE"
+            _xunsafe="$BUNDLE_UNSAFE"
             BUNDLE="$_save_bundle"
+            if [ "$_xunsafe" = 1 ]; then
+                warn "   拒绝 $(basename "$_xh") 的 module.json bundleName（含不安全字符），跳过该额外探针"
+                record "extraprobe_${_xkey}_result=unsafe_bundle"
+                FAILURES=$((FAILURES + 1))
+                continue
+            fi
             if [ -z "$_xbundle" ]; then
                 warn "   读不出 $(basename "$_xh") 的 bundleName，跳过该额外探针"
                 record "extraprobe_${_xkey}_result=no_bundle"

@@ -21,14 +21,23 @@
 #                  hap is installed, started, captured and archived like P1-P4
 #   S8  extra-fail an extra probe whose install fails (unsigned/signature path) is recorded
 #                  as install_failed and skipped, and the round still produces its archive
+#   S9  injection  11 malicious bundleName payloads (;, &&, $(), backticks, newline, space,
+#                  quotes, backslashes, traversal) in a hap's module.json are rejected
+#                  before any hdc command; traversal writes no file outside $OUT
+#   S9b valid      control group: dotted/underscore/uppercase bundle names still install,
+#                  start and record their joined device-side command
+#   S10 env        KIT_BUNDLE_NAME with a payload is rejected; a valid one still drives the
+#                  fallback path
 #
 # Stub hdc surface (every subcommand tester-run.sh invokes):
 #   list targets | install -r <hap> | uninstall <bundle> | shell aa start -a EntryAbility -b <b>
 #   shell pidof <b> | shell ps -ef | shell param get <key> | shell bm get -u
 #   shell hilog -r | hilog | shell "hilog -t kmsg" | shell "cat /proc/sys/..."
 #   shell "ls -l /data/storage/el1/bundle/libs/arm64/ 2>/dev/null"
-# `hdc -t <id>` prefixes are accepted. A hap whose basename contains `fail` is rejected
-# with `code:9568297` on stderr. pidof answers a pid for the first
+# `hdc -t <id>` prefixes are accepted. Every `shell` invocation is also appended, joined the
+# way hdc joins its argv, to <state>/device-shell.log (the stub never executes it): the S9
+# tests fail if a payload ever reaches that line. A hap whose basename contains `fail` is
+# rejected with `code:9568297` on stderr. pidof answers a pid for the first
 # FAKE_HDC_PIDOF_ALIVE_CALLS calls per bundle (default 1), then nothing.
 # FAKE_HDC_MISSING_PROC=1 makes both /proc/sys cats fail (missing path);
 # FAKE_HDC_MISSING_APPLIBS=1 makes the bundle libs ls fail (missing dir).
@@ -46,7 +55,7 @@
 # Exit: 0 = all checks passed; 1 = at least one check failed (work dir kept for triage).
 set -u
 
-SELFTEST_VERSION="3 (2026-09-23)"
+SELFTEST_VERSION="4 (2026-09-23)"
 
 log()  { printf '[%s] %s\n' "$(date '+%H:%M:%S')" "$*"; }
 section() { printf '\n=== %s ===\n' "$*"; }
@@ -170,8 +179,27 @@ PY
     rm -rf "$_src"
 }
 
+# Like make_hap, but the bundle name goes through json.dumps: needed for the S9 payloads
+# (quotes, backslashes, control characters) that make_hap's raw heredoc cannot carry.
+make_hap_json() {
+    _dst="$1"; _bundle="$2"; _name="${3:-entry}"
+    python3 - "$_dst" "$_bundle" "$_name" <<'PY'
+import json, os, sys, tempfile, zipfile
+dst, bundle, name = sys.argv[1], sys.argv[2], sys.argv[3]
+mod = {"app": {"bundleName": bundle, "versionName": "1.0.0-selftest",
+               "minAPIVersion": 60000020, "targetAPIVersion": 60000020, "apiReleaseType": "Release"},
+       "module": {"name": name, "type": "entry", "mainElement": "EntryAbility"}}
+with tempfile.TemporaryDirectory() as d:
+    path = os.path.join(d, "module.json")
+    with open(path, "w", encoding="utf-8") as handle:
+        json.dump(mod, handle)
+    with zipfile.ZipFile(dst, "w", zipfile.ZIP_DEFLATED) as z:
+        z.write(path, "module.json")
+PY
+}
+
 make_synthetic_kit() {
-    _k="$WORK/kit-synth"
+    _k="${1:-$WORK/kit-synth}"
     rm -rf "$_k"
     mkdir -p "$_k"
     make_hap "$_k/hello-maui-app.hap" "com.example.hellomauiapp" "entry"
@@ -303,6 +331,9 @@ case "$cmd" in
     shell)
         shift
         _cmd="$*"
+        # hdc joins `shell` argv into one device-side command line; record that line so the
+        # tests can prove no bundle-name payload ever reaches it (stub-only, not executed).
+        printf '%s\n' "$_cmd" >> "$STATE/device-shell.log"
         case "$_cmd" in
             "hilog -t kmsg")
                 cat <<'KMSG_EOF'
@@ -719,6 +750,7 @@ assert_contains "S2 stub called uninstall" "uninstall com.example.hellomauiapp" 
 assert_contains "S2 stub called install" "install -r $MAIN_HAP" "$CALLS_S2"
 assert_contains "S2 stub called aa start" "shell aa start -a EntryAbility -b com.example.hellomauiapp" "$CALLS_S2"
 assert_contains "S2 stub called pidof" "shell pidof com.example.hellomauiapp" "$CALLS_S2"
+assert_contains "S2 stub joined device command for aa start" "aa start -a EntryAbility -b com.example.hellomauiapp" "$STATE_DIR/S2/device-shell.log"
 assert_contains "S2 stub called hilog -r" "shell hilog -r" "$CALLS_S2"
 assert_contains "S2 stub called param get" "shell param get const.product.model" "$CALLS_S2"
 assert_contains "S2 stub called bm get -u" "shell bm get -u" "$CALLS_S2"
@@ -915,6 +947,116 @@ else
     bad "S8 report archive could not be extracted ($ARCHIVE_S8)"
 fi
 assert_scenario_sandbox "S8"
+
+# ---- S9: malicious bundleName payloads are rejected (A1) ------------------------------
+# Every payload below is a bundleName read from a hap's module.json (--hap path) or from
+# KIT_BUNDLE_NAME. hdc joins argv into one device-side command line, so any of these could
+# run on the device if it reached `aa start -b` / `pidof` / uninstall. The script must die
+# during kit/step-0 validation, before the first device action; the stub records the
+# joined device-side line in <state>/device-shell.log to make a regression visible.
+section "S9 malicious bundleName payloads (--hap) rejected before any device command"
+S9_TOTAL=0
+S9_REJECTED=0
+_i=1
+while [ "$_i" -le 11 ]; do
+    case "$_i" in
+        1)  P='com.example.legit; touch PWNED' ;;
+        2)  P='com.example.legit && touch PWNED' ;;
+        3)  P='com.example.legit$(touch PWNED)' ;;
+        4)  P='com.example.legit`touch PWNED`' ;;
+        5)  P="com.example.legit$(printf '\n')touch PWNED" ;;
+        6)  P='com.example.legit touch PWNED' ;;
+        7)  P='com.example.legit"; touch PWNED;"' ;;
+        8)  P="com.example.legit'; touch PWNED;'" ;;
+        9)  P='com.example.legit\; touch PWNED' ;;
+        10) P='com.example.legit\ touch PWNED' ;;
+        11) P='../ESCAPED' ;;
+    esac
+    if [ "$HAVE_PY3" != 1 ]; then
+        skip "S9 payload $_i needs python3 for a JSON-safe module.json"
+        continue
+    fi
+    S9_TOTAL=$((S9_TOTAL + 1))
+    EVIL_HAP="$WORK/haps/evil-$_i.hap"
+    make_hap_json "$EVIL_HAP" "$P" "entry"
+    run_tester "S9-$_i" "" --kit-dir "$KIT" --hap "$EVIL_HAP" --install --start --uninstall \
+        --out "$WORK/out-evil-$_i"
+    _bad=0
+    [ "$RC" -ne 0 ] || _bad=1
+    grep -Fq -- "bundleName 未通过安全校验" "$LOGS/S9-$_i.log" || _bad=1
+    _dev="$(grep -c -e 'install -r' -e 'aa start' -e 'uninstall ' "$STATE_DIR/S9-$_i/calls.log" 2>/dev/null || true)"
+    [ "$_dev" = "0" ] || _bad=1
+    [ ! -e "$STATE_DIR/S9-$_i/device-shell.log" ] || _bad=1
+    if [ "$_bad" = 0 ]; then
+        S9_REJECTED=$((S9_REJECTED + 1))
+        ok "S9 payload $_i rejected before any device command"
+    else
+        bad "S9 payload $_i NOT rejected (rc=$RC; see $LOGS/S9-$_i.log and $STATE_DIR/S9-$_i/calls.log)"
+    fi
+    assert_not_exists "S9 payload $_i creates no PWNED file" "$CWD/PWNED"
+    _i=$((_i + 1))
+done
+assert_eq "S9 all ${S9_TOTAL} malicious payloads rejected" "$S9_TOTAL" "$S9_REJECTED"
+S9_ESCAPED="$(find "$WORK" -name 'ESCAPED*' -print 2>/dev/null)"
+assert_eq "S9 traversal payload leaves no ESCAPED file" "" "$S9_ESCAPED"
+
+# ---- S9b: valid bundle names still pass (control group) -------------------------------
+section "S9b valid bundle names still pass (--hap control group)"
+if [ "$HAVE_PY3" = 1 ]; then
+    VALID_UNDERSCORE_HAP="$WORK/haps/valid-underscore.hap"
+    make_hap_json "$VALID_UNDERSCORE_HAP" "com.example.hello_mauiapp_2" "entry"
+    run_tester S9b "" --kit-dir "$KIT" --hap "$VALID_UNDERSCORE_HAP" --install --start --capture 1 \
+        --out "$WORK/out-valid-underscore"
+    assert_eq "S9b underscore bundle accepted (rc, log: $LOGS/S9b.log)" "0" "$RC"
+    assert_contains "S9b stub called aa start with the underscore bundle" \
+        "shell aa start -a EntryAbility -b com.example.hello_mauiapp_2" "$STATE_DIR/S9b/calls.log"
+    assert_contains "S9b joined device command carries the underscore bundle" \
+        "aa start -a EntryAbility -b com.example.hello_mauiapp_2" "$STATE_DIR/S9b/device-shell.log"
+
+    VALID_UPPER_HAP="$WORK/haps/valid-uppercase.hap"
+    make_hap_json "$VALID_UPPER_HAP" "com.example.Upper2Case" "entry"
+    run_tester S9c "" --kit-dir "$KIT" --hap "$VALID_UPPER_HAP" --install --start --capture 1 \
+        --out "$WORK/out-valid-upper"
+    assert_eq "S9c uppercase bundle accepted (rc, log: $LOGS/S9c.log)" "0" "$RC"
+    assert_contains "S9c stub called aa start with the uppercase bundle" \
+        "shell aa start -a EntryAbility -b com.example.Upper2Case" "$STATE_DIR/S9c/calls.log"
+    assert_scenario_sandbox "S9b"
+    assert_scenario_sandbox "S9c"
+else
+    skip "S9b/S9c valid-bundle controls need python3"
+fi
+
+# ---- S10: KIT_BUNDLE_NAME source validation ------------------------------------------
+section "S10 KIT_BUNDLE_NAME payload rejected; valid fallback accepted"
+RC=0
+( cd "$CWD" && env HDC="$STUB" TMPDIR="$TMPD" FAKE_HDC_STATE="$STATE_DIR/S10" \
+    FAKE_HDC_DEVICE="$STUB_DEVICE" PATH="$WORK/bin:$PATH" \
+    KIT_BUNDLE_NAME='com.example.legit; touch PWNED' \
+    sh "$TESTER" --kit-dir "$KIT" --install --out "$WORK/out-env" ) > "$LOGS/S10.log" 2>&1 || RC=$?
+assert_eq "S10 KIT_BUNDLE_NAME payload rejected (rc, log: $LOGS/S10.log)" "1" "$RC"
+assert_contains "S10 rejection names the bundle-name check" "bundleName 未通过安全校验" "$LOGS/S10.log"
+assert_not_exists "S10 rejected before any hdc call" "$STATE_DIR/S10/calls.log"
+assert_not_exists "S10 creates no PWNED file" "$CWD/PWNED"
+
+if [ "$HAVE_PY3" = 1 ]; then
+    # A hap without module.json falls back to KIT_BUNDLE_NAME; a valid one must still work.
+    # Use a dedicated minimal kit: the real kit's verify-kit.sh cross-checks KIT_BUNDLE_NAME
+    # against its own haps, which would reject the custom fallback for an unrelated reason.
+    make_synthetic_kit "$WORK/kit-env"
+    NOMOD_HAP="$WORK/haps/no-module.hap"
+    python3 - "$NOMOD_HAP" <<'PY'
+import sys, zipfile
+with zipfile.ZipFile(sys.argv[1], "w") as z:
+    z.writestr("not-module.txt", "no module.json here")
+PY
+    run_tester S10b "KIT_BUNDLE_NAME=com.example.custom.fallback" --kit-dir "$WORK/kit-env" \
+        --hap "$NOMOD_HAP" --out "$WORK/out-env-ok"
+    assert_eq "S10b valid KIT_BUNDLE_NAME fallback accepted (rc, log: $LOGS/S10b.log)" "0" "$RC"
+    assert_contains "S10b fallback bundle used for the plan" "bundle:  com.example.custom.fallback" "$LOGS/S10b.log"
+else
+    skip "S10b valid fallback control needs python3"
+fi
+assert_not_exists "S10 creates no ESCAPED file" "$WORK/ESCAPED.txt"
 
 # ---- global: nothing outside the temp dir --------------------------------------------
 section "global: no state outside the temp dir"
