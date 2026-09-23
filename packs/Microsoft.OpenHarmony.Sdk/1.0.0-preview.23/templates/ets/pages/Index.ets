@@ -1004,7 +1004,33 @@ struct Index {
   // origins, local files, inline/in-page documents and relative references - which keep
   // loading exactly as before (no managed round trip).
   private isAppNavigation(url: string): boolean {
-    if (url.length === 0 || url.charAt(0) === '/' || url.charAt(0) === '#' || url.charAt(0) === '?') {
+    if (url.length === 0) {
+      return true;
+    }
+    // H-C2: reject protocol-relative and backslash network-path references ("//host",
+    // "/\host", "\\host", ...) before the '/' fast path below. A URL parser resolves them
+    // against another authority (WHATWG: "//evil.invalid/x" -> "https://evil.invalid/x"),
+    // so they must never count as app-local content; returning false hands the load to the
+    // managed handler, exactly like any other external URL. Leading whitespace/control
+    // characters are skipped first so " //host", "\t//host" and "\u0001//host" cannot dodge
+    // the check. Plain same-origin paths ("/page", "#frag", "?q") keep the fast path.
+    let lead: number = 0;
+    while (lead < url.length) {
+      const code: number = url.charCodeAt(lead);
+      if (code <= 0x20 || code === 0x7f) {
+        lead++;
+      } else {
+        break;
+      }
+    }
+    if (lead + 1 < url.length) {
+      const first: string = url.charAt(lead);
+      const second: string = url.charAt(lead + 1);
+      if ((first === '/' || first === '\\') && (second === '/' || second === '\\')) {
+        return false;
+      }
+    }
+    if (url.charAt(0) === '/' || url.charAt(0) === '#' || url.charAt(0) === '?') {
       return true;
     }
     if (url.startsWith('about:') || url.startsWith('data:') || url.startsWith('blob:') ||
