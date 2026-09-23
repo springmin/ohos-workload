@@ -40,7 +40,7 @@ on:
         description: 'maui-ohos commit SHA to compile (defaults to the pinned feature/openharmony tip)'
         required: false
         type: string
-        default: '0e9d90cdf6d007507c0574a0021ebfc0306ca5ff'
+        default: 'c05db90fddb6f23890456aa00fe774fa37931d99'
   push:
     branches: [ master ]
   pull_request:
@@ -53,13 +53,14 @@ permissions:
 # Reproducible cross-repo compile: the MAUI slice is checked out at an exact commit, not the
 # mutable feature/openharmony branch, so a push to the fork cannot change what this gate compiles.
 # The default is the feature/openharmony tip verified with
-# `git ls-remote https://github.com/springmin/maui-ohos feature/openharmony` after the audit and
-# performance batches (0e9d90cd: the H7 rawfile byte transport, the trimmed slice headers moved
-# into docs/openharmony-slice-notes.md, and the managed perf batch - text metrics, carousel
-# slides and rawfile answer caches - over 31daa37c's audit fixes; the 315-check suite's pins
-# hold at this commit); advance it deliberately (workflow_dispatch can compile any commit).
+# `git ls-remote https://github.com/springmin/maui-ohos feature/openharmony` on 2026-09-24
+# (c05db90f: the scroll ticker drops its frame registration as soon as no fling can start, and
+# the frame path stops allocating - dead calendar draw removed, animation-loop list and colour
+# variants reused, cached frame-subscription delegate - over the H7 rawfile byte transport
+# batch; the 315-check suite's pins hold at this commit); advance it deliberately
+# (workflow_dispatch can compile any commit).
 env:
-  MAUI_OHOS_REF: ${{ github.event.inputs.maui_ohos_ref || '0e9d90cdf6d007507c0574a0021ebfc0306ca5ff' }}
+  MAUI_OHOS_REF: ${{ github.event.inputs.maui_ohos_ref || 'c05db90fddb6f23890456aa00fe774fa37931d99' }}
   # setup-dotnet installs the requested 11.0.x preview into DOTNET_INSTALL_DIR; on Linux that
   # defaults to /usr/share/dotnet, which a per-user cache cannot persist. Point it at ~/.dotnet
   # (the action resolves the ~ prefix against $HOME) so the cache step below actually avoids the
