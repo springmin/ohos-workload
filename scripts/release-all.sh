@@ -2,12 +2,12 @@
 # One-command release wrapper for the OpenHarmony platform workload (ohos-workload): the
 # proven manual release chain, in order. DRY-RUN BY DEFAULT.
 #   1 pack consistency: repo packs/Microsoft.OpenHarmony.Sdk/<ver> vs the installed
-#     ${DOTNET_ROOT:-~/.dotnet}/packs/... copy, for the three files a stale install breaks
-#     (templates/ets/modules.ui.abc - rebuilt by build-arkts-shell.sh and synced into the
-#     installed pack; modules.abc is the frozen default stub - hosts/arm64-v8a/
-#     libopenharmonyhost.so, targets/OpenHarmony.Hap.targets). Reports MATCH / NOTE-DIFF; a
-#     diff is a warning, never an abort (step 6 builds the kit against the installed copy, so
-#     a diff deserves a look).
+#     ${DOTNET_ROOT:-~/.dotnet}/packs/... copy, for the four files a stale install breaks
+#     (templates/ets/modules.ui.abc - the kit shell rebuilt by build-arkts-shell.sh;
+#     templates/ets/modules.abc - the headless shell, built with ARKTS_SHELL_VARIANT=headless;
+#     both synced into the installed pack; hosts/arm64-v8a/libopenharmonyhost.so,
+#     targets/OpenHarmony.Hap.targets). Reports MATCH / NOTE-DIFF; a diff is a warning, never
+#     an abort (step 6 builds the kit against the installed copy, so a diff deserves a look).
 #   2 pack-workload-bundle.sh -> dist/openharmony-workload-<ver>.tar.gz
 #   3 sha256 of that bundle -> BUNDLE_SHA (the independent digest gate)
 #   4 release-checksums.sh -> dist/SHA256SUMS
@@ -208,6 +208,7 @@ fi
 
 DIFFS=0
 for _item in "abc:templates/ets/modules.ui.abc" \
+             "headless:templates/ets/modules.abc" \
              "host:hosts/arm64-v8a/libopenharmonyhost.so" \
              "targets:targets/OpenHarmony.Hap.targets"; do
     _label="${_item%%:*}"; _rel="${_item#*:}"
@@ -226,10 +227,10 @@ for _item in "abc:templates/ets/modules.ui.abc" \
         fi
     fi
 done
-log "step 1: $((3 - DIFFS))/3 MATCH, $DIFFS NOTE-DIFF"
+log "step 1: $((4 - DIFFS))/4 MATCH, $DIFFS NOTE-DIFF"
 if [ "$DIFFS" -gt 0 ]; then
     warn "installed pack copy differs from the repo pack; step 6 builds the kit against the installed"
-    warn "copy (MSBuild resolves ~/.dotnet/packs), so sync the three files (or reinstall the workload)"
+    warn "copy (MSBuild resolves ~/.dotnet/packs), so sync the four files (or reinstall the workload)"
     warn "before --publish when the difference is not intended"
 fi
 

@@ -1,7 +1,10 @@
 #!/bin/sh
-# Builds the ArkTS shell (ability + ArkUI page) with the official hvigor toolchain and writes
-# dist/ets/modules.abc; packaging consumes it via -p:OpenHarmonyArktsModulesAbc together with
-# -p:OpenHarmonyUIPage (see the OpenHarmonyUIPage packing doc).
+# Builds the ArkTS shell with the official hvigor toolchain. ARKTS_SHELL_VARIANT picks the
+# sources: ui (default) compiles the UI ability + ArkUI page and writes dist/ets/modules.abc;
+# packaging consumes it via -p:OpenHarmonyArktsModulesAbc together with -p:OpenHarmonyUIPage
+# (see the OpenHarmonyUIPage packing doc). headless compiles the page-free EntryAbility.ets and
+# writes dist/ets/modules.headless.abc, the artifact installed as the platform pack's
+# templates/ets/modules.abc - the default shell for builds without OpenHarmonyUIPage.
 #
 # No DevEco Studio: hvigor and its ohos plugin come from the Huawei npm mirror
 # (HVIGOR_MIRROR), pinned by sha256 (HVIGOR_SHA256 / HVIGOR_OHOS_PLUGIN_SHA256) and unpacked
@@ -45,6 +48,10 @@ BUNDLE_NAME="${ARKTS_SHELL_BUNDLE_NAME:-${KIT_BUNDLE_NAME:-com.example.hellomaui
 # in the header). Raise it only together with ARKTS_MAX_BC_VERSION.
 COMPATIBLE_SDK_VERSION="${ARKTS_COMPATIBLE_SDK_VERSION:-18}"
 MAX_BC_VERSION="${ARKTS_MAX_BC_VERSION:-13.0.1.0}"
+# Selective shell variant (see the header): ui is the default and keeps the kit-facing
+# dist/ets/modules.abc; headless emits dist/ets/modules.headless.abc so it can never overwrite
+# the UI shell the device-test kit packages.
+VARIANT="${ARKTS_SHELL_VARIANT:-ui}"
 
 info() { printf '==> %s\n' "$*"; }
 die() { printf 'ERROR: %s\n' "$*" >&2; exit 1; }
@@ -226,21 +233,34 @@ for c in ets js native previewer toolchains; do
 done
 
 # 3) project scaffold --------------------------------------------------------
+case "$VARIANT" in
+    ui|headless) ;;
+    *) die "ARKTS_SHELL_VARIANT must be 'ui' or 'headless' (got '$VARIANT')" ;;
+esac
 rm -rf "$PROJ"
 mkdir -p "$PROJ/hvigor" "$PROJ/AppScope/resources/base/element" "$PROJ/AppScope/resources/base/media" \
-    "$PROJ/entry/src/main/ets/entryability" "$PROJ/entry/src/main/ets/pages" \
+    "$PROJ/entry/src/main/ets/entryability" \
     "$PROJ/entry/src/main/resources/base/element" "$PROJ/entry/src/main/resources/base/media" \
     "$PROJ/entry/src/main/resources/base/profile"
-# UI ability + page from the platform pack templates
-cp "$TPL/ets/entryability/EntryAbility.ui.ets" "$PROJ/entry/src/main/ets/entryability/EntryAbility.ets"
-cp "$TPL/ets/pages/Index.ets" "$PROJ/entry/src/main/ets/pages/Index.ets"
+if [ "$VARIANT" = ui ]; then
+    # UI variant: the UI-enabled ability + the ArkUI page from the platform pack templates.
+    mkdir -p "$PROJ/entry/src/main/ets/pages"
+    cp "$TPL/ets/entryability/EntryAbility.ui.ets" "$PROJ/entry/src/main/ets/entryability/EntryAbility.ets"
+    cp "$TPL/ets/pages/Index.ets" "$PROJ/entry/src/main/ets/pages/Index.ets"
+    OUT_NAME=modules.abc
+else
+    # Headless variant: the page-free ability only. No pages/Index is copied and main_pages
+    # stays empty below, matching the packaging target's no-OpenHarmonyUIPage path.
+    cp "$TPL/ets/entryability/EntryAbility.ets" "$PROJ/entry/src/main/ets/entryability/EntryAbility.ets"
+    OUT_NAME=modules.headless.abc
+fi
 cp "$TPL/resources/base/element/color.json" "$PROJ/entry/src/main/resources/base/element/"
 cp "$TPL/resources/base/media/app_icon.png" "$PROJ/entry/src/main/resources/base/media/"
 cp "$TPL/resources/base/media/app_icon.png" "$PROJ/AppScope/resources/base/media/"
 
-python3 - "$PROJ" "$PLATFORM_VERSION" "$API_VERSION" "$TYPECHECK" "$BUNDLE_NAME" "$COMPATIBLE_SDK_VERSION" <<'PY'
+python3 - "$PROJ" "$PLATFORM_VERSION" "$API_VERSION" "$TYPECHECK" "$BUNDLE_NAME" "$COMPATIBLE_SDK_VERSION" "$VARIANT" <<'PY'
 import json, os, sys
-proj, platform_version, api_version, typecheck, bundle_name, compatible_sdk_version = sys.argv[1:7]
+proj, platform_version, api_version, typecheck, bundle_name, compatible_sdk_version, variant = sys.argv[1:8]
 typecheck_json = 'true' if typecheck == '1' else 'false'
 def w(rel, text):
     with open(os.path.join(proj, rel), 'w') as f: f.write(text)
@@ -249,7 +269,8 @@ strings = [{"name": n, "value": "opendotnet"} for n in
            ("app_name", "module_desc", "EntryAbility_desc", "EntryAbility_label")]
 for base in ('entry/src/main/resources/base/element', 'AppScope/resources/base/element'):
     w(f'{base}/string.json', json.dumps({"string": strings}, indent=2))
-w('entry/src/main/resources/base/profile/main_pages.json', json.dumps({"src": ["pages/Index"]}))
+if variant == 'ui':
+    w('entry/src/main/resources/base/profile/main_pages.json', json.dumps({"src": ["pages/Index"]}))
 w('AppScope/app.json5', f"""{{
   app: {{
     bundleName: '{bundle_name}',
@@ -347,7 +368,7 @@ w('entry/build-profile.json5', """{
   targets: [{ name: 'default' }],
 }
 """)
-w('entry/src/main/module.json5', """{
+module_json = """{
   module: {
     name: 'entry',
     type: 'entry',
@@ -373,7 +394,13 @@ w('entry/src/main/module.json5', """{
     requestPermissions: [],
   },
 }
-""")
+"""
+if variant != 'ui':
+    # The headless module has no pages profile: hvigor rejects an empty main_pages.json
+    # (src needs at least one item) and the ability never loadContent's. The packaging target
+    # emits an empty main_pages for the same reason on the no-OpenHarmonyUIPage path.
+    module_json = module_json.replace("    pages: '$profile:main_pages',\n", '')
+w('entry/src/main/module.json5', module_json)
 w('local.properties', f"sdk.dir={proj}/../sdk\nnodejs.dir={os.path.expanduser('~/.harmonybrew')}\n")
 print('  project scaffold written:', proj)
 PY
@@ -429,11 +456,12 @@ grep -E 'Finished :entry:default@CompileArkTS|Failed :entry:default@CompileArkTS
 ABC="$(find "$PROJ/entry/build" -name modules.abc | head -1)"
 [ -n "$ABC" ] || die "modules.abc not produced (see .arkts-build/project/.hvigor/outputs/build-logs)"
 mkdir -p "$OUT_DIR"
-cp "$ABC" "$OUT_DIR/modules.abc"
+OUT_FILE="$OUT_DIR/$OUT_NAME"
+cp "$ABC" "$OUT_FILE"
 # Read the abc version back from the fixed header: 8 B magic "PANDA\0\0\0", 4 B adler32,
 # then one byte per version component at offset 0x0c. Fail when it is newer than the
 # runtime limit, because the device then refuses to load the module (exit 254).
-BC_VERSION="$(python3 - "$OUT_DIR/modules.abc" "$MAX_BC_VERSION" <<'PY'
+BC_VERSION="$(python3 - "$OUT_FILE" "$MAX_BC_VERSION" <<'PY'
 import sys
 abc, maximum = sys.argv[1], sys.argv[2]
 raw = open(abc, 'rb').read(0x10)
@@ -444,5 +472,10 @@ max_version = tuple(int(p) for p in maximum.split('.')) if maximum and maximum !
 sys.exit(3 if max_version and version > max_version else 0)
 PY
 )" || die "abc version $BC_VERSION is newer than $MAX_BC_VERSION (set ARKTS_MAX_BC_VERSION=any to allow, or ARKTS_COMPATIBLE_SDK_VERSION to a level whose es2abc output the device accepts)"
-info "ArkTS shell compiled: $OUT_DIR/modules.abc ($(stat -c%s "$OUT_DIR/modules.abc") bytes, abc version $BC_VERSION, compatibleSdkVersion $COMPATIBLE_SDK_VERSION)"
-info "package it with: -p:OpenHarmonyUIPage=pages/Index -p:OpenHarmonyArktsModulesAbc=$OUT_DIR/modules.abc"
+info "ArkTS shell compiled ($VARIANT): $OUT_FILE ($(stat -c%s "$OUT_FILE") bytes, abc version $BC_VERSION, compatibleSdkVersion $COMPATIBLE_SDK_VERSION)"
+if [ "$VARIANT" = ui ]; then
+    info "package it with: -p:OpenHarmonyUIPage=pages/Index -p:OpenHarmonyArktsModulesAbc=$OUT_FILE"
+else
+    info "package it with: -p:OpenHarmonyArktsModulesAbc=$OUT_FILE"
+    info "install it as the default headless shell: cp $OUT_FILE $TPL/ets/modules.abc (and the other preview packs)"
+fi
