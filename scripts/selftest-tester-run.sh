@@ -16,6 +16,10 @@
 #   S4  probes     --uninstall --probes <dir> --capture 1 (4 probe haps, PROBE1..PROBE4)
 #   S5  crash      pidof alive then dead -> process_alive=no, exit 1
 #   S6  missing    missing /proc evidence paths + missing --compare-lib file are tolerated
+#   S7  extra      --extra-probes <dir> (comma + repeated forms, deduped): one importprobe-a
+#                  hap is installed, started, captured and archived like P1-P4
+#   S8  extra-fail an extra probe whose install fails (unsigned/signature path) is recorded
+#                  as install_failed and skipped, and the round still produces its archive
 #
 # Stub hdc surface (every subcommand tester-run.sh invokes):
 #   list targets | install -r <hap> | uninstall <bundle> | shell aa start -a EntryAbility -b <b>
@@ -39,7 +43,7 @@
 # Exit: 0 = all checks passed; 1 = at least one check failed (work dir kept for triage).
 set -u
 
-SELFTEST_VERSION="1 (2026-09-22)"
+SELFTEST_VERSION="2 (2026-09-22)"
 
 log()  { printf '[%s] %s\n' "$(date '+%H:%M:%S')" "$*"; }
 section() { printf '\n=== %s ===\n' "$*"; }
@@ -391,6 +395,8 @@ KMSG_EOF
 09-22 10:00:00.300 12345 12345 I A00000/PROBE: PROBE2|jni|ok
 09-22 10:00:00.400 12345 12345 I A00000/PROBE: PROBE3|arkts|ok
 09-22 10:00:00.500 12345 12345 I A00000/PROBE: PROBE4|libc.so|ok
+09-22 10:00:00.550 12345 12345 I A00000/IMPORTPROBE: ABILITY_ON_CREATE
+09-22 10:00:00.560 12345 12345 I A00000/IMPORTPROBE_A: A PAGE_ABOUT_TO_APPEAR
 09-22 10:00:00.600 12345 12345 I A00000/AppKilledReporter: app killed reporter selftest line
 09-22 10:00:00.700 12345 12345 I A00000/unrelated: must be filtered out
 HILOG_EOF
@@ -432,6 +438,15 @@ while [ "$_i" -le 4 ]; do
     make_hap "$WORK/probes/hello-mauiapp-probe$_i-unsigned.hap" "com.example.hellomauiapp.probe$_i" "entry"
     _i=$((_i + 1))
 done
+# extra probes (--extra-probes): the shipping importprobe-a hap plus one whose install fails
+EXTRA_PROBE_DIR="$WORK/extra-probes"
+EXTRA_PROBE_HAP="$EXTRA_PROBE_DIR/hello-mauiapp-importprobe-a-unsigned.hap"
+mkdir -p "$EXTRA_PROBE_DIR"
+make_hap "$EXTRA_PROBE_HAP" "com.example.hellomauiapp.importprobea" "entry"
+EXTRA_FAIL_DIR="$WORK/extra-probes-fail"
+EXTRA_FAIL_HAP="$EXTRA_FAIL_DIR/hello-mauiapp-importprobe-fail-unsigned.hap"
+mkdir -p "$EXTRA_FAIL_DIR"
+make_hap "$EXTRA_FAIL_HAP" "com.example.hellomauiapp.importprobefail" "entry"
 COMPARE_LIB="$WORK/compare/cc-switch-lib.so"
 mkdir -p "$(dirname "$COMPARE_LIB")"
 printf 'stub third-party lib for --compare-lib (not a real ELF)\n' > "$COMPARE_LIB"
@@ -526,6 +541,8 @@ HILOG_OUT="$LOGS/stub-hilog.out"
 FAKE_HDC_STATE="$STATE_DIR/contract-hilog" "$STUB" hilog > "$HILOG_OUT" 2>&1 || true
 assert_contains "stub: hilog streams [maui]" "[maui]" "$HILOG_OUT"
 assert_contains "stub: hilog streams PROBE4|libc.so|ok" "PROBE4|libc.so|ok" "$HILOG_OUT"
+assert_contains "stub: hilog streams IMPORTPROBE ability line" "IMPORTPROBE: ABILITY_ON_CREATE" "$HILOG_OUT"
+assert_contains "stub: hilog streams IMPORTPROBE_A page line" "IMPORTPROBE_A: A PAGE_ABOUT_TO_APPEAR" "$HILOG_OUT"
 assert_contains "stub: hilog streams AppKilledReporter" "AppKilledReporter" "$HILOG_OUT"
 
 KMSG_OUT="$LOGS/stub-kmsg.out"
@@ -784,6 +801,67 @@ else
     bad "S6 report archive could not be extracted ($ARCHIVE_S6)"
 fi
 assert_scenario_sandbox "S6"
+
+# ---- S7: extra probes path -----------------------------------------------------------
+section "S7 extra probes path (--extra-probes <dir>, comma + repeated forms)"
+run_tester S7 "" --kit-dir "$KIT" --uninstall --capture 1 \
+    --extra-probes "$EXTRA_PROBE_DIR,$EXTRA_PROBE_DIR" \
+    --extra-probes "$EXTRA_PROBE_DIR" --out "$WORK/out-extra"
+assert_eq "S7 exit code 0 (log: $LOGS/S7.log)" "0" "$RC"
+
+ARCHIVE_S7="$(report_archive out-extra)"
+assert_file "S7 report archive produced" "$ARCHIVE_S7"
+if prepare_report "$ARCHIVE_S7" "$WORK/x-extra" out-extra; then
+    S="$REPORT/summary.txt"
+    assert_eq "S7 summary main bundle unchanged" "com.example.hellomauiapp" "$(sum_val "$S" bundle)"
+    assert_eq "S7 summary extra_probes_dirs deduped" "$EXTRA_PROBE_DIR" "$(sum_val "$S" extra_probes_dirs)"
+    assert_eq "S7 summary uninstall_extraprobe_importprobe-a=ok" "ok" "$(sum_val "$S" uninstall_extraprobe_importprobe-a)"
+    assert_eq "S7 summary extraprobe bundle" "com.example.hellomauiapp.importprobea" "$(sum_val "$S" extraprobe_importprobe-a_bundle)"
+    assert_eq "S7 summary extraprobe install=ok" "ok" "$(sum_val "$S" extraprobe_importprobe-a_install)"
+    assert_eq "S7 summary extraprobe alive=yes" "yes" "$(sum_val "$S" extraprobe_importprobe-a_alive)"
+    assert_eq "S7 summary extraprobe match=marker" "marker" "$(sum_val "$S" extraprobe_importprobe-a_match)"
+    assert_gt "S7 summary extraprobe lines > 0" 0 "$(sum_val "$S" extraprobe_importprobe-a_lines)"
+    assert_gt "S7 summary extraprobe capture_lines > 0" 0 "$(sum_val "$S" extraprobe_importprobe-a_capture_lines)"
+    assert_eq "S7 summary extraprobe result=ok" "ok" "$(sum_val "$S" extraprobe_importprobe-a_result)"
+    assert_file "S7 extra probe raw capture in archive" "$REPORT/probes/extra-importprobe-a-hilog.txt"
+    assert_contains "S7 extra probe capture has IMPORTPROBE_A" "IMPORTPROBE_A" "$REPORT/probes/extra-importprobe-a-hilog.txt"
+    assert_contains "S7 extra probe capture has IMPORTPROBE ability line" "IMPORTPROBE: ABILITY_ON_CREATE" "$REPORT/probes/extra-importprobe-a-hilog.txt"
+    assert_file "S7 extra probe lines file in archive" "$REPORT/probes/extra-importprobe-a-lines.txt"
+    assert_contains "S7 extra probe lines has the page line" "IMPORTPROBE_A: A PAGE_ABOUT_TO_APPEAR" "$REPORT/probes/extra-importprobe-a-lines.txt"
+    assert_contains "S7 probe-all-lines has extra probe line" "IMPORTPROBE_A: A PAGE_ABOUT_TO_APPEAR" "$REPORT/probes/probe-all-lines.txt"
+    assert_contains "S7 extra probe install log success" "install bundle successfully" "$REPORT/probes/extra-importprobe-a-install.txt"
+    assert_file "S7 extra probe start log in archive" "$REPORT/probes/extra-importprobe-a-start.txt"
+    assert_file "S7 kmsg evidence file present" "$REPORT/kmsg/kmsg.log"
+else
+    bad "S7 report archive could not be extracted ($ARCHIVE_S7)"
+fi
+assert_eq "S7 extra-probe dir deduped to one install" "1" "$(grep -c -F "install -r $EXTRA_PROBE_HAP" "$STATE_DIR/S7/calls.log" | tr -d ' ')"
+assert_contains "S7 stub called extra probe aa start" "shell aa start -a EntryAbility -b com.example.hellomauiapp.importprobea" "$STATE_DIR/S7/calls.log"
+assert_contains "S7 stub called extra probe uninstall" "uninstall com.example.hellomauiapp.importprobea" "$STATE_DIR/S7/calls.log"
+assert_scenario_sandbox "S7"
+
+# ---- S8: extra probe install failure -------------------------------------------------
+section "S8 extra probe install failure recorded and skipped"
+run_tester S8 "" --kit-dir "$KIT" --extra-probes "$EXTRA_FAIL_DIR" --out "$WORK/out-extra-fail"
+assert_eq "S8 exit code 1 (log: $LOGS/S8.log)" "1" "$RC"
+
+ARCHIVE_S8="$(report_archive out-extra-fail)"
+assert_file "S8 archive still produced" "$ARCHIVE_S8"
+assert_contains "S8 install failure mentions code:9568297" "code:9568297" "$LOGS/S8.log"
+assert_contains "S8 stub rejected extra *fail* hap (rc=1)" "hello-mauiapp-importprobe-fail-unsigned.hap | rc=1" "$STATE_DIR/S8/calls.log"
+if prepare_report "$ARCHIVE_S8" "$WORK/x-extra-fail" out-extra-fail; then
+    S="$REPORT/summary.txt"
+    assert_eq "S8 summary extraprobe result=install_failed" "install_failed" "$(sum_val "$S" extraprobe_importprobe-fail_result)"
+    assert_eq "S8 summary extraprobe install=missing (run skipped)" "" "$(sum_val "$S" extraprobe_importprobe-fail_install)"
+    assert_gt "S8 summary failures >= 1" 0 "$(sum_val "$S" failures)"
+    assert_file "S8 extra probe install log in archive" "$REPORT/probes/extra-importprobe-fail-install.txt"
+    assert_contains "S8 extra probe install log has code" "code:9568297" "$REPORT/probes/extra-importprobe-fail-install.txt"
+    assert_not_exists "S8 no hilog capture for failed extra probe" "$REPORT/probes/extra-importprobe-fail-hilog.txt"
+    assert_eq "S8 main bundle unchanged" "com.example.hellomauiapp" "$(sum_val "$S" bundle)"
+else
+    bad "S8 report archive could not be extracted ($ARCHIVE_S8)"
+fi
+assert_scenario_sandbox "S8"
 
 # ---- global: nothing outside the temp dir --------------------------------------------
 section "global: no state outside the temp dir"

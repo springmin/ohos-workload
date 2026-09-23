@@ -16,6 +16,10 @@
 #                                `hilog -t kmsg` -> kmsg/kmsg.log + kmsg-filtered.log
 #   4  probes <dir>              install + run probe1..probe4, per-probe hilog capture of
 #                                the PROBE1..PROBE4 lines (kmsg recorded in the same windows)
+#      extra-probes <dir>...     additionally install + run every *.hap of each given dir
+#                                (importprobe-a/b/c, importb haps, ...) with the same per-file
+#                                install -> start -> hilog+kmsg window; the captured lines are
+#                                archived with the P1-P4 ones (probe-all-lines.txt)
 #   5  collect + pack            captures, module.json of the installed hap, device info
 #                                (param get outputs + UDID), ELF-signing evidence (xpm_mode,
 #                                fs-verity require_signatures, hap SoInfoSegment magic count,
@@ -25,9 +29,9 @@
 #
 # Safety: dry-run by default. Nothing is installed / started / removed / recorded on the
 # device unless the matching flag is given (--install --uninstall --start --capture
-# --probes). Without a device (hdc list targets) the script refuses device steps: with an
-# action flag it stops immediately, with no action flag it only verifies the kit locally
-# and prints the plan. --uninstall is explicit and never implied.
+# --probes --extra-probes). Without a device (hdc list targets) the script refuses device
+# steps: with an action flag it stops immediately, with no action flag it only verifies the
+# kit locally and prints the plan. --uninstall is explicit and never implied.
 #
 # Exit codes: 0 = ok (or a dry-run plan was printed with a device reachable),
 #             1 = at least one step failed (the archive is still produced),
@@ -35,13 +39,14 @@
 #
 # Usage: sh tester-run.sh [--kit-dir <dir> | --kit-tar <tar.gz>] [--expect-tree-digest <hex>]
 #          [--hap <hap>]... [--install] [--uninstall] [--start] [--capture [<seconds>]]
-#          [--probes <dir>] [--compare-lib <path>] [--out <dir>] [--device <id>] [-h|--help]
+#          [--probes <dir>] [--extra-probes <dir>]... [--compare-lib <path>] [--out <dir>]
+#          [--device <id>] [-h|--help]
 #
 # Env: HDC (default hdc; may be an absolute path), KIT_BUNDLE_NAME (fallback bundleName
 #      when the module.json cannot be read), TMPDIR.
 set -e
 
-SCRIPT_VERSION="1 (2026-09-22)"
+SCRIPT_VERSION="2 (2026-09-22)"
 
 log()  { printf '[%s] %s\n' "$(date '+%H:%M:%S')" "$*"; }
 warn() { printf '[%s] WARN: %s\n' "$(date '+%H:%M:%S')" "$*" >&2; }
@@ -65,6 +70,10 @@ usage() {
   --start                    启动应用并做存活检查（aa start -a EntryAbility -b <bundle>）
   --capture [<seconds>]      录制过滤后的 hilog + kmsg（默认 30 秒；只启动录制、不做别的）
   --probes <dir>             安装并运行 probe1..probe4（目录内含 4 个探针 hap），逐个抓 PROBE1..4
+  --extra-probes <dir>       额外安装并运行目录内全部 *.hap（importprobe-a/b/c、importb haps 等），
+                             与 P1-P4 相同：逐个 装 -> 启 -> 抓 hilog+kmsg；每个的原始窗口存为
+                             probes/extra-<名>-hilog.txt，命中行并入 probes/probe-all-lines.txt；
+                             可重复给出，或用逗号分隔多个目录（重复目录只处理一次）
 
 证据（ELF 代码签名，自动采集；判定规则见研究文档 §6）:
   每个录制窗口同时执行 hdc shell "hilog -t kmsg" -> kmsg/kmsg.log（并过滤出 kmsg-filtered.log）；
@@ -95,6 +104,8 @@ usage() {
   sh tester-run.sh --kit-dir ./device-test-kit --probes ./probes
   # 4) 只抓 hilog 30 秒（自己在窗口内操作应用）
   sh tester-run.sh --kit-dir ./device-test-kit --capture 30
+  # 5) P1-P4 + 额外探针（importprobe-a/b/c、importb haps 等，每个探针各录 30 秒）
+  sh tester-run.sh --kit-dir ./device-test-kit --probes ./probes --extra-probes ./importb-haps
 EOF
 }
 
@@ -107,6 +118,7 @@ INSTALL=0
 UNINSTALL=0
 START=0
 PROBES_DIR=""
+EXTRA_PROBES_DIRS=""
 KIT_DIR=""
 KIT_TAR=""
 EXPECT_TREE=""
@@ -192,6 +204,25 @@ $1"; fi
             [ $# -gt 0 ] || { warn "--probes 需要一个目录"; usage >&2; exit 2; }
             PROBES_DIR="$1"
             ;;
+        --extra-probes)
+            shift
+            [ $# -gt 0 ] || { warn "--extra-probes 需要一个目录（可重复给出或用逗号分隔多个）"; usage >&2; exit 2; }
+            _ep_rest="$1"
+            while [ -n "$_ep_rest" ]; do
+                case "$_ep_rest" in
+                    *,*) _ep_one="${_ep_rest%%,*}"; _ep_rest="${_ep_rest#*,}" ;;
+                    *)   _ep_one="$_ep_rest"; _ep_rest="" ;;
+                esac
+                _ep_one="${_ep_one%/}"
+                [ -n "$_ep_one" ] || { warn "--extra-probes 目录不能为空（逗号分隔时有空项）"; usage >&2; exit 2; }
+                if [ -z "$EXTRA_PROBES_DIRS" ]; then
+                    EXTRA_PROBES_DIRS="$_ep_one"
+                else
+                    EXTRA_PROBES_DIRS="$EXTRA_PROBES_DIRS
+$_ep_one"
+                fi
+            done
+            ;;
         --out)
             shift
             [ $# -gt 0 ] || { warn "--out 需要一个目录"; usage >&2; exit 2; }
@@ -208,6 +239,25 @@ $1"; fi
 done
 
 # ---- argument validation -------------------------------------------------------------
+# --extra-probes: drop directories named twice (repeatable + comma forms are equivalent)
+if [ -n "$EXTRA_PROBES_DIRS" ]; then
+    _ep_uniq=""
+    while IFS= read -r _ep_d; do
+        [ -n "$_ep_d" ] || continue
+        if ! printf '%s\n' "$_ep_uniq" | grep -Fxq -e "$_ep_d"; then
+            if [ -z "$_ep_uniq" ]; then
+                _ep_uniq="$_ep_d"
+            else
+                _ep_uniq="$_ep_uniq
+$_ep_d"
+            fi
+        fi
+    done <<EOF
+$EXTRA_PROBES_DIRS
+EOF
+    EXTRA_PROBES_DIRS="$_ep_uniq"
+fi
+
 case "$CAPTURE_SECS" in ''|*[!0-9]*) die "--capture 的秒数必须是正整数: $CAPTURE_SECS" ;; esac
 [ "$CAPTURE_SECS" -ge 1 ] || die "--capture 的秒数必须 >= 1"
 case "$OUT" in ''|'/'|'.'|'..') die "无效的 --out 目录: '$OUT'" ;; esac
@@ -215,6 +265,14 @@ if [ -n "$KIT_DIR" ] && [ -n "$KIT_TAR" ]; then die "--kit-dir 与 --kit-tar 只
 if [ -n "$KIT_DIR" ] && [ ! -d "$KIT_DIR" ]; then die "--kit-dir 不是目录: $KIT_DIR"; fi
 if [ -n "$KIT_TAR" ] && [ ! -f "$KIT_TAR" ]; then die "--kit-tar 文件不存在: $KIT_TAR"; fi
 if [ -n "$PROBES_DIR" ] && [ ! -d "$PROBES_DIR" ]; then die "--probes 目录不存在: $PROBES_DIR"; fi
+if [ -n "$EXTRA_PROBES_DIRS" ]; then
+    while IFS= read -r _ep_d; do
+        [ -n "$_ep_d" ] || continue
+        [ -d "$_ep_d" ] || die "--extra-probes 目录不存在: $_ep_d"
+    done <<EOF
+$EXTRA_PROBES_DIRS
+EOF
+fi
 if [ -n "$EXPECT_TREE" ]; then
     case "$EXPECT_TREE" in *[!0-9a-fA-F]*) die "--expect-tree-digest 不是十六进制 sha256: $EXPECT_TREE" ;; esac
     [ "${#EXPECT_TREE}" -eq 64 ] || die "--expect-tree-digest 需要 64 个十六进制字符"
@@ -224,7 +282,7 @@ fi
 KMSG_RAW="$OUT/kmsg/kmsg.log"
 
 ACTIONS=0
-if [ "$INSTALL" = 1 ] || [ "$UNINSTALL" = 1 ] || [ "$START" = 1 ] || [ "$CAPTURE" = 1 ] || [ -n "$PROBES_DIR" ]; then
+if [ "$INSTALL" = 1 ] || [ "$UNINSTALL" = 1 ] || [ "$START" = 1 ] || [ "$CAPTURE" = 1 ] || [ -n "$PROBES_DIR" ] || [ -n "$EXTRA_PROBES_DIRS" ]; then
     ACTIONS=1
 fi
 
@@ -275,7 +333,7 @@ if [ -n "$REASON" ]; then
         warn "无可用设备：$REASON"
         warn "  hdc list targets 输出：${TARGETS:-<空>}"
         warn "  请连接设备（已开 USB 调试）或用 hdc tconn <ip:port> 连接，再用 --device <id> 指定目标。"
-        warn "  已拒绝执行设备操作：--install / --uninstall / --start / --capture / --probes 都不会执行。"
+        warn "  已拒绝执行设备操作：--install / --uninstall / --start / --capture / --probes / --extra-probes 都不会执行。"
         exit 3
     fi
     warn "无可用设备：$REASON"
@@ -344,6 +402,44 @@ PY
         unzip -p "$_src" module.json > "$_dst"
     else
         return 1
+    fi
+}
+
+# ---- extra-probe helpers (--extra-probes) --------------------------------------------
+# Summary key of one extra hap:
+#   hello-mauiapp-importprobe-a-unsigned.hap -> importprobe-a
+#   hello-maui-app-importb.hap               -> importb
+#   hello-maui-app.hap                       -> app
+# Sanitized to [A-Za-z0-9._-] so it is safe in summary.txt keys and file names.
+extra_probe_key() {
+    _ek="$1"
+    _ek="${_ek##*/}"
+    _ek="${_ek%.hap}"
+    case "$_ek" in
+        *-unsigned) _ek="${_ek%-unsigned}" ;;
+        *-signed)   _ek="${_ek%-signed}" ;;
+    esac
+    case "$_ek" in
+        hello-maui-app-*) _ek="${_ek#hello-maui-app-}" ;;
+        hello-maui-app)   _ek="app" ;;
+        hello-mauiapp-*)  _ek="${_ek#hello-mauiapp-}" ;;
+    esac
+    [ -n "$_ek" ] || _ek="probe"
+    printf '%s' "$_ek" | tr -c 'A-Za-z0-9._-' '_'
+}
+
+# grep -E pattern for the lines of one extra probe: the key with `-` matching `-`/`_`/space
+# (importprobe-a -> importprobe[-_ ]?a), plus the leading name token (importprobe) so the
+# probe's ability-level lines (TAG=IMPORTPROBE) are kept too.
+extra_probe_marker() {
+    _em_key="$1"
+    _em_full="$(printf '%s' "$_em_key" | sed 's/\./\\./g' | sed 's/-/[-_ ]?/g')"
+    _em_pre="${_em_key%%-*}"
+    _em_pre="$(printf '%s' "$_em_pre" | sed 's/\./\\./g')"
+    if [ "$_em_pre" != "$_em_key" ] && [ "${#_em_pre}" -ge 4 ]; then
+        printf '%s|%s' "$_em_full" "$_em_pre"
+    else
+        printf '%s' "$_em_full"
     fi
 }
 
@@ -461,6 +557,27 @@ if [ "$UNINSTALL" = 1 ]; then
                 uninstall_one "com.example.hellomauiapp.probe$_i" "uninstall_probe$_i"
                 _i=$((_i + 1))
             done
+        fi
+        if [ -n "$EXTRA_PROBES_DIRS" ]; then
+            while IFS= read -r _xd; do
+                [ -n "$_xd" ] || continue
+                for _xh in "$_xd"/*.hap; do
+                    [ -f "$_xh" ] || continue
+                    _xkey="$(extra_probe_key "$_xh")"
+                    _save_bundle="$BUNDLE"
+                    read_bundle "$_xh"
+                    _xbundle="$BUNDLE"
+                    BUNDLE="$_save_bundle"
+                    if [ -n "$_xbundle" ]; then
+                        uninstall_one "$_xbundle" "uninstall_extraprobe_$_xkey"
+                    else
+                        warn "   读不出 $(basename "$_xh") 的 bundleName，跳过卸载"
+                        record "uninstall_extraprobe_${_xkey}=unknown_bundle"
+                    fi
+                done
+            done <<EOF
+$EXTRA_PROBES_DIRS
+EOF
         fi
     fi
 fi
@@ -692,7 +809,11 @@ else
 fi
 
 # ---- step 4: probes ------------------------------------------------------------------
-log "== 4/5 探针 P1-P4（--probes） =="
+if [ -n "$EXTRA_PROBES_DIRS" ]; then
+    log "== 4/5 探针 P1-P4（--probes）+ 额外探针（--extra-probes） =="
+else
+    log "== 4/5 探针 P1-P4（--probes） =="
+fi
 if [ -z "$PROBES_DIR" ]; then
     log "   [dry-run] 未加 --probes；跳过（用法: --probes <含 4 个探针 hap 的目录>）"
     record "probes=skipped(dry-run)"
@@ -751,6 +872,112 @@ else
         fi
         _i=$((_i + 1))
     done
+fi
+
+# ---- step 4b: extra probes (--extra-probes) ------------------------------------------
+# Every *.hap under each --extra-probes dir runs like a P1-P4 probe: install -> start ->
+# hilog+kmsg window -> extracted lines. Install failures (unsigned / signature / api) are
+# recorded and skipped; the raw window is archived either way.
+if [ -n "$EXTRA_PROBES_DIRS" ]; then
+    log "   额外探针目录: $(printf '%s' "$EXTRA_PROBES_DIRS" | tr '\n' ',')"
+    mkdir -p "$OUT/probes"
+    [ -f "$OUT/probes/probe-all-lines.txt" ] || : > "$OUT/probes/probe-all-lines.txt"
+    _xp_seen=""
+    while IFS= read -r _xd; do
+        [ -n "$_xd" ] || continue
+        _xp_dir_haps=0
+        for _xh in "$_xd"/*.hap; do
+            [ -f "$_xh" ] || continue
+            _xp_dir_haps=$((_xp_dir_haps + 1))
+            _xkey="$(extra_probe_key "$_xh")"
+            _xbase="$_xkey"
+            _xn=2
+            while printf '%s\n' "$_xp_seen" | grep -Fxq -e "$_xkey"; do
+                _xkey="$_xbase-$_xn"
+                _xn=$((_xn + 1))
+            done
+            if [ -z "$_xp_seen" ]; then
+                _xp_seen="$_xkey"
+            else
+                _xp_seen="$_xp_seen
+$_xkey"
+            fi
+            log "   -- extra[$_xkey]: $_xh"
+            _save_bundle="$BUNDLE"
+            read_bundle "$_xh"
+            _xbundle="$BUNDLE"
+            BUNDLE="$_save_bundle"
+            if [ -z "$_xbundle" ]; then
+                warn "   读不出 $(basename "$_xh") 的 bundleName，跳过该额外探针"
+                record "extraprobe_${_xkey}_result=no_bundle"
+                FAILURES=$((FAILURES + 1))
+                continue
+            fi
+            record "extraprobe_${_xkey}_bundle=$_xbundle"
+            if ! install_one "$_xh" "$OUT/probes/extra-${_xkey}-install.txt"; then
+                warn "   额外探针 $_xkey 安装失败（$INSTALL_RESULT），跳过运行（原文: $OUT/probes/extra-${_xkey}-install.txt）"
+                record "extraprobe_${_xkey}_result=install_failed"
+                FAILURES=$((FAILURES + 1))
+                continue
+            fi
+            record "extraprobe_${_xkey}_install=ok"
+            _raw="$OUT/probes/extra-${_xkey}-hilog.txt"
+            capture_start "$_raw"
+            sleep 1
+            start_app "$_xbundle" "$OUT/probes/extra-${_xkey}-start.txt"
+            sleep "$CAPTURE_SECS"
+            capture_stop
+            if _p="$(proc_alive "$_xbundle")"; then
+                record "extraprobe_${_xkey}_alive=yes"
+                log "   $_xkey 存活检查（+${CAPTURE_SECS}s）：pid=$_p"
+            else
+                record "extraprobe_${_xkey}_alive=no"
+                log "   $_xkey 存活检查（+${CAPTURE_SECs}s）：进程已退出"
+            fi
+            _marker="$(extra_probe_marker "$_xbase")"
+            _lines="$OUT/probes/extra-${_xkey}-lines.txt"
+            _rc=0
+            grep -Ei "$_marker" "$_raw" > "$_lines" 2>/dev/null || _rc=$?
+            if [ "$_rc" -gt 1 ]; then
+                warn "   $_xkey 行过滤失败（grep rc=$_rc）"
+                : > "$_lines"
+            fi
+            _match="marker"
+            if [ ! -s "$_lines" ]; then
+                # file-name marker missed (renamed hap / different tag): keep the same
+                # filtered lines as the main hilog capture so the evidence is archived
+                _match="fallback"
+                _rc=0
+                grep -E "$FILTER_RE" "$_raw" > "$_lines" 2>/dev/null || _rc=$?
+                if [ "$_rc" -gt 1 ]; then : > "$_lines"; fi
+            fi
+            _n="$(line_count "$_lines")"
+            _cap_n="$(line_count "$_raw")"
+            cat "$_lines" >> "$OUT/probes/probe-all-lines.txt" 2>/dev/null || true
+            if [ "$_n" -gt 0 ]; then
+                record "extraprobe_${_xkey}_match=$_match"
+                record "extraprobe_${_xkey}_capture_lines=$_cap_n"
+                record "extraprobe_${_xkey}_lines=$_n"
+                record "extraprobe_${_xkey}_result=ok"
+                log "   $_xkey 完成：${_n}/${_cap_n} 行（match=$_match，marker: $_marker）-> $_lines"
+            else
+                warn "   $_xkey 未捕获到有效行（marker: $_marker；原文: $_raw）"
+                record "extraprobe_${_xkey}_match=none"
+                record "extraprobe_${_xkey}_capture_lines=$_cap_n"
+                record "extraprobe_${_xkey}_lines=0"
+                record "extraprobe_${_xkey}_result=no_lines"
+                FAILURES=$((FAILURES + 1))
+            fi
+        done
+        if [ "$_xp_dir_haps" -eq 0 ]; then
+            _xdkey="$(printf '%s' "$_xd" | tr -c 'A-Za-z0-9._-' '_')"
+            warn "   $_xd 下没有 *.hap，跳过该目录"
+            record "extraprobes_dir_${_xdkey}=no_hap"
+            FAILURES=$((FAILURES + 1))
+        fi
+    done <<EOF
+$EXTRA_PROBES_DIRS
+EOF
 fi
 
 # ---- step 5: collect + pack ----------------------------------------------------------
@@ -886,6 +1113,9 @@ else
         printf 'tree_digest=%s\n' "$TREE_DIGEST"
         printf 'expect_tree_digest=%s\n' "$EXPECT_TREE"
         printf 'bundle=%s\n' "$BUNDLE"
+        if [ -n "$EXTRA_PROBES_DIRS" ]; then
+            printf 'extra_probes_dirs=%s\n' "$(printf '%s' "$EXTRA_PROBES_DIRS" | tr '\n' ',')"
+        fi
         printf 'main_hap=%s\n' "$MAIN_HAP"
         printf 'main_hap_sha256=%s\n' "$MAIN_HAP_SHA"
         printf 'kmsg_capture=%s\n' "$KMSG_RESULT"
