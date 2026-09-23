@@ -6,10 +6,16 @@
 #   2. npx --yes markdownlint-cli2@0.23.3                 (.github/workflows/markdownlint.yml)
 #   3. interaction suite, test/maui-platform-verify:      (.github/workflows/interaction-regression.yml)
 #        dotnet build -m:1 + run bin/Debug/net11.0/verify.dll
-#        requires exit 0, >= 226 "[verify]" lines, no "Unhandled" line, and both perf
+#        requires exit 0, the suite's own "[suite] checks=... floor=... assert=True" contract
+#        line (the floor is declared once in Program.cs; this script must not repeat a literal),
+#        a grep count matching the suite-reported count, no "Unhandled" line, and both perf
 #        markers (frame-path + a11y publish-path) reporting within=True
 #   4. pixel suite, test/headless-render:                 (.github/workflows/pixel-regression.yml)
 #        dotnet run -c Release, requires "PIXEL ASSERTIONS PASSED"
+#
+# The interaction suite is rebuilt from this working tree before it runs, so an older harness
+# without the [suite] line makes the gate fail with a clear message instead of silently checking
+# a stale threshold; there is deliberately no fallback literal.
 #
 # The suites need the build prerequisites CI materialises first (it checks out springmin/maui-ohos
 # and builds the two hosting assemblies in Release); this script assumes the development machine
@@ -176,12 +182,26 @@ else
         [ -n "$CHECKS" ] || CHECKS=0
         UNHANDLED=0
         grep -q 'Unhandled' "$LOG_DIR/interaction-run.log" && UNHANDLED=1
+        # The suite declares its own count/floor contract on the [suite] line (the constants live
+        # in test/maui-platform-verify/Program.cs); CI reads the same line, so the two gates share
+        # one source and this script no longer carries a second, weaker literal (the old 226).
+        SUITE_LINE=0
+        SUITE_CHECKS=0
+        SUITE_FLOOR=0
+        SUITE_RAW="$(grep -E '^\[suite\] checks=[0-9]+ total=[0-9]+ floor=[0-9]+ assert=True$' "$LOG_DIR/interaction-run.log" 2>/dev/null | tail -1 || true)"
+        if [ -n "$SUITE_RAW" ]; then
+            SUITE_LINE=1
+            SUITE_CHECKS="$(printf '%s\n' "$SUITE_RAW" | sed -n 's/.*checks=\([0-9][0-9]*\).*/\1/p')"
+            SUITE_FLOOR="$(printf '%s\n' "$SUITE_RAW" | sed -n 's/.*floor=\([0-9][0-9]*\).*/\1/p')"
+            [ -n "$SUITE_CHECKS" ] || SUITE_CHECKS=0
+            [ -n "$SUITE_FLOOR" ] || SUITE_FLOOR=0
+        fi
         # Mirror the CI gate: both perf markers must be present and carry within=True.
         PERF_FRAME=0
         grep -q '\[verify\] perf warmup=.*within=True' "$LOG_DIR/interaction-run.log" && PERF_FRAME=1
         PERF_A11Y=0
         grep -q '\[verify\] perf a11y .*within=True' "$LOG_DIR/interaction-run.log" && PERF_A11Y=1
-        if [ "$RUN_RC" -ne 0 ] || [ "$UNHANDLED" -ne 0 ] || [ "$CHECKS" -lt 226 ] || [ "$PERF_FRAME" -ne 1 ] || [ "$PERF_A11Y" -ne 1 ]; then
+        if [ "$RUN_RC" -ne 0 ] || [ "$UNHANDLED" -ne 0 ] || [ "$SUITE_LINE" -ne 1 ] || [ "$CHECKS" -ne "$SUITE_CHECKS" ] || [ "$CHECKS" -lt "$SUITE_FLOOR" ] || [ "$PERF_FRAME" -ne 1 ] || [ "$PERF_A11Y" -ne 1 ]; then
             if [ "$RUN_RC" -ne 0 ]; then
                 warn "interaction suite exited $RUN_RC"
             fi
@@ -189,8 +209,14 @@ else
                 warn "interaction output contains an unhandled exception"
                 grep -n -m 3 'Unhandled' "$LOG_DIR/interaction-run.log" | sed 's/^/   /' >&2
             fi
-            if [ "$CHECKS" -lt 226 ]; then
-                warn "expected at least 226 [verify] lines, got $CHECKS"
+            if [ "$SUITE_LINE" -ne 1 ]; then
+                warn "the suite did not report its [suite] checks/floor contract line (harness and preflight.sh must come from the same commit)"
+            fi
+            if [ "$SUITE_LINE" -eq 1 ] && [ "$CHECKS" -ne "$SUITE_CHECKS" ]; then
+                warn "[suite] reports $SUITE_CHECKS checks but grep counts $CHECKS [verify] lines"
+            fi
+            if [ "$SUITE_LINE" -eq 1 ] && [ "$CHECKS" -lt "$SUITE_FLOOR" ]; then
+                warn "expected at least $SUITE_FLOOR [verify] lines (suite-declared floor), got $CHECKS"
             fi
             if [ "$PERF_FRAME" -ne 1 ]; then
                 warn "frame-path perf marker missing or within=False (expected '[verify] perf warmup=... within=True')"
@@ -209,8 +235,9 @@ else
         else
             # CI gates both perf markers on within=True; report the perf lines here, verbatim.
             grep '\[verify\] perf' "$LOG_DIR/interaction-run.log" | sed 's/^/   /'
-            ST_INTERACTION="PASS ($CHECKS [verify], no Unhandled, perf within budget)"
-            log "   $CHECKS [verify] lines (>= 226), no Unhandled, frame + a11y perf within=True"
+            grep '^\[suite\]' "$LOG_DIR/interaction-run.log" | sed 's/^/   /'
+            ST_INTERACTION="PASS ($CHECKS [verify], floor $SUITE_FLOOR, perf within budget)"
+            log "   $CHECKS [verify] lines (suite floor $SUITE_FLOOR, count matches the [suite] line), no Unhandled, frame + a11y perf within=True"
         fi
     fi
 fi
