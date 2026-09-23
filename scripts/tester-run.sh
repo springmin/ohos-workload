@@ -35,7 +35,8 @@
 #      module.json cannot be read), TMPDIR.
 set -e
 
-SCRIPT_VERSION="4 (2026-09-23)"
+# Bumped with every release repack: the kit release notes' "Bundled tester-run.sh" revision.
+SCRIPT_VERSION="6 (2026-09-24)"
 
 log()  { printf '[%s] %s\n' "$(date '+%H:%M:%S')" "$*"; }
 warn() { printf '[%s] WARN: %s\n' "$(date '+%H:%M:%S')" "$*" >&2; }
