@@ -1,62 +1,38 @@
 #!/bin/sh
-# One-command release wrapper for the OpenHarmony platform workload (ohos-workload).
-#
-# scripts/release-all.sh orchestrates the proven manual release chain, in order:
-#
-#   1. pack consistency: repo packs/Microsoft.OpenHarmony.Sdk/<ver> vs the installed
-#      ${DOTNET_ROOT:-~/.dotnet}/packs/... copy for the three files a stale install breaks
-#      (templates/ets/modules.ui.abc - the UI shell build-arkts-shell.sh rebuilds and the
-#      current flow syncs into the installed pack; modules.abc is the frozen default stub -
-#      hosts/arm64-v8a/libopenharmonyhost.so, targets/OpenHarmony.Hap.targets).
-#      Reports MATCH / NOTE-DIFF; a diff is a warning,
-#      never an abort (the installed copy may legitimately be ahead or behind - step 6
-#      builds the kit against the installed copy, so a diff deserves a look).
-#   2. scripts/pack-workload-bundle.sh      -> dist/openharmony-workload-<ver>.tar.gz
-#   3. sha256 of that bundle                -> BUNDLE_SHA (the independent digest gate)
-#   4. scripts/release-checksums.sh         -> dist/SHA256SUMS
-#   5. scripts/publish-workload-release.sh --bundle-sha256 <hash> --skip-kit
-#         --also-sdk-release <tag> [--allow-clobber-mismatch, only when explicitly
-#         requested with ALLOW_CLOBBER_MISMATCH=1 or --allow-clobber-mismatch]
-#      (versioned workload-<ver>, rolling workload-latest, SDK release attachment)
-#      The clobber switch stays opt-in: publish-workload-release.sh's digest guard only
-#      overwrites an existing release asset whose published sha256 differs from this run's
-#      bundle digest when the flag is passed. Rolling tags (workload-latest, device-test-kit)
-#      are refreshed routinely and may legitimately differ; the versioned workload-<ver>
-#      release is meant to be immutable, so the wrapper does not weaken that guard by
-#      default - pass ALLOW_CLOBBER_MISMATCH=1 (or --allow-clobber-mismatch) to do so.
-#   6. scripts/make-device-test-kit.sh --publish
-#      If that fails after (re)building the kit tarball, the fallback uploads the kit and a
-#      freshly written <kit>.tar.gz.sha256 sidecar with `gh release upload --clobber` to
-#      device-test-kit and workload-latest (what the manual chain did by hand). A tarball
-#      unchanged since before step 6 is refused: it would be a stale kit, not this run's.
-#   7. scripts/preflight.sh                 (skip with --skip-preflight)
-#   8. read-only verification printout: local bundle/kit hashes, the kit tree digest
-#      (verify-kit.sh --tree-digest, when the kit directory is present) and the GitHub API
-#      asset digests for device-test-kit, workload-latest, workload-<ver> and the SDK release.
-#
-# DRY-RUN BY DEFAULT: every mutating command is printed with a [dry-run] prefix and nothing
-# is built, written or uploaded. Pass --publish to execute the chain. Steps 1 and 8 are
-# read-only, so they run in both modes; --publish is the only way anything can be uploaded.
-#
-# Failure handling: every step logs its exact command, the wrapper captures the real exit
-# code (no pipelines that could mask it) and aborts with exit 1; bad usage exits 2.
-#
+# One-command release wrapper for the OpenHarmony platform workload (ohos-workload): the
+# proven manual release chain, in order. DRY-RUN BY DEFAULT.
+#   1 pack consistency: repo packs/Microsoft.OpenHarmony.Sdk/<ver> vs the installed
+#     ${DOTNET_ROOT:-~/.dotnet}/packs/... copy, for the three files a stale install breaks
+#     (templates/ets/modules.ui.abc - rebuilt by build-arkts-shell.sh and synced into the
+#     installed pack; modules.abc is the frozen default stub - hosts/arm64-v8a/
+#     libopenharmonyhost.so, targets/OpenHarmony.Hap.targets). Reports MATCH / NOTE-DIFF; a
+#     diff is a warning, never an abort (step 6 builds the kit against the installed copy, so
+#     a diff deserves a look).
+#   2 pack-workload-bundle.sh -> dist/openharmony-workload-<ver>.tar.gz
+#   3 sha256 of that bundle -> BUNDLE_SHA (the independent digest gate)
+#   4 release-checksums.sh -> dist/SHA256SUMS
+#   5 publish-workload-release.sh --bundle-sha256 <hash> --skip-kit --also-sdk-release <tag>
+#     (versioned workload-<ver>, rolling workload-latest, SDK release attachment). The clobber
+#     switch stays opt-in (ALLOW_CLOBBER_MISMATCH=1 / --allow-clobber-mismatch): rolling tags
+#     may legitimately differ, the versioned release is meant to be immutable, so the wrapper
+#     does not weaken the digest guard by default.
+#   6 make-device-test-kit.sh --publish. If that fails after (re)building the kit tarball,
+#     the fallback uploads the kit and a freshly written <kit>.tar.gz.sha256 sidecar with
+#     `gh release upload --clobber` to device-test-kit and workload-latest (what the manual
+#     chain did by hand); a tarball unchanged since before step 6 is refused as a stale kit.
+#   7 preflight.sh (skip with --skip-preflight)
+#   8 read-only verification printout: local bundle/kit hashes, the kit tree digest
+#     (verify-kit.sh --tree-digest, when the kit directory is present) and the GitHub API
+#     asset digests for device-test-kit, workload-latest, workload-<ver> and the SDK release.
+# --publish executes the chain; without it every mutating command is printed with a [dry-run]
+# prefix and nothing is built, written or uploaded. Steps 1 and 8 are read-only and run in
+# both modes.
+# Failure handling: every step logs its exact command, the wrapper captures the real exit code
+# (no pipelines that could mask it) and aborts with exit 1; bad usage exits 2.
 # Usage: scripts/release-all.sh [--publish] [--skip-preflight] [--sdk-release <tag>]
 #                              [--kit-dir <dir>] [--out <tar.gz>] [--allow-clobber-mismatch] [-h]
-#
-#   --publish            execute the chain (uploads); without it: dry-run
-#   --skip-preflight     skip step 7
-#   --sdk-release <tag>  SDK release for --also-sdk-release (default:
-#                        v11.0.100-rc.1.26451.109-openharmony; empty = do not attach)
-#   --kit-dir <dir>      passthrough to make-device-test-kit.sh (default:
-#                        $DEVICE_TEST_KIT_DIR or /data/storage/el2/base/tmp/opencode/device-test-kit)
-#   --out <tar.gz>       passthrough to make-device-test-kit.sh (default: <kit-dir>.tar.gz)
-#   --allow-clobber-mismatch
-#                        forward publish-workload-release.sh's clobber override (same as
-#                        ALLOW_CLOBBER_MISMATCH=1): an already-published asset with a
-#                        different sha256 is overwritten instead of refusing the release
-#   -h, --help           this help
-#
+#   --sdk-release default v11.0.100-rc.1.26451.109-openharmony (empty = do not attach);
+#   --kit-dir default $DEVICE_TEST_KIT_DIR or the approved opencode tmp dir.
 # Env: SDK_BAND (default 11.0.100-rc.1), REPO (default springmin/sdk-ohos), DOTNET_ROOT
 #      (default $HOME/.dotnet), DEVICE_TEST_KIT_DIR, GH (default gh),
 #      ALLOW_CLOBBER_MISMATCH (default 0; see --allow-clobber-mismatch).

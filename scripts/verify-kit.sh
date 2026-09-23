@@ -1,56 +1,35 @@
 #!/bin/sh
 # Tester-facing self-check for the OpenHarmony MAUI device-test kit ("delivery kit").
-#
 # Run it from inside the extracted kit (the directory that holds SHA256SUMS):
-#
 #   sh verify-kit.sh                 # current directory must contain SHA256SUMS
 #   sh verify-kit.sh <kit-dir>       # or point it at the extracted kit
-#
-# It (1) verifies every file against SHA256SUMS with sha256sum -c, (2) summarizes the five
-# haps by reading module.json inside each one (bundleName, min/target API, requestPermissions)
-# and fails unless they all carry the expected bundle name (KIT_BUNDLE_NAME, default
-# com.example.hellomauiapp), (3) prints a one-line warning that the four default haps are
-# self-signed and a real device rejects them (9568257/9568344 -> re-sign hello-maui-app-unsigned.hap
-# or use a pre-signed kit), plus the install options and the self-sign pointer, and (4) lists
-# the log lines to send back.
-#
-# SHA256SUMS lives inside the same archive it covers, so it can only prove internal
-# consistency, not that the archive (or the extracted tree) is the published one:
-#
-#   1. check the transfer checksum of the downloaded .tar.gz:
-#        sha256sum -c <kit>.tar.gz.sha256
-#      or let this script check the tarball on disk (--anchor / --anchor-file / KIT_ANCHOR):
-#        sh verify-kit.sh --anchor <sha256 of the .tar.gz> [--anchor-file <path-to.tar.gz>]
-#   2. extract the kit,
-#   3. bind the exact extracted tree with the digest published by the delivery:
-#        sh verify-kit.sh --expect-tree-digest <sha256>       # or KIT_TREE_DIGEST=<hex>
-#      `--tree-digest` prints the digest, for an out-of-band comparison.
-#
-# The tree digest is a sha256 over the sorted kit contents: one "<file sha256>  <relative
-# path>" line per regular file (SHA256SUMS and this script included), LC_ALL=C sorted by
-# relative path and hashed again. The only inputs are the relative path bytes and the file
-# contents: modes, mtimes, owners and directory entries are never read, so an extraction
-# that drops modes/owners (Windows tar, python tarfile, a different umask) still matches.
-# Transport leftovers of the kit itself are not kit content: a root-level archive
-# (*.tar.gz/*.tgz/*.tar/*.tar.bz2/*.tar.xz/*.zip/*.7z) and its checksum sidecar
-# (*.sha256/*.sha1/*.md5/*.sha512) are skipped (and named on stderr), so the common Windows
-# "extract in place" layout (kit files + device-test-kit.tar.gz + .sha256 in one folder)
-# yields the same digest as a clean extraction. Any other file added to the tree (e.g. a
-# .DS_Store/Thumbs.db written by the extraction tool) does change the digest, by design:
-# the digest binds the exact content tree, not a subset of it.
-#
-# --anchor only checks the .tar.gz file itself; it does NOT bind the extracted tree (the
-# extraction happens outside this script), so it cannot catch a tampered extraction.
-# Both checks fail closed: a missing/mismatching tarball, a non-hex anchor, an absent
-# .tar.gz.sha256 sidecar, a non-hex tree digest or a mismatching expected tree digest
-# makes the run fail.
-#
-# Exit code: 0 = kit OK; 1 = a checksum/anchor/tree-digest failed, a hap is
-# missing/unreadable, a hap carries an unexpected bundleName, or 自签说明.md / 签名说明.txt
-# is absent;
-# 2 = SHA256SUMS not found (wrong directory) or bad usage. The kit's own SHA256SUMS is not
-# in its own list - the outer <kit>.tar.gz.sha256 covers it, and the tree digest covers
-# SHA256SUMS itself.
+# Steps: (1) verify every file against SHA256SUMS (sha256sum -c); (2) summarize the five haps
+# from their module.json (bundleName, min/target API, requestPermissions) and fail unless all
+# carry the expected bundle name (KIT_BUNDLE_NAME, default com.example.hellomauiapp); (3) warn
+# (one line) that the four default haps are self-signed and rejected by a real device
+# (9568257/9568344 -> re-sign hello-maui-app-unsigned.hap or use a pre-signed kit), plus the
+# install options and the self-sign pointer; (4) list the log lines to send back.
+# SHA256SUMS lives inside the archive it covers, so it proves internal consistency only:
+#   1. check the transfer checksum of the .tar.gz: `sha256sum -c <kit>.tar.gz.sha256`, or let
+#      this script check the tarball (--anchor / --anchor-file / KIT_ANCHOR);
+#   2. extract the kit;
+#   3. bind the exact tree with the published digest: --expect-tree-digest <sha256> (or
+#      KIT_TREE_DIGEST); --tree-digest prints the digest for an out-of-band comparison.
+# Tree digest: sha256 over the sorted kit contents - one "<file sha256>  <relative path>" line
+# per regular file (SHA256SUMS and this script included), LC_ALL=C sorted by relative path and
+# hashed again. Only relative path bytes and file contents are inputs (no modes/mtimes/owners/
+# dir entries), so a mode-less extraction still matches. Transport leftovers are not content:
+# a root-level archive (*.tar.gz/*.tgz/*.tar/*.tar.bz2/*.tar.xz/*.zip/*.7z) and its
+# (*.sha256/*.sha1/*.md5/*.sha512) sidecar are skipped (named on stderr), so the common
+# "extract in place" layout yields the clean-extraction digest; any other added file (e.g.
+# .DS_Store) does change it, by design.
+# --anchor does NOT bind the extracted tree (extraction happens outside this script). Both
+# checks fail closed: missing/mismatching tarball, non-hex anchor, absent .tar.gz.sha256
+# sidecar, non-hex or mismatching tree digest all fail.
+# Exit: 0 = kit OK; 1 = checksum/anchor/tree-digest failure, missing/unreadable hap, unexpected
+# bundleName, or absent 自签说明.md/签名说明.txt; 2 = SHA256SUMS not found (wrong directory) or
+# bad usage. The kit's SHA256SUMS is not in its own list - the outer <kit>.tar.gz.sha256 covers
+# it, and the tree digest covers SHA256SUMS itself.
 set -e
 
 log()  { printf '[%s] %s\n' "$(date '+%H:%M:%S')" "$*"; }

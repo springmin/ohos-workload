@@ -1,54 +1,38 @@
 #!/bin/sh
 # tester-run.sh - OpenHarmony MAUI device-test kit: one-command on-device round.
-#
-# Standalone tester script, also published as the `tester-run.sh` asset on the
-# device-test-kit release. It automates the round described by the shipped kit docs:
-#
-#   0  locate + verify the kit   extracted kit dir (cwd, --kit-dir) or --kit-tar <tar.gz>
-#                                (sidecar `sha256sum -c`, then `sh verify-kit.sh` in the
-#                                kit root, optional --expect-tree-digest <hex>)
-#   1  install                   hdc install -r; the install result code is reported with
-#                                9568344 / 9568297 / E00C001 hints
-#   2  start                     aa start -b <module.json bundleName> -a EntryAbility, then
-#                                a process survival check (pidof / ps fallback)
-#   3  capture [<seconds>]       hilog -r, then a filtered hilog recording while the app is
-#                                started/used (default 30 s); the same window also records
-#                                `hilog -t kmsg` -> kmsg/kmsg.log + kmsg-filtered.log
-#   4  probes <dir>              install + run probe1..probe4, per-probe hilog capture of
-#                                the PROBE1..PROBE4 lines (kmsg recorded in the same windows)
-#      extra-probes <dir>...     additionally install + run every *.hap of each given dir
-#                                (importprobe-a/b/c, importb haps, ...) with the same per-file
-#                                install -> start -> hilog+kmsg window; the captured lines are
-#                                archived with the P1-P4 ones (probe-all-lines.txt)
-#   5  collect + pack            captures, module.json of the installed hap, device info
-#                                (param get outputs + UDID), ELF-signing evidence (xpm_mode,
-#                                fs-verity require_signatures, hap SoInfoSegment magic count,
-#                                optional --compare-lib display-sign), app-lib path evidence
-#                                (hilog greps + bundle libs listing), kit hashes,
-#                                machine-readable summary; tar into
-#                                tester-report-<timestamp>.tar.gz
-#
-# Safety: dry-run by default. Nothing is installed / started / removed / recorded on the
-# device unless the matching flag is given (--install --uninstall --start --capture
-# --probes --extra-probes). Without a device (hdc list targets) the script refuses device
-# steps: with an action flag it stops immediately, with no action flag it only verifies the
-# kit locally and prints the plan. --uninstall is explicit and never implied.
-# Every bundle name (from a hap's module.json or KIT_BUNDLE_NAME) is validated before it can
-# reach an hdc command: it must be a dotted, letter-first [A-Za-z0-9_] name, so a crafted
-# hap cannot smuggle shell metacharacters into `hdc shell aa start -b ...` (A1). Uninstall
-# log file names are sanitized on top of that.
-#
-# Exit codes: 0 = ok (or a dry-run plan was printed with a device reachable),
-#             1 = at least one step failed (the archive is still produced),
-#             2 = usage error, 3 = no device / refused.
-#
+# Standalone tester script, also published as the `tester-run.sh` asset on the device-test-kit
+# release; automates the round described by the shipped kit docs:
+#   0 locate+verify the kit  extracted kit dir (cwd/--kit-dir) or --kit-tar <tar.gz>: sidecar
+#       `sha256sum -c`, then `sh verify-kit.sh` in the kit root, optional --expect-tree-digest
+#   1 install   hdc install -r; result code reported with 9568344/9568297/E00C001 hints
+#   2 start     aa start -b <module.json bundleName> -a EntryAbility + survival check
+#       (pidof / ps fallback)
+#   3 capture [<seconds>]  hilog -r, then a filtered recording while the app is started/used
+#       (default 30 s); same window records `hilog -t kmsg` -> kmsg/kmsg.log + kmsg-filtered.log
+#   4 probes <dir>  install + run probe1..probe4, per-probe hilog capture of the PROBE1..PROBE4
+#       lines (kmsg in the same windows); extra-probes <dir>... additionally installs + runs
+#       every *.hap of each dir with the same install -> start -> hilog+kmsg window, archiving
+#       the captured lines with the P1-P4 ones (probe-all-lines.txt)
+#   5 collect+pack  captures, installed-hap module.json, device info (param get + UDID),
+#       ELF-signing evidence (xpm_mode, fs-verity require_signatures, hap SoInfoSegment magic
+#       count, optional --compare-lib display-sign), app-lib path evidence (hilog greps + bundle
+#       libs listing), kit hashes, machine-readable summary; tar -> tester-report-<stamp>.tar.gz
+# Safety: dry-run by default. Nothing is installed/started/removed/recorded unless the matching
+# flag is given (--install --uninstall --start --capture --probes --extra-probes). Without a
+# device (hdc list targets) device steps are refused: with an action flag it stops immediately,
+# without one it only verifies the kit locally and prints the plan. --uninstall is explicit and
+# never implied. Every bundle name (module.json or KIT_BUNDLE_NAME) is validated as a dotted,
+# letter-first [A-Za-z0-9_] name before it can reach an hdc command, so a crafted hap cannot
+# smuggle shell metacharacters into `hdc shell aa start -b ...` (A1); uninstall log file names
+# are sanitized on top of that.
+# Exit codes: 0 = ok (or a dry-run plan printed with a device reachable), 1 = at least one step
+# failed (the archive is still produced), 2 = usage error, 3 = no device / refused.
 # Usage: sh tester-run.sh [--kit-dir <dir> | --kit-tar <tar.gz>] [--expect-tree-digest <hex>]
 #          [--hap <hap>]... [--install] [--uninstall] [--start] [--capture [<seconds>]]
 #          [--probes <dir>] [--extra-probes <dir>]... [--compare-lib <path>] [--out <dir>]
 #          [--device <id>] [-h|--help]
-#
-# Env: HDC (default hdc; may be an absolute path), KIT_BUNDLE_NAME (fallback bundleName
-#      when the module.json cannot be read), TMPDIR.
+# Env: HDC (default hdc; may be an absolute path), KIT_BUNDLE_NAME (fallback bundleName when
+#      module.json cannot be read), TMPDIR.
 set -e
 
 SCRIPT_VERSION="4 (2026-09-23)"

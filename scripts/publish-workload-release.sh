@@ -1,61 +1,44 @@
 #!/bin/sh
 # Publishes the OpenHarmony platform workload as GitHub releases:
-#
-#   workload-<version>   immutable release, assets openharmony-workload-<version>.tar.gz + SHA256SUMS
-#   workload-latest      rolling release,  asset openharmony-workload-latest.tar.gz
-#   device-test-kit      delivery kit,     assets device-test-kit.tar.gz + .sha256
-#                        (also attached to workload-latest). Skipped, with a log line, when the
-#                        kit tarball is absent (DEVICE_TEST_KIT overrides the default path).
-#
-# Optionally attach the versioned asset to an SDK release as well (the "A" layout):
-#   --also-sdk-release v11.0.100-rc.1.26451.109-openharmony
-#
+#   workload-<version>  immutable release, assets openharmony-workload-<version>.tar.gz +
+#                       SHA256SUMS
+#   workload-latest     rolling release, asset openharmony-workload-latest.tar.gz
+#   device-test-kit     delivery kit, assets device-test-kit.tar.gz + .sha256 (also attached to
+#                       workload-latest); skipped with a log line when the kit tarball is
+#                       absent (DEVICE_TEST_KIT overrides the default path)
+#   --also-sdk-release <tag> additionally attaches the versioned asset to an SDK release (the
+#                       "A" layout, e.g. v11.0.100-rc.1.26451.109-openharmony)
+# Digest gate (fail closed): every artifact that is uploaded must match an independent
+# expected sha256 supplied by the caller (local files are never trusted on their own):
+# --bundle-sha256 / BUNDLE_SHA256 for the bundle, --kit-sha256 / DEVICE_TEST_KIT_SHA256 for the
+# kit. A real (non --dry-run) publish without the expectation for an artifact it would upload
+# aborts before touching any release.
+# Release checksums are regenerated from the bundle being published on every run
+# (release-checksums.sh: bare names, the versioned + rolling entries) and checked line by line
+# against the digests this run gates on, so a stale dist/SHA256SUMS is never uploaded;
+# --skip-latest drops the rolling entry, matching the versioned release assets.
+# --kit-tree-digest / DEVICE_TEST_KIT_TREE_DIGEST: sha256 of the extracted kit contents, echoed
+# into the kit release notes so a tester can bind the exact tree with
+# `sh verify-kit.sh --expect-tree-digest <hex>`.
+# --clobber is only used when the GitHub API reports the same digest for the existing asset
+# (idempotent re-upload); replacing an asset whose published digest differs - including the
+# rolling workload-latest and a rebuilt kit - requires --allow-clobber-mismatch (or
+# ALLOW_CLOBBER_MISMATCH=1). Every check is logged.
+# SDK release SHA256SUMS: the published body is fetched and merged - every line whose basename
+# this run does not publish is kept verbatim, the workload entries are replaced with this
+# run's digests, sorted by basename; only when the fetch fails (asset absent, API error) is the
+# local file uploaded unchanged, with a warning. workload-<version> and workload-latest keep
+# the exact two-line file, --clobber included.
+# Release notes: scripts/release-notes.sh generates the notes for the versioned release and
+# workload-latest (invoke it directly as `scripts/release-notes.sh --version <version>
+# [--since <tag-or-commit>]` for the commits since the previous workload-<version> tag,
+# grouped by type, plus the dist/SHA256SUMS digests); bundle/install guidance is appended, the
+# static notes are the fallback. Run `git fetch --tags` before publishing.
 # Usage: scripts/publish-workload-release.sh [--repo owner/name] [--dry-run]
 #          [--skip-versioned] [--skip-latest] [--skip-kit] [--kit <tarball>]
 #          [--kit-tag <tag>] [--also-sdk-release <tag>]
 #          [--bundle-sha256 <hex>] [--kit-sha256 <hex>] [--kit-tree-digest <hex>]
 #          [--allow-clobber-mismatch]
-#
-# Digest gate (fail closed): every artifact that is uploaded must match an independent
-# expected sha256 supplied by the caller (local files are never trusted on their own):
-#   --bundle-sha256 / BUNDLE_SHA256           dist/openharmony-workload-<version>.tar.gz
-#   --kit-sha256    / DEVICE_TEST_KIT_SHA256  the device-test kit tarball
-# A real (non --dry-run) publish without the expectation for an artifact it would upload
-# aborts before touching any release.
-#
-# Release checksums are regenerated from the bundle being published on every run
-# (scripts/release-checksums.sh: bare names, the versioned + rolling entries) and then
-# checked line by line against the digests this run gates on. A dist/SHA256SUMS left over
-# from an older build - stale by definition - is therefore never uploaded. --skip-latest
-# drops the rolling entry, matching the assets attached to the versioned release.
-#
-# Optional kit tree digest (--kit-tree-digest / DEVICE_TEST_KIT_TREE_DIGEST): the sha256 of
-# the extracted kit contents, echoed into the kit release notes so a tester can bind the
-# exact tree with `sh verify-kit.sh --expect-tree-digest <hex>`.
-#
-# --clobber is only used when the GitHub API reports the same digest for the existing
-# asset (idempotent re-upload); replacing an asset whose published digest differs -
-# including the rolling workload-latest and a rebuilt kit - requires the explicit
-# --allow-clobber-mismatch (or ALLOW_CLOBBER_MISMATCH=1). Every check is logged.
-#
-# The SDK release also carries the SDK tarball, nupkgs, selfsign, ... and its SHA256SUMS
-# names them for the installer's L1 resolution. Attaching this workload therefore does not
-# upload the local two-line file blindly: the published SHA256SUMS body is fetched and
-# merged - every line whose basename this run does not publish is kept verbatim, the
-# workload entries (versioned + rolling) are replaced with this run's digests (a rolling
-# line left over from an earlier merge is dropped when --skip-latest refreshes nothing),
-# and the result is sorted by basename. Only when the fetch fails (asset absent, API error)
-# is the local file uploaded unchanged, with a warning (the pre-merge behaviour). The
-# workload-<version> and workload-latest releases are not affected: they keep receiving
-# exactly the two-line file, --clobber included.
-#
-# Release notes: when scripts/release-notes.sh is present it generates the notes body for
-# both the versioned release and workload-latest (invoke it directly as
-#   scripts/release-notes.sh --version <version> [--since <tag-or-commit>]
-# for the commits since the previous `workload-<version>` tag, grouped by type, plus the
-# dist/SHA256SUMS digests). The bundle/install guidance is appended after the changelog; the
-# static notes are the fallback when the generator is missing or fails. Run
-# `git fetch --tags` before publishing so the default commit range is the previous release.
 set -e
 
 log() { printf '[%s] %s\n' "$(date '+%H:%M:%S')" "$*"; }

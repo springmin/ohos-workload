@@ -1,57 +1,37 @@
 #!/bin/sh
-# Re-signs a hap for specific device(s).
-#
-# Modes:
-#   device (default): builds a debug profile from the SDK's UnsgnedDebugProfileTemplate.json
-#                     (device-ids replaced with the given UDID(s)) and signs with the SDK
-#                     test keystore; the profile's bundle-name is taken from --bundle
-#                     (default: the demo bundle com.example.hellomauiapp - override for a
-#                     differently packed hap).
-#   --huawei:         delegates to scripts/sign-huawei.sh, which signs with DevEco Studio's
-#                     auto-signing material (Huawei p12/cer/p7b under <configDir>) and
-#                     decrypts the Studio-encrypted password via the hvigor plugin.
-#                     The hap's module.json bundleName must already match the p7b's
-#                     bundle-name (rebuild with -p:OpenHarmonyBundleName=<name>); this is
-#                     checked before signing.
-#   --external:       signs with signing material supplied by another party (e.g. a tester
-#                     who obtained a Huawei-issued debug profile with their own locally
-#                     generated key): --profile <p7b>, --key <p12>, --key-alias <alias>,
-#                     --expect-udid <UDID>. The p7b must list the UDID in
-#                     debug-info.device-ids or the run fails before signing (fail closed);
-#                     each hap's module.json bundleName must match the p7b's bundle-name,
-#                     and the app cert chain (--cert <cer>, or a *.cer next to the p7b)
-#                     must contain the profile's development-certificate (the p7b carries
-#                     only the leaf; hap-sign-tool needs the chain). Every signed hap is
-#                     checked with verify-app before it is kept.
-#
-# Usage:
-#   scripts/sign-for-device.sh <udid[,udid...]> [--version <packVer>] [--bundle <name>]
-#                              [--unsigned <hap>] [--out <hap>]
-#   scripts/sign-for-device.sh --huawei [configDir] [encryptedPassword]
-#                              [--pwd-input-mode] [--unsigned <hap>] [--out <hap>]
-#   scripts/sign-for-device.sh --external --profile <p7b> --key <p12> --key-alias <alias>
-#                              --expect-udid <UDID> [--cert <cer>] [--pwd-input-mode]
-#                              [--key-pwd-file <file>] [--unsigned <hap>]... [--out <hap>]
-#                              [--out-dir <dir>]
-#   scripts/sign-for-device.sh --show-profile-devices [<p7b>|--config <dir>]
-#                              [--huawei [configDir]]
-# Env:
-#   OHOS_SDK_ROOT   OpenHarmony SDK root (default: the harmonybrew 26.0.0.18_2 install)
-#   OHOS_ENC_PWD    Studio-encrypted password for --huawei, as an alternative to the positional
-#                   encryptedPassword (preferred: argv is world-readable); it is forwarded to
-#                   sign-huawei.sh through the environment
-#   OHOS_PWD_INPUT_MODE  same as --pwd-input-mode (1 = interactive prompt; 0 = argv, default)
-# --pwd-input-mode (--huawei or --external): in --huawei mode it is forwarded to
-#                   sign-huawei.sh; in --external mode hap-sign-tool reads keystorePwd and
-#                   keyPwd from the terminal (-pwdInputMode 1, no -keyPwd/-keystorePwd).
-#                   Without a tty, script(1) provides a pty automatically (feed the two
-#                   prompts on stdin; with --key-pwd-file the file is fed twice) and the
-#                   mode fails when script(1) is not installed. The password never enters
-#                   argv and is never logged.
-# --key-pwd-file <file> (--external only): read the p12 password from the first line of
-#                   <file>. With --pwd-input-mode the file is fed through script(1) (still
-#                   no argv); without it the password is passed to hap-sign-tool on argv
-#                   for the duration of the call (same residual as --huawei's default mode).
+# Re-signs a hap for specific device(s). Modes:
+#   device (default): debug profile from the SDK's UnsgnedDebugProfileTemplate.json (device-ids
+#     = the given UDID(s)), signed with the SDK test keystore; bundle-name from --bundle
+#     (default com.example.hellomauiapp).
+#   --huawei: delegate to scripts/sign-huawei.sh (DevEco auto-signing p12/cer/p7b under
+#     <configDir>, Studio-encrypted password via the hvigor plugin); the hap's module.json
+#     bundleName must already match the p7b's (rebuild with -p:OpenHarmonyBundleName=<name>),
+#     checked before signing.
+#   --external: sign with material from another party (e.g. a tester's Huawei-issued debug
+#     profile + own key): --profile <p7b> --key <p12> --key-alias <alias> --expect-udid <UDID>.
+#     The p7b must list the UDID in debug-info.device-ids (fail closed), each hap's bundleName
+#     must match the p7b's, and the app cert chain (--cert <cer>, or a *.cer next to the p7b)
+#     must contain the profile's development-certificate (the p7b has only the leaf;
+#     hap-sign-tool needs the chain). Every signed hap is verify-app checked before it is kept.
+# Usage (usage() carries the full surface):
+#   sign-for-device.sh <udid[,udid...]> [--version <packVer>] [--bundle <name>]
+#     [--unsigned <hap>] [--out <hap>]
+#   sign-for-device.sh --huawei [configDir] [encryptedPassword] [--pwd-input-mode]
+#     [--unsigned <hap>] [--out <hap>]
+#   sign-for-device.sh --external --profile <p7b> --key <p12> --key-alias <alias>
+#     --expect-udid <UDID> [--cert <cer>] [--pwd-input-mode] [--key-pwd-file <file>]
+#     [--unsigned <hap>]... [--out <hap>] [--out-dir <dir>]
+#   sign-for-device.sh --show-profile-devices [<p7b>|--config <dir>] [--huawei [configDir]]
+# Env: OHOS_SDK_ROOT (default: the harmonybrew 26.0.0.18_2 install);
+#   OHOS_ENC_PWD - Studio-encrypted password for --huawei (preferred over the positional
+#     encryptedPassword: argv is world-readable), forwarded to sign-huawei.sh via the env;
+#   OHOS_PWD_INPUT_MODE - same as --pwd-input-mode (1 = prompt; 0 = argv, default).
+# --pwd-input-mode (--huawei: forwarded to sign-huawei.sh; --external: hap-sign-tool reads
+#   keystorePwd/keyPwd from the terminal, -pwdInputMode 1, no -keyPwd/-keystorePwd). Without a
+#   tty, script(1) supplies a pty (feed the two prompts on stdin; --key-pwd-file is fed twice)
+#   and the mode fails without script(1). The password never enters argv/logs.
+# --key-pwd-file <file> (--external only): p12 password from the first line; with
+#   --pwd-input-mode it goes through script(1) (still no argv), otherwise on argv for the call.
 set -e
 
 log() { printf '[%s] %s\n' "$(date '+%H:%M:%S')" "$*"; }

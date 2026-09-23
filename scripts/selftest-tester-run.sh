@@ -1,57 +1,46 @@
 #!/bin/sh
-# selftest-tester-run.sh - repeatable, fully local selftest for scripts/tester-run.sh.
-#
-# tester-run.sh is the primary tester path (one-command on-device round). This selftest
-# drives it end-to-end against a stub `hdc` created in a temp dir: no device, no real hdc,
-# no network. It covers the documented paths and asserts exit codes, the report archive
-# contents, and that nothing outside the temp dir is touched.
-#
+# selftest-tester-run.sh - repeatable, fully local selftest for scripts/tester-run.sh (the
+# primary tester path). Drives it end-to-end against a stub `hdc` in a temp dir: no device, no
+# real hdc, no network; asserts exit codes, report-archive contents, and that nothing outside
+# the temp dir is touched.
 # Scenarios:
 #   stub contract  the stub itself (list targets, install ok/fail, pidof alive->dead,
 #                  hilog -r/stream, "hilog -t kmsg", app-lib ls, /proc/sys evidence cats)
-#   S1  dry-run    no action flags, device reachable -> plan only, exit 0, no report
-#   S2  success    --uninstall --install --start --capture 1 (+ --device, --expect-tree-digest,
+#   S1 dry-run     no action flags, device reachable -> plan only, exit 0, no report
+#   S2 success     --uninstall --install --start --capture 1 (+ --device, --expect-tree-digest,
 #                  --compare-lib) -> kmsg + ELF-signing + app-lib path evidence assertions
-#   S3  install    a hap named *fail* -> code:9568297, exit 1, archive still produced
-#   S4  probes     --uninstall --probes <dir> --capture 1 (4 probe haps, PROBE1..PROBE4)
-#   S5  crash      pidof alive then dead -> process_alive=no, exit 1
-#   S6  missing    missing /proc evidence paths + missing --compare-lib file + missing
-#                  bundle libs dir are tolerated
-#   S7  extra      --extra-probes <dir> (comma + repeated forms, deduped): one importprobe-a
-#                  hap is installed, started, captured and archived like P1-P4
-#   S8  extra-fail an extra probe whose install fails (unsigned/signature path) is recorded
-#                  as install_failed and skipped, and the round still produces its archive
-#   S9  injection  11 malicious bundleName payloads (;, &&, $(), backticks, newline, space,
-#                  quotes, backslashes, traversal) in a hap's module.json are rejected
-#                  before any hdc command; traversal writes no file outside $OUT
-#   S9b valid      control group: dotted/underscore/uppercase bundle names still install,
-#                  start and record their joined device-side command
+#   S3 install     a hap named *fail* -> code:9568297, exit 1, archive still produced
+#   S4 probes      --uninstall --probes <dir> --capture 1 (4 probe haps, PROBE1..PROBE4)
+#   S5 crash       pidof alive then dead -> process_alive=no, exit 1
+#   S6 missing     missing /proc evidence paths + --compare-lib file + bundle libs dir tolerated
+#   S7 extra       --extra-probes <dir> (comma + repeated, deduped): one importprobe-a hap is
+#                  installed, started, captured and archived like P1-P4
+#   S8 extra-fail  an extra probe whose install fails is recorded as install_failed and skipped;
+#                  the round still produces its archive
+#   S9 injection   11 malicious bundleName payloads (;, &&, $(), backticks, newline, space,
+#                  quotes, backslashes, traversal) in module.json are rejected before any hdc
+#                  command; traversal writes no file outside $OUT
+#   S9b valid      control group: dotted/underscore/uppercase names still install, start and
+#                  record their joined device-side command
 #   S10 env        KIT_BUNDLE_NAME with a payload is rejected; a valid one still drives the
 #                  fallback path
-#
-# Stub hdc surface (every subcommand tester-run.sh invokes):
-#   list targets | install -r <hap> | uninstall <bundle> | shell aa start -a EntryAbility -b <b>
-#   shell pidof <b> | shell ps -ef | shell param get <key> | shell bm get -u
-#   shell hilog -r | hilog | shell "hilog -t kmsg" | shell "cat /proc/sys/..."
-#   shell "ls -l /data/storage/el1/bundle/libs/arm64/ 2>/dev/null"
-# `hdc -t <id>` prefixes are accepted. Every `shell` invocation is also appended, joined the
-# way hdc joins its argv, to <state>/device-shell.log (the stub never executes it): the S9
-# tests fail if a payload ever reaches that line. A hap whose basename contains `fail` is
-# rejected with `code:9568297` on stderr. pidof answers a pid for the first
-# FAKE_HDC_PIDOF_ALIVE_CALLS calls per bundle (default 1), then nothing.
-# FAKE_HDC_MISSING_PROC=1 makes both /proc/sys cats fail (missing path);
-# FAKE_HDC_MISSING_APPLIBS=1 makes the bundle libs ls fail (missing dir).
-# A stub `binary-sign-tool` lives in $WORK/bin (prepended to PATH for every run) and answers
-# `display-sign` with `code signature is not found`.
-#
-# Kit under test: SELFTEST_KIT_DIR if set; else the local
-# /data/storage/el2/base/tmp/opencode/device-test-kit when it looks complete; else a
-# synthetic minimal kit (module.json + dummy haps + minimal verify-kit.sh) is built in
-# the temp dir. SELFTEST_FORCE_SYNTHETIC=1 forces the synthetic kit.
-#
-# Env: SELFTEST_TMPDIR=<dir>   work dir base (default: the approved opencode tmp dir)
-#      SELFTEST_KEEP=1        keep the work dir even when all checks pass
-#      SELFTEST_TESTER=<path> tester-run.sh under test (default: next to this script)
+# Stub hdc surface (every subcommand tester-run.sh invokes): list targets | install -r <hap> |
+#   uninstall <bundle> | shell aa start -a EntryAbility -b <b> | shell pidof <b> | shell ps -ef
+#   | shell param get <key> | shell bm get -u | shell hilog -r | hilog | shell "hilog -t kmsg"
+#   | shell "cat /proc/sys/..." | shell "ls -l /data/storage/el1/bundle/libs/arm64/ 2>/dev/null"
+#   `hdc -t <id>` prefixes are accepted. Every `shell` invocation is appended, joined the way
+#   hdc joins its argv, to <state>/device-shell.log (never executed): the S9 tests fail if a
+#   payload ever reaches that line. A hap whose basename contains `fail` is rejected with
+#   `code:9568297` on stderr. pidof answers a pid for the first FAKE_HDC_PIDOF_ALIVE_CALLS calls
+#   per bundle (default 1), then nothing. FAKE_HDC_MISSING_PROC=1 fails both /proc/sys cats;
+#   FAKE_HDC_MISSING_APPLIBS=1 fails the bundle libs ls. A stub `binary-sign-tool` in $WORK/bin
+#   (prepended to PATH) answers `display-sign` with `code signature is not found`.
+# Kit under test: SELFTEST_KIT_DIR if set; else the local approved device-test-kit dir when it
+#   looks complete; else a synthetic minimal kit (module.json + dummy haps + minimal
+#   verify-kit.sh) in the temp dir. SELFTEST_FORCE_SYNTHETIC=1 forces the synthetic kit.
+# Env: SELFTEST_TMPDIR=<dir> work dir base (default: the approved opencode tmp dir),
+#      SELFTEST_KEEP=1 keep the work dir even when all checks pass,
+#      SELFTEST_TESTER=<path> tester-run.sh under test (default: next to this script).
 # Exit: 0 = all checks passed; 1 = at least one check failed (work dir kept for triage).
 set -u
 

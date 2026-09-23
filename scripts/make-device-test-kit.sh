@@ -1,84 +1,47 @@
 #!/bin/sh
 # Builds and assembles the OpenHarmony MAUI device-test kit (the "delivery kit"):
-#
-#   4 self-signed haps  hello-maui-app.hap                (26.0 band, no extra permissions)
-#                       hello-maui-app-permissions.hap    (26.0 band, +5 permissions)
-#                       hello-maui-app-api20.hap          (20.0 band, no extra permissions)
-#                       hello-maui-app-api20-permissions.hap
-#                       -> signed with OUR debug material only (profile bound to the example
-#                          UDID): a real device rejects them (9568257 / 9568344). The names are
-#                          kept because tester-run.sh and the shipped docs address them, so the
-#                          kit-root 签名说明.txt is the unmistakable label ("self-signed:
-#                          re-sign or use a pre-signed kit") - do not silently rename again.
-#   1 unsigned hap      hello-maui-app-unsigned.hap       (26.0 band, default payload; the
-#                                                         re-sign-then-install variant)
-#   9 docs            验收说明.md 快速开始.md 真机操作手册.md 文档索引.md 签名与UDID指南.md
-#                     自签说明.md 最终状态.md README-交付说明.md 签名说明.txt
-#   0/1 meta          目标设备.txt (only with --sign-external: UDID + profile sha256 + method)
-#   1 verifier        verify-kit.sh                    (tester self-check: sha256sum -c + hap
-#                                                      summary + --tree-digest/--expect-tree-digest)
-#   SHA256SUMS        checksum of every hap + doc + verify-kit.sh in the kit
-#   <out>.tar.gz      the kit root, packed flat (tar -C <kit> .)
-#
+#   4 self-signed haps  hello-maui-app.hap, hello-maui-app-permissions.hap,
+#     hello-maui-app-api20.hap, hello-maui-app-api20-permissions.hap (26.0/20.0 band x optional
+#     OpenHarmonyExtraPermissions), signed with OUR debug material only (profile bound to the
+#     example UDID): a real device rejects them (9568257/9568344), and the kit-root 签名说明.txt
+#     states this. tester-run.sh and the shipped docs address these names - keep them.
+#   1 unsigned hap      hello-maui-app-unsigned.hap (26.0, re-sign-then-install variant)
+#   9 docs             验收说明.md 快速开始.md 真机操作手册.md 文档索引.md 签名与UDID指南.md
+#                       自签说明.md 最终状态.md README-交付说明.md + 签名说明.txt (generated here
+#                       from the heredoc, so it always matches the kit's actual hap names)
+#   0/1 meta           目标设备.txt only with --sign-external (UDID + profile sha256 + method)
+#   verify-kit.sh + SHA256SUMS (every hap/doc/script) + <out>.tar.gz (kit root, packed flat)
 # The haps are (re)published from test/hello-maui-app for both API bands with and without
-# OpenHarmonyExtraPermissions, using <dist-dir>/ets/modules.abc as the ArkTS shell; each
-# publish lands in test/hello-maui-app/bin/Release/<tfm>/openharmony-arm64/ and is copied
-# into the kit right away. The 20.0 publishes use the TargetFrameworks/TargetFramework
-# override documented in the acceptance doc (test/hello-maui-app multi-targets).
-# Signing embeds a timestamp, so a rebuilt kit has fresh hap hashes - SHA256SUMS is always
-# regenerated, never carried over.
-#
-# Usage: scripts/make-device-test-kit.sh [--kit-dir <dir>] [--dist-dir <dir>]
-#          [--out <tar.gz>] [--skip-tar] [--publish]
-#          [--sign-external <profile> <key> <alias> <expect-udid>]
-#
-#   --kit-dir <dir>   kit directory (default $DEVICE_TEST_KIT_DIR, else
-#                     /data/storage/el2/base/tmp/opencode/device-test-kit)
-#   --dist-dir <dir>  repo dist dir holding ets/modules.abc (default <repo>/dist)
-#   --out <tar.gz>    tarball (default <kit-dir>.tar.gz)
-#   --skip-tar        assemble the kit directory only
-#   --publish         publish the tarball via scripts/publish-workload-release.sh
-#   --sign-external   pre-sign the assembled haps (including the unsigned variant) with an
-#                     external debug profile/key for one device UDID, via
-#                     scripts/sign-for-device.sh --external: <profile> is the tester's p7b,
-#                     <key> their p12, <alias> the key alias and <expect-udid> the target
-#                     device (the p7b must list it or the build fails before signing). The
-#                     matching app cert chain (*.cer) must sit next to the p7b or be given
-#                     through OHOS_EXT_CERT; the password is asked on the terminal, or
-#                     taken from OHOS_KEY_PWD_FILE / piped on stdin. The kit then carries
-#                     目标设备.txt (UDID + profile sha256 + method, no secrets).
-#
-# Env: DOTNET (dotnet host, default: dotnet), RUNTIME_OHOS_PLANS (runtime-ohos docs/plans,
-#      default: the sibling checkout's docs/plans), OHOS_EXT_CERT, OHOS_KEY_PWD_FILE
-#      (--sign-external only).
-#
-# The kit directory is rebuilt from scratch in a staging dir and swapped in, so stale
-# files cannot leak into SHA256SUMS. scripts/verify-kit.sh is always copied in from the
-# repo (a tester can run `sh verify-kit.sh` inside the extracted kit; it is covered by
-# SHA256SUMS like every other file). The two kit-only docs (自签说明.md, README-交付说明.md)
-# come from the repo source in docs/plans (2026-09-21-ohos-tester-selfsign.md,
-# 2026-09-21-ohos-delivery-kit-readme.md); only when that checkout is absent are the kit
-# directory copies of a previous run used, so updated repo docs are never shadowed by
-# stale kit copies. 签名说明.txt (the self-signed status page: 9568257/9568344 expected,
-# re-sign the unsigned variant) is generated here from the heredoc below, so it always
-# matches the kit's actual hap names. The operator-facing docs come from docs/plans as well:
-# 2026-09-21-ohos-device-run-playbook.md ships as 真机操作手册.md and
-# 2026-09-21-ohos-final-status.md ships as 最终状态.md; the SHA256SUMS glob below (*.md)
-# picks every shipped doc up, so verify-kit.sh needs no change.
-#
-# --publish passes the digests of the artifacts just built (DEVICE_TEST_KIT_SHA256 plus
-# the bundle's) and --allow-clobber-mismatch, because a rebuilt kit intentionally replaces
-# the previously delivered assets; publish-workload-release.sh still verifies each local
-# file against the supplied digest and compares it with the published asset digest.
-#
-# The kit contents tree digest (verify-kit.sh --tree-digest: sorted relative paths + per-file
-# sha256 of the assembled kit) is printed here and passed to --publish as
-# --kit-tree-digest, so the kit release notes can carry the value a tester binds with
-# `sh verify-kit.sh --expect-tree-digest <hex>`. The tarball checksum alone binds only the
-# .tar.gz file, not the extracted directory. The digest reads only relative paths + file
-# contents (no modes/mtimes/owners) and ignores the kit's root-level transport archive and
-# checksum sidecar, so a tester who extracts the tarball in place next to it computes the
-# same value as this build did on the clean kit directory.
+# OpenHarmonyExtraPermissions, using <dist-dir>/ets/modules.abc as the ArkTS shell (the 20.0
+# publishes use the TargetFrameworks/TargetFramework override from the acceptance doc); each
+# publish lands in test/hello-maui-app/bin/Release/<tfm>/openharmony-arm64/ and is copied into
+# the kit right away. Signing embeds a timestamp, so SHA256SUMS is always regenerated, never
+# carried over.
+# Usage: scripts/make-device-test-kit.sh [--kit-dir <dir>] [--dist-dir <dir>] [--out <tar.gz>]
+#          [--skip-tar] [--publish] [--sign-external <profile> <key> <alias> <expect-udid>]
+#   see usage() for defaults (kit dir $DEVICE_TEST_KIT_DIR or the approved opencode tmp dir,
+#   dist dir <repo>/dist, out <kit-dir>.tar.gz) and the full option text.
+#   --sign-external pre-signs every hap (unsigned variant included) with an external debug
+#   profile/key for one UDID via sign-for-device.sh --external: the p7b must list the UDID
+#   (fail closed), the app cert chain (*.cer next to the p7b, or OHOS_EXT_CERT) is required,
+#   and the password comes from the terminal or OHOS_KEY_PWD_FILE / stdin.
+# Env: DOTNET, RUNTIME_OHOS_PLANS (runtime-ohos docs/plans), OHOS_EXT_CERT, OHOS_KEY_PWD_FILE.
+# The kit dir is rebuilt from scratch in a staging dir and swapped in, so stale files cannot
+# leak into SHA256SUMS. verify-kit.sh always comes from the repo; 自签说明.md and
+# README-交付说明.md come from runtime-ohos docs/plans (2026-09-21-ohos-tester-selfsign.md,
+# 2026-09-21-ohos-delivery-kit-readme.md) and 真机操作手册.md / 最终状态.md from
+# 2026-09-21-ohos-device-run-playbook.md / 2026-09-21-ohos-final-status.md, when that checkout
+# exists (updated repo docs are never shadowed by stale kit copies), else from a previous kit
+# run; the SHA256SUMS *.md glob picks every shipped doc up.
+# --publish passes DEVICE_TEST_KIT_SHA256 (plus the bundle's digest) and
+# --allow-clobber-mismatch (a rebuilt kit intentionally replaces the previous assets;
+# publish-workload-release.sh still verifies each local file against the supplied digest and
+# compares it with the published asset digest) and --kit-tree-digest, so the release notes
+# carry the digest a tester binds with `sh verify-kit.sh --expect-tree-digest <hex>`. The tree
+# digest (verify-kit.sh --tree-digest) is a sha256 over the sorted relative paths + per-file
+# sha256 of the assembled kit (no modes/mtimes/owners) that ignores the kit's root-level
+# transport archive and checksum sidecar, so an extract-in-place tester computes the same
+# value this build did on the clean kit directory.
 set -e
 
 log()  { printf '[%s] %s\n' "$(date '+%H:%M:%S')" "$*"; }
