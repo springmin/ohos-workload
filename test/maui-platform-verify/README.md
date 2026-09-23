@@ -33,9 +33,11 @@ host and the TFM gating / public-API baseline / `SupportedPlatform` / frozen-ABI
 artifacts). Before the fuzz tail
 it runs a frame-path performance budget (warm-up plus 200 timed
 `OpenHarmonyWindowRenderer.Render` frames over a fixed 401-node tree, reporting
-average/p50/p95/max frame time and the managed allocation delta) and an accessibility
+average/p50/p95/max frame time, the max/average ratio, a p95/average jitter ratio and the managed
+allocation delta) and an accessibility
 publish-path budget (unchanged vs mutated frames over the same tree, see "Performance budget"
-below), failing the suite when the (deliberately loose) budgets are exceeded.
+below), failing the suite when the (deliberately loose for wall-clock, deterministic for
+allocation and jitter) budgets are exceeded.
 
 ## Running it
 
@@ -49,12 +51,16 @@ dotnet bin/Debug/net11.0/verify.dll | grep -c '\[verify\]'   # expect 315 (302 c
 ```
 
 The `interaction-regression` workflow (`.github/workflows/interaction-regression.yml`) runs the
-suite on a GitHub runner as a real gate: it checks out this repository plus `springmin/maui-ohos`
+suite on a GitHub runner as a real gate (on push to `master`, on pull requests and on
+`workflow_dispatch`): it checks out this repository plus `springmin/maui-ohos`
 (`feature/openharmony`, the branch carrying `src/Core/src/Platform/OpenHarmony`), builds
 `src/Microsoft.OpenHarmony.Hosting` and `src/Microsoft.OpenHarmony.Maui.Graphics` in Release,
 points `MAUI_SLICE_DIR` / `HOSTING_DLL` / `OPENHARMONY_GRAPHICS_DLL` at those roots, and fails the
-job unless the run exits 0, reports at least 295 `[verify]` lines, both perf lines report
-`within=True`, and no `Unhandled` line is logged.
+job unless the run exits 0, the suite's own `[suite]` contract line reports `assert=True` with at
+least the floor declared in `Program.cs`, both perf lines report `within=True`, and no `Unhandled`
+line is logged. The floor (295 = 315 - 20, the documented convention) lives only in `Program.cs`;
+the workflow and `scripts/preflight.sh` both read the printed `[suite] checks=... floor=...` line
+instead of repeating a literal, so the two local/CI thresholds cannot drift apart.
 
 ## Fuzz tail
 
@@ -90,16 +96,31 @@ path (measure/arrange, the iterative view walk, the accessibility shadow-tree re
 diff, the surface hooks) runs unchanged.
 
 The `[verify] perf` line reports the average, p50, p95 and max frame time, the max/average ratio,
-the managed allocation delta (`GC.GetAllocatedBytesForCurrentThread`, total and per frame) and the
-section's own wall time. The budget is intentionally loose because CI runners are shared, the
-suite runs in Debug and the off-device frame keeps one failed native lookup on the dev host:
+the p95/average jitter ratio, the managed allocation delta (`GC.GetAllocatedBytesForCurrentThread`,
+total and per frame) and the section's own wall time. The budget is intentionally loose for the
+wall-clock ceilings because CI runners are shared, the suite runs in Debug and the off-device frame
+keeps one failed native lookup on the dev host; the allocation and jitter ceilings are tight
+because they are the regression signals the loose ceilings miss:
 
 - `avg <= 20 ms` - the managed work is sub-millisecond; a uniform regression (extra walk, blocking
   call, quadratic layout) has to add more than ~14 ms/frame to trip this.
 - `max <= 250 ms` - a very loose absolute hang guard.
-- `max/avg <= 100x` - the relative outlier check, so a pathological single frame fails even on a
-  machine where the absolute ceilings are too loose; single preempted frames (10-30x a
+- `max/avg <= 100x` - the raw relative outlier check, so a pathological single frame fails even on
+  a machine where the absolute ceilings are too loose; single preempted frames (10-30x a
   sub-millisecond average) are tolerated.
+- `p95/avg <= 2x` (the reported `jitter`) - the stability gate. The raw `max/avg` is not a stable
+  signal on a loaded shared host: a single preempted frame measured 3.4x here while the frame path
+  was healthy, and the pre-FIX-P2 baseline logged 8.1x, so the tight gate uses the 95th percentile
+  instead (robust to one or two preempted frames, still catching a sustained regression where at
+  least one frame in twenty - or every frame - gets slower). Measured: 1.08x on CI, 1.3-1.7x on
+  the dev host (idle and loaded), so 2x keeps a documented margin.
+- `alloc/frame <= 291,456 B` - the allocation gate, 4x the post-FIX-P2 baseline (72,864 B/frame on
+  the dev host, 72,056 B/frame on CI - the same Debug codegen within 1.1%); the delta is
+  deterministic per code path (14,572,800 B total on every local run), so unlike the wall-clock
+  budgets it needs no noise slack. It fails the class of regression the pre-FIX-P2 measurements
+  showed (per-frame accessibility shadow-tree rebuilds, animation snapshots) as soon as a frame
+  path starts allocating a storm; a future, leaner baseline should tighten it deliberately (see
+  the constant comment in `Program.cs`).
 
 The suite then measures the accessibility publish path over the same fixed tree: 8 warm-up and 50
 timed unchanged frames (the skip path), followed by 8 warm-up and 50 timed frames whose label text
@@ -131,14 +152,17 @@ deliberately loose style as the frame budget:
   host), so the suite stays inside the ~2 s addition budget.
 
 A violation throws (unhandled exception, non-zero exit) after the numbers are printed, so CI logs
-keep the evidence. Measured on the OpenHarmony dev host (200 frames): avg ~3.5-3.8 ms, p50
-~3.4-3.7 ms, p95 ~4.5-4.7 ms, max 6.4-7.2 ms, max/avg ~1.7-2.1, ~185 KiB allocated per frame (the
-accessibility frame diff rebuilds the 401-node shadow tree: reported for context, not asserted),
-section wall time ~750-810 ms; the a11y block adds ~0.5-0.9 s (50 skip + 50 mutated passes) and the
-whole suite stayed within ~1 s of the unmodified 199-line run. On a normal CI runner the one
-remaining native lookup inside `Render` is sub-millisecond, so the reported average should be well
-under 1 ms, and the a11y block reported ~0.3/0.5 ms for the render step and ~0.07/0.28 ms for the
-publish pass (skip/republish).
+keep the evidence. Measured on the OpenHarmony dev host after the FIX-P2 allocation work (200
+frames): avg ~5.5-6.4 ms, p50 ~5.4-6.4 ms, p95 ~7.8-9.2 ms, max 9.5-24.7 ms (raw max/avg
+1.8-3.9x, i.e. one or two preempted frames), jitter p95/avg 1.33-1.43x, 72,864 B allocated per
+frame (also under load - the allocation delta is deterministic), section wall time ~1.0-1.4 s;
+the a11y block adds ~0.3-0.4 s (50 skip + 50 mutated passes) with render ratios ~19-23x and
+publish ratios ~137-168x. On a normal CI runner the one remaining native lookup inside `Render` is
+sub-millisecond: the latest runs reported avg ~0.61-0.63 ms, p95 0.65-0.68 ms, jitter ~1.08x,
+72,056 B/frame, and the a11y block reported ~0.3/0.5 ms for the render step and ~0.07/0.28 ms for
+the publish pass (skip/republish). Every run ends with the `[suite]` contract line
+(`checks=315 total=315 floor=295 assert=True`), which the workflow and `scripts/preflight.sh`
+parse.
 
 ## Notes
 
@@ -147,7 +171,10 @@ publish pass (skip/republish).
 - The suite fails loudly (unhandled exception) when a slice change breaks startup or when an
   assertion for the gesture flows (including the drag-and-drop checks) does not hold; keep it at
   302 checks plus the 4 fuzz lines plus the 1 frame-perf line plus the 8 a11y-perf lines
-  (315 `[verify]` lines) when touching the platform slice.
+  (315 `[verify]` lines) when touching the platform slice. The total and the floor (total - 20)
+  are declared in `Program.cs`; the run ends with a `[suite] checks=... floor=... assert=...`
+  line and fails itself when the printed count is below the floor, so the CI job and
+  `scripts/preflight.sh` do not repeat the threshold.
 - Contacts/calendar coverage: `OpenHarmonyContacts.FindAsync` and
   `OpenHarmonyCalendar.ListUpcomingAsync`/`AddEventAsync` return empty/false without throwing
   off-device and report `IsSupported == false` before and after the call (the permission probe
@@ -384,8 +411,11 @@ publish pass (skip/republish).
     the installed default must complete without throwing when the ability bridge is absent; the
     want kind for single-file sharing is pinned to 3.
 - CI wiring: `.github/workflows/interaction-regression.yml` builds the slice checkout and the
-  hosting assemblies on the runner and gates on the `[verify]` line count (>=295) plus both perf
-  `within=True` markers (see "Running it" above).
+  hosting assemblies on the runner and gates on the suite's `[suite]` contract line (the floor
+  declared in `Program.cs`, cross-checked against `grep -c '[verify]'`) plus both perf
+  `within=True` markers (see "Running it" above). The job runs on push to `master`, on pull
+  requests and on `workflow_dispatch`; it only needs the read-only `contents` permission and no
+  secrets, so fork PRs run it with the default read-only token.
 - Accessibility publish-contract coverage (R2b): the suite reflects
   `OpenHarmonyAccessibility.AccessibilityNode` (16 parameters now that hint, range and checked
   are published) and parses `ohos_host_accessibility_node`/`_get` out of
@@ -519,4 +549,7 @@ publish pass (skip/republish).
   handler delegate is swapped for a thrower, the native entry is invoked, the delegate is
   restored and the ten inline `ReportCallbackFailure` guards are pinned in the source. That is 7
   lines: 308 + 7 = 315 = 302 interaction checks + 4 fuzz + 1 frame perf + 8 a11y perf; the
-  suite's documented floor convention is total - 20 = 295.
+  suite's documented floor convention is total - 20 = 295, declared once in `Program.cs` (the
+  `verifyCheckTotal`/`verifyCheckFloor` constants behind the `[suite]` line). When checks are
+  added or removed, update that one constant and the totals in this README; the workflow and
+  preflight pick the floor up from the printed line automatically.

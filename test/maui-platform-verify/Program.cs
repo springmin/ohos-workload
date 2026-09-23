@@ -7,6 +7,14 @@ using Microsoft.Maui.Controls;
 using Microsoft.Maui.Hosting;
 using Microsoft.Maui.Platform;
 
+// The suite's [verify] line total is part of its contract: the CI job and scripts/preflight.sh
+// gate on the floor declared here, so count the lines actually printed (see the [suite] summary
+// after the fuzz tail) instead of letting every caller repeat its own threshold constant.
+VerifyLineCountingWriter verifyStdout = new(Console.Out);
+Console.SetOut(verifyStdout);
+const int verifyCheckTotal = 315;                     // documented full [verify] line count
+const int verifyCheckFloor = verifyCheckTotal - 20;   // documented floor convention (total - 20)
+
 // A small image file for the Image handler.
 string imagePath = Path.Combine(Path.GetTempPath(), "verify-image.png");
 File.WriteAllBytes(imagePath, Convert.FromBase64String(
@@ -5521,14 +5529,27 @@ catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
 // primitive of the ~400 nodes pays the absent-host lookup, which measured ~1.2 s per frame here
 // and would swamp the managed frame path and the suite's time budget. A detached tree keeps
 // Render's managed work (measure/arrange, traversal, accessibility) plus the renderer-level
-// canvas calls - the same shape the deep-tree fuzz section uses. The allocation delta is
-// reported for context but not asserted: it is runtime/version dependent and the frame-time
-// budget is the regression signal.
+// canvas calls - the same shape the deep-tree fuzz section uses.
+//   * alloc/frame <= 291,456 B - the fixed tree allocates 72,864 B/frame on this host and
+//     72,056 B/frame on the CI runner after the FIX-P2 allocation work (same Debug codegen,
+//     within 1.1%), so 4x that is the allocation gate; a storm of the kind FIX-P2 removed
+//     (per-frame a11y shadow-tree rebuilds, animation snapshots) lands far above it. The
+//     allocation delta is deterministic per code path (14,572,800 B total on every run here),
+//     so this gate needs none of the slack the wall-clock budgets carry.
+//   * jitter (p95/avg) <= 2.0 - the frame-to-frame stability gate. The raw max/avg (bounded by
+//     the loose 100x outlier guard above) is not a stable signal on a loaded shared host: a
+//     single preempted frame measured 3.4x here while the frame path was healthy, and the
+//     pre-FIX-P2 baseline run logged 8.1x. p95/avg is robust to one or two preempted frames and
+//     still catches a sustained regression (every frame, or at least one frame in twenty,
+//     getting slower): it measured 1.08x on CI and 1.4-1.7x on the dev host, so 2.0x keeps a
+//     documented margin while the old 100x guard stays as the single-frame hang check.
 const int perfWarmupFrames = 8;
 const int perfFrames = 200;
 const double perfAverageCeilingMs = 20.0;
 const double perfMaxCeilingMs = 250.0;
 const double perfMaxAverageRatio = 100.0;
+const double perfJitterCeiling = 2.0;
+const double perfAllocPerFrameCeiling = 291_456.0;
 var perfDefaultCanvasFactory = OpenHarmonyWindowRenderer.CanvasFactory;
 OpenHarmonyWindowRenderer.CanvasFactory = () => new PerfCanvas();
 var perfRenderer = new OpenHarmonyWindowRenderer();
@@ -5582,15 +5603,21 @@ double perfP50 = perfSorted[perfFrames / 2];
 double perfP95 = perfSorted[Math.Min(perfFrames - 1, (int)Math.Ceiling(perfFrames * 0.95) - 1)];
 double perfMax = perfSorted[^1];
 double perfMaxAverage = perfMax / Math.Max(perfAverage, 1e-9);
+double perfJitter = perfP95 / Math.Max(perfAverage, 1e-9);
+double perfAllocPerFrame = perfAllocDelta / (double)perfFrames;
 bool perfWithinBudget = perfAverage <= perfAverageCeilingMs
     && perfMax <= perfMaxCeilingMs
-    && perfMaxAverage <= perfMaxAverageRatio;
-Console.WriteLine($"[verify] perf warmup={perfWarmupFrames} frames={perfFrames} nodes={perfNodes} avg={perfAverage:0.###}ms p50={perfP50:0.###}ms p95={perfP95:0.###}ms max={perfMax:0.###}ms max/avg={perfMaxAverage:0.##} allocDelta={perfAllocDelta}B alloc/frame={perfAllocDelta / (double)perfFrames:0.#}B elapsed={(int)perfWatch.ElapsedMilliseconds}ms budget=avg<={perfAverageCeilingMs:0.###}ms,max<={perfMaxCeilingMs:0.###}ms,max/avg<={perfMaxAverageRatio:0.###} warmupOk={perfWarm} within={perfWithinBudget}");
+    && perfMaxAverage <= perfMaxAverageRatio
+    && perfJitter <= perfJitterCeiling
+    && perfAllocPerFrame <= perfAllocPerFrameCeiling;
+Console.WriteLine($"[verify] perf warmup={perfWarmupFrames} frames={perfFrames} nodes={perfNodes} avg={perfAverage:0.###}ms p50={perfP50:0.###}ms p95={perfP95:0.###}ms max={perfMax:0.###}ms max/avg={perfMaxAverage:0.##} jitter={perfJitter:0.##} allocDelta={perfAllocDelta}B alloc/frame={perfAllocPerFrame:0.#}B elapsed={(int)perfWatch.ElapsedMilliseconds}ms budget=avg<={perfAverageCeilingMs:0.###}ms,max<={perfMaxCeilingMs:0.###}ms,max/avg<={perfMaxAverageRatio:0.###},jitter<={perfJitterCeiling:0.##},alloc/frame<={perfAllocPerFrameCeiling:0.#}B warmupOk={perfWarm} within={perfWithinBudget}");
 if (!perfWarm || !perfWithinBudget)
 {
     throw new InvalidOperationException(
         $"the frame-path performance budget failed: avg={perfAverage:0.###}ms (limit {perfAverageCeilingMs}ms) " +
         $"max={perfMax:0.###}ms (limit {perfMaxCeilingMs}ms) max/avg={perfMaxAverage:0.##} (limit {perfMaxAverageRatio}) " +
+        $"jitter={perfJitter:0.##} (limit {perfJitterCeiling}, p95/avg) " +
+        $"alloc/frame={perfAllocPerFrame:0.#}B (limit {perfAllocPerFrameCeiling:0.#}B) " +
         $"warmupOk={perfWarm} frames={perfFrames} nodes={perfNodes}");
 }
 
@@ -5947,6 +5974,19 @@ if (fuzzWatch.Elapsed > TimeSpan.FromSeconds(30))
     throw new InvalidOperationException($"the fuzz section took {fuzzMillis} ms");
 }
 
+// The suite's own check-count contract: report what was actually emitted and fail when it is
+// below the declared floor. The CI job and scripts/preflight.sh read this line instead of
+// repeating a threshold constant, so the count has a single source of truth (this file) and
+// cannot drift between the two callers. `grep -c '[verify]'` must agree with `checks=`.
+int verifyChecks = verifyStdout.VerifyLineCount;
+bool verifyCheckContract = verifyChecks >= verifyCheckFloor;
+Console.WriteLine($"[suite] checks={verifyChecks} total={verifyCheckTotal} floor={verifyCheckFloor} assert={verifyCheckContract}");
+if (!verifyCheckContract)
+{
+    throw new InvalidOperationException(
+        $"the interaction suite printed {verifyChecks} [verify] lines, below the {verifyCheckFloor}-line floor (declared total {verifyCheckTotal})");
+}
+
 // Target object for the HybridWebView JS -> .NET invocation checks. The reflection invoker
 // matches methods by name and deserializes each JSON parameter value into the parameter type.
 sealed class VerifyHybridInvokeTarget
@@ -6291,5 +6331,62 @@ class TestApp : Application
         }
         layout.Add(new ScrollView { Content = tall, HeightRequest = 400 });
         return new ContentPage { Content = layout };
+    }
+}
+
+/// <summary>
+/// Passthrough stdout writer that counts the complete lines carrying the "[verify]" check
+/// marker, so the suite can state its own contract line count in the [suite] summary and fail
+/// when the run is below the declared floor.
+/// </summary>
+sealed class VerifyLineCountingWriter : TextWriter
+{
+    private readonly TextWriter _inner;
+    private readonly System.Text.StringBuilder _line = new();
+
+    public VerifyLineCountingWriter(TextWriter inner) => _inner = inner;
+
+    public int VerifyLineCount { get; private set; }
+
+    public override System.Text.Encoding Encoding => _inner.Encoding;
+
+    public override void Flush() => _inner.Flush();
+
+    public override void Write(char value)
+    {
+        Track(value);
+        _inner.Write(value);
+    }
+
+    public override void Write(string? value)
+    {
+        if (value is null)
+        {
+            return;
+        }
+
+        foreach (char c in value)
+        {
+            Track(c);
+        }
+
+        _inner.Write(value);
+    }
+
+    private void Track(char c)
+    {
+        if (c == '\n')
+        {
+            if (_line.ToString().Contains("[verify]", StringComparison.Ordinal))
+            {
+                VerifyLineCount++;
+            }
+
+            _line.Clear();
+        }
+        else if (c != '\r')
+        {
+            _line.Append(c);
+        }
     }
 }
