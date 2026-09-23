@@ -1138,20 +1138,157 @@ void ohos_host_register_bridge(void* lifecycle, void* node, void* surface) {
     OhosHostBindAndFlushBridge(handle, lifecycle, node, surface);
 }
 
+// --- surface buffer presentation cache --------------------------------------------
+// The XComponent surface presents into a native window whose gralloc buffers are stable
+// while that window lives, so the fd-backed mapping is cached by (fd, size) instead of
+// being rebuilt every frame, and the buffer geometry/format/usage are only re-applied
+// when the window or its size changed (they are driver-level calls). Mappings are
+// dropped when the window is replaced or destroyed; a geometry change also drops them,
+// because the pool then hands out differently sized buffers. No fd is ever duplicated
+// (mmap borrows it), so the cache owns nothing but the mappings themselves.
+#define OHOS_PRESENT_MAP_MAX 8
+typedef struct {
+    int fd;
+    size_t size;
+    void* addr;
+    uint64_t last_used;
+} OhosPresentMapping;
+
+static OhosPresentMapping g_present_maps[OHOS_PRESENT_MAP_MAX];
+static uint64_t g_present_map_clock = 0;
+static void* g_native_window_configured = NULL;
+static int g_native_window_width = 0;
+static int g_native_window_height = 0;
+
+static void OhosHostPresentMapReleaseAll(void) {
+    for (int i = 0; i < OHOS_PRESENT_MAP_MAX; i++) {
+        if (g_present_maps[i].addr != NULL) {
+            munmap(g_present_maps[i].addr, g_present_maps[i].size);
+            g_present_maps[i].addr = NULL;
+            g_present_maps[i].size = 0;
+        }
+        g_present_maps[i].fd = -1;
+    }
+    g_present_map_clock = 0;
+}
+
+// Forget which options were last applied to the window; the next configure re-applies them.
+static void OhosHostNativeWindowInvalidate(void) {
+    g_native_window_configured = NULL;
+    g_native_window_width = 0;
+    g_native_window_height = 0;
+}
+
+// Applies geometry/format/usage only when the window or its size changed. On failure the
+// cached state stays invalid so the next frame retries.
+static int OhosHostNativeWindowConfigure(void* window, int width, int height) {
+    if (g_native_window_configured == window && g_native_window_width == width &&
+        g_native_window_height == height) {
+        return 0;
+    }
+    if (g_native_window_configured != NULL) {
+        // A different shape cannot be served by the mappings of the previous one.
+        OhosHostPresentMapReleaseAll();
+    }
+    uint64_t usage = NATIVEBUFFER_USAGE_CPU_WRITE | NATIVEBUFFER_USAGE_MEM_DMA;
+    if (OH_NativeWindow_NativeWindowHandleOpt((OHNativeWindow*)window, SET_BUFFER_GEOMETRY, width, height) != 0 ||
+        OH_NativeWindow_NativeWindowHandleOpt((OHNativeWindow*)window, SET_FORMAT, NATIVEBUFFER_PIXEL_FMT_RGBA_8888) != 0 ||
+        OH_NativeWindow_NativeWindowHandleOpt((OHNativeWindow*)window, SET_USAGE, usage) != 0) {
+        OhosHostNativeWindowInvalidate();
+        return -1;
+    }
+    g_native_window_configured = window;
+    g_native_window_width = width;
+    g_native_window_height = height;
+    return 0;
+}
+
+// Borrowed mapping of fd, cached across frames; NULL when the mmap fails (the caller
+// still flushes the buffer, it just does not write pixels into it).
+static void* OhosHostPresentMapAcquire(int fd, const void* hint, size_t size) {
+    if (fd < 0 || size == 0) {
+        return NULL;
+    }
+    int slot = -1;
+    for (int i = 0; i < OHOS_PRESENT_MAP_MAX; i++) {
+        OhosPresentMapping* mapping = &g_present_maps[i];
+        if (mapping->addr == NULL) {
+            if (slot < 0) {
+                slot = i;
+            }
+            continue;
+        }
+        if (mapping->fd == fd && mapping->size == size) {
+            mapping->last_used = ++g_present_map_clock;
+            return mapping->addr;
+        }
+    }
+    if (slot < 0) {
+        uint64_t oldest = UINT64_MAX;
+        for (int i = 0; i < OHOS_PRESENT_MAP_MAX; i++) {
+            if (g_present_maps[i].last_used < oldest) {
+                oldest = g_present_maps[i].last_used;
+                slot = i;
+            }
+        }
+    }
+    if (slot < 0) {
+        return NULL;
+    }
+    OhosPresentMapping* mapping = &g_present_maps[slot];
+    if (mapping->addr != NULL) {
+        munmap(mapping->addr, mapping->size);
+        mapping->addr = NULL;
+    }
+    void* addr = mmap((void*)hint, size, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+    if (addr == MAP_FAILED) {
+        mapping->fd = -1;
+        mapping->size = 0;
+        return NULL;
+    }
+    mapping->fd = fd;
+    mapping->size = size;
+    mapping->addr = addr;
+    mapping->last_used = ++g_present_map_clock;
+    return addr;
+}
+
+// Copies the packed bitmap rows into a mapped buffer. When the buffer stride matches the
+// packed row size this is a single memcpy; otherwise rows are copied one by one. Every
+// write stays inside map_size: a handle whose size does not cover the rows (or a bogus
+// stride) leaves the rest of the frame untouched instead of writing past the mapping.
+static void OhosHostPresentCopyRows(void* dst_ptr, size_t dst_stride, const void* src_ptr,
+                                    size_t row_bytes, int rows, size_t map_size) {
+    uint8_t* dst = (uint8_t*)dst_ptr;
+    const uint8_t* src = (const uint8_t*)src_ptr;
+    if (dst_stride == row_bytes) {
+        const size_t total = row_bytes * (size_t)rows;
+        if (total <= map_size) {
+            memcpy(dst, src, total);
+        }
+        return;
+    }
+    const size_t copy = row_bytes <= dst_stride ? row_bytes : dst_stride;
+    for (int y = 0; y < rows; y++) {
+        const size_t offset = (size_t)y * dst_stride;
+        if (offset + copy > map_size) {
+            break;
+        }
+        memcpy(dst + offset, src + (size_t)y * row_bytes, copy);
+    }
+}
+
 // Draws a frame into the XComponent surface. mode 0 = RGBA gradient (first frame proof),
 // mode 1 = solid colour (managed request). Returns 0 on success.
 static int OhosDrawFrame(void* window, int width, int height, int mode, unsigned int argb) {
     if (window == NULL || width <= 0 || height <= 0) {
         return -1;
     }
-    OHNativeWindow* native_window = (OHNativeWindow*)window;
-    uint64_t usage = NATIVEBUFFER_USAGE_CPU_WRITE | NATIVEBUFFER_USAGE_MEM_DMA;
-    if (OH_NativeWindow_NativeWindowHandleOpt(native_window, SET_BUFFER_GEOMETRY, width, height) != 0 ||
-        OH_NativeWindow_NativeWindowHandleOpt(native_window, SET_FORMAT, NATIVEBUFFER_PIXEL_FMT_RGBA_8888) != 0 ||
-        OH_NativeWindow_NativeWindowHandleOpt(native_window, SET_USAGE, usage) != 0) {
+    if (OhosHostNativeWindowConfigure(window, width, height) != 0) {
         fprintf(stderr, "[openharmony-host] surface: buffer options failed\n");
         return -1;
     }
+    OHNativeWindow* native_window = (OHNativeWindow*)window;
 
     int fence = -1;
     OHNativeWindowBuffer* buffer = NULL;
@@ -1207,6 +1344,12 @@ void ohos_host_set_native_window(void* window, int width, int height, ohos_surfa
     g_surface_height = height;
     g_surface_state = (int)state;
     g_surface_valid = 1;
+    // The cached present mappings belong to the previous surface's buffer pool; drop
+    // them on every surface transition (created/changed/destroyed). The options are
+    // re-applied too, since a surface change may have reset them. A surface change is
+    // a rare event, so re-mapping the first buffer afterwards costs nothing.
+    OhosHostPresentMapReleaseAll();
+    OhosHostNativeWindowInvalidate();
     if (state == OHOS_SURFACE_CREATED || state == OHOS_SURFACE_CHANGED) {
         OhosDrawFirstFrame(window, width, height);
     }
@@ -2112,7 +2255,102 @@ static OH_Drawing_Bitmap* g_canvas_bitmap = NULL;
 static OH_Drawing_ShaderEffect* g_brush_shader = NULL;
 static OH_Drawing_ShadowLayer* g_brush_shadow = NULL;
 
-static OH_Drawing_Brush* OhosMakeFillBrush(unsigned int argb) {
+// The effects above are the state the next fill/text brush picks up. The managed canvas
+// clears them on every fill-colour assignment (hundreds of times per frame), so
+// ohos_host_draw_clear_effects only publishes the logical state: the objects are destroyed
+// once, right before the next brush needs them (OhosResolvePendingClear). A brush created
+// after the clear never sees the effects either way, and repeated clears collapse into the
+// single pending flag instead of touching the Skia objects each time.
+static unsigned int g_effect_state_serial = 1;
+static int g_effects_clear_pending = 0;
+static void OhosFlushFillBrushCache(void);
+
+static void OhosBumpEffectState(void) {
+    g_effect_state_serial++;
+    if (g_effect_state_serial == 0) {
+        g_effect_state_serial = 1;
+    }
+}
+
+static void OhosResolvePendingClear(void) {
+    if (!g_effects_clear_pending) {
+        return;
+    }
+    g_effects_clear_pending = 0;
+    // Cached brushes captured the effect objects (shader/shadow) they were built with, so
+    // they are dropped before the objects are destroyed.
+    OhosFlushFillBrushCache();
+    if (g_brush_shader != NULL) {
+        OH_Drawing_ShaderEffectDestroy(g_brush_shader);
+        g_brush_shader = NULL;
+    }
+    if (g_brush_shadow != NULL) {
+        OH_Drawing_ShadowLayerDestroy(g_brush_shadow);
+        g_brush_shadow = NULL;
+    }
+}
+
+// --- fill/text brush cache ---------------------------------------------------------
+// A brush carries the fill colour plus the effects current at creation time, so it can be
+// reused for every later draw with the same (argb, effect generation); the bounded cache
+// removes the per-primitive create/destroy. Entries are dropped when the effect generation
+// advances (their shader/shadow references are gone) or when the LRU evicts them.
+// Single-threaded by contract, like g_canvas itself, so the cache takes no lock.
+#define OHOS_FILL_BRUSH_CACHE_MAX 32
+typedef struct {
+    unsigned int argb;
+    unsigned int serial;
+    OH_Drawing_Brush* brush;
+    uint64_t last_used;
+} OhosFillBrushEntry;
+
+static OhosFillBrushEntry g_fill_brushes[OHOS_FILL_BRUSH_CACHE_MAX];
+static uint64_t g_fill_brush_clock = 0;
+
+static void OhosFlushFillBrushCache(void) {
+    for (int i = 0; i < OHOS_FILL_BRUSH_CACHE_MAX; i++) {
+        if (g_fill_brushes[i].brush != NULL) {
+            OH_Drawing_BrushDestroy(g_fill_brushes[i].brush);
+            g_fill_brushes[i].brush = NULL;
+        }
+    }
+}
+
+// Borrowed brush owned by the cache; valid until the effect state changes.
+static OH_Drawing_Brush* OhosFillBrushGet(unsigned int argb) {
+    OhosResolvePendingClear();
+    const unsigned int serial = g_effect_state_serial;
+    int slot = -1;
+    for (int i = 0; i < OHOS_FILL_BRUSH_CACHE_MAX; i++) {
+        OhosFillBrushEntry* entry = &g_fill_brushes[i];
+        if (entry->brush == NULL) {
+            if (slot < 0) {
+                slot = i;
+            }
+            continue;
+        }
+        if (entry->argb == argb && entry->serial == serial) {
+            entry->last_used = ++g_fill_brush_clock;
+            return entry->brush;
+        }
+    }
+    if (slot < 0) {
+        uint64_t oldest = UINT64_MAX;
+        for (int i = 0; i < OHOS_FILL_BRUSH_CACHE_MAX; i++) {
+            if (g_fill_brushes[i].last_used < oldest) {
+                oldest = g_fill_brushes[i].last_used;
+                slot = i;
+            }
+        }
+    }
+    if (slot < 0) {
+        return NULL;
+    }
+    OhosFillBrushEntry* entry = &g_fill_brushes[slot];
+    if (entry->brush != NULL) {
+        OH_Drawing_BrushDestroy(entry->brush);
+        entry->brush = NULL;
+    }
     OH_Drawing_Brush* brush = OH_Drawing_BrushCreate();
     if (brush == NULL) {
         return NULL;
@@ -2124,18 +2362,39 @@ static OH_Drawing_Brush* OhosMakeFillBrush(unsigned int argb) {
     if (g_brush_shadow != NULL) {
         OH_Drawing_BrushSetShadowLayer(brush, g_brush_shadow);
     }
+    entry->argb = argb;
+    entry->serial = serial;
+    entry->brush = brush;
+    entry->last_used = ++g_fill_brush_clock;
     return brush;
 }
 
-void ohos_host_draw_clear_effects(void) {
+static void OhosSetShaderEffect(OH_Drawing_ShaderEffect* shader) {
+    OhosResolvePendingClear();
+    OhosFlushFillBrushCache();
     if (g_brush_shader != NULL) {
         OH_Drawing_ShaderEffectDestroy(g_brush_shader);
-        g_brush_shader = NULL;
     }
+    g_brush_shader = shader;
+    OhosBumpEffectState();
+}
+
+static void OhosSetShadowLayer(OH_Drawing_ShadowLayer* shadow) {
+    OhosResolvePendingClear();
+    OhosFlushFillBrushCache();
     if (g_brush_shadow != NULL) {
         OH_Drawing_ShadowLayerDestroy(g_brush_shadow);
-        g_brush_shadow = NULL;
     }
+    g_brush_shadow = shadow;
+    OhosBumpEffectState();
+}
+
+void ohos_host_draw_clear_effects(void) {
+    if (g_effects_clear_pending || (g_brush_shader == NULL && g_brush_shadow == NULL)) {
+        return;
+    }
+    g_effects_clear_pending = 1;
+    OhosBumpEffectState();
 }
 
 void ohos_host_draw_set_linear_gradient(float x0, float y0, float x1, float y1,
@@ -2148,12 +2407,9 @@ void ohos_host_draw_set_linear_gradient(float x0, float y0, float x1, float y1,
     if (start == NULL || end == NULL) {
         return;
     }
-    if (g_brush_shader != NULL) {
-        OH_Drawing_ShaderEffectDestroy(g_brush_shader);
-        g_brush_shader = NULL;
-    }
-    g_brush_shader = OH_Drawing_ShaderEffectCreateLinearGradient(start, end, (const uint32_t*)colors,
-                                                                stops, (uint32_t)count, CLAMP);
+    OH_Drawing_ShaderEffect* shader = OH_Drawing_ShaderEffectCreateLinearGradient(start, end,
+        (const uint32_t*)colors, stops, (uint32_t)count, CLAMP);
+    OhosSetShaderEffect(shader);
     OH_Drawing_PointDestroy(start);
     OH_Drawing_PointDestroy(end);
 }
@@ -2167,12 +2423,9 @@ void ohos_host_draw_set_radial_gradient(float cx, float cy, float radius,
     if (center == NULL) {
         return;
     }
-    if (g_brush_shader != NULL) {
-        OH_Drawing_ShaderEffectDestroy(g_brush_shader);
-        g_brush_shader = NULL;
-    }
-    g_brush_shader = OH_Drawing_ShaderEffectCreateRadialGradient(center, radius, (const uint32_t*)colors,
-                                                                stops, (uint32_t)count, CLAMP);
+    OH_Drawing_ShaderEffect* shader = OH_Drawing_ShaderEffectCreateRadialGradient(center, radius,
+        (const uint32_t*)colors, stops, (uint32_t)count, CLAMP);
+    OhosSetShaderEffect(shader);
     OH_Drawing_PointDestroy(center);
 }
 
@@ -2198,10 +2451,7 @@ int ohos_host_draw_set_image_pattern(const void* data, int length, int tileModeX
             OH_Drawing_ShaderEffect* shader = OH_Drawing_ShaderEffectCreatePixelMapShader(
                 drawingPixelMap, (OH_Drawing_TileMode)tileModeX, (OH_Drawing_TileMode)tileModeY, sampling, matrix);
             if (shader != NULL) {
-                if (g_brush_shader != NULL) {
-                    OH_Drawing_ShaderEffectDestroy(g_brush_shader);
-                }
-                g_brush_shader = shader;
+                OhosSetShaderEffect(shader);
                 rc = 0;
             }
             if (matrix != NULL) {
@@ -2216,11 +2466,7 @@ int ohos_host_draw_set_image_pattern(const void* data, int length, int tileModeX
 }
 
 void ohos_host_draw_set_shadow(float dx, float dy, float blur, unsigned int argb) {
-    if (g_brush_shadow != NULL) {
-        OH_Drawing_ShadowLayerDestroy(g_brush_shadow);
-        g_brush_shadow = NULL;
-    }
-    g_brush_shadow = OH_Drawing_ShadowLayerCreate(blur, dx, dy, (uint32_t)argb);
+    OhosSetShadowLayer(OH_Drawing_ShadowLayerCreate(blur, dx, dy, (uint32_t)argb));
 }
 static OH_Drawing_Canvas* g_canvas = NULL;
 static int g_canvas_width = 0;
@@ -2273,11 +2519,12 @@ void ohos_host_draw_rect(int x, int y, int width, int height, unsigned int argb,
         return;
     }
     if (filled) {
-        OH_Drawing_Brush* brush = OhosMakeFillBrush(argb);
-        OH_Drawing_CanvasAttachBrush(g_canvas, brush);
-        OH_Drawing_CanvasDrawRect(g_canvas, rect);
-        OH_Drawing_CanvasDetachBrush(g_canvas);
-        OH_Drawing_BrushDestroy(brush);
+        OH_Drawing_Brush* brush = OhosFillBrushGet(argb);
+        if (brush != NULL) {
+            OH_Drawing_CanvasAttachBrush(g_canvas, brush);
+            OH_Drawing_CanvasDrawRect(g_canvas, rect);
+            OH_Drawing_CanvasDetachBrush(g_canvas);
+        }
     } else {
         OH_Drawing_Pen* pen = OH_Drawing_PenCreate();
         OH_Drawing_PenSetColor(pen, (uint32_t)argb);
@@ -2291,11 +2538,311 @@ void ohos_host_draw_rect(int x, int y, int width, int height, unsigned int argb,
 }
 
 static OH_Drawing_Typeface* g_custom_typeface = NULL;
+// Bumped whenever the typeface changes; the font/blob caches key on it and are dropped
+// before the old typeface is destroyed (a cached Font holds it).
+static unsigned int g_typeface_serial = 1;
+
+// --- font cache --------------------------------------------------------------------
+// draw_text and measure_text both need one font per (size, typeface state); the create
+// cost dominates the per-text time once the TextBlob is cached, so the fonts are kept in
+// a small LRU. face_serial 0 keys the platform default face (measure_text never applies
+// the custom typeface, exactly as before); a non-zero serial keys the custom face.
+#define OHOS_FONT_CACHE_MAX 32
+typedef struct {
+    float size;
+    unsigned int face_serial;
+    OH_Drawing_Font* font;
+    uint64_t last_used;
+} OhosFontEntry;
+
+static OhosFontEntry g_fonts[OHOS_FONT_CACHE_MAX];
+static uint64_t g_font_clock = 0;
+
+static void OhosFontCacheFlush(void) {
+    for (int i = 0; i < OHOS_FONT_CACHE_MAX; i++) {
+        if (g_fonts[i].font != NULL) {
+            OH_Drawing_FontDestroy(g_fonts[i].font);
+            g_fonts[i].font = NULL;
+        }
+    }
+}
+
+// Borrowed font owned by the cache. The caller passes the exact text size it would have
+// handed to OH_Drawing_FontSetTextSize.
+static OH_Drawing_Font* OhosFontGet(float size, unsigned int face_serial) {
+    int slot = -1;
+    for (int i = 0; i < OHOS_FONT_CACHE_MAX; i++) {
+        OhosFontEntry* entry = &g_fonts[i];
+        if (entry->font == NULL) {
+            if (slot < 0) {
+                slot = i;
+            }
+            continue;
+        }
+        if (entry->size == size && entry->face_serial == face_serial) {
+            entry->last_used = ++g_font_clock;
+            return entry->font;
+        }
+    }
+    if (slot < 0) {
+        uint64_t oldest = UINT64_MAX;
+        for (int i = 0; i < OHOS_FONT_CACHE_MAX; i++) {
+            if (g_fonts[i].last_used < oldest) {
+                oldest = g_fonts[i].last_used;
+                slot = i;
+            }
+        }
+    }
+    if (slot < 0) {
+        return NULL;
+    }
+    OhosFontEntry* entry = &g_fonts[slot];
+    if (entry->font != NULL) {
+        OH_Drawing_FontDestroy(entry->font);
+        entry->font = NULL;
+    }
+    OH_Drawing_Font* font = OH_Drawing_FontCreate();
+    if (font == NULL) {
+        return NULL;
+    }
+    const int apply_custom = face_serial != 0 && g_custom_typeface != NULL;
+    if (apply_custom) {
+        OH_Drawing_FontSetTypeface(font, g_custom_typeface);
+    }
+    OH_Drawing_FontSetTextSize(font, size);
+    if (apply_custom) {
+        OH_Drawing_FontSetTypeface(font, g_custom_typeface);
+    }
+    entry->size = size;
+    entry->face_serial = face_serial;
+    entry->font = font;
+    entry->last_used = ++g_font_clock;
+    return font;
+}
+
+// --- TextBlob cache ----------------------------------------------------------------
+// Shaping dominates draw_text, so blobs for unchanged labels are kept across frames. The
+// key is (text, size, typeface state); entries are bounded by count and by cached text
+// bytes with LRU eviction, and text longer than OHOS_TEXT_CACHE_MAX_TEXT is never cached
+// (built, drawn and destroyed like before). Single-threaded by contract, like g_canvas.
+#define OHOS_TEXT_CACHE_MAX 256
+#define OHOS_TEXT_CACHE_BUCKETS 512
+#define OHOS_TEXT_CACHE_MAX_BYTES (256u * 1024u)
+#define OHOS_TEXT_CACHE_MAX_TEXT 4096u
+#define OHOS_TEXT_HASH_BYTES 64u
+
+typedef struct OhosTextBlobEntry {
+    struct OhosTextBlobEntry* bucket_next;
+    struct OhosTextBlobEntry* lru_prev;
+    struct OhosTextBlobEntry* lru_next;
+    uint64_t hash;
+    char* text;
+    size_t text_len;
+    float size;
+    unsigned int face_serial;
+    OH_Drawing_TextBlob* blob;
+} OhosTextBlobEntry;
+
+static OhosTextBlobEntry g_text_blobs[OHOS_TEXT_CACHE_MAX];
+static OhosTextBlobEntry* g_text_buckets[OHOS_TEXT_CACHE_BUCKETS];
+static OhosTextBlobEntry* g_text_free_list = NULL;
+static OhosTextBlobEntry* g_text_lru_head = NULL;
+static OhosTextBlobEntry* g_text_lru_tail = NULL;
+static size_t g_text_cached_bytes = 0;
+static int g_text_cache_ready = 0;
+
+static void OhosTextCacheReset(void) {
+    for (int i = 0; i < OHOS_TEXT_CACHE_BUCKETS; i++) {
+        g_text_buckets[i] = NULL;
+    }
+    g_text_free_list = NULL;
+    g_text_lru_head = NULL;
+    g_text_lru_tail = NULL;
+    g_text_cached_bytes = 0;
+    for (int i = 0; i < OHOS_TEXT_CACHE_MAX; i++) {
+        if (g_text_blobs[i].blob != NULL) {
+            OH_Drawing_TextBlobDestroy(g_text_blobs[i].blob);
+        }
+        free(g_text_blobs[i].text);
+        memset(&g_text_blobs[i], 0, sizeof(g_text_blobs[i]));
+        g_text_blobs[i].bucket_next = g_text_free_list;
+        g_text_free_list = &g_text_blobs[i];
+    }
+    g_text_cache_ready = 1;
+}
+
+static void OhosTextCacheEnsureInit(void) {
+    if (!g_text_cache_ready) {
+        OhosTextCacheReset();
+    }
+}
+
+// The full text is compared on lookup, so hashing only a prefix is safe: a collision
+// costs one memcmp, never a wrong blob.
+static uint64_t OhosTextHash(const char* text, size_t len, float size, unsigned int face_serial) {
+    const unsigned char* bytes = (const unsigned char*)text;
+    const size_t hashed = len < OHOS_TEXT_HASH_BYTES ? len : OHOS_TEXT_HASH_BYTES;
+    uint64_t hash = 1469598103934665603ull;
+    for (size_t i = 0; i < hashed; i++) {
+        hash ^= bytes[i];
+        hash *= 1099511628211ull;
+    }
+    hash ^= (uint64_t)len;
+    hash *= 1099511628211ull;
+    uint32_t size_bits = 0;
+    memcpy(&size_bits, &size, sizeof(size_bits));
+    hash ^= size_bits;
+    hash *= 1099511628211ull;
+    hash ^= face_serial;
+    hash *= 1099511628211ull;
+    return hash;
+}
+
+static void OhosTextLruUnlink(OhosTextBlobEntry* entry) {
+    if (entry->lru_prev != NULL) {
+        entry->lru_prev->lru_next = entry->lru_next;
+    } else {
+        g_text_lru_head = entry->lru_next;
+    }
+    if (entry->lru_next != NULL) {
+        entry->lru_next->lru_prev = entry->lru_prev;
+    } else {
+        g_text_lru_tail = entry->lru_prev;
+    }
+    entry->lru_prev = NULL;
+    entry->lru_next = NULL;
+}
+
+static void OhosTextLruPushFront(OhosTextBlobEntry* entry) {
+    entry->lru_prev = NULL;
+    entry->lru_next = g_text_lru_head;
+    if (g_text_lru_head != NULL) {
+        g_text_lru_head->lru_prev = entry;
+    }
+    g_text_lru_head = entry;
+    if (g_text_lru_tail == NULL) {
+        g_text_lru_tail = entry;
+    }
+}
+
+static void OhosTextCacheUnlinkBucket(OhosTextBlobEntry* entry) {
+    OhosTextBlobEntry** link = &g_text_buckets[entry->hash & (OHOS_TEXT_CACHE_BUCKETS - 1)];
+    while (*link != NULL) {
+        if (*link == entry) {
+            *link = entry->bucket_next;
+            break;
+        }
+        link = &(*link)->bucket_next;
+    }
+    entry->bucket_next = NULL;
+}
+
+static void OhosTextCacheEvict(OhosTextBlobEntry* entry) {
+    OhosTextLruUnlink(entry);
+    OhosTextCacheUnlinkBucket(entry);
+    if (entry->blob != NULL) {
+        OH_Drawing_TextBlobDestroy(entry->blob);
+    }
+    free(entry->text);
+    g_text_cached_bytes -= entry->text_len;
+    memset(entry, 0, sizeof(*entry));
+    entry->bucket_next = g_text_free_list;
+    g_text_free_list = entry;
+}
+
+// Borrowed blob; NULL means the caller must build (and later destroy) its own.
+static OH_Drawing_TextBlob* OhosTextBlobCacheGet(const char* utf8, size_t len, float size,
+                                                 unsigned int face_serial) {
+    OhosTextCacheEnsureInit();
+    if (len > OHOS_TEXT_CACHE_MAX_TEXT) {
+        return NULL;
+    }
+    const uint64_t hash = OhosTextHash(utf8, len, size, face_serial);
+    OhosTextBlobEntry* entry = g_text_buckets[hash & (OHOS_TEXT_CACHE_BUCKETS - 1)];
+    while (entry != NULL) {
+        if (entry->hash == hash && entry->text_len == len && entry->size == size &&
+            entry->face_serial == face_serial && memcmp(entry->text, utf8, len) == 0) {
+            OhosTextLruUnlink(entry);
+            OhosTextLruPushFront(entry);
+            return entry->blob;
+        }
+        entry = entry->bucket_next;
+    }
+    return NULL;
+}
+
+// Returns 1 when the cache took ownership of the blob.
+static int OhosTextBlobCachePut(const char* utf8, size_t len, float size,
+                                unsigned int face_serial, OH_Drawing_TextBlob* blob) {
+    OhosTextCacheEnsureInit();
+    if (len > OHOS_TEXT_CACHE_MAX_TEXT) {
+        return 0;  // the same cap as Get: a blob must not be stored and missed
+    }
+    const size_t bytes = len + 1;
+    if (bytes > OHOS_TEXT_CACHE_MAX_BYTES) {
+        return 0;
+    }
+    const uint64_t hash = OhosTextHash(utf8, len, size, face_serial);
+    // A key is never stored twice (Get refuses the same key only when it is over the
+    // text cap, so a caller can reach Put with an already cached key); replace it.
+    OhosTextBlobEntry* existing = g_text_buckets[hash & (OHOS_TEXT_CACHE_BUCKETS - 1)];
+    while (existing != NULL) {
+        if (existing->hash == hash && existing->text_len == len && existing->size == size &&
+            existing->face_serial == face_serial && memcmp(existing->text, utf8, len) == 0) {
+            OhosTextCacheEvict(existing);
+            break;
+        }
+        existing = existing->bucket_next;
+    }
+    while (g_text_cached_bytes + bytes > OHOS_TEXT_CACHE_MAX_BYTES && g_text_lru_tail != NULL) {
+        OhosTextCacheEvict(g_text_lru_tail);
+    }
+    if (g_text_free_list == NULL && g_text_lru_tail != NULL) {
+        OhosTextCacheEvict(g_text_lru_tail);
+    }
+    if (g_text_free_list == NULL) {
+        return 0;
+    }
+    char* copy = (char*)malloc(len + 1);
+    if (copy == NULL) {
+        return 0;
+    }
+    memcpy(copy, utf8, len);
+    copy[len] = '\0';
+    OhosTextBlobEntry* entry = g_text_free_list;
+    g_text_free_list = entry->bucket_next;
+    memset(entry, 0, sizeof(*entry));
+    entry->hash = hash;
+    entry->text = copy;
+    entry->text_len = len;
+    entry->size = size;
+    entry->face_serial = face_serial;
+    entry->blob = blob;
+    entry->bucket_next = g_text_buckets[hash & (OHOS_TEXT_CACHE_BUCKETS - 1)];
+    g_text_buckets[hash & (OHOS_TEXT_CACHE_BUCKETS - 1)] = entry;
+    OhosTextLruPushFront(entry);
+    g_text_cached_bytes += bytes;
+    return 1;
+}
+
+// Drops every cached font/blob plus the fill brushes: they all carry either the typeface
+// or the effect objects that are about to be replaced.
+static void OhosFlushTextCaches(void) {
+    OhosFontCacheFlush();
+    OhosTextCacheReset();
+    OhosFlushFillBrushCache();
+}
 
 void ohos_host_set_font_file(const char* path) {
+    // The caches are dropped before the old typeface: a cached Font/blob references it.
+    OhosFlushTextCaches();
     if (g_custom_typeface != NULL) {
         OH_Drawing_TypefaceDestroy(g_custom_typeface);
         g_custom_typeface = NULL;
+    }
+    g_typeface_serial++;
+    if (g_typeface_serial == 0) {
+        g_typeface_serial = 1;
     }
     if (path == NULL || *path == '\0') {
         return;
@@ -2309,29 +2856,32 @@ int ohos_host_draw_text(int x, int y, const char* utf8, float size, unsigned int
     if (g_canvas == NULL || utf8 == NULL || *utf8 == '\0') {
         return -1;
     }
-    OH_Drawing_Font* font = OH_Drawing_FontCreate();
-    if (font == NULL) {
-        return -1;
+    const size_t len = strlen(utf8);
+    const unsigned int face_serial = g_custom_typeface != NULL ? g_typeface_serial : 0u;
+    OH_Drawing_TextBlob* blob = OhosTextBlobCacheGet(utf8, len, size, face_serial);
+    int cached = blob != NULL;
+    if (blob == NULL) {
+        OH_Drawing_Font* font = OhosFontGet(size, face_serial);
+        if (font == NULL) {
+            return -1;
+        }
+        blob = OH_Drawing_TextBlobCreateFromString(utf8, font, TEXT_ENCODING_UTF8);
+        if (blob == NULL) {
+            return -1;
+        }
+        cached = OhosTextBlobCachePut(utf8, len, size, face_serial, blob);
     }
-    if (g_custom_typeface != NULL) {
-        OH_Drawing_FontSetTypeface(font, g_custom_typeface);
-    }
-    OH_Drawing_FontSetTextSize(font, size);
-    if (g_custom_typeface != NULL) {
-        OH_Drawing_FontSetTypeface(font, g_custom_typeface);
-    }
-    OH_Drawing_TextBlob* blob = OH_Drawing_TextBlobCreateFromString(utf8, font, TEXT_ENCODING_UTF8);
     int rc = -1;
-    if (blob != NULL) {
-        OH_Drawing_Brush* brush = OhosMakeFillBrush(argb);
+    OH_Drawing_Brush* brush = OhosFillBrushGet(argb);
+    if (brush != NULL) {
         OH_Drawing_CanvasAttachBrush(g_canvas, brush);
         OH_Drawing_CanvasDrawTextBlob(g_canvas, blob, (float)x, (float)y);
         OH_Drawing_CanvasDetachBrush(g_canvas);
-        OH_Drawing_BrushDestroy(brush);
-        OH_Drawing_TextBlobDestroy(blob);
         rc = 0;
     }
-    OH_Drawing_FontDestroy(font);
+    if (!cached) {
+        OH_Drawing_TextBlobDestroy(blob);
+    }
     return rc;
 }
 
@@ -2351,11 +2901,12 @@ void ohos_host_draw_polyline(const float* xy, int count, int closed, unsigned in
         OH_Drawing_PathClose(path);
     }
     if (filled) {
-        OH_Drawing_Brush* brush = OhosMakeFillBrush(argb);
-        OH_Drawing_CanvasAttachBrush(g_canvas, brush);
-        OH_Drawing_CanvasDrawPath(g_canvas, path);
-        OH_Drawing_CanvasDetachBrush(g_canvas);
-        OH_Drawing_BrushDestroy(brush);
+        OH_Drawing_Brush* brush = OhosFillBrushGet(argb);
+        if (brush != NULL) {
+            OH_Drawing_CanvasAttachBrush(g_canvas, brush);
+            OH_Drawing_CanvasDrawPath(g_canvas, path);
+            OH_Drawing_CanvasDetachBrush(g_canvas);
+        }
     } else {
         OH_Drawing_Pen* pen = OH_Drawing_PenCreate();
         OH_Drawing_PenSetColor(pen, (uint32_t)argb);
@@ -2374,11 +2925,12 @@ int ohos_host_measure_text(const char* utf8, float size, int* width, int* height
         if (height != NULL) *height = 0;
         return -1;
     }
-    OH_Drawing_Font* font = OH_Drawing_FontCreate();
+    // face_serial 0 keys the platform default face: measure_text has never applied the
+    // custom typeface, and that stays so the cached font matches the old per-call font.
+    OH_Drawing_Font* font = OhosFontGet(size > 0 ? size : 14.0f, 0u);
     if (font == NULL) {
         return -1;
     }
-    OH_Drawing_FontSetTextSize(font, size > 0 ? size : 14.0f);
     float textWidth = 0.0f;
     float textHeight = 0.0f;
     OH_Drawing_Font_Metrics metrics;
@@ -2388,7 +2940,6 @@ int ohos_host_measure_text(const char* utf8, float size, int* width, int* height
     OH_Drawing_FontMeasureText(font, utf8, strlen(utf8), TEXT_ENCODING_UTF8, NULL, &textWidth);
     if (width != NULL) *width = (int)(textWidth + 0.5f);
     if (height != NULL) *height = (int)(textHeight + 0.5f);
-    OH_Drawing_FontDestroy(font);
     return 0;
 }
 
@@ -2434,31 +2985,239 @@ void ohos_host_draw_clip_polyline(const float* xy, int count) {
     OH_Drawing_PathDestroy(path);
 }
 
+// --- image decode cache -------------------------------------------------------------
+// Managed code re-serializes the image to PNG/JPEG bytes for every draw, so the host sees
+// a fresh byte array each frame and there is no stable handle/version to key on: the
+// decoded pixelmap is cached by content hash plus length instead. Unchanged bytes hit the
+// cache across frames; a reloaded or edited resource changes the bytes, so it misses and
+// decodes once. Sources larger than OHOS_IMAGE_HASH_MAX_BYTES are decoded every time (the
+// hash cost is bounded) and the LRU cap bounds the retained decoded bitmaps.
+#define OHOS_IMAGE_CACHE_MAX 8
+#define OHOS_IMAGE_HASH_MAX_BYTES (8u * 1024u * 1024u)
+// The decoded bitmaps are the real memory: 8 MiB of compressed data can decode to
+// hundreds of MiB, so the cache also holds a decoded-byte budget and evicts by LRU.
+#define OHOS_IMAGE_CACHE_MAX_BYTES (32u * 1024u * 1024u)
+
+typedef struct {
+    uint64_t hash;
+    int length;
+    OH_PixelmapNative* pixelmap;
+    OH_Drawing_PixelMap* drawing;
+    uint32_t width;
+    uint32_t height;
+    size_t decoded_bytes;
+    uint64_t last_used;
+} OhosImageCacheEntry;
+
+static OhosImageCacheEntry g_image_cache[OHOS_IMAGE_CACHE_MAX];
+static uint64_t g_image_cache_clock = 0;
+static size_t g_image_cache_bytes = 0;
+
+// 4-lane 64-bit mix (32 bytes/iteration): the hash runs over every byte of the
+// payload on each draw, so it has to stay well above the decode it replaces.
+static uint64_t OhosImageHash(const void* data, size_t length) {
+    const uint8_t* bytes = (const uint8_t*)data;
+    uint64_t h0 = 0x9e3779b97f4a7c15ull;
+    uint64_t h1 = 0xbf58476d1ce4e5b9ull;
+    uint64_t h2 = 0x94d049bb133111ebull;
+    uint64_t h3 = 0x2545f4914f6cdd1dull;
+    size_t i = 0;
+    for (; i + 32 <= length; i += 32) {
+        uint64_t w0 = 0, w1 = 0, w2 = 0, w3 = 0;
+        memcpy(&w0, bytes + i, 8);
+        memcpy(&w1, bytes + i + 8, 8);
+        memcpy(&w2, bytes + i + 16, 8);
+        memcpy(&w3, bytes + i + 24, 8);
+        h0 = (h0 ^ w0) * 0x9e3779b185ebca87ull;
+        h0 ^= h0 >> 32;
+        h1 = (h1 ^ w1) * 0xc2b2ae3d27d4eb4full;
+        h1 ^= h1 >> 29;
+        h2 = (h2 ^ w2) * 0x165667b19e3779f9ull;
+        h2 ^= h2 >> 31;
+        h3 = (h3 ^ w3) * 0x85ebca77c2b2ae63ull;
+        h3 ^= h3 >> 27;
+    }
+    for (; i + 8 <= length; i += 8) {
+        uint64_t word = 0;
+        memcpy(&word, bytes + i, sizeof(word));
+        h0 = (h0 ^ word) * 0x9e3779b185ebca87ull;
+        h0 ^= h0 >> 32;
+    }
+    for (; i < length; i++) {
+        h0 = (h0 ^ bytes[i]) * 0x9e3779b185ebca87ull;
+        h0 ^= h0 >> 32;
+    }
+    uint64_t hash = h0 ^ (h1 * 0x9e3779b97f4a7c15ull) ^ (h2 * 0xc2b2ae3d27d4eb4full) ^
+                    (h3 * 0x165667b19e3779f9ull);
+    hash ^= (uint64_t)length;
+    hash *= 0x9e3779b97f4a7c15ull;
+    hash ^= hash >> 32;
+    return hash;
+}
+
+static void OhosImageCacheRelease(OhosImageCacheEntry* entry) {
+    if (entry->drawing != NULL) {
+        OH_Drawing_PixelMapDissolve(entry->drawing);
+    }
+    if (entry->pixelmap != NULL) {
+        OH_PixelmapNative_Release(entry->pixelmap);
+    }
+    g_image_cache_bytes -= entry->decoded_bytes;
+    memset(entry, 0, sizeof(*entry));
+}
+
+static OhosImageCacheEntry* OhosImageCacheFind(uint64_t hash, int length) {
+    for (int i = 0; i < OHOS_IMAGE_CACHE_MAX; i++) {
+        OhosImageCacheEntry* entry = &g_image_cache[i];
+        if (entry->pixelmap != NULL && entry->hash == hash && entry->length == length) {
+            entry->last_used = ++g_image_cache_clock;
+            return entry;
+        }
+    }
+    return NULL;
+}
+
+// Empty slot after the byte budget is satisfied; NULL when even an empty cache cannot
+// hold the decoded image.
+static OhosImageCacheEntry* OhosImageCacheReserve(size_t decoded_bytes) {
+    if (decoded_bytes > OHOS_IMAGE_CACHE_MAX_BYTES) {
+        return NULL;
+    }
+    while (g_image_cache_bytes + decoded_bytes > OHOS_IMAGE_CACHE_MAX_BYTES) {
+        int oldest_slot = -1;
+        uint64_t oldest = UINT64_MAX;
+        for (int i = 0; i < OHOS_IMAGE_CACHE_MAX; i++) {
+            if (g_image_cache[i].pixelmap != NULL && g_image_cache[i].last_used < oldest) {
+                oldest = g_image_cache[i].last_used;
+                oldest_slot = i;
+            }
+        }
+        if (oldest_slot < 0) {
+            break;
+        }
+        OhosImageCacheRelease(&g_image_cache[oldest_slot]);
+    }
+    int slot = -1;
+    for (int i = 0; i < OHOS_IMAGE_CACHE_MAX; i++) {
+        if (g_image_cache[i].pixelmap == NULL) {
+            slot = i;
+            break;
+        }
+    }
+    if (slot < 0) {
+        uint64_t oldest = UINT64_MAX;
+        for (int i = 0; i < OHOS_IMAGE_CACHE_MAX; i++) {
+            if (g_image_cache[i].last_used < oldest) {
+                oldest = g_image_cache[i].last_used;
+                slot = i;
+            }
+        }
+    }
+    if (slot < 0) {
+        return NULL;
+    }
+    OhosImageCacheRelease(&g_image_cache[slot]);
+    return &g_image_cache[slot];
+}
+
+static OH_PixelmapNative* OhosDecodePixelmap(const void* data, int length) {
+    OH_ImageSourceNative* source = NULL;
+    if (OH_ImageSourceNative_CreateFromData((uint8_t*)data, (size_t)length, &source) != IMAGE_SUCCESS || source == NULL) {
+        return NULL;
+    }
+    OH_PixelmapNative* pixelmap = NULL;
+    if (OH_ImageSourceNative_CreatePixelmap(source, NULL, &pixelmap) != IMAGE_SUCCESS) {
+        pixelmap = NULL;
+    }
+    OH_ImageSourceNative_Release(source);
+    return pixelmap;
+}
+
+static void OhosPixelmapQuerySize(OH_PixelmapNative* pixelmap, uint32_t* width, uint32_t* height) {
+    *width = 0;
+    *height = 0;
+    OH_Pixelmap_ImageInfo* info = NULL;
+    if (OH_PixelmapImageInfo_Create(&info) != IMAGE_SUCCESS || info == NULL) {
+        return;
+    }
+    if (OH_PixelmapNative_GetImageInfo(pixelmap, info) == IMAGE_SUCCESS) {
+        OH_PixelmapImageInfo_GetWidth(info, width);
+        OH_PixelmapImageInfo_GetHeight(info, height);
+    }
+    OH_PixelmapImageInfo_Release(info);
+}
+
 int ohos_host_draw_image_bytes(const void* data, int length, float x, float y, float width, float height) {
     if (g_canvas == NULL || data == NULL || length <= 0) {
         return -1;
     }
-    OH_ImageSourceNative* source = NULL;
-    if (OH_ImageSourceNative_CreateFromData((uint8_t*)data, (size_t)length, &source) != IMAGE_SUCCESS || source == NULL) {
-        return -1;
+    const int cacheable = (size_t)length <= OHOS_IMAGE_HASH_MAX_BYTES;
+    uint64_t hash = 0;
+    OhosImageCacheEntry* entry = NULL;
+    if (cacheable) {
+        hash = OhosImageHash(data, (size_t)length);
+        entry = OhosImageCacheFind(hash, length);
     }
-    OH_PixelmapNative* pixelmap = NULL;
-    int rc = -1;
-    if (OH_ImageSourceNative_CreatePixelmap(source, NULL, &pixelmap) == IMAGE_SUCCESS && pixelmap != NULL) {
-        OH_Drawing_PixelMap* drawingPixelMap = OH_Drawing_PixelMapGetFromOhPixelMapNative(pixelmap);
-        if (drawingPixelMap != NULL) {
-            OH_Drawing_Rect* src = OH_Drawing_RectCreate(0, 0, (float)(int)width, (float)(int)height);
-            OH_Drawing_Rect* dst = OH_Drawing_RectCreate(x, y, x + width, y + height);
-            OH_Drawing_SamplingOptions* sampling = OH_Drawing_SamplingOptionsCreate(FILTER_MODE_LINEAR, MIPMAP_MODE_LINEAR);
-            OH_Drawing_CanvasDrawPixelMapRect(g_canvas, drawingPixelMap, src, dst, sampling);
-            OH_Drawing_SamplingOptionsDestroy(sampling);
-            OH_Drawing_RectDestroy(src);
-            OH_Drawing_RectDestroy(dst);
-            rc = 0;
+    OH_Drawing_PixelMap* drawing = NULL;
+    OH_PixelmapNative* owned_pixelmap = NULL;  // temporary, released at the end when not cached
+    uint32_t pixel_width = 0;
+    uint32_t pixel_height = 0;
+    if (entry != NULL) {
+        drawing = entry->drawing;
+        pixel_width = entry->width;
+        pixel_height = entry->height;
+    } else {
+        owned_pixelmap = OhosDecodePixelmap(data, length);
+        if (owned_pixelmap == NULL) {
+            return -1;
         }
-        OH_PixelmapNative_Release(pixelmap);
+        drawing = OH_Drawing_PixelMapGetFromOhPixelMapNative(owned_pixelmap);
+        if (drawing != NULL) {
+            OhosPixelmapQuerySize(owned_pixelmap, &pixel_width, &pixel_height);
+        }
+        if (cacheable && drawing != NULL) {
+            const size_t decoded_bytes = (size_t)pixel_width * (size_t)pixel_height * 4u;
+            OhosImageCacheEntry* slot = OhosImageCacheReserve(decoded_bytes);
+            if (slot != NULL) {
+                slot->hash = hash;
+                slot->length = length;
+                slot->pixelmap = owned_pixelmap;
+                slot->drawing = drawing;
+                slot->width = pixel_width;
+                slot->height = pixel_height;
+                slot->decoded_bytes = decoded_bytes;
+                slot->last_used = ++g_image_cache_clock;
+                g_image_cache_bytes += decoded_bytes;
+                entry = slot;
+                owned_pixelmap = NULL;  // the cache owns both objects now
+            }
+        }
     }
-    OH_ImageSourceNative_Release(source);
+
+    int rc = -1;
+    if (drawing != NULL) {
+        // The source rectangle is the pixelmap's own size, not the destination size: the
+        // decoded image is scaled into (x, y, width, height) instead of being sampled
+        // against a wrong-sized source.
+        const float src_width = pixel_width > 0 ? (float)pixel_width : width;
+        const float src_height = pixel_height > 0 ? (float)pixel_height : height;
+        OH_Drawing_Rect* src = OH_Drawing_RectCreate(0.0f, 0.0f, src_width, src_height);
+        OH_Drawing_Rect* dst = OH_Drawing_RectCreate(x, y, x + width, y + height);
+        OH_Drawing_SamplingOptions* sampling = OH_Drawing_SamplingOptionsCreate(FILTER_MODE_LINEAR, MIPMAP_MODE_LINEAR);
+        OH_Drawing_CanvasDrawPixelMapRect(g_canvas, drawing, src, dst, sampling);
+        OH_Drawing_SamplingOptionsDestroy(sampling);
+        OH_Drawing_RectDestroy(src);
+        OH_Drawing_RectDestroy(dst);
+        rc = 0;
+    }
+    if (owned_pixelmap != NULL) {
+        // Uncached draw (over the hash cap, or the wrapper failed): drop the temporary
+        // wrapper and the decoded pixelmap.
+        if (drawing != NULL) {
+            OH_Drawing_PixelMapDissolve(drawing);
+        }
+        OH_PixelmapNative_Release(owned_pixelmap);
+    }
     return rc;
 }
 
@@ -2473,10 +3232,7 @@ int ohos_host_draw_present(void) {
     if (native_window == NULL || pixels == NULL) {
         return -1;
     }
-    uint64_t usage = NATIVEBUFFER_USAGE_CPU_WRITE | NATIVEBUFFER_USAGE_MEM_DMA;
-    if (OH_NativeWindow_NativeWindowHandleOpt(native_window, SET_BUFFER_GEOMETRY, width, height) != 0 ||
-        OH_NativeWindow_NativeWindowHandleOpt(native_window, SET_FORMAT, NATIVEBUFFER_PIXEL_FMT_RGBA_8888) != 0 ||
-        OH_NativeWindow_NativeWindowHandleOpt(native_window, SET_USAGE, usage) != 0) {
+    if (OhosHostNativeWindowConfigure(native_window, width, height) != 0) {
         return -1;
     }
     int fence = -1;
@@ -2485,17 +3241,11 @@ int ohos_host_draw_present(void) {
         return -1;
     }
     BufferHandle* handle = OH_NativeWindow_GetBufferHandleFromNative(buffer);
-    if (handle != NULL) {
-        void* addr = mmap(handle->virAddr, handle->size, PROT_READ | PROT_WRITE, MAP_SHARED, handle->fd, 0);
-        if (addr != MAP_FAILED) {
-            uint8_t* dst = (uint8_t*)addr;
-            const uint8_t* src = (const uint8_t*)pixels;
-            size_t row_bytes = (size_t)width * 4;
-            for (int y = 0; y < height; y++) {
-                size_t copy = row_bytes <= handle->stride ? row_bytes : handle->stride;
-                memcpy(dst + (size_t)y * handle->stride, src + (size_t)y * row_bytes, copy);
-            }
-            munmap(addr, handle->size);
+    if (handle != NULL && handle->fd >= 0 && handle->size > 0 && handle->stride > 0) {
+        void* addr = OhosHostPresentMapAcquire(handle->fd, handle->virAddr, (size_t)handle->size);
+        if (addr != NULL) {
+            OhosHostPresentCopyRows(addr, (size_t)handle->stride, pixels,
+                                    (size_t)width * 4, height, (size_t)handle->size);
         }
     }
     Region region = { NULL, 0 };
