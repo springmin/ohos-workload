@@ -12,10 +12,13 @@
 #include <arkui/native_node_napi.h>
 #include <napi/native_api.h>
 #include <hilog/log.h>
+#include <errno.h>
 #include <pthread.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
 
 #include <mutex>
 
@@ -2061,7 +2064,9 @@ napi_value RegisterRawFileSink(napi_env env, napi_callback_info info) {
     return undefined;
 }
 
-// ArkTS calls host.notifyRawFileResult(requestId, rc, dataBase64) when the read/probe finished.
+// ArkTS calls host.notifyRawFileResult(requestId, rc, dataBase64) when the read/probe finished
+// over the base64 transport (the fallback for shells/SDKs without a usable rawfile descriptor;
+// the descriptor read uses notifyRawFileFd below).
 // The base64 argument uses its own cap instead of the 1 MiB GetStringArg result cap; a larger
 // argument is not copied and a "success" carrying one is reported as TOO_LARGE.
 napi_value NotifyRawFileResult(napi_env env, napi_callback_info info) {
@@ -2095,6 +2100,100 @@ napi_value NotifyRawFileResult(napi_env env, napi_callback_info info) {
     napi_value undefined = nullptr;
     napi_get_undefined(env, &undefined);
     return undefined;
+}
+
+// One rawfile descriptor read: the shell obtained {fd, offset, length} from
+// resourceManager.getRawFd and calls this synchronously on its own thread, so the fd is valid
+// for the whole call and the shell closes it right after. The bytes are delivered to the managed
+// callback before returning (no fd dup, no ownership transfer). The read is chunked (256 KiB)
+// and copies straight into a buffer reused between calls: the 8 MiB output is allocated once and
+// later reads of the same or a smaller size reuse it. Returns 1 when the request was answered,
+// 0 when it was not (bad coordinates, allocation failure, short/erroring read) and the shell
+// must fall back to the base64 answer - the managed request stays pending until then.
+constexpr size_t kRawFileReadChunkBytes = 256 * 1024;
+
+constexpr int kRawFileDelivered = 1;
+constexpr int kRawFileFallback = 0;
+
+int DeliverRawFileBytes(int requestId, int fd, int64_t offset, int64_t length) {
+    if (fd < 0 || offset < 0 || length < 0) {
+        return kRawFileFallback;
+    }
+    const size_t size = static_cast<size_t>(length);
+    if (size == 0) {
+        // A zero-byte rawfile is a valid answer with no data.
+        ohos_host_raw_file_result_bytes(requestId, OHOS_RAW_FILE_OK, nullptr, 0);
+        return kRawFileDelivered;
+    }
+    static std::mutex bufferLock;
+    static std::vector<unsigned char> buffer;
+    std::lock_guard<std::mutex> guard(bufferLock);
+    if (buffer.size() < size) {
+        try {
+            buffer.resize(size);
+        } catch (...) {
+            OH_LOG_WARN(LOG_APP, "[openharmony-host] raw file: cannot allocate %{public}d bytes for the descriptor read; using the base64 answer",
+                        (int)size);
+            return kRawFileFallback;
+        }
+    }
+    size_t done = 0;
+    while (done < size) {
+        const size_t chunk = (size - done) < kRawFileReadChunkBytes ? (size - done) : kRawFileReadChunkBytes;
+        const ssize_t n = pread(fd, buffer.data() + done, chunk, static_cast<off_t>(offset + (int64_t)done));
+        if (n < 0 && errno == EINTR) {
+            continue;
+        }
+        if (n <= 0) {
+            OH_LOG_WARN(LOG_APP, "[openharmony-host] raw file: descriptor read stopped at %{public}d of %{public}d bytes; using the base64 answer",
+                        (int)done, (int)size);
+            return kRawFileFallback;
+        }
+        done += static_cast<size_t>(n);
+    }
+    ohos_host_raw_file_result_bytes(requestId, OHOS_RAW_FILE_OK, buffer.data(), size);
+    return kRawFileDelivered;
+}
+
+// ArkTS calls host.notifyRawFileFd(requestId, fd, offset, length) after a successful
+// resourceManager.getRawFd. Returns 1 when the request was answered here (the bytes were read
+// and delivered, or an over-cap descriptor was answered rc -3) and 0 when the shell must fall
+// back to notifyRawFileResult + getRawFileContent (no managed bytes callback, invalid
+// coordinates, or a failed read - the request has then NOT been answered).
+napi_value NotifyRawFileFd(napi_env env, napi_callback_info info) {
+    size_t argc = 4;
+    napi_value argv[4] = {nullptr, nullptr, nullptr, nullptr};
+    napi_get_cb_info(env, info, &argc, argv, nullptr, nullptr);
+    int32_t requestId = 0;
+    int32_t fd = -1;
+    double offset = -1;
+    double length = -1;
+    if (argc >= 1) napi_get_value_int32(env, argv[0], &requestId);
+    if (argc >= 2) napi_get_value_int32(env, argv[1], &fd);
+    if (argc >= 3) napi_get_value_double(env, argv[2], &offset);
+    if (argc >= 4) napi_get_value_double(env, argv[3], &length);
+    int delivered = kRawFileFallback;
+    if (ohos_host_raw_file_bytes_available() == 0) {
+        static bool noBytesCallbackLogged = false;
+        if (!noBytesCallbackLogged) {
+            noBytesCallbackLogged = true;
+            OH_LOG_WARN(LOG_APP, "[openharmony-host] raw file: no byte result callback; descriptor reads fall back to the base64 answer");
+        }
+    } else if (length < 0) {
+        // Invalid descriptor length (the shell always sends a number): leave the answer to the
+        // base64 fallback.
+    } else if (length > (double)OHOS_HOST_RAW_FILE_MAX_BYTES) {
+        // Refused before any read; the cap is the same one the shell checks.
+        ohos_host_raw_file_result_bytes(requestId, OHOS_RAW_FILE_TOO_LARGE, nullptr, 0);
+        delivered = kRawFileDelivered;
+    } else if (offset < 0 || offset > (double)INT64_MAX - length) {
+        // Coordinates that cannot describe a file in the HAP: leave the answer to the shell.
+    } else {
+        delivered = DeliverRawFileBytes(requestId, fd, (int64_t)offset, (int64_t)length);
+    }
+    napi_value result = nullptr;
+    napi_create_int32(env, delivered, &result);
+    return result;
 }
 
 // Runtime permissions: the managed side asks through ohos_host_request_permission; the sink's
@@ -2806,6 +2905,7 @@ napi_value Init(napi_env env, napi_value exports) {
         {"notifyPickerResult", nullptr, NotifyPickerResult, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"registerRawFileSink", nullptr, RegisterRawFileSink, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"notifyRawFileResult", nullptr, NotifyRawFileResult, nullptr, nullptr, nullptr, napi_default, nullptr},
+        {"notifyRawFileFd", nullptr, NotifyRawFileFd, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"permissionResult", nullptr, NotifyPermissionResult, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"notificationPermissionResult", nullptr, NotifyNotificationPermissionResult, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"clipboardResult", nullptr, NotifyClipboardResult, nullptr, nullptr, nullptr, napi_default, nullptr},

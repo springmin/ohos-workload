@@ -6,6 +6,7 @@
 #ifndef OPENHARMONY_HOST_H
 #define OPENHARMONY_HOST_H
 
+#include <stddef.h>
 #include <stdint.h>
 
 #ifdef __cplusplus
@@ -158,20 +159,28 @@ void ohos_host_picker_complete(int request_id, int rc, const char* name, const c
 /// Raw HAP resources: the managed side (maui-ohos OpenHarmonyFileSystem) asks for one file
 /// shipped raw in the HAP (resources/rawfile/**) through ohos_host_raw_file_request; the
 /// ArkTS shell's registerRawFileSink handler reads it with resourceManager and answers through
-/// host.notifyRawFileResult -> ohos_host_raw_file_result, delivered to the callback registered
-/// by ohos_host_raw_file_register_result. The request names one rawfile-relative path (the
+/// host.notifyRawFileFd (descriptor read, preferred) or host.notifyRawFileResult (base64
+/// fallback), delivered to the callbacks registered by ohos_host_raw_file_register_result_bytes
+/// and ohos_host_raw_file_register_result. The request names one rawfile-relative path (the
 /// managed side normalizes separators and trims leading '/'); op is an ohos_raw_file_op.
 ///
-/// Transport: the read answer is the base64 encoding of the bytes in one string argument. No
-/// temp files or shared paths cross the bridge, so there is no cleanup or name-collision race;
-/// the sender-side caps below keep the transient copies bounded. A read larger than
-/// OHOS_HOST_RAW_FILE_MAX_BYTES is refused by the shell (rc -3) before it is encoded, and the
-/// host refuses an over-long base64 argument the same way, so a buggy shell cannot make the
-/// host allocate past the cap. Callers decode once and length-check the result (the managed
-/// side does both).
+/// Transport: the read answer travels either as the raw bytes read from a rawfile descriptor or
+/// as one base64 string (legacy fallback for shells or SDKs without a usable descriptor). In the
+/// byte shape the shell obtains {fd, offset, length} with resourceManager.getRawFd and calls
+/// host.notifyRawFileFd; the host preads the descriptor during that synchronous call (the shell
+/// closes the fd afterwards) and hands the bytes to the bytes callback, so the content never
+/// becomes a string. In the base64 shape the shell calls host.notifyRawFileResult and the
+/// content travels as the base64 encoding of the bytes in one string argument. Neither shape
+/// uses temp files or shared paths, so there is no cleanup or name-collision race; the
+/// sender-side caps below keep the transient copies bounded. A read larger than
+/// OHOS_HOST_RAW_FILE_MAX_BYTES is refused by the shell (rc -3) before it is read or encoded, and
+/// the host refuses an over-long base64 argument or descriptor the same way, so a buggy shell
+/// cannot make the host allocate past the cap. Callers decode once (base64 shape only) and
+/// length-check the result (the managed side does both).
 ///
-/// rc values (ohos_raw_file_rc): 0 success (op OHOS_RAW_FILE_READ: data_base64 carries the
-/// bytes, empty for a zero-byte file; op OHOS_RAW_FILE_EXISTS: the file exists), -1 the bridge
+/// rc values (ohos_raw_file_rc): 0 success (op OHOS_RAW_FILE_READ: the bytes arrive through the
+/// bytes callback or as data_base64, empty for a zero-byte file; op OHOS_RAW_FILE_EXISTS: the
+/// file exists), -1 the bridge
 /// or SDK path is unavailable (no shell sink, resourceManager missing, malformed name, read
 /// failure; callers keep their payload-directory behaviour), -2 the rawfile does not exist
 /// (distinguishable so Exists answers false and OpenAppPackageFileAsync raises
@@ -190,8 +199,9 @@ typedef enum {
     OHOS_RAW_FILE_TOO_LARGE = -3,
 } ohos_raw_file_rc;
 
-/// One read is capped at 8 MiB (raw bytes; the base64 form is ~11.2 MiB). The shell and the
-/// managed side use the same number; keep all three in sync when changing it.
+/// One read is capped at 8 MiB (raw bytes; the base64 fallback form is ~11.2 MiB, the byte
+/// transport holds one host buffer of at most this size). The shell and the managed side use the
+/// same number; keep all three in sync when changing it.
 #define OHOS_HOST_RAW_FILE_MAX_BYTES (8u * 1024u * 1024u)
 
 /// The NAPI layer registers the listener that talks to the ArkTS shell:
@@ -206,9 +216,24 @@ int ohos_host_raw_file_request(int request_id, int op, const char* name);
 /// void (*)(int request_id, int rc, const char* data_base64).
 void ohos_host_raw_file_register_result(void* callback);
 
+/// The managed side registers the callback that completes a pending request with raw bytes:
+/// void (*)(int request_id, int rc, const unsigned char* data, size_t length). Optional: when
+/// it is not registered (an older managed slice), ohos_host_raw_file_bytes_available() returns 0
+/// and the host tells the shell to fall back to the base64 shape instead of dropping the
+/// request, so the request still completes.
+void ohos_host_raw_file_register_result_bytes(void* callback);
+
+/// 1 when a bytes callback is registered (an fd read can be answered), 0 otherwise.
+int ohos_host_raw_file_bytes_available(void);
+
 /// Called by the NAPI notify below: hands the shell's answer back to managed code. The payload
 /// is ignored for a non-zero rc and may be NULL (delivered as "").
 void ohos_host_raw_file_result(int request_id, int rc, const char* data_base64);
+
+/// Called by the NAPI fd notify (host.notifyRawFileFd) after reading the descriptor: hands the
+/// bytes back to the bytes callback. data is NULL (and length 0) for a non-zero rc; ownership
+/// stays with the caller, whose buffer is only valid until the call returns.
+void ohos_host_raw_file_result_bytes(int request_id, int rc, const unsigned char* data, size_t length);
 
 /// Runtime permissions: the managed side asks the ArkTS shell to prompt for one permission
 /// (abilityAccessCtrl.requestPermissionsFromUser); the shell's registerPermissionSink handler

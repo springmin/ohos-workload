@@ -599,6 +599,7 @@ struct OhosHostAppHandle {
     void (*bridge_clipboard_changed)(void);
     void (*bridge_geocode_result)(int request_id, int rc, const char* json);
     void (*bridge_raw_file_result)(int request_id, int rc, const char* data_base64);
+    void (*bridge_raw_file_result_bytes)(int request_id, int rc, const unsigned char* data, size_t length);
     void (*bridge_network_access)(int level);
     void (*bridge_key_event)(int key_code, int event_type);
     void (*bridge_soft_input_change)(int bottom);
@@ -1750,9 +1751,10 @@ void ohos_host_picker_complete(int request_id, int rc, const char* name, const c
 // ---------------------------------------------------------------------------
 // Raw HAP resources (resources/rawfile/**): the managed side asks for one file through
 // ohos_host_raw_file_request (op 0 reads it, op 1 probes existence); the ArkTS shell's
-// registerRawFileSink handler runs resourceManager and answers through
-// host.notifyRawFileResult -> ohos_host_raw_file_result. The header documents the rc values,
-// the base64 transport and the 8 MiB cap.
+// registerRawFileSink handler runs resourceManager and answers through host.notifyRawFileFd
+// (bytes read from the rawfile descriptor, preferred) or host.notifyRawFileResult (base64
+// fallback) -> ohos_host_raw_file_result_bytes / ohos_host_raw_file_result. The header
+// documents the rc values, both transports and the 8 MiB cap.
 // ---------------------------------------------------------------------------
 
 static void (*g_raw_file_listener)(int request_id, int op, const char* name) = NULL;
@@ -1767,6 +1769,17 @@ void ohos_host_raw_file_register_result(void* callback) {
     }
 }
 
+void ohos_host_raw_file_register_result_bytes(void* callback) {
+    if (g_app != NULL) {
+        g_app->bridge_raw_file_result_bytes =
+            (void (*)(int, int, const unsigned char*, size_t))callback;
+    }
+}
+
+int ohos_host_raw_file_bytes_available(void) {
+    return (g_app != NULL && g_app->bridge_raw_file_result_bytes != NULL) ? 1 : 0;
+}
+
 int ohos_host_raw_file_request(int request_id, int op, const char* name) {
     if (g_raw_file_listener == NULL || name == NULL) {
         return -1;
@@ -1778,6 +1791,12 @@ int ohos_host_raw_file_request(int request_id, int op, const char* name) {
 void ohos_host_raw_file_result(int request_id, int rc, const char* data_base64) {
     if (g_app != NULL && g_app->bridge_raw_file_result != NULL) {
         g_app->bridge_raw_file_result(request_id, rc, data_base64 != NULL ? data_base64 : "");
+    }
+}
+
+void ohos_host_raw_file_result_bytes(int request_id, int rc, const unsigned char* data, size_t length) {
+    if (g_app != NULL && g_app->bridge_raw_file_result_bytes != NULL) {
+        g_app->bridge_raw_file_result_bytes(request_id, rc, data, length);
     }
 }
 

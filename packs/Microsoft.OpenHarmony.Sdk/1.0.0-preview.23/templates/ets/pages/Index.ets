@@ -1951,19 +1951,32 @@ struct Index {
     });
 
     // Raw HAP resources (resources/rawfile/**): the managed FileSystem asks for one asset
-    // through host.registerRawFileSink - op 0 reads it and answers the base64 content, op 1
-    // probes existence without reading it. Device-compat: the resource manager comes from the
-    // ability context on the first request and is cached, so nothing is imported at page start
-    // and a context without one answers rc=-1. rc map (matches ohos_raw_file_rc in
+    // through host.registerRawFileSink - op 0 reads it, op 1 probes existence. op 0 prefers the
+    // descriptor transport: getRawFd hands the host {fd, offset, length} and the host preads the
+    // bytes straight into the managed byte[] (no base64 string), then the descriptor is closed;
+    // when the descriptor or the host export is unavailable, or the host did not answer the
+    // read, op 0 falls back to getRawFileContent + base64. Device-compat: the resource manager
+    // comes from the ability context on the first request and is cached, so nothing is imported
+    // at page start and a context without one answers rc=-1. rc map (matches ohos_raw_file_rc in
     // openharmony_host.h): 0 ok, -1 unavailable, -2 not found, -3 over rawFileMaxBytes. The cap
-    // is checked before the content is encoded, so a bigger file is answered with -3 and never
-    // copied.
+    // is checked before the content is read or encoded, so a bigger file is answered with -3 and
+    // never copied.
     this.hostCall('registerRawFileSink', typeof host !== 'undefined' && typeof host.registerRawFileSink === 'function', (): void => {
       host.registerRawFileSink(async (requestId: number, op: number, name: string): Promise<void> => {
         const answer = (rc: number, dataBase64: string): void => {
           this.hostCall('notifyRawFileResult', typeof host !== 'undefined' && typeof host.notifyRawFileResult === 'function', (): void => {
             host.notifyRawFileResult(requestId, rc, dataBase64);
           });
+        };
+        // The descriptor's owner is the shell; the host only reads it during the synchronous
+        // notifyRawFileFd call, so closing it here (on every path) is safe.
+        const closeRawFd = async (manager: resourceManager.ResourceManager, relative: string): Promise<void> => {
+          try {
+            await manager.closeRawFd(relative);
+          } catch (closeError) {
+            // The answer (if any) is already delivered; a close failure must not change it.
+            console.error(`[maui] rawfile closeRawFd failed: ${(closeError as Error).message}`);
+          }
         };
         const relative: string = name.replace(/\\/g, '/').replace(/^\/+/, '');
         if (relative.length === 0 || relative.length > 4096) {
@@ -1991,14 +2004,40 @@ struct Index {
               answer((probeError as BusinessError).code === 9001005 ? -2 : -1, '');
               return;
             }
-            try {
-              await manager.closeRawFd(relative);
-            } catch (closeError) {
-              // The probe already answered; a close failure must not change its result.
-              console.error(`[maui] rawfile closeRawFd failed: ${(closeError as Error).message}`);
-            }
+            await closeRawFd(manager, relative);
             answer(0, '');
             return;
+          }
+          if (typeof host !== 'undefined' && typeof host.notifyRawFileFd === 'function') {
+            let info: resourceManager.RawFileDescriptor | undefined = undefined;
+            try {
+              info = await manager.getRawFd(relative);
+            } catch (fdError) {
+              // No descriptor (missing rawfile, older SDK, unsupported entry): the base64
+              // read below answers and reports the rc exactly as before.
+              info = undefined;
+            }
+            if (info !== undefined) {
+              let answered: boolean = false;
+              try {
+                if (info.length > this.rawFileMaxBytes) {
+                  // Refused before any copy; the base64 path answers the same rc.
+                  answer(-3, '');
+                  answered = true;
+                } else {
+                  // 1 = the host read the descriptor and answered; 0 = it could not (it then
+                  // leaves the request to the base64 fallback below).
+                  answered = (host.notifyRawFileFd(requestId, info.fd, info.offset, info.length) as number) === 1;
+                }
+              } catch (fdReadError) {
+                console.error(`[maui] rawfile fd read failed: ${(fdReadError as Error).message}`);
+              } finally {
+                await closeRawFd(manager, relative);
+              }
+              if (answered) {
+                return;
+              }
+            }
           }
           const bytes: Uint8Array = await manager.getRawFileContent(relative);
           if (bytes.byteLength > this.rawFileMaxBytes) {
