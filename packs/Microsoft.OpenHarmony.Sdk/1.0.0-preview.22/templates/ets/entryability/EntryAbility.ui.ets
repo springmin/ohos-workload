@@ -22,6 +22,84 @@ interface AppConfig {
   assembly: string;
 }
 
+// Payload marker (P17): pins the zip identity (rawfile byte length + mtime) and the entry
+// count of a completed unpack, so a matching marker skips the 16 MB copy and the inflate.
+interface UnpackMarker {
+  zipSize: number;
+  mtime: number;
+  fileCount: number;
+}
+
+function countEntries(dir: string): number {
+  return fs.listFileSync(dir, { recursion: true }).length;
+}
+
+function readMarker(markerPath: string): UnpackMarker | undefined {
+  try {
+    return JSON.parse(fs.readTextSync(markerPath)) as UnpackMarker;
+  } catch (readError) {
+    return undefined;
+  }
+}
+
+// Reusable only when the marker pins the current zip and every recorded entry is still there:
+// a missing or half-written tree (interrupted first unpack, wiped dir) is rebuilt from scratch.
+function markerMatches(markerPath: string, payloadDir: string, zipSize: number, mtime: number): boolean {
+  if (mtime < 0 || !fs.accessSync(payloadDir)) {
+    return false;
+  }
+  const marker = readMarker(markerPath);
+  if (marker === undefined) {
+    return false;
+  }
+  return marker.zipSize === zipSize && marker.mtime === mtime && marker.fileCount === countEntries(payloadDir);
+}
+
+function deleteTree(path: string): void {
+  if (!fs.accessSync(path)) {
+    return;
+  }
+  for (const name of fs.listFileSync(path)) {
+    const child = `${path}/${name}`;
+    if (fs.statSync(child).isDirectory()) {
+      deleteTree(child);
+    } else {
+      fs.unlinkSync(child);
+    }
+  }
+  fs.rmdirSync(path);
+}
+
+function writeMarker(markerPath: string, marker: UnpackMarker): void {
+  try {
+    const tempPath = `${markerPath}.tmp`;
+    const file = fs.openSync(tempPath, fs.OpenMode.CREATE | fs.OpenMode.READ_WRITE | fs.OpenMode.TRUNC);
+    try {
+      fs.writeSync(file.fd, JSON.stringify(marker));
+      fs.fsyncSync(file.fd);
+    } finally {
+      fs.closeSync(file);
+    }
+    fs.renameSync(tempPath, markerPath);
+  } catch (markerError) {
+    // A lost marker only costs one more unpack next launch; never fail startup for it.
+    hilog.warn(DOMAIN, TAG, 'unpack marker not written: %{public}s', (markerError as Error).message);
+  }
+}
+
+// Unpacks dotnet.zip unless an earlier launch left a matching payload; true when it unpacked.
+// A stale (upgrade) or half-written payload is deleted before the new unpack starts.
+async function unpackIfNeeded(zipFd: number, zipSize: number, mtime: number, cached: string, payloadDir: string, markerPath: string): Promise<boolean> {
+  if (markerMatches(markerPath, payloadDir, zipSize, mtime)) {
+    return false;
+  }
+  fs.copyFile(zipFd, cached);
+  deleteTree(payloadDir);
+  await zlib.decompressFile(cached, payloadDir);
+  writeMarker(markerPath, { zipSize, mtime, fileCount: countEntries(payloadDir) });
+  return true;
+}
+
 export default class EntryAbility extends UIAbility {
   private started: boolean = false;
   // Host-availability guard (device-compat): a libopenharmonyhost.so that fails to load (for
@@ -101,10 +179,23 @@ export default class EntryAbility extends UIAbility {
     const payloadDir = `${this.context.filesDir}/dotnet`;
     const raw = await this.context.resourceManager.getRawFileContent('app.json');
     const config = JSON.parse(new util.TextDecoder('utf-8').decodeWithStream(raw)) as AppConfig;
+    const markerPath = `${this.context.filesDir}/dotnet.marker`;
     const cached = `${this.context.cacheDir}/dotnet.zip`;
     const zip = await this.context.resourceManager.getRawFd('dotnet.zip');
-    fs.copyFile(zip.fd, cached);
-    await zlib.decompressFile(cached, payloadDir);
+    // The marker pins the rawfile bytes; when fstat is unavailable the -1 identity never
+    // matches, which degrades to the old unconditional unpack instead of skipping wrongly.
+    let zipMtime = -1;
+    try {
+      zipMtime = fs.statSync(zip.fd).mtime;
+    } catch (statError) {
+      hilog.warn(DOMAIN, TAG, 'dotnet.zip stat failed: %{public}s', (statError as Error).message);
+    }
+    const unpacked: boolean = await unpackIfNeeded(zip.fd, zip.length, zipMtime, cached, payloadDir, markerPath);
+    if (unpacked) {
+      hilog.info(DOMAIN, TAG, 'unpacked payload into %{public}s', payloadDir);
+    } else {
+      hilog.info(DOMAIN, TAG, 'reused payload in %{public}s', payloadDir);
+    }
     const context = JSON.stringify({
       appDir: payloadDir,
       filesDir: this.context.filesDir,
