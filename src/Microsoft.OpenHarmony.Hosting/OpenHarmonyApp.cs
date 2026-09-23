@@ -243,7 +243,17 @@ public static class OpenHarmonyBridge
     }
 
     private static void OnPinch(int phase, double scale, float x, float y)
-        => Pinch?.Invoke(phase, scale, x, y);
+    {
+        // A reverse P/Invoke entry: the pinch callback runs application handlers directly.
+        try
+        {
+            Pinch?.Invoke(phase, scale, x, y);
+        }
+        catch (Exception ex)
+        {
+            ReportCallbackFailure("pinch", ex);
+        }
+    }
 
     /// <summary>Raised (also for late subscribers) whenever the host context is available,
     /// and again when a re-read shows it changed (the value is the current context).</summary>
@@ -968,108 +978,225 @@ public static class OpenHarmonyBridge
         }
     }
 
-    private static void OnLifecycleNative(int evt)
+    /// <summary>Most characters a reported callback-failure message may carry.</summary>
+    private const int CallbackFailureMaxChars = 600;
+
+    /// <summary>Most distinct failure keys remembered for the one-time reporting below.</summary>
+    private const int CallbackFailureKeyLimit = 128;
+
+    private static readonly object s_callbackSync = new();
+    private static readonly HashSet<string> s_reportedCallbackFailures = new(StringComparer.Ordinal);
+
+    /// <summary>
+    /// Reports an exception caught at a native -> managed callback boundary (MB-2). An exception
+    /// escaping such a callback unwinds into the host's native frame, where CoreCLR treats it as
+    /// fatal, so every callback that can run application code catches and reports instead of
+    /// letting the process die. The message can carry app- or page-supplied characters, so it is
+    /// flattened to one line and capped; it is reported once per boundary/exception type so a
+    /// handler that keeps failing cannot flood dotnet-status.txt.
+    /// </summary>
+    private static void ReportCallbackFailure(string boundary, Exception error)
     {
-        var lifecycleEvent = (OpenHarmonyLifecycleEvent)evt;
-        // The shell re-sending lifecycle events means the host is up; pick up a context that
-        // landed after Attach() before forwarding to the subscribers.
-        RefreshContext();
-        Action<OpenHarmonyLifecycleEvent>? handlers;
-        lock (s_sync)
+        string key = boundary + ":" + error.GetType().Name;
+        lock (s_callbackSync)
         {
-            handlers = s_lifecycleHandlers;
-            if (handlers is null)
+            if (s_reportedCallbackFailures.Count >= CallbackFailureKeyLimit ||
+                !s_reportedCallbackFailures.Add(key))
             {
-                if (s_pending.Count < 32)
-                {
-                    s_pending.Add(lifecycleEvent);
-                }
                 return;
             }
         }
-        WriteStatus($"lifecycle: {lifecycleEvent}");
-        handlers(lifecycleEvent);
+        WriteStatus($"{boundary} callback failed: {error.GetType().Name}: {FlattenCallbackMessage(error.Message)}");
+    }
+
+    /// <summary>One log-safe line: control characters become spaces and the text is capped.</summary>
+    private static string FlattenCallbackMessage(string? value)
+    {
+        if (string.IsNullOrEmpty(value))
+        {
+            return string.Empty;
+        }
+        int length = Math.Min(value.Length, CallbackFailureMaxChars);
+        char[]? flattened = null;
+        for (int i = 0; i < length; i++)
+        {
+            if (char.IsControl(value[i]))
+            {
+                flattened ??= value.ToCharArray();
+                flattened[i] = ' ';
+            }
+        }
+        string result = flattened is null ? value.Substring(0, length) : new string(flattened, 0, length);
+        return value.Length > CallbackFailureMaxChars ? result + "..." : result;
+    }
+
+    private static void OnLifecycleNative(int evt)
+    {
+        try
+        {
+            var lifecycleEvent = (OpenHarmonyLifecycleEvent)evt;
+            // The shell re-sending lifecycle events means the host is up; pick up a context that
+            // landed after Attach() before forwarding to the subscribers.
+            RefreshContext();
+            Action<OpenHarmonyLifecycleEvent>? handlers;
+            lock (s_sync)
+            {
+                handlers = s_lifecycleHandlers;
+                if (handlers is null)
+                {
+                    if (s_pending.Count < 32)
+                    {
+                        s_pending.Add(lifecycleEvent);
+                    }
+                    return;
+                }
+            }
+            WriteStatus($"lifecycle: {lifecycleEvent}");
+            handlers(lifecycleEvent);
+        }
+        catch (Exception ex)
+        {
+            ReportCallbackFailure("lifecycle", ex);
+        }
     }
 
     private static void OnTouchNative(int type, float x, float y, int pointerCount, int pointerId)
     {
-        var args = new OpenHarmonyTouchEventArgs((OpenHarmonyTouchAction)type, x, y, pointerCount, pointerId);
-        Action<OpenHarmonyTouchEventArgs>? handlers;
-        lock (s_sync)
+        // Input is a hot path: the guard below adds no allocation on the normal path.
+        try
         {
-            handlers = s_touchHandlers;
+            var args = new OpenHarmonyTouchEventArgs((OpenHarmonyTouchAction)type, x, y, pointerCount, pointerId);
+            Action<OpenHarmonyTouchEventArgs>? handlers;
+            lock (s_sync)
+            {
+                handlers = s_touchHandlers;
+            }
+            handlers?.Invoke(args);
         }
-        handlers?.Invoke(args);
+        catch (Exception ex)
+        {
+            ReportCallbackFailure("touch", ex);
+        }
     }
 
     private static void OnTextInputNative(IntPtr utf8)
     {
-        string text = Marshal.PtrToStringUTF8(utf8) ?? string.Empty;
-        Action<string>? handlers;
-        lock (s_sync)
+        try
         {
-            handlers = s_textInputHandlers;
+            string text = Marshal.PtrToStringUTF8(utf8) ?? string.Empty;
+            Action<string>? handlers;
+            lock (s_sync)
+            {
+                handlers = s_textInputHandlers;
+            }
+            handlers?.Invoke(text);
         }
-        handlers?.Invoke(text);
+        catch (Exception ex)
+        {
+            ReportCallbackFailure("text input", ex);
+        }
     }
 
     private static void OnWebEventNative(IntPtr stateUtf8, IntPtr urlUtf8)
     {
-        string state = stateUtf8 == IntPtr.Zero ? string.Empty : Marshal.PtrToStringUTF8(stateUtf8) ?? string.Empty;
-        string url = urlUtf8 == IntPtr.Zero ? string.Empty : Marshal.PtrToStringUTF8(urlUtf8) ?? string.Empty;
-        CompleteWebEvent(state, url);
+        try
+        {
+            string state = stateUtf8 == IntPtr.Zero ? string.Empty : Marshal.PtrToStringUTF8(stateUtf8) ?? string.Empty;
+            string url = urlUtf8 == IntPtr.Zero ? string.Empty : Marshal.PtrToStringUTF8(urlUtf8) ?? string.Empty;
+            CompleteWebEvent(state, url);
+        }
+        catch (Exception ex)
+        {
+            ReportCallbackFailure("web event", ex);
+        }
     }
 
     private static void OnPickerResultNative(int requestId, int rc, IntPtr nameUtf8, IntPtr dataUtf8)
     {
-        string name = nameUtf8 == IntPtr.Zero ? string.Empty : Marshal.PtrToStringUTF8(nameUtf8) ?? string.Empty;
-        string data = dataUtf8 == IntPtr.Zero ? string.Empty : Marshal.PtrToStringUTF8(dataUtf8) ?? string.Empty;
-        CompletePickerRequest(requestId, rc, name, data);
+        try
+        {
+            string name = nameUtf8 == IntPtr.Zero ? string.Empty : Marshal.PtrToStringUTF8(nameUtf8) ?? string.Empty;
+            string data = dataUtf8 == IntPtr.Zero ? string.Empty : Marshal.PtrToStringUTF8(dataUtf8) ?? string.Empty;
+            CompletePickerRequest(requestId, rc, name, data);
+        }
+        catch (Exception ex)
+        {
+            ReportCallbackFailure("picker result", ex);
+        }
     }
 
     private static void OnKeystoreResultNative(int requestId, int rc, IntPtr dataUtf8)
     {
-        string data = dataUtf8 == IntPtr.Zero ? string.Empty : Marshal.PtrToStringUTF8(dataUtf8) ?? string.Empty;
-        KeystoreResult?.Invoke(requestId, rc, data);
+        try
+        {
+            string data = dataUtf8 == IntPtr.Zero ? string.Empty : Marshal.PtrToStringUTF8(dataUtf8) ?? string.Empty;
+            KeystoreResult?.Invoke(requestId, rc, data);
+        }
+        catch (Exception ex)
+        {
+            ReportCallbackFailure("keystore result", ex);
+        }
     }
 
     private static void OnTextSubmittedNative()
     {
-        Action? handlers;
-        lock (s_sync)
+        try
         {
-            handlers = s_textSubmittedHandlers;
+            Action? handlers;
+            lock (s_sync)
+            {
+                handlers = s_textSubmittedHandlers;
+            }
+            handlers?.Invoke();
         }
-        handlers?.Invoke();
+        catch (Exception ex)
+        {
+            ReportCallbackFailure("text submitted", ex);
+        }
     }
 
     private static void OnFrameNative(long timestamp, long targetTimestamp)
     {
-        var args = new OpenHarmonyFrameEventArgs(timestamp, targetTimestamp);
-        Action<OpenHarmonyFrameEventArgs>? handlers;
-        lock (s_sync)
+        // Frames are the hottest path: the guard below adds no allocation on the normal path.
+        try
         {
-            handlers = s_frameHandlers;
+            var args = new OpenHarmonyFrameEventArgs(timestamp, targetTimestamp);
+            Action<OpenHarmonyFrameEventArgs>? handlers;
+            lock (s_sync)
+            {
+                handlers = s_frameHandlers;
+            }
+            handlers?.Invoke(args);
         }
-        handlers?.Invoke(args);
+        catch (Exception ex)
+        {
+            ReportCallbackFailure("frame", ex);
+        }
     }
 
     private static void OnSurfaceNative(IntPtr window, int width, int height, int state)
     {
-        var info = new OpenHarmonySurfaceInfo(window, width, height, (OpenHarmonySurfaceState)state);
-        // The surface becoming ready is the point where the host (payload extraction, app
-        // context) is fully up; publish a context that landed after Attach() before the
-        // subscribers see the surface, so a retry that reacts to SurfaceChanged also sees
-        // the current Context.
-        RefreshContext();
-        Action<OpenHarmonySurfaceInfo>? handlers;
-        lock (s_sync)
+        try
         {
-            s_surface = info;
-            handlers = s_surfaceHandlers;
+            var info = new OpenHarmonySurfaceInfo(window, width, height, (OpenHarmonySurfaceState)state);
+            // The surface becoming ready is the point where the host (payload extraction, app
+            // context) is fully up; publish a context that landed after Attach() before the
+            // subscribers see the surface, so a retry that reacts to SurfaceChanged also sees
+            // the current Context.
+            RefreshContext();
+            Action<OpenHarmonySurfaceInfo>? handlers;
+            lock (s_sync)
+            {
+                s_surface = info;
+                handlers = s_surfaceHandlers;
+            }
+            WriteStatus($"surface: state={info.State} window=0x{window.ToInt64():x} {width}x{height}");
+            handlers?.Invoke(info);
         }
-        WriteStatus($"surface: state={info.State} window=0x{window.ToInt64():x} {width}x{height}");
-        handlers?.Invoke(info);
+        catch (Exception ex)
+        {
+            ReportCallbackFailure("surface", ex);
+        }
     }
 
     private static void OnNodeNative(IntPtr node)
