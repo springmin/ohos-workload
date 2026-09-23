@@ -1,6 +1,6 @@
 # Interaction regression suite (headless)
 
-The MAUI-on-OpenHarmony interaction harness (295 interaction checks, a 4-line fuzz tail, a
+The MAUI-on-OpenHarmony interaction harness (302 interaction checks, a 4-line fuzz tail, a
 frame-path performance budget and an accessibility publish-path budget). It builds the platform
 slice sources from the
 `maui-ohos` working tree and drives the app host without a device: touch/drag/pinch/pointer input,
@@ -45,7 +45,7 @@ below), failing the suite when the (deliberately loose) budgets are exceeded.
 # (or the MauiSliceDir / HostingDll / OpenHarmonyGraphicsDll MSBuild properties) before building
 # elsewhere; an explicit -p: value wins over the environment and the absolute fallbacks.
 dotnet build -v:q
-dotnet bin/Debug/net11.0/verify.dll | grep -c '\[verify\]'   # expect 308 (295 checks + 4 fuzz + 1 frame perf + 8 a11y perf)
+dotnet bin/Debug/net11.0/verify.dll | grep -c '\[verify\]'   # expect 315 (302 checks + 4 fuzz + 1 frame perf + 8 a11y perf)
 ```
 
 The `interaction-regression` workflow (`.github/workflows/interaction-regression.yml`) runs the
@@ -146,8 +146,8 @@ publish pass (skip/republish).
   blocks codesigned ELF apphosts on some machines).
 - The suite fails loudly (unhandled exception) when a slice change breaks startup or when an
   assertion for the gesture flows (including the drag-and-drop checks) does not hold; keep it at
-  295 checks plus the 4 fuzz lines plus the 1 frame-perf line plus the 8 a11y-perf lines
-  (308 `[verify]` lines) when touching the platform slice.
+  302 checks plus the 4 fuzz lines plus the 1 frame-perf line plus the 8 a11y-perf lines
+  (315 `[verify]` lines) when touching the platform slice.
 - Contacts/calendar coverage: `OpenHarmonyContacts.FindAsync` and
   `OpenHarmonyCalendar.ListUpcomingAsync`/`AddEventAsync` return empty/false without throwing
   off-device and report `IsSupported == false` before and after the call (the permission probe
@@ -498,3 +498,25 @@ publish pass (skip/republish).
   Directory.Build.props. `rb frozenabi` pins the `ohos_host_*`/`OHOS_HOST_APP_CONTEXT` ABI-freeze
   comment. That is 11 lines: 297 + 11 = 308 = 295 interaction checks + 4 fuzz + 1 frame perf +
   8 a11y perf; the workflow floor moves with the total (308 - 20 = 288).
+- Audit batch-3 pins (FIX-MAUI residues: MB-1 bounded approval table / MB-2 guarded native
+  callbacks / MB-3 app-package names / H-C2 approval + load channels): seven `[verify]` lines for
+  the fixes that shipped without behavioural coverage here. `audit3 mb1` fills the web approval
+  table through 200 `__OHNAV` requests and requires the 64-entry cap, the newest decision kept,
+  the expired-marker prune on a page event, the oldest eviction when full and the one-shot
+  consumption by the matching `started` event. `audit3 mb3` requires every traversal, rooted,
+  drive-letter, UNC and control-character spelling to throw `ArgumentException` while five legal
+  relative names keep the missing-file contract and the message carries the normalized
+  `a/b/c.txt` name. `audit3 hc2 approvals` requires the eight file/foreign-looking targets to stay
+  blocked while the absolute https target approves exactly (id, url); `audit3 hc2 load` pins the
+  21-case `IsLoadableSourceUrl` table (app-internal references and the shell's own schemes stay
+  loadable, network-path/UNC and scheme-like spellings are refused). `audit3 mb2 guards` attaches
+  throwing handlers to the WebView JS-message, BLE-GATT, clipboard, sensor, menu, theme and
+  hybrid boundaries, drives the private native entries and requires no escape, with the seven
+  `NativeCallbackFailed` source guards pinned alongside; `audit3 mb2 status` requires the thrown
+  failures to reach `dotnet-status.txt` flattened to one line. `audit3 host callbacks` does the
+  same for this repository's ten `OpenHarmonyBridge` native entries (touch, frame, text input,
+  text submitted, lifecycle, surface, pinch, web event, picker and keystore result): each private
+  handler delegate is swapped for a thrower, the native entry is invoked, the delegate is
+  restored and the ten inline `ReportCallbackFailure` guards are pinned in the source. That is 7
+  lines: 308 + 7 = 315 = 302 interaction checks + 4 fuzz + 1 frame perf + 8 a11y perf; the
+  suite's documented floor convention is total - 20 = 295.

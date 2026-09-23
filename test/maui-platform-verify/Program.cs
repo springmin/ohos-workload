@@ -5041,6 +5041,456 @@ if (!pg2GuardOk)
         $"order={pg2GuardOrderOk} evidence={pg2GuardEvidenceOk} source={pg2HostScriptPath ?? "<missing>"}");
 }
 
+// ---- Audit batch-3 pins: the FIX-MAUI security residuals (MB-1/MB-2/MB-3/H-C2) ----------------
+// The slice fixes at maui-ohos c730226f closed the batch-3 findings - the unbounded web approval
+// table, application exceptions escaping a native -> managed callback, unvetted app-package
+// names and the approval/load URL channels - but shipped without behavioural pins here. Each fix
+// gets the off-device contract the scratch harness exercised: the real approval dictionary and
+// the private native entries are driven directly, and the hosting bridge's own native callbacks
+// (this repository, MB-2) get the same treatment, so a removed try/catch fails this run. The
+// probes share one throwaway bridge context (AppDir for the package probes, FilesDir for the
+// swallowed-exception status lines) that is restored afterwards.
+
+MethodInfo Audit3NativeEntry(Type type, string name)
+    => type.GetMethod(name, BindingFlags.NonPublic | BindingFlags.Static)
+        ?? throw new InvalidOperationException($"{type.Name}.{name} was not found; the audit batch-3 pins drive the native entry directly");
+
+// MB-1: 200 approved main-frame navigations leave the table bounded at the 64-entry cap with the
+// newest decision kept; an expired marker is pruned by a page event; a full table evicts the
+// entry closest to expiry; the matching "started" event still consumes its entry exactly once.
+FieldInfo n30ApprovalsField = typeof(OpenHarmonyWebViewHandler)
+    .GetField("s_approvedNavigations", BindingFlags.NonPublic | BindingFlags.Static)
+    ?? throw new InvalidOperationException("OpenHarmonyWebViewHandler.s_approvedNavigations was not found; the MB-1 cap pin needs the approval table");
+var n30Approvals = (Dictionary<string, long>)n30ApprovalsField.GetValue(null)!;
+string n30NewestUrl = string.Empty;
+for (int n30Index = 0; n30Index < 200; n30Index++)
+{
+    n30NewestUrl = $"https://example.invalid/nav/{n30Index}/{new string('A', 64)}";
+    OpenHarmonyWebViewHandler.HandleJsMessage($"__OHNAV|{n30NewestUrl}|id-{n30Index}");
+}
+int n30CapCount = n30Approvals.Count;
+bool n30CapOk = n30CapCount == 64;
+bool n30NewestOk = n30Approvals.ContainsKey(n30NewestUrl);
+string n30StaleUrl = "https://stale.invalid/never-started";
+n30Approvals[n30StaleUrl] = Environment.TickCount64 - 1;
+OpenHarmonyWebViewHandler.OnPageEvent("finished", "https://example.invalid/done");
+bool n30TtlOk = !n30Approvals.ContainsKey(n30StaleUrl);
+string n30ClosestToExpiry = n30Approvals.OrderBy(entry => entry.Value).First().Key;
+OpenHarmonyWebViewHandler.HandleJsMessage("__OHNAV|https://example.invalid/late|id-late");
+bool n30EvictOk = n30Approvals.Count <= 64 && !n30Approvals.ContainsKey(n30ClosestToExpiry) &&
+    n30Approvals.ContainsKey("https://example.invalid/late");
+OpenHarmonyWebViewHandler.HandleJsMessage("__OHNAV|https://example.invalid/one-shot|id-one-shot");
+bool n30OneShotApproved = n30Approvals.ContainsKey("https://example.invalid/one-shot");
+OpenHarmonyWebViewHandler.OnPageEvent("started", "https://example.invalid/one-shot");
+bool n30OneShotOk = n30OneShotApproved && !n30Approvals.ContainsKey("https://example.invalid/one-shot");
+bool n30Mb1Ok = n30CapOk && n30NewestOk && n30TtlOk && n30EvictOk && n30OneShotOk;
+Console.WriteLine($"[verify] audit3 mb1 approvals cap={n30CapOk}(count={n30CapCount}) newest={n30NewestOk} ttlPruned={n30TtlOk} evictedOldest={n30EvictOk} oneShot={n30OneShotOk} assert={n30Mb1Ok}");
+if (!n30Mb1Ok)
+{
+    throw new InvalidOperationException(
+        $"the bounded web-approval table (MB-1) drifted: cap={n30CapOk} newest={n30NewestOk} " +
+        $"ttl={n30TtlOk} evict={n30EvictOk} oneShot={n30OneShotOk}");
+}
+
+// A throwaway bridge context for the package probes and the swallowed-exception status lines.
+string n30AuditRoot = Path.Combine(Path.GetTempPath(), "verify-audit3");
+string n30StatusDir = Path.Combine(n30AuditRoot, "status");
+string n30AppDir = Path.Combine(n30AuditRoot, "app");
+Directory.CreateDirectory(n30StatusDir);
+Directory.CreateDirectory(n30AppDir);
+Microsoft.OpenHarmony.Hosting.OpenHarmonyAppContext? n30ContextBefore =
+    (Microsoft.OpenHarmony.Hosting.OpenHarmonyAppContext?)bridgeContextField.GetValue(null);
+FieldInfo n30SurfaceField = typeof(Microsoft.OpenHarmony.Hosting.OpenHarmonyBridge)
+    .GetField("s_surface", BindingFlags.NonPublic | BindingFlags.Static)
+    ?? throw new InvalidOperationException("OpenHarmonyBridge.s_surface was not found; the host surface pin saves/restores it");
+Microsoft.OpenHarmony.Hosting.OpenHarmonySurfaceInfo? n30SurfaceBefore =
+    (Microsoft.OpenHarmony.Hosting.OpenHarmonySurfaceInfo?)n30SurfaceField.GetValue(null);
+SetBridgeContext(new Microsoft.OpenHarmony.Hosting.OpenHarmonyAppContext { FilesDir = n30StatusDir, AppDir = n30AppDir });
+string n30StatusPath = Path.Combine(n30StatusDir, "dotnet-status.txt");
+File.Delete(n30StatusPath);
+
+// MB-3: app-package names are canonicalized ('/' separators, no "." or ".." segments) and every
+// traversal, rooted, drive-letter, UNC and control-character spelling is refused, while legal
+// relative names keep the missing-file contract (they reach the rawfile fallback, not a throw).
+var n30FileSystem = new OpenHarmonyFileSystem();
+string[] n30BadNames =
+{
+    "../secret", "..", "/etc/passwd", "//server/share/x", "C:\\Windows\\win.ini", "C:file",
+    "a\\..\\b", "..\\x", "a//b", "a/", "sub/../../x", ".", "a\0b",
+};
+int n30NsRejected = 0;
+foreach (string n30Name in n30BadNames)
+{
+    try
+    {
+        _ = n30FileSystem.OpenAppPackageFileAsync(n30Name);
+    }
+    catch (ArgumentException)
+    {
+        n30NsRejected++;
+    }
+}
+string[] n30GoodNames = { "index.html", "wwwroot/index.html", "a\\b\\c.txt", "./x/y.html", "a/./b.txt" };
+int n30AllowedMisses = 0;
+bool n30SeparatorsNormalized = false;
+foreach (string n30Name in n30GoodNames)
+{
+    try
+    {
+        _ = n30FileSystem.OpenAppPackageFileAsync(n30Name).GetAwaiter().GetResult();
+    }
+    catch (FileNotFoundException n30Missing)
+    {
+        n30AllowedMisses++;
+        if (n30Name == "a\\b\\c.txt")
+        {
+            n30SeparatorsNormalized = n30Missing.Message.Contains("'a/b/c.txt'");
+        }
+    }
+}
+bool n30ExistsRejected = false;
+try
+{
+    _ = n30FileSystem.AppPackageFileExistsAsync("../x").GetAwaiter().GetResult();
+}
+catch (ArgumentException)
+{
+    n30ExistsRejected = true;
+}
+bool n30Mb3Ok = n30NsRejected == n30BadNames.Length && n30AllowedMisses == n30GoodNames.Length &&
+    n30SeparatorsNormalized && n30ExistsRejected;
+Console.WriteLine($"[verify] audit3 mb3 apppackage rejected={n30NsRejected}/{n30BadNames.Length} allowed={n30AllowedMisses}/{n30GoodNames.Length} normalized={n30SeparatorsNormalized} existsRejected={n30ExistsRejected} assert={n30Mb3Ok}");
+if (!n30Mb3Ok)
+{
+    throw new InvalidOperationException(
+        $"the app-package name validation (MB-3) drifted: rejected={n30NsRejected} allowed={n30AllowedMisses} " +
+        $"normalized={n30SeparatorsNormalized} existsRejected={n30ExistsRejected}");
+}
+
+// H-C2 (approval channel): only an absolute http(s) target with a host may be approved back to
+// the shell; the spellings a URI parser turns into a file/foreign target stay blocked.
+var n30ApprovalsSent = new List<(string Id, string Url)>();
+void Audit3OnApproval(string id, string url) => n30ApprovalsSent.Add((id, url));
+OpenHarmonyWebViewHandler.NavigationApprovalSent += Audit3OnApproval;
+string[] n30BlockedTargets =
+{
+    "//evil.invalid/x", "///evil.invalid", "/\\evil.invalid", "//evil.invalid:8443/x",
+    "file://evil.invalid/x", "mailto:a@b.c", "javascript:alert(1)", "data:text/html,x",
+};
+int n30BlockedKept = 0;
+foreach (string n30Target in n30BlockedTargets)
+{
+    int n30SentBefore = n30ApprovalsSent.Count;
+    OpenHarmonyWebViewHandler.HandleJsMessage($"__OHNAV|{n30Target}|id-bad");
+    n30BlockedKept += n30ApprovalsSent.Count == n30SentBefore ? 1 : 0;
+}
+OpenHarmonyWebViewHandler.HandleJsMessage("__OHNAV|https://example.invalid/ok|id-ok");
+bool n30ApprovedOk = n30ApprovalsSent.Count == 1 && n30ApprovalsSent[0] == ("id-ok", "https://example.invalid/ok");
+OpenHarmonyWebViewHandler.NavigationApprovalSent -= Audit3OnApproval;
+bool n30ApprovalOk = n30BlockedKept == n30BlockedTargets.Length && n30ApprovedOk;
+Console.WriteLine($"[verify] audit3 hc2 approvals blocked={n30BlockedKept}/{n30BlockedTargets.Length} accepted={n30ApprovedOk} assert={n30ApprovalOk}");
+if (!n30ApprovalOk)
+{
+    throw new InvalidOperationException(
+        $"the approval channel (H-C2) drifted: blocked={n30BlockedKept}/{n30BlockedTargets.Length} accepted={n30ApprovedOk}");
+}
+
+// H-C2 (app-requested load path): app-internal references and the shell's own schemes stay
+// loadable; network-path/UNC spellings, scheme-like spellings and unknown schemes are refused.
+(string Url, bool Allowed)[] n30LoadCases =
+{
+    ("//evil.invalid/x", false),
+    ("/\\evil.invalid", false),
+    ("\\\\evil.invalid\\x", false),
+    (" //evil.invalid/x", false),
+    ("\t//evil.invalid/x", false),
+    ("https:foo", false),
+    ("https:/evil.invalid", false),
+    ("mailto:a@b.c", false),
+    ("javascript:alert(1)", false),
+    ("/index.html", true),
+    ("#frag", true),
+    ("?q=1", true),
+    ("page2.html", true),
+    ("sub/dir/page2.html", true),
+    ("https://example.invalid/x", true),
+    ("http://example.invalid:8080/x", true),
+    ("file:///data/storage/el2/base/files/index.html", true),
+    ("file://evil.invalid/x", false),
+    ("data:text/html,<p>hi</p>", true),
+    ("about:blank", true),
+    ("blob:https://0.0.0.0/1234", true),
+};
+int n30LoadRejected = 0;
+int n30LoadAllowed = 0;
+int n30LoadUnexpected = 0;
+foreach ((string n30Url, bool n30CaseAllowed) in n30LoadCases)
+{
+    bool n30Actual = OpenHarmonyWebViewHandler.IsLoadableSourceUrl(n30Url);
+    if (n30Actual == n30CaseAllowed)
+    {
+        n30LoadRejected += n30CaseAllowed ? 0 : 1;
+        n30LoadAllowed += n30CaseAllowed ? 1 : 0;
+    }
+    else
+    {
+        n30LoadUnexpected++;
+    }
+}
+bool n30LoadOk = n30LoadUnexpected == 0;
+Console.WriteLine($"[verify] audit3 hc2 load cases={n30LoadCases.Length} rejected={n30LoadRejected} allowed={n30LoadAllowed} unexpected={n30LoadUnexpected} assert={n30LoadOk}");
+if (!n30LoadOk)
+{
+    throw new InvalidOperationException($"the app-requested load table (H-C2) drifted on {n30LoadUnexpected} case(s)");
+}
+
+// MB-2 (slice): a throwing application handler must not escape the reverse P/Invoke boundary.
+// Each probe attaches a throwing handler to the app-facing event and drives the private native
+// entry the shell's notification lands on; the matching source guard is pinned too, because the
+// menu/theme/hybrid entries cannot always be made to throw from a synthetic call.
+var n30SliceEscapes = new List<string>();
+void Audit3ExpectGuarded(string name, Action invoke)
+{
+    try
+    {
+        invoke();
+    }
+    catch (Exception ex)
+    {
+        n30SliceEscapes.Add(name + ":" + ex.GetType().Name);
+        Console.WriteLine($"[verify] audit3 mb2 escaped {name}: {ex.GetType().Name}: {ex.Message}");
+    }
+}
+
+Action<string> n30JsThrower = _ => throw new InvalidOperationException("app js handler failed\nsecond line");
+OpenHarmonyWebViewHandler.JsMessage += n30JsThrower;
+Audit3ExpectGuarded("webview", () =>
+{
+    IntPtr n30Payload = Marshal.StringToCoTaskMemUTF8("{\"pad\":\"x\"}");
+    try
+    {
+        Audit3NativeEntry(typeof(OpenHarmonyWebViewHandler), "OnJsMessageNative").Invoke(null, new object?[] { n30Payload });
+    }
+    finally
+    {
+        Marshal.FreeCoTaskMem(n30Payload);
+    }
+});
+OpenHarmonyWebViewHandler.JsMessage -= n30JsThrower;
+
+EventHandler<OpenHarmonyGattValueChangedEventArgs> n30GattThrower =
+    (_, _) => throw new InvalidOperationException("app gatt handler failed");
+OpenHarmonyBluetoothGatt.ValueChanged += n30GattThrower;
+Audit3ExpectGuarded("gatt", () =>
+{
+    IntPtr n30Payload = Marshal.StringToCoTaskMemUTF8(
+        "value\tAA:BB:CC\t0000fff0-0000-1000-8000-00805f9b34fb\t0000fff1-0000-1000-8000-00805f9b34fb\tAAECAwQ=");
+    try
+    {
+        Audit3NativeEntry(typeof(OpenHarmonyBluetoothGatt), "OnEventNative").Invoke(null, new object?[] { n30Payload });
+    }
+    finally
+    {
+        Marshal.FreeCoTaskMem(n30Payload);
+    }
+});
+OpenHarmonyBluetoothGatt.ValueChanged -= n30GattThrower;
+
+Action n30ClipboardThrower = () => throw new InvalidOperationException("app clipboard handler failed");
+OpenHarmonyClipboardBridge.Changed += n30ClipboardThrower;
+Audit3ExpectGuarded("clipboard", () => Audit3NativeEntry(typeof(OpenHarmonyClipboardBridge), "OnNativeClipboardChanged").Invoke(null, null));
+OpenHarmonyClipboardBridge.Changed -= n30ClipboardThrower;
+
+EventHandler<Microsoft.Maui.Devices.Sensors.AccelerometerChangedEventArgs> n30SensorThrower =
+    (_, _) => throw new InvalidOperationException("app sensor handler failed");
+OpenHarmonyAccelerometer.Instance.ReadingChanged += n30SensorThrower;
+Audit3ExpectGuarded("sensors", () =>
+{
+    foreach (int n30SensorType in new[] { 1, 2, 6, 8, 259 })
+    {
+        Audit3NativeEntry(typeof(OpenHarmonySensors), "OnReading")
+            .Invoke(null, new object?[] { n30SensorType, 0f, 0f, 9.8f, 0f, 0L });
+    }
+});
+OpenHarmonyAccelerometer.Instance.ReadingChanged -= n30SensorThrower;
+
+Audit3ExpectGuarded("menus", () => Audit3NativeEntry(typeof(OpenHarmonyMenus), "OnMenuActionNative").Invoke(null, new object?[] { 7 }));
+Audit3ExpectGuarded("theme", () => Audit3NativeEntry(typeof(OpenHarmonyTheme), "OnNativeTheme").Invoke(null, new object?[] { 1 }));
+Audit3ExpectGuarded("hybrid", () =>
+{
+    IntPtr n30Method = Marshal.StringToCoTaskMemUTF8("noop");
+    IntPtr n30Arguments = Marshal.StringToCoTaskMemUTF8("[]");
+    try
+    {
+        Audit3NativeEntry(typeof(OpenHarmonyHybridWebViewHandler), "OnHybridInvokeNative")
+            .Invoke(null, new object?[] { 1, n30Method, n30Arguments });
+    }
+    finally
+    {
+        Marshal.FreeCoTaskMem(n30Method);
+        Marshal.FreeCoTaskMem(n30Arguments);
+    }
+});
+
+(string File, string Guard)[] n30GuardSources =
+{
+    ("OpenHarmonyWebViewHandler.cs", "NativeCallbackFailed(\"web js message\", ex)"),
+    ("OpenHarmonyBluetoothGatt.cs", "NativeCallbackFailed(\"bluetooth gatt event\", ex)"),
+    ("OpenHarmonyEssentialsBridges.cs", "NativeCallbackFailed(\"clipboard changed\", ex)"),
+    ("OpenHarmonySensors.cs", "NativeCallbackFailed(\"sensor reading\", ex)"),
+    ("OpenHarmonyMenus.cs", "NativeCallbackFailed(\"menu action\", ex)"),
+    ("OpenHarmonyTheme.cs", "NativeCallbackFailed(\"theme change\", ex)"),
+    ("OpenHarmonyHybridWebViewHandler.cs", "NativeCallbackFailed(\"hybrid invoke\", ex)"),
+};
+int n30GuardSourceHits = 0;
+string n30GuardSourceMissing = string.Empty;
+foreach ((string n30GuardFile, string n30GuardText) in n30GuardSources)
+{
+    string? n30GuardPath = FindHostSource(n30GuardFile);
+    bool n30GuardFound = n30GuardPath is not null &&
+        File.ReadAllText(n30GuardPath).Contains(n30GuardText, StringComparison.Ordinal);
+    n30GuardSourceHits += n30GuardFound ? 1 : 0;
+    if (!n30GuardFound)
+    {
+        n30GuardSourceMissing += (n30GuardSourceMissing.Length == 0 ? string.Empty : ",") + n30GuardFile;
+    }
+}
+bool n30Mb2GuardsOk = n30SliceEscapes.Count == 0 && n30GuardSourceHits == n30GuardSources.Length;
+Console.WriteLine($"[verify] audit3 mb2 guards guarded=7 escaped={n30SliceEscapes.Count} sources={n30GuardSourceHits}/{n30GuardSources.Length} missing='{n30GuardSourceMissing}' assert={n30Mb2GuardsOk}");
+if (!n30Mb2GuardsOk)
+{
+    throw new InvalidOperationException(
+        $"a slice native-callback guard (MB-2) drifted: escaped={string.Join(",", n30SliceEscapes)} " +
+        $"sources={n30GuardSourceHits}/{n30GuardSources.Length} missing='{n30GuardSourceMissing}'");
+}
+
+// MB-2 (hosting bridge): the repository's own reverse P/Invoke entries. The private handler
+// delegate is swapped for a throwing one, the native entry the shell calls is invoked, and the
+// app-facing subscribers are restored afterwards, so the probe leaves no state behind. The
+// source contract pins the inline guards on all ten entries.
+int n30HostEntries = 0;
+var n30HostEscapes = new List<string>();
+void Audit3ProbeHostCallback(string boundary, string fieldName, string methodName, Delegate thrower, object?[] arguments)
+{
+    FieldInfo n30Field = typeof(Microsoft.OpenHarmony.Hosting.OpenHarmonyBridge)
+        .GetField(fieldName, BindingFlags.NonPublic | BindingFlags.Static)
+        ?? throw new InvalidOperationException($"OpenHarmonyBridge.{fieldName} was not found; the host callback pin needs the handler seam");
+    object? n30Before = n30Field.GetValue(null);
+    n30Field.SetValue(null, thrower);
+    try
+    {
+        n30HostEntries++;
+        Audit3NativeEntry(typeof(Microsoft.OpenHarmony.Hosting.OpenHarmonyBridge), methodName).Invoke(null, arguments);
+    }
+    catch (Exception ex)
+    {
+        n30HostEscapes.Add(boundary + ":" + ex.GetType().Name);
+        Console.WriteLine($"[verify] audit3 host escaped {boundary}: {ex.GetType().Name}: {ex.Message}");
+    }
+    finally
+    {
+        n30Field.SetValue(null, n30Before);
+    }
+}
+
+Action<Microsoft.OpenHarmony.Hosting.OpenHarmonyTouchEventArgs> n30TouchThrower =
+    _ => throw new InvalidOperationException("app touch handler failed");
+Audit3ProbeHostCallback("touch", "s_touchHandlers", "OnTouchNative", n30TouchThrower, new object?[] { 0, 0f, 0f, 1, 1 });
+
+Action<Microsoft.OpenHarmony.Hosting.OpenHarmonyFrameEventArgs> n30FrameThrower =
+    _ => throw new InvalidOperationException("app frame handler failed");
+Audit3ProbeHostCallback("frame", "s_frameHandlers", "OnFrameNative", n30FrameThrower, new object?[] { 0L, 0L });
+
+Action<string> n30TextInputThrower = _ => throw new InvalidOperationException("app text input handler failed");
+Audit3ProbeHostCallback("text input", "s_textInputHandlers", "OnTextInputNative", n30TextInputThrower, new object?[] { IntPtr.Zero });
+
+Action n30TextSubmittedThrower = () => throw new InvalidOperationException("app text submitted handler failed");
+Audit3ProbeHostCallback("text submitted", "s_textSubmittedHandlers", "OnTextSubmittedNative", n30TextSubmittedThrower, Array.Empty<object?>());
+
+Action<Microsoft.OpenHarmony.Hosting.OpenHarmonyLifecycleEvent> n30LifecycleThrower =
+    _ => throw new InvalidOperationException("app lifecycle handler failed");
+Audit3ProbeHostCallback("lifecycle", "s_lifecycleHandlers", "OnLifecycleNative", n30LifecycleThrower, new object?[] { 2 });
+
+Action<Microsoft.OpenHarmony.Hosting.OpenHarmonySurfaceInfo> n30SurfaceThrower =
+    _ => throw new InvalidOperationException("app surface handler failed");
+Audit3ProbeHostCallback("surface", "s_surfaceHandlers", "OnSurfaceNative", n30SurfaceThrower, new object?[] { IntPtr.Zero, 1080, 1920, 0 });
+
+Action<int, double, float, float> n30PinchThrower =
+    (_, _, _, _) => throw new InvalidOperationException("app pinch handler failed");
+Audit3ProbeHostCallback("pinch", "Pinch", "OnPinch", n30PinchThrower, new object?[] { 1, 1.0, 0f, 0f });
+
+Action<string, string> n30WebEventThrower =
+    (_, _) => throw new InvalidOperationException("app web event handler failed");
+Audit3ProbeHostCallback("web event", "WebEvent", "OnWebEventNative", n30WebEventThrower, new object?[] { IntPtr.Zero, IntPtr.Zero });
+
+Action<int, int, string, string> n30PickerThrower =
+    (_, _, _, _) => throw new InvalidOperationException("app picker result handler failed");
+Audit3ProbeHostCallback("picker result", "PickerResult", "OnPickerResultNative", n30PickerThrower, new object?[] { 99999, 1, IntPtr.Zero, IntPtr.Zero });
+
+Action<int, int, string> n30KeystoreThrower =
+    (_, _, _) => throw new InvalidOperationException("app keystore result handler failed");
+Audit3ProbeHostCallback("keystore result", "KeystoreResult", "OnKeystoreResultNative", n30KeystoreThrower, new object?[] { 99999, 1, IntPtr.Zero });
+
+// MB-2 (status channel): the swallowed failures reach dotnet-status.txt as one flattened line
+// per boundary, and the hosting bridge reports its own ten boundaries the same way.
+string n30StatusLog = File.Exists(n30StatusPath) ? File.ReadAllText(n30StatusPath) : string.Empty;
+bool n30FlattenedOk =
+    n30StatusLog.Contains("web js message callback failed: InvalidOperationException: app js handler failed second line") &&
+    n30StatusLog.Contains("bluetooth gatt event callback failed: InvalidOperationException: app gatt handler failed") &&
+    n30StatusLog.Contains("clipboard changed callback failed: InvalidOperationException: app clipboard handler failed") &&
+    n30StatusLog.Contains("sensor reading callback failed: InvalidOperationException: app sensor handler failed");
+Console.WriteLine($"[verify] audit3 mb2 status flattened={n30FlattenedOk} bytes={n30StatusLog.Length} assert={n30FlattenedOk}");
+if (!n30FlattenedOk)
+{
+    throw new InvalidOperationException("a swallowed native-callback failure (MB-2) did not reach dotnet-status.txt as one flattened line");
+}
+
+string[] n30HostStatusLines =
+{
+    "touch callback failed: InvalidOperationException: app touch handler failed",
+    "frame callback failed: InvalidOperationException: app frame handler failed",
+    "text input callback failed: InvalidOperationException: app text input handler failed",
+    "text submitted callback failed: InvalidOperationException: app text submitted handler failed",
+    "lifecycle callback failed: InvalidOperationException: app lifecycle handler failed",
+    "surface callback failed: InvalidOperationException: app surface handler failed",
+    "pinch callback failed: InvalidOperationException: app pinch handler failed",
+    "web event callback failed: InvalidOperationException: app web event handler failed",
+    "picker result callback failed: InvalidOperationException: app picker result handler failed",
+    "keystore result callback failed: InvalidOperationException: app keystore result handler failed",
+};
+int n30HostLogged = n30HostStatusLines.Count(line => n30StatusLog.Contains(line, StringComparison.Ordinal));
+string? n30HostingPath = FindHostSource("src/Microsoft.OpenHarmony.Hosting/OpenHarmonyApp.cs");
+string n30HostingSource = n30HostingPath is null ? string.Empty : File.ReadAllText(n30HostingPath);
+int n30HostGuardsPinned = 0;
+foreach (string n30Boundary in new[]
+{
+    "touch", "frame", "text input", "text submitted", "lifecycle", "surface", "pinch",
+    "web event", "picker result", "keystore result",
+})
+{
+    n30HostGuardsPinned += n30HostingSource.Contains($"ReportCallbackFailure(\"{n30Boundary}\", ex)") ? 1 : 0;
+}
+bool n30HostOk = n30HostEntries == 10 && n30HostEscapes.Count == 0 &&
+    n30HostLogged == n30HostStatusLines.Length && n30HostGuardsPinned == 10;
+Console.WriteLine($"[verify] audit3 host callbacks entries={n30HostEntries} escaped={n30HostEscapes.Count} status={n30HostLogged}/{n30HostStatusLines.Length} guards={n30HostGuardsPinned}/10 source='{n30HostingPath ?? "<missing>"}' assert={n30HostOk}");
+if (!n30HostOk)
+{
+    throw new InvalidOperationException(
+        $"a hosting native-callback guard (MB-2) drifted: entries={n30HostEntries} escaped={string.Join(",", n30HostEscapes)} " +
+        $"status={n30HostLogged}/{n30HostStatusLines.Length} guards={n30HostGuardsPinned}/10");
+}
+
+SetBridgeContext(n30ContextBefore);
+n30SurfaceField.SetValue(null, n30SurfaceBefore);
+try
+{
+    Directory.Delete(n30AuditRoot, true);
+}
+catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+{
+    // The audit scratch directory is diagnostic only; leaving it behind must not fail the suite.
+}
+
 // ---- Performance budget (bounded, deterministic, seedless) ------------------------------------
 // The frame path (OpenHarmonyWindowRenderer.Render: measure/arrange, the iterative view walk, the
 // accessibility shadow tree rebuild + frame diff and the surface hooks) is timed over a fixed
