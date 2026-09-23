@@ -8,14 +8,15 @@
 #
 # Scenarios:
 #   stub contract  the stub itself (list targets, install ok/fail, pidof alive->dead,
-#                  hilog -r/stream, "hilog -t kmsg", /proc/sys evidence cats)
+#                  hilog -r/stream, "hilog -t kmsg", app-lib ls, /proc/sys evidence cats)
 #   S1  dry-run    no action flags, device reachable -> plan only, exit 0, no report
 #   S2  success    --uninstall --install --start --capture 1 (+ --device, --expect-tree-digest,
-#                  --compare-lib) -> kmsg + ELF-signing evidence assertions
+#                  --compare-lib) -> kmsg + ELF-signing + app-lib path evidence assertions
 #   S3  install    a hap named *fail* -> code:9568297, exit 1, archive still produced
 #   S4  probes     --uninstall --probes <dir> --capture 1 (4 probe haps, PROBE1..PROBE4)
 #   S5  crash      pidof alive then dead -> process_alive=no, exit 1
-#   S6  missing    missing /proc evidence paths + missing --compare-lib file are tolerated
+#   S6  missing    missing /proc evidence paths + missing --compare-lib file + missing
+#                  bundle libs dir are tolerated
 #   S7  extra      --extra-probes <dir> (comma + repeated forms, deduped): one importprobe-a
 #                  hap is installed, started, captured and archived like P1-P4
 #   S8  extra-fail an extra probe whose install fails (unsigned/signature path) is recorded
@@ -25,10 +26,12 @@
 #   list targets | install -r <hap> | uninstall <bundle> | shell aa start -a EntryAbility -b <b>
 #   shell pidof <b> | shell ps -ef | shell param get <key> | shell bm get -u
 #   shell hilog -r | hilog | shell "hilog -t kmsg" | shell "cat /proc/sys/..."
+#   shell "ls -l /data/storage/el1/bundle/libs/arm64/ 2>/dev/null"
 # `hdc -t <id>` prefixes are accepted. A hap whose basename contains `fail` is rejected
 # with `code:9568297` on stderr. pidof answers a pid for the first
 # FAKE_HDC_PIDOF_ALIVE_CALLS calls per bundle (default 1), then nothing.
-# FAKE_HDC_MISSING_PROC=1 makes both /proc/sys cats fail (missing path).
+# FAKE_HDC_MISSING_PROC=1 makes both /proc/sys cats fail (missing path);
+# FAKE_HDC_MISSING_APPLIBS=1 makes the bundle libs ls fail (missing dir).
 # A stub `binary-sign-tool` lives in $WORK/bin (prepended to PATH for every run) and answers
 # `display-sign` with `code signature is not found`.
 #
@@ -43,7 +46,7 @@
 # Exit: 0 = all checks passed; 1 = at least one check failed (work dir kept for triage).
 set -u
 
-SELFTEST_VERSION="2 (2026-09-22)"
+SELFTEST_VERSION="3 (2026-09-23)"
 
 log()  { printf '[%s] %s\n' "$(date '+%H:%M:%S')" "$*"; }
 section() { printf '\n=== %s ===\n' "$*"; }
@@ -315,6 +318,16 @@ KMSG_EOF
                 printf 'hilog clear done\n'
                 exit 0
                 ;;
+            "ls -l /data/storage/el1/bundle/libs/arm64/ 2>/dev/null")
+                if [ "${FAKE_HDC_MISSING_APPLIBS:-0}" = 1 ]; then
+                    printf 'ls: /data/storage/el1/bundle/libs/arm64/: No such file or directory\n' >&2
+                    exit 1
+                fi
+                printf 'total 12880\n'
+                printf '%s\n' '-rwxr-xr-x 1 0 0 195488 /data/storage/el1/bundle/libs/arm64/libopenharmonyhost.so'
+                printf '%s\n' '-rwxr-xr-x 1 0 0 1246328 /data/storage/el1/bundle/libs/arm64/libc++_shared.so'
+                exit 0
+                ;;
             "cat /proc/sys/kernel/xpm/xpm_mode")
                 if [ "${FAKE_HDC_MISSING_PROC:-0}" = 1 ]; then
                     printf 'cat: %s: No such file or directory\n' "$_cmd" >&2
@@ -399,6 +412,8 @@ KMSG_EOF
 09-22 10:00:00.560 12345 12345 I A00000/IMPORTPROBE_A: A PAGE_ABOUT_TO_APPEAR
 09-22 10:00:00.600 12345 12345 I A00000/AppKilledReporter: app killed reporter selftest line
 09-22 10:00:00.700 12345 12345 I A00000/unrelated: must be filtered out
+09-22 10:00:00.800 12345 12345 I A00000/ets_runtime: SetAppLibPath appLibPathKey: com.example.hellomauiapp/entry, lib path: /data/storage/el1/bundle/libs/arm64
+09-22 10:00:00.810 12345 12345 I A00000/NAPI: dlopen libopenharmonyhost.so from /data/storage/el1/bundle/libs/arm64
 HILOG_EOF
         exit 0
         ;;
@@ -544,11 +559,22 @@ assert_contains "stub: hilog streams PROBE4|libc.so|ok" "PROBE4|libc.so|ok" "$HI
 assert_contains "stub: hilog streams IMPORTPROBE ability line" "IMPORTPROBE: ABILITY_ON_CREATE" "$HILOG_OUT"
 assert_contains "stub: hilog streams IMPORTPROBE_A page line" "IMPORTPROBE_A: A PAGE_ABOUT_TO_APPEAR" "$HILOG_OUT"
 assert_contains "stub: hilog streams AppKilledReporter" "AppKilledReporter" "$HILOG_OUT"
+assert_contains "stub: hilog streams appLibPathKey" "appLibPathKey: com.example.hellomauiapp/entry" "$HILOG_OUT"
+assert_contains "stub: hilog streams appLibPathKey lib path" "lib path: /data/storage/el1/bundle/libs/arm64" "$HILOG_OUT"
+assert_contains "stub: hilog streams dlopen host line" "dlopen libopenharmonyhost.so" "$HILOG_OUT"
 
 KMSG_OUT="$LOGS/stub-kmsg.out"
 FAKE_HDC_STATE="$STATE_DIR/contract-kmsg" "$STUB" shell "hilog -t kmsg" > "$KMSG_OUT" 2>&1 || true
 assert_contains "stub: kmsg has xpm unsigned file event" "unsigned file" "$KMSG_OUT"
 assert_contains "stub: kmsg has fs_security_verity line" "fs_security_verity" "$KMSG_OUT"
+
+APP_LIBS_OUT="$LOGS/stub-app-libs.out"
+FAKE_HDC_STATE="$STATE_DIR/contract-app-libs" "$STUB" shell "ls -l /data/storage/el1/bundle/libs/arm64/ 2>/dev/null" > "$APP_LIBS_OUT" 2>&1 || true
+assert_contains "stub: app libs listing has the host lib" "libopenharmonyhost.so" "$APP_LIBS_OUT"
+STUB_RC=0
+FAKE_HDC_STATE="$STATE_DIR/contract-app-libs-missing" FAKE_HDC_MISSING_APPLIBS=1 \
+    "$STUB" shell "ls -l /data/storage/el1/bundle/libs/arm64/ 2>/dev/null" > "$LOGS/stub-app-libs-missing.out" 2>&1 || STUB_RC=$?
+assert_eq "stub: missing app libs dir rc=1" "1" "$STUB_RC"
 
 FAKE_HDC_STATE="$STATE_DIR/contract-proc" "$STUB" shell "cat /proc/sys/kernel/xpm/xpm_mode" > "$LOGS/stub-xpm-mode.out" 2>&1 || true
 assert_eq "stub: xpm_mode answers 2" "2" "$(tr -d '\r\n' < "$LOGS/stub-xpm-mode.out")"
@@ -622,6 +648,21 @@ if prepare_report "$ARCHIVE_S2" "$WORK/x-success" out-success; then
     assert_eq "S2 summary kmsg_capture=ok" "ok" "$(sum_val "$S" kmsg_capture)"
     assert_gt "S2 summary kmsg_lines > 0" 0 "$(sum_val "$S" kmsg_lines)"
     assert_gt "S2 summary kmsg_filtered_lines > 0" 0 "$(sum_val "$S" kmsg_filtered_lines)"
+
+    # app-lib path evidence (RM1, research doc §8.4)
+    assert_file "S2 hilog applib filtered in archive" "$REPORT/hilog/hilog-applib.txt"
+    assert_contains "S2 applib filtered has appLibPathKey" "appLibPathKey: com.example.hellomauiapp/entry" "$REPORT/hilog/hilog-applib.txt"
+    assert_contains "S2 applib filtered has the lib path" "lib path: /data/storage/el1/bundle/libs/arm64" "$REPORT/hilog/hilog-applib.txt"
+    assert_file "S2 hilog dlopen filtered in archive" "$REPORT/hilog/hilog-dlopen.txt"
+    assert_contains "S2 dlopen filtered has the host load" "dlopen libopenharmonyhost.so" "$REPORT/hilog/hilog-dlopen.txt"
+    assert_eq "S2 summary applib_path_capture=ok" "ok" "$(sum_val "$S" applib_path_capture)"
+    assert_gt "S2 summary applib_path_lines > 0" 0 "$(sum_val "$S" applib_path_lines)"
+    assert_eq "S2 summary dlopen_capture=ok" "ok" "$(sum_val "$S" dlopen_capture)"
+    assert_gt "S2 summary dlopen_lines > 0" 0 "$(sum_val "$S" dlopen_lines)"
+    assert_file "S2 device app-libs-arm64.txt in archive" "$REPORT/device/app-libs-arm64.txt"
+    assert_contains "S2 app libs listing has the host lib" "libopenharmonyhost.so" "$REPORT/device/app-libs-arm64.txt"
+    assert_eq "S2 summary app_libs_arm64=ok" "ok" "$(sum_val "$S" app_libs_arm64)"
+    assert_gt "S2 summary app_libs_arm64_lines > 0" 0 "$(sum_val "$S" app_libs_arm64_lines)"
     assert_eq "S2 summary xpm_mode=2" "2" "$(sum_val "$S" xpm_mode)"
     assert_eq "S2 summary verity_require_signatures=1" "1" "$(sum_val "$S" verity_require_signatures)"
     assert_file "S2 device xpm_mode.txt in archive" "$REPORT/device/xpm_mode.txt"
@@ -684,6 +725,7 @@ assert_contains "S2 stub called bm get -u" "shell bm get -u" "$CALLS_S2"
 assert_contains "S2 stub called kmsg stream" "shell hilog -t kmsg" "$CALLS_S2"
 assert_contains "S2 stub called xpm_mode cat" "shell cat /proc/sys/kernel/xpm/xpm_mode" "$CALLS_S2"
 assert_contains "S2 stub called require_signatures cat" "shell cat /proc/sys/fs/verity/require_signatures" "$CALLS_S2"
+assert_contains "S2 stub called app libs ls" "shell ls -l /data/storage/el1/bundle/libs/arm64/" "$CALLS_S2"
 assert_scenario_sandbox "S2"
 
 # ---- S3: install failure path --------------------------------------------------------
@@ -779,8 +821,8 @@ fi
 assert_scenario_sandbox "S5"
 
 # ---- S6: missing evidence paths tolerated --------------------------------------------
-section "S6 missing /proc paths + missing --compare-lib file tolerated"
-run_tester S6 "FAKE_HDC_MISSING_PROC=1" --kit-dir "$KIT" --install --capture 1 \
+section "S6 missing /proc paths + missing --compare-lib file + missing app libs dir tolerated"
+run_tester S6 "FAKE_HDC_MISSING_PROC=1 FAKE_HDC_MISSING_APPLIBS=1" --kit-dir "$KIT" --install --capture 1 \
     --compare-lib "$WORK/compare/does-not-exist.so" --out "$WORK/out-missing"
 assert_eq "S6 exit code 0 (log: $LOGS/S6.log)" "0" "$RC"
 
@@ -797,6 +839,12 @@ if prepare_report "$ARCHIVE_S6" "$WORK/x-missing" out-missing; then
     assert_eq "S6 summary kmsg_capture=ok" "ok" "$(sum_val "$S" kmsg_capture)"
     assert_file "S6 kmsg evidence file present" "$REPORT/kmsg/kmsg.log"
     assert_file "S6 kmsg filtered file present" "$REPORT/kmsg/kmsg-filtered.log"
+    assert_eq "S6 missing app libs dir tolerated (empty)" "empty" "$(sum_val "$S" app_libs_arm64)"
+    assert_eq "S6 summary app_libs_arm64_lines=0" "0" "$(sum_val "$S" app_libs_arm64_lines)"
+    assert_file "S6 device app-libs-arm64.txt kept (empty)" "$REPORT/device/app-libs-arm64.txt"
+    assert_eq "S6 summary failures=0 (missing paths tolerated)" "0" "$(sum_val "$S" failures)"
+    assert_eq "S6 applib evidence still collected" "ok" "$(sum_val "$S" applib_path_capture)"
+    assert_gt "S6 applib path lines > 0" 0 "$(sum_val "$S" applib_path_lines)"
 else
     bad "S6 report archive could not be extracted ($ARCHIVE_S6)"
 fi
@@ -832,6 +880,11 @@ if prepare_report "$ARCHIVE_S7" "$WORK/x-extra" out-extra; then
     assert_contains "S7 extra probe install log success" "install bundle successfully" "$REPORT/probes/extra-importprobe-a-install.txt"
     assert_file "S7 extra probe start log in archive" "$REPORT/probes/extra-importprobe-a-start.txt"
     assert_file "S7 kmsg evidence file present" "$REPORT/kmsg/kmsg.log"
+    assert_file "S7 hilog applib filtered in archive" "$REPORT/hilog/hilog-applib.txt"
+    assert_contains "S7 applib filtered has appLibPathKey" "appLibPathKey" "$REPORT/hilog/hilog-applib.txt"
+    assert_eq "S7 summary applib_path_capture=ok" "ok" "$(sum_val "$S" applib_path_capture)"
+    assert_gt "S7 summary applib_path_lines > 0" 0 "$(sum_val "$S" applib_path_lines)"
+    assert_file "S7 device app-libs-arm64.txt in archive" "$REPORT/device/app-libs-arm64.txt"
 else
     bad "S7 report archive could not be extracted ($ARCHIVE_S7)"
 fi

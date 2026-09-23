@@ -23,7 +23,8 @@
 #   5  collect + pack            captures, module.json of the installed hap, device info
 #                                (param get outputs + UDID), ELF-signing evidence (xpm_mode,
 #                                fs-verity require_signatures, hap SoInfoSegment magic count,
-#                                optional --compare-lib display-sign), kit hashes,
+#                                optional --compare-lib display-sign), app-lib path evidence
+#                                (hilog greps + bundle libs listing), kit hashes,
 #                                machine-readable summary; tar into
 #                                tester-report-<timestamp>.tar.gz
 #
@@ -46,7 +47,7 @@
 #      when the module.json cannot be read), TMPDIR.
 set -e
 
-SCRIPT_VERSION="2 (2026-09-22)"
+SCRIPT_VERSION="3 (2026-09-23)"
 
 log()  { printf '[%s] %s\n' "$(date '+%H:%M:%S')" "$*"; }
 warn() { printf '[%s] WARN: %s\n' "$(date '+%H:%M:%S')" "$*" >&2; }
@@ -79,6 +80,10 @@ usage() {
   每个录制窗口同时执行 hdc shell "hilog -t kmsg" -> kmsg/kmsg.log（并过滤出 kmsg-filtered.log）；
   采集 /proc/sys/kernel/xpm/xpm_mode 与 /proc/sys/fs/verity/require_signatures（路径缺失容忍）；
   统计所装 hap 的 SoInfoSegment magic（0x20e7d20e）命中数，均写入 summary.txt。
+  app-lib 路径证据（RM1，研究文档 §8.4；缺失容忍）：从本轮已捕获的 hilog 过滤出
+  hilog/hilog-applib.txt（SetAppLibPath|appLibPathKey|NativeLibPath|lib path）与
+  hilog/hilog-dlopen.txt（dlopen|cannot find library|openharmonyhost），并采集
+  ls -l /data/storage/el1/bundle/libs/arm64/ -> device/app-libs-arm64.txt。
   --compare-lib <path>       本机对照一个能跑的第三方 app 的 lib：若 PATH 上有
                              binary-sign-tool，就执行 display-sign -inFile <path> 并收下输出
 
@@ -128,6 +133,8 @@ FALLBACK_BUNDLE="${KIT_BUNDLE_NAME:-com.example.hellomauiapp}"
 BUNDLE=""
 FILTER_RE='hellomaui|maui|dotnet|openharmonyhost|AppKilledReporter|JsError|appspawn|PROBE'
 FILTER_KMSG_RE='xpm|unsigned file|fs_security_verity|libopenharmonyhost|hellomauiapp'
+FILTER_APPLIB_RE='SetAppLibPath|appLibPathKey|NativeLibPath|lib path'
+FILTER_DLOPEN_RE='dlopen|cannot find library|openharmonyhost'
 DEV_KEYS="const.product.model const.product.brand const.product.name const.product.devicetype const.product.software.version const.ohos.apiversion const.ohos.fullname const.product.cpu.abilist const.build.characteristics"
 FAILURES=0
 TMP=""
@@ -138,6 +145,12 @@ KMSG_STARTED=0
 KMSG_RESULT="not_captured"
 KMSG_LINES=0
 KMSG_FILTERED_LINES=0
+APPLIB_RESULT="not_captured"
+APPLIB_LINES=0
+DLOPEN_RESULT="not_captured"
+DLOPEN_LINES=0
+APPLIBS_DIR_RESULT="not_captured"
+APPLIBS_DIR_LINES=0
 ARCHIVE=""
 UDID=""
 TREE_DIGEST=""
@@ -737,6 +750,17 @@ filter_hilog() {
     printf '%s' "$_n"
 }
 
+# Append the lines of one captured hilog file matching $1 (regex) into $3 (append target).
+# No match (grep rc=1) is fine - the evidence is optional; only hard errors warn.
+filter_append() {
+    _fa_re="$1"; _fa_src="$2"; _fa_dst="$3"
+    _fa_rc=0
+    grep -E "$_fa_re" "$_fa_src" >> "$_fa_dst" 2>/dev/null || _fa_rc=$?
+    if [ "$_fa_rc" -gt 1 ]; then
+        warn "   hilog 过滤失败（grep rc=$_fa_rc）: $(basename "$_fa_src")"
+    fi
+}
+
 # ---- steps 2 + 3: start / capture ----------------------------------------------------
 if [ "$START" = 0 ] && [ "$CAPTURE" = 0 ]; then
     log "== 2/5 启动（--start） · 3/5 hilog 录制（--capture） =="
@@ -985,6 +1009,7 @@ log "== 5/5 采集与打包 =="
 if [ "$DO_DEVICE" = 0 ]; then
     log "   [dry-run] 将采集: hilog+kmsg 捕获、module.json、param get + UDID、kit 哈希、summary.txt"
     log "   [dry-run] 将采集 ELF 签名证据: xpm_mode/require_signatures、SoInfoSegment magic 计数"
+    log "   [dry-run] 将采集 app-lib 路径证据: hilog 过滤（appLibPathKey/dlopen）+ bundle libs 目录列表"
     if [ -n "$COMPARE_LIB" ]; then
         log "   [dry-run] 本地对照: binary-sign-tool display-sign -inFile $COMPARE_LIB（若工具在 PATH 上）"
     fi
@@ -1045,6 +1070,48 @@ else
         : > "$OUT/kmsg/kmsg.log"
         : > "$OUT/kmsg/kmsg-filtered.log"
         warn "   kmsg 未捕获（本轮没有 hilog 录制窗口）"
+    fi
+
+    # ---- app-lib path evidence (RM1 diagnostics, research doc §8.4; missing lines tolerated) ----
+    # Grep every hilog window already captured (the main capture plus each probe window);
+    # the registration line may be at DEBUG level (`hilog -b D` when a run comes back empty).
+    : > "$OUT/hilog/hilog-applib.txt"
+    : > "$OUT/hilog/hilog-dlopen.txt"
+    _al_seen=0
+    for _f in "$OUT/hilog/hilog-full.txt" "$OUT/probes"/*-hilog.txt; do
+        [ -s "$_f" ] || continue
+        _al_seen=1
+        filter_append "$FILTER_APPLIB_RE" "$_f" "$OUT/hilog/hilog-applib.txt"
+        filter_append "$FILTER_DLOPEN_RE" "$_f" "$OUT/hilog/hilog-dlopen.txt"
+    done
+    if [ "$_al_seen" = 1 ]; then
+        APPLIB_RESULT="ok"
+        DLOPEN_RESULT="ok"
+        APPLIB_LINES="$(line_count "$OUT/hilog/hilog-applib.txt")"
+        DLOPEN_LINES="$(line_count "$OUT/hilog/hilog-dlopen.txt")"
+        if [ "$APPLIB_LINES" -eq 0 ]; then
+            warn "   未见 SetAppLibPath/appLibPathKey/NativeLibPath/lib path（日志级别或窗口原因，保留空证据）"
+        fi
+        if [ "$DLOPEN_LINES" -eq 0 ]; then
+            warn "   未见 dlopen/cannot find library/openharmonyhost（同上，保留空证据）"
+        fi
+        log "   app-lib 路径 -> $OUT/hilog/hilog-applib.txt（${APPLIB_LINES} 行）/ dlopen -> $OUT/hilog/hilog-dlopen.txt（${DLOPEN_LINES} 行）"
+    else
+        warn "   app-lib 路径证据未采集（本轮没有 hilog 录制窗口）"
+    fi
+
+    # device-side bundle libs listing (research doc §8.4 check 2); absence/empty tolerated.
+    # Only stdout lands in the report (a missing dir says so on stderr and must not count as a line).
+    APPLIBS_DIR_FILE="$OUT/device/app-libs-arm64.txt"
+    _av_rc=0
+    hdc_cmd shell "ls -l /data/storage/el1/bundle/libs/arm64/ 2>/dev/null" > "$APPLIBS_DIR_FILE" 2>/dev/null || _av_rc=$?
+    APPLIBS_DIR_LINES="$(line_count "$APPLIBS_DIR_FILE")"
+    if [ "$APPLIBS_DIR_LINES" -gt 0 ]; then
+        APPLIBS_DIR_RESULT="ok"
+        log "   bundle libs 目录 -> $APPLIBS_DIR_FILE（${APPLIBS_DIR_LINES} 行）"
+    else
+        APPLIBS_DIR_RESULT="empty"
+        warn "   bundle libs 目录为空（rc=$_av_rc；/data/storage/el1/bundle/libs/arm64/ 不存在或不可读；容忍）"
     fi
 
     XPM_MODE="$(proc_value /proc/sys/kernel/xpm/xpm_mode)"
@@ -1121,6 +1188,12 @@ else
         printf 'kmsg_capture=%s\n' "$KMSG_RESULT"
         printf 'kmsg_lines=%s\n' "$KMSG_LINES"
         printf 'kmsg_filtered_lines=%s\n' "$KMSG_FILTERED_LINES"
+        printf 'applib_path_capture=%s\n' "$APPLIB_RESULT"
+        printf 'applib_path_lines=%s\n' "$APPLIB_LINES"
+        printf 'dlopen_capture=%s\n' "$DLOPEN_RESULT"
+        printf 'dlopen_lines=%s\n' "$DLOPEN_LINES"
+        printf 'app_libs_arm64=%s\n' "$APPLIBS_DIR_RESULT"
+        printf 'app_libs_arm64_lines=%s\n' "$APPLIBS_DIR_LINES"
         printf 'xpm_mode=%s\n' "$XPM_MODE"
         printf 'verity_require_signatures=%s\n' "$VERITY_REQ"
         printf 'soinfosegment_hap=%s\n' "$SOINFO_HAP"
@@ -1161,7 +1234,8 @@ log "归档:   $ARCHIVE"
 log "sha256: $(cut -d' ' -f1 "$ARCHIVE.sha256")"
 log "回传:   把 $ARCHIVE（连同 .sha256）发给交付方 —— 与收到 device-test-kit 相同的渠道"
 log "        （邮件/IM/工单）；GitHub 用户可附到 springmin/sdk-ohos 的 issue。"
-log "        归档内已有：hilog/、kmsg/、probes/、meta/module.json、device/udid.txt、summary.txt。"
+log "        归档内已有：hilog/（含 applib/dlopen 过滤）、kmsg/、probes/、meta/module.json、"
+log "        device/udid.txt、device/app-libs-arm64.txt、summary.txt。"
 if [ "$FAILURES" -gt 0 ]; then
     warn "本轮有 $FAILURES 项未通过：详情见 $OUT/summary.txt"
     exit 1
