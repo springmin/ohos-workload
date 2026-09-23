@@ -16,7 +16,7 @@ name: interaction-regression
 # floor, logs no "Unhandled" line, and both perf lines carry the "within=True" budget marker:
 #   * the frame-path gate - 200 timed OpenHarmonyWindowRenderer.Render frames over a fixed 401-node
 #     tree: average <= 20 ms, max <= 250 ms, raw max/average <= 100x, p95/average jitter <= 2x and
-#     the managed allocation <= 291,456 B/frame (4x the post-FIX-P2 baseline);
+#     the managed allocation <= 13,824 B/frame (3x the post-managed-perf-batch baseline);
 #   * the accessibility publish-path gate - 50 unchanged passes vs 50 mutated passes over the same
 #     tree (Refresh + Publish render step and Publish-alone pass), skip/republish average/max
 #     ceilings and documented republish/skip ratio floors (render >= 1.25x, publish >= 2x).

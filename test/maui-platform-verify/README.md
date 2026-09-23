@@ -113,15 +113,18 @@ because they are the regression signals the loose ceilings miss:
   was healthy, and the pre-FIX-P2 baseline logged 8.1x, so the tight gate uses the 95th percentile
   instead (robust to one or two preempted frames, still catching a sustained regression where at
   least one frame in twenty - or every frame - gets slower). Measured: 1.08x on CI, 1.3-1.7x on
-  the dev host (idle and loaded), so 2x keeps a documented margin.
-- `alloc/frame <= 218,592 B` - the allocation gate, 3x the post-FIX-P2 baseline (72,864 B/frame
-  on the dev host, 72,080-72,056 B/frame on CI - the same Debug codegen within 1.1%). It is the
-  lower end of the review's suggested 3-4x band, chosen so the measured pre-FIX-P2 storm
-  (241,688 B/frame = 3.3x: per-frame accessibility shadow-tree rebuilds plus animation snapshots)
-  trips it; a 4x ceiling would have let that exact regression back in. The delta is deterministic
-  per code path (14,572,800 B total on every local run, 14,416,000 B on CI), so unlike the
-  wall-clock budgets it needs no noise slack; if a legitimate baseline growth lands near the
-  ceiling, raise the constant deliberately (see the constant comment in `Program.cs`).
+  the dev host (idle and loaded; 1.30-1.31x after the managed perf batch), so 2x keeps a
+  documented margin.
+- `alloc/frame <= 13,824 B` - the allocation gate, re-based at 3x the post-managed-perf-batch
+  baseline (4,504 B/frame on the dev host = a deterministic 900,800 B per 200-frame run; the
+  pre-batch baseline was 72,864 B/frame here and 72,056-72,080 B on CI). 3x = 13,512 B, rounded
+  up to the next 512-byte boundary (13.5 KiB) so the ceiling is a tidy unit with a hair of
+  margin (3.07x) and stays at the lower end of the documented 3-4x band. The delta is
+  deterministic per code path, so unlike the wall-clock budgets this gate needs no noise slack;
+  it catches a re-introduced per-frame allocation storm (the pre-FIX-P2 storm measured
+  241,688 B/frame = 3.3x of the old baseline) long before the loose wall-clock ceilings would.
+  If a legitimate baseline growth lands near the ceiling, raise the constant deliberately (see
+  the constant comment in `Program.cs`).
 
 The suite then measures the accessibility publish path over the same fixed tree: 8 warm-up and 50
 timed unchanged frames (the skip path), followed by 8 warm-up and 50 timed frames whose label text
@@ -153,15 +156,16 @@ deliberately loose style as the frame budget:
   host), so the suite stays inside the ~2 s addition budget.
 
 A violation throws (unhandled exception, non-zero exit) after the numbers are printed, so CI logs
-keep the evidence. Measured on the OpenHarmony dev host after the FIX-P2 allocation work (200
-frames): avg ~5.5-6.4 ms, p50 ~5.4-6.4 ms, p95 ~7.8-9.2 ms, max 9.5-24.7 ms (raw max/avg
-1.8-3.9x, i.e. one or two preempted frames), jitter p95/avg 1.33-1.43x, 72,864 B allocated per
-frame (also under load - the allocation delta is deterministic), section wall time ~1.0-1.4 s;
-the a11y block adds ~0.3-0.4 s (50 skip + 50 mutated passes) with render ratios ~19-23x and
-publish ratios ~137-168x. On a normal CI runner the one remaining native lookup inside `Render` is
-sub-millisecond: the latest runs reported avg ~0.61-0.63 ms, p95 0.65-0.68 ms, jitter ~1.08x,
-72,056 B/frame, and the a11y block reported ~0.3/0.5 ms for the render step and ~0.07/0.28 ms for
-the publish pass (skip/republish). Every run ends with the `[suite]` contract line
+keep the evidence. Measured on the OpenHarmony dev host after the managed perf batch (200
+frames): avg ~3.1-3.5 ms, p50 ~3.0-3.4 ms, p95 ~4.1-4.5 ms, max ~5.0-5.4 ms (raw max/avg
+1.6x, i.e. one or two preempted frames), jitter p95/avg 1.30-1.31x, 4,504 B allocated per frame
+(also under load - the allocation delta is deterministic at 900,800 B per run), section wall time
+~0.66-0.75 s; the a11y block adds ~0.2-0.4 s (50 skip + 50 mutated passes) with render ratios
+~10-15x and publish ratios ~80-120x. On a normal CI runner the one remaining native lookup inside
+`Render` is sub-millisecond: the pre-batch runs reported avg ~0.61-0.63 ms, p95 0.65-0.68 ms,
+jitter ~1.08x and 72,056 B/frame, and the a11y block reported ~0.3/0.5 ms for the render step and
+~0.07/0.28 ms for the publish pass (skip/republish); the post-batch job log carries the new CI
+numbers. Every run ends with the `[suite]` contract line
 (`checks=315 total=315 floor=295 assert=True`), which the workflow and `scripts/preflight.sh`
 parse.
 

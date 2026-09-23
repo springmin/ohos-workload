@@ -5530,28 +5530,32 @@ catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
 // and would swamp the managed frame path and the suite's time budget. A detached tree keeps
 // Render's managed work (measure/arrange, traversal, accessibility) plus the renderer-level
 // canvas calls - the same shape the deep-tree fuzz section uses.
-//   * alloc/frame <= 218,592 B - the allocation gate: 3x the post-FIX-P2 baseline (72,864 B/frame
-//     on this host, 72,080-72,056 B/frame on the CI runner - the same Debug codegen within 1.1%).
-//     That is the lower end of the review's suggested 3-4x band, chosen so the measured
-//     pre-FIX-P2 storm (241,688 B/frame = 3.3x) trips it instead of sitting under a 4x ceiling.
-//     The delta is deterministic per code path (14,572,800 B total on every local run,
-//     14,416,000 B on CI), so unlike the wall-clock budgets this gate needs no noise slack; if a
-//     legitimate baseline growth lands near it, raise the constant deliberately rather than
-//     loosening the check silently.
+//   * alloc/frame <= 13,824 B - the allocation gate, re-based after the managed perf batch
+//     (maui-ohos 0e9d90cd: text metrics, carousel slides and rawfile answer caches): 3x the
+//     4,504 B/frame baseline measured on this host, where the delta is deterministic
+//     (900,800 B per 200-frame run on every repeat), so unlike the wall-clock budgets this gate
+//     needs no noise slack. 3x = 13,512 B, rounded up to the next 512-byte boundary (13.5 KiB =
+//     3.07x) so the ceiling is a tidy unit with a hair of margin and stays at the lower end of
+//     the review's documented 3-4x band. The pre-batch baseline was 72,864 B/frame here
+//     (72,056-72,080 B/frame on CI, the same Debug codegen within 1.1%) and the pre-FIX-P2 storm
+//     measured 241,688 B/frame = 3.3x of it, which the old 218,592 B ceiling caught; if a
+//     legitimate baseline growth lands near the new ceiling, raise the constant deliberately
+//     rather than loosening the check silently.
 //   * jitter (p95/avg) <= 2.0 - the frame-to-frame stability gate. The raw max/avg (bounded by
 //     the loose 100x outlier guard above) is not a stable signal on a loaded shared host: a
 //     single preempted frame measured 3.4x here while the frame path was healthy, and the
 //     pre-FIX-P2 baseline run logged 8.1x. p95/avg is robust to one or two preempted frames and
 //     still catches a sustained regression (every frame, or at least one frame in twenty,
-//     getting slower): it measured 1.08x on CI and 1.4-1.7x on the dev host, so 2.0x keeps a
-//     documented margin while the old 100x guard stays as the single-frame hang check.
+//     getting slower): it measured 1.08x on CI and 1.3-1.7x on the dev host (1.30-1.31x after
+//     the managed perf batch), so 2.0x keeps a documented margin while the old 100x guard stays
+//     as the single-frame hang check.
 const int perfWarmupFrames = 8;
 const int perfFrames = 200;
 const double perfAverageCeilingMs = 20.0;
 const double perfMaxCeilingMs = 250.0;
 const double perfMaxAverageRatio = 100.0;
 const double perfJitterCeiling = 2.0;
-const double perfAllocPerFrameCeiling = 218_592.0;
+const double perfAllocPerFrameCeiling = 13_824.0;
 var perfDefaultCanvasFactory = OpenHarmonyWindowRenderer.CanvasFactory;
 OpenHarmonyWindowRenderer.CanvasFactory = () => new PerfCanvas();
 var perfRenderer = new OpenHarmonyWindowRenderer();
