@@ -598,6 +598,7 @@ struct OhosHostAppHandle {
     void (*bridge_clipboard_result)(int request_id, int rc, const char* text);
     void (*bridge_clipboard_changed)(void);
     void (*bridge_geocode_result)(int request_id, int rc, const char* json);
+    void (*bridge_raw_file_result)(int request_id, int rc, const char* data_base64);
     void (*bridge_network_access)(int level);
     void (*bridge_key_event)(int key_code, int event_type);
     void (*bridge_soft_input_change)(int bottom);
@@ -1600,6 +1601,40 @@ void ohos_host_picker_request(int request_id, int kind) {
 void ohos_host_picker_complete(int request_id, int rc, const char* name, const char* data_base64) {
     if (g_app != NULL && g_app->bridge_picker_result != NULL) {
         g_app->bridge_picker_result(request_id, rc, name, data_base64);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Raw HAP resources (resources/rawfile/**): the managed side asks for one file through
+// ohos_host_raw_file_request (op 0 reads it, op 1 probes existence); the ArkTS shell's
+// registerRawFileSink handler runs resourceManager and answers through
+// host.notifyRawFileResult -> ohos_host_raw_file_result. The header documents the rc values,
+// the base64 transport and the 8 MiB cap.
+// ---------------------------------------------------------------------------
+
+static void (*g_raw_file_listener)(int request_id, int op, const char* name) = NULL;
+
+void ohos_host_raw_file_set_listener(void (*listener)(int, int, const char*)) {
+    g_raw_file_listener = listener;
+}
+
+void ohos_host_raw_file_register_result(void* callback) {
+    if (g_app != NULL) {
+        g_app->bridge_raw_file_result = (void (*)(int, int, const char*))callback;
+    }
+}
+
+int ohos_host_raw_file_request(int request_id, int op, const char* name) {
+    if (g_raw_file_listener == NULL || name == NULL) {
+        return -1;
+    }
+    g_raw_file_listener(request_id, op, name);
+    return 0;
+}
+
+void ohos_host_raw_file_result(int request_id, int rc, const char* data_base64) {
+    if (g_app != NULL && g_app->bridge_raw_file_result != NULL) {
+        g_app->bridge_raw_file_result(request_id, rc, data_base64 != NULL ? data_base64 : "");
     }
 }
 

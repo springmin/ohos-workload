@@ -48,6 +48,9 @@ import type { BusinessError } from '@kit.BasicServicesKit';
 // runGeocode); this type-only import is erased by the compiler and only names the request
 // shapes used in annotations.
 import type geoLocationManager from '@ohos.geoLocationManager';
+// Raw HAP resources (resources/rawfile/**): names the ResourceManager type the ability context
+// exposes; the type-only import is erased by the compiler.
+import type resourceManager from '@ohos.resourceManager';
 
 // Menu bridge: the managed side publishes the current page's menu bars (MenuBarItem/MenuFlyout)
 // as a flat table through the host. registerMenuChangedSink fires after every commit - including
@@ -294,6 +297,13 @@ struct Index {
   // lack an export. Every guarded call is logged once per API per page, not once per
   // event/frame, so a repetitive UI path cannot flood the log.
   private hostUnavailable: Set<string> = new Set();
+  // Raw HAP resources (resources/rawfile/**): the cap on one read (mirrors
+  // OHOS_HOST_RAW_FILE_MAX_BYTES in openharmony_host.h and the managed MaxBytes), the cached
+  // resource manager and a one-time log flag for a read error other than "not found" ("not
+  // found" is a normal answer).
+  private rawFileMaxBytes: number = 8 * 1024 * 1024;
+  private rawFileManager: resourceManager.ResourceManager | undefined = undefined;
+  private rawFileErrorLogged: boolean = false;
   // B6 navigation allow-list state: a cancelled external navigation waits for the managed
   // Navigating decision under its unguessable id; navApproved/navProgrammatic are the one-shot
   // markers that let the shell's own reloads pass. All entries are time-bounded and dropped
@@ -1911,6 +1921,77 @@ struct Index {
         // Documents (and the media fallback) stay on the static @ohos.file.picker /
         // @ohos.file.fs imports, with the caller's maxSelectNumber (1 for single-select).
         await this.selectDocumentUris(requestId, multi, count);
+      });
+    });
+
+    // Raw HAP resources (resources/rawfile/**): the managed FileSystem asks for one asset
+    // through host.registerRawFileSink - op 0 reads it and answers the base64 content, op 1
+    // probes existence without reading it. Device-compat: the resource manager comes from the
+    // ability context on the first request and is cached, so nothing is imported at page start
+    // and a context without one answers rc=-1. rc map (matches ohos_raw_file_rc in
+    // openharmony_host.h): 0 ok, -1 unavailable, -2 not found, -3 over rawFileMaxBytes. The cap
+    // is checked before the content is encoded, so a bigger file is answered with -3 and never
+    // copied.
+    this.hostCall('registerRawFileSink', typeof host !== 'undefined' && typeof host.registerRawFileSink === 'function', (): void => {
+      host.registerRawFileSink(async (requestId: number, op: number, name: string): Promise<void> => {
+        const answer = (rc: number, dataBase64: string): void => {
+          this.hostCall('notifyRawFileResult', typeof host !== 'undefined' && typeof host.notifyRawFileResult === 'function', (): void => {
+            host.notifyRawFileResult(requestId, rc, dataBase64);
+          });
+        };
+        const relative: string = name.replace(/\\/g, '/').replace(/^\/+/, '');
+        if (relative.length === 0 || relative.length > 4096) {
+          answer(-1, '');
+          return;
+        }
+        try {
+          let manager: resourceManager.ResourceManager | undefined = this.rawFileManager;
+          if (manager === undefined) {
+            // Stage model: the ability context owns the app's resource manager (resolved on
+            // the first request, then cached; no import at page start).
+            const context = getContext(this) as common.UIAbilityContext;
+            manager = context.resourceManager;
+            this.rawFileManager = manager;
+          }
+          if (manager === undefined) {
+            answer(-1, '');
+            return;
+          }
+          if (op === 1) {
+            // Existence probe: getRawFd reads no content; closeRawFd releases the descriptor.
+            try {
+              await manager.getRawFd(relative);
+            } catch (probeError) {
+              answer((probeError as BusinessError).code === 9001005 ? -2 : -1, '');
+              return;
+            }
+            try {
+              await manager.closeRawFd(relative);
+            } catch (closeError) {
+              // The probe already answered; a close failure must not change its result.
+              console.error(`[maui] rawfile closeRawFd failed: ${(closeError as Error).message}`);
+            }
+            answer(0, '');
+            return;
+          }
+          const bytes: Uint8Array = await manager.getRawFileContent(relative);
+          if (bytes.byteLength > this.rawFileMaxBytes) {
+            answer(-3, '');
+            return;
+          }
+          answer(0, new util.Base64Helper().encodeToStringSync(bytes));
+        } catch (rawFileError) {
+          if ((rawFileError as BusinessError).code === 9001005) {
+            // Missing rawfile: a normal answer, not a failure, so nothing is logged.
+            answer(-2, '');
+            return;
+          }
+          if (!this.rawFileErrorLogged) {
+            this.rawFileErrorLogged = true;
+            console.error(`[maui] rawfile read failed: ${(rawFileError as Error).message}`);
+          }
+          answer(-1, '');
+        }
       });
     });
 

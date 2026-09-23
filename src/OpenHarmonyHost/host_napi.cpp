@@ -2004,6 +2004,99 @@ napi_value NotifyPickerResult(napi_env env, napi_callback_info info) {
     return undefined;
 }
 
+// Raw HAP resources (resources/rawfile/**): the managed side forwards a request through
+// ohos_host_raw_file_request; the ArkTS shell's registerRawFileSink handler lazily imports
+// @ohos.resourceManager, reads the named relative path (op 0, base64 answer) or probes it
+// (op 1, no content read) and answers through host.notifyRawFileResult. See openharmony_host.h
+// for the rc values. One read is capped at OHOS_HOST_RAW_FILE_MAX_BYTES: the shell refuses a
+// bigger file with rc -3 before encoding it, and NotifyRawFileResult refuses an over-long
+// base64 argument the same way, so neither side can be made to allocate past the base64 form
+// of the cap. The content travels as one base64 string - no temp files or shared paths cross
+// the bridge, hence no cleanup or name-collision race.
+HostSink g_raw_file_sink("raw file", false);
+
+// ceil(bytes / 3) * 4, computed without overflowing.
+constexpr size_t kMaxRawFileBase64Bytes =
+    ((static_cast<size_t>(OHOS_HOST_RAW_FILE_MAX_BYTES) + 2) / 3) * 4;
+
+// Called by the host core (managed side) to ask the shell for one raw resource.
+void OnRawFileRequest(int requestId, int op, const char* name) {
+    if (!ControlStringFits(name, "raw_file")) {
+        // The name was refused before it could reach the shell; answer the pending managed
+        // request right away (never leave it to its timeout).
+        ohos_host_raw_file_result(requestId, OHOS_RAW_FILE_UNAVAILABLE, "");
+        return;
+    }
+    SinkCall* call = new SinkCall();
+    call->AddInt(requestId);
+    call->AddInt(op);
+    call->AddString(name, kMaxControlBytes);
+    if (!HostSinkPost(g_raw_file_sink, call)) {
+        // No shell sink (older shell or no page yet): answer immediately and log once.
+        static bool unavailableLogged = false;
+        if (!unavailableLogged) {
+            unavailableLogged = true;
+            OH_LOG_WARN(LOG_APP, "[openharmony-host] raw file: no shell sink; requests answer unavailable");
+        }
+        ohos_host_raw_file_result(requestId, OHOS_RAW_FILE_UNAVAILABLE, "");
+    }
+}
+
+// ArkTS calls host.registerRawFileSink(fn) to receive raw-resource requests.
+napi_value RegisterRawFileSink(napi_env env, napi_callback_info info) {
+    size_t argc = 1;
+    napi_value argv[1] = {nullptr};
+    napi_get_cb_info(env, info, &argc, argv, nullptr, nullptr);
+    if (argc >= 1) {
+        napi_valuetype type = napi_undefined;
+        napi_typeof(env, argv[0], &type);
+        if (type == napi_function) {
+            HostSinkRegister(env, g_raw_file_sink, argv[0]);
+            ohos_host_raw_file_set_listener(OnRawFileRequest);
+            OH_LOG_INFO(LOG_APP, "[openharmony-host] raw file sink registered");
+        }
+    }
+    napi_value undefined = nullptr;
+    napi_get_undefined(env, &undefined);
+    return undefined;
+}
+
+// ArkTS calls host.notifyRawFileResult(requestId, rc, dataBase64) when the read/probe finished.
+// The base64 argument uses its own cap instead of the 1 MiB GetStringArg result cap; a larger
+// argument is not copied and a "success" carrying one is reported as TOO_LARGE.
+napi_value NotifyRawFileResult(napi_env env, napi_callback_info info) {
+    size_t argc = 3;
+    napi_value argv[3] = {nullptr, nullptr, nullptr};
+    napi_get_cb_info(env, info, &argc, argv, nullptr, nullptr);
+    int requestId = 0;
+    int rc = OHOS_RAW_FILE_UNAVAILABLE;
+    std::string data;
+    if (argc >= 1) napi_get_value_int32(env, argv[0], &requestId);
+    if (argc >= 2) napi_get_value_int32(env, argv[1], &rc);
+    if (argc >= 3) {
+        napi_valuetype type = napi_undefined;
+        napi_typeof(env, argv[2], &type);
+        if (type == napi_string) {
+            size_t length = 0;
+            if (napi_get_value_string_utf8(env, argv[2], nullptr, 0, &length) != napi_ok ||
+                length > kMaxRawFileBase64Bytes) {
+                if (rc == OHOS_RAW_FILE_OK) {
+                    rc = OHOS_RAW_FILE_TOO_LARGE;
+                }
+                OH_LOG_WARN(LOG_APP, "[openharmony-host] raw file: payload dropped: %{public}d base64 bytes over the %{public}d cap",
+                            (int)length, (int)kMaxRawFileBase64Bytes);
+            } else {
+                data.resize(length);
+                napi_get_value_string_utf8(env, argv[2], data.data(), length + 1, &length);
+            }
+        }
+    }
+    ohos_host_raw_file_result(requestId, rc, data.c_str());
+    napi_value undefined = nullptr;
+    napi_get_undefined(env, &undefined);
+    return undefined;
+}
+
 // Runtime permissions: the managed side asks through ohos_host_request_permission; the sink's
 // handler runs abilityAccessCtrl.requestPermissionsFromUser and answers with
 // host.permissionResult(requestId, granted). Argument order matches the C listener
@@ -2701,6 +2794,8 @@ napi_value Init(napi_env env, napi_value exports) {
         {"notifyBattery", nullptr, NotifyBattery, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"notifyDisplay", nullptr, NotifyDisplay, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"notifyPickerResult", nullptr, NotifyPickerResult, nullptr, nullptr, nullptr, napi_default, nullptr},
+        {"registerRawFileSink", nullptr, RegisterRawFileSink, nullptr, nullptr, nullptr, napi_default, nullptr},
+        {"notifyRawFileResult", nullptr, NotifyRawFileResult, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"permissionResult", nullptr, NotifyPermissionResult, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"notificationPermissionResult", nullptr, NotifyNotificationPermissionResult, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"clipboardResult", nullptr, NotifyClipboardResult, nullptr, nullptr, nullptr, napi_default, nullptr},
