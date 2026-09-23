@@ -6,7 +6,10 @@
 #
 # No DevEco Studio is required: hvigor and the ohos plugin are installed from the Huawei
 # npm mirror (HVIGOR_MIRROR), and the SDK is exposed to hvigor through a version-nested
-# symlink root (hvigor expects <sdkRoot>/<platformVersion>/<component>).
+# symlink root (hvigor expects <sdkRoot>/<platformVersion>/<component>). Both tarballs are
+# pinned by sha256 (HVIGOR_SHA256 / HVIGOR_OHOS_PLUGIN_SHA256) and verified on download and
+# before a cached one is unpacked: node executes hvigor.js, so a poisoned mirror or cache
+# must fail the build instead (see section 1).
 #
 # Requirements: node >= 18, an OpenHarmony SDK (OHOS_SDK_ROOT or the harmonybrew default).
 # hvigor aborts with a V8 fatal when driven from the device's toybox sh; re-exec under
@@ -104,16 +107,80 @@ API_VERSION="$(read_sdk_meta apiVersion)"
 info "SDK $SDK (platform $PLATFORM_VERSION, API $API_VERSION)"
 
 # 1) hvigor ------------------------------------------------------------------
+# The two tarballs are downloaded and then executed by node (hvigor.js assembleHap), so they
+# are pinned by sha256 (A2): a compromised mirror, a DNS/TLS MITM or a poisoned cache must
+# not get code execution on the build host. The pins are for the default HVIGOR_VERSION
+# 6.26.4: a fresh download on 2026-09-23 had these digests and they matched both the local
+# cache that produced the working device build and the mirror's registry metadata
+# (dist.shasum / dist.integrity). A version bump must update the pins, or pass
+# HVIGOR_SHA256 / HVIGOR_OHOS_PLUGIN_SHA256 explicitly.
+HVIGOR_SHA256="${HVIGOR_SHA256:-33b2741aca3ee00f6375d6a988b4951875a0c2369d0b0ce3568a6d69249ad82d}"
+HVIGOR_OHOS_PLUGIN_SHA256="${HVIGOR_OHOS_PLUGIN_SHA256:-2f97a309bad4297a478091278ed6372c18330f1159551427529436c3525779b6}"
 HVIGOR_JS="$HVIGOR_DIR/node_modules/@ohos/hvigor/bin/hvigor.js"
+
+sha256_of() {
+    if command -v sha256sum >/dev/null 2>&1; then
+        sha256sum "$1" | cut -d' ' -f1
+    else
+        python3 -c "import hashlib,sys;print(hashlib.sha256(open(sys.argv[1],'rb').read()).hexdigest())" "$1"
+    fi
+}
+
+# rc=0 only when $1 hashes to the pinned $2; the caller reports what went wrong.
+verify_hvigor_tgz() {
+    _file="$1"; _want="$2"
+    [ -f "$_file" ] || return 1
+    _have="$(sha256_of "$_file")" || return 1
+    [ "$_have" = "$_want" ] || return 1
+    return 0
+}
+
 if [ ! -f "$HVIGOR_JS" ]; then
     info "installing hvigor $HVIGOR_VERSION from $MIRROR"
     mkdir -p "$HVIGOR_DIR/node_modules/@ohos"
     for pkg in hvigor hvigor-ohos-plugin; do
+        case "$pkg" in
+            hvigor)             want="$HVIGOR_SHA256" ;;
+            hvigor-ohos-plugin) want="$HVIGOR_OHOS_PLUGIN_SHA256" ;;
+        esac
         tgz="$HVIGOR_DIR/$pkg.tgz"
-        url="$MIRROR/@ohos/$pkg/-/@ohos-$pkg-$HVIGOR_VERSION.tgz"
-        [ -f "$tgz" ] || curl -fsSL --retry 3 -o "$tgz" "$url" || die "download failed: $url"
-        tar xzf "$tgz" -C "$HVIGOR_DIR/node_modules/@ohos"
-        mv "$HVIGOR_DIR/node_modules/@ohos/package" "$HVIGOR_DIR/node_modules/@ohos/$pkg"
+        if [ -f "$tgz" ]; then
+            # Cache from an earlier run: it is executed too, so verify before unpacking.
+            if ! verify_hvigor_tgz "$tgz" "$want"; then
+                die "sha256 mismatch for the cached $pkg tarball
+  file     $tgz
+  expected $want
+  actual   $(sha256_of "$tgz" 2>/dev/null || printf '<unreadable>')
+  refusing to unpack/execute it; replace or delete the file and retry"
+            fi
+        else
+            # The mirror serves the standard npm tarball path (scope stripped); the
+            # @ohos-prefixed name its metadata advertises currently 404s, so try it second.
+            url="$MIRROR/@ohos/$pkg/-/$pkg-$HVIGOR_VERSION.tgz"
+            url_alt="$MIRROR/@ohos/$pkg/-/@ohos-$pkg-$HVIGOR_VERSION.tgz"
+            part="$tgz.part.$$"
+            rm -f "$part"
+            curl -fsSL --retry 3 -o "$part" "$url" \
+                || curl -fsSL --retry 3 -o "$part" "$url_alt" \
+                || die "download failed: $url (also tried $url_alt)"
+            # Verify before the file enters the cache or is unpacked, and never keep a
+            # failed download around (the next run would trip over it).
+            if ! verify_hvigor_tgz "$part" "$want"; then
+                _have="$(sha256_of "$part" 2>/dev/null || printf '<unreadable>')"
+                rm -f "$part"
+                die "sha256 mismatch for the downloaded $pkg tarball
+  url      $url
+  expected $want
+  actual   $_have
+  refusing to unpack/execute it (compromised mirror, or HVIGOR_VERSION bumped without pins?)"
+            fi
+            mv "$part" "$tgz"
+        fi
+        rm -rf "$HVIGOR_DIR/node_modules/@ohos/package" "$HVIGOR_DIR/node_modules/@ohos/$pkg"
+        tar xzf "$tgz" -C "$HVIGOR_DIR/node_modules/@ohos" || die "cannot unpack $tgz"
+        mv "$HVIGOR_DIR/node_modules/@ohos/package" "$HVIGOR_DIR/node_modules/@ohos/$pkg" \
+            || die "cannot install $pkg under $HVIGOR_DIR/node_modules/@ohos"
+        info "installed $pkg $HVIGOR_VERSION (sha256 verified)"
     done
 fi
 
