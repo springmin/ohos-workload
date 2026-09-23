@@ -23,6 +23,13 @@
 # (*.sha256/*.sha1/*.md5/*.sha512) sidecar are skipped (named on stderr), so the common
 # "extract in place" layout yields the clean-extraction digest; any other added file (e.g.
 # .DS_Store) does change it, by design.
+#
+# Reuse (P16): step 1's `sha256sum -c` reads every file covered by SHA256SUMS, so the digest
+# reuses those just-verified hashes instead of reading the same bytes a second time in one
+# run. The reuse only covers entries whose check reported OK and whose inode/size/mtime pair
+# was identical before and after the check; everything else (SHA256SUMS itself, docs outside
+# the list, moved files) is hashed here from disk. Verification strength is unchanged: no
+# hash is trusted unless it was computed against exactly these bytes in this run.
 # --anchor does NOT bind the extracted tree (extraction happens outside this script). Both
 # checks fail closed: missing/mismatching tarball, non-hex anchor, absent .tar.gz.sha256
 # sidecar, non-hex or mismatching tree digest all fail.
@@ -43,21 +50,64 @@ warn() { printf '[%s] WARN: %s\n' "$(date '+%H:%M:%S')" "$*" >&2; }
 # on stderr, so extracting the tarball in place still matches a clean extraction. Any other
 # added file (.DS_Store/Thumbs.db/...) changes the digest. Publisher and tester run this
 # same code, so identical path+content bytes produce the identical value anywhere.
+# Tree digest lines: reuse the hashes step 1 verified for these exact bytes (the map holds
+# the entries of a successful, snapshot-stable SHA256SUMS check) and hash only what the map
+# does not cover (SHA256SUMS itself, docs outside the list, files that moved). One awk holds
+# the map and the file list; sha256sum is spawned only for the leftovers, because process
+# spawns are the expensive part on a device (~40 ms each).
 tree_digest() {
     (
         cd "$KIT" || exit 1
         LC_ALL=C
         export LC_ALL
-        find . -type f -print | sed 's|^\./||' | LC_ALL=C sort | while IFS= read -r _rel; do
-            case "$_rel" in
-                */*) ;;  # only files directly in the kit root can be transport leftovers
-                *.tar.gz|*.tgz|*.tar|*.tar.bz2|*.tar.xz|*.zip|*.7z|*.sha256|*.sha1|*.md5|*.sha512)
-                    log "   忽略包外传输文件（不计入 tree digest）: $_rel" >&2
-                    continue ;;
-            esac
-            printf '%s  %s\n' "$(sha256sum -- "$_rel" | cut -d' ' -f1)" "$_rel"
-        done
+        find . -type f -print | sed 's|^\./||' | LC_ALL=C sort | awk -v map="$TMP/verified.map" '
+            BEGIN {
+                while ((getline line < map) > 0) {
+                    split(line, kv, " ")
+                    if (kv[1] != "") verified[kv[1]] = kv[2]
+                }
+                close(map)
+            }
+            {
+                rel = $0
+                if (rel !~ /\// && rel ~ /\.(tar\.gz|tgz|tar|tar\.bz2|tar\.xz|zip|7z|sha256|sha1|md5|sha512)$/) {
+                    printf "[tree-digest] 忽略包外传输文件（不计入 tree digest）: %s\n", rel > "/dev/stderr"
+                    next
+                }
+                if (rel in verified) {
+                    printf "%s  %s\n", verified[rel], rel
+                    next
+                }
+                safe = rel
+                gsub(/\\/, "\\\\", safe)
+                gsub(/"/, "\\\"", safe)
+                gsub(/\$/, "\\$", safe)
+                gsub(/`/, "\\`", safe)
+                cmd = "sha256sum -- \"" safe "\""
+                if ((cmd | getline out) > 0) {
+                    split(out, parts, " ")
+                    printf "%s  %s\n", parts[1], rel
+                }
+                close(cmd)
+            }'
     ) | sha256sum | cut -d' ' -f1
+}
+
+# One "<name> <inode> <size> <mtime>" line per SHA256SUMS entry that exists, from a single
+# awk + single stat pass (a per-file loop would spawn hundreds of processes on a device).
+# The caller runs it from inside the kit directory.
+sums_stat_snapshot() {
+    [ -f SHA256SUMS ] || return 0
+    _names="$(awk '{ n=substr($0,67); sub(/^\*/, "", n); sub(/^\.\//, "", n); if (n!="") print n }' SHA256SUMS)"
+    [ -n "$_names" ] || return 0
+    if command -v xargs >/dev/null 2>&1; then
+        printf '%s\n' "$_names" | xargs -r stat -c '%n %i %s %Y' 2>/dev/null || true
+    else
+        printf '%s\n' "$_names" | while IFS= read -r _name; do
+            [ -f "$_name" ] || continue
+            printf '%s %s\n' "$_name" "$(stat -c '%i %s %Y' -- "$_name" 2>/dev/null)"
+        done
+    fi
 }
 
 usage() {
@@ -185,12 +235,70 @@ else
     log "== 0/4 外层锚点：未请求（建议先 sha256sum -c <kit>.tar.gz.sha256 或 --anchor <sha256>）"
 fi
 
+# The tree digest is computed after step 1 so it can reuse the hashes that check just
+# verified for these exact bytes (see the note at the top); both checks still run, and a
+# requested --expect-tree-digest still fails closed.
+
+TMP="$(mktemp -d 2>/dev/null || true)"
+if [ -z "$TMP" ]; then
+    TMP="${TMPDIR:-/tmp}/verify-kit.$$"
+    mkdir -p "$TMP"
+fi
+trap 'rm -rf "$TMP"' 0 1 2 15
+
+cd "$KIT"
+
+log "== 1/4 SHA256SUMS 校验（sha256sum -c）"
+ENTRIES="$(wc -l < SHA256SUMS | tr -d ' ')"
+: > "$TMP/verified.map"
+if [ "$ENTRIES" -eq 0 ]; then
+    warn "SHA256SUMS 是空文件，无法校验"
+    FAIL=1
+else
+    # First verification is always a real read of every covered file. The inode/size/mtime
+    # snapshot around it proves the bytes did not move while being checked, which is what
+    # makes the tree digest's reuse of these hashes sound; a moved file drops out of the map
+    # and is hashed from disk below.
+    SUMS_SNAP_BEFORE="$(sums_stat_snapshot)"
+    sha256sum -c SHA256SUMS > "$TMP/sums.out" 2> "$TMP/sums.err" && SUMS_RC=0 || SUMS_RC=$?
+    SUMS_SNAP_AFTER="$(sums_stat_snapshot)"
+    while IFS= read -r line; do
+        case "$line" in
+            *": OK") printf '   ok   %s\n' "${line%": OK"}" ;;
+            *)       printf '   FAIL %s\n' "$line" >&2 ;;
+        esac
+    done < "$TMP/sums.out"
+    if [ "$SUMS_RC" -eq 0 ]; then
+        log "   $ENTRIES 项全部通过（sha256sum -c OK）"
+    else
+        FAIL=1
+        if [ -s "$TMP/sums.err" ]; then
+            sed 's/^/   /' "$TMP/sums.err" >&2
+        fi
+        warn "SHA256SUMS 校验失败：以上 FAIL 项说明文件被改动或传输损坏，请重新下载并解压交付包"
+    fi
+    # Fail closed: an empty snapshot (stat/xargs unavailable) never arms the reuse.
+    if [ "$SUMS_RC" -eq 0 ] && [ -n "$SUMS_SNAP_BEFORE" ] && [ "$SUMS_SNAP_BEFORE" = "$SUMS_SNAP_AFTER" ]; then
+        # A zero exit from sha256sum -c means every entry matched, and the snapshot proves the
+        # files did not move across the check, so the recorded hashes describe these bytes.
+        awk '{ n=substr($0,67); sub(/^\*/, "", n); sub(/^\.\//, "", n); if (n=="") next; printf "%s %s\n", n, substr($0,1,64) }' \
+            SHA256SUMS > "$TMP/verified.map"
+    fi
+fi
+
 # Optional tree digest: unlike --anchor (which checks the .tar.gz file), this binds the
 # extracted kit directory itself. --tree-digest prints it; --expect-tree-digest (or
-# KIT_TREE_DIGEST) compares and fails closed.
+# KIT_TREE_DIGEST) compares and fails closed. The hashes verified by step 1 for these exact
+# bytes are reused instead of being read again (see the header note); SHA256SUMS itself,
+# files outside the list and any file whose metadata moved are hashed from disk here.
 TREE_DIGEST=""
 if [ "$TREE_MODE" = 1 ] || [ -n "$TREE_EXPECT" ]; then
-    log "== 0b/4 内容树摘要（tree digest：排序相对路径 + 每文件 sha256）"
+    log "== 1b/4 内容树摘要（tree digest：排序相对路径 + 每文件 sha256）"
+    if [ -s "$TMP/verified.map" ]; then
+        log "   复用本次已校验的 SHA256SUMS 哈希（同一次运行、失效校验通过，未逐文件重读）"
+    else
+        warn "   无可复用的本次校验结果，tree digest 逐文件重算（不降低校验强度）"
+    fi
     TREE_DIGEST="$(tree_digest)"
     log "   tree sha256=$TREE_DIGEST"
     if [ -n "$TREE_EXPECT" ]; then
@@ -211,39 +319,6 @@ if [ "$TREE_MODE" = 1 ] || [ -n "$TREE_EXPECT" ]; then
                 fi
             ;; esac
         fi
-    fi
-fi
-
-TMP="$(mktemp -d 2>/dev/null || true)"
-if [ -z "$TMP" ]; then
-    TMP="${TMPDIR:-/tmp}/verify-kit.$$"
-    mkdir -p "$TMP"
-fi
-trap 'rm -rf "$TMP"' 0 1 2 15
-
-cd "$KIT"
-
-log "== 1/4 SHA256SUMS 校验（sha256sum -c）"
-ENTRIES="$(wc -l < SHA256SUMS | tr -d ' ')"
-if [ "$ENTRIES" -eq 0 ]; then
-    warn "SHA256SUMS 是空文件，无法校验"
-    FAIL=1
-else
-    sha256sum -c SHA256SUMS > "$TMP/sums.out" 2> "$TMP/sums.err" && SUMS_RC=0 || SUMS_RC=$?
-    while IFS= read -r line; do
-        case "$line" in
-            *": OK") printf '   ok   %s\n' "${line%": OK"}" ;;
-            *)       printf '   FAIL %s\n' "$line" >&2 ;;
-        esac
-    done < "$TMP/sums.out"
-    if [ "$SUMS_RC" -eq 0 ]; then
-        log "   $ENTRIES 项全部通过（sha256sum -c OK）"
-    else
-        FAIL=1
-        if [ -s "$TMP/sums.err" ]; then
-            sed 's/^/   /' "$TMP/sums.err" >&2
-        fi
-        warn "SHA256SUMS 校验失败：以上 FAIL 项说明文件被改动或传输损坏，请重新下载并解压交付包"
     fi
 fi
 

@@ -357,20 +357,24 @@ fi
 [ -n "$TREE_SHA" ] || { warn "could not compute the kit tree digest (verify-kit.sh rc=$VERIFY_RC)"; exit 1; }
 log "tree:   sha256=$TREE_SHA"
 
+KIT_SHA=""
 if [ "$SKIP_TAR" = 0 ]; then
     log "== packing the tarball =="
     rm -f "$OUT"
     tar -czf "$OUT" -C "$KIT_DIR" .
     log "tar:    $OUT"
     log "size:   $(wc -c < "$OUT" | tr -d ' ') bytes"
-    log "sha256: $(sha256sum "$OUT" | cut -d' ' -f1)"
+    # Computed once: the publish block below and the release notes reuse this value instead
+    # of reading the freshly written ~90-120 MB tarball again in the same run.
+    KIT_SHA="$(sha256sum "$OUT" | cut -d' ' -f1)"
+    log "sha256: $KIT_SHA"
 else
     log "tar skipped (--skip-tar)"
 fi
 
 if [ "$PUBLISH" = 1 ]; then
     log "== publishing the kit (scripts/publish-workload-release.sh) =="
-    KIT_SHA="$(sha256sum "$OUT" | cut -d' ' -f1)"
+    [ -n "$KIT_SHA" ] || KIT_SHA="$(sha256sum "$OUT" | cut -d' ' -f1)"
     BUNDLE_VER="$(python3 -c "import json;print(json.load(open('$W/manifests/${SDK_BAND:-11.0.100-rc.1}/microsoft.net.sdk.openharmony/WorkloadManifest.json'))['version'])")"
     BUNDLE="$W/dist/openharmony-workload-$BUNDLE_VER.tar.gz"
     [ -f "$BUNDLE" ] || sh "$W/scripts/pack-workload-bundle.sh" >/dev/null

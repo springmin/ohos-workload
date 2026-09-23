@@ -521,7 +521,19 @@ if [ -n "$KIT_TAR" ]; then
     _rc=0
     ( cd "$(dirname "$KIT_TAR")" && sha256sum -c "$(basename "$SIDECAR")" ) || _rc=$?
     [ "$_rc" -eq 0 ] || die "外层 tar.gz 校验失败（见上）；请重新下载 kit 与 sidecar 后再试"
-    KIT_TAR_SHA="$(sha256sum "$KIT_TAR" | cut -d' ' -f1)"
+    # The check above read the tarball and compared it against the sidecar, so the verified
+    # digest can be taken from that single-line sidecar instead of reading ~90-120 MB again
+    # in this same run. Anything unexpected (extra lines, non-hex value) falls back to
+    # hashing the file.
+    KIT_TAR_SHA=""
+    if [ "$(wc -l < "$SIDECAR" | tr -d ' ')" = 1 ]; then
+        _sha_cand="$(cut -d' ' -f1 < "$SIDECAR")"
+        case "$_sha_cand" in
+            *[!0-9a-fA-F]*|'') ;;
+            *) [ "${#_sha_cand}" -eq 64 ] && KIT_TAR_SHA="$_sha_cand" ;;
+        esac
+    fi
+    [ -n "$KIT_TAR_SHA" ] || KIT_TAR_SHA="$(sha256sum "$KIT_TAR" | cut -d' ' -f1)"
     mkdir -p "$TMP/kit"
     log "   解压到临时目录..."
     tar xzf "$KIT_TAR" -C "$TMP/kit" || die "解压失败: $KIT_TAR"
@@ -534,16 +546,66 @@ fi
 KIT_DIR="$(cd "$KIT_DIR" && pwd)"
 log "   kit: $KIT_DIR"
 
+# The SHA256SUMS hashes are reused below (main-hap hash + kit-hap-sha256.txt) instead of
+# reading every hap again: verify-kit.sh runs a real sha256sum -c between these two snapshots,
+# so if the inode/size/mtime set is identical the recorded hashes describe these exact bytes.
+# Any movement anywhere in the kit root disables the reuse and the hashes are computed again.
+kit_root_stat_snapshot() {
+    # One find + one batched stat pass: a per-file loop costs a process spawn each (~40 ms on
+    # device) and would eat the reads this reuse is meant to save.
+    ( cd "$KIT_DIR" || exit 1
+      if command -v xargs >/dev/null 2>&1; then
+          find . -maxdepth 1 -type f -print 2>/dev/null | LC_ALL=C sort | xargs -r stat -c '%n %i %s %Y' 2>/dev/null
+      else
+          find . -maxdepth 1 -type f -print 2>/dev/null | LC_ALL=C sort | while IFS= read -r _rel; do
+              printf '%s %s\n' "$_rel" "$(stat -c '%i %s %Y' -- "$_rel" 2>/dev/null || stat -f '%i %z %m' -- "$_rel" 2>/dev/null || printf nostat)"
+          done
+      fi ) || true
+}
+
+# Verified hashes of the kit haps: from the SHA256SUMS that verify-kit.sh just checked when
+# the snapshot proved nothing moved, otherwise from a fresh read (never borrowed across runs).
+kit_hap_hashes() {
+    if [ "$KIT_SUMS_TRUSTED" = 1 ]; then
+        awk '{ n=substr($0,67); sub(/^\*/, "", n); sub(/^\.\//, "", n); if (n ~ /\.hap$/) printf "%s  ./%s\n", substr($0,1,64), n }' \
+            "$KIT_DIR/SHA256SUMS" | LC_ALL=C sort -k2
+    else
+        ( cd "$KIT_DIR" && sha256sum ./*.hap 2>/dev/null ) | LC_ALL=C sort -k2
+    fi
+}
+
+# Hash of one kit file for the summary: the verified SHA256SUMS entry when available,
+# otherwise a direct read (e.g. a --hap path outside the kit).
+kit_hash_of() {
+    _kh_rel="${1#"$KIT_DIR"/}"
+    if [ "$KIT_SUMS_TRUSTED" = 1 ]; then
+        _kh="$(awk -v n="./$_kh_rel" '$2 == n { print $1; exit }' "$TMP/kit-hap-sha256.txt")"
+        [ -n "$_kh" ] && { printf '%s\n' "$_kh"; return 0; }
+    fi
+    sha256sum "$1" | cut -d' ' -f1
+}
+
+KIT_SNAP_BEFORE="$(kit_root_stat_snapshot)"
 _rc=0
 if [ -n "$EXPECT_TREE" ]; then
     ( cd "$KIT_DIR" && sh verify-kit.sh --tree-digest --expect-tree-digest "$EXPECT_TREE" ) > "$TMP/verify-kit.log" 2>&1 || _rc=$?
 else
     ( cd "$KIT_DIR" && sh verify-kit.sh --tree-digest ) > "$TMP/verify-kit.log" 2>&1 || _rc=$?
 fi
+KIT_SNAP_AFTER="$(kit_root_stat_snapshot)"
 cat "$TMP/verify-kit.log"
 [ "$_rc" -eq 0 ] || die "kit 自检未通过（verify-kit.sh 退出码 $_rc）；请按上文修复后重试，勿带病安装"
 TREE_DIGEST="$(sed -n 's/^.*tree sha256=//p' "$TMP/verify-kit.log" | head -n1)"
-log "   kit 自检 OK（tree digest ${TREE_DIGEST:-<未打印>}）"
+KIT_SUMS_TRUSTED=0
+# Fail closed: an empty snapshot (stat/xargs unavailable) never arms the reuse.
+if [ -n "$KIT_SNAP_BEFORE" ] && [ "$KIT_SNAP_BEFORE" = "$KIT_SNAP_AFTER" ]; then
+    KIT_SUMS_TRUSTED=1
+fi
+if [ "$KIT_SUMS_TRUSTED" = 1 ]; then
+    log "   kit 自检 OK（tree digest ${TREE_DIGEST:-<未打印>}；hap 哈希复用本次已校验的 SHA256SUMS）"
+else
+    log "   kit 自检 OK（tree digest ${TREE_DIGEST:-<未打印>}；校验窗口内文件发生变化，hap 哈希重算）"
+fi
 
 if [ -n "$HAPS" ]; then
     MAIN_HAP="$(printf '%s\n' "$HAPS" | head -n1)"
@@ -560,7 +622,11 @@ if [ -z "$BUNDLE" ]; then
     BUNDLE="$FALLBACK_BUNDLE"
 fi
 require_safe_bundle_name "$BUNDLE"
-MAIN_HAP_SHA="$(sha256sum "$MAIN_HAP" | cut -d' ' -f1)"
+# One map for the whole run: verified SHA256SUMS values when the snapshot proves the bytes
+# did not move, otherwise the fresh sha256sum ./*.hap output (same content the old path wrote
+# to meta/kit-hap-sha256.txt, now read once).
+kit_hap_hashes > "$TMP/kit-hap-sha256.txt"
+MAIN_HAP_SHA="$(kit_hash_of "$MAIN_HAP")"
 log "   主 hap:  $MAIN_HAP"
 log "   bundle:  $BUNDLE"
 
@@ -1082,7 +1148,7 @@ else
     fi
     cp -f "$KIT_DIR/SHA256SUMS" "$OUT/meta/SHA256SUMS"
     cp -f "$TMP/verify-kit.log" "$OUT/meta/verify-kit.log"
-    ( cd "$KIT_DIR" && sha256sum ./*.hap ) > "$OUT/meta/kit-hap-sha256.txt" 2>/dev/null || true
+    cp -f "$TMP/kit-hap-sha256.txt" "$OUT/meta/kit-hap-sha256.txt" 2>/dev/null || true
     printf 'tester-run.sh version %s\n' "$SCRIPT_VERSION" > "$OUT/meta/tester-run.version.txt"
     if [ -n "$KIT_TAR" ]; then
         printf '%s  %s\n' "$KIT_TAR_SHA" "$(basename "$KIT_TAR")" > "$OUT/meta/kit-tar-sha256.txt"
