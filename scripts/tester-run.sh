@@ -19,8 +19,8 @@
 #       libs listing), bootstrap/rawfile failure signatures (hilog-bootstrap.txt + summary
 #       counts), device-side payload state (files dir listing + dotnet.marker first line),
 #       kit hap self-check (meta/kit-selfcheck.txt: resources.index size, libs/arm64-v8a
-#       count, abc header version), kit hashes, machine-readable summary;
-#       tar -> tester-report-<stamp>.tar.gz
+#       file count, payload-in-libs marker, abc header version), kit hashes, machine-readable
+#       summary; tar -> tester-report-<stamp>.tar.gz
 # Safety: dry-run by default. Nothing is installed/started/removed/recorded unless the matching
 # flag is given (--install --uninstall --start --capture --probes --extra-probes). Without a
 # device (hdc list targets) device steps are refused: with an action flag it stops immediately,
@@ -641,7 +641,7 @@ kit_hash_of() {
 # libs, an abc the device runtime rejects. Reading zip central directories is cheap; the files
 # stay untouched. Output: at most 10 lines, first line a comment.
 kit_selfcheck() {
-    printf '# kit hap self-check (tester-run.sh v%s): resources.index / libs/arm64-v8a / abc\n' "${SCRIPT_VERSION%% *}"
+    printf '# kit hap self-check (tester-run.sh v%s): resources.index / libs/arm64-v8a / payload-in-libs / abc\n' "${SCRIPT_VERSION%% *}"
     if command -v python3 >/dev/null 2>&1; then
         python3 - "$KIT_DIR" <<'PY'
 import os, sys, zipfile
@@ -655,13 +655,14 @@ for name in haps:
             names = z.namelist()
             idx = z.getinfo('resources.index').file_size if 'resources.index' in names else 'missing'
             libs = sum(1 for n in names if n.startswith('libs/arm64-v8a/') and not n.endswith('/'))
+            payload = 'yes' if 'libs/arm64-v8a/.dotnet-payload.json' in names else 'no'
             abc = 'missing'
             for n in sorted(n for n in names if n.endswith('.abc')):
                 raw = z.read(n)[:16]
                 if raw[:5] == b'PANDA':
                     abc = '%s:%s:%d' % (n, '.'.join(str(b) for b in raw[12:16]), z.getinfo(n).file_size)
                     break
-        print('%s index=%s libs=%s abc=%s' % (name, idx, libs, abc))
+        print('%s index=%s libs=%s payload=%s abc=%s' % (name, idx, libs, payload, abc))
     except Exception as exc:
         print('%s error=%s' % (name, exc))
 PY
@@ -672,10 +673,12 @@ PY
             _slist="$(unzip -l "$_sf" 2>/dev/null || true)"
             _sidx="$(printf '%s\n' "$_slist" | awk '$NF == "resources.index" { printf "%s", $1; found = 1; exit } END { if (!found) printf "missing" }')"
             _slibs="$(printf '%s\n' "$_slist" | awk '$NF ~ /^libs\/arm64-v8a\/.+/ { n++ } END { print n + 0 }')"
+            _spl="no"
+            printf '%s\n' "$_slist" | grep -qF -- "libs/arm64-v8a/.dotnet-payload.json" && _spl="yes"
             _sabc="missing"
             _sver="$(unzip -p "$_sf" ets/modules.abc 2>/dev/null | dd bs=1 count=16 2>/dev/null | od -An -v -tu1 2>/dev/null | awk '{ for (i = 1; i <= NF; i++) a[++n] = $i } END { if (n >= 16 && a[1] == 80 && a[2] == 65 && a[3] == 78 && a[4] == 68 && a[5] == 65) printf "%d.%d.%d.%d", a[13], a[14], a[15], a[16] }')"
             [ -n "$_sver" ] && _sabc="ets/modules.abc:$_sver"
-            printf '%s index=%s libs=%s abc=%s\n' "$_sname" "$_sidx" "$_slibs" "$_sabc"
+            printf '%s index=%s libs=%s payload=%s abc=%s\n' "$_sname" "$_sidx" "$_slibs" "$_spl" "$_sabc"
         done
     else
         printf '# kit self-check unavailable (need python3 or unzip)\n'

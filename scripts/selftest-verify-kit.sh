@@ -8,14 +8,15 @@
 #   S0 policy     the HOST_DEPS_DEFAULT copy embedded in verify-kit.sh carries exactly the
 #                 [needed]/[undefined] entries of src/OpenHarmonyHost/host-deps.conf
 #   S1 good       a kit that satisfies the current contract -> exit 0, KIT OK, every 2b
-#                 assertion passes (index 579 B, abc 212952 B / PANDA 13.0.1.0, 14 .so,
-#                 DT_NEEDED=5, denylist 0, dotnet.zip 253 entries / 0 .so); S1b reruns the
-#                 same kit to prove the check leaves no state behind
+#                 assertion passes (index 579 B, abc 215680 B / PANDA 13.0.1.0, 14 .so,
+#                 payload-in-libs marker (assembly + 19 entries + zip sha), DT_NEEDED=5,
+#                 denylist 0, dotnet.zip 253 entries / 0 .so); S1b reruns the same kit to
+#                 prove the check leaves no state behind
 #   S2 noindex    one hap loses resources.index -> exit 1, FAIL names it and FIX-DEV3 0f26b74
 #   S3 emptyindex resources.index is 0 B -> exit 1 ("0 B 空文件")
 #   S4 bigindex   resources.index 2048 B -> WARN only, exit 0 (historical/soft drift)
-#   S5 abcdrift   abc 211032 B -> WARN + KIT OK by default; --expected-abc 212952 -> FAIL;
-#                 abc 15608 B (the headless shell) stays accepted without a warning
+#   S5 abcdrift   abc 214000 B -> WARN + KIT OK by default; --expected-abc 215680 -> FAIL;
+#                 abc 18308 B (the headless shell) stays accepted without a warning
 #   S6 abcver     abc PANDA version 12.9.9.9 -> exit 1
 #   S7 libs       13 .so -> exit 1 (a runtime ELF is missing); 15 .so -> WARN only
 #   S8 dotnetzip  dotnet.zip carrying a .so -> exit 1; 254 entries -> WARN only
@@ -25,12 +26,15 @@
 #   S12 hostdeps  --host-deps canonical -> exit 0; narrowed whitelist -> exit 1; missing file
 #                 -> exit 2; a policy without [undefined] entries -> exit 1 (fail closed)
 #   S13 usage     --expected-abc with a non-numeric token -> exit 2; unknown option -> exit 2
+#   S14 payload   payload-in-libs marker mutants -> exit 1: marker missing, entry count drift,
+#                 zip-sha mismatch, entry assembly not staged
 #
 # The kit fixture mirrors the real one: five haps (module.json / ets/modules.abc /
-# resources.index / resources/rawfile/dotnet.zip / libs/arm64-v8a/*.so), 自签说明.md,
-# 签名说明.txt, the repository's verify-kit.sh and a regenerated SHA256SUMS (so step 1 passes
-# and only the 2b assertion under test decides). The host ELF is hand-built ELF64 LE with
-# PT_LOAD + PT_DYNAMIC + DT_NEEDED/DT_STRTAB/DT_SYMTAB/DT_HASH, so no toolchain is involved.
+# resources.index / resources/rawfile/dotnet.zip / libs/arm64-v8a/*.so + the payload-in-libs
+# marker and payload files), 自签说明.md, 签名说明.txt, the repository's verify-kit.sh and a
+# regenerated SHA256SUMS (so step 1 passes and only the 2b assertion under test decides). The
+# host ELF is hand-built ELF64 LE with PT_LOAD + PT_DYNAMIC + DT_NEEDED/DT_STRTAB/DT_SYMTAB/
+# DT_HASH, so no toolchain is involved.
 #
 # Env: SELFTEST_TMPDIR=<dir>  work dir base (default: the approved opencode tmp dir)
 #      SELFTEST_KEEP=1       keep the work dir even when all checks pass
@@ -142,10 +146,57 @@ MODULE = {
             "minAPIVersion": 50002014, "targetAPIVersion": 60101024, "apiReleaseType": "Release"},
     "module": {"name": "entry", "type": "entry", "requestPermissions": []},
 }
-ABC_SIZE = 212952
+ABC_SIZE = 215680
 ABC_VERSION = (13, 0, 1, 0)
 INDEX_SIZE = 579
 DOTNET_ENTRIES = 253
+# Payload-in-libs fixture: the marker plus the small synthetic payload the selftest stages in
+# libs/arm64-v8a/. The marker's entry count describes the real libs file count (marker
+# excluded): the 14 .so plus the payload files below.
+PAYLOAD_MARKER = "libs/arm64-v8a/.dotnet-payload.json"
+PAYLOAD_ASSEMBLY = "hello-maui-app.dll"
+PAYLOAD_FILES = [
+    PAYLOAD_ASSEMBLY,
+    "hello-maui-app.runtimeconfig.json",
+    "hello-maui-app.deps.json",
+    "System.Private.CoreLib.dll",
+    "wwwroot/index.html",
+]
+
+
+def payload_entries(libs):
+    return len(libs) + len(PAYLOAD_FILES)
+
+
+def good_payload_marker(dotnet, entries):
+    return json.dumps({
+        "schema": 1,
+        "assembly": PAYLOAD_ASSEMBLY,
+        "entries": entries,
+        "payloadEntries": DOTNET_ENTRIES,
+        "payloadBytes": 38 * 1024 * 1024,
+        "zipEntries": DOTNET_ENTRIES,
+        "zipSha256": hashlib.sha256(dotnet).hexdigest(),
+    }).encode()
+
+
+def refresh_marker(items):
+    """Rewrites the payload marker from the current libs/zip content, the way the packaging
+    target does: count + zip entry count + zip sha256. Used by the mutations that change the
+    libs file set or the zip but are not about the marker itself, so those scenarios keep
+    testing exactly the assertion they name."""
+    data = dict(items)
+    if PAYLOAD_MARKER not in data or "resources/rawfile/dotnet.zip" not in data:
+        return items
+    dotnet = data["resources/rawfile/dotnet.zip"]
+    marker = json.loads(data[PAYLOAD_MARKER])
+    marker["entries"] = sum(1 for n in data if n.startswith("libs/arm64-v8a/") and not n.endswith("/")) - 1
+    with zipfile.ZipFile(io.BytesIO(dotnet)) as dz:
+        marker["zipEntries"] = len(dz.namelist())
+    marker["payloadEntries"] = marker["zipEntries"]
+    marker["zipSha256"] = hashlib.sha256(dotnet).hexdigest()
+    data[PAYLOAD_MARKER] = json.dumps(marker).encode()
+    return [(n, data[n]) for n, _ in items]
 
 
 def _align(n, a=8):
@@ -230,6 +281,10 @@ def write_haps(kit, abc=None, index=INDEX_SIZE, host=None, dotnet=None, libs=Non
             for name in libs:
                 payload = host if name == "libopenharmonyhost.so" else b"\0" * 64
                 z.writestr("libs/arm64-v8a/" + name, payload)
+            # Payload-in-libs: the staged payload files and the marker the packaging writes.
+            for name in PAYLOAD_FILES:
+                z.writestr("libs/arm64-v8a/" + name, b"fixture payload")
+            z.writestr(PAYLOAD_MARKER, good_payload_marker(dotnet, payload_entries(libs)))
 
 
 def rebuild_sums(kit):
@@ -292,17 +347,42 @@ def patch(kit, op, arg=None):
             items.append(("libs/arm64-v8a/libopenharmonyhost.so", host))
             for name in keep:
                 items.append(("libs/arm64-v8a/" + name, b"\0" * 64))
+            items = refresh_marker(items)  # the .so count changed: keep the marker describing it
         elif op == "zip-so":
             items = [(n, good_dotnet(DOTNET_ENTRIES, extra_so=["libcoreclr.so"])
                       if n == "resources/rawfile/dotnet.zip" else d) for n, d in items]
+            items = refresh_marker(items)
         elif op == "zip-entries":
             items = [(n, good_dotnet(int(arg)) if n == "resources/rawfile/dotnet.zip" else d)
                      for n, d in items]
+            items = refresh_marker(items)
         elif op == "host-so":
             with open(arg, "rb") as f:
                 host = f.read()
             items = [(n, host if n == "libs/arm64-v8a/libopenharmonyhost.so" else d)
                      for n, d in items]
+        elif op in ("payload-drop-marker", "payload-entries", "payload-zipsha",
+                    "payload-assembly", "payload-drop-assembly"):
+            # Marker mutants: the payload-in-libs assertion under test, so the marker is NOT
+            # refreshed afterwards (except dropping the assembly, where the count is fixed too
+            # so exactly the missing-assembly assertion fires).
+            data = dict(items)
+            marker = json.loads(data[PAYLOAD_MARKER]) if PAYLOAD_MARKER in data else None
+            if op == "payload-drop-marker":
+                items = [(n, d) for n, d in items if n != PAYLOAD_MARKER]
+            elif op == "payload-entries":
+                marker["entries"] = int(arg)
+            elif op == "payload-zipsha":
+                marker["zipSha256"] = arg
+            elif op == "payload-assembly":
+                marker["assembly"] = arg
+            elif op == "payload-drop-assembly":
+                items = [(n, d) for n, d in items if n != "libs/arm64-v8a/" + PAYLOAD_ASSEMBLY]
+                items = refresh_marker(items)
+            if marker is not None and op != "payload-drop-marker" and op != "payload-drop-assembly":
+                data = dict(items)
+                data[PAYLOAD_MARKER] = json.dumps(marker).encode()
+                items = [(n, data[n]) for n, _ in items]
         else:
             raise SystemExit("unknown patch op: %s" % op)
         write_hap(path, items)
@@ -361,8 +441,10 @@ assert_rc 0 "$RC" "S1 good kit"
 assert_contains "S1 KIT OK" "KIT OK" "$LOG_FILE"
 assert_contains "S1 all 2b assertions pass" "全部关键断言通过" "$LOG_FILE"
 assert_contains "S1 index 579 B listed" "resources.index 579 B（≤1 KiB 合理范围）" "$LOG_FILE"
-assert_contains "S1 abc 212952 / PANDA 13.0.1.0" "ets/modules.abc 212952 B，PANDA 头版本 13.0.1.0" "$LOG_FILE"
+assert_contains "S1 abc 215680 / PANDA 13.0.1.0" "ets/modules.abc 215680 B，PANDA 头版本 13.0.1.0" "$LOG_FILE"
 assert_contains "S1 libs .so=14" "libs/arm64-v8a/: 14 个 .so" "$LOG_FILE"
+assert_contains "S1 payload-in-libs marker staged + counted" "payload-in-libs: assembly=hello-maui-app.dll，条目=19（实测 19）" "$LOG_FILE"
+assert_contains "S1 payload-in-libs marker zip bound" "zip=253/" "$LOG_FILE"
 assert_contains "S1 host DT_NEEDED=5" "DT_NEEDED=5" "$LOG_FILE"
 assert_contains "S1 host denylist 0" "denylist 命中=0" "$LOG_FILE"
 assert_contains "S1 dotnet.zip 253 entries / 0 .so" "dotnet.zip entries=253，.so=0" "$LOG_FILE"
@@ -419,19 +501,19 @@ assert_contains "S4 KIT OK carries the WARN count" "KIT OK（5 条 WARN" "$LOG_F
 # ---- S5: abc size drift is a WARN by default, a FAIL when pinned ---------------------
 section "S5 abc size drift: WARN by default, FAIL with --expected-abc"
 K="$(new_kit kit-abcdrift)"
-python3 "$WORK/fixture.py" patch "$K" abc-size 211032
+python3 "$WORK/fixture.py" patch "$K" abc-size 214000
 run_verify "$K"
 assert_rc 0 "$RC" "S5 drifted abc still KIT OK by default"
-assert_contains "S5 warns about the drifted size" "abc 大小 211032 不是当前期望（212952/15608）" "$LOG_FILE"
+assert_contains "S5 warns about the drifted size" "abc 大小 214000 不是当前期望（215680/18308）" "$LOG_FILE"
 assert_contains "S5 KIT OK carries the WARN count" "KIT OK（5 条 WARN" "$LOG_FILE"
-run_verify "$K" --expected-abc 212952
-assert_rc 1 "$RC" "S5 pinned --expected-abc 212952 turns the drift into a FAIL"
-assert_contains "S5 reports the pinned set" "不在 --expected-abc 212952 内" "$LOG_FILE"
+run_verify "$K" --expected-abc 215680
+assert_rc 1 "$RC" "S5 pinned --expected-abc 215680 turns the drift into a FAIL"
+assert_contains "S5 reports the pinned set" "不在 --expected-abc 215680 内" "$LOG_FILE"
 assert_contains "S5 KIT CHECK FAILED" "KIT CHECK FAILED" "$LOG_FILE"
 K="$(new_kit kit-headlessabc)"
-python3 "$WORK/fixture.py" patch "$K" abc-size 15608
+python3 "$WORK/fixture.py" patch "$K" abc-size 18308
 run_verify "$K"
-assert_rc 0 "$RC" "S5 headless abc (15608 B) is accepted"
+assert_rc 0 "$RC" "S5 headless abc (18308 B) is accepted"
 assert_not_contains "S5 headless abc produces no size WARN" "不是当前期望" "$LOG_FILE"
 
 # ---- S6: the PANDA header version is pinned ------------------------------------------
@@ -516,6 +598,34 @@ run_verify "$GOOD_KIT" --expected-abc abc
 assert_rc 2 "$RC" "S13 non-numeric --expected-abc"
 run_verify "$GOOD_KIT" --no-such-option
 assert_rc 2 "$RC" "S13 unknown option"
+
+# ---- S14: the payload-in-libs marker is part of the per-hap contract ------------------
+section "S14 payload-in-libs marker mutants -> FAIL"
+K="$(new_kit kit-nopayload)"
+python3 "$WORK/fixture.py" patch "$K" payload-drop-marker
+run_verify "$K"
+assert_rc 1 "$RC" "S14 missing payload marker fails"
+assert_contains "S14 names the missing marker" "缺 libs/arm64-v8a/.dotnet-payload.json" "$LOG_FILE"
+assert_contains "S14 points at the namespace reason" "唯一允许 dlopen 的目录" "$LOG_FILE"
+assert_contains "S14 points at OpenHarmonyHapPayloadInLibs" "OpenHarmonyHapPayloadInLibs=true" "$LOG_FILE"
+
+K="$(new_kit kit-payloadcount)"
+python3 "$WORK/fixture.py" patch "$K" payload-entries 999
+run_verify "$K"
+assert_rc 1 "$RC" "S14 marker entry-count drift fails"
+assert_contains "S14 reports the count drift" "payload marker entries=999 与实测" "$LOG_FILE"
+
+K="$(new_kit kit-payloadsha)"
+python3 "$WORK/fixture.py" patch "$K" payload-zipsha 0000000000000000000000000000000000000000000000000000000000000000
+run_verify "$K"
+assert_rc 1 "$RC" "S14 marker zip-sha mismatch fails"
+assert_contains "S14 reports the sha mismatch" "回退 zip 不同源" "$LOG_FILE"
+
+K="$(new_kit kit-payloadasm)"
+python3 "$WORK/fixture.py" patch "$K" payload-assembly missing.dll
+run_verify "$K"
+assert_rc 1 "$RC" "S14 marker naming an unstaged assembly fails"
+assert_contains "S14 names the missing assembly" "入口程序集 'missing.dll' 不在 libs/arm64-v8a/" "$LOG_FILE"
 
 # ---- summary -------------------------------------------------------------------------
 section "summary"

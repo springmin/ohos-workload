@@ -837,7 +837,7 @@ if prepare_report "$ARCHIVE_S2" "$WORK/x-success" out-success; then
     assert_contains "S2 kit-selfcheck names the main hap" "$(basename "$MAIN_HAP")" "$REPORT/meta/kit-selfcheck.txt"
     if [ "$SELFCHECK_OK" = 1 ]; then
         assert_eq "S2 summary kit_index_ok=yes" "yes" "$(sum_val "$S" kit_index_ok)"
-        assert_matches "S2 kit-selfcheck reads resources.index size" 'index=[0-9]+ libs=[0-9]+ abc=' "$REPORT/meta/kit-selfcheck.txt"
+        assert_matches "S2 kit-selfcheck reads resources.index size" 'index=[0-9]+ libs=[0-9]+ payload=(yes|no) abc=' "$REPORT/meta/kit-selfcheck.txt"
         assert_matches "S2 kit-selfcheck reads a PANDA abc version" 'abc=[^ :]+:[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+' "$REPORT/meta/kit-selfcheck.txt"
     else
         skip "S2 kit-selfcheck values (no python3/unzip on this host)"

@@ -19,13 +19,23 @@
 #                    1 KiB only warns (resources/permissions grew -> review the expectation).
 #   abc header       ets/modules.abc must be a PANDA file whose 4-byte version field at 0x0c is
 #                    13.0.1.0 (FAIL otherwise), and its size must be one of the current
-#                    expectations - 212952 for the ui/shell shell, 15608 for the headless shell
+#                    expectations - 215680 for the ui/shell shell, 18308 for the headless shell
 #                    (--expected-abc <bytes[,bytes]> / KIT_EXPECTED_ABC pins the set; a size
 #                    outside it then FAILs instead of warning, so a historical kit's old abc
 #                    does not kill the run).
 #   libs             libs/arm64-v8a/ exists with exactly 14 .so files (fewer = a runtime ELF is
 #                    missing and the device loader will refuse the hap -> FAIL; more = WARN,
 #                    update the expectation when the runtime file set really changed).
+#   payload-in-libs  libs/arm64-v8a/.dotnet-payload.json exists and is self-consistent: the
+#                    entry assembly it names is staged in the libs directory, its file count
+#                    equals the real libs file count (marker excluded), payloadEntries equals
+#                    zipEntries, and its zipSha256 equals the bytes of
+#                    resources/rawfile/dotnet.zip. The staged payload is the namespace-allowed
+#                    copy the runtime starts from (el1/bundle/libs/<abi> is the only directory
+#                    the device lets a dlopen come from), so a missing or inconsistent marker
+#                    means the app would fall back to the refused data-directory extraction
+#                    -> FAIL. A hap packed with -p:OpenHarmonyHapPayloadInLibs=false fails this
+#                    check by design.
 #   dotnet.zip       readable -> must carry no .so (an unsigned duplicate would be dlopen'd from
 #                    the extracted app dir and rejected by an enforcing device -> FAIL) and its
 #                    entry count is expected to stay 253 (drift = WARN).
@@ -42,9 +52,10 @@
 # repository is absent; --host-deps <file> / KIT_HOST_DEPS replaces it with the canonical
 # src/OpenHarmonyHost/host-deps.conf (scripts/selftest-verify-kit.sh fails when the two drift).
 # The 2b assertions are graded: only resources.index, the abc header version, a shrunken
-# libs/, a .so inside dotnet.zip and the host DT_NEEDED/denylist failures are FAIL; an old abc
-# size, a big index, extra libs and a zip entry-count drift are WARN, so a historical kit still
-# reports its real defects without being killed for pre-contract values.
+# libs/, a .so inside dotnet.zip, the payload-in-libs marker, and the host DT_NEEDED/denylist
+# failures are FAIL; an old abc size, a big index, extra libs and a zip entry-count drift are
+# WARN, so a historical kit still reports its real defects without being killed for
+# pre-contract values.
 # SHA256SUMS lives inside the archive it covers, so it proves internal consistency only:
 #   1. check the transfer checksum of the .tar.gz: `sha256sum -c <kit>.tar.gz.sha256`, or let
 #      this script check the tarball (--anchor / --anchor-file / KIT_ANCHOR);
@@ -145,10 +156,10 @@ OH_LOG_
 HOST_DEPS_EOF
 )"
 
-# Current abc size expectations: the ui/shell ArkTS shell (212952 B) and the headless shell
-# (15608 B). --expected-abc <bytes[,bytes]> / KIT_EXPECTED_ABC replaces the set and turns a
+# Current abc size expectations: the ui/shell ArkTS shell (215680 B) and the headless shell
+# (18308 B). --expected-abc <bytes[,bytes]> / KIT_EXPECTED_ABC replaces the set and turns a
 # mismatch from a historical-kit WARN into a FAIL (the kit builder uses that strict form).
-EXPECT_ABC="${KIT_EXPECTED_ABC:-212952,15608}"
+EXPECT_ABC="${KIT_EXPECTED_ABC:-215680,18308}"
 EXPECT_ABC_PINNED="${KIT_EXPECTED_ABC:+1}"
 HOST_DEPS_FILE="${KIT_HOST_DEPS:-}"
 
@@ -229,8 +240,9 @@ usage: $0 [--anchor <sha256-of-tar.gz>] [--anchor-file <path-to.tar.gz>]
 Verifies SHA256SUMS, summarizes the five haps of an extracted device-test kit, and
 asserts the payload facts that failed on a real device before: resources.index present
 and non-empty, abc PANDA header version 13.0.1.0 + current size, libs/arm64-v8a .so
-count, dotnet.zip composition, and the host ELF dependency discipline (DT_NEEDED subset
-of the embedded host-deps.conf, no nm -D -u denylist hit).
+count, the payload-in-libs marker (entry assembly + staged file count + zip fallback
+identity), dotnet.zip composition, and the host ELF dependency discipline (DT_NEEDED
+subset of the embedded host-deps.conf, no nm -D -u denylist hit).
 Without an argument the current directory is used (it must contain SHA256SUMS).
 
   --anchor <hex>        also check the .tar.gz on disk against this sha256 (fail closed when
@@ -245,7 +257,7 @@ Without an argument the current directory is used (it must contain SHA256SUMS).
                         fail unless the extracted tree matches this digest (the value comes
                         with the delivery, e.g. the release notes)
   --expected-abc <bytes[,bytes]>
-                        abc size expectation (default: 212952,15608 = the ui/shell and the
+                        abc size expectation (default: 215680,18308 = the ui/shell and the
                         headless ArkTS shell); a size outside the set warns by default and
                         fails when this option pins the set
   --host-deps <path>    read the host dependency policy from this file instead of the
@@ -287,7 +299,7 @@ while [ $# -gt 0 ]; do
             ;;
         --expected-abc)
             shift
-            [ $# -gt 0 ] || { warn "--expected-abc 需要逗号分隔的字节数（如 212952,15608）"; usage >&2; exit 2; }
+            [ $# -gt 0 ] || { warn "--expected-abc 需要逗号分隔的字节数（如 215680,18308）"; usage >&2; exit 2; }
             EXPECT_ABC="$1"
             EXPECT_ABC_PINNED=1
             ;;
@@ -325,7 +337,7 @@ KIT="$(cd "$KIT" && pwd)"
 EXPECT_ABC="$(printf '%s' "$EXPECT_ABC" | tr ',' ' ')"
 for _abc in $EXPECT_ABC; do
     case "$_abc" in
-        ''|*[!0-9]*) warn "--expected-abc 需要逗号/空格分隔的字节数（如 212952,15608），得到: $EXPECT_ABC"; usage >&2; exit 2 ;;
+        ''|*[!0-9]*) warn "--expected-abc 需要逗号/空格分隔的字节数（如 215680,18308），得到: $EXPECT_ABC"; usage >&2; exit 2 ;;
     esac
 done
 [ -n "$EXPECT_ABC" ] || { warn "--expected-abc 不能为空"; usage >&2; exit 2; }
@@ -515,7 +527,7 @@ DEEP_WARNS=0
 if command -v python3 >/dev/null 2>&1; then
     python3 - "$KIT" "$BUNDLE_EXPECT" "$TMP/kit-bundle" "$POLICY" "$TMP/deep-status" \
         "$EXPECT_ABC" "$EXPECT_ABC_PINNED" <<'PY' || FAIL=1
-import io, json, os, struct, sys, zipfile
+import hashlib, io, json, os, struct, sys, zipfile
 
 kit = sys.argv[1]
 expected = sys.argv[2]
@@ -533,6 +545,7 @@ ABC_VERSION = "13.0.1.0"    # 4-byte PANDA version field at offset 0x0c
 LIBS_DIR = "libs/arm64-v8a/"
 HOST_SO = LIBS_DIR + "libopenharmonyhost.so"
 DOTNET_ZIP = "resources/rawfile/dotnet.zip"
+PAYLOAD_MARKER = LIBS_DIR + ".dotnet-payload.json"
 
 haps = [
     ("hello-maui-app.hap",
@@ -816,26 +829,86 @@ for name, purpose in haps:
                                   % (name, len(hits), shown))
 
         # --- dotnet.zip: no unsigned ELF duplicates, stable entry count ------------------------
+        dotnet_entries = None
+        dotnet_sha = None
         if DOTNET_ZIP not in names:
             print("      zip    <缺 %s>" % DOTNET_ZIP)
             grade("WARN", "%s: 包内没有 %s — 跳过 zip 组成检查（若 zip 可读才断言）" % (name, DOTNET_ZIP))
         else:
             try:
-                with zipfile.ZipFile(io.BytesIO(z.read(DOTNET_ZIP))) as dz:
+                dotnet_raw = z.read(DOTNET_ZIP)
+                dotnet_sha = hashlib.sha256(dotnet_raw).hexdigest()
+                with zipfile.ZipFile(io.BytesIO(dotnet_raw)) as dz:
                     dnames = dz.namelist()
+                dotnet_entries = len(dnames)
                 sos = [n for n in dnames if n.endswith(".so")]
-                print("      zip    dotnet.zip entries=%d，.so=%d" % (len(dnames), len(sos)))
+                print("      zip    dotnet.zip entries=%d，.so=%d" % (dotnet_entries, len(sos)))
                 if sos:
                     shown = ", ".join(sos[:3]) + (" ..." if len(sos) > 3 else "")
                     grade("FAIL", "%s: dotnet.zip 含 %d 个 .so: %s — 解包到 app 目录的未签名副本会被 enforcing 设备拒绝"
                                   " dlopen；同名 ELF 必须只出现在 libs/<abi>/（targets 的 OpenHarmonyDeterministicZip 排除名单）"
                                   % (name, len(sos), shown))
-                if len(dnames) != EXPECT_ZIP_ENTRIES:
+                if dotnet_entries != EXPECT_ZIP_ENTRIES:
                     grade("WARN", "%s: dotnet.zip 条目 %d != 期望 %d — 运行时文件集变化时正常，确认后更新期望"
-                                  % (name, len(dnames), EXPECT_ZIP_ENTRIES))
+                                  % (name, dotnet_entries, EXPECT_ZIP_ENTRIES))
             except Exception as exc:
                 print("      zip    dotnet.zip 读取失败（%s）" % exc)
                 grade("WARN", "%s: 无法读取 dotnet.zip（%s）— 跳过 zip 组成检查（若 zip 可读才断言）" % (name, exc))
+
+        # --- payload-in-libs: the staged payload the runtime starts from -----------------------
+        # The packaging copies the whole managed payload into libs/<abi>/ and writes the
+        # .dotnet-payload.json marker (see "Payload in libs" in the packaging doc). The device
+        # namespace policy allows a dlopen only from that signed bundle directory, so the staged
+        # payload is the copy that starts; without it the runtime falls back to the data
+        # directory extraction an enforcing device refuses. The marker is therefore part of the
+        # per-hap contract and every inconsistency is a FAIL: the named entry assembly must be
+        # staged, the entry count must describe the real libs file count (marker excluded), the
+        # payload count must match the zip fallback, and the recorded zip sha256 must describe
+        # the packed dotnet.zip bytes.
+        if PAYLOAD_MARKER not in names:
+            print("      libs   <缺 %s（payload-in-libs 标志）>" % PAYLOAD_MARKER)
+            grade("FAIL", "%s: 缺 %s — hap 没有把托管 payload 随 libs/<abi>/ 一起签名（el1/bundle/libs/<abi> 是设备"
+                          "唯一允许 dlopen 的目录），启动会回退到 data 目录解包并被 enforcing 设备拒绝；用默认的"
+                          " OpenHarmonyHapPayloadInLibs=true 重新打包" % (name, PAYLOAD_MARKER))
+        else:
+            libs_files = [n for n in names if n.startswith(LIBS_DIR) and not n.endswith("/")]
+            actual_entries = len(libs_files) - 1  # the marker itself is not a libs payload entry
+            payload_marker = None
+            try:
+                payload_marker = json.loads(z.read(PAYLOAD_MARKER))
+                if not isinstance(payload_marker, dict):
+                    raise ValueError("marker 不是 JSON 对象")
+            except Exception as exc:
+                print("      libs   payload marker 读取失败（%s）" % exc)
+                grade("FAIL", "%s: %s 无法解析（%s）— payload-in-libs 身份无法校验，拒绝放行"
+                              % (name, PAYLOAD_MARKER, exc))
+            if payload_marker is not None:
+                assembly = str(payload_marker.get("assembly", "?"))
+                declared = payload_marker.get("entries")
+                payload_entries = payload_marker.get("payloadEntries")
+                zip_entries = payload_marker.get("zipEntries")
+                zip_sha = str(payload_marker.get("zipSha256", ""))
+                print("      libs   payload-in-libs: assembly=%s，条目=%s（实测 %d），payload=%s，zip=%s/%s"
+                      % (assembly, declared, actual_entries, payload_entries, zip_entries,
+                         (zip_sha[:12] + "...") if zip_sha else "<空>"))
+                if assembly == "?" or (LIBS_DIR + assembly) not in names:
+                    grade("FAIL", "%s: payload marker 的入口程序集 '%s' 不在 %s（%s 缺失）— payload 不完整"
+                                  % (name, assembly, LIBS_DIR, LIBS_DIR + assembly))
+                if declared != actual_entries:
+                    grade("FAIL", "%s: payload marker entries=%s 与实测 %s 目录文件数不符（实测 %d，不含 marker）—"
+                                  " 标记与实际 payload 漂移" % (name, declared, LIBS_DIR, actual_entries))
+                if payload_entries != zip_entries:
+                    grade("FAIL", "%s: payload marker payloadEntries=%s != zipEntries=%s — libs payload 与 dotnet.zip"
+                                  " 回退副本不一致" % (name, payload_entries, zip_entries))
+                if dotnet_entries is not None and zip_entries != dotnet_entries:
+                    grade("FAIL", "%s: payload marker zipEntries=%s != dotnet.zip 实际条目 %d — 回退 zip 已被替换"
+                                  % (name, zip_entries, dotnet_entries))
+                if dotnet_sha is not None:
+                    if not zip_sha:
+                        grade("FAIL", "%s: payload marker 没有 zipSha256 — 无法绑定 %s 回退副本" % (name, DOTNET_ZIP))
+                    elif zip_sha != dotnet_sha:
+                        grade("FAIL", "%s: payload marker zipSha256=%s... != dotnet.zip sha256=%s... — libs payload 与回退"
+                                      " zip 不同源" % (name, zip_sha[:12], dotnet_sha[:12]))
 
 with open(bundle_file, "w") as f:
     f.write(bundles[0] if bundles else "")
@@ -855,7 +928,7 @@ with open(status_file, "w") as f:
         f.write("%s\t%s\n" % (level, msg))
 sys.exit(1 if fail else 0)
 PY
-    log "== 2b/4 深度断言（resources.index / abc / libs / dotnet.zip / 宿主依赖）"
+    log "== 2b/4 深度断言（resources.index / abc / libs / payload-in-libs / dotnet.zip / 宿主依赖）"
     if [ -s "$TMP/deep-status" ]; then
         TAB="$(printf '\t')"
         while IFS="$TAB" read -r _lvl _msg; do
@@ -866,7 +939,7 @@ PY
         done < "$TMP/deep-status"
     fi
     if [ "$DEEP_FAILS" -eq 0 ] && [ "$DEEP_WARNS" -eq 0 ]; then
-        log "   全部关键断言通过：5 hap 的 index/abc/libs/宿主依赖均符合当前契约"
+        log "   全部关键断言通过：5 hap 的 index/abc/libs/payload-in-libs/宿主依赖均符合当前契约"
     else
         log "   深度断言汇总：FAIL $DEEP_FAILS，WARN $DEEP_WARNS（FAIL 需处理；WARN 不阻断）"
     fi
