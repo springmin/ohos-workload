@@ -24,17 +24,27 @@
 #                  record their joined device-side command
 #   S10 env        KIT_BUNDLE_NAME with a payload is rejected; a valid one still drives the
 #                  fallback path
+#   S11 bootstrap  FAKE_HDC_BOOTSTRAP_ERRORS=1: hilog-bootstrap.txt keeps the reference failure
+#                  signatures and summary counts them (bootstrap_errors/rawfile_errors/libload_errors)
+#   S12 payload    FAKE_HDC_MISSING_PAYLOAD=1: missing files dir + marker tolerated
+#                  (payload_present=no, payload_marker=empty, failures=0)
+#   S13 no index   a kit hap without resources.index -> meta/kit-selfcheck.txt shows index=missing,
+#                  summary kit_index_ok=no; no capture window -> bootstrap_errors=<unavailable>
 # Stub hdc surface (every subcommand tester-run.sh invokes): list targets | install -r <hap> |
 #   uninstall <bundle> | shell aa start -a EntryAbility -b <b> | shell pidof <b> | shell ps -ef
 #   | shell param get <key> | shell bm get -u | shell hilog -r | hilog | shell "hilog -t kmsg"
 #   | shell "cat /proc/sys/..." | shell "ls -l /data/storage/el1/bundle/libs/arm64/ 2>/dev/null"
+#   | shell "ls -l /data/storage/el2/base/haps/entry/files/ 2>/dev/null"
+#   | shell "cat /data/storage/el2/base/haps/entry/files/dotnet.marker 2>/dev/null"
 #   `hdc -t <id>` prefixes are accepted. Every `shell` invocation is appended, joined the way
 #   hdc joins its argv, to <state>/device-shell.log (never executed): the S9 tests fail if a
 #   payload ever reaches that line. A hap whose basename contains `fail` is rejected with
 #   `code:9568297` on stderr. pidof answers a pid for the first FAKE_HDC_PIDOF_ALIVE_CALLS calls
 #   per bundle (default 1), then nothing. FAKE_HDC_MISSING_PROC=1 fails both /proc/sys cats;
-#   FAKE_HDC_MISSING_APPLIBS=1 fails the bundle libs ls. A stub `binary-sign-tool` in $WORK/bin
-#   (prepended to PATH) answers `display-sign` with `code signature is not found`.
+#   FAKE_HDC_MISSING_APPLIBS=1 fails the bundle libs ls; FAKE_HDC_MISSING_PAYLOAD=1 fails the
+#   files dir ls and the marker cat; FAKE_HDC_BOOTSTRAP_ERRORS=1 adds the device report §4/§7
+#   failure lines to the hilog stream. A stub `binary-sign-tool` in $WORK/bin (prepended to
+#   PATH) answers `display-sign` with `code signature is not found`.
 # Kit under test: SELFTEST_KIT_DIR if set; else the local approved device-test-kit dir when it
 #   looks complete; else a synthetic minimal kit (module.json + dummy haps + minimal
 #   verify-kit.sh) in the temp dir. SELFTEST_FORCE_SYNTHETIC=1 forces the synthetic kit.
@@ -44,7 +54,7 @@
 # Exit: 0 = all checks passed; 1 = at least one check failed (work dir kept for triage).
 set -u
 
-SELFTEST_VERSION="4 (2026-09-23)"
+SELFTEST_VERSION="5 (2026-09-24)"
 
 log()  { printf '[%s] %s\n' "$(date '+%H:%M:%S')" "$*"; }
 section() { printf '\n=== %s ===\n' "$*"; }
@@ -133,6 +143,10 @@ assert_dir_empty() {
     if [ -d "$2" ] && [ -z "$(ls -A "$2" 2>/dev/null)" ]; then ok "$1"
     else bad "$1 (not empty: $2)"; fi
 }
+assert_matches() {
+    if [ -f "$3" ] && grep -Eq -- "$2" "$3"; then ok "$1"
+    else bad "$1 (no match for '$2' in ${3:-<empty>})"; fi
+}
 
 sum_val() { sed -n "s/^$2=//p" "$1" | head -n1; }
 
@@ -146,22 +160,31 @@ kit_tree_digest() {
 }
 
 make_hap() {
-    _dst="$1"; _bundle="$2"; _name="${3:-entry}"
+    _dst="$1"; _bundle="$2"; _name="${3:-entry}"; _with_index="${4:-1}"
     _src="$WORK/hapsrc.$$"
     rm -rf "$_src"
-    mkdir -p "$_src"
+    mkdir -p "$_src/ets"
     cat > "$_src/module.json" <<EOF
 {"app":{"bundleName":"$_bundle","versionName":"1.0.0-selftest","minAPIVersion":60000020,"targetAPIVersion":60000020,"apiReleaseType":"Release"},"module":{"name":"$_name","type":"entry","mainElement":"EntryAbility"}}
 EOF
+    if [ "$_with_index" = 1 ]; then
+        # kit #22 contract the tester-run self-check reads back: resources.index + an abc with
+        # the fixed 16-byte header (magic "PANDA", adler placeholder, version 13.0.1.0 at 0x0c).
+        printf 'IDX:selftest' > "$_src/resources.index"
+        printf 'PANDA\000\000\000\000\000\000\000\015\000\001\000' > "$_src/ets/modules.abc"
+    fi
     if command -v python3 >/dev/null 2>&1; then
         python3 - "$_src" "$_dst" <<'PY'
 import os, sys, zipfile
 src, dst = sys.argv[1], sys.argv[2]
 with zipfile.ZipFile(dst, "w", zipfile.ZIP_DEFLATED) as z:
-    z.write(os.path.join(src, "module.json"), "module.json")
+    for root, _dirs, files in os.walk(src):
+        for fname in sorted(files):
+            path = os.path.join(root, fname)
+            z.write(path, os.path.relpath(path, src))
 PY
     elif command -v zip >/dev/null 2>&1; then
-        ( cd "$_src" && zip -q "$_dst" module.json )
+        ( cd "$_src" && zip -q -r "$_dst" . )
     else
         cp "$_src/module.json" "$_dst"
     fi
@@ -348,6 +371,24 @@ KMSG_EOF
                 printf '%s\n' '-rwxr-xr-x 1 0 0 1246328 /data/storage/el1/bundle/libs/arm64/libc++_shared.so'
                 exit 0
                 ;;
+            "ls -l /data/storage/el2/base/haps/entry/files/ 2>/dev/null")
+                if [ "${FAKE_HDC_MISSING_PAYLOAD:-0}" = 1 ]; then
+                    printf 'ls: /data/storage/el2/base/haps/entry/files/: No such file or directory\n' >&2
+                    exit 1
+                fi
+                printf 'total 32\n'
+                printf '%s\n' 'drwxr-xr-x 2 0 0 4096 /data/storage/el2/base/haps/entry/files/dotnet'
+                printf '%s\n' '-rw-r--r-- 1 0 0 123 /data/storage/el2/base/haps/entry/files/dotnet.marker'
+                printf '%s\n' '-rw-r--r-- 1 0 0 456 /data/storage/el2/base/haps/entry/files/note.txt'
+                exit 0
+                ;;
+            "cat /data/storage/el2/base/haps/entry/files/dotnet.marker 2>/dev/null")
+                if [ "${FAKE_HDC_MISSING_PAYLOAD:-0}" = 1 ]; then
+                    exit 1
+                fi
+                printf '%s\n' '{"zipSize":15974604,"mtime":1758600000,"fileCount":253}'
+                exit 0
+                ;;
             "cat /proc/sys/kernel/xpm/xpm_mode")
                 if [ "${FAKE_HDC_MISSING_PROC:-0}" = 1 ]; then
                     printf 'cat: %s: No such file or directory\n' "$_cmd" >&2
@@ -435,6 +476,20 @@ KMSG_EOF
 09-22 10:00:00.800 12345 12345 I A00000/ets_runtime: SetAppLibPath appLibPathKey: com.example.hellomauiapp/entry, lib path: /data/storage/el1/bundle/libs/arm64
 09-22 10:00:00.810 12345 12345 I A00000/NAPI: dlopen libopenharmonyhost.so from /data/storage/el1/bundle/libs/arm64
 HILOG_EOF
+        # Device report §4/§7 failure signatures (opt-in so the default stream stays clean:
+        # the empty-result tolerance of hilog-bootstrap.txt is asserted on the default stream).
+        if [ "${FAKE_HDC_BOOTSTRAP_ERRORS:-0}" = 1 ]; then
+            cat <<'BOOT_EOF'
+09-22 10:00:01.000 12345 12345 E A00000/OHOS_DOTNET: bootstrap failed: GetRawFileContent failed, name is empty
+09-22 10:00:04.000 12345 12345 E A00000/OHOS_DOTNET: bootstrap retry failed: GetRawFileContent failed, name is empty
+09-22 10:00:07.000 12345 12345 E A00000/OHOS_DOTNET: bootstrap final retry failed: GetRawFileContent failed, name is empty
+09-22 10:00:07.100 12345 12345 E A00000/OHOS_DOTNET: bootstrap failed: BusinessError 900002: destination path is not an existing directory
+09-22 10:00:07.200 12345 12345 E A00000/OHOS_DOTNET: bootstrap failed: BusinessError 900003: ZIP entry data extraction failed, source file may be damaged
+09-22 10:00:07.300 12345 12345 I A00000/MMG: [NMM:1439]load module default/openharmonyhost failed: Error relocating libopenharmonyhost.so: symbol not found
+09-22 10:00:07.400 12345 12345 E A00000/MUSL-LDSO: load /data/storage/el2/base/haps/entry/files/dotnet/libhostfxr.so failed: check ns accessible failed namespace=moduleNs_default
+09-22 10:00:07.500 12345 12345 W A00000/Museum: Museum bootstrap diagnostics captured
+BOOT_EOF
+        fi
         exit 0
         ;;
     *)
@@ -494,6 +549,9 @@ if command -v python3 >/dev/null 2>&1; then
     MAIN_HAP_MAGIC="$(python3 -c 'import re,sys; d=open(sys.argv[1],"rb").read(); print(len(re.findall(bytes.fromhex("20e7d20e"), d)))' "$MAIN_HAP" 2>/dev/null || true)"
     FAIL_HAP_MAGIC="$(python3 -c 'import re,sys; d=open(sys.argv[1],"rb").read(); print(len(re.findall(bytes.fromhex("20e7d20e"), d)))' "$FAIL_HAP" 2>/dev/null || true)"
 fi
+# kit-selfcheck values are numeric/versioned only when the tester side has python3 or unzip
+SELFCHECK_OK=0
+if [ "$HAVE_PY3" = 1 ] || command -v unzip >/dev/null 2>&1; then SELFCHECK_OK=1; fi
 
 KIT_TREE="$(kit_tree_digest "$KIT")"
 MAIN_HAP_SHA="$(sha256sum "$MAIN_HAP" | cut -d' ' -f1)"
@@ -596,6 +654,25 @@ FAKE_HDC_STATE="$STATE_DIR/contract-app-libs-missing" FAKE_HDC_MISSING_APPLIBS=1
     "$STUB" shell "ls -l /data/storage/el1/bundle/libs/arm64/ 2>/dev/null" > "$LOGS/stub-app-libs-missing.out" 2>&1 || STUB_RC=$?
 assert_eq "stub: missing app libs dir rc=1" "1" "$STUB_RC"
 
+PAYLOAD_LS_OUT="$LOGS/stub-payload-files.out"
+FAKE_HDC_STATE="$STATE_DIR/contract-payload" "$STUB" shell "ls -l /data/storage/el2/base/haps/entry/files/ 2>/dev/null" > "$PAYLOAD_LS_OUT" 2>&1 || true
+assert_contains "stub: payload listing has the dotnet dir" "files/dotnet" "$PAYLOAD_LS_OUT"
+assert_contains "stub: payload listing has dotnet.marker" "dotnet.marker" "$PAYLOAD_LS_OUT"
+STUB_RC=0
+FAKE_HDC_STATE="$STATE_DIR/contract-payload-missing" FAKE_HDC_MISSING_PAYLOAD=1 \
+    "$STUB" shell "ls -l /data/storage/el2/base/haps/entry/files/ 2>/dev/null" > "$LOGS/stub-payload-missing.out" 2>&1 || STUB_RC=$?
+assert_eq "stub: missing payload dir rc=1" "1" "$STUB_RC"
+MARKER_OUT="$LOGS/stub-payload-marker.out"
+FAKE_HDC_STATE="$STATE_DIR/contract-marker" "$STUB" shell "cat /data/storage/el2/base/haps/entry/files/dotnet.marker 2>/dev/null" > "$MARKER_OUT" 2>&1 || true
+assert_contains "stub: payload marker has zipSize" "zipSize" "$MARKER_OUT"
+
+BOOT_OUT="$LOGS/stub-bootstrap-hilog.out"
+FAKE_HDC_STATE="$STATE_DIR/contract-bootstrap" FAKE_HDC_BOOTSTRAP_ERRORS=1 "$STUB" hilog > "$BOOT_OUT" 2>&1 || true
+assert_contains "stub: bootstrap hilog has GetRawFileContent failed" "GetRawFileContent failed" "$BOOT_OUT"
+assert_contains "stub: bootstrap hilog has BusinessError 900003" "900003" "$BOOT_OUT"
+assert_contains "stub: bootstrap hilog has MUSL-LDSO line" "MUSL-LDSO" "$BOOT_OUT"
+assert_not_contains "stub: default hilog stays free of bootstrap failures" "bootstrap failed" "$HILOG_OUT"
+
 FAKE_HDC_STATE="$STATE_DIR/contract-proc" "$STUB" shell "cat /proc/sys/kernel/xpm/xpm_mode" > "$LOGS/stub-xpm-mode.out" 2>&1 || true
 assert_eq "stub: xpm_mode answers 2" "2" "$(tr -d '\r\n' < "$LOGS/stub-xpm-mode.out")"
 FAKE_HDC_STATE="$STATE_DIR/contract-proc" "$STUB" shell "cat /proc/sys/fs/verity/require_signatures" > "$LOGS/stub-verity.out" 2>&1 || true
@@ -683,6 +760,33 @@ if prepare_report "$ARCHIVE_S2" "$WORK/x-success" out-success; then
     assert_contains "S2 app libs listing has the host lib" "libopenharmonyhost.so" "$REPORT/device/app-libs-arm64.txt"
     assert_eq "S2 summary app_libs_arm64=ok" "ok" "$(sum_val "$S" app_libs_arm64)"
     assert_gt "S2 summary app_libs_arm64_lines > 0" 0 "$(sum_val "$S" app_libs_arm64_lines)"
+
+    # kit hap self-check + payload + bootstrap/rawfile evidence (kit #22 findings)
+    assert_file "S2 meta/kit-selfcheck.txt in archive" "$REPORT/meta/kit-selfcheck.txt"
+    assert_contains "S2 kit-selfcheck names the main hap" "$(basename "$MAIN_HAP")" "$REPORT/meta/kit-selfcheck.txt"
+    if [ "$SELFCHECK_OK" = 1 ]; then
+        assert_eq "S2 summary kit_index_ok=yes" "yes" "$(sum_val "$S" kit_index_ok)"
+        assert_matches "S2 kit-selfcheck reads resources.index size" 'index=[0-9]+ libs=[0-9]+ abc=' "$REPORT/meta/kit-selfcheck.txt"
+        assert_matches "S2 kit-selfcheck reads a PANDA abc version" 'abc=[^ :]+:[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+' "$REPORT/meta/kit-selfcheck.txt"
+    else
+        skip "S2 kit-selfcheck values (no python3/unzip on this host)"
+    fi
+    assert_file "S2 device payload-files.txt in archive" "$REPORT/device/payload-files.txt"
+    assert_contains "S2 payload listing keeps the dotnet dir" "files/dotnet" "$REPORT/device/payload-files.txt"
+    assert_contains "S2 payload listing keeps dotnet.marker" "dotnet.marker" "$REPORT/device/payload-files.txt"
+    assert_not_contains "S2 payload listing filters unrelated files" "note.txt" "$REPORT/device/payload-files.txt"
+    assert_eq "S2 summary payload_present=yes" "yes" "$(sum_val "$S" payload_present)"
+    assert_gt "S2 summary payload_files > 0" 0 "$(sum_val "$S" payload_files)"
+    assert_eq "S2 summary payload_marker=ok" "ok" "$(sum_val "$S" payload_marker)"
+    assert_file "S2 device payload-marker.txt in archive" "$REPORT/device/payload-marker.txt"
+    assert_contains "S2 payload marker has zipSize" "zipSize" "$REPORT/device/payload-marker.txt"
+    assert_file "S2 hilog-bootstrap.txt in archive" "$REPORT/hilog/hilog-bootstrap.txt"
+    assert_eq "S2 summary bootstrap_capture=ok" "ok" "$(sum_val "$S" bootstrap_capture)"
+    assert_eq "S2 summary bootstrap_lines=0 (empty tolerated)" "0" "$(sum_val "$S" bootstrap_lines)"
+    assert_eq "S2 summary bootstrap_errors=0" "0" "$(sum_val "$S" bootstrap_errors)"
+    assert_eq "S2 summary rawfile_errors=0" "0" "$(sum_val "$S" rawfile_errors)"
+    assert_eq "S2 summary libload_errors=0" "0" "$(sum_val "$S" libload_errors)"
+
     assert_eq "S2 summary xpm_mode=2" "2" "$(sum_val "$S" xpm_mode)"
     assert_eq "S2 summary verity_require_signatures=1" "1" "$(sum_val "$S" verity_require_signatures)"
     assert_file "S2 device xpm_mode.txt in archive" "$REPORT/device/xpm_mode.txt"
@@ -747,6 +851,8 @@ assert_contains "S2 stub called kmsg stream" "shell hilog -t kmsg" "$CALLS_S2"
 assert_contains "S2 stub called xpm_mode cat" "shell cat /proc/sys/kernel/xpm/xpm_mode" "$CALLS_S2"
 assert_contains "S2 stub called require_signatures cat" "shell cat /proc/sys/fs/verity/require_signatures" "$CALLS_S2"
 assert_contains "S2 stub called app libs ls" "shell ls -l /data/storage/el1/bundle/libs/arm64/" "$CALLS_S2"
+assert_contains "S2 stub called payload files ls" "shell ls -l /data/storage/el2/base/haps/entry/files/" "$CALLS_S2"
+assert_contains "S2 stub called payload marker cat" "shell cat /data/storage/el2/base/haps/entry/files/dotnet.marker" "$CALLS_S2"
 assert_scenario_sandbox "S2"
 
 # ---- S3: install failure path --------------------------------------------------------
@@ -1046,6 +1152,91 @@ else
     skip "S10b valid fallback control needs python3"
 fi
 assert_not_exists "S10 creates no ESCAPED file" "$WORK/ESCAPED.txt"
+
+# ---- S11: bootstrap/rawfile failure signatures ---------------------------------------
+# The stub switches on the reference failure lines of the device report §4/§7; the archiver must
+# keep them verbatim and count them (bootstrap/rawfile/libload) without failing the round.
+section "S11 bootstrap/rawfile failure signatures (FAKE_HDC_BOOTSTRAP_ERRORS=1)"
+run_tester S11 "FAKE_HDC_BOOTSTRAP_ERRORS=1" --kit-dir "$KIT" --install --capture 1 --out "$WORK/out-bootstrap"
+assert_eq "S11 exit code 0 (evidence-only, log: $LOGS/S11.log)" "0" "$RC"
+
+ARCHIVE_S11="$(report_archive out-bootstrap)"
+assert_file "S11 report archive produced" "$ARCHIVE_S11"
+if prepare_report "$ARCHIVE_S11" "$WORK/x-bootstrap" out-bootstrap; then
+    S="$REPORT/summary.txt"
+    B="$REPORT/hilog/hilog-bootstrap.txt"
+    assert_file "S11 hilog-bootstrap.txt in archive" "$B"
+    assert_contains "S11 keeps bootstrap failed line" "bootstrap failed" "$B"
+    assert_contains "S11 keeps GetRawFileContent line" "GetRawFileContent failed" "$B"
+    assert_contains "S11 keeps BusinessError 900002 line" "900002" "$B"
+    assert_contains "S11 keeps ZIP entry 900003 line" "900003" "$B"
+    assert_contains "S11 keeps symbol not found line" "symbol not found" "$B"
+    assert_contains "S11 keeps MUSL-LDSO namespace line" "check ns accessible failed" "$B"
+    assert_contains "S11 keeps Museum line" "Museum" "$B"
+    assert_eq "S11 summary bootstrap_capture=ok" "ok" "$(sum_val "$S" bootstrap_capture)"
+    assert_eq "S11 summary bootstrap_lines=8" "8" "$(sum_val "$S" bootstrap_lines)"
+    assert_eq "S11 summary bootstrap_errors=5" "5" "$(sum_val "$S" bootstrap_errors)"
+    assert_eq "S11 summary rawfile_errors=5" "5" "$(sum_val "$S" rawfile_errors)"
+    assert_eq "S11 summary libload_errors=2" "2" "$(sum_val "$S" libload_errors)"
+    assert_eq "S11 summary failures=0 (signatures are evidence, not a step failure)" "0" "$(sum_val "$S" failures)"
+else
+    bad "S11 report archive could not be extracted ($ARCHIVE_S11)"
+fi
+assert_scenario_sandbox "S11"
+
+# ---- S12: missing payload dir + marker tolerated -------------------------------------
+section "S12 missing payload dir + marker tolerated (FAKE_HDC_MISSING_PAYLOAD=1)"
+run_tester S12 "FAKE_HDC_MISSING_PAYLOAD=1" --kit-dir "$KIT" --install --capture 1 --out "$WORK/out-nopayload"
+assert_eq "S12 exit code 0 (log: $LOGS/S12.log)" "0" "$RC"
+
+ARCHIVE_S12="$(report_archive out-nopayload)"
+assert_file "S12 report archive produced" "$ARCHIVE_S12"
+if prepare_report "$ARCHIVE_S12" "$WORK/x-nopayload" out-nopayload; then
+    S="$REPORT/summary.txt"
+    assert_file "S12 payload-files.txt kept (empty)" "$REPORT/device/payload-files.txt"
+    assert_eq "S12 payload-files.txt is empty" "0" "$(wc -l < "$REPORT/device/payload-files.txt" | tr -d ' ')"
+    assert_file "S12 payload-marker.txt kept (empty)" "$REPORT/device/payload-marker.txt"
+    assert_eq "S12 payload-marker.txt is empty" "" "$(cat "$REPORT/device/payload-marker.txt" 2>/dev/null)"
+    assert_eq "S12 summary payload_present=no" "no" "$(sum_val "$S" payload_present)"
+    assert_eq "S12 summary payload_files=0" "0" "$(sum_val "$S" payload_files)"
+    assert_eq "S12 summary payload_marker=empty" "empty" "$(sum_val "$S" payload_marker)"
+    assert_eq "S12 summary bootstrap_capture=ok (hilog still captured)" "ok" "$(sum_val "$S" bootstrap_capture)"
+    assert_eq "S12 summary failures=0 (missing payload tolerated)" "0" "$(sum_val "$S" failures)"
+else
+    bad "S12 report archive could not be extracted ($ARCHIVE_S12)"
+fi
+assert_scenario_sandbox "S12"
+
+# ---- S13: kit hap without resources.index + no capture window ------------------------
+# Two degradations at once: kit_index_ok=no (the resource-manager root cause of §4.2) and a
+# device round without a hilog window (bootstrap counts become <unavailable>, not a fake 0).
+section "S13 kit without resources.index -> kit_index_ok=no; no capture -> counts <unavailable>"
+make_synthetic_kit "$WORK/kit-noindex"
+make_hap "$WORK/kit-noindex/hello-maui-app.hap" "com.example.hellomauiapp" "entry" 0
+( cd "$WORK/kit-noindex" && sha256sum hello-maui-app.hap hello-maui-app-api20.hap verify-kit.sh > SHA256SUMS )
+run_tester S13 "" --kit-dir "$WORK/kit-noindex" --install --out "$WORK/out-noindex"
+assert_eq "S13 exit code 0 (log: $LOGS/S13.log)" "0" "$RC"
+
+ARCHIVE_S13="$(report_archive out-noindex)"
+assert_file "S13 report archive produced" "$ARCHIVE_S13"
+if prepare_report "$ARCHIVE_S13" "$WORK/x-noindex" out-noindex; then
+    S="$REPORT/summary.txt"
+    assert_file "S13 meta/kit-selfcheck.txt in archive" "$REPORT/meta/kit-selfcheck.txt"
+    if [ "$SELFCHECK_OK" = 1 ]; then
+        assert_contains "S13 selfcheck shows index=missing" "index=missing" "$REPORT/meta/kit-selfcheck.txt"
+        assert_eq "S13 summary kit_index_ok=no" "no" "$(sum_val "$S" kit_index_ok)"
+    else
+        skip "S13 kit-selfcheck values (no python3/unzip on this host)"
+    fi
+    assert_eq "S13 summary bootstrap_capture=not_captured" "not_captured" "$(sum_val "$S" bootstrap_capture)"
+    assert_eq "S13 summary bootstrap_errors=<unavailable>" "<unavailable>" "$(sum_val "$S" bootstrap_errors)"
+    assert_eq "S13 summary rawfile_errors=<unavailable>" "<unavailable>" "$(sum_val "$S" rawfile_errors)"
+    assert_eq "S13 summary payload_present=yes (stub device has a payload)" "yes" "$(sum_val "$S" payload_present)"
+    assert_eq "S13 summary failures=0" "0" "$(sum_val "$S" failures)"
+else
+    bad "S13 report archive could not be extracted ($ARCHIVE_S13)"
+fi
+assert_scenario_sandbox "S13"
 
 # ---- global: nothing outside the temp dir --------------------------------------------
 section "global: no state outside the temp dir"

@@ -16,7 +16,11 @@
 #   5 collect+pack  captures, installed-hap module.json, device info (param get + UDID),
 #       ELF-signing evidence (xpm_mode, fs-verity require_signatures, hap SoInfoSegment magic
 #       count, optional --compare-lib display-sign), app-lib path evidence (hilog greps + bundle
-#       libs listing), kit hashes, machine-readable summary; tar -> tester-report-<stamp>.tar.gz
+#       libs listing), bootstrap/rawfile failure signatures (hilog-bootstrap.txt + summary
+#       counts), device-side payload state (files dir listing + dotnet.marker first line),
+#       kit hap self-check (meta/kit-selfcheck.txt: resources.index size, libs/arm64-v8a
+#       count, abc header version), kit hashes, machine-readable summary;
+#       tar -> tester-report-<stamp>.tar.gz
 # Safety: dry-run by default. Nothing is installed/started/removed/recorded unless the matching
 # flag is given (--install --uninstall --start --capture --probes --extra-probes). Without a
 # device (hdc list targets) device steps are refused: with an action flag it stops immediately,
@@ -35,8 +39,9 @@
 #      module.json cannot be read), TMPDIR.
 set -e
 
-# Bumped with every release repack: the kit release notes' "Bundled tester-run.sh" revision.
-SCRIPT_VERSION="6 (2026-09-24)"
+# Bumped with every release repack (随发布重打包递增): the kit release notes' "Bundled
+# tester-run.sh" revision.
+SCRIPT_VERSION="7 (2026-09-24)"
 
 log()  { printf '[%s] %s\n' "$(date '+%H:%M:%S')" "$*"; }
 warn() { printf '[%s] WARN: %s\n' "$(date '+%H:%M:%S')" "$*" >&2; }
@@ -65,7 +70,7 @@ usage() {
                              probes/extra-<名>-hilog.txt，命中行并入 probes/probe-all-lines.txt；
                              可重复给出，或用逗号分隔多个目录（重复目录只处理一次）
 
-证据（ELF 代码签名，自动采集；判定规则见研究文档 §6）:
+证据（自动采集、缺失容忍；ELF 判定规则见研究文档 §6，真机失败串见验证报告 §4/§7）:
   每个录制窗口同时执行 hdc shell "hilog -t kmsg" -> kmsg/kmsg.log（并过滤出 kmsg-filtered.log）；
   采集 /proc/sys/kernel/xpm/xpm_mode 与 /proc/sys/fs/verity/require_signatures（路径缺失容忍）；
   统计所装 hap 的 SoInfoSegment magic（0x20e7d20e）命中数，均写入 summary.txt。
@@ -73,6 +78,17 @@ usage() {
   hilog/hilog-applib.txt（SetAppLibPath|appLibPathKey|NativeLibPath|lib path）与
   hilog/hilog-dlopen.txt（dlopen|cannot find library|openharmonyhost），并采集
   ls -l /data/storage/el1/bundle/libs/arm64/ -> device/app-libs-arm64.txt。
+  bootstrap/rawfile 失败特征（真机报告 §4/§7 的失败串，缺失容忍）：对所有已捕获 hilog 窗口再
+  过滤 GetRawFileContent|bootstrap failed|bootstrap retry|BusinessError|900002|900003|
+  ZIP entry|destination path|Load native module failed|symbol not found|cannot find library|
+  Museum|MUSL-LDSO|check ns accessible -> hilog/hilog-bootstrap.txt；命中计数写入 summary
+  （bootstrap_errors/rawfile_errors/libload_errors；未录到窗口记 <unavailable>）。
+  设备侧 payload 状态（缺失容忍）：ls -l /data/storage/el2/base/haps/entry/files/ 保留
+  dotnet*/payload 行 -> device/payload-files.txt，再读一行 files/dotnet.marker ->
+  device/payload-marker.txt；payload_present/payload_files/payload_marker 写入 summary。
+  kit 侧 hap 自检（本地，独立于 verify-kit）：每个 kit hap 的 resources.index 有无与大小、
+  libs/arm64-v8a 计数、ets/modules.abc 头版本（PANDA 头部 0x0c 起 4 字节）-> meta/kit-selfcheck.txt
+  （≤10 行）；kit_index_ok 写入 summary。dry-run 只打印不落盘。
   --compare-lib <path>       本机对照一个能跑的第三方 app 的 lib：若 PATH 上有
                              binary-sign-tool，就执行 display-sign -inFile <path> 并收下输出
 
@@ -125,6 +141,14 @@ FILTER_RE='hellomaui|maui|dotnet|openharmonyhost|AppKilledReporter|JsError|appsp
 FILTER_KMSG_RE='xpm|unsigned file|fs_security_verity|libopenharmonyhost|hellomauiapp'
 FILTER_APPLIB_RE='SetAppLibPath|appLibPathKey|NativeLibPath|lib path'
 FILTER_DLOPEN_RE='dlopen|cannot find library|openharmonyhost'
+# Device findings (bootstrap/rawfile/hap-load failures) reproduce as these signatures; the
+# filter is deliberately wider than the summary error counters below.
+FILTER_BOOTSTRAP_RE='GetRawFileContent|bootstrap failed|bootstrap retry|BusinessError|900002|900003|ZIP entry|destination path|Load native module failed|symbol not found|cannot find library|Museum|MUSL-LDSO|check ns accessible'
+FILTER_BOOTSTRAP_ERR_RE='bootstrap failed|bootstrap .*retry'
+FILTER_RAWFILE_ERR_RE='GetRawFileContent|BusinessError|900002|900003|ZIP entry|destination path'
+FILTER_LIBLOAD_ERR_RE='Load native module failed|symbol not found|cannot find library|MUSL-LDSO|check ns accessible'
+# App sandbox files dir: dotnet/ payload + dotnet.marker (read-only, absence tolerated).
+DEV_FILES_DIR='/data/storage/el2/base/haps/entry/files'
 DEV_KEYS="const.product.model const.product.brand const.product.name const.product.devicetype const.product.software.version const.ohos.apiversion const.ohos.fullname const.product.cpu.abilist const.build.characteristics"
 FAILURES=0
 TMP=""
@@ -159,6 +183,15 @@ SOINFO_HITS="<unavailable>"
 SOINFO_VERDICT="unavailable"
 SOINFO_HAP=""
 COMPARE_LIB_RESULT=""
+BOOTSTRAP_RESULT="not_captured"
+BOOTSTRAP_LINES=0
+BOOTSTRAP_ERRORS="<unavailable>"
+RAWFILE_ERRORS="<unavailable>"
+LIBLOAD_ERRORS="<unavailable>"
+PAYLOAD_PRESENT="<unavailable>"
+PAYLOAD_FILES_LINES=0
+PAYLOAD_MARKER="<unavailable>"
+KIT_INDEX_OK="<unavailable>"
 
 while [ $# -gt 0 ]; do
     case "$1" in
@@ -338,6 +371,16 @@ line_count() {
     else
         printf '0'
     fi
+}
+
+# Matching-line count of a grep -E pattern in a file: grep -c prints 0 and exits 1 when nothing
+# matches, so the count is normalized here (never propagate the rc, callers run under set -e).
+match_count() {
+    _mc="$(grep -E -c -- "$1" "$2" 2>/dev/null || true)"
+    case "$_mc" in
+        ''|*[!0-9]*) printf '0' ;;
+        *) printf '%s' "$_mc" ;;
+    esac
 }
 
 # ---- device gate ---------------------------------------------------------------------
@@ -586,6 +629,65 @@ kit_hash_of() {
     sha256sum "$1" | cut -d' ' -f1
 }
 
+# ---- kit hap self-check (local; complements verify-kit.sh, no heavy re-implementation) ----
+# One line per kit hap: resources.index size, libs/arm64-v8a entry count, abc header version
+# ("PANDA" magic + version bytes at 0x0c, same shape build-arkts-shell.sh checks). The device
+# failure classes it localizes: missing resources.index ("name is empty"), a hap that lost its
+# libs, an abc the device runtime rejects. Reading zip central directories is cheap; the files
+# stay untouched. Output: at most 10 lines, first line a comment.
+kit_selfcheck() {
+    printf '# kit hap self-check (tester-run.sh v%s): resources.index / libs/arm64-v8a / abc\n' "${SCRIPT_VERSION%% *}"
+    if command -v python3 >/dev/null 2>&1; then
+        python3 - "$KIT_DIR" <<'PY'
+import os, sys, zipfile
+kit = sys.argv[1]
+haps = sorted(n for n in os.listdir(kit) if n.endswith('.hap'))
+if not haps:
+    print('# no *.hap in the kit root')
+for name in haps:
+    try:
+        with zipfile.ZipFile(os.path.join(kit, name)) as z:
+            names = z.namelist()
+            idx = z.getinfo('resources.index').file_size if 'resources.index' in names else 'missing'
+            libs = sum(1 for n in names if n.startswith('libs/arm64-v8a/') and not n.endswith('/'))
+            abc = 'missing'
+            for n in sorted(n for n in names if n.endswith('.abc')):
+                raw = z.read(n)[:16]
+                if raw[:5] == b'PANDA':
+                    abc = '%s:%s:%d' % (n, '.'.join(str(b) for b in raw[12:16]), z.getinfo(n).file_size)
+                    break
+        print('%s index=%s libs=%s abc=%s' % (name, idx, libs, abc))
+    except Exception as exc:
+        print('%s error=%s' % (name, exc))
+PY
+    elif command -v unzip >/dev/null 2>&1; then
+        for _sf in "$KIT_DIR"/*.hap; do
+            [ -f "$_sf" ] || continue
+            _sname="$(basename "$_sf")"
+            _slist="$(unzip -l "$_sf" 2>/dev/null || true)"
+            _sidx="$(printf '%s\n' "$_slist" | awk '$NF == "resources.index" { printf "%s", $1; found = 1; exit } END { if (!found) printf "missing" }')"
+            _slibs="$(printf '%s\n' "$_slist" | awk '$NF ~ /^libs\/arm64-v8a\/.+/ { n++ } END { print n + 0 }')"
+            _sabc="missing"
+            _sver="$(unzip -p "$_sf" ets/modules.abc 2>/dev/null | dd bs=1 count=16 2>/dev/null | od -An -v -tu1 2>/dev/null | awk '{ for (i = 1; i <= NF; i++) a[++n] = $i } END { if (n >= 16 && a[1] == 80 && a[2] == 65 && a[3] == 78 && a[4] == 68 && a[5] == 65) printf "%d.%d.%d.%d", a[13], a[14], a[15], a[16] }')"
+            [ -n "$_sver" ] && _sabc="ets/modules.abc:$_sver"
+            printf '%s index=%s libs=%s abc=%s\n' "$_sname" "$_sidx" "$_slibs" "$_sabc"
+        done
+    else
+        printf '# kit self-check unavailable (need python3 or unzip)\n'
+    fi
+}
+
+# kit_index_ok from a kit-selfcheck emission: yes = every hap carries resources.index.
+kit_index_ok_of() {
+    if [ ! -s "$1" ] || ! grep -Eq '^[^#].*index=' "$1" 2>/dev/null; then
+        printf '<unavailable>'
+    elif grep -Eq '^[^#].*index=missing' "$1" 2>/dev/null; then
+        printf 'no'
+    else
+        printf 'yes'
+    fi
+}
+
 KIT_SNAP_BEFORE="$(kit_root_stat_snapshot)"
 _rc=0
 if [ -n "$EXPECT_TREE" ]; then
@@ -606,6 +708,21 @@ if [ "$KIT_SUMS_TRUSTED" = 1 ]; then
     log "   kit 自检 OK（tree digest ${TREE_DIGEST:-<未打印>}；hap 哈希复用本次已校验的 SHA256SUMS）"
 else
     log "   kit 自检 OK（tree digest ${TREE_DIGEST:-<未打印>}；校验窗口内文件发生变化，hap 哈希重算）"
+fi
+
+# Local hap-level self-check (complements verify-kit.sh, independent of the device): printed in
+# every round (dry-run included), archived as meta/kit-selfcheck.txt only in a device round.
+kit_selfcheck > "$TMP/kit-selfcheck.txt" 2> "$TMP/kit-selfcheck.err" || true
+KIT_INDEX_OK="$(kit_index_ok_of "$TMP/kit-selfcheck.txt")"
+log "   kit hap 自检（本地）: kit_index_ok=$KIT_INDEX_OK"
+while IFS= read -r _ks_line; do
+    log "     $_ks_line"
+done < "$TMP/kit-selfcheck.txt"
+if [ -s "$TMP/kit-selfcheck.err" ]; then
+    warn "   kit hap 自检有 stderr 输出（不影响本轮；见下）"
+    while IFS= read -r _ks_err; do
+        warn "     $_ks_err"
+    done < "$TMP/kit-selfcheck.err"
 fi
 
 if [ -n "$HAPS" ]; then
@@ -1136,6 +1253,9 @@ if [ "$DO_DEVICE" = 0 ]; then
     log "   [dry-run] 将采集: hilog+kmsg 捕获、module.json、param get + UDID、kit 哈希、summary.txt"
     log "   [dry-run] 将采集 ELF 签名证据: xpm_mode/require_signatures、SoInfoSegment magic 计数"
     log "   [dry-run] 将采集 app-lib 路径证据: hilog 过滤（appLibPathKey/dlopen）+ bundle libs 目录列表"
+    log "   [dry-run] 将采集 bootstrap/rawfile 失败特征: hilog 再过滤 -> hilog/hilog-bootstrap.txt + summary 计数"
+    log "   [dry-run] 将采集 payload 状态: ls -l $DEV_FILES_DIR/ + 读一行 dotnet.marker -> device/payload-*.txt"
+    log "   [dry-run] kit hap 自检已在上方打印；设备轮会写入 meta/kit-selfcheck.txt"
     if [ -n "$COMPARE_LIB" ]; then
         log "   [dry-run] 本地对照: binary-sign-tool display-sign -inFile $COMPARE_LIB（若工具在 PATH 上）"
     fi
@@ -1150,6 +1270,7 @@ else
     cp -f "$KIT_DIR/SHA256SUMS" "$OUT/meta/SHA256SUMS"
     cp -f "$TMP/verify-kit.log" "$OUT/meta/verify-kit.log"
     cp -f "$TMP/kit-hap-sha256.txt" "$OUT/meta/kit-hap-sha256.txt" 2>/dev/null || true
+    cp -f "$TMP/kit-selfcheck.txt" "$OUT/meta/kit-selfcheck.txt" 2>/dev/null || true
     printf 'tester-run.sh version %s\n' "$SCRIPT_VERSION" > "$OUT/meta/tester-run.version.txt"
     if [ -n "$KIT_TAR" ]; then
         printf '%s  %s\n' "$KIT_TAR_SHA" "$(basename "$KIT_TAR")" > "$OUT/meta/kit-tar-sha256.txt"
@@ -1226,6 +1347,33 @@ else
         warn "   app-lib 路径证据未采集（本轮没有 hilog 录制窗口）"
     fi
 
+    # ---- bootstrap/rawfile failure signatures (device report §4; an empty result is fine) ----
+    # Same windows as the app-lib greps. The counters feed the summary so a failed round can be
+    # localized without opening the raw hilog: bootstrap_errors (bootstrap/retry), rawfile_errors
+    # (GetRawFileContent / BusinessError 900002-900003 / ZIP entry / destination path) and
+    # libload_errors (namespace / missing symbol / module load).
+    : > "$OUT/hilog/hilog-bootstrap.txt"
+    _bs_seen=0
+    for _f in "$OUT/hilog/hilog-full.txt" "$OUT/probes"/*-hilog.txt; do
+        [ -s "$_f" ] || continue
+        _bs_seen=1
+        filter_append "$FILTER_BOOTSTRAP_RE" "$_f" "$OUT/hilog/hilog-bootstrap.txt"
+    done
+    if [ "$_bs_seen" = 1 ]; then
+        BOOTSTRAP_RESULT="ok"
+        BOOTSTRAP_LINES="$(line_count "$OUT/hilog/hilog-bootstrap.txt")"
+        BOOTSTRAP_ERRORS="$(match_count "$FILTER_BOOTSTRAP_ERR_RE" "$OUT/hilog/hilog-bootstrap.txt")"
+        RAWFILE_ERRORS="$(match_count "$FILTER_RAWFILE_ERR_RE" "$OUT/hilog/hilog-bootstrap.txt")"
+        LIBLOAD_ERRORS="$(match_count "$FILTER_LIBLOAD_ERR_RE" "$OUT/hilog/hilog-bootstrap.txt")"
+        log "   bootstrap/rawfile 特征 -> $OUT/hilog/hilog-bootstrap.txt（${BOOTSTRAP_LINES} 行；bootstrap_errors=$BOOTSTRAP_ERRORS rawfile_errors=$RAWFILE_ERRORS libload_errors=$LIBLOAD_ERRORS）"
+        if [ "$BOOTSTRAP_ERRORS" -gt 0 ] || [ "$RAWFILE_ERRORS" -gt 0 ] || [ "$LIBLOAD_ERRORS" -gt 0 ]; then
+            warn "   命中 bootstrap/rawfile/libload 失败特征（原文见 hilog-bootstrap.txt；不影响本轮退出码）"
+        fi
+    else
+        BOOTSTRAP_RESULT="not_captured"
+        warn "   bootstrap/rawfile 特征未采集（本轮没有 hilog 录制窗口；summary 计数记 <unavailable>）"
+    fi
+
     # device-side bundle libs listing (research doc §8.4 check 2); absence/empty tolerated.
     # Only stdout lands in the report (a missing dir says so on stderr and must not count as a line).
     APPLIBS_DIR_FILE="$OUT/device/app-libs-arm64.txt"
@@ -1238,6 +1386,35 @@ else
     else
         APPLIBS_DIR_RESULT="empty"
         warn "   bundle libs 目录为空（rc=$_av_rc；/data/storage/el1/bundle/libs/arm64/ 不存在或不可读；容忍）"
+    fi
+
+    # ---- device-side payload state (dotnet/ unpack; missing dir/marker tolerated) ----
+    # The unpacked payload lives in <filesDir>/dotnet and the unpack marker one level up
+    # (<filesDir>/dotnet.marker, one JSON line); a half-written payload has no marker. Both
+    # reads are read-only and stay as empty evidence on absence.
+    PAYLOAD_FILES_FILE="$OUT/device/payload-files.txt"
+    PAYLOAD_MARKER_FILE="$OUT/device/payload-marker.txt"
+    : > "$PAYLOAD_FILES_FILE"
+    : > "$PAYLOAD_MARKER_FILE"
+    _pf_rc=0
+    hdc_cmd shell "ls -l $DEV_FILES_DIR/ 2>/dev/null" > "$TMP/payload-files.raw" 2>/dev/null || _pf_rc=$?
+    grep -E 'dotnet|payload' "$TMP/payload-files.raw" > "$PAYLOAD_FILES_FILE" 2>/dev/null || true
+    PAYLOAD_FILES_LINES="$(line_count "$PAYLOAD_FILES_FILE")"
+    _marker_line="$(hdc_cmd shell "cat $DEV_FILES_DIR/dotnet.marker 2>/dev/null" 2>/dev/null | tr -d '\r' | sed -n '1{s/^[[:space:]]*//;s/[[:space:]]*$//;p;}')"
+    if [ -n "$_marker_line" ]; then
+        printf '%s\n' "$_marker_line" > "$PAYLOAD_MARKER_FILE"
+        PAYLOAD_MARKER="ok"
+    else
+        PAYLOAD_MARKER="empty"
+    fi
+    if [ "$PAYLOAD_FILES_LINES" -gt 0 ] || [ "$PAYLOAD_MARKER" = ok ]; then
+        PAYLOAD_PRESENT="yes"
+    else
+        PAYLOAD_PRESENT="no"
+    fi
+    log "   payload 状态 -> $PAYLOAD_FILES_FILE（${PAYLOAD_FILES_LINES} 行，rc=$_pf_rc）/ marker=${PAYLOAD_MARKER}（payload_present=$PAYLOAD_PRESENT）"
+    if [ "$PAYLOAD_PRESENT" = no ]; then
+        warn "   未见 dotnet payload/marker（$DEV_FILES_DIR；首次启动前属正常，缺失容忍）"
     fi
 
     XPM_MODE="$(proc_value /proc/sys/kernel/xpm/xpm_mode)"
@@ -1320,6 +1497,15 @@ else
         printf 'dlopen_lines=%s\n' "$DLOPEN_LINES"
         printf 'app_libs_arm64=%s\n' "$APPLIBS_DIR_RESULT"
         printf 'app_libs_arm64_lines=%s\n' "$APPLIBS_DIR_LINES"
+        printf 'bootstrap_capture=%s\n' "$BOOTSTRAP_RESULT"
+        printf 'bootstrap_lines=%s\n' "$BOOTSTRAP_LINES"
+        printf 'bootstrap_errors=%s\n' "$BOOTSTRAP_ERRORS"
+        printf 'rawfile_errors=%s\n' "$RAWFILE_ERRORS"
+        printf 'libload_errors=%s\n' "$LIBLOAD_ERRORS"
+        printf 'payload_present=%s\n' "$PAYLOAD_PRESENT"
+        printf 'payload_files=%s\n' "$PAYLOAD_FILES_LINES"
+        printf 'payload_marker=%s\n' "$PAYLOAD_MARKER"
+        printf 'kit_index_ok=%s\n' "$KIT_INDEX_OK"
         printf 'xpm_mode=%s\n' "$XPM_MODE"
         printf 'verity_require_signatures=%s\n' "$VERITY_REQ"
         printf 'soinfosegment_hap=%s\n' "$SOINFO_HAP"
@@ -1360,8 +1546,9 @@ log "归档:   $ARCHIVE"
 log "sha256: $(cut -d' ' -f1 "$ARCHIVE.sha256")"
 log "回传:   把 $ARCHIVE（连同 .sha256）发给交付方 —— 与收到 device-test-kit 相同的渠道"
 log "        （邮件/IM/工单）；GitHub 用户可附到 springmin/sdk-ohos 的 issue。"
-log "        归档内已有：hilog/（含 applib/dlopen 过滤）、kmsg/、probes/、meta/module.json、"
-log "        device/udid.txt、device/app-libs-arm64.txt、summary.txt。"
+log "        归档内已有：hilog/（含 applib/dlopen/bootstrap 过滤）、kmsg/、probes/、meta/module.json、"
+log "        meta/kit-selfcheck.txt、device/udid.txt、device/app-libs-arm64.txt、"
+log "        device/payload-files.txt、device/payload-marker.txt、summary.txt。"
 if [ "$FAILURES" -gt 0 ]; then
     warn "本轮有 $FAILURES 项未通过：详情见 $OUT/summary.txt"
     exit 1
