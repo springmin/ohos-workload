@@ -54,15 +54,30 @@
 # Exit: 0 = all checks passed; 1 = at least one check failed (work dir kept for triage).
 set -u
 
-SELFTEST_VERSION="5 (2026-09-24)"
+SELFTEST_VERSION="6 (2026-09-24)"
 
 log()  { printf '[%s] %s\n' "$(date '+%H:%M:%S')" "$*"; }
 section() { printf '\n=== %s ===\n' "$*"; }
 
 # ---- paths ---------------------------------------------------------------------------
-SELFTEST_DIR="$(cd "$(dirname "$0")" && pwd)"
-ROOT_DIR="$(cd "$SELFTEST_DIR/.." && pwd)"
-TESTER="${SELFTEST_TESTER:-$SELFTEST_DIR/tester-run.sh}"
+# Resolve the script/repo root before anything else. Everything the selftest later uses
+# (work dir, logs, stub, kit, tester script) is anchored to these absolute roots, so the
+# run is identical no matter which cwd `sh selftest-tester-run.sh` is launched from.
+_self_path="$0"
+case "$_self_path" in
+    */*) ;;
+    *) _self_path="$(command -v "$_self_path" 2>/dev/null || printf '%s' "$_self_path")" ;;
+esac
+SELF_DIR="$(cd "$(dirname "$_self_path")" && pwd -P)" || { printf 'FATAL: cannot resolve the selftest directory\n' >&2; exit 1; }
+SELFTEST_DIR="$SELF_DIR"
+REPO_DIR="$(cd "$SELF_DIR/.." && pwd -P)" || REPO_DIR="$SELF_DIR"
+ROOT_DIR="$REPO_DIR"
+TESTER="${SELFTEST_TESTER:-$SELF_DIR/tester-run.sh}"
+# SELFTEST_TESTER may be relative: anchor it to the launch cwd, not to the work dir.
+case "$TESTER" in
+    /*) ;;
+    *) TESTER="$PWD/$TESTER" ;;
+esac
 DEFAULT_KIT="/data/storage/el2/base/tmp/opencode/device-test-kit"
 
 if [ ! -f "$TESTER" ]; then
@@ -86,29 +101,79 @@ elif [ -n "${TMPDIR:-}" ]; then
 else
     WORK_BASE="/tmp"
 fi
-mkdir -p "$WORK_BASE" 2>/dev/null || WORK_BASE="${TMPDIR:-/tmp}"
+# SELFTEST_TMPDIR/TMPDIR can be relative: anchor them to the launch cwd first, then
+# canonicalize, so WORK and every path under it are absolute whatever the cwd does later.
+case "$WORK_BASE" in
+    /*) ;;
+    *) WORK_BASE="$PWD/$WORK_BASE" ;;
+esac
+if ! mkdir -p "$WORK_BASE" 2>/dev/null; then
+    WORK_BASE="${TMPDIR:-/tmp}"
+    case "$WORK_BASE" in
+        /*) ;;
+        *) WORK_BASE="$PWD/$WORK_BASE" ;;
+    esac
+    mkdir -p "$WORK_BASE" 2>/dev/null || true
+fi
+WORK_BASE="$(cd "$WORK_BASE" 2>/dev/null && pwd -P)" || WORK_BASE="/tmp"
 WORK="$(mktemp -d "$WORK_BASE/selftest-tester-run.XXXXXX" 2>/dev/null || true)"
 if [ -z "$WORK" ]; then
-    WORK="${TMPDIR:-/tmp}/selftest-tester-run.$$"
-    mkdir -p "$WORK"
+    WORK="$WORK_BASE/selftest-tester-run.$$"
+    mkdir -p "$WORK" 2>/dev/null || { printf 'FATAL: cannot create a work dir under %s\n' "$WORK_BASE" >&2; exit 1; }
 fi
+WORK="$(cd "$WORK" && pwd -P)" || exit 1
+# Ownership marker: cleanup removes the work dir only while it is still this run's dir.
+WORK_OWNER="$WORK/.selftest-owner"
+printf '%s\n' "$$" > "$WORK_OWNER" 2>/dev/null || true
 
 CHECKS=0
 FAILED=0
 KEEP="${SELFTEST_KEEP:-0}"
+INTERRUPTED=0
+TESTER_JOB=""
+
+# Keep the work dir when a check failed, when asked to, or when the run was interrupted
+# (evidence for triage), and remove it only if this run still owns it: a cleanup that
+# fired mid-run (or belongs to another process) must never pull logs/state/cwd out from
+# under the scenarios that are still executing.
 cleanup() {
-    if [ "$FAILED" -gt 0 ] || [ "$KEEP" = 1 ]; then
+    trap - 0 1 2 15
+    # Converge first: stop the in-flight tester-run.sh (TERM, then KILL, then reap) so no
+    # background work survives the selftest.
+    if [ -n "$TESTER_JOB" ]; then
+        kill "$TESTER_JOB" >/dev/null 2>&1 || true
+        kill -0 "$TESTER_JOB" >/dev/null 2>&1 && kill -9 "$TESTER_JOB" >/dev/null 2>&1 || true
+        wait "$TESTER_JOB" >/dev/null 2>&1 || true
+        TESTER_JOB=""
+    fi
+    if [ "$FAILED" -gt 0 ] || [ "$KEEP" = 1 ] || [ "$INTERRUPTED" = 1 ]; then
         return 0
     fi
-    rm -rf "$WORK" 2>/dev/null || true
+    case "$WORK" in
+        ''|/|.) return 0 ;;
+    esac
+    if [ -f "$WORK_OWNER" ] && [ "$(cat "$WORK_OWNER" 2>/dev/null)" = "$$" ]; then
+        rm -rf "$WORK" 2>/dev/null || true
+    fi
 }
-trap cleanup 0 1 2 15
+trap cleanup 0
+# A signal must terminate the selftest. The old `trap cleanup 0 1 2 15` ran cleanup and
+# then kept executing: the removed work dir made the remaining scenarios cascade
+# (S9b..S13 "can't create .../logs" and "not empty" failures) and the run outlived a
+# caller's timeout.
+trap 'INTERRUPTED=1; exit 1' 1 2 15
 
 CWD="$WORK/cwd"
 TMPD="$WORK/tmp"
 LOGS="$WORK/logs"
 STATE_DIR="$WORK/state"
-mkdir -p "$CWD" "$TMPD" "$LOGS" "$STATE_DIR" "$WORK/bin" "$WORK/haps" "$WORK/probes"
+
+# Recreate the key dirs before each scenario: if an external cleanup removes one
+# mid-run, the next scenario recovers instead of failing with "can't create .../logs".
+ensure_work_dirs() {
+    mkdir -p "$CWD" "$TMPD" "$LOGS" "$STATE_DIR" "$WORK/bin" "$WORK/haps" "$WORK/probes" 2>/dev/null || true
+}
+ensure_work_dirs
 
 # ---- check helpers -------------------------------------------------------------------
 ok()   { CHECKS=$((CHECKS + 1)); printf '  [PASS] %s\n' "$1"; }
@@ -562,11 +627,17 @@ FAIL_HAP_SHA="$(sha256sum "$FAIL_HAP" | cut -d' ' -f1)"
 RC=0
 run_tester() {
     _tag="$1"; _extra="$2"; shift 2
+    ensure_work_dirs
     _log="$LOGS/$_tag.log"
     RC=0
     # $_extra is intentionally unquoted: it carries zero or more `VAR=value` assignments.
-    ( cd "$CWD" && env HDC="$STUB" TMPDIR="$TMPD" FAKE_HDC_STATE="$STATE_DIR/$_tag" \
-        FAKE_HDC_DEVICE="$STUB_DEVICE" PATH="$WORK/bin:$PATH" $_extra sh "$TESTER" "$@" ) > "$_log" 2>&1 || RC=$?
+    # exec keeps $TESTER_JOB pointing at tester-run.sh itself, so an interrupt can stop it
+    # (cleanup kills it and waits) instead of leaving a tester grandchild behind.
+    ( cd "$CWD" && exec env HDC="$STUB" TMPDIR="$TMPD" FAKE_HDC_STATE="$STATE_DIR/$_tag" \
+        FAKE_HDC_DEVICE="$STUB_DEVICE" PATH="$WORK/bin:$PATH" $_extra sh "$TESTER" "$@" ) > "$_log" 2>&1 &
+    TESTER_JOB=$!
+    wait "$TESTER_JOB" || RC=$?
+    TESTER_JOB=""
     return 0
 }
 
@@ -1123,6 +1194,7 @@ fi
 
 # ---- S10: KIT_BUNDLE_NAME source validation ------------------------------------------
 section "S10 KIT_BUNDLE_NAME payload rejected; valid fallback accepted"
+ensure_work_dirs
 RC=0
 ( cd "$CWD" && env HDC="$STUB" TMPDIR="$TMPD" FAKE_HDC_STATE="$STATE_DIR/S10" \
     FAKE_HDC_DEVICE="$STUB_DEVICE" PATH="$WORK/bin:$PATH" \

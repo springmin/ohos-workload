@@ -424,11 +424,16 @@ if [ -z "$TMP" ]; then
     mkdir -p "$TMP"
 fi
 cleanup() {
+    trap - 0 1 2 15
     if [ -n "$HILOG_PID" ]; then kill "$HILOG_PID" >/dev/null 2>&1 || true; fi
     if [ -n "$KMSG_PID" ]; then kill "$KMSG_PID" >/dev/null 2>&1 || true; fi
     if [ -n "$TMP" ] && [ -d "$TMP" ]; then rm -rf "$TMP" || true; fi
 }
-trap cleanup 0 1 2 15
+trap cleanup 0
+# A signal must end the round. With `trap cleanup 0 1 2 15` a TERM only ran cleanup and
+# the script continued issuing device commands against the removed $TMP (found via the
+# selftest: TERM during a capture window kept going into the remaining steps).
+trap 'exit 1' 1 2 15
 RESULTS="$TMP/results.txt"
 : > "$RESULTS"
 record() { printf '%s\n' "$*" >> "$RESULTS"; }
