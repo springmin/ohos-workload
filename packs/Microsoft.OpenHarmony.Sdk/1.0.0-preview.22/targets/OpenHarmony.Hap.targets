@@ -234,6 +234,25 @@
            Text="OpenHarmony packaging requires the OpenHarmony SDK toolchain. Set OpenHarmonySdkRoot (or OHOS_SDK_ROOT) to the SDK root that contains toolchains/lib." />
   </Target>
 
+  <!-- restool comes from the toolchain the packing tool was resolved from: the toolchain
+       directory's sibling (<toolchain dir>/../restool is the SDK's toolchains/restool in the
+       harmonybrew layout), then the configured SDK root. _OpenHarmonyDetectToolchain above
+       already resolved an unset OpenHarmonyToolchainDir (including the Cellar fallback), so
+       either lookup covers the explicit SDK root and the Cellar install; OpenHarmonyRestool
+       overrides both. See "Resource index" in the packaging doc. -->
+  <Target Name="_OpenHarmonyResolveRestool"
+          DependsOnTargets="_OpenHarmonyDetectToolchain"
+          Condition=" '$(OpenHarmonyHapPackage)' == 'true' and '$(TargetPlatformIdentifier)' == 'openharmony' ">
+    <PropertyGroup>
+      <_OpenHarmonySdkRootDir Condition=" '$(OpenHarmonySdkRoot)' != '' ">$([MSBuild]::EnsureTrailingSlash('$(OpenHarmonySdkRoot)'))</_OpenHarmonySdkRootDir>
+      <_OpenHarmonyRestoolNextToToolchain Condition=" '$(OpenHarmonyToolchainDir)' != '' ">$([System.IO.Path]::GetFullPath('$(OpenHarmonyToolchainDir)/../restool'))</_OpenHarmonyRestoolNextToToolchain>
+      <OpenHarmonyRestool Condition=" '$(OpenHarmonyRestool)' == '' and '$(_OpenHarmonyRestoolNextToToolchain)' != '' and Exists('$(_OpenHarmonyRestoolNextToToolchain)') ">$(_OpenHarmonyRestoolNextToToolchain)</OpenHarmonyRestool>
+      <OpenHarmonyRestool Condition=" '$(OpenHarmonyRestool)' == '' and '$(_OpenHarmonySdkRootDir)' != '' and Exists('$(_OpenHarmonySdkRootDir)toolchains/restool') ">$(_OpenHarmonySdkRootDir)toolchains/restool</OpenHarmonyRestool>
+    </PropertyGroup>
+    <Error Condition=" '$(OpenHarmonyRestool)' == '' or !Exists('$(OpenHarmonyRestool)') "
+           Text="OpenHarmony hap packaging requires restool (the resources.index compiler) from the OpenHarmony SDK toolchains. Set OpenHarmonyRestool, or point OpenHarmonySdkRoot (or OHOS_SDK_ROOT) at an SDK root that contains toolchains/restool." />
+  </Target>
+
   <!-- Resolves the staging directory at target execution time. PublishDir is assigned by the
        Publish target (and IntermediateOutputPath by the common targets), so evaluating the
        fallback at import time would leave the stage dir empty and turn every staging path
@@ -492,11 +511,43 @@
     <Message Importance="high" Text="OpenHarmony: staged .hap payload at $(_OpenHarmonyHapStageDir)" />
   </Target>
 
+  <!-- resources.index: the device ResourceManager resolves this hap's resources (resources/rawfile
+       included) through the index, and a hap without one fails the rawfile read with
+       "GetRawFileContent failed, name is empty" (see "Resource index" in the packaging doc). The
+       index is compiled by the SDK's restool from the staged resources with the same module.json
+       that is packed, so the resource ids match the module.json/resource declarations. restool
+       also copies the whole resources/ tree into its output directory; the index is
+       self-contained, so the copy is dropped again and only resources.index is kept. -->
+  <Target Name="_OpenHarmonyGenerateResourceIndex"
+          DependsOnTargets="_OpenHarmonyResolveHapStageDir;_OpenHarmonyStageHap;_OpenHarmonyResolveRestool"
+          Condition=" '$(OpenHarmonyHapPackage)' == 'true' and '$(TargetPlatformIdentifier)' == 'openharmony' ">
+    <PropertyGroup>
+      <!-- Forward slashes: the restool config below is JSON. -->
+      <_OpenHarmonyHapStageDirSlash>$([System.String]::Copy('$(_OpenHarmonyHapStageDir)').Replace('\', '/'))</_OpenHarmonyHapStageDirSlash>
+      <_OpenHarmonyResourceIndexDir>$(_OpenHarmonyHapStageDirSlash)res-index/</_OpenHarmonyResourceIndexDir>
+      <_OpenHarmonyResourceIndex>$(_OpenHarmonyResourceIndexDir)resources.index</_OpenHarmonyResourceIndex>
+      <_OpenHarmonyResourceIndexConfig>$(_OpenHarmonyResourceIndexDir)resConfig.json</_OpenHarmonyResourceIndexConfig>
+      <!-- The module name is fixed by the pack's module.json template ("name":"entry"). -->
+      <_OpenHarmonyResourceIndexJson>{"configPath":"$(_OpenHarmonyHapStageDirSlash)module.json","packageName":"$(OpenHarmonyBundleName)","output":"$(_OpenHarmonyResourceIndexDir)","moduleNames":"entry","ResourceTable":["$(_OpenHarmonyResourceIndexDir)ResourceTable.h","$(_OpenHarmonyResourceIndexDir)ResourceTable.ts"],"applicationResource":"$(_OpenHarmonyHapStageDirSlash)resources","moduleResources":[],"iconCheck":false}</_OpenHarmonyResourceIndexJson>
+    </PropertyGroup>
+    <RemoveDir Directories="$(_OpenHarmonyResourceIndexDir)" />
+    <MakeDir Directories="$(_OpenHarmonyResourceIndexDir)" />
+    <WriteLinesToFile File="$(_OpenHarmonyResourceIndexConfig)" Lines="$(_OpenHarmonyResourceIndexJson)" Overwrite="true" />
+    <Exec Command="&quot;$(OpenHarmonyRestool)&quot; -l &quot;$(_OpenHarmonyResourceIndexConfig)&quot;" />
+    <RemoveDir Directories="$(_OpenHarmonyResourceIndexDir)resources" />
+    <Error Condition=" !Exists('$(_OpenHarmonyResourceIndex)') "
+           Text="restool did not produce $(_OpenHarmonyResourceIndex); see the Resource index section in the packaging doc." />
+    <PropertyGroup>
+      <_OpenHarmonyResourceIndexBytes>$([System.IO.File]::ReadAllBytes('$(_OpenHarmonyResourceIndex)').Length)</_OpenHarmonyResourceIndexBytes>
+    </PropertyGroup>
+    <Message Importance="high" Text="OpenHarmony: compiled $(_OpenHarmonyResourceIndex) ($(_OpenHarmonyResourceIndexBytes) bytes) with restool from $(_OpenHarmonyHapStageDir)resources" />
+  </Target>
+
   <Target Name="_OpenHarmonyPackHap"
           AfterTargets="_OpenHarmonyStageHap"
-          DependsOnTargets="_OpenHarmonyResolveHapStageDir"
+          DependsOnTargets="_OpenHarmonyResolveHapStageDir;_OpenHarmonyGenerateResourceIndex"
           Condition=" '$(OpenHarmonyHapPackage)' == 'true' and '$(TargetPlatformIdentifier)' == 'openharmony' ">
-    <Exec Command="&quot;$(OpenHarmonyToolchainDir)/ohos_packing_tool&quot; pack --mode hap --json-path &quot;$(_OpenHarmonyHapStageDir)module.json&quot; --ets-path &quot;$(_OpenHarmonyHapStageDir)ets&quot; --resources-path &quot;$(_OpenHarmonyHapStageDir)resources&quot; --lib-path &quot;$(_OpenHarmonyHapStageDir)libs&quot; --out-path &quot;$(_OpenHarmonyHapUnsigned)&quot; --force true" />
+    <Exec Command="&quot;$(OpenHarmonyToolchainDir)/ohos_packing_tool&quot; pack --mode hap --json-path &quot;$(_OpenHarmonyHapStageDir)module.json&quot; --ets-path &quot;$(_OpenHarmonyHapStageDir)ets&quot; --resources-path &quot;$(_OpenHarmonyHapStageDir)resources&quot; --index-path &quot;$(_OpenHarmonyResourceIndex)&quot; --lib-path &quot;$(_OpenHarmonyHapStageDir)libs&quot; --out-path &quot;$(_OpenHarmonyHapUnsigned)&quot; --force true" />
     <Message Importance="high" Text="OpenHarmony: packed $(_OpenHarmonyHapUnsigned)" />
   </Target>
 

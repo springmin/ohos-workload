@@ -11,10 +11,29 @@ preview.22/23/24 packs (`test/maui-platform-verify`, PG2).
 Packed by the OpenHarmony SDK's `ohos_packing_tool`:
 
 ```text
-module.json, ets/modules.abc,
+module.json, resources.index, ets/modules.abc,
 libs/<abi>/{libopenharmonyhost.so, libc++_shared.so, <.NET runtime *.so>},
 resources/base/..., resources/rawfile/{app.json, dotnet.zip}
 ```
+
+## Resource index
+
+`resources.index` is compiled by the SDK's `restool` from the staged `resources/` tree and the
+same `module.json` that is packed (`_OpenHarmonyGenerateResourceIndex` in the targets file), then
+handed to `ohos_packing_tool pack` with `--index-path`. The device `ResourceManager` resolves the
+hap's resources through that index; without it the ArkTS shell's rawfile read fails with
+`GetRawFileContent failed, name is empty` and the managed bootstrap never starts, so the index is
+not optional. The resource ids follow the module.json declarations (`requestPermissions` and the
+compileSdk fields included), and restool itself picks the index format from
+`module.json`'s `minAPIVersion` (`RestoolV2` for API >= 20, the legacy `Restool` format for the
+older bands), so no format flag is needed.
+
+`OpenHarmonyRestool` overrides the restool binary; the default resolution follows the resolved
+packing tool (`<toolchain dir>/../restool`, then `<OpenHarmonySdkRoot>/toolchains/restool`). A
+missing restool is a build error: a hap without the index installs but cannot read its rawfile
+payload. restool also copies the whole `resources/` tree into its output directory
+(`<stage>/res-index/`); the index is self-contained, so the copy is deleted and only
+`resources.index` is kept.
 
 ## Staging directory
 
