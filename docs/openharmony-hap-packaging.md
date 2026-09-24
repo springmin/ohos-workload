@@ -110,6 +110,59 @@ The set is enumerated from the publish directory at target execution time; non-E
 are skipped (and stay in the zip), an empty ELF set is a hard error, and the staged libs go
 through the same `OpenHarmonyCodesign` pass as the host and `libc++_shared.so`.
 
+## Executable memory (W^X) and the startup probe
+
+Motivation - three independent layers all disable the W^X allocator on this platform:
+
+- The `runtime-ohos` fork defaults `EnableWriteXorExecute` to 0 under `TARGET_OPENHARMONY`
+  (`src/coreclr/inc/clrconfigvalues.h`, commit `678ac21836c`): the sandbox refuses `PROT_EXEC`
+  on the file-backed mappings the W^X allocator uses, while anonymous executable memory is what
+  the JIT can allocate.
+- The SDK (sdk-ohos) additionally bakes `System.Runtime.EnableWriteXorExecute=false` into every
+  generated runtimeconfig and `DOTNET_EnableWriteXorExecute=0` into the CLI/child-process
+  environment (`OpenHarmonyEnvironmentDefaults`), so `dotnet build`/`dotnet run` and their
+  apphosts work without a wrapper.
+- The host sets `DOTNET_EnableWriteXorExecute` itself, before hostfxr can initialize coreclr on
+  either launch path (`ohos_host_run_app`, `ohos_host_start_app`). That is deliberately
+  redundant: it also covers a hap built without the SDK's runtimeconfig mapping, and the
+  process environment is inherited by every child the runtime spawns.
+
+The host logs the decision on every launch path:
+
+```text
+[openharmony-host] start_app: xwe=0 source=default
+```
+
+A/B switch - `xwe.txt` in the app's writable sandbox directory (the context's `filesDir`;
+when no context is published, `app_dir` or its writable parent, i.e. the `<filesDir>/dotnet`
+payload layout): when its first byte is `1`, the host sets `DOTNET_EnableWriteXorExecute=1`
+for that launch (`source=file`) and reproduces the platform W^X failure for an evidence round.
+Any other content (or no file) keeps the default `0`.
+
+Probe - on the first launch path the host maps one page with each strategy the runtime could
+use and emits one line (hilog tag `OHOS_DOTNET`, also appended to `<filesDir>/dotnet-status.txt`
+in the managed `600`-character flattened style):
+
+```text
+OHOS_DOTNET probe: 1=OK 2=12 3=OK 4=38
+```
+
+Each token is `OK` or the `errno` of the failing call:
+
+| # | strategy | what `OK` means |
+|---|----------|-----------------|
+| 1 | anonymous `mmap(RWX)` | the RWX allocator's mapping (`EnableWriteXorExecute=0`) is available |
+| 2 | anonymous `mmap(RW)` -> `mprotect(RX)` | anonymous W^X works without file backing |
+| 3 | `memfd_create` + `ftruncate` + `mmap(RW)` -> `mprotect(RX)` | in-memory file-backed W^X works |
+| 4 | temp file `mmap(RX)` | plain file-backed executable mapping works (the strict W^X allocator's path) |
+
+Failures never fail the launch; the tokens are collected by `scripts/tester-run.sh` into
+`hilog/hilog-execmem.txt` (`OHOS_DOTNET probe:|xwe=`, counts in `summary.txt` as
+`execmem_capture`/`execmem_lines`). Typical errnos: `1` EPERM (sandbox policy), `12` ENOMEM,
+`13` EACCES (seccomp/SELinux), `38` ENOSYS (the syscall is not implemented on the image). The
+probe runs once per process, so a bridged launch that adopts a later context cannot append a
+second line.
+
 ## Payload in libs
 
 The device's namespace policy allows a `dlopen` only from the app's signed bundle directory

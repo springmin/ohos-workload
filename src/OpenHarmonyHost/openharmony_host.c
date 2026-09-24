@@ -441,6 +441,303 @@ static void* OhosHostOpenHostfxr(const char* caller, const char* app_dir, char* 
     return NULL;
 }
 
+// ---------------------------------------------------------------------------
+// Executable-memory policy (W^X) and the one-shot exec-memory probe
+// ---------------------------------------------------------------------------
+// CoreCLR defaults EnableWriteXorExecute to 0 on TARGET_OPENHARMONY
+// (src/coreclr/inc/clrconfigvalues.h, commit 678ac21836c): the sandbox refuses PROT_EXEC on the
+// file-backed mappings the W^X default uses, while anonymous executable memory is what a JIT
+// can allocate. The SDK additionally bakes System.Runtime.EnableWriteXorExecute=false into every
+// runtimeconfig and exports DOTNET_EnableWriteXorExecute=0 (OpenHarmonyEnvironmentDefaults), so
+// this setenv is deliberately redundant: it covers a hap built without the SDK mapping and,
+// through the process environment, every child the runtime spawns. The initializing coreclr
+// reads the variable when it starts, so setting it before hostfxr runs the app is early enough
+// for both launch paths here (run_app and the bridged start_app command-line init).
+//
+// The A/B switch is an optional "xwe.txt" in the app's writable sandbox directory: first byte
+// '1' selects W^X=1 for one experiment, anything else (or no file) keeps the default 0. The
+// directory is the context's filesDir when the shell published one, else app_dir itself / its
+// parent when writable - the extracted-payload layout is <filesDir>/dotnet, so its parent is
+// the files dir. The same lookup receives the one-line probe result appended to
+// dotnet-status.txt (next to the managed status lines); a directory that cannot be written
+// only costs that append, never the launch.
+//
+// The probe itself runs once per process, on the first launch path that reaches this block, and
+// is best effort: it maps a page with each strategy the runtime could use and records OK or the
+// errno of the failing call. One device round then says which strategies the sandbox allows.
+#define OHOS_STATUS_LINE_MAX 600
+
+// Appends one flattened, capped status line to <dir>/dotnet-status.txt. Mirrors the managed
+// style (OpenHarmonyApp.FlattenCallbackMessage): control characters become spaces, the line is
+// capped at OHOS_STATUS_LINE_MAX characters with a trailing "...", one line per message. Never
+// fails the caller; the probe runs once per process, so no dedup state is needed here.
+static void OhosHostAppendStatusLine(const char* dir, const char* message) {
+    if (dir == NULL || dir[0] == '\0' || message == NULL) {
+        return;
+    }
+    char path[4096];
+    if (path_join(path, sizeof(path), dir, "dotnet-status.txt") != 0) {
+        return;
+    }
+    char flat[OHOS_STATUS_LINE_MAX + 4];
+    size_t length = strlen(message);
+    size_t keep = length < OHOS_STATUS_LINE_MAX ? length : OHOS_STATUS_LINE_MAX;
+    for (size_t i = 0; i < keep; i++) {
+        unsigned char c = (unsigned char)message[i];
+        flat[i] = (c < 0x20 || c == 0x7f) ? ' ' : (char)c;
+    }
+    if (length > keep) {
+        flat[keep++] = '.';
+        flat[keep++] = '.';
+        flat[keep++] = '.';
+    }
+    flat[keep] = '\0';
+    int fd = open(path, O_WRONLY | O_CREAT | O_APPEND, 0600);
+    if (fd < 0) {
+        return;
+    }
+    (void)!write(fd, flat, keep);
+    (void)!write(fd, "\n", 1);
+    close(fd);
+}
+
+// Minimal extraction of one string value from the compact context JSON the shells send
+// (JSON.stringify). Same contract as OhosHostContextNamesAppDir: a textual scan is enough for
+// the flat shape, and a false negative only falls back to the app_dir-derived directory.
+// Backslash escapes are copied without the backslash (paths do not carry them in practice).
+static int OhosHostJsonString(const char* json, const char* key, char* out, size_t out_size) {
+    out[0] = '\0';
+    if (json == NULL || key == NULL || out_size < 2) {
+        return 0;
+    }
+    char needle[64];
+    int written = snprintf(needle, sizeof(needle), "\"%s\"", key);
+    if (written <= 0 || (size_t)written >= sizeof(needle)) {
+        return 0;
+    }
+    const char* cursor = strstr(json, needle);
+    if (cursor == NULL) {
+        return 0;
+    }
+    cursor = strchr(cursor + written, ':');
+    if (cursor == NULL) {
+        return 0;
+    }
+    cursor++;
+    while (*cursor == ' ' || *cursor == '\t' || *cursor == '\n' || *cursor == '\r') {
+        cursor++;
+    }
+    if (*cursor != '"') {
+        return 0;
+    }
+    cursor++;
+    size_t used = 0;
+    while (*cursor != '\0' && *cursor != '"') {
+        if (*cursor == '\\' && cursor[1] != '\0') {
+            cursor++;
+        }
+        if (used + 1 >= out_size) {
+            out[0] = '\0';
+            return 0;
+        }
+        out[used++] = *cursor++;
+    }
+    out[used] = '\0';
+    return *cursor == '"' && used > 0;
+}
+
+// Picks the writable sandbox directory that carries xwe.txt and receives the status line: the
+// context's filesDir when present and writable, else app_dir itself or its parent when writable
+// (the extracted payload lives in <filesDir>/dotnet). Returns 1 and fills `out` when found.
+static int OhosHostWritableDir(const char* app_dir, const char* context_json, char* out, size_t out_size) {
+    out[0] = '\0';
+    char files_dir[4096];
+    if (OhosHostJsonString(context_json, "filesDir", files_dir, sizeof(files_dir)) &&
+        access(files_dir, W_OK) == 0) {
+        snprintf(out, out_size, "%s", files_dir);
+        return 1;
+    }
+    if (app_dir != NULL && app_dir[0] != '\0' && access(app_dir, W_OK) == 0) {
+        snprintf(out, out_size, "%s", app_dir);
+        return 1;
+    }
+    if (app_dir != NULL) {
+        const char* slash = strrchr(app_dir, '/');
+        if (slash != NULL && slash != app_dir) {
+            size_t parent_len = (size_t)(slash - app_dir);
+            if (parent_len + 1 < out_size) {
+                memcpy(out, app_dir, parent_len);
+                out[parent_len] = '\0';
+                if (access(out, W_OK) == 0) {
+                    return 1;
+                }
+            }
+        }
+    }
+    out[0] = '\0';
+    return 0;
+}
+
+// First byte of <dir>/xwe.txt == '1' turns W^X back on; every other outcome keeps the default.
+static int OhosHostReadXweFile(const char* dir) {
+    char path[4096];
+    if (dir == NULL || dir[0] == '\0' || path_join(path, sizeof(path), dir, "xwe.txt") != 0) {
+        return 0;
+    }
+    int fd = open(path, O_RDONLY);
+    if (fd < 0) {
+        return 0;
+    }
+    char first = '\0';
+    ssize_t got = read(fd, &first, 1);
+    close(fd);
+    return got == 1 && first == '1';
+}
+
+// One probe result token: "OK", or the errno of the failing call.
+static void OhosHostProbeToken(char* out, size_t out_size, int err) {
+    if (err == 0) {
+        snprintf(out, out_size, "OK");
+    } else {
+        snprintf(out, out_size, "%d", err);
+    }
+}
+
+// Runs the mapping strategies the runtime may use, once per process. Each step is independent
+// and failure is not fatal: the line records which one the sandbox refuses and with which errno.
+//   1. anonymous mmap(RWX)                      - the RWX allocator's mapping
+//   2. anonymous mmap(RW) -> mprotect(RX)       - the W^X allocator's anonymous fallback
+//   3. memfd_create + ftruncate + mmap(RW) -> mprotect(RX) - in-memory file-backed W^X
+//   4. temp file mmap(RX)                       - plain file-backed executable mapping
+static int g_exec_probe_done = 0;
+
+static void OhosHostProbeExecMemoryOnce(const char* status_dir) {
+    if (g_exec_probe_done) {
+        return;
+    }
+    g_exec_probe_done = 1;
+
+    long page = sysconf(_SC_PAGESIZE);
+    size_t page_size = page > 0 ? (size_t)page : 4096u;
+    char r1[16];
+    char r2[16];
+    char r3[16];
+    char r4[16];
+
+    // 1. anonymous RWX
+    {
+        void* p = mmap(NULL, page_size, PROT_READ | PROT_WRITE | PROT_EXEC,
+                       MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+        if (p == MAP_FAILED) {
+            OhosHostProbeToken(r1, sizeof(r1), errno);
+        } else {
+            OhosHostProbeToken(r1, sizeof(r1), 0);
+            munmap(p, page_size);
+        }
+    }
+
+    // 2. anonymous RW -> mprotect RX
+    {
+        void* p = mmap(NULL, page_size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+        if (p == MAP_FAILED) {
+            OhosHostProbeToken(r2, sizeof(r2), errno);
+        } else {
+            int err = mprotect(p, page_size, PROT_READ | PROT_EXEC) == 0 ? 0 : errno;
+            OhosHostProbeToken(r2, sizeof(r2), err);
+            munmap(p, page_size);
+        }
+    }
+
+    // 3. memfd_create -> ftruncate -> mmap RW -> mprotect RX
+    {
+        int err = 0;
+        int fd = memfd_create("ohos-exec-probe", 0);
+        if (fd < 0) {
+            err = errno;
+        } else {
+            if (ftruncate(fd, (off_t)page_size) != 0) {
+                err = errno;
+            } else {
+                void* p = mmap(NULL, page_size, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+                if (p == MAP_FAILED) {
+                    err = errno;
+                } else {
+                    if (mprotect(p, page_size, PROT_READ | PROT_EXEC) != 0) {
+                        err = errno;
+                    }
+                    munmap(p, page_size);
+                }
+            }
+            close(fd);
+        }
+        OhosHostProbeToken(r3, sizeof(r3), err);
+    }
+
+    // 4. temp file mmap RX (the sandbox dir first, then TMPDIR, then /tmp)
+    {
+        const char* dirs[3];
+        int dir_count = 0;
+        if (status_dir != NULL && status_dir[0] != '\0') {
+            dirs[dir_count++] = status_dir;
+        }
+        const char* tmp_dir = getenv("TMPDIR");
+        if (tmp_dir != NULL && tmp_dir[0] == '/') {
+            dirs[dir_count++] = tmp_dir;
+        }
+        dirs[dir_count++] = "/tmp";
+
+        int err = ENOENT;
+        for (int i = 0; i < dir_count; i++) {
+            char path[4096];
+            if (path_join(path, sizeof(path), dirs[i], "ohos-exec-probe.tmp") != 0) {
+                err = ENAMETOOLONG;
+                continue;
+            }
+            int fd = open(path, O_CREAT | O_RDWR | O_TRUNC, 0600);
+            if (fd < 0) {
+                err = errno;
+                continue;
+            }
+            if (ftruncate(fd, (off_t)page_size) != 0) {
+                err = errno;
+            } else {
+                void* p = mmap(NULL, page_size, PROT_READ | PROT_EXEC, MAP_SHARED, fd, 0);
+                err = p == MAP_FAILED ? errno : 0;
+                if (p != MAP_FAILED) {
+                    munmap(p, page_size);
+                }
+            }
+            close(fd);
+            unlink(path);
+            break;
+        }
+        OhosHostProbeToken(r4, sizeof(r4), err);
+    }
+
+    char line[160];
+    snprintf(line, sizeof(line), "OHOS_DOTNET probe: 1=%s 2=%s 3=%s 4=%s", r1, r2, r3, r4);
+    OH_LOG_INFO(LOG_APP, "%{public}s", line);
+    fprintf(stderr, "[openharmony-host] %s\n", line);
+    OhosHostAppendStatusLine(status_dir, line);
+}
+
+// Applies the W^X decision and runs the probe. Called before hostfxr can start coreclr on both
+// launch paths; the probe itself is one-shot, so a second call only re-reads xwe.txt (the
+// pending context adopted during start_app can be the first source of filesDir).
+static void OhosHostApplyExecMemoryPolicy(const char* caller, const char* app_dir, const char* context_json) {
+    char dir[4096];
+    int have_dir = OhosHostWritableDir(app_dir, context_json, dir, sizeof(dir));
+    int enabled = have_dir && OhosHostReadXweFile(dir) ? 1 : 0;
+    const char* source = enabled ? "file" : "default";
+
+    setenv("DOTNET_EnableWriteXorExecute", enabled ? "1" : "0", 1);
+    const char* name = caller != NULL ? caller : "(null)";
+    OH_LOG_INFO(LOG_APP, "[openharmony-host] %{public}s: xwe=%{public}d source=%{public}s",
+                name, enabled, source);
+    fprintf(stderr, "[openharmony-host] %s: xwe=%d source=%s\n", name, enabled, source);
+    OhosHostProbeExecMemoryOnce(have_dir ? dir : NULL);
+}
+
 // hostfxr is deliberately resolved at run time, never at link time: libhostfxr.so ships both
 // in the hap's libs/<abi>/ (the signed copy the HAP code-signing block covers; loaded first,
 // see OhosHostOpenHostfxr) and in the app payload (dotnet.zip, extracted by the ArkTS ability
@@ -470,6 +767,10 @@ int ohos_host_run_app(const char* app_dir, const char* app_assembly_file, int ar
     if (!used_own) {
         OhosHostEnsureRuntimeLibs("run_app", effective_app_dir);
     }
+
+    // Pin the executable-memory policy (and probe it once) before hostfxr can initialize
+    // coreclr. run_app has no context JSON, so xwe.txt is looked up in app_dir / its parent.
+    OhosHostApplyExecMemoryPolicy("run_app", effective_app_dir, NULL);
 
     void* hostfxr = OhosHostOpenHostfxr("run_app", effective_app_dir, hostfxr_path, sizeof(hostfxr_path));
     if (hostfxr == NULL) {
@@ -844,6 +1145,11 @@ int ohos_host_start_app(const char* app_dir, const char* app_assembly_file,
         OhosHostEnsureRuntimeLibs("start_app", effective_app_dir);
     }
 
+    // Pin the executable-memory policy (and probe it once) before hostfxr can start coreclr.
+    // The start context carries filesDir on every current shell, so the A/B file and the probe
+    // status line land in the app sandbox; a pending context adopted below is re-applied.
+    OhosHostApplyExecMemoryPolicy("start_app", effective_app_dir, context_json);
+
     void* hostfxr = OhosHostOpenHostfxr("start_app", effective_app_dir, hostfxr_path, sizeof(hostfxr_path));
     if (hostfxr == NULL) {
         OH_LOG_ERROR(LOG_APP, "[openharmony-host] start_app: could not load libhostfxr.so (last tried %{public}s)",
@@ -967,6 +1273,14 @@ int ohos_host_start_app(const char* app_dir, const char* app_assembly_file,
     g_app = handle;
     g_launch_in_progress = 0;
     pthread_mutex_unlock(&g_context_mutex);
+
+    // An adopted pending context can be the first source of filesDir (the page published before
+    // the ability bootstrap reached start_app). Re-apply the policy with the final snapshot so
+    // the A/B file is honored; the probe already ran once on the early call.
+    if (handle->context_json != NULL &&
+        (context_json == NULL || strcmp(handle->context_json, context_json) != 0)) {
+        OhosHostApplyExecMemoryPolicy("start_app", effective_app_dir, handle->context_json);
+    }
 
     pthread_attr_t attr;
     pthread_attr_init(&attr);

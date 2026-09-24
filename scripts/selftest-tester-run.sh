@@ -540,6 +540,8 @@ KMSG_EOF
 09-22 10:00:00.700 12345 12345 I A00000/unrelated: must be filtered out
 09-22 10:00:00.800 12345 12345 I A00000/ets_runtime: SetAppLibPath appLibPathKey: com.example.hellomauiapp/entry, lib path: /data/storage/el1/bundle/libs/arm64
 09-22 10:00:00.810 12345 12345 I A00000/NAPI: dlopen libopenharmonyhost.so from /data/storage/el1/bundle/libs/arm64
+09-22 10:00:00.820 12345 12345 I A00000/OHOS_DOTNET: [openharmony-host] start_app: xwe=0 source=default
+09-22 10:00:00.830 12345 12345 I A00000/OHOS_DOTNET: OHOS_DOTNET probe: 1=OK 2=OK 3=OK 4=38
 HILOG_EOF
         # Device report §4/§7 failure signatures (opt-in so the default stream stays clean:
         # the empty-result tolerance of hilog-bootstrap.txt is asserted on the default stream).
@@ -823,6 +825,11 @@ if prepare_report "$ARCHIVE_S2" "$WORK/x-success" out-success; then
     assert_contains "S2 applib filtered has the lib path" "lib path: /data/storage/el1/bundle/libs/arm64" "$REPORT/hilog/hilog-applib.txt"
     assert_file "S2 hilog dlopen filtered in archive" "$REPORT/hilog/hilog-dlopen.txt"
     assert_contains "S2 dlopen filtered has the host load" "dlopen libopenharmonyhost.so" "$REPORT/hilog/hilog-dlopen.txt"
+    assert_file "S2 hilog execmem filtered in archive" "$REPORT/hilog/hilog-execmem.txt"
+    assert_contains "S2 execmem filtered has the xwe decision" "xwe=0 source=default" "$REPORT/hilog/hilog-execmem.txt"
+    assert_contains "S2 execmem filtered has the probe line" "OHOS_DOTNET probe: 1=OK 2=OK 3=OK 4=38" "$REPORT/hilog/hilog-execmem.txt"
+    assert_eq "S2 summary execmem_capture=ok" "ok" "$(sum_val "$S" execmem_capture)"
+    assert_gt "S2 summary execmem_lines > 0" 0 "$(sum_val "$S" execmem_lines)"
     assert_eq "S2 summary applib_path_capture=ok" "ok" "$(sum_val "$S" applib_path_capture)"
     assert_gt "S2 summary applib_path_lines > 0" 0 "$(sum_val "$S" applib_path_lines)"
     assert_eq "S2 summary dlopen_capture=ok" "ok" "$(sum_val "$S" dlopen_capture)"

@@ -78,6 +78,8 @@ usage() {
   hilog/hilog-applib.txt（SetAppLibPath|appLibPathKey|NativeLibPath|lib path）与
   hilog/hilog-dlopen.txt（dlopen|cannot find library|openharmonyhost），并采集
   ls -l /data/storage/el1/bundle/libs/arm64/ -> device/app-libs-arm64.txt。
+  execmem 证据（FIX-XWE；缺失容忍）：同一批 hilog 窗口过滤 OHOS_DOTNET probe:/xwe= ->
+  hilog/hilog-execmem.txt；execmem_capture/execmem_lines 写入 summary。
   bootstrap/rawfile 失败特征（真机报告 §4/§7 的失败串，缺失容忍）：对所有已捕获 hilog 窗口再
   过滤 GetRawFileContent|bootstrap failed|bootstrap retry|BusinessError|900002|900003|
   ZIP entry|destination path|Load native module failed|symbol not found|cannot find library|
@@ -141,6 +143,9 @@ FILTER_RE='hellomaui|maui|dotnet|openharmonyhost|AppKilledReporter|JsError|appsp
 FILTER_KMSG_RE='xpm|unsigned file|fs_security_verity|libopenharmonyhost|hellomauiapp'
 FILTER_APPLIB_RE='SetAppLibPath|appLibPathKey|NativeLibPath|lib path'
 FILTER_DLOPEN_RE='dlopen|cannot find library|openharmonyhost'
+# Host executable-memory policy/probe (FIX-XWE): the W^X decision line and the one-line probe
+# result the host writes on the first launch path (tag OHOS_DOTNET).
+FILTER_EXECMEM_RE='OHOS_DOTNET probe:|xwe='
 # Device findings (bootstrap/rawfile/hap-load failures) reproduce as these signatures; the
 # filter is deliberately wider than the summary error counters below.
 FILTER_BOOTSTRAP_RE='GetRawFileContent|bootstrap failed|bootstrap retry|BusinessError|900002|900003|ZIP entry|destination path|Load native module failed|symbol not found|cannot find library|Museum|MUSL-LDSO|check ns accessible'
@@ -163,6 +168,8 @@ APPLIB_RESULT="not_captured"
 APPLIB_LINES=0
 DLOPEN_RESULT="not_captured"
 DLOPEN_LINES=0
+EXECMEM_RESULT="not_captured"
+EXECMEM_LINES=0
 APPLIBS_DIR_RESULT="not_captured"
 APPLIBS_DIR_LINES=0
 ARCHIVE=""
@@ -1261,6 +1268,7 @@ if [ "$DO_DEVICE" = 0 ]; then
     log "   [dry-run] 将采集: hilog+kmsg 捕获、module.json、param get + UDID、kit 哈希、summary.txt"
     log "   [dry-run] 将采集 ELF 签名证据: xpm_mode/require_signatures、SoInfoSegment magic 计数"
     log "   [dry-run] 将采集 app-lib 路径证据: hilog 过滤（appLibPathKey/dlopen）+ bundle libs 目录列表"
+    log "   [dry-run] 将采集 execmem 证据（FIX-XWE）: hilog 过滤（OHOS_DOTNET probe:/xwe=）-> hilog/hilog-execmem.txt"
     log "   [dry-run] 将采集 bootstrap/rawfile 失败特征: hilog 再过滤 -> hilog/hilog-bootstrap.txt + summary 计数"
     log "   [dry-run] 将采集 payload 状态: ls -l $DEV_FILES_DIR/ + 读一行 dotnet.marker -> device/payload-*.txt"
     log "   [dry-run] kit hap 自检已在上方打印；设备轮会写入 meta/kit-selfcheck.txt"
@@ -1332,25 +1340,32 @@ else
     # the registration line may be at DEBUG level (`hilog -b D` when a run comes back empty).
     : > "$OUT/hilog/hilog-applib.txt"
     : > "$OUT/hilog/hilog-dlopen.txt"
+    : > "$OUT/hilog/hilog-execmem.txt"
     _al_seen=0
     for _f in "$OUT/hilog/hilog-full.txt" "$OUT/probes"/*-hilog.txt; do
         [ -s "$_f" ] || continue
         _al_seen=1
         filter_append "$FILTER_APPLIB_RE" "$_f" "$OUT/hilog/hilog-applib.txt"
         filter_append "$FILTER_DLOPEN_RE" "$_f" "$OUT/hilog/hilog-dlopen.txt"
+        filter_append "$FILTER_EXECMEM_RE" "$_f" "$OUT/hilog/hilog-execmem.txt"
     done
     if [ "$_al_seen" = 1 ]; then
         APPLIB_RESULT="ok"
         DLOPEN_RESULT="ok"
+        EXECMEM_RESULT="ok"
         APPLIB_LINES="$(line_count "$OUT/hilog/hilog-applib.txt")"
         DLOPEN_LINES="$(line_count "$OUT/hilog/hilog-dlopen.txt")"
+        EXECMEM_LINES="$(line_count "$OUT/hilog/hilog-execmem.txt")"
         if [ "$APPLIB_LINES" -eq 0 ]; then
             warn "   未见 SetAppLibPath/appLibPathKey/NativeLibPath/lib path（日志级别或窗口原因，保留空证据）"
         fi
         if [ "$DLOPEN_LINES" -eq 0 ]; then
             warn "   未见 dlopen/cannot find library/openharmonyhost（同上，保留空证据）"
         fi
-        log "   app-lib 路径 -> $OUT/hilog/hilog-applib.txt（${APPLIB_LINES} 行）/ dlopen -> $OUT/hilog/hilog-dlopen.txt（${DLOPEN_LINES} 行）"
+        if [ "$EXECMEM_LINES" -eq 0 ]; then
+            warn "   未见 OHOS_DOTNET probe/xwe= 行（宿主版本或日志窗口原因，保留空证据）"
+        fi
+        log "   app-lib 路径 -> $OUT/hilog/hilog-applib.txt（${APPLIB_LINES} 行）/ dlopen -> $OUT/hilog/hilog-dlopen.txt（${DLOPEN_LINES} 行）/ execmem -> $OUT/hilog/hilog-execmem.txt（${EXECMEM_LINES} 行）"
     else
         warn "   app-lib 路径证据未采集（本轮没有 hilog 录制窗口）"
     fi
@@ -1503,6 +1518,8 @@ else
         printf 'applib_path_lines=%s\n' "$APPLIB_LINES"
         printf 'dlopen_capture=%s\n' "$DLOPEN_RESULT"
         printf 'dlopen_lines=%s\n' "$DLOPEN_LINES"
+        printf 'execmem_capture=%s\n' "$EXECMEM_RESULT"
+        printf 'execmem_lines=%s\n' "$EXECMEM_LINES"
         printf 'app_libs_arm64=%s\n' "$APPLIBS_DIR_RESULT"
         printf 'app_libs_arm64_lines=%s\n' "$APPLIBS_DIR_LINES"
         printf 'bootstrap_capture=%s\n' "$BOOTSTRAP_RESULT"
