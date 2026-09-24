@@ -22,6 +22,24 @@
 # abc version: the SDK 26 default 24.0.0.0 is rejected by the device runtime; compatibleSdkVersion
 # 18 makes es2abc emit 13.0.1.0. The emitted version is read back from the abc header and must not
 # exceed ARKTS_MAX_BC_VERSION (default 13.0.1.0); raise it with ARKTS_COMPATIBLE_SDK_VERSION.
+#
+# hvigor "00302013 - The root node is not yet available for build" (the device-side testers hit it
+# with an older scaffold; kit report 5) is guarded in three places. The generated
+# hvigor/hvigor-config.json5 keeps `dependencies: {}` because DevEco Studio and the Command Line
+# Tools already bundle the plugin - listing @ohos/hvigor or @ohos/hvigor-ohos-plugin there makes
+# hvigor load two copies (official handling step 2 of ide-hvigor-errorcode-00302) - and
+# check_hvigor_config_deps() re-reads the generated file so a future edit fails fast instead of
+# mysteriously. When hvigor still fails with that code, diagnose_hvigor_log() prints the official
+# three steps, the duplicate-config/cache checks and the DevEco-Studio fallback (create an empty
+# project and replace entry/src/main/ets, the path that unblocked the device build).
+# modelVersion is the DevEco-created 6.0.2 in the two files hvigor requires to agree
+# (hvigor-config.json5 and oh-package.json5; a mismatch is INCONSISTENT_MODEL_VERSION), while
+# runtimeOS stays OpenHarmony: this tree builds against the OpenHarmony SDK 26.0.0, and with
+# runtimeOS HarmonyOS hvigor requires a '26.0.0'-style string compatibleSdkVersion for API >= 26
+# (verified error 00306042), which raises es2abc above the device's 13.0.1.0 abc limit. strictMode
+# already carries the DevEco values caseSensitiveCheck=true / useNormalizedOHMUrl=false.
+# --diagnose-log <file>, --check-project-deps <dir> and --scaffold-only <dir> expose those pieces
+# to scripts/selftest-build-arkts-shell.sh without node, hvigor or an SDK.
 if [ -z "${BASH_VERSION:-}" ] && command -v bash >/dev/null 2>&1; then
     exec bash "$0" "$@"
 fi
@@ -48,6 +66,11 @@ BUNDLE_NAME="${ARKTS_SHELL_BUNDLE_NAME:-${KIT_BUNDLE_NAME:-com.example.hellomaui
 # in the header). Raise it only together with ARKTS_MAX_BC_VERSION.
 COMPATIBLE_SDK_VERSION="${ARKTS_COMPATIBLE_SDK_VERSION:-18}"
 MAX_BC_VERSION="${ARKTS_MAX_BC_VERSION:-13.0.1.0}"
+# modelVersion of the generated project (hvigor-config.json5 *and* oh-package.json5 must agree, or
+# hvigor exits with INCONSISTENT_MODEL_VERSION). 6.0.2 is what a DevEco-created project carries;
+# the pinned hvigor accepts anything in [5.0.0, 26.0.0], and 6.0.0 vs 6.0.2 compiles to a
+# byte-identical modules.abc (verified), so the DevEco value is kept.
+MODEL_VERSION="${ARKTS_MODEL_VERSION:-6.0.2}"
 # Selective shell variant (see the header): ui is the default and keeps the kit-facing
 # dist/ets/modules.abc; headless emits dist/ets/modules.headless.abc so it can never overwrite
 # the UI shell the device-test kit packages.
@@ -55,6 +78,253 @@ VARIANT="${ARKTS_SHELL_VARIANT:-ui}"
 
 info() { printf '==> %s\n' "$*"; }
 die() { printf 'ERROR: %s\n' "$*" >&2; exit 1; }
+
+# SDK metadata (platformVersion/apiVersion); defined here so --scaffold-only can read it without
+# reaching the full SDK validation of the main path.
+read_sdk_meta() { python3 -c "import json;print(json.load(open('$SDK/ets/oh-uni-package.json'))['$1'])"; }
+
+# Directories every generated configuration file lives in (the ets sources are copied separately).
+make_project_dirs() {
+    mkdir -p "$PROJ/hvigor" "$PROJ/AppScope/resources/base/element" "$PROJ/AppScope/resources/base/media" \
+        "$PROJ/entry/src/main/ets/entryability" \
+        "$PROJ/entry/src/main/resources/base/element" "$PROJ/entry/src/main/resources/base/media" \
+        "$PROJ/entry/src/main/resources/base/profile"
+}
+
+# Writes every generated project configuration into $PROJ. Extracted from section 3 so
+# --scaffold-only can exercise the exact texts (the selftest asserts the hvigor-config
+# dependencies stay empty, modelVersion agreement and the strictMode values).
+write_project_configs() {
+python3 - "$PROJ" "$PLATFORM_VERSION" "$API_VERSION" "$TYPECHECK" "$BUNDLE_NAME" \
+    "$COMPATIBLE_SDK_VERSION" "$VARIANT" "$MODEL_VERSION" <<'PY'
+import json, os, sys
+proj, platform_version, api_version, typecheck, bundle_name, compatible_sdk_version, variant, model_version = sys.argv[1:9]
+typecheck_json = 'true' if typecheck == '1' else 'false'
+def w(rel, text):
+    with open(os.path.join(proj, rel), 'w') as f: f.write(text)
+
+strings = [{"name": n, "value": "opendotnet"} for n in
+           ("app_name", "module_desc", "EntryAbility_desc", "EntryAbility_label")]
+for base in ('entry/src/main/resources/base/element', 'AppScope/resources/base/element'):
+    w(f'{base}/string.json', json.dumps({"string": strings}, indent=2))
+if variant == 'ui':
+    w('entry/src/main/resources/base/profile/main_pages.json', json.dumps({"src": ["pages/Index"]}))
+w('AppScope/app.json5', f"""{{
+  app: {{
+    bundleName: '{bundle_name}',
+    vendor: 'example',
+    versionCode: 1,
+    versionName: '1.0.0',
+    icon: '$media:app_icon',
+    label: '$string:app_name',
+  }},
+}}
+""")
+w('hvigorfile.ts', "export { appTasks } from '@ohos/hvigor-ohos-plugin';\n")
+w('entry/hvigorfile.ts', "export { hapTasks } from '@ohos/hvigor-ohos-plugin';\n")
+w('oh-package.json5', """{
+  modelVersion: '__MODEL_VERSION__',
+  name: 'opendotnet',
+  version: '1.0.0',
+  description: 'ArkTS shell for a .NET OpenHarmony app',
+  main: '',
+  author: '',
+  license: 'MIT',
+  dependencies: {},
+}
+""".replace('__MODEL_VERSION__', model_version))
+w('entry/oh-package.json5', """{
+  name: 'entry',
+  version: '1.0.0',
+  description: 'entry module',
+  main: '',
+  author: '',
+  license: 'MIT',
+  dependencies: {},
+}
+""")
+# ohpm lock files for the (empty) dependency tree. hvigor does not require them to produce
+# loader_out (module.json/pkgContextInfo.json/filesInfo.txt are generated either way), but the
+# device-test feedback flagged a missing lock as an incomplete DevEco-style project.
+lock = """{
+  meta: {
+    stableOrder: true,
+    enableUnifiedLockfile: false,
+  },
+  lockfileVersion: 3,
+  ATTENTION: 'THIS IS AN AUTOGENERATED FILE. DO NOT EDIT THIS FILE DIRECTLY.',
+  specifiers: {},
+  packages: {},
+}
+"""
+w('oh-package-lock.json5', lock)
+w('entry/oh-package-lock.json5', lock)
+# dependencies stays empty on purpose: DevEco Studio and the Command Line Tools bundle hvigor,
+# and listing @ohos/hvigor / @ohos/hvigor-ohos-plugin here makes hvigor load a second copy
+# (official handling step 2 of ide-hvigor-errorcode-00302) and fail with 00302013 "The root node
+# is not yet available for build". check_hvigor_config_deps() below re-checks this after writing.
+w('hvigor/hvigor-config.json5', """{
+  modelVersion: '__MODEL_VERSION__',
+  dependencies: {},
+  execution: { analyze: 'normal', daemon: false, incremental: false, parallel: true, typeCheck: __TYPECHECK__ },
+  logging: { level: 'info' },
+  debugging: { stacktrace: false },
+}
+""".replace('__MODEL_VERSION__', model_version).replace('__TYPECHECK__', typecheck_json))
+w('build-profile.json5', f"""{{
+  app: {{
+    products: [
+      {{
+        name: 'default',
+        compileSdkVersion: '{platform_version}',
+        compatibleSdkVersion: '{compatible_sdk_version}',
+        targetSdkVersion: '{platform_version}',
+        runtimeOS: 'OpenHarmony',
+        buildOption: {{
+          strictMode: {{
+            caseSensitiveCheck: true,
+            // The device runtime (HarmonyOS 7.0 / API 26) resolves the ability entry as
+            // <bundleName>/entry/ets/entryability/EntryAbility and matches it against the abc
+            // record names. Normalized OHM URLs ('&entry/src/main/ets/...&') are only resolved
+            // when the HAP ships pkgContextInfo.json (the ArkTS VM's IsNormalizedOhmUrlPack()
+            // gate), which this workload's packaging does not include yet - the pre-PA1
+            // normalized abc failed the entry on the device. Non-normalized records are
+            // <bundleName>/entry/ets/... and resolve directly. The host registers both its
+            // bare name and the file name, so switching back to true is a packaging-side job
+            // (ship pkgContextInfo.json) rather than a host-side one.
+            useNormalizedOHMUrl: false,
+          }},
+        }},
+      }},
+    ],
+    buildModeSet: [{{ name: 'debug' }}, {{ name: 'release' }}],
+  }},
+  modules: [
+    {{ name: 'entry', srcPath: './entry', targets: [{{ name: 'default', applyToProducts: ['default'] }}] }},
+  ],
+}}
+""")
+w('entry/build-profile.json5', """{
+  apiType: 'stageMode',
+  buildOption: {},
+  targets: [{ name: 'default' }],
+}
+""")
+module_json = """{
+  module: {
+    name: 'entry',
+    type: 'entry',
+    description: '$string:module_desc',
+    mainElement: 'EntryAbility',
+    deviceTypes: ['default'],
+    deliveryWithInstall: true,
+    installationFree: false,
+    pages: '$profile:main_pages',
+    abilities: [
+      {
+        name: 'EntryAbility',
+        srcEntry: './ets/entryability/EntryAbility.ets',
+        description: '$string:EntryAbility_desc',
+        icon: '$media:app_icon',
+        label: '$string:EntryAbility_label',
+        startWindowIcon: '$media:app_icon',
+        startWindowBackground: '$color:start_window_background',
+        exported: true,
+        skills: [{ entities: ['entity.system.home'], actions: ['action.system.home'] }],
+      },
+    ],
+    requestPermissions: [],
+  },
+}
+"""
+if variant != 'ui':
+    # The headless module has no pages profile: hvigor rejects an empty main_pages.json
+    # (src needs at least one item) and the ability never loadContent's. The packaging target
+    # emits an empty main_pages for the same reason on the no-OpenHarmonyUIPage path.
+    module_json = module_json.replace("    pages: '$profile:main_pages',\n", '')
+w('entry/src/main/module.json5', module_json)
+w('local.properties', f"sdk.dir={proj}/../sdk\nnodejs.dir={os.path.expanduser('~/.harmonybrew')}\n")
+print('  project scaffold written:', proj)
+PY
+}
+
+# Official handling step 2 of ide-hvigor-errorcode-00302: DevEco Studio and the Command Line
+# Tools already bundle hvigor, so hvigor-config.json5's dependencies must not list @ohos/hvigor
+# or @ohos/hvigor-ohos-plugin - a listed copy makes hvigor find two plugins and abort with
+# 00302013 "The root node is not yet available for build". The generated file is written with an
+# empty dependencies on purpose; this guard makes a later (hand or template) edit fail fast with
+# the official pointer instead of a cryptic hvigor error.
+# rc=0 clean; rc=1 a hvigor plugin is listed (reason on stdout); rc=2 config missing.
+check_hvigor_config_deps() {
+    python3 - "$1" <<'PY'
+import os, re, sys
+proj = sys.argv[1]
+cfg = os.path.join(proj, 'hvigor', 'hvigor-config.json5')
+if not os.path.isfile(cfg):
+    print(f'hvigor-config.json5 not found: {cfg}')
+    sys.exit(2)
+# Strip // comments so the explanatory comment inside the generated file cannot trip the check.
+text = re.sub(r'//[^\n]*', '', open(cfg, encoding='utf-8', errors='replace').read())
+bad = [name for name in ('@ohos/hvigor-ohos-plugin', '@ohos/hvigor') if name in text]
+if bad:
+    print('hvigor-config.json5 lists a hvigor plugin dependency: ' + ', '.join(bad))
+    print('ide-hvigor-errorcode-00302 handling step 2: remove it/them - DevEco Studio and the')
+    print('Command Line Tools bundle hvigor, and a second copy fails the build with')
+    print('00302013 "The root node is not yet available for build".')
+    print(f'config: {cfg}')
+    sys.exit(1)
+sys.exit(0)
+PY
+}
+
+# Attribution for the hvigor failure the device-side testers hit (kit report 5): prints the
+# official three handling steps of ide-hvigor-errorcode-00302, the duplicate-config/cache checks
+# and the DevEco-Studio fallback that unblocked their abc build. Returns 0 when the log carries
+# the 00302013 / "root node" signature, 1 otherwise (the build still fails; this only explains).
+diagnose_hvigor_log() {
+    grep -qE '00302013|root node is not yet available' "$1" || return 1
+    cat >&2 <<EOF
+
+hvigor 00302013 "The root node is not yet available for build" found in $1
+
+Official handling steps (ide-hvigor-errorcode-00302):
+  1. Call hvigor APIs from hvigorfile.ts, never from hvigorconfig.ts: that file executes before
+     nodesInitialized, so an API call there aborts with exactly this error.
+  2. Remove '@ohos/hvigor' and '@ohos/hvigor-ohos-plugin' from hvigor-config.json5's
+     dependencies: DevEco Studio and the Command Line Tools bundle the plugin, and a listed copy
+     makes hvigor find two plugins. This script generates dependencies: {} and re-checks it:
+       $0 --check-project-deps $PROJ
+  3. A plugin's own package.json must not declare '@ohos/hvigor*' in dependencies either; move
+     them to that package's devDependencies.
+
+Project: $PROJ
+  generated config:        $PROJ/hvigor/hvigor-config.json5
+  duplicate config files:  find "$PROJ" -name hvigor-config.json5 -not -path '*/node_modules/*'
+  duplicate plugin copies: find "$PROJ" -path '*/@ohos/hvigor-ohos-plugin/package.json'
+  our node_modules:        ls -ld "$PROJ/node_modules"  (a symlink to the CLI's hvigor install;
+                           DevEco resolves its own bundled copy instead)
+  stray hvigorconfig.ts:   rm -f "$PROJ/hvigorconfig.ts"  (not generated by this script)
+  clear the stale hvigor caches and retry:
+    rm -rf "$PROJ/.hvigor" "$PROJ/build" "$PROJ/entry/build" "$PROJ/node_modules/.cache"
+    DevEco Studio: Build > Clean Project, then File > Sync and Refresh Project.
+
+Verified fallback when the CLI cannot get past it (unblocked the device abc build, kit report 5.3):
+  create an empty project in DevEco Studio (its complete layout; keep its modelVersion 6.0.2,
+  runtimeOS HarmonyOS and strictMode useNormalizedOHMUrl=false), then replace its ets sources:
+    cp "$PROJ/entry/src/main/ets/entryability/EntryAbility.ets" <deveco>/entry/src/main/ets/entryability/
+    cp "$PROJ/entry/src/main/ets/pages/Index.ets" <deveco>/entry/src/main/ets/pages/   # ui variant only
+  build with hvigorw assembleHap and feed the result back as
+    -p:OpenHarmonyArktsModulesAbc=<deveco>/entry/build/default/intermediates/loader_out/default/ets/modules.abc
+EOF
+    # Live duplicate report, best effort; find does not follow the node_modules symlink, so this
+    # only lists real copies inside the project.
+    _dups="$(find "$PROJ" -path '*/@ohos/hvigor-ohos-plugin/package.json' 2>/dev/null | head -5)"
+    if [ -n "$_dups" ]; then
+        printf 'extra hvigor plugin copies found under the project (remove them):\n' >&2
+        printf '%s\n' "$_dups" | sed 's/^/  /' >&2
+    fi
+    return 0
+}
 
 # The two hvigor tarballs are unpacked with `tar xzf` and the extracted files are then executed
 # by node, so besides the sha256 pin (section 1) their member list must be safe: an absolute path
@@ -95,6 +365,57 @@ if [ "${1:-}" = "--check-tgz" ]; then
     esac
 fi
 
+# --diagnose-log <file>: attribute a saved hvigor log and exit. Needs no node or SDK, so it also
+# works on a log copied from another machine; scripts/selftest-build-arkts-shell.sh drives the
+# 00302013 positive and negative cases through it. Exit 0 = signature found (handling steps
+# printed), 1 = not found.
+if [ "${1:-}" = "--diagnose-log" ]; then
+    [ -n "${2:-}" ] || die "usage: $0 --diagnose-log <file>"
+    [ -f "$2" ] || die "no such log file: $2"
+    if diagnose_hvigor_log "$2"; then
+        exit 0
+    fi
+    info "no 00302013/'root node' signature in $2"
+    exit 1
+fi
+
+# --check-project-deps <dir>: run only the hvigor-config dependency guard over an existing
+# project dir. Exit 0 = clean; 1 = a hvigor plugin is listed (reason printed by the guard);
+# 2 = hvigor/hvigor-config.json5 missing.
+if [ "${1:-}" = "--check-project-deps" ]; then
+    [ -n "${2:-}" ] || die "usage: $0 --check-project-deps <project-dir>"
+    check_hvigor_config_deps "$2" && _crc=0 || _crc=$?
+    case "$_crc" in
+        0) info "hvigor-config dependencies clean: $2"; exit 0 ;;
+        1) exit 1 ;;
+        *) die "no hvigor/hvigor-config.json5 under $2" ;;
+    esac
+fi
+
+# --scaffold-only <dir>: write only the generated project configuration - no node, no hvigor
+# download, no SDK symlink and no template copy - so the selftest can assert the exact texts
+# hvigor reads (empty dependencies, modelVersion agreement, strictMode). Platform values come
+# from the SDK when present, else ARKTS_PLATFORM_VERSION / ARKTS_API_VERSION.
+if [ "${1:-}" = "--scaffold-only" ]; then
+    [ -n "${2:-}" ] || die "usage: $0 --scaffold-only <dir>"
+    PROJ="$2"
+    if [ -f "$SDK/ets/oh-uni-package.json" ]; then
+        PLATFORM_VERSION="$(read_sdk_meta platformVersion)"
+        API_VERSION="$(read_sdk_meta apiVersion)"
+    else
+        PLATFORM_VERSION="${ARKTS_PLATFORM_VERSION:-26.0.0}"
+        API_VERSION="${ARKTS_API_VERSION:-26}"
+    fi
+    make_project_dirs
+    write_project_configs
+    check_hvigor_config_deps "$PROJ" && _crc=0 || _crc=$?
+    if [ "$_crc" -ne 0 ]; then
+        die "the generated hvigor-config.json5 failed the hvigor-plugin dependency guard (see above)"
+    fi
+    info "scaffold configs written: $PROJ (modelVersion $MODEL_VERSION, runtimeOS OpenHarmony, compatibleSdkVersion $COMPATIBLE_SDK_VERSION)"
+    exit 0
+fi
+
 [ -x "$NODE_BIN" ] || die "node not found (set NODE=)"
 # NODE= overrides the host node. The device's /data/service/hnp node (v24.13.0) aborts with a
 # V8 fatal ("Check failed: 12 == (*__errno_location())") before it runs anything, so fall back
@@ -121,7 +442,6 @@ if [ -z "${JAVA_HOME:-}" ]; then
 fi
 [ -n "${JAVA_HOME:-}" ] && info "java: $JAVA_HOME"
 
-read_sdk_meta() { python3 -c "import json;print(json.load(open('$SDK/ets/oh-uni-package.json'))['$1'])"; }
 PLATFORM_VERSION="$(read_sdk_meta platformVersion)"
 API_VERSION="$(read_sdk_meta apiVersion)"
 info "SDK $SDK (platform $PLATFORM_VERSION, API $API_VERSION)"
@@ -238,10 +558,7 @@ case "$VARIANT" in
     *) die "ARKTS_SHELL_VARIANT must be 'ui' or 'headless' (got '$VARIANT')" ;;
 esac
 rm -rf "$PROJ"
-mkdir -p "$PROJ/hvigor" "$PROJ/AppScope/resources/base/element" "$PROJ/AppScope/resources/base/media" \
-    "$PROJ/entry/src/main/ets/entryability" \
-    "$PROJ/entry/src/main/resources/base/element" "$PROJ/entry/src/main/resources/base/media" \
-    "$PROJ/entry/src/main/resources/base/profile"
+make_project_dirs
 if [ "$VARIANT" = ui ]; then
     # UI variant: the UI-enabled ability + the ArkUI page from the platform pack templates.
     mkdir -p "$PROJ/entry/src/main/ets/pages"
@@ -258,152 +575,14 @@ cp "$TPL/resources/base/element/color.json" "$PROJ/entry/src/main/resources/base
 cp "$TPL/resources/base/media/app_icon.png" "$PROJ/entry/src/main/resources/base/media/"
 cp "$TPL/resources/base/media/app_icon.png" "$PROJ/AppScope/resources/base/media/"
 
-python3 - "$PROJ" "$PLATFORM_VERSION" "$API_VERSION" "$TYPECHECK" "$BUNDLE_NAME" "$COMPATIBLE_SDK_VERSION" "$VARIANT" <<'PY'
-import json, os, sys
-proj, platform_version, api_version, typecheck, bundle_name, compatible_sdk_version, variant = sys.argv[1:8]
-typecheck_json = 'true' if typecheck == '1' else 'false'
-def w(rel, text):
-    with open(os.path.join(proj, rel), 'w') as f: f.write(text)
-
-strings = [{"name": n, "value": "opendotnet"} for n in
-           ("app_name", "module_desc", "EntryAbility_desc", "EntryAbility_label")]
-for base in ('entry/src/main/resources/base/element', 'AppScope/resources/base/element'):
-    w(f'{base}/string.json', json.dumps({"string": strings}, indent=2))
-if variant == 'ui':
-    w('entry/src/main/resources/base/profile/main_pages.json', json.dumps({"src": ["pages/Index"]}))
-w('AppScope/app.json5', f"""{{
-  app: {{
-    bundleName: '{bundle_name}',
-    vendor: 'example',
-    versionCode: 1,
-    versionName: '1.0.0',
-    icon: '$media:app_icon',
-    label: '$string:app_name',
-  }},
-}}
-""")
-w('hvigorfile.ts', "export { appTasks } from '@ohos/hvigor-ohos-plugin';\n")
-w('entry/hvigorfile.ts', "export { hapTasks } from '@ohos/hvigor-ohos-plugin';\n")
-w('oh-package.json5', """{
-  modelVersion: '6.0.0',
-  name: 'opendotnet',
-  version: '1.0.0',
-  description: 'ArkTS shell for a .NET OpenHarmony app',
-  main: '',
-  author: '',
-  license: 'MIT',
-  dependencies: {},
-}
-""")
-w('entry/oh-package.json5', """{
-  name: 'entry',
-  version: '1.0.0',
-  description: 'entry module',
-  main: '',
-  author: '',
-  license: 'MIT',
-  dependencies: {},
-}
-""")
-# ohpm lock files for the (empty) dependency tree. hvigor does not require them to produce
-# loader_out (module.json/pkgContextInfo.json/filesInfo.txt are generated either way), but the
-# device-test feedback flagged a missing lock as an incomplete DevEco-style project.
-lock = """{
-  meta: {
-    stableOrder: true,
-    enableUnifiedLockfile: false,
-  },
-  lockfileVersion: 3,
-  ATTENTION: 'THIS IS AN AUTOGENERATED FILE. DO NOT EDIT THIS FILE DIRECTLY.',
-  specifiers: {},
-  packages: {},
-}
-"""
-w('oh-package-lock.json5', lock)
-w('entry/oh-package-lock.json5', lock)
-w('hvigor/hvigor-config.json5', """{
-  modelVersion: '6.0.0',
-  dependencies: {},
-  execution: { analyze: 'normal', daemon: false, incremental: false, parallel: true, typeCheck: __TYPECHECK__ },
-  logging: { level: 'info' },
-  debugging: { stacktrace: false },
-}
-""".replace('__TYPECHECK__', typecheck_json))
-w('build-profile.json5', f"""{{
-  app: {{
-    products: [
-      {{
-        name: 'default',
-        compileSdkVersion: '{platform_version}',
-        compatibleSdkVersion: '{compatible_sdk_version}',
-        targetSdkVersion: '{platform_version}',
-        runtimeOS: 'OpenHarmony',
-        buildOption: {{
-          strictMode: {{
-            caseSensitiveCheck: true,
-            // The device runtime (HarmonyOS 7.0 / API 26) resolves the ability entry as
-            // <bundleName>/entry/ets/entryability/EntryAbility and matches it against the abc
-            // record names. Normalized OHM URLs ('&entry/src/main/ets/...&') are only resolved
-            // when the HAP ships pkgContextInfo.json (the ArkTS VM's IsNormalizedOhmUrlPack()
-            // gate), which this workload's packaging does not include yet - the pre-PA1
-            // normalized abc failed the entry on the device. Non-normalized records are
-            // <bundleName>/entry/ets/... and resolve directly. The host registers both its
-            // bare name and the file name, so switching back to true is a packaging-side job
-            // (ship pkgContextInfo.json) rather than a host-side one.
-            useNormalizedOHMUrl: false,
-          }},
-        }},
-      }},
-    ],
-    buildModeSet: [{{ name: 'debug' }}, {{ name: 'release' }}],
-  }},
-  modules: [
-    {{ name: 'entry', srcPath: './entry', targets: [{{ name: 'default', applyToProducts: ['default'] }}] }},
-  ],
-}}
-""")
-w('entry/build-profile.json5', """{
-  apiType: 'stageMode',
-  buildOption: {},
-  targets: [{ name: 'default' }],
-}
-""")
-module_json = """{
-  module: {
-    name: 'entry',
-    type: 'entry',
-    description: '$string:module_desc',
-    mainElement: 'EntryAbility',
-    deviceTypes: ['default'],
-    deliveryWithInstall: true,
-    installationFree: false,
-    pages: '$profile:main_pages',
-    abilities: [
-      {
-        name: 'EntryAbility',
-        srcEntry: './ets/entryability/EntryAbility.ets',
-        description: '$string:EntryAbility_desc',
-        icon: '$media:app_icon',
-        label: '$string:EntryAbility_label',
-        startWindowIcon: '$media:app_icon',
-        startWindowBackground: '$color:start_window_background',
-        exported: true,
-        skills: [{ entities: ['entity.system.home'], actions: ['action.system.home'] }],
-      },
-    ],
-    requestPermissions: [],
-  },
-}
-"""
-if variant != 'ui':
-    # The headless module has no pages profile: hvigor rejects an empty main_pages.json
-    # (src needs at least one item) and the ability never loadContent's. The packaging target
-    # emits an empty main_pages for the same reason on the no-OpenHarmonyUIPage path.
-    module_json = module_json.replace("    pages: '$profile:main_pages',\n", '')
-w('entry/src/main/module.json5', module_json)
-w('local.properties', f"sdk.dir={proj}/../sdk\nnodejs.dir={os.path.expanduser('~/.harmonybrew')}\n")
-print('  project scaffold written:', proj)
-PY
+write_project_configs
+# Fool-proofing for hvigor 00302013 (official handling step 2): the config just written must not
+# list the bundled hvigor plugin. The generator never does, but a hand/template edit that added
+# one fails here with the official pointer instead of a cryptic "root node" abort later.
+check_hvigor_config_deps "$PROJ" && _grc=0 || _grc=$?
+if [ "$_grc" -ne 0 ]; then
+    die "generated hvigor-config.json5 failed the hvigor-plugin dependency guard (see ide-hvigor-errorcode-00302 step 2; fix $PROJ/hvigor/hvigor-config.json5)"
+fi
 printf 'sdk.dir=%s\nnodejs.dir=%s\n' "$SDK_ROOT" "${NODE_HOME:-$HOME/.harmonybrew}" > "$PROJ/local.properties"
 # The hvigorfile imports @ohos/hvigor-ohos-plugin; with TYPECHECK=1 hvigor typechecks that
 # file too, and its module resolution only looks inside the project, so expose the installed
@@ -449,6 +628,7 @@ while :; do
         continue
     fi
     tail -20 "$LOG" | sed 's/^/    /'
+    diagnose_hvigor_log "$LOG" || true
     die "hvigor failed (full log: $LOG)"
 done
 grep -E 'Finished :entry:default@CompileArkTS|Failed :entry:default@CompileArkTS' "$LOG" | tail -1 | sed 's/^/    /' || true

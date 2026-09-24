@@ -20,9 +20,26 @@
 #   T7 wiring     the install path runs the sha256 check, then the member check, then `tar xzf`
 #                 (source pin: the gate sits before the first extraction on both the cached and
 #                 the downloaded tarball)
+#   T8 diagnose+  a log carrying hvigor 00302013 / "The root node is not yet available for build"
+#                 is attributed by `--diagnose-log`: exit 0 and the official handling steps
+#                 (ide-hvigor-errorcode-00302), the duplicate-plugin/cache commands and the
+#                 DevEco-Studio fallback are all printed
+#   T9 diagnose-  an ordinary hvigor log has no such signature: exit 1, no handling steps
+#   T10 scaffold  `--scaffold-only` writes the real hvigor-config.json5 / oh-package.json5 /
+#                 build-profile.json5 without node or an SDK; assert the empty dependencies, the
+#                 modelVersion agreement (a mismatch makes hvigor exit with
+#                 INCONSISTENT_MODEL_VERSION) and the strictMode/runtimeOS/compatibleSdkVersion
+#                 values; `--check-project-deps` accepts the generated project
+#   T11 deps gate a project whose hvigor-config lists @ohos/hvigor-ohos-plugin (or @ohos/hvigor) is
+#                 rejected by `--check-project-deps` with the official pointer, while the same
+#                 names inside a // comment stay accepted (the guard strips comments)
+#   T12 wiring    source pin for the new pieces: the generated modelVersion default, the dependency
+#                 guard running after scaffold generation and before hvigor starts, and the
+#                 diagnosis hook sitting on the failure path just before the final die
 #
 # No network, no node, no SDK, no real unpack: the malicious tarballs are created with python3's
-# tarfile into a temp dir and only ever listed (`tar tzf`). A fixture is deliberately kept
+# tarfile into a temp dir and only ever listed (`tar tzf`), the scaffold is written by the script's
+# own generator (python3 only), and the hvigor logs are fixtures. A fixture is deliberately kept
 # malicious and the test proves that with `tar tzf` (so the negative cases cannot silently stop
 # matching the guard), while asserting the would-be escape target never appears.
 #
@@ -31,7 +48,7 @@
 # Exit: 0 = all checks passed; 1 = at least one check failed (work dir kept for triage).
 set -u
 
-SELFTEST_VERSION="1 (2026-09-23)"
+SELFTEST_VERSION="2 (2026-09-24)"
 
 log()     { printf '[%s] %s\n' "$(date '+%H:%M:%S')" "$*"; }
 section() { printf '\n=== %s ===\n' "$*"; }
@@ -68,6 +85,9 @@ assert_rc() { # <expected> <actual> <label>
 }
 assert_contains() { # <label> <needle> <file>
     if grep -qF -- "$2" "$3" 2>/dev/null; then pass_ "$1"; else fail_ "$1 (missing: $2)"; fi
+}
+assert_not_contains() { # <label> <needle> <file>
+    if grep -qF -- "$2" "$3" 2>/dev/null; then fail_ "$1 (unexpected: $2)"; else pass_ "$1"; fi
 }
 assert_not_exists() { # <label> <path>
     if [ ! -e "$2" ]; then pass_ "$1"; else fail_ "$1 ($2 exists)"; fi
@@ -207,6 +227,121 @@ else
     fail_ "T7 cached/downloaded sha256 checks changed"
 fi
 
+# ---- T8: the 00302013 diagnosis on a real-shaped log ----------------------------------
+section "T8 hvigor 00302013 log is attributed"
+cat > "$WORK/hvigor-00302013.log" <<'EOF'
+> hvigor ERROR: 00302013 Script Error
+Error Message: The root node is not yet available for build. At file: hvigorfile.ts or hvigorconfig.ts
+> hvigor ERROR: BUILD FAILED in 4 s 118 ms
+EOF
+( cd "$SELFTEST_DIR/.." && sh "$BUILD_SCRIPT" --diagnose-log "$WORK/hvigor-00302013.log" ) > "$LOG_FILE" 2>&1
+assert_rc 0 $? "T8 --diagnose-log exits 0 on the 00302013 signature"
+for needle in "00302013" "root node" "ide-hvigor-errorcode-00302" "hvigorconfig.ts" \
+              "hvigor-config.json5" "devDependencies" "DevEco Studio" "useNormalizedOHMUrl" \
+              "rm -rf" ".hvigor" "--check-project-deps"; do
+    assert_contains "T8 output mentions '$needle'" "$needle" "$LOG_FILE"
+done
+assert_contains "T8 output names the generated scaffold" "hvigor/project" "$LOG_FILE"
+
+# ---- T9: an ordinary hvigor failure must not be mis-attributed ------------------------
+section "T9 ordinary hvigor log is not diagnosed"
+{
+    printf '> hvigor Finished :entry:default@CompileArkTS... after 12 s\n'
+    printf '> hvigor ERROR: Failed :entry:default@PackageHap...\n'
+} > "$WORK/hvigor-ordinary.log"
+( cd "$SELFTEST_DIR/.." && sh "$BUILD_SCRIPT" --diagnose-log "$WORK/hvigor-ordinary.log" ) > "$LOG_FILE" 2>&1
+RC=$?
+assert_rc 1 "$RC" "T9 --diagnose-log exits 1 without the signature"
+assert_contains "T9 says no signature was found" "no 00302013" "$LOG_FILE"
+assert_not_contains "T9 prints no 00302013 handling steps" "ide-hvigor-errorcode-00302" "$LOG_FILE"
+
+# ---- T10: the generated scaffold configuration ----------------------------------------
+section "T10 generated scaffold configuration"
+SCAFFOLD="$WORK/scaffold"
+( cd "$SELFTEST_DIR/.." && sh "$BUILD_SCRIPT" --scaffold-only "$SCAFFOLD" ) > "$LOG_FILE" 2>&1
+assert_rc 0 $? "T10 --scaffold-only exits 0"
+HCFG="$SCAFFOLD/hvigor/hvigor-config.json5"
+OPKG="$SCAFFOLD/oh-package.json5"
+BPROF="$SCAFFOLD/build-profile.json5"
+assert_contains "T10 hvigor-config keeps dependencies empty" "dependencies: {}" "$HCFG"
+assert_contains "T10 hvigor-config typeCheck defaults to false" "typeCheck: false" "$HCFG"
+assert_contains "T10 build-profile keeps runtimeOS OpenHarmony" "runtimeOS: 'OpenHarmony'" "$BPROF"
+assert_contains "T10 build-profile keeps useNormalizedOHMUrl false" "useNormalizedOHMUrl: false" "$BPROF"
+assert_contains "T10 build-profile keeps caseSensitiveCheck true" "caseSensitiveCheck: true" "$BPROF"
+assert_contains "T10 build-profile keeps compatibleSdkVersion 18" "compatibleSdkVersion: '18'" "$BPROF"
+# hvigor exits with INCONSISTENT_MODEL_VERSION when hvigor-config.json5 and oh-package.json5
+# disagree, so the two generated values must stay in lockstep.
+HC_MV="$(sed -n "s/.*modelVersion: '\([^']*\)'.*/\1/p" "$HCFG" | head -1)"
+OP_MV="$(sed -n "s/.*modelVersion: '\([^']*\)'.*/\1/p" "$OPKG" | head -1)"
+if [ -n "$HC_MV" ] && [ "$HC_MV" = "$OP_MV" ]; then
+    pass_ "T10 hvigor-config and oh-package modelVersion agree ($HC_MV)"
+else
+    fail_ "T10 modelVersion mismatch (hvigor-config='$HC_MV' oh-package='$OP_MV')"
+fi
+if [ "$HC_MV" = "6.0.2" ]; then
+    pass_ "T10 modelVersion is the DevEco-created value 6.0.2"
+else
+    fail_ "T10 modelVersion is '$HC_MV', expected 6.0.2"
+fi
+( cd "$SELFTEST_DIR/.." && sh "$BUILD_SCRIPT" --check-project-deps "$SCAFFOLD" ) > "$LOG_FILE" 2>&1
+assert_rc 0 $? "T10 --check-project-deps accepts the generated project"
+assert_contains "T10 the guard reports the clean dependencies" "dependencies clean" "$LOG_FILE"
+
+# ---- T11: the hvigor plugin dependency guard ------------------------------------------
+section "T11 hvigor plugin dependency guard"
+POISONED="$WORK/scaffold-poisoned"
+cp -r "$SCAFFOLD" "$POISONED"
+sed "s|dependencies: {}|dependencies: { '@ohos/hvigor-ohos-plugin': '6.26.4', '@ohos/hvigor': '6.26.4' }|" \
+    "$POISONED/hvigor/hvigor-config.json5" > "$POISONED/hvigor/hvigor-config.json5.new"
+mv "$POISONED/hvigor/hvigor-config.json5.new" "$POISONED/hvigor/hvigor-config.json5"
+( cd "$SELFTEST_DIR/.." && sh "$BUILD_SCRIPT" --check-project-deps "$POISONED" ) > "$LOG_FILE" 2>&1
+RC=$?
+assert_rc 1 "$RC" "T11 a listed hvigor plugin is rejected"
+assert_contains "T11 names the offending plugin" "@ohos/hvigor-ohos-plugin" "$LOG_FILE"
+assert_contains "T11 points at the official error code" "00302013" "$LOG_FILE"
+assert_contains "T11 points at the official handling step" "handling step 2" "$LOG_FILE"
+# The guard strips // comments, so an explanatory comment naming the packages stays legal.
+COMMENTED="$WORK/scaffold-commented"
+cp -r "$SCAFFOLD" "$COMMENTED"
+python3 - "$COMMENTED/hvigor/hvigor-config.json5" <<'PY'
+import sys
+path = sys.argv[1]
+lines = open(path).read().split('\n')
+lines.insert(1, '  // keep @ohos/hvigor and @ohos/hvigor-ohos-plugin out of dependencies')
+open(path, 'w').write('\n'.join(lines))
+PY
+( cd "$SELFTEST_DIR/.." && sh "$BUILD_SCRIPT" --check-project-deps "$COMMENTED" ) > "$LOG_FILE" 2>&1
+assert_rc 0 $? "T11 a // comment naming the plugins stays accepted"
+
+# ---- T12: source pins for the guard and the diagnosis hook ----------------------------
+section "T12 source pins: modelVersion, generation guard, failure diagnosis"
+MV_LINE="$(grep -nF 'MODEL_VERSION="${ARKTS_MODEL_VERSION:-6.0.2}"' "$BUILD_SCRIPT" | head -1 | cut -d: -f1)"
+GEN_LINE="$(grep -n '^write_project_configs$' "$BUILD_SCRIPT" | head -1 | cut -d: -f1)"
+GUARD_LINE="$(grep -nF 'check_hvigor_config_deps "$PROJ" && _grc=0' "$BUILD_SCRIPT" | head -1 | cut -d: -f1)"
+HVIGOR_LINE="$(grep -nF 'info "running hvigor assembleHap"' "$BUILD_SCRIPT" | head -1 | cut -d: -f1)"
+DIAG_LINE="$(grep -nF 'diagnose_hvigor_log "$LOG"' "$BUILD_SCRIPT" | head -1 | cut -d: -f1)"
+DIE_LINE="$(grep -nF 'die "hvigor failed (full log: $LOG)"' "$BUILD_SCRIPT" | head -1 | cut -d: -f1)"
+for pair in "modelVersion:$MV_LINE" "scaffold generation:$GEN_LINE" "dependency guard:$GUARD_LINE" \
+            "hvigor start:$HVIGOR_LINE" "diagnosis hook:$DIAG_LINE" "failure die:$DIE_LINE"; do
+    label="${pair%%:*}"; line="${pair#*:}"
+    if [ -n "$line" ]; then pass_ "T12 marker '$label' exists (line $line)"; else fail_ "T12 marker '$label' is missing"; fi
+done
+if [ -n "$GEN_LINE" ] && [ -n "$GUARD_LINE" ] && [ "$GEN_LINE" -lt "$GUARD_LINE" ]; then
+    pass_ "T12 the dependency guard runs after the scaffold is generated"
+else
+    fail_ "T12 ordering: scaffold=$GEN_LINE guard=$GUARD_LINE"
+fi
+if [ -n "$GUARD_LINE" ] && [ -n "$HVIGOR_LINE" ] && [ "$GUARD_LINE" -lt "$HVIGOR_LINE" ]; then
+    pass_ "T12 the dependency guard runs before hvigor starts"
+else
+    fail_ "T12 ordering: guard=$GUARD_LINE hvigor=$HVIGOR_LINE"
+fi
+if [ -n "$DIAG_LINE" ] && [ -n "$DIE_LINE" ] && [ "$DIAG_LINE" -lt "$DIE_LINE" ]; then
+    pass_ "T12 the 00302013 diagnosis runs on the failure path before the final die"
+else
+    fail_ "T12 ordering: diagnosis=$DIAG_LINE die=$DIE_LINE"
+fi
+
 # ---- summary -------------------------------------------------------------------------
 section "summary"
 log "checks: $CHECKS, failed: $FAILED"
@@ -214,7 +349,7 @@ if [ "$FAILED" -gt 0 ]; then
     log "SELFTEST FAILED - work dir kept: $WORK"
     exit 1
 fi
-log "SELFTEST OK - tarball member gate rejects ../ and absolute members before unpacking"
+log "SELFTEST OK - tarball member gate, hvigor 00302013 diagnosis and DevEco-aligned scaffold all hold"
 if [ "$KEEP" = "1" ]; then
     log "work dir kept (SELFTEST_KEEP=1): $WORK"
 else
