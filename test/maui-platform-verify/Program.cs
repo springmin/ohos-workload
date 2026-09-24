@@ -12,7 +12,7 @@ using Microsoft.Maui.Platform;
 // after the fuzz tail) instead of letting every caller repeat its own threshold constant.
 VerifyLineCountingWriter verifyStdout = new(Console.Out);
 Console.SetOut(verifyStdout);
-const int verifyCheckTotal = 315;                     // documented full [verify] line count
+const int verifyCheckTotal = 320;                     // documented full [verify] line count
 const int verifyCheckFloor = verifyCheckTotal - 20;   // documented floor convention (total - 20)
 
 // A small image file for the Image handler.
@@ -3154,7 +3154,8 @@ if (!a7NapiOk)
 
 // A7b: the native entry's guard (g_launch_in_progress under g_context_mutex) rejects a second
 // start before anything is allocated, is set and cleared under the lock and cleared again when
-// the handle is published; every failure path before that runs OhosHostEndLaunch().
+// the handle is published; every failure path before that runs OhosHostEndLaunch(), including
+// the payload-in-libs app_dir resolution failure (six calls, all before the handle publish).
 int a7NativeAt = cSource?.IndexOf("int ohos_host_start_app(const char* app_dir,", StringComparison.Ordinal) ?? -1;
 int a7NativeLockAt = a7NativeAt < 0 ? -1 : cSource!.IndexOf("pthread_mutex_lock(&g_context_mutex);", a7NativeAt, StringComparison.Ordinal);
 int a7NativeRejectAt = a7NativeLockAt < 0 ? -1 : cSource!.IndexOf("if (g_app != NULL || g_launch_in_progress) {", a7NativeLockAt, StringComparison.Ordinal);
@@ -3165,8 +3166,8 @@ bool a7NativeOk = cSource?.Contains("static int g_launch_in_progress = 0;") == t
     a7NativeRejectAt > a7NativeLockAt && a7NativeSetAt > a7NativeRejectAt && a7NativeUnlockAt > a7NativeSetAt &&
     cSource.Contains("g_app = handle;\n    g_launch_in_progress = 0;") &&
     cSource.Contains("static void OhosHostEndLaunch(void) {\n    pthread_mutex_lock(&g_context_mutex);\n    g_launch_in_progress = 0;") &&
-    a7EndLaunchCalls == 5;
-Console.WriteLine($"[verify] a7 native launch guard guard={cSource?.Contains("static int g_launch_in_progress = 0;") == true} rejectSecond={a7NativeRejectAt > a7NativeLockAt && a7NativeSetAt > a7NativeRejectAt} setUnderLock={a7NativeSetAt > a7NativeRejectAt && a7NativeUnlockAt > a7NativeSetAt} clearedOnPublish={cSource?.Contains("g_app = handle;\n    g_launch_in_progress = 0;") == true} failurePaths={a7EndLaunchCalls}/5 source='{cSourcePath ?? "<missing>"}' assert={a7NativeOk}");
+    a7EndLaunchCalls == 6;
+Console.WriteLine($"[verify] a7 native launch guard guard={cSource?.Contains("static int g_launch_in_progress = 0;") == true} rejectSecond={a7NativeRejectAt > a7NativeLockAt && a7NativeSetAt > a7NativeRejectAt} setUnderLock={a7NativeSetAt > a7NativeRejectAt && a7NativeUnlockAt > a7NativeSetAt} clearedOnPublish={cSource?.Contains("g_app = handle;\n    g_launch_in_progress = 0;") == true} failurePaths={a7EndLaunchCalls}/6 source='{cSourcePath ?? "<missing>"}' assert={a7NativeOk}");
 if (!a7NativeOk)
 {
     throw new InvalidOperationException(
@@ -4984,12 +4985,14 @@ if (!pg2LibcxxOk)
 
 // PG2c: the host's runtime-lib bridge (openharmony_host.c). The bridge runs on both launch paths
 // before hostfxr is initialized, resolves its own signed libs directory through dladdr, links the
-// runtime natives into app_dir with a copy fallback (warned once), and logs one summary line.
+// runtime natives into the effective app_dir (the caller's, or the staged libs/<abi>/ directory
+// the payload-in-libs resolution claims; skipped then) with a copy fallback (warned once), and
+// logs one summary line.
 int pg2RunAt = cSource?.IndexOf("int ohos_host_run_app(const char* app_dir", StringComparison.Ordinal) ?? -1;
-int pg2RunBridgeAt = pg2RunAt < 0 ? -1 : cSource!.IndexOf("OhosHostEnsureRuntimeLibs(\"run_app\", app_dir);", pg2RunAt, StringComparison.Ordinal);
+int pg2RunBridgeAt = pg2RunAt < 0 ? -1 : cSource!.IndexOf("OhosHostEnsureRuntimeLibs(\"run_app\", effective_app_dir);", pg2RunAt, StringComparison.Ordinal);
 int pg2RunHostfxrAt = pg2RunBridgeAt < 0 ? -1 : cSource!.IndexOf("OhosHostOpenHostfxr(\"run_app\"", pg2RunBridgeAt, StringComparison.Ordinal);
 int pg2StartAt = cSource?.IndexOf("int ohos_host_start_app(const char* app_dir", StringComparison.Ordinal) ?? -1;
-int pg2StartBridgeAt = pg2StartAt < 0 ? -1 : cSource!.IndexOf("OhosHostEnsureRuntimeLibs(\"start_app\", app_dir);", pg2StartAt, StringComparison.Ordinal);
+int pg2StartBridgeAt = pg2StartAt < 0 ? -1 : cSource!.IndexOf("OhosHostEnsureRuntimeLibs(\"start_app\", effective_app_dir);", pg2StartAt, StringComparison.Ordinal);
 int pg2StartHostfxrAt = pg2StartBridgeAt < 0 ? -1 : cSource!.IndexOf("OhosHostOpenHostfxr(\"start_app\"", pg2StartBridgeAt, StringComparison.Ordinal);
 bool pg2BridgeDefOk = cSource?.Contains("static void OhosHostEnsureRuntimeLibs(const char* caller, const char* app_dir) {") == true;
 bool pg2BridgePathsOk = pg2RunAt >= 0 && pg2RunBridgeAt > pg2RunAt && pg2RunHostfxrAt > pg2RunBridgeAt &&
@@ -5047,6 +5050,107 @@ if (!pg2GuardOk)
     throw new InvalidOperationException(
         $"the PG2 build-host DT_NEEDED guard drifted: readelf={pg2GuardReadelfOk} fail={pg2GuardFailOk} " +
         $"order={pg2GuardOrderOk} evidence={pg2GuardEvidenceOk} source={pg2HostScriptPath ?? "<missing>"}");
+}
+
+// PG2e: the payload-in-libs app_dir resolution (openharmony_host.c): OhosHostResolveAppDir
+// prefers this library's own libs/<abi>/ directory when the entry assembly is staged there, so
+// both launch paths resolve the effective directory - and the runtime-lib bridge above only
+// runs for the caller's directory - before anything else touches app_dir.
+bool pg2ResolveDefOk = cSource?.Contains("static const char* OhosHostResolveAppDir(const char* caller, const char* app_dir,") == true;
+int pg2ResolveRunAt = pg2RunAt < 0 ? -1 : cSource!.IndexOf("OhosHostResolveAppDir(\"run_app\", app_dir, app_assembly_file, own_dir, sizeof(own_dir), &used_own);", pg2RunAt, StringComparison.Ordinal);
+int pg2ResolveStartAt = pg2StartAt < 0 ? -1 : cSource!.IndexOf("OhosHostResolveAppDir(\"start_app\", app_dir, app_assembly_file, own_dir, sizeof(own_dir), &used_own);", pg2StartAt, StringComparison.Ordinal);
+bool pg2ResolvePathsOk = pg2ResolveRunAt > pg2RunAt && pg2ResolveRunAt < pg2RunBridgeAt &&
+    pg2ResolveStartAt > pg2StartAt && pg2ResolveStartAt < pg2StartBridgeAt;
+bool pg2ResolveOk = pg2ResolveDefOk && pg2ResolvePathsOk;
+Console.WriteLine($"[verify] pg2 host resolve app dir defined={pg2ResolveDefOk} runPath={pg2ResolveRunAt > pg2RunAt} startPath={pg2ResolveStartAt > pg2StartAt} beforeBridge={pg2ResolvePathsOk} source='{cSourcePath ?? "<missing>"}' assert={pg2ResolveOk}");
+if (!pg2ResolveOk)
+{
+    throw new InvalidOperationException(
+        $"the PG2 payload-in-libs app_dir resolution drifted: defined={pg2ResolveDefOk} " +
+        $"runPath={pg2ResolveRunAt > pg2RunAt} startPath={pg2ResolveStartAt > pg2StartAt} " +
+        $"beforeBridge={pg2ResolvePathsOk} source={cSourcePath ?? "<missing>"}");
+}
+
+// PG2f: the resolution log the device keys on: hilog plus the stderr mirror, carrying the
+// used_own=0|1 own=<own dir> app=<effective dir> markers.
+bool pg2ResolveLogOk = cSource?.Contains("\"[openharmony-host] %{public}s: app_dir resolution: used_own=%{public}d own=%{public}s app=%{public}s\"") == true &&
+    cSource!.Contains("fprintf(stderr, \"[openharmony-host] %s: app_dir resolution: used_own=%d own=%s app=%s\\n\"");
+Console.WriteLine($"[verify] pg2 host resolve app dir log hilog={cSource?.Contains("\"[openharmony-host] %{public}s: app_dir resolution: used_own=%{public}d own=%{public}s app=%{public}s\"") == true} stderr={cSource?.Contains("fprintf(stderr, \"[openharmony-host] %s: app_dir resolution: used_own=%d own=%s app=%s\\n\"") == true} source='{cSourcePath ?? "<missing>"}' assert={pg2ResolveLogOk}");
+if (!pg2ResolveLogOk)
+{
+    throw new InvalidOperationException(
+        $"the PG2 app_dir resolution log drifted (<used_own=0|1 own=... app=...> markers): source={cSourcePath ?? "<missing>"}");
+}
+
+// PG2g: the .dotnet-payload.json marker contract, cross-file like the pack pins above: the
+// three preview packs write the marker (MarkerFileName, the libs entry count, the
+// payloadEntries/zipEntries staging counters and the packed fallback zipSha256) and both
+// entry-ability templates read it back through PAYLOAD_MARKER_NAME/PayloadMarker.
+bool pg2MarkerTargetsOk = true;
+bool pg2MarkerShellOk = true;
+string? pg2MarkerPath = null;
+foreach (string pg2Version in pg2PackVersions)
+{
+    string? pg2TargetsPath = FindHostSource($"packs/Microsoft.OpenHarmony.Sdk/{pg2Version}/targets/OpenHarmony.Hap.targets");
+    pg2MarkerPath ??= pg2TargetsPath;
+    string pg2Targets = pg2TargetsPath is null ? string.Empty : File.ReadAllText(pg2TargetsPath);
+    pg2MarkerTargetsOk &= pg2Targets.Contains("MarkerFileName=\".dotnet-payload.json\"") &&
+        pg2Targets.Contains("json.Append(\",\\\"payloadEntries\\\":\").Append(PayloadEntries);") &&
+        pg2Targets.Contains("json.Append(\",\\\"zipEntries\\\":\").Append(ZipEntries);") &&
+        pg2Targets.Contains("json.Append(\",\\\"zipSha256\\\":\\\"\").Append(zipSha).Append('\"');");
+    foreach (string pg2ShellName in new[] { "EntryAbility.ets", "EntryAbility.ui.ets" })
+    {
+        string? pg2ShellPath = FindHostSource($"packs/Microsoft.OpenHarmony.Sdk/{pg2Version}/templates/ets/entryability/{pg2ShellName}");
+        string pg2Shell = pg2ShellPath is null ? string.Empty : File.ReadAllText(pg2ShellPath);
+        pg2MarkerShellOk &= pg2Shell.Contains("const PAYLOAD_MARKER_NAME = '.dotnet-payload.json';") &&
+            pg2Shell.Contains("interface PayloadMarker {") &&
+            pg2Shell.Contains("marker.assembly === assembly && marker.entries > 0");
+    }
+}
+bool pg2MarkerOk = pg2MarkerTargetsOk && pg2MarkerShellOk;
+Console.WriteLine($"[verify] pg2 payload marker packs=22,23,24 targets={pg2MarkerTargetsOk} shell={pg2MarkerShellOk} source='{pg2MarkerPath ?? "<missing>"}' assert={pg2MarkerOk}");
+if (!pg2MarkerOk)
+{
+    throw new InvalidOperationException(
+        $"the PG2 .dotnet-payload.json marker contract drifted: targets={pg2MarkerTargetsOk} " +
+        $"shell={pg2MarkerShellOk} source={pg2MarkerPath ?? "<missing>"}");
+}
+
+// PG2h: the exec-memory policy: the definition, both launch-path calls before their
+// OhosHostOpenHostfxr (the start_app path re-applies it when a pending context is adopted), the
+// DOTNET_EnableWriteXorExecute environment pin and the xwe=0|1 source=default|file log in both
+// forms.
+bool pg2PolicyDefOk = cSource?.Contains("static void OhosHostApplyExecMemoryPolicy(const char* caller, const char* app_dir, const char* context_json) {") == true;
+int pg2PolicyRunAt = pg2RunAt < 0 ? -1 : cSource!.IndexOf("OhosHostApplyExecMemoryPolicy(\"run_app\", effective_app_dir, NULL);", pg2RunAt, StringComparison.Ordinal);
+int pg2PolicyStartAt = pg2StartAt < 0 ? -1 : cSource!.IndexOf("OhosHostApplyExecMemoryPolicy(\"start_app\", effective_app_dir, context_json);", pg2StartAt, StringComparison.Ordinal);
+bool pg2PolicyPathsOk = pg2PolicyRunAt > pg2RunBridgeAt && pg2PolicyRunAt < pg2RunHostfxrAt &&
+    pg2PolicyStartAt > pg2StartBridgeAt && pg2PolicyStartAt < pg2StartHostfxrAt;
+bool pg2PolicyEnvOk = cSource?.Contains("setenv(\"DOTNET_EnableWriteXorExecute\", enabled ? \"1\" : \"0\", 1);") == true;
+bool pg2PolicyLogOk = cSource?.Contains("\"[openharmony-host] %{public}s: xwe=%{public}d source=%{public}s\"") == true &&
+    cSource!.Contains("fprintf(stderr, \"[openharmony-host] %s: xwe=%d source=%s\\n\", name, enabled, source);");
+bool pg2PolicyOk = pg2PolicyDefOk && pg2PolicyPathsOk && pg2PolicyEnvOk && pg2PolicyLogOk;
+Console.WriteLine($"[verify] pg2 host exec memory policy defined={pg2PolicyDefOk} bothPaths={pg2PolicyPathsOk} env={pg2PolicyEnvOk} xweLog={pg2PolicyLogOk} source='{cSourcePath ?? "<missing>"}' assert={pg2PolicyOk}");
+if (!pg2PolicyOk)
+{
+    throw new InvalidOperationException(
+        $"the PG2 exec-memory policy drifted: defined={pg2PolicyDefOk} paths={pg2PolicyPathsOk} " +
+        $"env={pg2PolicyEnvOk} log={pg2PolicyLogOk} source={cSourcePath ?? "<missing>"}");
+}
+
+// PG2i: the one-shot exec-memory probe: the once guard, the `OHOS_DOTNET probe: 1=... 4=...`
+// mapping line and its dotnet-status.txt append.
+bool pg2ProbeDefOk = cSource?.Contains("static void OhosHostProbeExecMemoryOnce(const char* status_dir) {") == true;
+bool pg2ProbeOnceOk = cSource?.Contains("static int g_exec_probe_done = 0;") == true &&
+    cSource!.Contains("if (g_exec_probe_done) {\n        return;\n    }");
+bool pg2ProbeTokenOk = cSource?.Contains("snprintf(line, sizeof(line), \"OHOS_DOTNET probe: 1=%s 2=%s 3=%s 4=%s\", r1, r2, r3, r4);") == true;
+bool pg2ProbeStatusOk = cSource?.Contains("OhosHostAppendStatusLine(status_dir, line);") == true;
+bool pg2ProbeOk = pg2ProbeDefOk && pg2ProbeOnceOk && pg2ProbeTokenOk && pg2ProbeStatusOk;
+Console.WriteLine($"[verify] pg2 host exec memory probe defined={pg2ProbeDefOk} oneShot={pg2ProbeOnceOk} token={pg2ProbeTokenOk} status={pg2ProbeStatusOk} source='{cSourcePath ?? "<missing>"}' assert={pg2ProbeOk}");
+if (!pg2ProbeOk)
+{
+    throw new InvalidOperationException(
+        $"the PG2 exec-memory probe drifted: defined={pg2ProbeDefOk} once={pg2ProbeOnceOk} " +
+        $"token={pg2ProbeTokenOk} status={pg2ProbeStatusOk} source={cSourcePath ?? "<missing>"}");
 }
 
 // ---- Audit batch-3 pins: the FIX-MAUI security residuals (MB-1/MB-2/MB-3/H-C2) ----------------

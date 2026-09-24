@@ -1,6 +1,6 @@
 # Interaction regression suite (headless)
 
-The MAUI-on-OpenHarmony interaction harness (302 interaction checks, a 4-line fuzz tail, a
+The MAUI-on-OpenHarmony interaction harness (307 interaction checks, a 4-line fuzz tail, a
 frame-path performance budget and an accessibility publish-path budget). It builds the platform
 slice sources from the
 `maui-ohos` working tree and drives the app host without a device: touch/drag/pinch/pointer input,
@@ -25,8 +25,10 @@ flashlight default/degradation and the file-share dispatch/MIME/URI path), the V
 on-demand app-context publish (V8: native/NAPI/shell-template checks plus an off-device drill
 of the managed bridge's surface-replay seam), and the PG2 packaging/host invariants (the runtime
 natives staged into the signed `libs/<abi>/` with their `dotnet.zip` exclusion, the
-`libc++_shared` staging + re-sign pass, the host's `libs/<abi>/` -> app-dir symlink bridge and
-the build-host `DT_NEEDED libhostfxr` guard), plus the PI1/PI2/RB batch (the app-package root,
+`libc++_shared` staging + re-sign pass, the `.dotnet-payload.json` marker the staging writes and
+the shell reads, the host's `libs/<abi>/` -> app-dir symlink bridge with the payload-in-libs
+app_dir resolution and the exec-memory policy/probe, and the build-host `DT_NEEDED libhostfxr`
+guard), plus the PI1/PI2/RB batch (the app-package root,
 the Create=0 send + pre-Run activation, the carousel grouping flatten, the shadow mapper/
 `DrawShadow`, the SecureStorage fallback note, the platform application object, the window-overlay
 host and the TFM gating / public-API baseline / `SupportedPlatform` / frozen-ABI review
@@ -47,7 +49,7 @@ allocation and jitter) budgets are exceeded.
 # (or the MauiSliceDir / HostingDll / OpenHarmonyGraphicsDll MSBuild properties) before building
 # elsewhere; an explicit -p: value wins over the environment and the absolute fallbacks.
 dotnet build -v:q
-dotnet bin/Debug/net11.0/verify.dll | grep -c '\[verify\]'   # expect 315 (302 checks + 4 fuzz + 1 frame perf + 8 a11y perf)
+dotnet bin/Debug/net11.0/verify.dll | grep -c '\[verify\]'   # expect 320 (307 checks + 4 fuzz + 1 frame perf + 8 a11y perf)
 ```
 
 The `interaction-regression` workflow (`.github/workflows/interaction-regression.yml`) runs the
@@ -58,7 +60,7 @@ suite on a GitHub runner as a real gate (on push to `master`, on pull requests a
 points `MAUI_SLICE_DIR` / `HOSTING_DLL` / `OPENHARMONY_GRAPHICS_DLL` at those roots, and fails the
 job unless the run exits 0, the suite's own `[suite]` contract line reports `assert=True` with at
 least the floor declared in `Program.cs`, both perf lines report `within=True`, and no `Unhandled`
-line is logged. The floor (295 = 315 - 20, the documented convention) lives only in `Program.cs`;
+line is logged. The floor (300 = 320 - 20, the documented convention) lives only in `Program.cs`;
 the workflow and `scripts/preflight.sh` both read the printed `[suite] checks=... floor=...` line
 instead of repeating a literal, so the two local/CI thresholds cannot drift apart.
 
@@ -167,7 +169,7 @@ jitter ~1.08x and 72,056 B/frame, and the a11y block reported ~0.3/0.5 ms for th
 ~0.07/0.28 ms for the publish pass (skip/republish). The post-batch run (commit a10b73e) reported
 avg 0.488 ms, p95 0.698 ms, jitter 1.43x and 3,720 B/frame, i.e. the ceiling is 3.72x the CI
 baseline. Every run ends with the `[suite]` contract line
-(`checks=315 total=315 floor=295 assert=True`), which the workflow and `scripts/preflight.sh`
+(`checks=320 total=320 floor=300 assert=True`), which the workflow and `scripts/preflight.sh`
 parse.
 
 ## Notes
@@ -176,8 +178,8 @@ parse.
   blocks codesigned ELF apphosts on some machines).
 - The suite fails loudly (unhandled exception) when a slice change breaks startup or when an
   assertion for the gesture flows (including the drag-and-drop checks) does not hold; keep it at
-  302 checks plus the 4 fuzz lines plus the 1 frame-perf line plus the 8 a11y-perf lines
-  (315 `[verify]` lines) when touching the platform slice. The total and the floor (total - 20)
+  307 checks plus the 4 fuzz lines plus the 1 frame-perf line plus the 8 a11y-perf lines
+  (320 `[verify]` lines) when touching the platform slice. The total and the floor (total - 20)
   are declared in `Program.cs`; the run ends with a `[suite] checks=... floor=... assert=...`
   line and fails itself when the printed count is below the floor, so the CI job and
   `scripts/preflight.sh` do not repeat the threshold.
@@ -294,7 +296,7 @@ parse.
   queue globals, their transfer to the handle inside the A1 critical section and the
   register_bridge flush; A7 asserts the NAPI `g_launch_lock`/`g_launch_requested`
   reject-before-allocate guard with both failure-path clears and the native
-  `g_launch_in_progress` guard set/cleared under the lock with the five `OhosHostEndLaunch()`
+  `g_launch_in_progress` guard set/cleared under the lock with the six `OhosHostEndLaunch()`
   failure calls; A8 asserts `ImeUtf8PrefixLength` backs off to a UTF-8 sequence boundary at both
   IME call sites (and no `strncpy` call site remains); B3 asserts the shell's
   `window.__ohHybridId`/`window.__ohBlazorId` stamps in all three preview templates and the
@@ -554,8 +556,23 @@ parse.
   text submitted, lifecycle, surface, pinch, web event, picker and keystore result): each private
   handler delegate is swapped for a thrower, the native entry is invoked, the delegate is
   restored and the ten inline `ReportCallbackFailure` guards are pinned in the source. That is 7
-  lines: 308 + 7 = 315 = 302 interaction checks + 4 fuzz + 1 frame perf + 8 a11y perf; the
-  suite's documented floor convention is total - 20 = 295, declared once in `Program.cs` (the
+  lines: 308 + 7 = 315 = 302 interaction checks + 4 fuzz + 1 frame perf + 8 a11y perf.
+- PG2e pins (payload-in-libs app_dir resolution / payload marker / exec-memory policy + probe):
+  five `[verify]` lines for the payload-in-libs launch path the host probes before hostfxr.
+  `pg2 host resolve app dir` pins `OhosHostResolveAppDir` and both launch-path calls (the
+  resolution runs before the runtime-lib bridge each path); `pg2 host resolve app dir log` pins
+  the `used_own=0|1 own=... app=...` resolution log in both the hilog and stderr forms.
+  `pg2 payload marker` pins the staging's `MarkerFileName=".dotnet-payload.json"` writer in all
+  three preview packs (the libs entry count, the `payloadEntries`/`zipEntries` staging counters
+  and the `zipSha256` of the packed fallback zip) plus the `PAYLOAD_MARKER_NAME`/`PayloadMarker`
+  reader in both entry-ability templates. `pg2 host exec memory policy` pins
+  `OhosHostApplyExecMemoryPolicy` on both launch paths before their `OhosHostOpenHostfxr`, the
+  `DOTNET_EnableWriteXorExecute` environment pin and the `xwe=0|1 source=default|file` log in
+  both forms; `pg2 host exec memory probe` pins the one-shot `OHOS_DOTNET probe:` mapping line
+  and its `dotnet-status.txt` append (and the A7 native pin counts all six failure-path
+  `OhosHostEndLaunch()` calls, the app_dir resolution failure included). That is 5 lines:
+  315 + 5 = 320 = 307 interaction checks + 4 fuzz + 1 frame perf + 8 a11y perf; the suite's
+  documented floor convention is total - 20 = 300, declared once in `Program.cs` (the
   `verifyCheckTotal`/`verifyCheckFloor` constants behind the `[suite]` line). When checks are
   added or removed, update that one constant and the totals in this README; the workflow and
   preflight pick the floor up from the printed line automatically.

@@ -21,7 +21,7 @@ name: interaction-regression
 #     tree (Refresh + Publish render step and Publish-alone pass), skip/republish average/max
 #     ceilings and documented republish/skip ratio floors (render >= 1.25x, publish >= 2x).
 #
-# The check-count floor (295 = 315 - 20, the documented convention) is declared once in
+# The check-count floor (300 = 320 - 20, the documented convention) is declared once in
 # test/maui-platform-verify/Program.cs, next to the constants that count the executed suite's own
 # [verify] lines; this job reads the `[suite]` line the run prints (and cross-checks it against
 # `grep -c`) instead of repeating a literal, exactly like scripts/preflight.sh, so the local gate
@@ -54,10 +54,12 @@ permissions:
 # mutable feature/openharmony branch, so a push to the fork cannot change what this gate compiles.
 # The default is the feature/openharmony tip verified with
 # `git ls-remote https://github.com/springmin/maui-ohos feature/openharmony` on 2026-09-24
-# (236d18a9: refresh the platform slice harness baseline to 315 checks / floor 295 - docs-only
-# on top of c05db90f, the scroll ticker dropping its frame registration as soon as no fling can
-# start and the frame path no longer allocating; the 315-check suite's pins hold at the same
-# compiled tree); advance it deliberately (workflow_dispatch can compile any commit).
+# (236d18a9: refresh the platform slice harness baseline to the then-current 315 checks /
+# floor 295 - docs-only on top of c05db90f, the scroll ticker dropping its frame registration as
+# soon as no fling can start and the frame path no longer allocating; the suite now pins 320
+# checks / floor 300 after the payload-in-libs app_dir and exec-memory pin refresh, and its pins
+# hold at the same compiled tree); advance it deliberately (workflow_dispatch can compile any
+# commit).
 env:
   MAUI_OHOS_REF: ${{ github.event.inputs.maui_ohos_ref || '236d18a9919b02b07df80083c1520080d50b65ad' }}
   # setup-dotnet installs the requested 11.0.x preview into DOTNET_INSTALL_DIR; on Linux that
