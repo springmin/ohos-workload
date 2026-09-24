@@ -54,6 +54,8 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
+#include "host_optional.h"  // after the NDK headers: it redirects optional API call sites
+
 // NOTE: signature is (argc, argv, host_path, dotnet_root, app_path) — see native/corehost/hostfxr.h.
 typedef int (*ohos_main_startupinfo_fn)(const int argc, const char* const* argv,
                                         const char* host_path, const char* dotnet_root,
@@ -1183,6 +1185,9 @@ static void OhosHostNativeWindowInvalidate(void) {
 // Applies geometry/format/usage only when the window or its size changed. On failure the
 // cached state stays invalid so the next frame retries.
 static int OhosHostNativeWindowConfigure(void* window, int width, int height) {
+    if (!ohos_host_optional_native_window_available()) {
+        return -1;  // reported once by the optional-library loader; drawing stays disabled
+    }
     if (g_native_window_configured == window && g_native_window_width == width &&
         g_native_window_height == height) {
         return 0;
@@ -1192,9 +1197,10 @@ static int OhosHostNativeWindowConfigure(void* window, int width, int height) {
         OhosHostPresentMapReleaseAll();
     }
     uint64_t usage = NATIVEBUFFER_USAGE_CPU_WRITE | NATIVEBUFFER_USAGE_MEM_DMA;
-    if (OH_NativeWindow_NativeWindowHandleOpt((OHNativeWindow*)window, SET_BUFFER_GEOMETRY, width, height) != 0 ||
-        OH_NativeWindow_NativeWindowHandleOpt((OHNativeWindow*)window, SET_FORMAT, NATIVEBUFFER_PIXEL_FMT_RGBA_8888) != 0 ||
-        OH_NativeWindow_NativeWindowHandleOpt((OHNativeWindow*)window, SET_USAGE, usage) != 0) {
+    if (ohos_host_optional_native_window_set_geometry((OHNativeWindow*)window, width, height) != 0 ||
+        ohos_host_optional_native_window_set_format((OHNativeWindow*)window,
+                                                    NATIVEBUFFER_PIXEL_FMT_RGBA_8888) != 0 ||
+        ohos_host_optional_native_window_set_usage((OHNativeWindow*)window, usage) != 0) {
         OhosHostNativeWindowInvalidate();
         return -1;
     }
@@ -1284,6 +1290,9 @@ static void OhosHostPresentCopyRows(void* dst_ptr, size_t dst_stride, const void
 static int OhosDrawFrame(void* window, int width, int height, int mode, unsigned int argb) {
     if (window == NULL || width <= 0 || height <= 0) {
         return -1;
+    }
+    if (!ohos_host_optional_native_window_available()) {
+        return -1;  // reported once by the optional-library loader; frame dropped silently
     }
     if (OhosHostNativeWindowConfigure(window, width, height) != 0) {
         fprintf(stderr, "[openharmony-host] surface: buffer options failed\n");
@@ -1406,6 +1415,9 @@ void ohos_host_request_text_input(int show) {
 // ---------------------------------------------------------------------------
 
 int ohos_host_vibrate(int duration_ms) {
+    if (!ohos_host_optional_vibrator_available()) {
+        return -1;  // no vibrator library on this image: request dropped
+    }
     Vibrator_Attribute attribute;
     attribute.vibratorId = 0;
     attribute.usage = (Vibrator_Usage)0; /* Vibrator_Usage default (unknown) */
@@ -1439,6 +1451,9 @@ static void OnLocationReported(Location_Info* location, void* userData) {
 }
 
 int ohos_host_location_start(void) {
+    if (!ohos_host_optional_location_available()) {
+        return -1;  // no location library on this image: locating stays off
+    }
     if (g_location_config == NULL) {
         g_location_config = OH_Location_CreateRequestConfig();
         if (g_location_config == NULL) {
@@ -1606,6 +1621,9 @@ void ohos_host_keyboard_set_text(const char* utf8) {
 }
 
 static int EnsureInputMethod(void) {
+    if (!ohos_host_optional_ime_available()) {
+        return -1;  // reduced image without the API 12+ IME entry points: keyboard stays off
+    }
     if (g_inputmethod_proxy != NULL) {
         return 0;
     }
@@ -2016,6 +2034,9 @@ void ohos_host_set_network_capabilities(const char* encoded) {
 }
 
 int ohos_host_network_capabilities(void) {
+    if (!ohos_host_optional_net_conn_available()) {
+        return 0;  // no NetConn library on this image: no bearer types reported
+    }
     if (g_net_bearers_known) {
         return g_net_bearers;
     }
@@ -2077,6 +2098,9 @@ int ohos_host_keyboard_hide(void) {
 }
 
 int ohos_host_network_access(void) {
+    if (!ohos_host_optional_net_conn_available()) {
+        return 1; /* none: no NetConn library on this image */
+    }
     int32_t hasDefault = 0;
     if (OH_NetConn_HasDefaultNet(&hasDefault) != 0 || hasDefault == 0) {
         return 1; /* none */
@@ -2098,6 +2122,9 @@ int ohos_host_network_access(void) {
 }
 
 int ohos_host_check_permission(const char* permission) {
+    if (!ohos_host_optional_ability_access_available()) {
+        return 0;  // no access-control library on this image: report "not granted"
+    }
     if (permission == NULL) {
         return 0;
     }
@@ -2450,6 +2477,9 @@ void ohos_host_draw_set_radial_gradient(float cx, float cy, float radius,
 
 int ohos_host_draw_set_image_pattern(const void* data, int length, int tileModeX, int tileModeY,
                                      float scaleX, float scaleY) {
+    if (!ohos_host_optional_image_available()) {
+        return -1;  // no ImageSource/Pixelmap library on this image: pattern stays off
+    }
     if (data == NULL || length <= 0) {
         return -1;
     }
@@ -3140,6 +3170,9 @@ static OhosImageCacheEntry* OhosImageCacheReserve(size_t decoded_bytes) {
 }
 
 static OH_PixelmapNative* OhosDecodePixelmap(const void* data, int length) {
+    if (!ohos_host_optional_image_available()) {
+        return NULL;  // no ImageSource/Pixelmap library on this image: decoding stays off
+    }
     OH_ImageSourceNative* source = NULL;
     if (OH_ImageSourceNative_CreateFromData((uint8_t*)data, (size_t)length, &source) != IMAGE_SUCCESS || source == NULL) {
         return NULL;
@@ -3244,6 +3277,9 @@ int ohos_host_draw_present(void) {
     if (g_canvas == NULL || !g_surface_valid || g_surface_state == (int)OHOS_SURFACE_DESTROYED) {
         return -1;
     }
+    if (!ohos_host_optional_native_window_available()) {
+        return -1;  // reported once by the optional-library loader; present dropped silently
+    }
     OHNativeWindow* native_window = (OHNativeWindow*)g_surface_window;
     int width = g_canvas_width;
     int height = g_canvas_height;
@@ -3313,6 +3349,9 @@ void ohos_host_sensor_set_listener(void* listener) {
 void ohos_host_sensor_stop(void);
 
 int ohos_host_sensor_is_supported(int type) {
+    if (!ohos_host_optional_sensor_available()) {
+        return 0;  // no sensor library on this image: nothing is supported
+    }
     uint32_t capacity = 32;
     Sensor_Info** infos = OH_Sensor_CreateInfos(capacity);
     if (infos == NULL) {
@@ -3336,6 +3375,9 @@ int ohos_host_sensor_is_supported(int type) {
 }
 
 int ohos_host_sensor_start(int type, int interval_ms) {
+    if (!ohos_host_optional_sensor_available()) {
+        return -1;  // no sensor library on this image: subscription stays off
+    }
     ohos_host_sensor_stop();
     Sensor_SubscriptionId* id = OH_Sensor_CreateSubscriptionId();
     Sensor_SubscriptionAttribute* attr = OH_Sensor_CreateSubscriptionAttribute();

@@ -12,6 +12,7 @@
 #include <arkui/native_node_napi.h>
 #include <napi/native_api.h>
 #include <hilog/log.h>
+#include "host_optional_log.h"  // after hilog/log.h: routes OH_LOG_* through the optional shim
 #include <errno.h>
 #include <pthread.h>
 #include <stdint.h>
