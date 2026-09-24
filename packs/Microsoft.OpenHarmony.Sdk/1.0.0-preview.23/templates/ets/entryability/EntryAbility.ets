@@ -133,6 +133,10 @@ async function unpackIfNeeded(zipFd: number, zipOffset: number, zipSize: number,
   }
   copyZipRange(zipFd, zipOffset, zipSize, cached);
   deleteTree(payloadDir);
+  // decompressFile refuses a destination that does not exist yet (device finding:
+  // BusinessError 900002 "destination path is not an existing directory"), so create the
+  // payload dir after the stale tree is gone and before the inflate starts.
+  fs.mkdirSync(payloadDir, true);
   await zlib.decompressFile(cached, payloadDir);
   writeMarker(markerPath, { zipSize, mtime, fileCount: countEntries(payloadDir) });
   return true;
