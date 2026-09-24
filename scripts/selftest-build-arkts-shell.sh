@@ -36,6 +36,10 @@
 #   T12 wiring    source pin for the new pieces: the generated modelVersion default, the dependency
 #                 guard running after scaffold generation and before hvigor starts, and the
 #                 diagnosis hook sitting on the failure path just before the final die
+#   T13 abc       `--check-abc` accepts an abc carrying the payload-in-libs probe
+#                 (dotnet-payload/bundleCodeDir/payload-in-libs) and the dotnet.zip fallback
+#                 (dotnet.marker); each missing literal fails with its name, an unreadable file
+#                 is exit 2 and a missing argument is refused
 #
 # No network, no node, no SDK, no real unpack: the malicious tarballs are created with python3's
 # tarfile into a temp dir and only ever listed (`tar tzf`), the scaffold is written by the script's
@@ -341,6 +345,34 @@ if [ -n "$DIAG_LINE" ] && [ -n "$DIE_LINE" ] && [ "$DIAG_LINE" -lt "$DIE_LINE" ]
 else
     fail_ "T12 ordering: diagnosis=$DIAG_LINE die=$DIE_LINE"
 fi
+
+# ---- T13: the compiled-abc contract gate -----------------------------------------------
+section "T13 compiled-shell abc gate (--check-abc)"
+# The abc the build ships must carry the payload-in-libs probe and the dotnet.zip fallback
+# literals; --check-abc exposes the same check without node/hvigor/SDK.
+ABC_FIXTURE="$WORK/abc-good.bin"
+printf 'PANDA\0\0\0\0\0\0\0\0\0\0\0\0dotnet-payload bundleCodeDir payload-in-libs dotnet.marker' > "$ABC_FIXTURE"
+if sh "$BUILD_SCRIPT" --check-abc "$ABC_FIXTURE" > "$WORK/T13-good.log" 2>&1; then
+    pass_ "T13 a complete abc passes (exit 0)"
+else
+    fail_ "T13 the complete abc fixture was rejected (see $WORK/T13-good.log)"
+fi
+assert_contains "T13 reports the probe as present" "payload-in-libs probe" "$WORK/T13-good.log"
+for _lit in dotnet-payload bundleCodeDir payload-in-libs dotnet.marker; do
+    python3 - "$ABC_FIXTURE" "$WORK/abc-missing-$_lit.bin" "$_lit" <<'PY'
+import sys
+src, dst, drop = sys.argv[1:4]
+data = open(src, 'rb').read().replace(drop.encode(), b'x' * len(drop))
+open(dst, 'wb').write(data)
+PY
+    sh "$BUILD_SCRIPT" --check-abc "$WORK/abc-missing-$_lit.bin" > "$WORK/T13-$_lit.log" 2>&1 && _rc=0 || _rc=$?
+    assert_rc 1 "$_rc" "T13 an abc without '$_lit' fails"
+    assert_contains "T13 names the missing literal '$_lit'" "$_lit" "$WORK/T13-$_lit.log"
+done
+sh "$BUILD_SCRIPT" --check-abc "$WORK/does-not-exist.abc" > "$WORK/T13-missing.log" 2>&1 && _rc=0 || _rc=$?
+assert_rc 2 "$_rc" "T13 an unreadable abc is bad input (exit 2)"
+sh "$BUILD_SCRIPT" --check-abc > "$WORK/T13-usage.log" 2>&1 && _rc=0 || _rc=$?
+assert_rc 1 "$_rc" "T13 --check-abc without a file is refused"
 
 # ---- summary -------------------------------------------------------------------------
 section "summary"

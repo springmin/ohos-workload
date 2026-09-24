@@ -22,6 +22,10 @@
 # abc version: the SDK 26 default 24.0.0.0 is rejected by the device runtime; compatibleSdkVersion
 # 18 makes es2abc emit 13.0.1.0. The emitted version is read back from the abc header and must not
 # exceed ARKTS_MAX_BC_VERSION (default 13.0.1.0); raise it with ARKTS_COMPATIBLE_SDK_VERSION.
+# Two more gates run on the emitted artifact: the compile itself must be reported as finished
+# (hvigor's own PackageHap failure is tolerated, a failed CompileArkTS is not), and the abc must
+# carry the payload-in-libs probe plus the dotnet.zip fallback literals (dotnet-payload /
+# bundleCodeDir / payload-in-libs / dotnet.marker), so a stale template cannot ship silently.
 #
 # hvigor "00302013 - The root node is not yet available for build" (the device-side testers hit it
 # with an older scaffold; kit report 5) is guarded in three places. The generated
@@ -365,6 +369,38 @@ if [ "${1:-}" = "--check-tgz" ]; then
     esac
 fi
 
+# --check-abc <file>: run just the compiled-shell contract check and exit. It needs no node,
+# hvigor or SDK, so scripts/selftest-build-arkts-shell.sh drives its positive and negative cases.
+# rc=0 when the abc carries every payload-in-libs literal, 1 when one is missing (named on
+# stdout), 2 when the file cannot be read.
+check_abc_contract() {
+    python3 - "$1" <<'PY'
+import sys
+abc = sys.argv[1]
+try:
+    data = open(abc, 'rb').read()
+except OSError as exc:
+    print('cannot read %s (%s)' % (abc, exc))
+    sys.exit(2)
+missing = [lit for lit in ('dotnet-payload', 'bundleCodeDir', 'payload-in-libs', 'dotnet.marker')
+           if lit.encode() not in data]
+if missing:
+    print('ERROR: %s lacks the literal(s): %s' % (abc, ', '.join(missing)))
+    sys.exit(1)
+print('    payload-in-libs probe (dotnet-payload/bundleCodeDir) and the dotnet.zip fallback (dotnet.marker) are present in %s' % abc)
+PY
+}
+
+if [ "${1:-}" = "--check-abc" ]; then
+    [ -n "${2:-}" ] || die "usage: $0 --check-abc <modules.abc>"
+    check_abc_contract "$2" && _abc_rc=0 || _abc_rc=$?
+    case "$_abc_rc" in
+        0) exit 0 ;;
+        1) exit 1 ;;
+        *) exit 2 ;;
+    esac
+fi
+
 # --diagnose-log <file>: attribute a saved hvigor log and exit. Needs no node or SDK, so it also
 # works on a log copied from another machine; scripts/selftest-build-arkts-shell.sh drives the
 # 00302013 positive and negative cases through it. Exit 0 = signature found (handling steps
@@ -631,7 +667,18 @@ while :; do
     diagnose_hvigor_log "$LOG" || true
     die "hvigor failed (full log: $LOG)"
 done
-grep -E 'Finished :entry:default@CompileArkTS|Failed :entry:default@CompileArkTS' "$LOG" | tail -1 | sed 's/^/    /' || true
+# The ArkTS compile itself must have finished: the tolerated failure above is hvigor's own
+# PackageHap step, but a `Failed :entry:default@CompileArkTS` line means the abc below is not
+# the compiled result of these sources and must not be shipped as the shell.
+COMPILE_LINE="$(grep -E 'Finished :entry:default@CompileArkTS|Failed :entry:default@CompileArkTS' "$LOG" | tail -1 || true)"
+case "$COMPILE_LINE" in
+    *'Finished :entry:default@CompileArkTS'*)
+        printf '    %s\n' "$COMPILE_LINE" ;;
+    *)
+        tail -20 "$LOG" | sed 's/^/    /'
+        diagnose_hvigor_log "$LOG" || true
+        die "hvigor did not report a finished ArkTS compile (full log: $LOG)" ;;
+esac
 
 ABC="$(find "$PROJ/entry/build" -name modules.abc | head -1)"
 [ -n "$ABC" ] || die "modules.abc not produced (see .arkts-build/project/.hvigor/outputs/build-logs)"
@@ -653,6 +700,12 @@ sys.exit(3 if max_version and version > max_version else 0)
 PY
 )" || die "abc version $BC_VERSION is newer than $MAX_BC_VERSION (set ARKTS_MAX_BC_VERSION=any to allow, or ARKTS_COMPATIBLE_SDK_VERSION to a level whose es2abc output the device accepts)"
 info "ArkTS shell compiled ($VARIANT): $OUT_FILE ($(stat -c%s "$OUT_FILE") bytes, abc version $BC_VERSION, compatibleSdkVersion $COMPATIBLE_SDK_VERSION)"
+# Compiled-artifact gate: the abc must be the payload-in-libs shell - it probes the staged
+# bundle payload (libs/<abi>/.dotnet-payload.json under bundleCodeDir) and keeps the dotnet.zip
+# fallback (the P17 dotnet.marker). A build from a stale EntryAbility source (or the wrong
+# template) still compiles and passes the version check but would always take the extraction
+# path, so fail here; --check-abc exposes the same check to the selftest.
+check_abc_contract "$OUT_FILE" || die "the compiled shell lacks the payload-in-libs probe; rebuild from packs/.../templates/ets/entryability"
 if [ "$VARIANT" = ui ]; then
     info "package it with: -p:OpenHarmonyUIPage=pages/Index -p:OpenHarmonyArktsModulesAbc=$OUT_FILE"
 else

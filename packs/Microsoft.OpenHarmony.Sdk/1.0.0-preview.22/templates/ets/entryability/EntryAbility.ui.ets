@@ -2,7 +2,11 @@
 // ArkUI page (compiled by the ArkTS toolchain: ets-loader/hvigor or DevEco Studio).
 // The page receives a NodeContent, which the native host forwards to the managed app
 // (Microsoft.OpenHarmony.Hosting.OpenHarmonyBridge.NodeContent) so managed code can
-// attach native ArkUI nodes (e.g. an XComponent for Skia/MAUI rendering).
+// attach native ArkUI nodes (e.g. an XComponent for Skia/MAUI rendering). The packaging
+// target ships the published .NET output twice: in place under the hap's signed libs/<abi>/
+// (payload-in-libs, the namespace-allowed copy this ability starts from) and as
+// resources/rawfile/dotnet.zip, the fallback it unpacks into the app's files dir when the
+// staged payload is absent.
 import { UIAbility, AbilityConstant, Want } from '@kit.AbilityKit';
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import { window } from '@kit.ArkUI';
@@ -28,6 +32,47 @@ interface UnpackMarker {
   zipSize: number;
   mtime: number;
   fileCount: number;
+}
+
+// Payload-in-libs: the packaging stages the whole managed payload into the hap's signed
+// libs/<abi>/ directory and writes the .dotnet-payload.json marker there. That bundle
+// directory is the only one the device namespace policy allows the runtime to dlopen from, so
+// a complete staged payload is started in place and the dotnet.zip copy/inflate is skipped; a
+// hap packed without the marker (or with a partial staging) falls back to the zip below. The
+// marker names the entry assembly and the staged file count.
+interface PayloadMarker {
+  schema: number;
+  assembly: string;
+  entries: number;
+}
+
+// HAP libs/<abi>/ directory names on device: the packaging ABI ids map to the loader's names
+// (arm64-v8a -> arm64). Probing the known set keeps the shell template ABI-agnostic.
+const LIBS_ABI_DIRS = ['arm64', 'arm', 'x86_64'];
+const PAYLOAD_MARKER_NAME = '.dotnet-payload.json';
+
+// Returns the bundle libs directory when it carries a complete payload-in-libs staging: the
+// marker file, the entry assembly and a marker that names that assembly. Any error (missing
+// directory, unreadable bundle) is the zip fallback's business and returns undefined.
+function findLibsPayloadDir(bundleCodeDir: string, assembly: string): string | undefined {
+  if (bundleCodeDir.length === 0) {
+    return undefined;
+  }
+  for (const abi of LIBS_ABI_DIRS) {
+    const dir = `${bundleCodeDir}/libs/${abi}`;
+    try {
+      if (!fs.accessSync(dir) || !fs.accessSync(`${dir}/${PAYLOAD_MARKER_NAME}`) || !fs.accessSync(`${dir}/${assembly}`)) {
+        continue;
+      }
+      const marker = JSON.parse(fs.readTextSync(`${dir}/${PAYLOAD_MARKER_NAME}`)) as PayloadMarker;
+      if (marker.assembly === assembly && marker.entries > 0) {
+        return dir;
+      }
+    } catch (probeError) {
+      // keep probing: an unreadable or malformed candidate is not a payload-in-libs staging
+    }
+  }
+  return undefined;
 }
 
 function countEntries(dir: string): number {
@@ -84,6 +129,27 @@ function writeMarker(markerPath: string, marker: UnpackMarker): void {
   } catch (markerError) {
     // A lost marker only costs one more unpack next launch; never fail startup for it.
     hilog.warn(DOMAIN, TAG, 'unpack marker not written: %{public}s', (markerError as Error).message);
+  }
+}
+
+// A payload extracted by an earlier (pre-payload-in-libs) kit stays in filesDir after an
+// upgrade; drop it, its marker and the cached zip so the runtime never falls back to the stale
+// tree and the space is reclaimed. Best effort: a failure only leaves the old files behind and
+// never fails the launch.
+function removeStaleExtraction(payloadDir: string, markerPath: string, cachedZip: string): void {
+  try {
+    if (fs.accessSync(payloadDir)) {
+      deleteTree(payloadDir);
+      hilog.info(DOMAIN, TAG, 'removed the stale extracted payload %{public}s', payloadDir);
+    }
+    if (fs.accessSync(markerPath)) {
+      fs.unlinkSync(markerPath);
+    }
+    if (fs.accessSync(cachedZip)) {
+      fs.unlinkSync(cachedZip);
+    }
+  } catch (cleanupError) {
+    hilog.warn(DOMAIN, TAG, 'stale payload cleanup failed: %{public}s', (cleanupError as Error).message);
   }
 }
 
@@ -219,28 +285,41 @@ export default class EntryAbility extends UIAbility {
   }
 
   private async bootstrap(): Promise<void> {
-    const payloadDir = `${this.context.filesDir}/dotnet`;
     const raw = await this.context.resourceManager.getRawFileContent('app.json');
     const config = JSON.parse(new util.TextDecoder('utf-8').decodeWithStream(raw)) as AppConfig;
+    const payloadDir = `${this.context.filesDir}/dotnet`;
     const markerPath = `${this.context.filesDir}/dotnet.marker`;
     const cached = `${this.context.cacheDir}/dotnet.zip`;
-    const zip = await this.context.resourceManager.getRawFd('dotnet.zip');
-    // The marker pins the rawfile bytes; when fstat is unavailable the -1 identity never
-    // matches, which degrades to the old unconditional unpack instead of skipping wrongly.
-    let zipMtime = -1;
-    try {
-      zipMtime = fs.statSync(zip.fd).mtime;
-    } catch (statError) {
-      hilog.warn(DOMAIN, TAG, 'dotnet.zip stat failed: %{public}s', (statError as Error).message);
-    }
-    const unpacked: boolean = await unpackIfNeeded(zip.fd, zip.offset, zip.length, zipMtime, cached, payloadDir, markerPath);
-    if (unpacked) {
-      hilog.info(DOMAIN, TAG, 'unpacked payload into %{public}s', payloadDir);
+
+    // Payload-in-libs (see findLibsPayloadDir): a staged bundle payload is the namespace-allowed
+    // copy, so it is used in place and the rawfile zip stays the fallback. Otherwise the zip is
+    // unpacked into filesDir exactly as before (P17 marker logic included).
+    const libsDir = findLibsPayloadDir(this.context.bundleCodeDir, config.assembly);
+    let appDir: string;
+    if (libsDir !== undefined) {
+      appDir = libsDir;
+      hilog.info(DOMAIN, TAG, 'payload-in-libs: running from %{public}s (dotnet.zip not unpacked)', libsDir);
+      removeStaleExtraction(payloadDir, markerPath, cached);
     } else {
-      hilog.info(DOMAIN, TAG, 'reused payload in %{public}s', payloadDir);
+      const zip = await this.context.resourceManager.getRawFd('dotnet.zip');
+      // The marker pins the rawfile bytes; when fstat is unavailable the -1 identity never
+      // matches, which degrades to the old unconditional unpack instead of skipping wrongly.
+      let zipMtime = -1;
+      try {
+        zipMtime = fs.statSync(zip.fd).mtime;
+      } catch (statError) {
+        hilog.warn(DOMAIN, TAG, 'dotnet.zip stat failed: %{public}s', (statError as Error).message);
+      }
+      const unpacked: boolean = await unpackIfNeeded(zip.fd, zip.offset, zip.length, zipMtime, cached, payloadDir, markerPath);
+      if (unpacked) {
+        hilog.info(DOMAIN, TAG, 'unpacked payload into %{public}s', payloadDir);
+      } else {
+        hilog.info(DOMAIN, TAG, 'reused payload in %{public}s', payloadDir);
+      }
+      appDir = payloadDir;
     }
     const context = JSON.stringify({
-      appDir: payloadDir,
+      appDir: appDir,
       filesDir: this.context.filesDir,
       cacheDir: this.context.cacheDir,
       bundleName: this.context.abilityInfo.bundleName,
@@ -248,13 +327,13 @@ export default class EntryAbility extends UIAbility {
       nodeContent: 0,
     });
     const started: boolean = this.hostCall('startApp', typeof host !== 'undefined' && typeof host.startApp === 'function', (): void => {
-      host.startApp(payloadDir, config.assembly, context);
+      host.startApp(appDir, config.assembly, context);
     });
     if (!started) {
       hilog.error(DOMAIN, TAG, 'managed app %{public}s not started (UI shell): host unavailable', config.assembly);
       return;
     }
     this.started = true;
-    hilog.info(DOMAIN, TAG, 'managed app %{public}s started (UI shell)', config.assembly);
+    hilog.info(DOMAIN, TAG, 'managed app %{public}s started (UI shell) from %{public}s', config.assembly, appDir);
   }
 }
