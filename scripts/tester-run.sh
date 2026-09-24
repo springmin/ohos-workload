@@ -18,9 +18,10 @@
 #       count, optional --compare-lib display-sign), app-lib path evidence (hilog greps + bundle
 #       libs listing), bootstrap/rawfile failure signatures (hilog-bootstrap.txt + summary
 #       counts), device-side payload state (files dir listing + dotnet.marker first line),
-#       kit hap self-check (meta/kit-selfcheck.txt: resources.index size, libs/arm64-v8a
-#       file count, payload-in-libs marker, abc header version), kit hashes, machine-readable
-#       summary; tar -> tester-report-<stamp>.tar.gz
+#       exec-memory policy/probe evidence (hilog-execmem.txt: the xwe= decision line and the
+#       OHOS_DOTNET probe: result), kit hap self-check (meta/kit-selfcheck.txt: resources.index
+#       size, libs/arm64-v8a file count, payload-in-libs marker, abc header version), kit hashes,
+#       machine-readable summary; tar -> tester-report-<stamp>.tar.gz
 # Safety: dry-run by default. Nothing is installed/started/removed/recorded unless the matching
 # flag is given (--install --uninstall --start --capture --probes --extra-probes). Without a
 # device (hdc list targets) device steps are refused: with an action flag it stops immediately,
@@ -41,7 +42,7 @@ set -e
 
 # Bumped with every release repack (随发布重打包递增): the kit release notes' "Bundled
 # tester-run.sh" revision.
-SCRIPT_VERSION="7 (2026-09-24)"
+SCRIPT_VERSION="8 (2026-09-24)"
 
 log()  { printf '[%s] %s\n' "$(date '+%H:%M:%S')" "$*"; }
 warn() { printf '[%s] WARN: %s\n' "$(date '+%H:%M:%S')" "$*" >&2; }
