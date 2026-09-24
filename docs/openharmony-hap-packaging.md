@@ -12,7 +12,8 @@ Packed by the OpenHarmony SDK's `ohos_packing_tool`:
 
 ```text
 module.json, resources.index, ets/modules.abc,
-libs/<abi>/{libopenharmonyhost.so, libc++_shared.so, <.NET runtime *.so>},
+libs/<abi>/{libopenharmonyhost.so, libc++_shared.so, <.NET runtime *.so>,
+            <.NET managed payload: .dll/.json/... subdirectories, .dotnet-payload.json>},
 resources/base/..., resources/rawfile/{app.json, dotnet.zip}
 ```
 
@@ -34,7 +35,8 @@ missing restool is a build error: a hap without the index installs but cannot re
 payload. restool also copies the whole `resources/` tree into its output directory
 (`<stage>/res-index/`); the index is self-contained, so the copy is deleted and only
 `resources.index` is kept. The device-test kit's `verify-kit.sh` asserts the packed index
-(present, non-empty, ≤ 1 KiB), the abc header/size, the `libs/arm64-v8a` set and the
+(present, non-empty, ≤ 1 KiB), the abc header/size, the `libs/arm64-v8a` set, the
+payload-in-libs marker (entry assembly, staged file count, dotnet.zip identity) and the
 `dotnet.zip` composition per hap, plus the host ELF dependency discipline against
 `src/OpenHarmonyHost/host-deps.conf`; `scripts/selftest-verify-kit.sh` drives those
 assertions locally without a device (kit #23+).
@@ -98,16 +100,67 @@ Resolution of the libs-only set (measured on the OHOS host, not assumed):
   when it cannot find them the dump path degrades, the app is unaffected.
 
 Consequence for a device run: the app dir must expose the four names that are resolved by
-directory (`libhostpolicy.so`, `libcoreclr.so`, `libclrjit.so`, `libclrgc/gcexp.so`). The shell
-extracts only what the zip carries, so before the next device round the host has to bridge
-`libs/<abi>/` into the app directory (symlink the signed file under the same name before
-`start_app`) or `hostpolicy_resolver`/`deps_resolver` need a `libs/<abi>` lookup. Until that
-bridge exists a hap built by this target only starts where the app dir still carries those four
-files (i.e. a payload that was not excluded).
+directory (`libhostpolicy.so`, `libcoreclr.so`, `libclrjit.so`, `libclrgc/gcexp.so`). The
+payload-in-libs staging below satisfies that by construction (the app runs from `libs/<abi>/`
+itself); for a hap without it, the host bridges `libs/<abi>/` into the extracted app directory
+by symlinking the signed file under the same name before `start_app` (see the bridge block in
+`src/OpenHarmonyHost/openharmony_host.c`).
 
 The set is enumerated from the publish directory at target execution time; non-ELF `*.so` entries
 are skipped (and stay in the zip), an empty ELF set is a hard error, and the staged libs go
 through the same `OpenHarmonyCodesign` pass as the host and `libc++_shared.so`.
+
+## Payload in libs
+
+The device's namespace policy allows a `dlopen` only from the app's signed bundle directory
+(`/data/storage/el1/bundle/libs/arm64/` on the tester's device; the el2 data directories -
+`haps/entry/libs`, `files`, `cache` - are refused). The namespace probe from the kit #22 device
+round measured six candidate paths and found exactly one accepted `libcoreclr.so` load: the
+bundle `libs/<abi>` directory, matching Huawei's faqs-ndk-development guidance. `hostpolicy`
+and `coreclr` resolve `libhostpolicy.so`/`libcoreclr.so`/`libclrjit.so`/`libclrgc*.so` from
+`app_dir` (see the previous section), so a payload extracted into the data directory cannot be
+used there even though its files are readable.
+
+The packaging therefore stages the whole publish payload into `libs/<abi>/` next to the host
+and the runtime natives (`OpenHarmonyStagePayloadLibs` in the targets file): managed
+assemblies, `.runtimeconfig.json`/`.deps.json`, satellite resource subdirectories (`de/`,
+`zh-Hans/`, ...) and `wwwroot` assets, with the relative layout preserved. The staged files are
+covered by the same HAP signing block as the runtime ELFs (SoInfoSegment/fs-verity protects
+`libs/<abi>/**`), which is what makes the loader accept them from there. The runtime natives
+staged above are skipped by name, so each runtime ELF is copied once; an ELF the payload
+carries outside `*.so` (the diagnostics `createdump`) is re-signed by the same
+`OpenHarmonyCodesign` pass. `dotnet.zip` keeps every payload entry as well, so a hap carries
+both the in-place copy and the extraction fallback.
+
+The target writes `libs/<abi>/.dotnet-payload.json`
+(`OpenHarmonyWritePayloadMarker` in the targets file) as the payload identity:
+
+- `assembly`: the entry assembly that must be staged next to the marker,
+- `entries`: the number of files in `libs/<abi>/` (marker itself excluded),
+- `payloadEntries`/`payloadBytes`: what the staging copied (equals the zip entry count),
+- `zipEntries`/`zipSha256`: the identity of the packed `resources/rawfile/dotnet.zip`, so the
+  fallback copy is provably the same publish as the staged payload.
+
+Consumer behavior, all backwards compatible:
+
+- The ArkTS shell probes `<bundleCodeDir>/libs/{arm64,arm,x86_64}` for the marker, the entry
+  assembly and a marker naming that assembly. When they match, the app starts in place and the
+  `dotnet.zip` copy/inflate is skipped (a payload an earlier kit extracted into `filesDir` is
+  removed once); otherwise the shell unpacks exactly as before, P17 marker logic included.
+- `ohos_host_run_app`/`ohos_host_start_app` resolve this library's own directory through
+  `dladdr` and use it as `app_dir` when `<own_dir>/<entry assembly>` exists. The outcome is
+  logged as `used_own=1 own=<dir> app=<dir>` (or `used_own=0`), and the symlink bridge stays
+  the fallback for haps packed without the staged payload.
+- `scripts/verify-kit.sh` asserts the marker per hap: present, the named assembly staged, the
+  count equal to the real `libs/<abi>/` file count, `payloadEntries == zipEntries`, and the
+  recorded zip sha256 equal to the packed zip bytes. A missing or inconsistent marker is a
+  FAIL, because such a hap falls back to the refused data-directory extraction.
+- `-p:OpenHarmonyHapPayloadInLibs=false` restores the previous layout (payload only inside
+  `dotnet.zip`, no marker), for a rollback without a source change.
+
+Cost: the payload travels stored (uncompressed) inside the HAP because the packing tool keeps
+`libs/**` mmap-friendly; on the reference kit the signed hap grew from ~32.7 MB to ~75.3 MB
+(253 payload files, ~38.7 MB) while every other hap entry stayed byte-identical.
 
 ## Payload determinism
 

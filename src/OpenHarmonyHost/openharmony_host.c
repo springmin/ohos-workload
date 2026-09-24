@@ -347,6 +347,47 @@ static void OhosHostEnsureRuntimeLibs(const char* caller, const char* app_dir) {
 }
 // PF4-LIB-BRIDGE-END
 
+// --- payload-in-libs app_dir resolution -------------------------------------------------------
+//
+// The packaging stages the whole managed payload into the hap's signed libs/<abi>/ directory
+// (see the "Payload in libs" section of the packaging doc). That directory is the only one the
+// device's namespace policy allows a later dlopen from (the extracted app data directory is
+// refused), so when this library's own directory - resolved through dladdr, the same way
+// OhosHostEnsureRuntimeLibs finds the staged runtime natives - carries the entry assembly, it
+// supersedes the extracted payload the shell passed in as app_dir. A hap without the staged
+// payload (or a plain publish-directory run) has no entry assembly there and keeps the caller's
+// app_dir, with the symlink bridge above making the signed runtime natives visible to it.
+// Best effort by design: a missing directory or assembly never fails the launch, and the
+// outcome is logged once (hilog + stderr) with the used_own=<0|1> own=<own dir> app=<effective>
+// markers the device reports key on.
+static const char* OhosHostResolveAppDir(const char* caller, const char* app_dir,
+                                         const char* entry_file, char* own_dir,
+                                         size_t own_dir_size, int* used_own) {
+    if (used_own != NULL) {
+        *used_own = 0;
+    }
+    if (app_dir == NULL || entry_file == NULL || entry_file[0] == '\0') {
+        return app_dir;
+    }
+    if (OhosHostOwnDirectory(own_dir, own_dir_size) != 0) {
+        return app_dir;  // no own directory to prefer: leave the caller's app_dir alone
+    }
+    char entry_path[4096];
+    struct stat entry_st;
+    int own_has_entry = path_join(entry_path, sizeof(entry_path), own_dir, entry_file) == 0 &&
+                        stat(entry_path, &entry_st) == 0 && S_ISREG(entry_st.st_mode);
+    const char* effective = own_has_entry ? own_dir : app_dir;
+    if (own_has_entry && used_own != NULL) {
+        *used_own = 1;
+    }
+    OH_LOG_INFO(LOG_APP,
+                "[openharmony-host] %{public}s: app_dir resolution: used_own=%{public}d own=%{public}s app=%{public}s",
+                caller != NULL ? caller : "(null)", own_has_entry ? 1 : 0, own_dir, effective);
+    fprintf(stderr, "[openharmony-host] %s: app_dir resolution: used_own=%d own=%s app=%s\n",
+            caller != NULL ? caller : "(null)", own_has_entry ? 1 : 0, own_dir, effective);
+    return effective;
+}
+
 // Resolves libhostfxr.so. The HAP code-signing block (SoInfoSegment/fs-verity) covers
 // libs/<abi>/** only, so the signed copy staged next to this library (the host itself is
 // loaded from libs/<abi>/) is the one an enforcing device accepts; the copy extracted from
@@ -411,16 +452,26 @@ static void* OhosHostOpenHostfxr(const char* caller, const char* app_dir, char* 
 int ohos_host_run_app(const char* app_dir, const char* app_assembly_file, int argc, const char* const* argv) {
     char hostfxr_path[4096];
     char app_assembly_path[4096];
-    if (path_join(app_assembly_path, sizeof(app_assembly_path), app_dir, app_assembly_file) != 0) {
+    char own_dir[4096];
+    int used_own = 0;
+    const char* effective_app_dir =
+        OhosHostResolveAppDir("run_app", app_dir, app_assembly_file, own_dir, sizeof(own_dir), &used_own);
+    if (effective_app_dir == NULL) {
+        return -1;
+    }
+    if (path_join(app_assembly_path, sizeof(app_assembly_path), effective_app_dir, app_assembly_file) != 0) {
         return -1;
     }
 
     // hostpolicy/coreclr resolve libhostpolicy/libcoreclr/libclrjit/libclrgc from app_dir, so the
     // signed libs/<abi>/ copies are linked in before hostfxr is initialized (best effort, never
-    // fails the launch; see the bridge block above).
-    OhosHostEnsureRuntimeLibs("run_app", app_dir);
+    // fails the launch; see the bridge block above). When the payload ships in libs/<abi>/ the
+    // effective app_dir IS the staged directory and there is nothing to bridge.
+    if (!used_own) {
+        OhosHostEnsureRuntimeLibs("run_app", effective_app_dir);
+    }
 
-    void* hostfxr = OhosHostOpenHostfxr("run_app", app_dir, hostfxr_path, sizeof(hostfxr_path));
+    void* hostfxr = OhosHostOpenHostfxr("run_app", effective_app_dir, hostfxr_path, sizeof(hostfxr_path));
     if (hostfxr == NULL) {
         OH_LOG_ERROR(LOG_APP, "[openharmony-host] run_app: could not load libhostfxr.so (last tried %{public}s)",
                      hostfxr_path);
@@ -772,17 +823,28 @@ int ohos_host_start_app(const char* app_dir, const char* app_assembly_file,
 
     char hostfxr_path[4096];
     char app_assembly_path[4096];
-    if (path_join(app_assembly_path, sizeof(app_assembly_path), app_dir, app_assembly_file) != 0) {
+    char own_dir[4096];
+    int used_own = 0;
+    const char* effective_app_dir =
+        OhosHostResolveAppDir("start_app", app_dir, app_assembly_file, own_dir, sizeof(own_dir), &used_own);
+    if (effective_app_dir == NULL) {
+        OhosHostEndLaunch();
+        return -1;
+    }
+    if (path_join(app_assembly_path, sizeof(app_assembly_path), effective_app_dir, app_assembly_file) != 0) {
         OhosHostEndLaunch();
         return -1;
     }
 
     // Same bridge as run_app: hostfxr loads hostpolicy next to the app config and hostpolicy
     // builds '<app_dir>/libcoreclr.so', so app_dir must expose the signed libs/<abi>/ files
-    // before initialize (best effort, never fails the launch).
-    OhosHostEnsureRuntimeLibs("start_app", app_dir);
+    // before initialize (best effort, never fails the launch). When the payload ships in
+    // libs/<abi>/ the effective app_dir IS the staged directory and there is nothing to bridge.
+    if (!used_own) {
+        OhosHostEnsureRuntimeLibs("start_app", effective_app_dir);
+    }
 
-    void* hostfxr = OhosHostOpenHostfxr("start_app", app_dir, hostfxr_path, sizeof(hostfxr_path));
+    void* hostfxr = OhosHostOpenHostfxr("start_app", effective_app_dir, hostfxr_path, sizeof(hostfxr_path));
     if (hostfxr == NULL) {
         OH_LOG_ERROR(LOG_APP, "[openharmony-host] start_app: could not load libhostfxr.so (last tried %{public}s)",
                      hostfxr_path);
@@ -828,7 +890,7 @@ int ohos_host_start_app(const char* app_dir, const char* app_assembly_file,
     const char* argv[1] = {app_assembly_path};
     ohos_hostfxr_initialize_parameters params;
     params.size = sizeof(params);
-    params.host_path = app_dir;
+    params.host_path = effective_app_dir;
     params.dotnet_root = getenv("DOTNET_ROOT");
 
     void* ctx = NULL;
@@ -836,7 +898,7 @@ int ohos_host_start_app(const char* app_dir, const char* app_assembly_file,
     if (rc != 0 || ctx == NULL) {
         fprintf(stderr, "[openharmony-host] initialize_for_dotnet_command_line rc=0x%x\n", rc);
         OH_LOG_ERROR(LOG_APP, "[openharmony-host] start_app: hostfxr command-line init rc=0x%{public}x dir=%{public}s",
-                     (unsigned)rc, app_dir != NULL ? app_dir : "(null)");
+                     (unsigned)rc, effective_app_dir != NULL ? effective_app_dir : "(null)");
         OhosHostEndLaunch();
         return -1;
     }
