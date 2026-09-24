@@ -87,13 +87,52 @@ function writeMarker(markerPath: string, marker: UnpackMarker): void {
   }
 }
 
+// One chunk per read/write: the copy is bounded by the member length, so the buffer stays at
+// 64 KiB whatever the payload size.
+const ZIP_COPY_CHUNK = 64 * 1024;
+
+// Copies the rawfile member [zipOffset, zipOffset + zipSize) out of the HAP descriptor into
+// cached. getRawFd hands back a descriptor of the whole HAP plus the member's coordinates, so
+// copying the descriptor directly (fs.copyFile starts at byte 0) gives the inflater a
+// truncated archive; on the device that surfaced as BusinessError 900003 "ZIP entry data
+// extraction failed". A read shorter than the requested chunk means the descriptor does not
+// cover the member, so the copy fails closed instead of writing a silently truncated zip.
+function copyZipRange(zipFd: number, zipOffset: number, zipSize: number, cached: string): void {
+  const target = fs.openSync(cached, fs.OpenMode.WRITE_ONLY | fs.OpenMode.CREATE | fs.OpenMode.TRUNC);
+  try {
+    const buffer = new ArrayBuffer(ZIP_COPY_CHUNK);
+    let remaining = zipSize;
+    let position = zipOffset;
+    while (remaining > 0) {
+      const wanted = Math.min(remaining, buffer.byteLength);
+      // offset addresses the descriptor's file position and length the chunk size; the bytes
+      // land at the start of the buffer. Both are validated below.
+      const readLength = fs.readSync(zipFd, buffer, { length: wanted, offset: position });
+      if (readLength !== wanted) {
+        throw new Error(`rawfile copy of dotnet.zip stopped at ${position - zipOffset}/${zipSize} bytes (read ${readLength} of ${wanted} at ${position})`);
+      }
+      const written = fs.writeSync(target.fd, buffer, { length: readLength });
+      if (written !== readLength) {
+        throw new Error(`rawfile copy of dotnet.zip wrote ${written} of ${readLength} bytes (${position - zipOffset}/${zipSize})`);
+      }
+      remaining -= readLength;
+      position += readLength;
+    }
+    // The inflater and the marker must only see the cached zip once its bytes are on disk.
+    fs.fsyncSync(target.fd);
+  } finally {
+    fs.closeSync(target);
+  }
+}
+
 // Unpacks dotnet.zip unless an earlier launch left a matching payload; true when it unpacked.
-// A stale (upgrade) or half-written payload is deleted before the new unpack starts.
-async function unpackIfNeeded(zipFd: number, zipSize: number, mtime: number, cached: string, payloadDir: string, markerPath: string): Promise<boolean> {
+// The cached zip is copied at the rawfile coordinates getRawFd reports; a stale (upgrade) or
+// half-written payload is deleted before the new unpack starts.
+async function unpackIfNeeded(zipFd: number, zipOffset: number, zipSize: number, mtime: number, cached: string, payloadDir: string, markerPath: string): Promise<boolean> {
   if (markerMatches(markerPath, payloadDir, zipSize, mtime)) {
     return false;
   }
-  fs.copyFile(zipFd, cached);
+  copyZipRange(zipFd, zipOffset, zipSize, cached);
   deleteTree(payloadDir);
   await zlib.decompressFile(cached, payloadDir);
   writeMarker(markerPath, { zipSize, mtime, fileCount: countEntries(payloadDir) });
@@ -190,7 +229,7 @@ export default class EntryAbility extends UIAbility {
     } catch (statError) {
       hilog.warn(DOMAIN, TAG, 'dotnet.zip stat failed: %{public}s', (statError as Error).message);
     }
-    const unpacked: boolean = await unpackIfNeeded(zip.fd, zip.length, zipMtime, cached, payloadDir, markerPath);
+    const unpacked: boolean = await unpackIfNeeded(zip.fd, zip.offset, zip.length, zipMtime, cached, payloadDir, markerPath);
     if (unpacked) {
       hilog.info(DOMAIN, TAG, 'unpacked payload into %{public}s', payloadDir);
     } else {
