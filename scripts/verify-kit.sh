@@ -5,10 +5,46 @@
 #   sh verify-kit.sh <kit-dir>       # or point it at the extracted kit
 # Steps: (1) verify every file against SHA256SUMS (sha256sum -c); (2) summarize the five haps
 # from their module.json (bundleName, min/target API, requestPermissions) and fail unless all
-# carry the expected bundle name (KIT_BUNDLE_NAME, default com.example.hellomauiapp); (3) warn
+# carry the expected bundle name (KIT_BUNDLE_NAME, default com.example.hellomauiapp); (2b) assert
+# the payload facts that failed on a real device before (each one per hap, see below); (3) warn
 # (one line) that the four default haps are self-signed and rejected by a real device
 # (9568257/9568344 -> re-sign hello-maui-app-unsigned.hap or use a pre-signed kit), plus the
 # install options and the self-sign pointer; (4) list the log lines to send back.
+#
+# 2b assertions (per hap; FAIL -> exit 1, WARN -> printed but still KIT OK):
+#   resources.index  present and non-empty (FAIL when missing/empty, pointing at FIX-DEV3
+#                    0f26b74: dotnet publish must pack it with --index-path, or the device
+#                    ResourceManager rejects the rawfile read with "GetRawFileContent failed,
+#                    name is empty" and the managed bootstrap never starts). A size above
+#                    1 KiB only warns (resources/permissions grew -> review the expectation).
+#   abc header       ets/modules.abc must be a PANDA file whose 4-byte version field at 0x0c is
+#                    13.0.1.0 (FAIL otherwise), and its size must be one of the current
+#                    expectations - 212952 for the ui/shell shell, 15608 for the headless shell
+#                    (--expected-abc <bytes[,bytes]> / KIT_EXPECTED_ABC pins the set; a size
+#                    outside it then FAILs instead of warning, so a historical kit's old abc
+#                    does not kill the run).
+#   libs             libs/arm64-v8a/ exists with exactly 14 .so files (fewer = a runtime ELF is
+#                    missing and the device loader will refuse the hap -> FAIL; more = WARN,
+#                    update the expectation when the runtime file set really changed).
+#   dotnet.zip       readable -> must carry no .so (an unsigned duplicate would be dlopen'd from
+#                    the extracted app dir and rejected by an enforcing device -> FAIL) and its
+#                    entry count is expected to stay 253 (drift = WARN).
+#   host ELF         libs/arm64-v8a/libopenharmonyhost.so: DT_NEEDED (readelf -d equivalent)
+#                    must be a subset of the host-deps.conf [needed] whitelist, must not name
+#                    libhostfxr.so (resolved through the dlopen handle, never at load time), and
+#                    the dynamic undefined symbols (nm -D -u equivalent) must not match the
+#                    [undefined] denylist (IME/NativeWindow/Vibrator/Sensor/Location/NetConn/AT/
+#                    ImageSource/Pixelmap/OH_LOG_). A direct reference means the dlopen/dlsym
+#                    degradation in host_optional.c was bypassed and a reduced device image
+#                    refuses to load the module. The DT_NEEDED/nm parsing is done in the same
+#                    python3 pass as the zip reads, so testers need no binutils.
+# The policy is embedded below because the script runs inside an extracted kit, where the
+# repository is absent; --host-deps <file> / KIT_HOST_DEPS replaces it with the canonical
+# src/OpenHarmonyHost/host-deps.conf (scripts/selftest-verify-kit.sh fails when the two drift).
+# The 2b assertions are graded: only resources.index, the abc header version, a shrunken
+# libs/, a .so inside dotnet.zip and the host DT_NEEDED/denylist failures are FAIL; an old abc
+# size, a big index, extra libs and a zip entry-count drift are WARN, so a historical kit still
+# reports its real defects without being killed for pre-contract values.
 # SHA256SUMS lives inside the archive it covers, so it proves internal consistency only:
 #   1. check the transfer checksum of the .tar.gz: `sha256sum -c <kit>.tar.gz.sha256`, or let
 #      this script check the tarball (--anchor / --anchor-file / KIT_ANCHOR);
@@ -34,13 +70,87 @@
 # checks fail closed: missing/mismatching tarball, non-hex anchor, absent .tar.gz.sha256
 # sidecar, non-hex or mismatching tree digest all fail.
 # Exit: 0 = kit OK; 1 = checksum/anchor/tree-digest failure, missing/unreadable hap, unexpected
-# bundleName, or absent 自签说明.md/签名说明.txt; 2 = SHA256SUMS not found (wrong directory) or
-# bad usage. The kit's SHA256SUMS is not in its own list - the outer <kit>.tar.gz.sha256 covers
-# it, and the tree digest covers SHA256SUMS itself.
+# bundleName, or a failed 2b assertion, or absent 自签说明.md/签名说明.txt; 2 = SHA256SUMS not
+# found (wrong directory) or bad usage. The kit's SHA256SUMS is not in its own list - the outer
+# <kit>.tar.gz.sha256 covers it, and the tree digest covers SHA256SUMS itself.
 set -e
 
 log()  { printf '[%s] %s\n' "$(date '+%H:%M:%S')" "$*"; }
 warn() { printf '[%s] WARN: %s\n' "$(date '+%H:%M:%S')" "$*" >&2; }
+fail_msg() { printf '[%s] FAIL: %s\n' "$(date '+%H:%M:%S')" "$*" >&2; }
+
+# Embedded copy of src/OpenHarmonyHost/host-deps.conf, the link policy scripts/build-host.sh
+# enforces when the host is built. This script also runs inside an extracted kit, where the
+# repository is not available, so the policy travels with it; --host-deps <file> /
+# KIT_HOST_DEPS re-reads the canonical file when a checkout is at hand.
+HOST_DEPS_DEFAULT="$(cat <<'HOST_DEPS_EOF'
+# Link-time policy for libopenharmonyhost.so, enforced by scripts/build-host.sh.
+# (Verbatim copy of src/OpenHarmonyHost/host-deps.conf; scripts/selftest-verify-kit.sh fails
+#  when the entry lists drift apart.)
+#
+# The host ships to devices whose system image may be a reduced build (one observed
+# HarmonyOS image is missing 10 NDK libraries and the API 12+ IME entry points). Anything
+# that is not guaranteed to be present must be resolved with dlopen/dlsym at runtime
+# (src/OpenHarmonyHost/host_optional.c) instead of a DT_NEEDED entry or a direct call.
+#
+# [needed]    - exact DT_NEEDED sonames allowed in the shipped .so. Keep this list to the
+#               set observed on every test device; add a library only with device evidence.
+# [undefined] - prefixes that must NOT appear in `nm -D -u` output. Each entry is the API
+#               namespace of a dlopen/dlsym-degraded group; a direct reference means the
+#               degradation was bypassed and the host would fail to load where the
+#               library/symbol is absent.
+#
+# Format: one entry per line, '#' starts a comment, blank lines are ignored.
+
+[needed]
+# NAPI module registration + XComponent (libace_napi.z.so / libace_ndk.z.so): the ArkTS
+# `import host from 'libopenharmonyhost.so'` path itself needs these, and both were
+# present on the reduced test image.
+libace_napi.z.so
+libace_ndk.z.so
+# OH_Drawing_* rendering surface: present on the reduced test image.
+libnative_drawing.so
+# Toolchain runtimes, always present.
+libc++_shared.so
+libc.so
+
+[undefined]
+# IME (inputmethod/*): API 12+ entry points were stripped from libace_ndk.z.so on the
+# reduced test image.
+OH_InputMethod
+OH_TextEditorProxy
+OH_AttachOptions
+# NativeWindow (native_window/external_window.h): libnative_window.so absent on the
+# reduced test image.
+OH_NativeWindow_
+# Vibrator (sensors/vibrator.h): libohvibrator.z.so absent on the reduced test image.
+OH_Vibrator_
+# Sensors (sensors/oh_sensor.h): libohsensor.so absent on the reduced test image.
+OH_Sensor
+# Location (LocationKit/oh_location*.h): liblocation_ndk.so absent on the reduced test image.
+OH_Location
+# Default-network capabilities (network/netmanager/net_connection.h): libnet_connection.so
+# absent on the reduced test image.
+OH_NetConn_
+# Self permission check (accesstoken/ability_access_control.h): libability_access_control.so
+# absent on the reduced test image.
+OH_AT_
+# ImageSource/Pixelmap (multimedia/image_framework): libimage_source.so and libpixelmap.so
+# absent on the reduced test image.
+OH_ImageSource
+OH_Pixelmap
+# hilog (hilog/log.h): libhilog_ndk.z.so absent on the reduced test image; OH_LOG_* falls
+# back to stderr via host_optional_log.h.
+OH_LOG_
+HOST_DEPS_EOF
+)"
+
+# Current abc size expectations: the ui/shell ArkTS shell (212952 B) and the headless shell
+# (15608 B). --expected-abc <bytes[,bytes]> / KIT_EXPECTED_ABC replaces the set and turns a
+# mismatch from a historical-kit WARN into a FAIL (the kit builder uses that strict form).
+EXPECT_ABC="${KIT_EXPECTED_ABC:-212952,15608}"
+EXPECT_ABC_PINNED="${KIT_EXPECTED_ABC:+1}"
+HOST_DEPS_FILE="${KIT_HOST_DEPS:-}"
 
 # Deterministic digest of the extracted kit contents: every regular file under the kit root
 # (SHA256SUMS and this script included) contributes one "<file sha256>  <relative path>"
@@ -113,9 +223,14 @@ sums_stat_snapshot() {
 usage() {
     cat <<EOF
 usage: $0 [--anchor <sha256-of-tar.gz>] [--anchor-file <path-to.tar.gz>]
-          [--tree-digest] [--expect-tree-digest <sha256>] [kit-dir]
+          [--tree-digest] [--expect-tree-digest <sha256>]
+          [--expected-abc <bytes[,bytes]>] [--host-deps <host-deps.conf>] [kit-dir]
 
-Verifies SHA256SUMS and summarizes the five haps of an extracted device-test kit.
+Verifies SHA256SUMS, summarizes the five haps of an extracted device-test kit, and
+asserts the payload facts that failed on a real device before: resources.index present
+and non-empty, abc PANDA header version 13.0.1.0 + current size, libs/arm64-v8a .so
+count, dotnet.zip composition, and the host ELF dependency discipline (DT_NEEDED subset
+of the embedded host-deps.conf, no nm -D -u denylist hit).
 Without an argument the current directory is used (it must contain SHA256SUMS).
 
   --anchor <hex>        also check the .tar.gz on disk against this sha256 (fail closed when
@@ -129,7 +244,16 @@ Without an argument the current directory is used (it must contain SHA256SUMS).
   --expect-tree-digest <hex>
                         fail unless the extracted tree matches this digest (the value comes
                         with the delivery, e.g. the release notes)
-  env: KIT_ANCHOR, KIT_ANCHOR_FILE, KIT_TREE_DIGEST, KIT_BUNDLE_NAME
+  --expected-abc <bytes[,bytes]>
+                        abc size expectation (default: 212952,15608 = the ui/shell and the
+                        headless ArkTS shell); a size outside the set warns by default and
+                        fails when this option pins the set
+  --host-deps <path>    read the host dependency policy from this file instead of the
+                        embedded copy (use the repository's
+                        src/OpenHarmonyHost/host-deps.conf); fail closed when it cannot be
+                        read or has no [needed]/[undefined] entries
+  env: KIT_ANCHOR, KIT_ANCHOR_FILE, KIT_TREE_DIGEST, KIT_BUNDLE_NAME,
+       KIT_EXPECTED_ABC, KIT_HOST_DEPS
 EOF
 }
 
@@ -161,6 +285,17 @@ while [ $# -gt 0 ]; do
             [ $# -gt 0 ] || { warn "--expect-tree-digest 需要一个 sha256"; usage >&2; exit 2; }
             TREE_EXPECT="$1"
             ;;
+        --expected-abc)
+            shift
+            [ $# -gt 0 ] || { warn "--expected-abc 需要逗号分隔的字节数（如 212952,15608）"; usage >&2; exit 2; }
+            EXPECT_ABC="$1"
+            EXPECT_ABC_PINNED=1
+            ;;
+        --host-deps)
+            shift
+            [ $# -gt 0 ] || { warn "--host-deps 需要一个策略文件路径"; usage >&2; exit 2; }
+            HOST_DEPS_FILE="$1"
+            ;;
         -*) warn "unknown argument: $1"; usage >&2; exit 2 ;;
         *)
             [ -z "$KIT" ] || { warn "unexpected extra argument: $1"; usage >&2; exit 2; }
@@ -184,6 +319,16 @@ fi
 [ -d "$KIT" ] || { warn "kit dir not found: $KIT"; exit 2; }
 KIT="$(cd "$KIT" && pwd)"
 [ -f "$KIT/SHA256SUMS" ] || { warn "SHA256SUMS not found in: $KIT"; exit 2; }
+
+# Normalize the abc size expectation to a space-separated list (commas allowed on the CLI);
+# a non-numeric token is bad usage, not a kit failure.
+EXPECT_ABC="$(printf '%s' "$EXPECT_ABC" | tr ',' ' ')"
+for _abc in $EXPECT_ABC; do
+    case "$_abc" in
+        ''|*[!0-9]*) warn "--expected-abc 需要逗号/空格分隔的字节数（如 212952,15608），得到: $EXPECT_ABC"; usage >&2; exit 2 ;;
+    esac
+done
+[ -n "$EXPECT_ABC" ] || { warn "--expected-abc 不能为空"; usage >&2; exit 2; }
 
 FAIL=0
 
@@ -245,6 +390,34 @@ if [ -z "$TMP" ]; then
     mkdir -p "$TMP"
 fi
 trap 'rm -rf "$TMP"' 0 1 2 15
+
+# Host dependency policy (step 2b): the embedded copy is the default; --host-deps/KIT_HOST_DEPS
+# replaces it with the canonical src/OpenHarmonyHost/host-deps.conf. Copy it into $TMP before
+# cd "$KIT" so a relative path keeps working. Both sections must be non-empty (fail closed:
+# an empty whitelist would pass every NEEDED and an empty denylist every symbol).
+POLICY="$TMP/host-deps.conf"
+if [ -n "$HOST_DEPS_FILE" ]; then
+    if [ ! -f "$HOST_DEPS_FILE" ]; then
+        warn "host-deps 策略文件不存在: $HOST_DEPS_FILE"
+        usage >&2
+        exit 2
+    fi
+    cp "$HOST_DEPS_FILE" "$POLICY" || { warn "无法读取 host-deps 策略文件: $HOST_DEPS_FILE"; exit 2; }
+    log "   宿主依赖策略：--host-deps $HOST_DEPS_FILE"
+else
+    printf '%s\n' "$HOST_DEPS_DEFAULT" > "$POLICY"
+    log "   宿主依赖策略：内嵌副本（src/OpenHarmonyHost/host-deps.conf）"
+fi
+HOST_NEEDED="$(awk '/^\[needed\]/{in_section=1; next} /^\[/{in_section=0} in_section && $0 !~ /^[[:space:]]*#/ && NF {print $1}' "$POLICY")"
+HOST_UNDEFINED="$(awk '/^\[undefined\]/{in_section=1; next} /^\[/{in_section=0} in_section && $0 !~ /^[[:space:]]*#/ && NF {print $1}' "$POLICY")"
+if [ -z "$HOST_NEEDED" ]; then
+    warn "$POLICY 没有 [needed] 条目；白名单为空会放行任何 DT_NEEDED，拒绝继续"
+    FAIL=1
+fi
+if [ -z "$HOST_UNDEFINED" ]; then
+    warn "$POLICY 没有 [undefined] 条目；denylist 为空会放行任何直接引用，拒绝继续"
+    FAIL=1
+fi
 
 cd "$KIT"
 
@@ -336,14 +509,31 @@ done
 [ -f "自签说明.md" ] || { warn "缺少 自签说明.md（9568344 自签流程指向它）"; FAIL=1; }
 [ -f "签名说明.txt" ] || { warn "缺少 签名说明.txt（自签名 hap 的预期拒绝与重签路径说明）"; FAIL=1; }
 
-log "== 2/4 五个 hap 一览（读 module.json）"
+log "== 2/4 五个 hap 一览与深度断言（module.json / resources.index / abc / libs / 宿主依赖）"
+DEEP_FAILS=0
+DEEP_WARNS=0
 if command -v python3 >/dev/null 2>&1; then
-    python3 - "$KIT" "$BUNDLE_EXPECT" "$TMP/kit-bundle" <<'PY' || FAIL=1
-import json, os, sys, zipfile
+    python3 - "$KIT" "$BUNDLE_EXPECT" "$TMP/kit-bundle" "$POLICY" "$TMP/deep-status" \
+        "$EXPECT_ABC" "$EXPECT_ABC_PINNED" <<'PY' || FAIL=1
+import io, json, os, struct, sys, zipfile
 
 kit = sys.argv[1]
 expected = sys.argv[2]
 bundle_file = sys.argv[3]
+policy_file = sys.argv[4]
+status_file = sys.argv[5]
+expected_abc = [int(v) for v in sys.argv[6].split()]
+abc_pinned = sys.argv[7] == "1"
+
+# Current-generation expectations; the abc sizes come from the shell (--expected-abc).
+EXPECT_LIBS = 14            # host + libc++ + 12 runtime ELF under libs/arm64-v8a/
+EXPECT_ZIP_ENTRIES = 253    # dotnet.zip entries (deterministic writer with the ELF names excluded)
+INDEX_SANE_MAX = 1024       # resources.index measured 579 B (API 26) / 707 B (API 20)
+ABC_VERSION = "13.0.1.0"    # 4-byte PANDA version field at offset 0x0c
+LIBS_DIR = "libs/arm64-v8a/"
+HOST_SO = LIBS_DIR + "libopenharmonyhost.so"
+DOTNET_ZIP = "resources/rawfile/dotnet.zip"
+
 haps = [
     ("hello-maui-app.hap",
      "默认包：API 26 波段，无额外权限（UI/交互/手势/IME/通知/安全区/WebView/无障碍/Hybrid）；"
@@ -357,6 +547,142 @@ haps = [
     ("hello-maui-app-unsigned.hap",
      "未签名（与默认包同一负载）：本包唯一可重签安装的变体，按 自签说明.md 用你自己的自动签名安装"),
 ]
+
+graded = []
+
+
+def grade(level, msg):
+    # FAIL -> the shell prints it and exits 1; WARN -> printed, run stays KIT OK.
+    graded.append((level, msg))
+
+
+def policy_entries(path):
+    """host-deps.conf parser mirroring scripts/build-host.sh: [needed] / [undefined] sections,
+    '#' comments and blank lines ignored, the first whitespace token is the entry."""
+    needed, undefined, section = [], [], ""
+    with open(path, "r", errors="replace") as f:
+        for raw in f:
+            line = raw.strip()
+            if line == "[needed]":
+                section = "needed"
+                continue
+            if line == "[undefined]":
+                section = "undefined"
+                continue
+            if line.startswith("["):
+                section = ""
+                continue
+            if not line or line.startswith("#"):
+                continue
+            if section == "needed":
+                needed.append(line.split()[0])
+            elif section == "undefined":
+                undefined.append(line.split()[0])
+    return needed, undefined
+
+
+def vaddr_to_off(loads, vaddr):
+    for p_off, p_vaddr, p_filesz in loads:
+        if p_vaddr <= vaddr < p_vaddr + p_filesz:
+            return p_off + (vaddr - p_vaddr)
+    return None
+
+
+def elf_dyn(data):
+    """DT_NEEDED + undefined dynamic symbol names of an ELF64 little-endian shared object: the
+    readelf -d / nm -D -u equivalent, parsed here so testers need no binutils."""
+    if len(data) < 64 or data[:4] != b"\x7fELF":
+        return None, None, "不是 ELF 文件"
+    if data[4] != 2 or data[5] != 1:
+        return None, None, "只解析 ELF64 小端"
+    (e_type, _machine, _version, _entry, e_phoff, _shoff, _flags,
+     _ehsize, e_phentsize, e_phnum, _shentsize, _shnum, _shstrndx) = \
+        struct.unpack_from("<HHIQQQIHHHHHH", data, 16)
+    if e_phentsize < 56 or e_phnum == 0:
+        return None, None, "没有程序头（静态 ELF？）"
+    loads, dyn_off = [], None
+    for i in range(e_phnum):
+        off = e_phoff + i * e_phentsize
+        if off + 56 > len(data):
+            break
+        p_type, _flags, p_offset, p_vaddr, _paddr, p_filesz, _p_memsz, _align = \
+            struct.unpack_from("<IIQQQQQQ", data, off)
+        if p_type == 1:    # PT_LOAD
+            loads.append((p_offset, p_vaddr, p_filesz))
+        elif p_type == 2:  # PT_DYNAMIC
+            dyn_off = p_offset
+    if dyn_off is None:
+        return None, None, "没有 PT_DYNAMIC"
+    needed_offsets, strtab_vaddr, strtab_sz, symtab_vaddr, hash_vaddr = [], None, 0, None, None
+    i = 0
+    while True:
+        off = dyn_off + i * 16
+        if off + 16 > len(data):
+            return None, None, "dynamic 数组被截断"
+        d_tag, d_val = struct.unpack_from("<qQ", data, off)
+        i += 1
+        if d_tag == 0:      # DT_NULL
+            break
+        if d_tag == 1:      # DT_NEEDED
+            needed_offsets.append(d_val)
+        elif d_tag == 5:    # DT_STRTAB
+            strtab_vaddr = d_val
+        elif d_tag == 10:   # DT_STRSZ
+            strtab_sz = d_val
+        elif d_tag == 6:    # DT_SYMTAB
+            symtab_vaddr = d_val
+        elif d_tag == 4:    # DT_HASH
+            hash_vaddr = d_val
+    if strtab_vaddr is None:
+        return None, None, "没有 DT_STRTAB"
+    str_off = vaddr_to_off(loads, strtab_vaddr)
+    if str_off is None:
+        return None, None, "DT_STRTAB 不在 PT_LOAD 内"
+
+    def string_at(idx):
+        if idx >= strtab_sz:
+            return None
+        end = data.find(b"\0", str_off + idx)
+        if end < 0:
+            return None
+        return data[str_off + idx:end].decode("utf-8", "replace")
+
+    needed = [n for n in (string_at(v) for v in needed_offsets) if n]
+
+    # Symbol count: DT_HASH.nchain is exact; otherwise the gap to .dynstr is safe when it is
+    # 24-byte aligned (lld lays .dynstr immediately after .dynsym).
+    sym_off = vaddr_to_off(loads, symtab_vaddr) if symtab_vaddr is not None else None
+    nsym = None
+    if sym_off is not None:
+        if hash_vaddr is not None:
+            h = vaddr_to_off(loads, hash_vaddr)
+            if h is not None and h + 8 <= len(data):
+                _nbucket, nchain = struct.unpack_from("<II", data, h)
+                if 0 < nchain <= (len(data) - sym_off) // 24:
+                    nsym = nchain
+        if nsym is None and sym_off < str_off and (str_off - sym_off) % 24 == 0:
+            nsym = (str_off - sym_off) // 24
+    undefined = []
+    if nsym and sym_off is not None:
+        for k in range(nsym):
+            if sym_off + k * 24 + 24 > len(data):
+                break
+            st_name, _info, _other, st_shndx = struct.unpack_from("<IBBH", data, sym_off + k * 24)
+            if st_shndx == 0 and st_name:  # SHN_UNDEF
+                name = string_at(st_name)
+                if name:
+                    undefined.append(name)
+        undefined = sorted(set(undefined))
+    return needed, undefined, "%d 个 UND 符号" % len(undefined)
+
+
+try:
+    needed_allow, undefined_deny = policy_entries(policy_file)
+    policy_ok = True
+except Exception as exc:
+    needed_allow, undefined_deny, policy_ok = [], [], False
+    grade("FAIL", "无法读取宿主依赖策略 %s (%s) — 宿主依赖纪律无法校验，拒绝放行" % (policy_file, exc))
+
 fail = 0
 bundles = []
 for name, purpose in haps:
@@ -364,30 +690,152 @@ for name, purpose in haps:
     path = os.path.join(kit, name)
     if not os.path.isfile(path):
         print("      MISS  文件不在交付包内")
+        grade("FAIL", "%s: 文件不在交付包内" % name)
         fail = 1
         continue
     try:
-        with zipfile.ZipFile(path) as z:
-            data = json.loads(z.read("module.json"))
+        z = zipfile.ZipFile(path)
     except Exception as exc:
-        print("      BAD   无法读取 module.json (%s)" % exc)
+        print("      BAD   无法读取 hap (%s)" % exc)
+        grade("FAIL", "%s: 无法读取 hap (%s)" % (name, exc))
         fail = 1
         continue
-    app = data.get("app") or {}
-    mod = data.get("module") or {}
-    bundle = app.get("bundleName", "?")
-    if bundle != "?":
-        bundles.append(bundle)
-    perms = [p.get("name", "?") for p in (mod.get("requestPermissions") or [])]
-    print("      bundle=%s  versionName=%s" % (bundle, app.get("versionName", "?")))
-    print("      API    min=%s target=%s (%s)" % (app.get("minAPIVersion", "?"),
-                                                  app.get("targetAPIVersion", "?"),
-                                                  app.get("apiReleaseType", "?")))
-    if perms:
-        short = ", ".join(p.rsplit(".", 1)[-1] for p in perms)
-        print("      权限   requestPermissions=%d [%s]" % (len(perms), short))
-    else:
-        print("      权限   requestPermissions=0")
+    with z:
+        names = z.namelist()
+        try:
+            data = json.loads(z.read("module.json"))
+        except Exception as exc:
+            print("      BAD   无法读取 module.json (%s)" % exc)
+            grade("FAIL", "%s: 无法读取 module.json (%s)" % (name, exc))
+            fail = 1
+            continue
+        app = data.get("app") or {}
+        mod = data.get("module") or {}
+        bundle = app.get("bundleName", "?")
+        if bundle != "?":
+            bundles.append(bundle)
+        perms = [p.get("name", "?") for p in (mod.get("requestPermissions") or [])]
+        print("      bundle=%s  versionName=%s" % (bundle, app.get("versionName", "?")))
+        print("      API    min=%s target=%s (%s)" % (app.get("minAPIVersion", "?"),
+                                                      app.get("targetAPIVersion", "?"),
+                                                      app.get("apiReleaseType", "?")))
+        if perms:
+            short = ", ".join(p.rsplit(".", 1)[-1] for p in perms)
+            print("      权限   requestPermissions=%d [%s]" % (len(perms), short))
+        else:
+            print("      权限   requestPermissions=0")
+
+        # --- resources.index: the device ResourceManager needs it for the rawfile payload -----
+        if "resources.index" not in names:
+            print("      index  <缺 resources.index>")
+            grade("FAIL", "%s: 缺 resources.index — 设备 ResourceManager 解析不了 hap 资源，ArkTS 壳读 rawfile 会报"
+                         " \"GetRawFileContent failed, name is empty\"，托管引导起不来（FIX-DEV3 0f26b74：dotnet publish"
+                         " 必须把 restool 编出的 index 用 --index-path 打包；该 kit 需重打包）" % name)
+        else:
+            try:
+                idx = z.read("resources.index")
+            except Exception as exc:
+                idx = None
+                print("      index  resources.index 读取失败 (%s)" % exc)
+                grade("FAIL", "%s: resources.index 读取失败 (%s)" % (name, exc))
+            if idx is not None:
+                if len(idx) == 0:
+                    print("      index  resources.index 0 B（空文件）")
+                    grade("FAIL", "%s: resources.index 是 0 B 空文件（FIX-DEV3 0f26b74 之后不应出现；需重打包）" % name)
+                else:
+                    print("      index  resources.index %d B%s"
+                          % (len(idx), "（≤1 KiB 合理范围）" if len(idx) <= INDEX_SANE_MAX else "（> 1 KiB）"))
+                    if len(idx) > INDEX_SANE_MAX:
+                        grade("WARN", "%s: resources.index %d B 超出预期 ≤%d B — 资源/权限增加时正常，确认后更新本检查"
+                                      % (name, len(idx), INDEX_SANE_MAX))
+
+        # --- abc: PANDA format version + current shell size -----------------------------------
+        if "ets/modules.abc" not in names:
+            print("      abc    <缺 ets/modules.abc>")
+            grade("FAIL", "%s: 缺 ets/modules.abc — ArkTS 壳没有可加载的入口" % name)
+        else:
+            abc = z.read("ets/modules.abc")
+            ver = ".".join(str(b) for b in abc[0x0C:0x10]) if len(abc) >= 0x10 and abc[:5] == b"PANDA" else None
+            print("      abc    ets/modules.abc %d B，PANDA 头版本 %s" % (len(abc), ver or "?"))
+            if ver is None:
+                grade("FAIL", "%s: ets/modules.abc 不是 PANDA abc（前 4 字节 %r）" % (name, abc[:4]))
+            elif ver != ABC_VERSION:
+                grade("FAIL", "%s: abc PANDA 头版本 %s != %s（0x0c 处的 4 字节版本；壳/格式漂移）"
+                              % (name, ver, ABC_VERSION))
+            if len(abc) not in expected_abc:
+                sizes = "/".join(str(v) for v in expected_abc)
+                if abc_pinned:
+                    grade("FAIL", "%s: abc 大小 %d 不在 --expected-abc %s 内（已显式固定期望，按漂移处理）"
+                                  % (name, len(abc), sizes))
+                else:
+                    grade("WARN", "%s: abc 大小 %d 不是当前期望（%s）— 历史 kit 的旧壳属正常；确认不是意外漂移，"
+                                  "或用 --expected-abc %d 固定" % (name, len(abc), sizes, len(abc)))
+
+        # --- libs/arm64-v8a: every runtime ELF must ship in the signed libs dir ----------------
+        libs = [n for n in names if n.startswith(LIBS_DIR) and n.endswith(".so")]
+        if not libs:
+            print("      libs   <缺 %s>" % LIBS_DIR)
+            grade("FAIL", "%s: 缺 %s — 宿主 DT_NEEDED 的 libc++_shared.so 与运行时 ELF 必须随 hap 的 libs 目录签名，"
+                          "否则设备加载器拒绝" % (name, LIBS_DIR))
+        else:
+            print("      libs   %s: %d 个 .so" % (LIBS_DIR, len(libs)))
+            if len(libs) < EXPECT_LIBS:
+                grade("FAIL", "%s: %s 只有 %d 个 .so（期望 %d）— 少了运行时 ELF，设备上会缺依赖"
+                              % (name, LIBS_DIR, len(libs), EXPECT_LIBS))
+            elif len(libs) > EXPECT_LIBS:
+                grade("WARN", "%s: %s 有 %d 个 .so（期望 %d）— 运行时文件集变化时正常，确认后更新期望"
+                              % (name, LIBS_DIR, len(libs), EXPECT_LIBS))
+
+        # --- host ELF dependency discipline ---------------------------------------------------
+        if HOST_SO not in names:
+            print("      host   <缺 %s>" % HOST_SO)
+            grade("FAIL", "%s: 缺 %s" % (name, HOST_SO))
+        elif policy_ok:
+            host = z.read(HOST_SO)
+            needed, undef, note = elf_dyn(host)
+            if needed is None:
+                print("      host   %s %d B；ELF 解析失败（%s）" % (HOST_SO, len(host), note))
+                grade("WARN", "%s: 宿主 ELF 解析失败（%s）— 跳过 DT_NEEDED/denylist 检查；确认不是 arm64 ELF64 之外的变体"
+                              % (name, note))
+            else:
+                hits = sorted({u for p in undefined_deny for u in undef if p in u})
+                shown_needed = needed if len(needed) <= 6 else needed[:6] + ["..."]
+                print("      host   %s %d B；DT_NEEDED=%d [%s]；UND=%d，denylist 命中=%d"
+                      % (HOST_SO, len(host), len(needed), "、".join(shown_needed), len(undef), len(hits)))
+                extra = [n for n in needed if n not in needed_allow]
+                if "libhostfxr.so" in extra:
+                    grade("FAIL", "%s: 宿主 DT_NEEDED 含 libhostfxr.so — 它要在 dotnet.zip 解包后才经 dlopen 句柄解析，"
+                                  "加载期 NEEDED 会让 ArkTS import 在解包前失败（见 scripts/build-host.sh 的同名门禁）" % name)
+                    extra = [n for n in extra if n != "libhostfxr.so"]
+                if extra:
+                    grade("FAIL", "%s: 宿主 DT_NEEDED 超出 host-deps.conf 白名单: %s — 精简系统镜像没有这些库，"
+                                  "需在 host_optional.c 里 dlopen/dlsym" % (name, ", ".join(extra)))
+                if hits:
+                    shown = ", ".join(hits[:8]) + (" ..." if len(hits) > 8 else "")
+                    grade("FAIL", "%s: 宿主直接引用可选 API（nm -D -u denylist 命中 %d 个）: %s — dlopen/dlsym 降级被绕过"
+                                  % (name, len(hits), shown))
+
+        # --- dotnet.zip: no unsigned ELF duplicates, stable entry count ------------------------
+        if DOTNET_ZIP not in names:
+            print("      zip    <缺 %s>" % DOTNET_ZIP)
+            grade("WARN", "%s: 包内没有 %s — 跳过 zip 组成检查（若 zip 可读才断言）" % (name, DOTNET_ZIP))
+        else:
+            try:
+                with zipfile.ZipFile(io.BytesIO(z.read(DOTNET_ZIP))) as dz:
+                    dnames = dz.namelist()
+                sos = [n for n in dnames if n.endswith(".so")]
+                print("      zip    dotnet.zip entries=%d，.so=%d" % (len(dnames), len(sos)))
+                if sos:
+                    shown = ", ".join(sos[:3]) + (" ..." if len(sos) > 3 else "")
+                    grade("FAIL", "%s: dotnet.zip 含 %d 个 .so: %s — 解包到 app 目录的未签名副本会被 enforcing 设备拒绝"
+                                  " dlopen；同名 ELF 必须只出现在 libs/<abi>/（targets 的 OpenHarmonyDeterministicZip 排除名单）"
+                                  % (name, len(sos), shown))
+                if len(dnames) != EXPECT_ZIP_ENTRIES:
+                    grade("WARN", "%s: dotnet.zip 条目 %d != 期望 %d — 运行时文件集变化时正常，确认后更新期望"
+                                  % (name, len(dnames), EXPECT_ZIP_ENTRIES))
+            except Exception as exc:
+                print("      zip    dotnet.zip 读取失败（%s）" % exc)
+                grade("WARN", "%s: 无法读取 dotnet.zip（%s）— 跳过 zip 组成检查（若 zip 可读才断言）" % (name, exc))
 
 with open(bundle_file, "w") as f:
     f.write(bundles[0] if bundles else "")
@@ -396,15 +844,36 @@ if sorted(set(bundles)) != [expected]:
     print("      FAIL  bundleName 期望 %s，实际 %s" % (expected, ", ".join(sorted(set(bundles))) or "无"))
     print("            旧 bundle 的 hap（bundle 名含连字符）需按 ohos-workload bbfa03c 重新打包")
     print("            后再交付；确属其他 bundle 时用 KIT_BUNDLE_NAME=<name> 覆盖期望值")
+    grade("FAIL", "五个 hap 的 bundleName 期望 %s，实际 %s — 旧 bundle（含连字符）需按 ohos-workload bbfa03c 重打包；"
+                  "确属其他 bundle 用 KIT_BUNDLE_NAME=<name> 覆盖" % (expected, ", ".join(sorted(set(bundles))) or "无"))
     fail = 1
 else:
     print("      bundle 校验 OK：五个 hap 的 bundleName 一致（%s）" % expected)
+
+with open(status_file, "w") as f:
+    for level, msg in graded:
+        f.write("%s\t%s\n" % (level, msg))
 sys.exit(1 if fail else 0)
 PY
+    log "== 2b/4 深度断言（resources.index / abc / libs / dotnet.zip / 宿主依赖）"
+    if [ -s "$TMP/deep-status" ]; then
+        TAB="$(printf '\t')"
+        while IFS="$TAB" read -r _lvl _msg; do
+            case "$_lvl" in
+                FAIL) DEEP_FAILS=$((DEEP_FAILS + 1)); FAIL=1; fail_msg "$_msg" ;;
+                WARN) DEEP_WARNS=$((DEEP_WARNS + 1)); warn "$_msg" ;;
+            esac
+        done < "$TMP/deep-status"
+    fi
+    if [ "$DEEP_FAILS" -eq 0 ] && [ "$DEEP_WARNS" -eq 0 ]; then
+        log "   全部关键断言通过：5 hap 的 index/abc/libs/宿主依赖均符合当前契约"
+    else
+        log "   深度断言汇总：FAIL $DEEP_FAILS，WARN $DEEP_WARNS（FAIL 需处理；WARN 不阻断）"
+    fi
     KIT_BUNDLE="$(cat "$TMP/kit-bundle" 2>/dev/null || true)"
     [ -n "$KIT_BUNDLE" ] || KIT_BUNDLE="$BUNDLE_EXPECT"
 else
-    warn "python3 不可用，跳过 hap 摘要与 bundleName 校验（文件完整性已由 SHA256SUMS 覆盖）"
+    warn "python3 不可用，跳过 hap 摘要、bundleName 及深度断言（resources.index/abc/libs/宿主依赖）；文件完整性已由 SHA256SUMS 覆盖"
     KIT_BUNDLE="$BUNDLE_EXPECT"
 fi
 
@@ -431,9 +900,13 @@ log "   无 hdc：截图应用日志区（或应用内 A11Y 自检弹窗）"
 log "   关键字与 status 对照见 验收说明.md §5b；回传模板见 §6（一页上手：快速开始.md §6）"
 
 if [ "$FAIL" -eq 0 ]; then
-    log "KIT OK — 交付包完整，按 快速开始.md 开始测试"
+    if [ "$DEEP_WARNS" -gt 0 ]; then
+        log "KIT OK（$DEEP_WARNS 条 WARN：多为历史 kit 的旧件提示，见上，不阻断）— 交付包完整，按 快速开始.md 开始测试"
+    else
+        log "KIT OK — 交付包完整，按 快速开始.md 开始测试"
+    fi
     exit 0
 else
-    warn "KIT CHECK FAILED — 请先处理上面的 FAIL/WARN 项"
+    warn "KIT CHECK FAILED — 请先处理上面的 FAIL/WARN 项（深度断言 FAIL $DEEP_FAILS，WARN $DEEP_WARNS）"
     exit 1
 fi

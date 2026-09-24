@@ -33,7 +33,11 @@ packing tool (`<toolchain dir>/../restool`, then `<OpenHarmonySdkRoot>/toolchain
 missing restool is a build error: a hap without the index installs but cannot read its rawfile
 payload. restool also copies the whole `resources/` tree into its output directory
 (`<stage>/res-index/`); the index is self-contained, so the copy is deleted and only
-`resources.index` is kept.
+`resources.index` is kept. The device-test kit's `verify-kit.sh` asserts the packed index
+(present, non-empty, ≤ 1 KiB), the abc header/size, the `libs/arm64-v8a` set and the
+`dotnet.zip` composition per hap, plus the host ELF dependency discipline against
+`src/OpenHarmonyHost/host-deps.conf`; `scripts/selftest-verify-kit.sh` drives those
+assertions locally without a device (kit #23+).
 
 ## Staging directory
 
