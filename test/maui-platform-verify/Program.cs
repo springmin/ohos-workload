@@ -4463,12 +4463,12 @@ if (!arktsAbcOk)
 // on-demand Connectivity Kit import) and answer through notifyBluetoothGattResult/Event.
 string? n10GattPath = FindHostSource("OpenHarmonyBluetoothGatt.cs");
 string n10Gatt = n10GattPath is null ? string.Empty : File.ReadAllText(n10GattPath);
-bool n10ManagedOk = n10Gatt.Contains("[DllImport(HostLibrary, EntryPoint = \"ohos_host_bluetooth_gatt_request\", CharSet = CharSet.Ansi)]") &&
-    n10Gatt.Contains("private static extern int BluetoothGattRequest(int requestId, int op, string payload);") &&
-    n10Gatt.Contains("[DllImport(HostLibrary, EntryPoint = \"ohos_host_bluetooth_gatt_register_result\")]") &&
-    n10Gatt.Contains("private static extern void BluetoothGattRegisterResult(IntPtr callback);") &&
-    n10Gatt.Contains("[DllImport(HostLibrary, EntryPoint = \"ohos_host_bluetooth_gatt_register_event\")]") &&
-    n10Gatt.Contains("private static extern void BluetoothGattRegisterEvent(IntPtr callback);") &&
+bool n10ManagedOk = n10Gatt.Contains("[LibraryImport(HostLibrary, EntryPoint = \"ohos_host_bluetooth_gatt_request\", StringMarshalling = StringMarshalling.Utf8)]") &&
+    n10Gatt.Contains("private static partial int BluetoothGattRequest(int requestId, int op, string payload);") &&
+    n10Gatt.Contains("[LibraryImport(HostLibrary, EntryPoint = \"ohos_host_bluetooth_gatt_register_result\")]") &&
+    n10Gatt.Contains("private static partial void BluetoothGattRegisterResult(IntPtr callback);") &&
+    n10Gatt.Contains("[LibraryImport(HostLibrary, EntryPoint = \"ohos_host_bluetooth_gatt_register_event\")]") &&
+    n10Gatt.Contains("private static partial void BluetoothGattRegisterEvent(IntPtr callback);") &&
     n10Gatt.Contains("private delegate void GattResultCallback(int requestId, int code, IntPtr payloadUtf8);") &&
     n10Gatt.Contains("private delegate void GattEventCallback(IntPtr payloadUtf8);") &&
     n10Gatt.Contains("OpenHarmonyBridge.CheckSelfPermission(\"ohos.permission.ACCESS_BLUETOOTH\")");

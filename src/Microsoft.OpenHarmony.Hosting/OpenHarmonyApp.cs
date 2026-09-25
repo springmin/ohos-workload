@@ -803,7 +803,7 @@ public static partial class OpenHarmonyBridge
     /// Reads the host context and registers the managed callbacks. Called
     /// automatically through a module initializer; calling it again only re-checks
     /// the host context (registration stays one-shot). Safe to call outside a hap
-    /// (the DllImport simply fails and is ignored).
+    /// (the P/Invoke simply fails and is ignored).
     /// </summary>
     public static void Attach()
     {

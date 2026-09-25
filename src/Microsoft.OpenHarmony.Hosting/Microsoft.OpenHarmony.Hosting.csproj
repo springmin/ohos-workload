@@ -14,5 +14,13 @@
     <IsAotCompatible>true</IsAotCompatible>
     <EnableTrimAnalyzer>true</EnableTrimAnalyzer>
     <EnableAotAnalyzer>true</EnableAotAnalyzer>
+    <!-- FIX-INTEROP P2: [assembly: DisableRuntimeMarshalling] stays off for now. Every P/Invoke
+         in this assembly is [LibraryImport], but the ten native reverse-entry thunks are
+         registered with Marshal.GetFunctionPointerForDelegate, which runtime marshalling
+         disabled refuses. Converting them to [UnmanagedCallersOnly] + delegate* unmanaged is
+         blocked by the interaction harness, which invokes all ten thunks directly from managed
+         code (audit3 host-callback probe); managed invocation of an UnmanagedCallersOnly method
+         is invalid. The switch becomes available once the callbacks no longer need managed
+         invocation. -->
   </PropertyGroup>
 </Project>
