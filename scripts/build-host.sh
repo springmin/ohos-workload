@@ -114,7 +114,7 @@ echo "    ok: no optional-library symbol in nm -D -u"
 # --- gate 3: the managed export contract (FIX-INTEROP #1) ---------------------------
 # The library is compiled as C++, so a host function lacking C linkage exports only a _Z...
 # mangled symbol and the managed EntryPoint lookup fails at runtime. Every name in
-# host-exports.txt (the unique DllImport EntryPoints of the managed slice/hosting) must be a
+# host-exports.txt (the unique managed DllImport/LibraryImport EntryPoints of the slice/hosting) must be a
 # plain defined symbol. scripts/check-host-exports.py enforces the static half in CI; this is
 # the built-library half.
 EXPORTS_CONTRACT="$SRC/host-exports.txt"

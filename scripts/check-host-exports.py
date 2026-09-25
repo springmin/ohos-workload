@@ -5,14 +5,14 @@ libopenharmonyhost.so is compiled as C++ (clang++ treats the .c file as C++), so
 function only exports its plain name when it has C linkage: either it is declared in
 openharmony_host.h (whose extern "C" block covers the whole header) or its definition sits
 in an extern "C" region / carries an explicit extern "C". The sensor and notification
-functions missed both and shipped as _Z... mangled symbols, so the managed DllImport
+functions missed both and shipped as _Z... mangled symbols, so the managed P/Invoke
 lookups failed only at runtime.
 
 This script is the static, NDK-free half of the gate (CI runs it on every PR):
   * default mode checks every name in src/OpenHarmonyHost/host-exports.txt against the
     native sources and fails when a name is missing, has no C linkage, or only exists as a
     declaration-less C++-mangled definition;
-  * --print-managed regenerates the expected list from the managed DllImport declarations
+  * --print-managed regenerates the expected list from the managed DllImport/LibraryImport declarations
     (maui-ohos platform slice + this repository's Hosting/Maui.Graphics sources).
   * --cross-check additionally resolves the managed EntryPoints (including
     EntryPoint = <const> forms) and fails when a managed requirement is absent from
@@ -35,7 +35,7 @@ HOST = os.path.join(REPO, "src", "OpenHarmonyHost")
 EXPECTED = os.path.join(HOST, "host-exports.txt")
 HEADER = os.path.join(HOST, "openharmony_host.h")
 SOURCES = ["host_napi.cpp", "openharmony_host.c", "host_optional.c"]
-# Managed DllImport sources beyond the slice: keep in sync with the audit's extract.py.
+# Managed import sources beyond the slice: keep in sync with the audit's extract.py.
 HOSTING_DIRS = [
     os.path.join(REPO, "src", "Microsoft.OpenHarmony.Hosting"),
     os.path.join(REPO, "src", "Microsoft.OpenHarmony.Maui.Graphics"),
@@ -168,18 +168,18 @@ def check_static(names):
     return problems
 
 # ---------------------------------------------------------------------------
-# Managed EntryPoint cross-check (the 121 DllImport declarations, 114 unique).
+# Managed EntryPoint cross-check (the DllImport/LibraryImport declarations).
 # ---------------------------------------------------------------------------
 
 def parse_managed(root_dir):
-    """[(file, line, resolved_entry, method)] for DllImport declarations in root_dir."""
+    """[(file, line, resolved_entry, method)] for DllImport/LibraryImport declarations in root_dir."""
     rows = []
     for file_name in sorted(os.listdir(root_dir)):
         if not file_name.endswith(".cs"):
             continue
         text = read(os.path.join(root_dir, file_name))
         consts = dict(re.findall(r'const\s+string\s+(\w+)\s*=\s*"([^"]+)"', text))
-        for match in re.finditer(r"\[(?:System\.Runtime\.InteropServices\.)?DllImport\s*\(([^)]*)\)\s*\]", text):
+        for match in re.finditer(r"\[(?:System\.Runtime\.InteropServices\.)?(?:Dll|Library)Import\s*\(([^)]*)\)\s*\]", text):
             attr = match.group(1)
             after = text[match.end():]
             decl = re.search(r"(?:extern\s+)?[^;{]*?\b([A-Za-z_]\w*)\s*\(([^;{]*?)\)\s*;", after, flags=re.S)
@@ -229,7 +229,7 @@ def main():
     if args.print_managed:
         for name in sorted({row[2] for row in rows}):
             print(name)
-        print(f"# {len(rows)} DllImport declarations, {len({row[2] for row in rows})} unique EntryPoints", file=sys.stderr)
+        print(f"# {len(rows)} managed import declarations, {len({row[2] for row in rows})} unique EntryPoints", file=sys.stderr)
         return 0
 
     names = expected_names()
@@ -243,7 +243,7 @@ def main():
 
     print(f"host-exports.txt: {len(names)} expected exports")
     print(f"native declarations: {len(header_declarations())} in {os.path.basename(HEADER)}")
-    print(f"managed DllImports: {len(rows)} declarations, {len({row[2] for row in rows})} unique EntryPoints")
+    print(f"managed imports: {len(rows)} declarations, {len({row[2] for row in rows})} unique EntryPoints")
 
     if args.cross_check:
         print("\nmanaged EntryPoint -> host-exports.txt:")
@@ -257,7 +257,7 @@ def main():
         for problem in problems:
             print(f"  - {problem}", file=sys.stderr)
         print("\nAdd the missing declaration to src/OpenHarmonyHost/openharmony_host.h (inside its"
-              " extern \"C\" block) and, when a managed DllImport changed, regenerate"
+              " extern \"C\" block) and, when a managed import declaration changed, regenerate"
               " src/OpenHarmonyHost/host-exports.txt with --print-managed.", file=sys.stderr)
         return 1
 

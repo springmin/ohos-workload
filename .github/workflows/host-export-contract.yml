@@ -1,7 +1,7 @@
 name: host-export-contract
 
 # CI gate for FIX-INTEROP #1: libopenharmonyhost.so is compiled as C++, so a host function
-# without C linkage exports only a _Z... mangled symbol and the managed DllImport EntryPoint
+# without C linkage exports only a _Z... mangled symbol and the managed P/Invoke EntryPoint
 # lookup fails at runtime - on device, after the app ships. The NDK build enforces the built
 # library in scripts/build-host.sh (nm -D against src/OpenHarmonyHost/host-exports.txt); this
 # job is the NDK-free half and catches a regression before merge:

@@ -100,94 +100,110 @@ public static partial class OpenHarmonyBridge
 {
     private const string HostLibrary = "libopenharmonyhost.so";
 
-    [DllImport(HostLibrary, EntryPoint = "ohos_host_get_app_context")]
-    private static extern IntPtr GetAppContextNative();
+    [LibraryImport(HostLibrary, EntryPoint = "ohos_host_get_app_context")]
+    private static partial IntPtr GetAppContextNative();
 
-    [DllImport(HostLibrary, EntryPoint = "ohos_host_fill_surface")]
-    private static extern int FillSurfaceNative(uint argb);
+    [LibraryImport(HostLibrary, EntryPoint = "ohos_host_fill_surface")]
+    private static partial int FillSurfaceNative(uint argb);
 
-    [DllImport(HostLibrary, EntryPoint = "ohos_host_register_bridge")]
-    private static extern void RegisterBridgeNative(IntPtr lifecycle, IntPtr node, IntPtr surface);
+    [LibraryImport(HostLibrary, EntryPoint = "ohos_host_register_bridge")]
+    private static partial void RegisterBridgeNative(IntPtr lifecycle, IntPtr node, IntPtr surface);
 
-    [DllImport(HostLibrary, EntryPoint = "ohos_host_register_input")]
-    private static extern void RegisterInputNative(IntPtr touch, IntPtr frame);
+    [LibraryImport(HostLibrary, EntryPoint = "ohos_host_register_input")]
+    private static partial void RegisterInputNative(IntPtr touch, IntPtr frame);
 
-    [DllImport(HostLibrary, EntryPoint = "ohos_host_register_text_input")]
-    private static extern void RegisterTextInputNative(IntPtr callback);
+    [LibraryImport(HostLibrary, EntryPoint = "ohos_host_register_text_input")]
+    private static partial void RegisterTextInputNative(IntPtr callback);
 
     [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
     public delegate void PinchCallback(int phase, double scale, float x, float y);
 
-    [DllImport(HostLibrary, EntryPoint = "ohos_host_register_pinch")]
-    private static extern void RegisterPinch(IntPtr callback);
+    [LibraryImport(HostLibrary, EntryPoint = "ohos_host_register_pinch")]
+    private static partial void RegisterPinch(IntPtr callback);
 
 
-    [DllImport(HostLibrary, EntryPoint = "ohos_host_register_text_submitted")]
-    private static extern void RegisterTextSubmittedNative(IntPtr callback);
+    [LibraryImport(HostLibrary, EntryPoint = "ohos_host_register_text_submitted")]
+    private static partial void RegisterTextSubmittedNative(IntPtr callback);
 
-    [DllImport(HostLibrary, EntryPoint = "ohos_host_keystore_register_result")]
-    private static extern void RegisterKeystoreResultNative(IntPtr callback);
+    [LibraryImport(HostLibrary, EntryPoint = "ohos_host_keystore_register_result")]
+    private static partial void RegisterKeystoreResultNative(IntPtr callback);
 
-    [DllImport(HostLibrary, EntryPoint = "ohos_host_picker_register_result")]
-    private static extern void RegisterPickerResultNative(IntPtr callback);
+    [LibraryImport(HostLibrary, EntryPoint = "ohos_host_picker_register_result")]
+    private static partial void RegisterPickerResultNative(IntPtr callback);
 
-    [DllImport(HostLibrary, EntryPoint = "ohos_host_picker_request")]
-    private static extern void RequestPickerNative(int requestId, int kind);
+    [LibraryImport(HostLibrary, EntryPoint = "ohos_host_picker_request")]
+    private static partial void RequestPickerNative(int requestId, int kind);
 
-    [DllImport(HostLibrary, EntryPoint = "ohos_host_web_command", CharSet = CharSet.Ansi)]
-    private static extern void WebCommandNative(string op, string arg);
+    [LibraryImport(HostLibrary, EntryPoint = "ohos_host_web_command", StringMarshalling = StringMarshalling.Utf8)]
+    private static partial void WebCommandNative(string op, string arg);
 
-    [DllImport(HostLibrary, EntryPoint = "ohos_host_web_register_event")]
-    private static extern void RegisterWebEventNative(IntPtr callback);
+    [LibraryImport(HostLibrary, EntryPoint = "ohos_host_web_register_event")]
+    private static partial void RegisterWebEventNative(IntPtr callback);
 
-    [DllImport(HostLibrary, EntryPoint = "ohos_host_get_avoid_area")]
-    private static extern int GetAvoidAreaNative(out int top, out int bottom, out int left, out int right);
+    [LibraryImport(HostLibrary, EntryPoint = "ohos_host_get_avoid_area")]
+    private static partial int GetAvoidAreaNative(out int top, out int bottom, out int left, out int right);
 
-    [DllImport(HostLibrary, EntryPoint = "ohos_host_request_text_input")]
-    private static extern void RequestTextInputNative(int show);
+    [LibraryImport(HostLibrary, EntryPoint = "ohos_host_request_text_input")]
+    private static partial void RequestTextInputNative(int show);
 
-    [DllImport(HostLibrary, EntryPoint = "ohos_host_keyboard_show")]
-    private static extern int KeyboardShowNative();
+    [LibraryImport(HostLibrary, EntryPoint = "ohos_host_keyboard_show")]
+    private static partial int KeyboardShowNative();
 
-    [DllImport(HostLibrary, EntryPoint = "ohos_host_keyboard_hide")]
-    private static extern int KeyboardHideNative();
+    [LibraryImport(HostLibrary, EntryPoint = "ohos_host_keyboard_hide")]
+    private static partial int KeyboardHideNative();
 
-    [DllImport(HostLibrary, EntryPoint = "ohos_host_keyboard_set_text", CharSet = CharSet.Ansi)]
-    private static extern void KeyboardSetTextNative(string text);
+    [LibraryImport(HostLibrary, EntryPoint = "ohos_host_keyboard_set_text", StringMarshalling = StringMarshalling.Utf8)]
+    private static partial void KeyboardSetTextNative(string text);
 
-    [DllImport(HostLibrary, EntryPoint = "ohos_host_request_vibration")]
-    private static extern void RequestVibrationNative(int durationMs);
+    [LibraryImport(HostLibrary, EntryPoint = "ohos_host_request_vibration")]
+    private static partial void RequestVibrationNative(int durationMs);
 
-    [DllImport(HostLibrary, EntryPoint = "ohos_host_vibrate")]
-    private static extern int VibrateNative(int durationMs);
+    [LibraryImport(HostLibrary, EntryPoint = "ohos_host_vibrate")]
+    private static partial int VibrateNative(int durationMs);
 
-    [DllImport(HostLibrary, EntryPoint = "ohos_host_network_access")]
-    private static extern int NetworkAccessNative();
+    [LibraryImport(HostLibrary, EntryPoint = "ohos_host_network_access")]
+    private static partial int NetworkAccessNative();
 
-    [DllImport(HostLibrary, EntryPoint = "ohos_host_check_permission", CharSet = CharSet.Ansi)]
-    private static extern int CheckPermissionNative(string permission);
+    [LibraryImport(HostLibrary, EntryPoint = "ohos_host_check_permission", StringMarshalling = StringMarshalling.Utf8)]
+    private static partial int CheckPermissionNative(string permission);
 
-    [DllImport(HostLibrary, EntryPoint = "ohos_host_set_font_file", CharSet = CharSet.Ansi)]
-    private static extern void SetFontFileNative(string path);
+    [LibraryImport(HostLibrary, EntryPoint = "ohos_host_set_font_file", StringMarshalling = StringMarshalling.Utf8)]
+    private static partial void SetFontFileNative(string path);
 
-    [DllImport(HostLibrary, EntryPoint = "ohos_host_location_start")]
-    private static extern int LocationStartNative();
+    [LibraryImport(HostLibrary, EntryPoint = "ohos_host_location_start")]
+    private static partial int LocationStartNative();
 
-    [DllImport(HostLibrary, EntryPoint = "ohos_host_location_stop")]
-    private static extern int LocationStopNative();
+    [LibraryImport(HostLibrary, EntryPoint = "ohos_host_location_stop")]
+    private static partial int LocationStopNative();
 
-    [DllImport(HostLibrary, EntryPoint = "ohos_host_location_get")]
-    private static extern int LocationGetNative(out double latitude, out double longitude, out double altitude);
+    [LibraryImport(HostLibrary, EntryPoint = "ohos_host_location_get")]
+    private static partial int LocationGetNative(out double latitude, out double longitude, out double altitude);
 
+    // FIX-P2-INTEROP: the host invokes every reverse entry with the platform C ABI; declare it
+    // on each thunk type instead of relying on the default (matters on any future x86 host and
+    // documents the ABI at the delegate seam). These stay delegates, not [UnmanagedCallersOnly]
+    // + delegate* unmanaged: the interaction harness drives all ten thunks directly from managed
+    // code (audit3 host-callback audit) and a method with UnmanagedCallersOnly cannot be invoked
+    // from managed code; the delegate fields below root each thunk for the process lifetime.
+    [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
     private delegate void NativeLifecycleDelegate(int evt);
+    [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
     private delegate void NativeNodeDelegate(IntPtr node);
+    [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
     private delegate void NativeSurfaceDelegate(IntPtr window, int width, int height, int state);
+    [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
     private delegate void NativeTouchDelegate(int type, float x, float y, int pointerCount, int pointerId);
+    [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
     private delegate void NativeFrameDelegate(long timestamp, long targetTimestamp);
+    [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
     private delegate void NativeTextInputDelegate(IntPtr utf8);
+    [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
     private delegate void NativeTextSubmittedDelegate();
+    [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
     private delegate void NativeKeystoreResultDelegate(int requestId, int rc, IntPtr dataUtf8);
+    [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
     private delegate void NativePickerResultDelegate(int requestId, int rc, IntPtr nameUtf8, IntPtr dataUtf8);
+    [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
     private delegate void NativeWebEventDelegate(IntPtr stateUtf8, IntPtr urlUtf8);
 
     private static readonly object s_sync = new();
@@ -1306,68 +1322,68 @@ public static partial class OpenHarmonyBridge
 /// Skia-based 2D API (native_drawing). This is the rendering entry point managed code uses
 /// today; a Microsoft.Maui.Graphics backend maps its canvas onto the same calls.
 /// </summary>
-public static class OpenHarmonyCanvas
+public static partial class OpenHarmonyCanvas
 {
     private const string HostLibrary = "libopenharmonyhost.so";
 
-    [DllImport(HostLibrary, EntryPoint = "ohos_host_draw_begin")]
-    private static extern int BeginNative(int width, int height);
+    [LibraryImport(HostLibrary, EntryPoint = "ohos_host_draw_begin")]
+    private static partial int BeginNative(int width, int height);
 
-    [DllImport(HostLibrary, EntryPoint = "ohos_host_draw_clear")]
-    private static extern void ClearNative(uint argb);
+    [LibraryImport(HostLibrary, EntryPoint = "ohos_host_draw_clear")]
+    private static partial void ClearNative(uint argb);
 
-    [DllImport(HostLibrary, EntryPoint = "ohos_host_draw_rect")]
-    private static extern void RectNative(int x, int y, int width, int height, uint argb, int filled);
+    [LibraryImport(HostLibrary, EntryPoint = "ohos_host_draw_rect")]
+    private static partial void RectNative(int x, int y, int width, int height, uint argb, int filled);
 
-    [DllImport(HostLibrary, EntryPoint = "ohos_host_draw_text", CharSet = CharSet.Ansi)]
-    private static extern int TextNative(int x, int y, string utf8, float size, uint argb);
+    [LibraryImport(HostLibrary, EntryPoint = "ohos_host_draw_text", StringMarshalling = StringMarshalling.Utf8)]
+    private static partial int TextNative(int x, int y, string utf8, float size, uint argb);
 
-    [DllImport(HostLibrary, EntryPoint = "ohos_host_draw_polyline")]
-    private static extern void PolylineNative(float[] xy, int count, int closed, uint argb, int filled, float strokeWidth);
+    [LibraryImport(HostLibrary, EntryPoint = "ohos_host_draw_polyline")]
+    private static partial void PolylineNative(float[] xy, int count, int closed, uint argb, int filled, float strokeWidth);
 
-    [DllImport(HostLibrary, EntryPoint = "ohos_host_draw_polyline")]
-    private static extern unsafe void PolylineNativePtr(float* xy, int count, int closed, uint argb, int filled, float strokeWidth);
+    [LibraryImport(HostLibrary, EntryPoint = "ohos_host_draw_polyline")]
+    private static unsafe partial void PolylineNativePtr(float* xy, int count, int closed, uint argb, int filled, float strokeWidth);
 
-    [DllImport(HostLibrary, EntryPoint = "ohos_host_measure_text", CharSet = CharSet.Ansi)]
-    private static extern int MeasureTextNative(string utf8, float size, out int width, out int height);
+    [LibraryImport(HostLibrary, EntryPoint = "ohos_host_measure_text", StringMarshalling = StringMarshalling.Utf8)]
+    private static partial int MeasureTextNative(string utf8, float size, out int width, out int height);
 
     private static bool s_textMetricsUnavailable;
 
-    [DllImport(HostLibrary, EntryPoint = "ohos_host_draw_save")]
-    private static extern void SaveNative();
+    [LibraryImport(HostLibrary, EntryPoint = "ohos_host_draw_save")]
+    private static partial void SaveNative();
 
-    [DllImport(HostLibrary, EntryPoint = "ohos_host_draw_restore")]
-    private static extern void RestoreNative();
+    [LibraryImport(HostLibrary, EntryPoint = "ohos_host_draw_restore")]
+    private static partial void RestoreNative();
 
-    [DllImport(HostLibrary, EntryPoint = "ohos_host_draw_clip_rect")]
-    private static extern void ClipRectNative(float x, float y, float width, float height, int subtract);
+    [LibraryImport(HostLibrary, EntryPoint = "ohos_host_draw_clip_rect")]
+    private static partial void ClipRectNative(float x, float y, float width, float height, int subtract);
 
-    [DllImport(HostLibrary, EntryPoint = "ohos_host_draw_clip_polyline")]
-    private static extern void ClipPolylineNative(float[] xy, int count);
+    [LibraryImport(HostLibrary, EntryPoint = "ohos_host_draw_clip_polyline")]
+    private static partial void ClipPolylineNative(float[] xy, int count);
 
-    [DllImport(HostLibrary, EntryPoint = "ohos_host_draw_clip_polyline")]
-    private static extern unsafe void ClipPolylineNativePtr(float* xy, int count);
+    [LibraryImport(HostLibrary, EntryPoint = "ohos_host_draw_clip_polyline")]
+    private static unsafe partial void ClipPolylineNativePtr(float* xy, int count);
 
-    [DllImport(HostLibrary, EntryPoint = "ohos_host_draw_image_bytes")]
-    private static extern int DrawImageBytesNative(byte[] data, int length, float x, float y, float width, float height);
+    [LibraryImport(HostLibrary, EntryPoint = "ohos_host_draw_image_bytes")]
+    private static partial int DrawImageBytesNative(byte[] data, int length, float x, float y, float width, float height);
 
-    [DllImport(HostLibrary, EntryPoint = "ohos_host_draw_set_linear_gradient")]
-    private static extern void LinearGradientNative(float x0, float y0, float x1, float y1, uint[] colors, float[] stops, int count);
+    [LibraryImport(HostLibrary, EntryPoint = "ohos_host_draw_set_linear_gradient")]
+    private static partial void LinearGradientNative(float x0, float y0, float x1, float y1, uint[] colors, float[] stops, int count);
 
-    [DllImport(HostLibrary, EntryPoint = "ohos_host_draw_set_radial_gradient")]
-    private static extern void RadialGradientNative(float cx, float cy, float radius, uint[] colors, float[] stops, int count);
+    [LibraryImport(HostLibrary, EntryPoint = "ohos_host_draw_set_radial_gradient")]
+    private static partial void RadialGradientNative(float cx, float cy, float radius, uint[] colors, float[] stops, int count);
 
-    [DllImport(HostLibrary, EntryPoint = "ohos_host_draw_set_image_pattern")]
-    private static extern int ImagePatternNative(byte[] data, int length, int tileModeX, int tileModeY, float scaleX, float scaleY);
+    [LibraryImport(HostLibrary, EntryPoint = "ohos_host_draw_set_image_pattern")]
+    private static partial int ImagePatternNative(byte[] data, int length, int tileModeX, int tileModeY, float scaleX, float scaleY);
 
-    [DllImport(HostLibrary, EntryPoint = "ohos_host_draw_set_shadow")]
-    private static extern void ShadowNative(float dx, float dy, float blur, uint argb);
+    [LibraryImport(HostLibrary, EntryPoint = "ohos_host_draw_set_shadow")]
+    private static partial void ShadowNative(float dx, float dy, float blur, uint argb);
 
-    [DllImport(HostLibrary, EntryPoint = "ohos_host_draw_clear_effects")]
-    private static extern void ClearEffectsNative();
+    [LibraryImport(HostLibrary, EntryPoint = "ohos_host_draw_clear_effects")]
+    private static partial void ClearEffectsNative();
 
-    [DllImport(HostLibrary, EntryPoint = "ohos_host_draw_present")]
-    private static extern int PresentNative();
+    [LibraryImport(HostLibrary, EntryPoint = "ohos_host_draw_present")]
+    private static partial int PresentNative();
 
     /// <summary>Creates/resizes the canvas for the current surface. Safe to call repeatedly.</summary>
     public static bool Begin(int width, int height)
