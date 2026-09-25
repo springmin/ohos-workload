@@ -379,16 +379,540 @@
     </Task>
   </UsingTask>
 
+    <!-- module.json generation (module.json is not valid JSON before the @PLACEHOLDER@ tokens
+       are substituted, so the task lexes the template, substitutes with JSON string escaping and
+       validates the result as JSON; see the task's own comments). It replaced the former
+       ReadLinesFromFile + string.Replace chain, whose single-line contract broke on any other
+       template formatting. -->
+  <UsingTask TaskName="OpenHarmonyGenerateModuleJson"
+             TaskFactory="RoslynCodeTaskFactory"
+             AssemblyFile="$(MSBuildToolsPath)/Microsoft.Build.Tasks.Core.dll">
+    <Task>
+      <Code Type="Class" Language="cs"><![CDATA[
+using System;
+using System.Collections.Generic;
+using System.IO;
+using System.Text;
+using Microsoft.Build.Framework;
+using Microsoft.Build.Utilities;
+
+public class OpenHarmonyGenerateModuleJson : Task
+{
+    [Required] public string TemplateFile { get; set; }
+    [Required] public string OutputFile { get; set; }
+    public ITaskItem[] Replacements { get; set; }
+    public string CompileSdkVersion { get; set; }
+    public string CompileSdkType { get; set; }
+    public ITaskItem[] ExtraPermissions { get; set; }
+    [Output] public bool Changed { get; set; }
+
+    private sealed class JsonNode
+    {
+        public int Start;
+        public int End;
+        public List<JsonMember> Members;   // objects only
+    }
+
+    private sealed class JsonMember
+    {
+        public string Key;
+        public JsonNode Value;
+        public bool HasComma;
+        public int CommaIndex = -1;
+    }
+
+    private sealed class Edit
+    {
+        public int Start;
+        public int End;
+        public string Text;
+    }
+
+    public override bool Execute()
+    {
+        if (string.IsNullOrEmpty(TemplateFile) || !File.Exists(TemplateFile))
+        {
+            Log.LogError("OpenHarmony module.json: template not found: '{0}'", TemplateFile);
+            return false;
+        }
+
+        var values = new Dictionary<string, string>(StringComparer.Ordinal);
+        if (Replacements != null)
+        {
+            foreach (var item in Replacements)
+            {
+                var key = (item.ItemSpec ?? "").Trim().Trim('@');
+                if (key.Length == 0)
+                {
+                    Log.LogError("OpenHarmony module.json: a replacement has an empty placeholder name");
+                    return false;
+                }
+                if (values.ContainsKey(key))
+                {
+                    Log.LogError("OpenHarmony module.json: duplicate replacement for '@{0}@'", key);
+                    return false;
+                }
+                values[key] = item.GetMetadata("Value") ?? "";
+            }
+        }
+
+        // The old contract read the template line-by-line and joined the lines (which required a
+        // single-line file); the task accepts any formatting and normalizes only the trailing
+        // newline, matching the previous output bytes.
+        string template = File.ReadAllText(TemplateFile).TrimEnd('\r', '\n');
+        var output = new StringBuilder(template.Length + 256);
+        var used = new HashSet<string>(StringComparer.Ordinal);
+        int i = 0;
+        bool inString = false;
+        bool escaped = false;
+        while (i < template.Length)
+        {
+            char c = template[i];
+            if (inString)
+            {
+                if (escaped) { escaped = false; output.Append(c); i++; continue; }
+                if (c == '\\') { escaped = true; output.Append(c); i++; continue; }
+                if (c == '"') { inString = false; output.Append(c); i++; continue; }
+                if (c == '@')
+                {
+                    int end = PlaceholderEnd(template, i);
+                    if (end > i)
+                    {
+                        string key = template.Substring(i + 1, end - i - 1);
+                        if (!values.ContainsKey(key))
+                        {
+                            Log.LogError("OpenHarmony module.json: the template carries '@{0}@' but no value was supplied", key);
+                            return false;
+                        }
+                        output.Append(EscapeJsonString(values[key]));
+                        used.Add(key);
+                        i = end + 1;
+                        continue;
+                    }
+                }
+                output.Append(c);
+                i++;
+                continue;
+            }
+
+            if (c == '"') { inString = true; output.Append(c); i++; continue; }
+            if (c == '@')
+            {
+                int end = PlaceholderEnd(template, i);
+                if (end > i)
+                {
+                    string key = template.Substring(i + 1, end - i - 1);
+                    if (!values.ContainsKey(key))
+                    {
+                        Log.LogError("OpenHarmony module.json: the template carries '@{0}@' but no value was supplied", key);
+                        return false;
+                    }
+                    string raw = values[key];
+                    if (!IsJsonLiteral(raw))
+                    {
+                        Log.LogError("OpenHarmony module.json: '@{0}@' is outside a JSON string, so its value must be a JSON literal (number, true, false or null); got '{1}'", key, raw);
+                        return false;
+                    }
+                    output.Append(raw);
+                    used.Add(key);
+                    i = end + 1;
+                    continue;
+                }
+            }
+            output.Append(c);
+            i++;
+        }
+
+        string json = output.ToString();
+        JsonNode root;
+        try
+        {
+            int pos = 0;
+            root = ParseValue(json, ref pos);
+            SkipWhitespace(json, ref pos);
+            if (pos != json.Length)
+            {
+                throw new FormatException("trailing characters after the root value");
+            }
+        }
+        catch (FormatException exc)
+        {
+            Log.LogError("OpenHarmony module.json: the generated document is not valid JSON: {0}", exc.Message);
+            return false;
+        }
+
+        var edits = new List<Edit>();
+        JsonNode app = FindMember(root, "app");
+        JsonNode module = FindMember(root, "module");
+        if (app == null)
+        {
+            Log.LogError("OpenHarmony module.json: the template has no 'app' object");
+            return false;
+        }
+        if (module == null)
+        {
+            Log.LogError("OpenHarmony module.json: the template has no 'module' object");
+            return false;
+        }
+
+        if (!string.IsNullOrEmpty(CompileSdkVersion) || !string.IsNullOrEmpty(CompileSdkType))
+        {
+            var apiRelease = FindJsonMember(app, "apiReleaseType");
+            if (apiRelease == null)
+            {
+                Log.LogError("OpenHarmony module.json: compileSdkVersion/compileSdkType need an 'app.apiReleaseType' member to anchor the insertion");
+                return false;
+            }
+            var fragment = new StringBuilder();
+            if (!string.IsNullOrEmpty(CompileSdkVersion))
+            {
+                fragment.Append("\"compileSdkVersion\":\"").Append(EscapeJsonString(CompileSdkVersion)).Append("\",");
+            }
+            if (!string.IsNullOrEmpty(CompileSdkType))
+            {
+                fragment.Append("\"compileSdkType\":\"").Append(EscapeJsonString(CompileSdkType)).Append("\",");
+            }
+            string text = fragment.ToString();
+            int at;
+            if (apiRelease.HasComma)
+            {
+                at = apiRelease.CommaIndex + 1;   // after the member's comma
+            }
+            else
+            {
+                at = apiRelease.Value.End;
+                text = "," + text.TrimEnd(',');
+            }
+            edits.Add(new Edit { Start = at, End = at, Text = text });
+        }
+
+        if (ExtraPermissions != null && ExtraPermissions.Length > 0)
+        {
+            var fragment = new StringBuilder(",\"requestPermissions\":[");
+            for (int n = 0; n < ExtraPermissions.Length; n++)
+            {
+                if (n > 0)
+                {
+                    fragment.Append(',');
+                }
+                fragment.Append("{\"name\":\"").Append(EscapeJsonString(ExtraPermissions[n].ItemSpec)).Append("\"}");
+            }
+            fragment.Append(']');
+            int at = module.End - 1;   // before the module object's closing brace
+            edits.Add(new Edit { Start = at, End = at, Text = fragment.ToString() });
+        }
+
+        if (edits.Count > 0)
+        {
+            edits.Sort(delegate (Edit a, Edit b) { return b.Start.CompareTo(a.Start); });
+            for (int n = 0; n < edits.Count; n++)
+            {
+                var edit = edits[n];
+                if (edit.Start < 0 || edit.End > json.Length || edit.Start > edit.End)
+                {
+                    Log.LogError("OpenHarmony module.json: internal edit out of range");
+                    return false;
+                }
+                if (n > 0 && edit.End > edits[n - 1].Start)
+                {
+                    Log.LogError("OpenHarmony module.json: overlapping edits (apiReleaseType/permissions anchors collided)");
+                    return false;
+                }
+                json = json.Substring(0, edit.Start) + edit.Text + json.Substring(edit.End);
+            }
+        }
+
+        try
+        {
+            int pos = 0;
+            ParseValue(json, ref pos);
+            SkipWhitespace(json, ref pos);
+            if (pos != json.Length)
+            {
+                throw new FormatException("trailing characters after the root value");
+            }
+        }
+        catch (FormatException exc)
+        {
+            Log.LogError("OpenHarmony module.json: the document is not valid JSON after the insertions: {0}", exc.Message);
+            return false;
+        }
+
+        string result = json + "\n";
+        string previous = File.Exists(OutputFile) ? File.ReadAllText(OutputFile) : null;
+        Changed = previous != result;
+        if (Changed)
+        {
+            var dir = Path.GetDirectoryName(OutputFile);
+            if (!string.IsNullOrEmpty(dir))
+            {
+                Directory.CreateDirectory(dir);
+            }
+            File.WriteAllText(OutputFile, result);
+        }
+        Log.LogMessage(MessageImportance.Low, "OpenHarmony module.json: wrote {0} ({1} bytes, changed={2})", OutputFile, result.Length, Changed);
+        return true;
+    }
+
+    private static int PlaceholderEnd(string text, int at)
+    {
+        int end = text.IndexOf('@', at + 1);
+        if (end < 0)
+        {
+            return -1;
+        }
+        string name = text.Substring(at + 1, end - at - 1);
+        if (name.Length == 0)
+        {
+            return -1;
+        }
+        foreach (char c in name)
+        {
+            if (!char.IsLetterOrDigit(c) && c != '_')
+            {
+                return -1;
+            }
+        }
+        return end;
+    }
+
+    private static bool IsJsonLiteral(string value)
+    {
+        if (string.IsNullOrEmpty(value))
+        {
+            return false;
+        }
+        if (value == "true" || value == "false" || value == "null")
+        {
+            return true;
+        }
+        int start = value[0] == '-' ? 1 : 0;
+        if (start >= value.Length)
+        {
+            return false;
+        }
+        bool digit = false;
+        for (int n = start; n < value.Length; n++)
+        {
+            char c = value[n];
+            if (c >= '0' && c <= '9') { digit = true; continue; }
+            if (c == '.' || c == 'e' || c == 'E' || c == '+' || c == '-') { continue; }
+            return false;
+        }
+        return digit;
+    }
+
+    private static string EscapeJsonString(string value)
+    {
+        var sb = new StringBuilder(value.Length + 8);
+        foreach (char c in value)
+        {
+            switch (c)
+            {
+                case '"': sb.Append("\\\""); break;
+                case '\\': sb.Append("\\\\"); break;
+                case '\b': sb.Append("\\b"); break;
+                case '\f': sb.Append("\\f"); break;
+                case '\n': sb.Append("\\n"); break;
+                case '\r': sb.Append("\\r"); break;
+                case '\t': sb.Append("\\t"); break;
+                default:
+                    if (c < 0x20)
+                    {
+                        sb.Append("\\u").Append(((int)c).ToString("x4"));
+                    }
+                    else
+                    {
+                        sb.Append(c);
+                    }
+                    break;
+            }
+        }
+        return sb.ToString();
+    }
+
+    private static void SkipWhitespace(string text, ref int pos)
+    {
+        while (pos < text.Length && (text[pos] == ' ' || text[pos] == '\t' || text[pos] == '\r' || text[pos] == '\n'))
+        {
+            pos++;
+        }
+    }
+
+    private static string ParseString(string text, ref int pos)
+    {
+        if (pos >= text.Length || text[pos] != '"')
+        {
+            throw new FormatException("expected a string at offset " + pos);
+        }
+        int start = ++pos;
+        while (pos < text.Length)
+        {
+            char c = text[pos];
+            if (c == '\\') { pos += 2; continue; }
+            if (c == '"') { break; }
+            pos++;
+        }
+        if (pos >= text.Length)
+        {
+            throw new FormatException("unterminated string at offset " + start);
+        }
+        string value = text.Substring(start, pos - start);
+        pos++;   // step over the closing quote
+        return value;
+    }
+
+    private static JsonNode ParseValue(string text, ref int pos)
+    {
+        SkipWhitespace(text, ref pos);
+        if (pos >= text.Length)
+        {
+            throw new FormatException("unexpected end of input");
+        }
+        var node = new JsonNode { Start = pos };
+        char c = text[pos];
+        if (c == '{')
+        {
+            node.Members = new List<JsonMember>();
+            pos++;
+            SkipWhitespace(text, ref pos);
+            if (pos < text.Length && text[pos] == '}')
+            {
+                pos++;
+                node.End = pos;
+                return node;
+            }
+            while (true)
+            {
+                SkipWhitespace(text, ref pos);
+                var member = new JsonMember();
+                member.Key = ParseString(text, ref pos);
+                SkipWhitespace(text, ref pos);
+                if (pos >= text.Length || text[pos] != ':')
+                {
+                    throw new FormatException("expected ':' after key '" + member.Key + "' at offset " + pos);
+                }
+                pos++;
+                member.Value = ParseValue(text, ref pos);
+                SkipWhitespace(text, ref pos);
+                if (pos < text.Length && text[pos] == ',')
+                {
+                    member.HasComma = true;
+                    member.CommaIndex = pos;
+                    pos++;
+                }
+                node.Members.Add(member);
+                if (!member.HasComma)
+                {
+                    break;
+                }
+            }
+            SkipWhitespace(text, ref pos);
+            if (pos >= text.Length || text[pos] != '}')
+            {
+                throw new FormatException("expected '}' at offset " + pos);
+            }
+            pos++;
+            node.End = pos;
+            return node;
+        }
+        if (c == '[')
+        {
+            pos++;
+            SkipWhitespace(text, ref pos);
+            if (pos < text.Length && text[pos] == ']')
+            {
+                pos++;
+                node.End = pos;
+                return node;
+            }
+            while (true)
+            {
+                ParseValue(text, ref pos);
+                SkipWhitespace(text, ref pos);
+                if (pos < text.Length && text[pos] == ',')
+                {
+                    pos++;
+                    continue;
+                }
+                break;
+            }
+            SkipWhitespace(text, ref pos);
+            if (pos >= text.Length || text[pos] != ']')
+            {
+                throw new FormatException("expected ']' at offset " + pos);
+            }
+            pos++;
+            node.End = pos;
+            return node;
+        }
+        if (c == '"')
+        {
+            ParseString(text, ref pos);
+            node.End = pos;
+            return node;
+        }
+        while (pos < text.Length)
+        {
+            c = text[pos];
+            if (c == ',' || c == '}' || c == ']' || c == ' ' || c == '\t' || c == '\r' || c == '\n')
+            {
+                break;
+            }
+            pos++;
+        }
+        if (pos == node.Start)
+        {
+            throw new FormatException("expected a value at offset " + node.Start);
+        }
+        string literal = text.Substring(node.Start, pos - node.Start);
+        if (literal != "true" && literal != "false" && literal != "null" && !IsJsonLiteral(literal))
+        {
+            throw new FormatException("invalid literal '" + literal + "' at offset " + node.Start);
+        }
+        node.End = pos;
+        return node;
+    }
+
+    private static JsonNode FindMember(JsonNode node, string key)
+    {
+        var member = FindJsonMember(node, key);
+        return member == null ? null : member.Value;
+    }
+
+    private static JsonMember FindJsonMember(JsonNode node, string key)
+    {
+        if (node == null || node.Members == null)
+        {
+            return null;
+        }
+        foreach (var member in node.Members)
+        {
+            if (member.Key == key)
+            {
+                return member;
+            }
+        }
+        return null;
+    }
+}
+
+      ]]></Code>
+    </Task>
+  </UsingTask>
+
+  <!-- Toolchain resolution is explicit (audit V5): OpenHarmonyToolchainDir, or
+       OpenHarmonySdkRoot (OHOS_SDK_ROOT) + /toolchains/lib. Nothing under $HOME is probed, so a
+       stale homebrew Cellar install can never satisfy a build silently, and the error names the
+       property to set instead of pointing at a directory the user cannot influence. -->
   <Target Name="_OpenHarmonyDetectToolchain"
           Condition=" '$(OpenHarmonyHapPackage)' == 'true' and ('$(OpenHarmonyToolchainDir)' == '' or !Exists('$(OpenHarmonyToolchainDir)/ohos_packing_tool')) ">
-    <ItemGroup>
-      <_OpenHarmonyToolchainCandidate Include="$([System.Environment]::GetEnvironmentVariable('HOME'))/.harmonybrew/Cellar/ohos-sdk/*/toolchains/lib" />
-    </ItemGroup>
-    <PropertyGroup>
-      <OpenHarmonyToolchainDir>@(_OpenHarmonyToolchainCandidate->Reverse()->FirstOrDefault())</OpenHarmonyToolchainDir>
-    </PropertyGroup>
-    <Error Condition=" '$(OpenHarmonyToolchainDir)' == '' or !Exists('$(OpenHarmonyToolchainDir)/ohos_packing_tool') "
-           Text="OpenHarmony packaging requires the OpenHarmony SDK toolchain. Set OpenHarmonySdkRoot (or OHOS_SDK_ROOT) to the SDK root that contains toolchains/lib." />
+    <Error Condition=" '$(OpenHarmonySdkRoot)' == '' and '$(OpenHarmonyToolchainDir)' == '' "
+           Text="OpenHarmony packaging requires the OpenHarmony SDK toolchain. Set OpenHarmonySdkRoot (or OHOS_SDK_ROOT) to the SDK root that contains toolchains/lib (ohos_packing_tool, restool and hap-sign-tool), or set OpenHarmonyToolchainDir explicitly." />
+    <Error Condition=" '$(OpenHarmonySdkRoot)' != '' and !Exists('$(OpenHarmonySdkRoot)/toolchains/lib/ohos_packing_tool') "
+           Text="OpenHarmonySdkRoot '$(OpenHarmonySdkRoot)' does not contain toolchains/lib/ohos_packing_tool; point it at the SDK root (or set OpenHarmonyToolchainDir explicitly)." />
+    <Error Condition=" '$(OpenHarmonyToolchainDir)' != '' and !Exists('$(OpenHarmonyToolchainDir)/ohos_packing_tool') "
+           Text="OpenHarmonyToolchainDir '$(OpenHarmonyToolchainDir)' does not contain ohos_packing_tool." />
   </Target>
 
   <!-- restool comes from the toolchain the packing tool was resolved from: the toolchain
@@ -469,11 +993,12 @@
       <_OpenHarmonyBlazorMauiAsset Include="@(MauiAsset)"
           Condition=" $([System.String]::Copy('%(MauiAsset.TargetPath)').Replace('\', '/').StartsWith('wwwroot/')) " />
     </ItemGroup>
-    <ItemGroup Condition=" '@(_OpenHarmonyBlazorAsset)' != '' and '@(_OpenHarmonyBlazorStaticScript)' == '' ">
-      <!-- NuGet-cache fallback (the WebView package is a transitive dependency of
-           Microsoft.AspNetCore.Components.WebView.Maui and lives in the global packages folder). -->
-      <_OpenHarmonyBlazorScript Include="$(NuGetPackageRoot)microsoft.aspnetcore.components.webview/*/staticwebassets/blazor.webview.js" />
-    </ItemGroup>
+    <!-- Static-web-assets only (audit V6): the Razor/WebView SDK produces blazor.webview.js as a
+         static web asset; a NuGet-cache glob guessed at a path that the SDK does not own and could
+         silently stage a mismatched version. A wwwroot without the asset is a hard error naming
+         the fix. -->
+    <Error Condition=" '@(_OpenHarmonyBlazorAsset)' != '' and '@(_OpenHarmonyBlazorStaticScript)' == '' "
+           Text="OpenHarmony: the project carries wwwroot content but @(StaticWebAsset) has no blazor.webview.js. The Razor/static-web-assets publish pipeline must produce it (reference Microsoft.AspNetCore.Components.WebView.Maui and let the SDK publish the static web assets); the workload no longer falls back to a NuGet-cache copy." />
     <ItemGroup Condition=" '@(_OpenHarmonyBlazorStaticScript)' != '' ">
       <_OpenHarmonyBlazorScript Include="@(_OpenHarmonyBlazorStaticScript)" />
     </ItemGroup>
@@ -486,10 +1011,8 @@
     <Copy Condition=" '@(_OpenHarmonyBlazorScript)' != '' "
           SourceFiles="@(_OpenHarmonyBlazorScript)"
           DestinationFiles="@(_OpenHarmonyBlazorScript->'$(_OpenHarmonyBlazorPublishDir)wwwroot/_framework/blazor.webview.js')" />
-    <Message Importance="high" Condition=" '@(_OpenHarmonyBlazorAsset)' != '' and '@(_OpenHarmonyBlazorScript)' != '' "
-             Text="OpenHarmony: staged the Blazor content root (wwwroot) and _framework/blazor.webview.js into $(PublishDir)wwwroot (native model; no wasm/dotnet browser assets)" />
-    <Message Importance="high" Condition=" '@(_OpenHarmonyBlazorAsset)' != '' and '@(_OpenHarmonyBlazorScript)' == '' "
-             Text="OpenHarmony: staged the Blazor content root (wwwroot) into $(PublishDir)wwwroot; blazor.webview.js was not found in @(StaticWebAsset) or the NuGet cache" />
+    <Message Importance="high" Condition=" '@(_OpenHarmonyBlazorScript)' != '' "
+             Text="OpenHarmony: staged _framework/blazor.webview.js from @(StaticWebAsset) into $(PublishDir)wwwroot (native model; no wasm/dotnet browser assets)" />
   </Target>
 
   <!-- Shared ElfSigner task (sdk-ohos Microsoft.NET.Build.Tasks). Re-signs an ELF64 file in
@@ -500,9 +1023,13 @@
        the pack self-contained: consumers only need the OpenHarmony-enabled .NET SDK. -->
   <UsingTask TaskName="OpenHarmonyCodesign" AssemblyFile="$(MicrosoftNETBuildTasksAssembly)" />
 
+  <!-- AfterTargets=Publish order: consumers can inject targets that must run after the SDK's
+       publish copy and before the hap staging by listing them in OpenHarmonyAfterPublishDependsOn
+       (e.g. a custom asset staging target). The staged libs are re-signed below, after the payload
+       staging and before the zip, so the .codesign pass always covers the final libs/<abi>/ tree. -->
   <Target Name="_OpenHarmonyStageHap"
           AfterTargets="Publish"
-          DependsOnTargets="_OpenHarmonyDetectToolchain;_OpenHarmonyResolveHapStageDir;_OpenHarmonyStageBlazorAssets"
+          DependsOnTargets="$(OpenHarmonyAfterPublishDependsOn);_OpenHarmonyDetectToolchain;_OpenHarmonyResolveHapStageDir;_OpenHarmonyStageBlazorAssets"
           Condition=" '$(OpenHarmonyHapPackage)' == 'true' and '$(TargetPlatformIdentifier)' == 'openharmony' ">
     <PropertyGroup>
       <_OpenHarmonyTemplatesDir>$(_OpenHarmonySdkPackDir)templates/</_OpenHarmonyTemplatesDir>
@@ -515,47 +1042,41 @@
     <RemoveDir Directories="$(_OpenHarmonyHapStageDir)" />
     <MakeDir Directories="$(_OpenHarmonyHapStageDir)ets;$(_OpenHarmonyHapStageDir)resources/base/element;$(_OpenHarmonyHapStageDir)resources/base/media;$(_OpenHarmonyHapStageDir)resources/base/profile;$(_OpenHarmonyHapStageDir)resources/rawfile;$(_OpenHarmonyHapStageDir)libs/$(OpenHarmonyAbi)" />
 
-    <!-- module.json from the single-line template -->
-    <ReadLinesFromFile File="$(_OpenHarmonyTemplatesDir)module.json.template">
-      <Output TaskParameter="Lines" ItemName="_OpenHarmonyModuleJsonLine" />
-    </ReadLinesFromFile>
-    <PropertyGroup>
-      <_OpenHarmonyModuleJson>@(_OpenHarmonyModuleJsonLine)</_OpenHarmonyModuleJson>
-      <_OpenHarmonyModuleJson>$(_OpenHarmonyModuleJson.Replace('@BUNDLE_NAME@', '$(OpenHarmonyBundleName)'))</_OpenHarmonyModuleJson>
-      <_OpenHarmonyModuleJson>$(_OpenHarmonyModuleJson.Replace('@VENDOR@', '$(OpenHarmonyVendor)'))</_OpenHarmonyModuleJson>
-      <_OpenHarmonyModuleJson>$(_OpenHarmonyModuleJson.Replace('@VERSION_CODE@', '$(OpenHarmonyVersionCode)'))</_OpenHarmonyModuleJson>
-      <_OpenHarmonyModuleJson>$(_OpenHarmonyModuleJson.Replace('@VERSION_NAME@', '$(OpenHarmonyVersionName)'))</_OpenHarmonyModuleJson>
-      <_OpenHarmonyModuleJson>$(_OpenHarmonyModuleJson.Replace('@MIN_API@', '$(OpenHarmonyMinApiVersion)'))</_OpenHarmonyModuleJson>
-      <_OpenHarmonyModuleJson>$(_OpenHarmonyModuleJson.Replace('@TARGET_API@', '$(OpenHarmonyTargetApiVersion)'))</_OpenHarmonyModuleJson>
-      <_OpenHarmonyModuleJson>$(_OpenHarmonyModuleJson.Replace('@API_RELEASE_TYPE@', '$(OpenHarmonyApiReleaseType)'))</_OpenHarmonyModuleJson>
-      <_OpenHarmonyModuleJson>$(_OpenHarmonyModuleJson.Replace('@DEBUG@', '$(OpenHarmonyHapDebug)'))</_OpenHarmonyModuleJson>
-      <_OpenHarmonyModuleJson>$(_OpenHarmonyModuleJson.Replace('@ABILITY_NAME@', '$(OpenHarmonyAbilityName)'))</_OpenHarmonyModuleJson>
-    </PropertyGroup>
-    <!-- compileSdkType/compileSdkVersion: inserted right after apiReleaseType, only when the
-         effective properties are non-empty. The device band defaults them (see the API band section in the packaging doc); the
-         API 20 band leaves both empty, so its module.json stays byte-identical. The fragment
-         is JSON text stored in an MSBuild value, so the double quotes are literal. -->
-    <PropertyGroup>
-      <_OpenHarmonyCompileSdkJson Condition=" '$(OpenHarmonyCompileSdkVersion)' != '' ">"compileSdkVersion":"$(OpenHarmonyCompileSdkVersion)",</_OpenHarmonyCompileSdkJson>
-      <_OpenHarmonyCompileSdkJson Condition=" '$(OpenHarmonyCompileSdkType)' != '' ">$(_OpenHarmonyCompileSdkJson)"compileSdkType":"$(OpenHarmonyCompileSdkType)",</_OpenHarmonyCompileSdkJson>
-      <_OpenHarmonyEmitCompileSdk Condition=" '$(OpenHarmonyCompileSdkType)' != '' or '$(OpenHarmonyCompileSdkVersion)' != '' ">true</_OpenHarmonyEmitCompileSdk>
-      <_OpenHarmonyModuleJson Condition=" '$(_OpenHarmonyEmitCompileSdk)' == 'true' ">$(_OpenHarmonyModuleJson.Replace('"apiReleaseType":"$(OpenHarmonyApiReleaseType)",', '"apiReleaseType":"$(OpenHarmonyApiReleaseType)",$(_OpenHarmonyCompileSdkJson)'))</_OpenHarmonyModuleJson>
-    </PropertyGroup>
+    <!-- module.json: see the OpenHarmonyGenerateModuleJson UsingTask. The task reads the whole
+         template, substitutes the @NAME@ tokens in their JSON context (string values are escaped,
+         bare values must be JSON literals), inserts compileSdkVersion/compileSdkType after
+         app.apiReleaseType and requestPermissions as a module member, and validates the result.
+         The bytes are unchanged for the previous single-line template and API-band values. -->
+    <ItemGroup>
+      <_OpenHarmonyModuleJsonReplacement Include="BUNDLE_NAME"><Value>$(OpenHarmonyBundleName)</Value></_OpenHarmonyModuleJsonReplacement>
+      <_OpenHarmonyModuleJsonReplacement Include="VENDOR"><Value>$(OpenHarmonyVendor)</Value></_OpenHarmonyModuleJsonReplacement>
+      <_OpenHarmonyModuleJsonReplacement Include="VERSION_CODE"><Value>$(OpenHarmonyVersionCode)</Value></_OpenHarmonyModuleJsonReplacement>
+      <_OpenHarmonyModuleJsonReplacement Include="VERSION_NAME"><Value>$(OpenHarmonyVersionName)</Value></_OpenHarmonyModuleJsonReplacement>
+      <_OpenHarmonyModuleJsonReplacement Include="MIN_API"><Value>$(OpenHarmonyMinApiVersion)</Value></_OpenHarmonyModuleJsonReplacement>
+      <_OpenHarmonyModuleJsonReplacement Include="TARGET_API"><Value>$(OpenHarmonyTargetApiVersion)</Value></_OpenHarmonyModuleJsonReplacement>
+      <_OpenHarmonyModuleJsonReplacement Include="API_RELEASE_TYPE"><Value>$(OpenHarmonyApiReleaseType)</Value></_OpenHarmonyModuleJsonReplacement>
+      <_OpenHarmonyModuleJsonReplacement Include="DEBUG"><Value>$(OpenHarmonyHapDebug)</Value></_OpenHarmonyModuleJsonReplacement>
+      <_OpenHarmonyModuleJsonReplacement Include="ABILITY_NAME"><Value>$(OpenHarmonyAbilityName)</Value></_OpenHarmonyModuleJsonReplacement>
+    </ItemGroup>
     <!-- Opt-in requestPermissions: inject only when OpenHarmonyExtraPermissions is set and
-         non-empty, so an unset property leaves module.json byte-identical. The list is split
-         on ';' and ',' with empty entries dropped (MSBuild trims each item). The minimal
+         non-empty, so an unset property leaves module.json byte-identical. The list is split on
+         ';' and ',' with empty entries dropped (MSBuild trims each item). The minimal
          {"name": "..."} form is used because usedScene/ability entries would need resources. -->
     <PropertyGroup Condition=" '$(OpenHarmonyExtraPermissions)' != '' ">
       <_OpenHarmonyNormalizedPermissions>$(OpenHarmonyExtraPermissions.Replace(',', ';'))</_OpenHarmonyNormalizedPermissions>
     </PropertyGroup>
     <ItemGroup Condition=" '$(OpenHarmonyExtraPermissions)' != '' ">
-      <_OpenHarmonyExtraPermission Include="$([MSBuild]::Unescape('$(_OpenHarmonyNormalizedPermissions)'))" />
+      <_OpenHarmonyModuleJsonPermission Include="$([MSBuild]::Unescape('$(_OpenHarmonyNormalizedPermissions)'))" />
     </ItemGroup>
-    <PropertyGroup Condition=" '$(OpenHarmonyExtraPermissions)' != '' ">
-      <_OpenHarmonyPermissionsJson>"requestPermissions":[@(_OpenHarmonyExtraPermission->'{"name":"%(Identity)"}', ',')]</_OpenHarmonyPermissionsJson>
-      <_OpenHarmonyModuleJson>$([System.String]::Copy('$(_OpenHarmonyModuleJson)').TrimEnd('}')),$(_OpenHarmonyPermissionsJson)}}</_OpenHarmonyModuleJson>
-    </PropertyGroup>
-    <WriteLinesToFile File="$(_OpenHarmonyHapStageDir)module.json" Lines="$(_OpenHarmonyModuleJson)" Overwrite="true" WriteOnlyWhenDifferent="true" />
+    <OpenHarmonyGenerateModuleJson TemplateFile="$(_OpenHarmonyTemplatesDir)module.json.template"
+                                   OutputFile="$(_OpenHarmonyHapStageDir)module.json"
+                                   Replacements="@(_OpenHarmonyModuleJsonReplacement)"
+                                   CompileSdkVersion="$(OpenHarmonyCompileSdkVersion)"
+                                   CompileSdkType="$(OpenHarmonyCompileSdkType)"
+                                   ExtraPermissions="@(_OpenHarmonyModuleJsonPermission)">
+      <Output TaskParameter="Changed" PropertyName="_OpenHarmonyModuleJsonChanged" />
+    </OpenHarmonyGenerateModuleJson>
+    <Message Importance="high" Text="OpenHarmony: wrote $(_OpenHarmonyHapStageDir)module.json (changed=$(_OpenHarmonyModuleJsonChanged), compileSdk=$(OpenHarmonyCompileSdkType)/$(OpenHarmonyCompileSdkVersion), permissions=@(_OpenHarmonyModuleJsonPermission->Count()))" />
 
     <!-- ArkTS shell (compiled), resources and the native host -->
     <Error Condition=" !Exists('$(OpenHarmonyArktsModulesAbc)') " Text="OpenHarmonyArktsModulesAbc does not exist: $(OpenHarmonyArktsModulesAbc)" />
@@ -569,7 +1090,8 @@
     <!-- C++ runtime staging: see "C++ runtime" in the packaging doc. Candidates are ordered by
          increasing preference: the Copy task writes them all to the same file name in
          libs/$(OpenHarmonyAbi)/, so the last existing source wins (an explicit
-         OpenHarmonyLibCxxShared, else the SDK root, else OHOS_NDK, else the Cellar install). -->
+         OpenHarmonyLibCxxShared, else the SDK root, else OHOS_NDK). Nothing under $HOME is probed
+         (audit V5): set OpenHarmonySdkRoot or OHOS_NDK explicitly. -->
     <PropertyGroup>
       <_OpenHarmonyNativeAbi Condition=" '$(OpenHarmonyAbi)' == 'arm64-v8a' ">aarch64-linux-ohos</_OpenHarmonyNativeAbi>
       <_OpenHarmonyNativeAbi Condition=" '$(OpenHarmonyAbi)' == 'armeabi-v7a' ">arm-linux-ohos</_OpenHarmonyNativeAbi>
@@ -579,7 +1101,6 @@
       <_OpenHarmonyNdkRootDir Condition=" '$(OHOS_NDK)' != '' ">$([MSBuild]::EnsureTrailingSlash('$(OHOS_NDK)'))</_OpenHarmonyNdkRootDir>
     </PropertyGroup>
     <ItemGroup>
-      <_OpenHarmonyLibCxxShared Include="$([System.Environment]::GetEnvironmentVariable('HOME'))/.harmonybrew/Cellar/ohos-sdk/*/native/llvm/lib/$(_OpenHarmonyNativeAbi)/libc++_shared.so" />
       <_OpenHarmonyLibCxxShared Condition=" '$(_OpenHarmonyNdkRootDir)' != '' and Exists('$(_OpenHarmonyNdkRootDir)llvm/lib/$(_OpenHarmonyNativeAbi)/libc++_shared.so') " Include="$(_OpenHarmonyNdkRootDir)llvm/lib/$(_OpenHarmonyNativeAbi)/libc++_shared.so" />
       <_OpenHarmonyLibCxxShared Condition=" '$(_OpenHarmonyNdkRootDir)' != '' and Exists('$(_OpenHarmonyNdkRootDir)native/llvm/lib/$(_OpenHarmonyNativeAbi)/libc++_shared.so') " Include="$(_OpenHarmonyNdkRootDir)native/llvm/lib/$(_OpenHarmonyNativeAbi)/libc++_shared.so" />
       <_OpenHarmonyLibCxxShared Condition=" '$(_OpenHarmonySdkRootDir)' != '' and Exists('$(_OpenHarmonySdkRootDir)native/llvm/lib/$(_OpenHarmonyNativeAbi)/libc++_shared.so') " Include="$(_OpenHarmonySdkRootDir)native/llvm/lib/$(_OpenHarmonyNativeAbi)/libc++_shared.so" />
@@ -700,6 +1221,12 @@
     <Message Importance="high" Condition=" '$(OpenHarmonyHapPayloadInLibs)' == 'true' "
              Text="OpenHarmony: wrote $(_OpenHarmonyPayloadMarkerPath) (libs/$(OpenHarmonyAbi)/ carries $(_OpenHarmonyLibsEntries) files: payload-in-libs + host + runtime natives + libc++_shared.so)" />
     <Message Importance="high" Text="OpenHarmony: staged .hap payload at $(_OpenHarmonyHapStageDir)" />
+
+    <!-- Clean contract (audit V2): every file this target creates is registered in FileWrites in
+         this same target, so `dotnet clean` removes the staging tree instead of leaving it behind. -->
+    <ItemGroup>
+      <FileWrites Include="$(_OpenHarmonyHapStageDir)**/*" />
+    </ItemGroup>
   </Target>
 
   <!-- resources.index: the device ResourceManager resolves this hap's resources (resources/rawfile
@@ -732,6 +1259,12 @@
       <_OpenHarmonyResourceIndexBytes>$([System.IO.File]::ReadAllBytes('$(_OpenHarmonyResourceIndex)').Length)</_OpenHarmonyResourceIndexBytes>
     </PropertyGroup>
     <Message Importance="high" Text="OpenHarmony: compiled $(_OpenHarmonyResourceIndex) ($(_OpenHarmonyResourceIndexBytes) bytes) with restool from $(_OpenHarmonyHapStageDir)resources" />
+
+    <!-- Clean contract: restool's output tree lives under the staging directory; register it so
+         `dotnet clean` removes it too. -->
+    <ItemGroup>
+      <FileWrites Include="$(_OpenHarmonyResourceIndexDir)**/*" />
+    </ItemGroup>
   </Target>
 
   <Target Name="_OpenHarmonyPackHap"
@@ -740,6 +1273,10 @@
           Condition=" '$(OpenHarmonyHapPackage)' == 'true' and '$(TargetPlatformIdentifier)' == 'openharmony' ">
     <Exec Command="&quot;$(OpenHarmonyToolchainDir)/ohos_packing_tool&quot; pack --mode hap --json-path &quot;$(_OpenHarmonyHapStageDir)module.json&quot; --ets-path &quot;$(_OpenHarmonyHapStageDir)ets&quot; --resources-path &quot;$(_OpenHarmonyHapStageDir)resources&quot; --index-path &quot;$(_OpenHarmonyResourceIndex)&quot; --lib-path &quot;$(_OpenHarmonyHapStageDir)libs&quot; --out-path &quot;$(_OpenHarmonyHapUnsigned)&quot; --force true" />
     <Message Importance="high" Text="OpenHarmony: packed $(_OpenHarmonyHapUnsigned)" />
+    <!-- Clean contract: the packer wrote the unsigned hap into OutputPath; register it here. -->
+    <ItemGroup>
+      <FileWrites Include="$(_OpenHarmonyHapUnsigned)" />
+    </ItemGroup>
   </Target>
 
   <Target Name="_OpenHarmonySignHap"
@@ -751,5 +1288,9 @@
     <Exec Condition=" $([MSBuild]::IsOSPlatform('Windows')) "
           Command="powershell -NoProfile -ExecutionPolicy Bypass -File &quot;$(_OpenHarmonyTemplatesDir)scripts/sign-hap.ps1&quot; -Toolchain &quot;$(OpenHarmonyToolchainDir)&quot; -In &quot;$(_OpenHarmonyHapUnsigned)&quot; -Out &quot;$(_OpenHarmonyHapFile)&quot; -Bundle &quot;$(OpenHarmonyBundleName)&quot; -Udid &quot;$(OpenHarmonyProfileUdid)&quot;" />
     <Message Importance="high" Text="OpenHarmony: signed $(_OpenHarmonyHapFile)" />
+    <!-- Clean contract: the signed hap is the packaged output; register it here. -->
+    <ItemGroup>
+      <FileWrites Include="$(_OpenHarmonyHapFile)" />
+    </ItemGroup>
   </Target>
 </Project>
