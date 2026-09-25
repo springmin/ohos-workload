@@ -615,5 +615,5 @@ defined inline with `RoslynCodeTaskFactory` (task-assembly migration, audit V8):
   SDK rebuild that carries the codesign-stamp registration.
 - **RID graph CI pin**: `scripts/sync-ridgraph.sh` single-sources the pack copies from
   `sdk-ohos/eng/PortableRuntimeIdentifierGraph.openharmony.json`; the cross-repo gate
-  (`.github/workflows/ridgraph-sync.yml`) pins the sdk-ohos commit `32e1719359` and must be bumped
+  (`.github/workflows/ridgraph-sync.yml`) pins the sdk-ohos commit `97cad7c59a` and must be bumped
   in lockstep with the sync whenever the canonical graph changes.
