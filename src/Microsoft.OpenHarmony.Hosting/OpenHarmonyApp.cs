@@ -96,7 +96,7 @@ public sealed class OpenHarmonyAppContext
 }
 
 /// <summary>Bridge between the native OpenHarmony shell and the managed application.</summary>
-public static class OpenHarmonyBridge
+public static partial class OpenHarmonyBridge
 {
     private const string HostLibrary = "libopenharmonyhost.so";
 
@@ -983,7 +983,7 @@ public static class OpenHarmonyBridge
         ContextJson? parsed;
         try
         {
-            parsed = JsonSerializer.Deserialize<ContextJson>(json);
+            parsed = JsonSerializer.Deserialize(json, HostJsonContext.Default.ContextJson);
         }
         catch
         {
@@ -1279,7 +1279,7 @@ public static class OpenHarmonyBridge
         WriteStatus($"node content set: 0x{node.ToInt64():x}");
     }
 
-    private sealed class ContextJson
+    internal sealed class ContextJson
     {
         [JsonPropertyName("appDir")] public string? AppDir { get; set; }
         [JsonPropertyName("filesDir")] public string? FilesDir { get; set; }
@@ -1287,6 +1287,17 @@ public static class OpenHarmonyBridge
         [JsonPropertyName("bundleName")] public string? BundleName { get; set; }
         [JsonPropertyName("abilityName")] public string? AbilityName { get; set; }
         [JsonPropertyName("nodeContent")] public long NodeContent { get; set; }
+    }
+
+    /// <summary>
+    /// Source-generated serialization for the native context payload (FIX-INTEROP #3). The
+    /// assembly sets JsonSerializerIsReflectionEnabledByDefault=false, so a reflection-based
+    /// JsonSerializer.Deserialize&lt;ContextJson&gt; would fail at runtime as well as at build
+    /// time (IL2026/IL3050); every context read goes through this context instead.
+    /// </summary>
+    [JsonSerializable(typeof(ContextJson))]
+    internal sealed partial class HostJsonContext : JsonSerializerContext
+    {
     }
 }
 

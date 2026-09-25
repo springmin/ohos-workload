@@ -1,0 +1,23 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net11.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <AssemblyName>hosting-context-json-smoke</AssemblyName>
+    <RootNamespace>Microsoft.OpenHarmony.Hosting.Smoke</RootNamespace>
+    <!-- FIX-INTEROP #3: the same switch the shipping app payload must enable. With it, the
+         test fails immediately if the Hosting assembly regresses to reflection-based
+         System.Text.Json instead of its source-generated HostJsonContext. -->
+    <JsonSerializerIsReflectionEnabledByDefault>false</JsonSerializerIsReflectionEnabledByDefault>
+    <!-- The hosting assembly under test: built from this repository (CI builds it in Release
+         before the test). Override with -p:OpenHarmonyHostingAssembly=<path>. -->
+    <OpenHarmonyHostingAssembly Condition=" '$(OpenHarmonyHostingAssembly)' == '' ">$(MSBuildThisFileDirectory)../../src/Microsoft.OpenHarmony.Hosting/bin/Release/net11.0/Microsoft.OpenHarmony.Hosting.dll</OpenHarmonyHostingAssembly>
+  </PropertyGroup>
+  <ItemGroup>
+    <Reference Include="Microsoft.OpenHarmony.Hosting">
+      <HintPath>$(OpenHarmonyHostingAssembly)</HintPath>
+      <Private>true</Private>
+    </Reference>
+  </ItemGroup>
+</Project>

@@ -4,5 +4,15 @@
     <AssemblyName>Microsoft.OpenHarmony.Hosting</AssemblyName>
     <Nullable>enable</Nullable>
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <!-- FIX-INTEROP #3: make the source-generated JSON the only path. With reflection
+         serialization disabled, any regression back to JsonSerializer.Deserialize<T>/<T> is
+         refused at runtime (and the trimming analyzer keeps flagging the compile-time IL2026/
+         IL3050), instead of silently working under the JIT and failing under AOT. -->
+    <JsonSerializerIsReflectionEnabledByDefault>false</JsonSerializerIsReflectionEnabledByDefault>
+    <!-- FIX-INTEROP #10: keep the trim/AOT analyzers on for this assembly on every build. The
+         platform slice sets the same switches; a regression is a build failure in CI. -->
+    <IsAotCompatible>true</IsAotCompatible>
+    <EnableTrimAnalyzer>true</EnableTrimAnalyzer>
+    <EnableAotAnalyzer>true</EnableAotAnalyzer>
   </PropertyGroup>
 </Project>
