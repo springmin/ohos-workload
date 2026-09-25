@@ -101,6 +101,9 @@ ohos_host_request_focus
 ohos_host_request_permission
 ohos_host_request_text_input
 ohos_host_request_vibration
+ohos_host_scan_available
+ohos_host_scan_register_result
+ohos_host_scan_request
 ohos_host_screenshot
 ohos_host_sensor_is_supported
 ohos_host_sensor_set_listener
@@ -109,6 +112,7 @@ ohos_host_sensor_stop
 ohos_host_set_font_file
 ohos_host_set_window_rect
 ohos_host_set_window_title
+ohos_host_share_kit_share
 ohos_host_shell_flyout_footer
 ohos_host_shell_flyout_header
 ohos_host_shell_search_set
