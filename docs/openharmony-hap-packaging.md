@@ -414,12 +414,14 @@ explicit `-p:OpenHarmonyArktsModulesAbc=<file>` overrides both. The former
 `modules.shell.abc` duplicate is gone (it was always byte-identical to `modules.ui.abc`).
 
 - **Source change (default flavor)**: rebuild both variants, install, then verify:
+
   ```sh
   scripts/build-arkts-shell.sh                        # UI    -> dist/ets/modules.abc
   ARKTS_SHELL_VARIANT=headless scripts/build-arkts-shell.sh   # -> dist/ets/modules.headless.abc
   scripts/build-arkts-shell.sh --install-packs        # all three packs + provenance, then the gate
   scripts/build-arkts-shell.sh --check-pack-abc       # re-run the gate alone
   ```
+
   `--install-packs` copies UI -> `templates/ets/modules.ui.abc` and headless ->
   `templates/ets/modules.abc` in preview.22/23/24 in lockstep and refreshes the
   `templates/ets/abc-provenance.json` record (schema 1: per-variant size, sha256, abc version and
