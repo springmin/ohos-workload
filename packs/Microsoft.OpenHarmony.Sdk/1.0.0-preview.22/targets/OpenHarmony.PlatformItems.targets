@@ -1,0 +1,34 @@
+<Project>
+  <!-- Platform item declarations, imported by Sdk/Sdk.targets only after the single-import guard
+       passes. They live in their own file because MSBuild evaluates item conditions in the item
+       pass, where every property is already final: an ItemGroup guarded by a marker that a second
+       import sets would be skipped on the first import too. The import condition runs during
+       import expansion, so the second import never reaches these items. -->
+  <!-- Runtime packs are arm64-only by design: OpenHarmony devices are arm64-v8a, the released
+       BCL pack is Microsoft.NETCore.App.Runtime.openharmony-arm64, and there is no
+       openharmony-x64 platform pack. Widen both RuntimePackRuntimeIdentifiers lists below
+       together once an x64 runtime pack is published. -->
+  <ItemGroup Condition=" '$(TargetPlatformIdentifier)' == 'openharmony' ">
+    <SdkSupportedTargetPlatformIdentifier Include="openharmony" DisplayName="OpenHarmony" />
+    <!-- The installed SDK's bundled RID list predates the openharmony rename; the platform
+         workload owns the RID until it ships in Microsoft.NETCore.Platforms. -->
+    <KnownFrameworkReference Update="Microsoft.NETCore.App"
+                              RuntimePackRuntimeIdentifiers="%(RuntimePackRuntimeIdentifiers);openharmony-arm64" />
+    <!-- Valid TargetPlatformVersions (OpenHarmony API levels): CI public SDK = 20, device SDK = 26. -->
+    <SdkSupportedTargetPlatformVersion Include="20.0" MinimumNETVersion="10.0" />
+    <SdkSupportedTargetPlatformVersion Include="26.0" MinimumNETVersion="10.0" />
+    <FrameworkReference Condition=" '$(DisableImplicitFrameworkReferences)' != 'true' "
+                        Include="Microsoft.OpenHarmony" IsImplicitlyDefined="true" Pack="false" PrivateAssets="All" />
+    <!-- Version-only TargetFramework: this item only exists for openharmony projects. -->
+    <KnownFrameworkReference Include="Microsoft.OpenHarmony"
+                              TargetFramework="net11.0"
+                              RuntimeFrameworkName="Microsoft.OpenHarmony"
+                              DefaultRuntimeFrameworkVersion="1.0.0-preview.22"
+                              LatestRuntimeFrameworkVersion="1.0.0-preview.22"
+                              TargetingPackName="Microsoft.OpenHarmony.Ref.$(TargetPlatformVersion)"
+                              TargetingPackVersion="1.0.0-preview.22"
+                              RuntimePackNamePatterns="Microsoft.OpenHarmony.Runtime.$(TargetPlatformVersion).**RID**"
+                              RuntimePackRuntimeIdentifiers="openharmony-arm64"
+                              />
+  </ItemGroup>
+</Project>

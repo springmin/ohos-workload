@@ -1,13 +1,19 @@
 <Project>
+  <!-- Single-source import guard: the SDK resolver imports this file once, but an explicit
+       <Import> (or a future manifest change) must not duplicate the platform symbols, items or
+       the Hap.targets import. The marker is captured before it is set, so the first import
+       applies and any later one is a no-op (audit V3/V10 regression). -->
   <PropertyGroup Condition=" '$(TargetPlatformIdentifier)' == 'openharmony' ">
+    <_OpenHarmonySdkTargetsAlreadyImported Condition=" '$(MicrosoftOpenHarmonySdkTargetsImported)' == 'true' ">true</_OpenHarmonySdkTargetsAlreadyImported>
     <MicrosoftOpenHarmonySdkTargetsImported>true</MicrosoftOpenHarmonySdkTargetsImported>
+  </PropertyGroup>
+  <PropertyGroup Condition=" '$(TargetPlatformIdentifier)' == 'openharmony' and '$(_OpenHarmonySdkTargetsAlreadyImported)' != 'true' ">
     <TargetPlatformSupported>true</TargetPlatformSupported>
     <TargetPlatformDisplayName>OpenHarmony</TargetPlatformDisplayName>
     <!-- Platform symbols, matching the convention of the other platform SDKs (ANDROID, ...). -->
     <DefineConstants Condition=" '$(DisableImplicitFrameworkDefines)' != 'true' ">$(DefineConstants);OPENHARMONY;__OPENHARMONY__</DefineConstants>
     <SupportedOSPlatformVersion Condition=" '$(SupportedOSPlatformVersion)' == '' ">20.0</SupportedOSPlatformVersion>
     <SupportedOSPlatformVersion Condition=" '$(SupportedOSPlatformVersion)' != '' and !$(SupportedOSPlatformVersion.Contains('.')) ">$(SupportedOSPlatformVersion).0</SupportedOSPlatformVersion>
-    <_OpenHarmonySdkTargetsDir>$(MSBuildThisFileDirectory)../targets/</_OpenHarmonySdkTargetsDir>
     <!-- Host model: the .hap host, not a classic apphost. -->
     <UseAppHost Condition=" '$(UseAppHost)' == '' ">false</UseAppHost>
     <SelfContained Condition=" '$(SelfContained)' == '' ">true</SelfContained>
@@ -17,41 +23,21 @@
     <!-- No classic apphost: the .hap host (NAPI) loads hostfxr. The SDK's built-in
          apphost-less RID list does not know openharmony yet. -->
     <_RuntimeIdentifierUsesAppHost Condition=" '$(RuntimeIdentifier)' != '' and $(RuntimeIdentifier.StartsWith('openharmony')) ">false</_RuntimeIdentifierUsesAppHost>
-    <!-- The openharmony RIDs are not in the SDK's bundled RID graph yet; the workload carries one. -->
+    <!-- The openharmony RIDs are not in the SDK's bundled RID graph yet; the workload carries
+         one. The legacy branch honors UseRidGraph=true (the SDK's own legacy graph has no
+         openharmony entries); the portable branch (the default for net8+) is the graph that is
+         byte-synced with sdk-ohos/eng/PortableRuntimeIdentifierGraph.openharmony.json by
+         scripts/sync-ridgraph.sh. -->
+    <RuntimeIdentifierGraphPath Condition=" '$(RuntimeIdentifierGraphPath)' == '' and '$(UseRidGraph)' == 'true' ">$(MSBuildThisFileDirectory)../ridgraph/RuntimeIdentifierGraph.openharmony.json</RuntimeIdentifierGraphPath>
     <RuntimeIdentifierGraphPath Condition=" '$(RuntimeIdentifierGraphPath)' == '' ">$(MSBuildThisFileDirectory)../ridgraph/PortableRuntimeIdentifierGraph.openharmony.json</RuntimeIdentifierGraphPath>
   </PropertyGroup>
 
-  <PropertyGroup Condition=" '$(TargetPlatformIdentifier)' == 'openharmony' ">
-    <_OpenHarmonySdkPackDir>$(MSBuildThisFileDirectory)..\</_OpenHarmonySdkPackDir>
-  </PropertyGroup>
 
-  <Import Project="$(MSBuildThisFileDirectory)../targets/OpenHarmony.Hap.targets" Condition=" '$(TargetPlatformIdentifier)' == 'openharmony' " />
+  <Import Project="$(MSBuildThisFileDirectory)../targets/OpenHarmony.Hap.targets"
+          Condition=" '$(TargetPlatformIdentifier)' == 'openharmony' and '$(_OpenHarmonySdkTargetsAlreadyImported)' != 'true' " />
 
-  <!-- Runtime packs are arm64-only by design: OpenHarmony devices are arm64-v8a, the released
-       BCL pack is Microsoft.NETCore.App.Runtime.openharmony-arm64, and there is no
-       openharmony-x64 platform pack. Widen both RuntimePackRuntimeIdentifiers lists below
-       together once an x64 runtime pack is published. -->
-  <ItemGroup Condition=" '$(TargetPlatformIdentifier)' == 'openharmony' ">
-    <SdkSupportedTargetPlatformIdentifier Include="openharmony" DisplayName="OpenHarmony" />
-    <!-- The installed SDK's bundled RID list predates the openharmony rename; the platform
-         workload owns the RID until it ships in Microsoft.NETCore.Platforms. -->
-    <KnownFrameworkReference Update="Microsoft.NETCore.App"
-                              RuntimePackRuntimeIdentifiers="%(RuntimePackRuntimeIdentifiers);openharmony-arm64" />
-    <!-- Valid TargetPlatformVersions (OpenHarmony API levels): CI public SDK = 20, device SDK = 26. -->
-    <SdkSupportedTargetPlatformVersion Include="20.0" MinimumNETVersion="10.0" />
-    <SdkSupportedTargetPlatformVersion Include="26.0" MinimumNETVersion="10.0" />
-    <FrameworkReference Condition=" '$(DisableImplicitFrameworkReferences)' != 'true' "
-                        Include="Microsoft.OpenHarmony" IsImplicitlyDefined="true" Pack="false" PrivateAssets="All" />
-    <!-- Version-only TargetFramework: this item only exists for openharmony projects. -->
-    <KnownFrameworkReference Include="Microsoft.OpenHarmony"
-                              TargetFramework="net11.0"
-                              RuntimeFrameworkName="Microsoft.OpenHarmony"
-                              DefaultRuntimeFrameworkVersion="1.0.0-preview.23"
-                              LatestRuntimeFrameworkVersion="1.0.0-preview.23"
-                              TargetingPackName="Microsoft.OpenHarmony.Ref.$(TargetPlatformVersion)"
-                              TargetingPackVersion="1.0.0-preview.23"
-                              RuntimePackNamePatterns="Microsoft.OpenHarmony.Runtime.$(TargetPlatformVersion).**RID**"
-                              RuntimePackRuntimeIdentifiers="openharmony-arm64"
-                              />
-  </ItemGroup>
+  <!-- Platform items (single source; guarded by the import marker so a second import through a
+       different path cannot duplicate them). -->
+  <Import Project="$(MSBuildThisFileDirectory)../targets/OpenHarmony.PlatformItems.targets"
+          Condition=" '$(TargetPlatformIdentifier)' == 'openharmony' and '$(_OpenHarmonySdkTargetsAlreadyImported)' != 'true' " />
 </Project>
