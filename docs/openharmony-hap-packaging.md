@@ -277,22 +277,71 @@ hyphen, say) is rejected at install with bm 9568344 "bundle name or module name 
 `_OpenHarmonyValidateBundleName` fails the build early on any remaining illegal character, and an
 explicit `-p:OpenHarmonyBundleName=<name>` is validated too.
 
-## Opt-in permissions
+## Feature permissions
 
-Set `OpenHarmonyExtraPermissions` to a `;` or `,` separated list of permission names, e.g. (keep
-the quotes - MSBuild splits an unquoted command-line property value at `;` and `,`, or use `%3B` /
-`%2C`):
+`module.json` `requestPermissions` is generated from a feature matrix, so a feature the app turns
+on always ships with the declaration, the request reason and the `usedScene` the platform
+requires. Set `OpenHarmonyFeatures` to a `;` or `,` separated list of feature ids (or `all`);
+each selected feature expands to the permission entries below. Unset/empty (the default) declares
+nothing and leaves `module.json` byte-identical to a build without the property.
+
+| Feature | Permission | Grant mode | Request point in the shell |
+| --- | --- | --- | --- |
+| `bluetooth` | `ohos.permission.ACCESS_BLUETOOTH` | user_grant | Bluetooth adapter/discovery/GATT sinks |
+| `location` | `ohos.permission.APPROXIMATELY_LOCATION` | user_grant | reverse geocoding |
+| `clipboard` | `ohos.permission.READ_PASTEBOARD` | user_grant | clipboard get/read (prompt on explicit get only) |
+| `contacts` | `ohos.permission.READ_CONTACTS` | user_grant | contacts query sink |
+| `calendar-read` | `ohos.permission.READ_CALENDAR` | user_grant | calendar list sink |
+| `calendar` | `ohos.permission.READ_CALENDAR` + `ohos.permission.WRITE_CALENDAR` | user_grant | calendar list + add sinks |
+| `print` | `ohos.permission.PRINT` | system_grant | print sink (`canIUse('SystemCapability.Print.PrintFramework')` gate) |
+| `network` | `ohos.permission.INTERNET` | system_grant | scenario permission: declare it when the app loads network content or calls web services (the shell's network observer and the managed network stack need it) |
 
 ```sh
--p:'OpenHarmonyExtraPermissions="ohos.permission.READ_CONTACTS;ohos.permission.READ_CALENDAR"'
+# contacts + calendar read/write + bluetooth (quotes keep MSBuild from splitting at ';')
+-p:'OpenHarmonyFeatures="contacts;calendar;bluetooth"'
 ```
 
-or set `OpenHarmonyExtraPermissions` in the project file. When the property is set and non-empty
-the generated `module.json` gains the matching minimal
-`"requestPermissions":[{"name":"..."}]` array (no usedScene/resources entries). Declaring a
-permission here does not grant it: the app still has to request it at runtime
-(`abilityAccessCtrl.requestPermissionsFromUser`). Unset/empty keeps `module.json` byte-identical to
-the build without the property.
+Each emitted entry carries `"reason": "$string:permission_reason_*"` (the reason strings ship in
+`templates/resources/base/element/string.json`) and
+`"usedScene": {"abilities":["EntryAbility"],"when":"inuse"}` (the ability comes from
+`OpenHarmonyAbilityName`).
+
+`OpenHarmonyExtraPermissions` remains as the raw escape hatch: a `;`/`,` separated list of
+permission names appended with the historical minimal `{"name":"..."}` form (a name that is in
+the feature table inherits its reason/usedScene; an unknown raw name logs a warning because a
+user_grant permission declared without a reason can be ignored by the platform). Use it for
+permissions the shell requests only through the managed `IPermissions.RequestAsync` sink, which
+cannot be derived statically:
+
+```sh
+-p:'OpenHarmonyExtraPermissions="ohos.permission.CAMERA"'
+```
+
+### Request-point validation (packaging gate)
+
+`_OpenHarmonyResolvePermissions` runs before the hap staging and cross-checks the declaration set
+against the permissions the shipped shell can request at runtime (the quoted
+`ohos.permission.*` literals in `templates/ets/**/*.ets`):
+
+- a request point no feature declares is a **hard error** (the matrix drifted; add it to the
+  feature table or to `OpenHarmonyPermissionsOptOut` with a documented reason);
+- an unknown `OpenHarmonyFeatures` id is a hard error naming the known ids;
+- a selected feature whose entry has no reason or an invalid `usedScene` is a hard error;
+- a request point the app does not declare logs a **high-importance warning** naming the feature
+  to enable (the feature answers "unavailable" while undeclared); set
+  `OpenHarmonyRequireDeclaredRequestPoints=true` to make it an error.
+
+`OpenHarmonyPermissionsOptOut` (a `;` list) marks request points the app deliberately does not
+declare. The manifest describes the shipped shell; an app that passes a custom
+`OpenHarmonyArktsModulesAbc` owns its own request points and can opt out of the gate.
+
+Install-time and runtime notes: declaring a permission never grants a user_grant permission - the
+managed app still requests it at runtime. `ohos.permission.APPROXIMATELY_LOCATION` is the
+permission the reverse-geocoding path requests; whether a device also needs it for
+forward-geocoding has not been verified on hardware (no test device) - the shell currently
+pre-checks it for reverse geocoding only (SKILL/docs basis: `getAddressesFromLocation` is
+`@permission ohos.permission.APPROXIMATELY_LOCATION` in `@ohos.geoLocationManager`; the forward
+`getAddressesFromLocationName` carries no `@permission` tag).
 
 ## Blazor asset staging (milestone 3.0)
 
@@ -361,26 +410,83 @@ HarmonyOS SDK present, which the current build host does not have.
 
 `OpenHarmonyArktsModulesAbc` defaults to the checked-in prebuilt shells: `templates/ets/modules.ui.abc`
 for UI builds (`OpenHarmonyUIPage` set) and `templates/ets/modules.abc` (headless) otherwise; an
-explicit `-p:OpenHarmonyArktsModulesAbc=<file>` overrides both. The sources under
-`templates/ets/**` and those prebuilt abc files drift apart until a release rebuild:
+explicit `-p:OpenHarmonyArktsModulesAbc=<file>` overrides both. The former
+`modules.shell.abc` duplicate is gone (it was always byte-identical to `modules.ui.abc`).
 
-- **Source change (default flavor)**: rebuild with
-  `ARKTS_SHELL_VARIANT=ui scripts/build-arkts-shell.sh` (writes `dist/ets/modules.abc`) and
-  `ARKTS_SHELL_VARIANT=headless …` (writes `dist/ets/modules.headless.abc`), then update all three
-  preview packs in lockstep: UI -> `templates/ets/modules.ui.abc` and `modules.shell.abc`, headless
-  -> `templates/ets/modules.abc`. The script's own gates must pass on each artifact: the abc version
-  (`--check-abc`/header read-back <= 13.0.1.0) and the payload-in-libs contract
-  (`dotnet-payload`/`bundleCodeDir`/`payload-in-libs`/`dotnet.marker`). The harness pins the three
-  `Index.ets` sources byte-identical, so a partial pack update fails `test/maui-platform-verify`.
+- **Source change (default flavor)**: rebuild both variants, install, then verify:
+  ```sh
+  scripts/build-arkts-shell.sh                        # UI    -> dist/ets/modules.abc
+  ARKTS_SHELL_VARIANT=headless scripts/build-arkts-shell.sh   # -> dist/ets/modules.headless.abc
+  scripts/build-arkts-shell.sh --install-packs        # all three packs + provenance, then the gate
+  scripts/build-arkts-shell.sh --check-pack-abc       # re-run the gate alone
+  ```
+  `--install-packs` copies UI -> `templates/ets/modules.ui.abc` and headless ->
+  `templates/ets/modules.abc` in preview.22/23/24 in lockstep and refreshes the
+  `templates/ets/abc-provenance.json` record (schema 1: per-variant size, sha256, abc version and
+  the source hashes; plus the pinned compiler identity).
+- **Gates** (`--check-sources` / `--check-pack-abc`, both wired into the build):
+  - source contract: no `@ohos` module/dynamic import, no global `getContext()`, no
+    `decodeWithStream()`, no global `focusControl` in `templates/ets/**/*.ets`, and the three
+    packs' sources must be byte-identical (the fixture harness pins them too);
+  - abc provenance: per variant the recorded size/sha256/abc version, the payload literals
+    (`dotnet-payload`/`bundleCodeDir`/`payload-in-libs`/`dotnet.marker`) and the UI literals
+    (`ohos_dotnet_surface`/`ohos_dotnet_input`/`__hwvInvokeDotNet`, which the headless variant must
+    not carry), the recorded source hashes (a source edit without a rebuild fails), the absence of
+    `modules.shell.abc`, byte-identity across the three packs, and - when a dist dir is given - the
+    freshly built artifacts against the installed packs. `scripts/build-arkts-shell.sh` runs the
+    pack gate automatically after a build once both variants exist in `dist/ets`.
 - **HarmonyOS flavor**: the compiled abc is flavor-specific (the HarmonyOS es2abc/toolchain), so do
   not overwrite the checked-in OpenHarmony abc with it - the default packs must stay buildable
   without the HarmonyOS SDK. Build the flavor and pass the result to the packaging invocation, or
   ship it as a separate pack revision; keep the checked-in `modules*.abc` on the default flavor.
-- **Current state (KIT-IMPL, 2026-09-25)**: the preview.22/23/24 `Index.ets` carry the Share/Scan
-  probe and compile on the OpenHarmony SDK (224,076 B UI abc, version 13.0.1.0, verified), but the
-  checked-in `modules.ui.abc`/`modules.shell.abc` are still the kit #24 build (215,680 B). Until the
-  next release rebuild replaces them, a hap that must carry the probe has to pass
-  `-p:OpenHarmonyArktsModulesAbc=<freshly built abc>` or wait for that rebuild.
+  The provenance record pins the default flavor and the script refuses to write it from a harmony
+  build.
+- **Current state (COMP-ARKTS fix, 2026-09-25)**: all three preview packs carry the same sources
+  (Share/Scan probe, kit-import migration, feature permission chain) and the abc rebuilt from them
+  on the OpenHarmony SDK: UI 234,620 B / sha256 `343253329aab…6e1f2`, headless 18,532 B / sha256
+  `d7ec9ca7ee61…38d785`, both abc version 13.0.1.0 with `compatibleSdkVersion 18`.
+
+### ArkTS shell conformance (COMP-ARKTS)
+
+The shell sources follow the audit's API conformance set, enforced by `--check-sources` and the
+per-variant literal gate:
+
+- **Kit imports only**: every `@ohos.*` import (static and dynamic) is migrated to `@kit.*`
+  (`@kit.AbilityKit`, `@kit.ArkUI`, `@kit.ArkTS`, `@kit.ArkWeb`, `@kit.BasicServicesKit`,
+  `@kit.CameraKit`, `@kit.ConnectivityKit`, `@kit.CoreFileKit`, `@kit.ImageKit`,
+  `@kit.LocalizationKit`, `@kit.LocationKit`, `@kit.MediaLibraryKit`, `@kit.NetworkKit`,
+  `@kit.NotificationKit`).
+- **`import type` policy**: the optional-kit type imports stay `import type` (and only those).
+  Rationale: the ArkTS compiler erases them (no module record in the abc - verified against the
+  built artifact), so a device whose framework lacks a kit still loads the page, which is the
+  documented device-compat strategy; value imports are only used for kits the page needs to run at
+  all (core + statically safe kits).
+- **Page context**: `this.getUIContext().getHostContext()` through one private `hostContext()`
+  helper replaces all 21 call sites of the global `getContext()`; the build gate rejects the
+  global form.
+- **Decode**: `util.TextDecoder.create('utf-8').decodeToString(bytes)` through the shared
+  `decodeUtf8()` helper replaces `decodeWithStream()` in both ability templates.
+- **Pickers**: `picker.DocumentViewPicker(context)` is constructed with the host context;
+  `photoAccessHelper.PhotoViewPicker` has no context constructor in this SDK (verified: "Expected
+  0 arguments, but got 1"), so it keeps its no-arg form.
+- **Syscap/permission entry probes**: print checks
+  `canIUse('SystemCapability.Print.PrintFramework')` before importing the kit; geocoding checks
+  `isGeocoderAvailable()` and pre-checks `APPROXIMATELY_LOCATION` for the reverse lookup, mapping
+  the kit error codes (3301000/801 -> rc -1 unavailable, 3301300/3301400 -> rc -2 query failure;
+  the managed side maps every non-zero rc to "no result").
+- **Focus**: `this.getUIContext().getFocusController().requestFocus(id)` replaces the global
+  `focusControl`.
+- **Callback ledger**: display/`commonEvent`/network/bluetooth listeners register a disposer in the
+  page's ledger and `aboutToDisappear` runs them; the SDK 26 `NetConnection` has no `off()`, so the
+  network observer uses `unregister(callback)` plus a `networkDisposed` guard that makes a late
+  callback a no-op (device confirmation pending - see the report note).
+- **Overlay avoid-area**: the shell panel, menu handle and A11Y button are inset by the system
+  avoid area and the soft-keyboard height; the managed/self-drawn content keeps its existing
+  `notifyAvoidArea`/`notifySoftInputArea` -> managed SafeArea padding path.
+- **Logging/catch hygiene**: `console.*` is replaced by `hilog` under one domain/tag; catches with
+  no use for their binding use the optional binding form.
+- **No regex literals in the page**: the static-web-asset fingerprint strip uses
+  `new RegExp(...)`; `build()` has no ternary expressions (named helper methods).
 
 ## Clean contract
 
