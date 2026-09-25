@@ -323,6 +323,65 @@ toolchain (or `restool`, resolved from the same root) is missing, the build fail
 to set. Scripts that build haps for a local homebrew install (`scripts/make-device-test-kit.sh`)
 resolve that layout themselves and export `OpenHarmonySdkRoot`, so the pack stays location-neutral.
 
+### HarmonyOS SDK branch (ARKTS_SDK_FLAVOR=harmony)
+
+The shell is compiled by `scripts/build-arkts-shell.sh` against the OpenHarmony SDK by default.
+The HMS Kits (Share/Scan/Map/Push/Account) are not part of that SDK: a literal
+`import('@kit.ShareKit')` is a hard ArkTS compile error there (`10505001 Cannot find module ...`,
+KIT-IMPL probe a, 2026-09-25; `@kit.AdsKit` resolves, so the gate is per-kit). The script therefore
+grew an opt-in HarmonyOS branch; the default flavor is unchanged.
+
+```sh
+# default (OpenHarmony SDK, runtimeOS OpenHarmony, compatibleSdkVersion 18)
+scripts/build-arkts-shell.sh
+
+# opt-in HarmonyOS branch: a DevEco-style SDK root whose default/ carries openharmony/ and hms/
+ARKTS_SDK_FLAVOR=harmony \
+ARKTS_HARMONY_SDK_ROOT=<sdk root> \          # or DEVECO_SDK_HOME
+scripts/build-arkts-shell.sh
+```
+
+The branch changes exactly three things: the SDK root comes from `ARKTS_HARMONY_SDK_ROOT` /
+`DEVECO_SDK_HOME` (must carry `<root>/default/openharmony/ets` and `<root>/default/hms/ets`, or the
+build fails with the property to set), `runtimeOS` becomes `HarmonyOS`, and `compatibleSdkVersion`
+defaults to `6.1.0(23)` (override with `ARKTS_COMPATIBLE_SDK_VERSION`) - the value the device-side
+DevEco build used to emit the accepted abc. `externalApiPaths` additionally exposes `hms/ets`, which
+is what lets the Share/Scan sinks compile against the real kit types. The abc header gate is
+unchanged: `ARKTS_MAX_BC_VERSION` stays `13.0.1.0` (the device runtime ceiling; the DevEco build at
+`6.1.0(23)` produced exactly `13.0.1.0`), so a HarmonyOS SDK whose es2abc emits a newer abc still
+fails here. On the default flavor the shell compiles the Share/Scan *probe* only: the specifier
+stays in a variable and the resolved module is cast to a local structural interface, so a device
+without the kit registers no sink and the managed side degrades (see the KIT-IMPL report in
+`runtime-ohos/docs/plans/2026-09-24-ohos-kit-gap-analysis.md`).
+
+The branch is scaffold-verified (`--scaffold-only` plus the selftest T14); a full build needs the
+HarmonyOS SDK present, which the current build host does not have.
+
+### Templates / abc sync strategy
+
+`OpenHarmonyArktsModulesAbc` defaults to the checked-in prebuilt shells: `templates/ets/modules.ui.abc`
+for UI builds (`OpenHarmonyUIPage` set) and `templates/ets/modules.abc` (headless) otherwise; an
+explicit `-p:OpenHarmonyArktsModulesAbc=<file>` overrides both. The sources under
+`templates/ets/**` and those prebuilt abc files drift apart until a release rebuild:
+
+- **Source change (default flavor)**: rebuild with
+  `ARKTS_SHELL_VARIANT=ui scripts/build-arkts-shell.sh` (writes `dist/ets/modules.abc`) and
+  `ARKTS_SHELL_VARIANT=headless …` (writes `dist/ets/modules.headless.abc`), then update all three
+  preview packs in lockstep: UI -> `templates/ets/modules.ui.abc` and `modules.shell.abc`, headless
+  -> `templates/ets/modules.abc`. The script's own gates must pass on each artifact: the abc version
+  (`--check-abc`/header read-back <= 13.0.1.0) and the payload-in-libs contract
+  (`dotnet-payload`/`bundleCodeDir`/`payload-in-libs`/`dotnet.marker`). The harness pins the three
+  `Index.ets` sources byte-identical, so a partial pack update fails `test/maui-platform-verify`.
+- **HarmonyOS flavor**: the compiled abc is flavor-specific (the HarmonyOS es2abc/toolchain), so do
+  not overwrite the checked-in OpenHarmony abc with it - the default packs must stay buildable
+  without the HarmonyOS SDK. Build the flavor and pass the result to the packaging invocation, or
+  ship it as a separate pack revision; keep the checked-in `modules*.abc` on the default flavor.
+- **Current state (KIT-IMPL, 2026-09-25)**: the preview.22/23/24 `Index.ets` carry the Share/Scan
+  probe and compile on the OpenHarmony SDK (224,076 B UI abc, version 13.0.1.0, verified), but the
+  checked-in `modules.ui.abc`/`modules.shell.abc` are still the kit #24 build (215,680 B). Until the
+  next release rebuild replaces them, a hap that must carry the probe has to pass
+  `-p:OpenHarmonyArktsModulesAbc=<freshly built abc>` or wait for that rebuild.
+
 ## Clean contract
 
 Every target registers the files it creates in `FileWrites` in the same target: the hap staging
