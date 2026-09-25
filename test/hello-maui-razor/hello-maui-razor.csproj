@@ -20,6 +20,9 @@
        OPENHARMONY_BLAZOR_WEBVIEW constant and the host page wiring) is the demo's configuration;
        the hap publish command is the same. -->
   <PropertyGroup>
+    <!-- The OpenHarmony slice compiles source-generated LibraryImport marshalling, which the
+         generator emits as unsafe code; the slice sources are compiled into this project. -->
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
     <TargetFrameworks>net11.0-openharmony20.0;net11.0-openharmony26.0</TargetFrameworks>
     <OutputType>Exe</OutputType>
     <Nullable>enable</Nullable>

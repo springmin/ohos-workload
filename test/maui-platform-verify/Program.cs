@@ -2530,16 +2530,16 @@ if (!s3RuntimeOk)
 // torch export plus the shell sink registration are present in the source the pack is built from.
 MethodInfo? s3FlashlightPinvoke = typeof(OpenHarmonyFlashlightBridge).GetMethod(
     "FlashlightSet", BindingFlags.NonPublic | BindingFlags.Static);
-DllImportAttribute? s3FlashlightImport = s3FlashlightPinvoke?.GetCustomAttribute<DllImportAttribute>();
+LibraryImportAttribute? s3FlashlightImport = s3FlashlightPinvoke?.GetCustomAttribute<LibraryImportAttribute>();
 bool s3EntryPointOk = s3FlashlightImport is not null &&
     s3FlashlightImport.EntryPoint == "ohos_host_flashlight_set" &&
-    s3FlashlightImport.Value == "libopenharmonyhost.so";
+    s3FlashlightImport.LibraryName == "libopenharmonyhost.so";
 bool s3OpcodesOk = OpenHarmonyFlashlightBridge.OffOp == 0 &&
     OpenHarmonyFlashlightBridge.OnOp == 1 &&
     OpenHarmonyFlashlightBridge.ProbeOp == 2;
 bool s3NativeOk = s3EntryPointOk && s3OpcodesOk &&
     s2Napi.Contains("ohos_host_flashlight_set") && s2Napi.Contains("\"registerFlashlightSink\"");
-Console.WriteLine($"[verify] s3 flashlight export entry='{s3FlashlightImport?.EntryPoint}' lib='{s3FlashlightImport?.Value}' opcodes={OpenHarmonyFlashlightBridge.OffOp}/{OpenHarmonyFlashlightBridge.OnOp}/{OpenHarmonyFlashlightBridge.ProbeOp} sink={s2Napi.Contains("\"registerFlashlightSink\"")} assert={s3NativeOk}");
+Console.WriteLine($"[verify] s3 flashlight export entry='{s3FlashlightImport?.EntryPoint}' lib='{s3FlashlightImport?.LibraryName}' opcodes={OpenHarmonyFlashlightBridge.OffOp}/{OpenHarmonyFlashlightBridge.OnOp}/{OpenHarmonyFlashlightBridge.ProbeOp} sink={s2Napi.Contains("\"registerFlashlightSink\"")} assert={s3NativeOk}");
 if (!s3NativeOk)
 {
     throw new InvalidOperationException("the S3 flashlight host export/sink contract drifted");
@@ -3448,11 +3448,11 @@ if (!b1PermissionOk)
 // registration/answer calls must all agree, so a rename or a dropped half fails here.
 MethodInfo? b1PermissionRequest = typeof(OpenHarmonyPermissionBridge).GetMethod("RequestPermissionNative", BindingFlags.NonPublic | BindingFlags.Static);
 MethodInfo? b1PermissionRegister = typeof(OpenHarmonyPermissionBridge).GetMethod("RegisterPermissionResultNative", BindingFlags.NonPublic | BindingFlags.Static);
-DllImportAttribute? b1PermissionRequestImport = b1PermissionRequest?.GetCustomAttribute<DllImportAttribute>();
-DllImportAttribute? b1PermissionRegisterImport = b1PermissionRegister?.GetCustomAttribute<DllImportAttribute>();
+LibraryImportAttribute? b1PermissionRequestImport = b1PermissionRequest?.GetCustomAttribute<LibraryImportAttribute>();
+LibraryImportAttribute? b1PermissionRegisterImport = b1PermissionRegister?.GetCustomAttribute<LibraryImportAttribute>();
 bool b1PermissionManaged = b1PermissionRequestImport is not null &&
     b1PermissionRequestImport.EntryPoint == "ohos_host_request_permission" &&
-    b1PermissionRequestImport.Value == "libopenharmonyhost.so" &&
+    b1PermissionRequestImport.LibraryName == "libopenharmonyhost.so" &&
     b1PermissionRequest?.GetParameters() is { Length: 2 } b1PermissionParams &&
     b1PermissionParams[0].ParameterType == typeof(string) && b1PermissionParams[1].ParameterType == typeof(int) &&
     b1PermissionRegisterImport?.EntryPoint == "ohos_host_register_permission_result";
@@ -3534,8 +3534,8 @@ bool b1ClipboardOps = OpenHarmonyClipboardBridge.HasOp == 0 &&
     OpenHarmonyClipboardBridge.GetOp == 1 && OpenHarmonyClipboardBridge.SetOp == 2;
 MethodInfo? b1ClipboardRequest = typeof(OpenHarmonyClipboardBridge).GetMethod("RequestNative", BindingFlags.NonPublic | BindingFlags.Static);
 MethodInfo? b1ClipboardRegister = typeof(OpenHarmonyClipboardBridge).GetMethod("RegisterResultNative", BindingFlags.NonPublic | BindingFlags.Static);
-DllImportAttribute? b1ClipboardRequestImport = b1ClipboardRequest?.GetCustomAttribute<DllImportAttribute>();
-DllImportAttribute? b1ClipboardRegisterImport = b1ClipboardRegister?.GetCustomAttribute<DllImportAttribute>();
+LibraryImportAttribute? b1ClipboardRequestImport = b1ClipboardRequest?.GetCustomAttribute<LibraryImportAttribute>();
+LibraryImportAttribute? b1ClipboardRegisterImport = b1ClipboardRegister?.GetCustomAttribute<LibraryImportAttribute>();
 bool b1ClipboardManaged = b1ClipboardOps &&
     b1ClipboardRequestImport?.EntryPoint == "ohos_host_clipboard_request" &&
     b1ClipboardRequest?.GetParameters() is { Length: 3 } b1ClipboardParams &&
@@ -3618,10 +3618,10 @@ if (!b1ConnectivityOk)
 // three preview templates staying byte-identical.
 MethodInfo? b1NetworkRead = typeof(OpenHarmonyConnectivityBridge).GetMethod("ReadNetworkAccess", BindingFlags.NonPublic | BindingFlags.Static);
 MethodInfo? b1NetworkRegister = typeof(OpenHarmonyConnectivityBridge).GetMethod("NetworkAccessRegisterNative", BindingFlags.NonPublic | BindingFlags.Static);
-DllImportAttribute? b1NetworkReadImport = typeof(OpenHarmonyConnectivityBridge).GetMethod("NetworkAccessNative", BindingFlags.NonPublic | BindingFlags.Static)?.GetCustomAttribute<DllImportAttribute>();
-DllImportAttribute? b1NetworkRegisterImport = b1NetworkRegister?.GetCustomAttribute<DllImportAttribute>();
+LibraryImportAttribute? b1NetworkReadImport = typeof(OpenHarmonyConnectivityBridge).GetMethod("NetworkAccessNative", BindingFlags.NonPublic | BindingFlags.Static)?.GetCustomAttribute<LibraryImportAttribute>();
+LibraryImportAttribute? b1NetworkRegisterImport = b1NetworkRegister?.GetCustomAttribute<LibraryImportAttribute>();
 bool b1ConnectivityManaged = b1NetworkReadImport?.EntryPoint == "ohos_host_network_access" &&
-    b1NetworkReadImport.Value == "libopenharmonyhost.so" &&
+    b1NetworkReadImport.LibraryName == "libopenharmonyhost.so" &&
     b1NetworkRegisterImport?.EntryPoint == "ohos_host_network_access_register" &&
     b1NetworkRead is not null;
 bool b1ConnectivityNative = cSource?.Contains("ohos_host_network_access_register(void* callback)") == true &&
@@ -3999,10 +3999,10 @@ if (!d1AllOk)
 // + the shell's sink registration/packer call sites).
 MethodInfo? b2ScreenshotPinvoke = typeof(OpenHarmonyScreenshotBridge).GetMethod(
     "ScreenshotNative", BindingFlags.NonPublic | BindingFlags.Static);
-DllImportAttribute? b2ScreenshotImport = b2ScreenshotPinvoke?.GetCustomAttribute<DllImportAttribute>();
+LibraryImportAttribute? b2ScreenshotImport = b2ScreenshotPinvoke?.GetCustomAttribute<LibraryImportAttribute>();
 bool b2ScreenshotManaged = b2ScreenshotImport is not null &&
     b2ScreenshotImport.EntryPoint == "ohos_host_screenshot" &&
-    b2ScreenshotImport.Value == "libopenharmonyhost.so" &&
+    b2ScreenshotImport.LibraryName == "libopenharmonyhost.so" &&
     b2ScreenshotPinvoke?.GetParameters() is { Length: 1 } b2ScreenshotParams &&
     b2ScreenshotParams[0].ParameterType == typeof(string);
 bool b2ScreenshotNative = s2Napi.Contains("extern \"C\" int ohos_host_screenshot(const char* out_path)") &&
@@ -4028,10 +4028,10 @@ MethodInfo? b2GeocodeRequest = typeof(OpenHarmonyGeocodingBridge).GetMethod(
     "GeocodeRequestNative", BindingFlags.NonPublic | BindingFlags.Static);
 MethodInfo? b2GeocodeRegister = typeof(OpenHarmonyGeocodingBridge).GetMethod(
     "RegisterGeocodeResultNative", BindingFlags.NonPublic | BindingFlags.Static);
-DllImportAttribute? b2GeocodeRequestImport = b2GeocodeRequest?.GetCustomAttribute<DllImportAttribute>();
-DllImportAttribute? b2GeocodeRegisterImport = b2GeocodeRegister?.GetCustomAttribute<DllImportAttribute>();
+LibraryImportAttribute? b2GeocodeRequestImport = b2GeocodeRequest?.GetCustomAttribute<LibraryImportAttribute>();
+LibraryImportAttribute? b2GeocodeRegisterImport = b2GeocodeRegister?.GetCustomAttribute<LibraryImportAttribute>();
 bool b2GeocodeManaged = b2GeocodeRequestImport?.EntryPoint == "ohos_host_geocode_request" &&
-    b2GeocodeRequestImport.Value == "libopenharmonyhost.so" &&
+    b2GeocodeRequestImport.LibraryName == "libopenharmonyhost.so" &&
     b2GeocodeRequest?.ReturnType == typeof(int) &&
     b2GeocodeRequest.GetParameters() is { Length: 3 } b2GeocodeParams &&
     b2GeocodeParams[0].ParameterType == typeof(int) &&
@@ -4110,7 +4110,7 @@ string? n1AppHostPath = FindHostSource("OpenHarmonyMauiAppHost.cs");
 string n1AppHost = n1AppHostPath is null ? string.Empty : File.ReadAllText(n1AppHostPath);
 string? n1PageHandlerPath = FindHostSource("OpenHarmonyPageHandler.cs");
 string n1PageHandler = n1PageHandlerPath is null ? string.Empty : File.ReadAllText(n1PageHandlerPath);
-bool n1ModelOk = n1SafeArea.Contains("internal static class OpenHarmonySafeArea") &&
+bool n1ModelOk = n1SafeArea.Contains("internal static partial class OpenHarmonySafeArea") &&
     n1SafeArea.Contains("OpenHarmonyBridge.TryGetAvoidArea(out int top, out int bottom, out int left, out int right)") &&
     n1SafeArea.Contains("return SafeAreaEdges.Container;") &&
     n1SafeArea.Contains("internal static Rect Pad(IView view, Rect frame, Rect windowBounds, Thickness insets)") &&
@@ -4611,11 +4611,11 @@ string n13Essentials = n13EssentialsPath is null ? string.Empty : File.ReadAllTe
 bool n13SettingsOk = n13AppInfo.Contains("private const int KindSettings = 4;") &&
     n13AppInfo.Contains("private const string SettingsBundle = \"com.ohos.settings\";") &&
     n13AppInfo.Contains("private const string SettingsAbility = \"com.ohos.settings.MainAbility\";") &&
-    n13AppInfo.Contains("[DllImport(HostLibrary, EntryPoint = \"ohos_host_ability_start\", CharSet = CharSet.Ansi)]") &&
+    n13AppInfo.Contains("[LibraryImport(HostLibrary, EntryPoint = \"ohos_host_ability_start\", StringMarshalling = StringMarshalling.Utf8)]") &&
     n13AppInfo.Contains("return AbilityStart(KindSettings, SettingsBundle, SettingsAbility) == 0;");
-bool n13BundleOk = n13AppInfo.Contains("[DllImport(HostLibrary, EntryPoint = \"ohos_host_get_bundle_version\")]") &&
-    n13AppInfo.Contains("[DllImport(HostLibrary, EntryPoint = \"ohos_host_get_bundle_build\")]") &&
-    n13AppInfo.Contains("[DllImport(HostLibrary, EntryPoint = \"ohos_host_get_bundle_name\")]") &&
+bool n13BundleOk = n13AppInfo.Contains("[LibraryImport(HostLibrary, EntryPoint = \"ohos_host_get_bundle_version\")]") &&
+    n13AppInfo.Contains("[LibraryImport(HostLibrary, EntryPoint = \"ohos_host_get_bundle_build\")]") &&
+    n13AppInfo.Contains("[LibraryImport(HostLibrary, EntryPoint = \"ohos_host_get_bundle_name\")]") &&
     n13AppInfo.Contains("public string VersionString => OpenHarmonyBundleInfoBridge.Version ?? FallbackVersion;") &&
     hSource?.Contains("int ohos_host_set_bundle_info(const char* version, const char* build, const char* name);") == true &&
     hSource.Contains("const char* ohos_host_get_bundle_version(void);") &&
@@ -4626,11 +4626,11 @@ bool n13BundleOk = n13AppInfo.Contains("[DllImport(HostLibrary, EntryPoint = \"o
     cSource.Contains("const char* ohos_host_get_bundle_name(void) {") &&
     s2Napi.Contains("napi_value SetBundleInfo(napi_env env, napi_callback_info info) {") &&
     s2Napi.Contains("\"setBundleInfo\"");
-bool n13NotificationsOk = n13Essentials.Contains("internal static class OpenHarmonyNotificationPermissionBridge") &&
+bool n13NotificationsOk = n13Essentials.Contains("internal static partial class OpenHarmonyNotificationPermissionBridge") &&
     n13Essentials.Contains("internal const int QueryOp = 0;") &&
     n13Essentials.Contains("internal const int RequestOp = 1;") &&
-    n13Essentials.Contains("[DllImport(HostLibrary, EntryPoint = \"ohos_host_notification_permission_request\")]") &&
-    n13Essentials.Contains("private static extern void RequestNative(int op, int requestId);") &&
+    n13Essentials.Contains("[LibraryImport(HostLibrary, EntryPoint = \"ohos_host_notification_permission_request\")]") &&
+    n13Essentials.Contains("private static partial void RequestNative(int op, int requestId);") &&
     n13Essentials.Contains("typeof(TPermission) == typeof(Permissions.PostNotifications)") &&
     hSource?.Contains("void ohos_host_notification_permission_set_listener(void (*listener)(int op, int request_id));") == true &&
     hSource.Contains("void ohos_host_notification_permission_request(int op, int request_id);") &&
@@ -4695,10 +4695,10 @@ string? n15SafeAreaPath = FindHostSource("OpenHarmonySafeArea.cs");
 string n15SafeArea = n15SafeAreaPath is null ? string.Empty : File.ReadAllText(n15SafeAreaPath);
 string? n15ExtrasPath = FindHostSource("OpenHarmonyEssentialsExtras.cs");
 string n15Extras = n15ExtrasPath is null ? string.Empty : File.ReadAllText(n15ExtrasPath);
-bool n15SoftInputOk = n15SafeArea.Contains("[DllImport(HostLibrary, EntryPoint = \"ohos_host_get_soft_input_area\")]") &&
-    n15SafeArea.Contains("private static extern int GetSoftInputAreaNative(out int bottom);") &&
-    n15SafeArea.Contains("[DllImport(HostLibrary, EntryPoint = \"ohos_host_register_soft_input_change\")]") &&
-    n15SafeArea.Contains("private static extern void RegisterSoftInputChangeNative(IntPtr callback);") &&
+bool n15SoftInputOk = n15SafeArea.Contains("[LibraryImport(HostLibrary, EntryPoint = \"ohos_host_get_soft_input_area\")]") &&
+    n15SafeArea.Contains("private static partial int GetSoftInputAreaNative(out int bottom);") &&
+    n15SafeArea.Contains("[LibraryImport(HostLibrary, EntryPoint = \"ohos_host_register_soft_input_change\")]") &&
+    n15SafeArea.Contains("private static partial void RegisterSoftInputChangeNative(IntPtr callback);") &&
     n15SafeArea.Contains("private delegate void SoftInputChanged(int bottom);") &&
     n15SafeArea.Contains("OpenHarmonyBridge.RequestRedraw();") &&
     hSource?.Contains("void ohos_host_set_soft_input_area(int bottom);") == true &&
@@ -4710,8 +4710,8 @@ bool n15SoftInputOk = n15SafeArea.Contains("[DllImport(HostLibrary, EntryPoint =
     cSource.Contains("int ohos_host_get_soft_input_area(int* bottom) {") &&
     s2Napi.Contains("napi_value NotifySoftInputArea(napi_env env, napi_callback_info info) {") &&
     s2Napi.Contains("\"notifySoftInputArea\"");
-bool n15ProfilesOk = n15Extras.Contains("[DllImport(HostLibrary, EntryPoint = \"ohos_host_network_capabilities\")]") &&
-    n15Extras.Contains("private static extern int NetworkCapabilitiesNative();") &&
+bool n15ProfilesOk = n15Extras.Contains("[LibraryImport(HostLibrary, EntryPoint = \"ohos_host_network_capabilities\")]") &&
+    n15Extras.Contains("private static partial int NetworkCapabilitiesNative();") &&
     n15Extras.Contains("public IEnumerable<ConnectionProfile> ConnectionProfiles") &&
     n15Extras.Contains("profiles.Add(ConnectionProfile.WiFi);") &&
     n15Extras.Contains("profiles.Add(ConnectionProfile.Cellular);") &&
@@ -4754,11 +4754,11 @@ bool n16FocusOk = n16Focus.Contains("internal static class OpenHarmonyFocusManag
     n16Focus.Contains("ViewHandler.ViewCommandMapper[\"Focus\"] = OnFocusCommand;") &&
     n16Focus.Contains("ViewHandler.ViewCommandMapper[\"Unfocus\"] = OnUnfocusCommand;") &&
     n16Focus.Contains("internal static bool TryGetTargetKey(IView view, out string targetKey)");
-bool n16KeyOk = n16Key.Contains("internal static class OpenHarmonyKeyListener") &&
+bool n16KeyOk = n16Key.Contains("internal static partial class OpenHarmonyKeyListener") &&
     n16Key.Contains("internal const int KeyTypeDown = 0;") &&
     n16Key.Contains("internal const int KeyTypeUp = 1;") &&
     n16Key.Contains("private delegate void KeyEventCallback(int keyCode, int eventType);") &&
-    n16Key.Contains("[DllImport(HostLibrary, EntryPoint = \"ohos_host_register_key_event\")]") &&
+    n16Key.Contains("[LibraryImport(HostLibrary, EntryPoint = \"ohos_host_register_key_event\")]") &&
     n16Key.Contains("internal static void Dispatch(int keyCode, int eventType)");
 bool n16HostOk = n14Extensions.Contains("OpenHarmonyFocusManager.Install();") &&
     n14Extensions.Contains("OpenHarmonyKeyListener.Install();") &&

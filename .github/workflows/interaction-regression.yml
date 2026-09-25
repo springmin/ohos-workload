@@ -40,7 +40,7 @@ on:
         description: 'maui-ohos commit SHA to compile (defaults to the pinned feature/openharmony tip)'
         required: false
         type: string
-        default: 'fc7fbfdc03913a7e3ce0bfccc7ec7481bf7974d5'
+        default: '31f4dbacdbded1f96dc56dda2a0d2507c3cb4600'
   push:
     branches: [ master ]
   pull_request:
@@ -52,14 +52,14 @@ permissions:
 
 # Reproducible cross-repo compile: the MAUI slice is checked out at an exact commit, not the
 # mutable feature/openharmony branch, so a push to the fork cannot change what this gate compiles.
-# The default is the feature/openharmony tip: fc7fbfdc, which carries the FIX-INTEROP slice
-# work (#4-#7: source-generated JSON payloads, trim/AOT-safe handler wiring) on top of the
-# Share/Scan kit extra and the 236d18a9 harness baseline. The suite pins 326 checks / floor 306
-# and the full run is green at this compiled tree (local preflight verification: 326/326,
-# floor 306); advance the pin deliberately and refresh this comment when the harness pins or
-# the tip move (workflow_dispatch can compile any commit).
+# The default is the feature/openharmony tip: 31f4dbac, the FIX-INTEROP P2 batch B1 commit
+# (LibraryImport for the system/Essentials bridges on top of the #4-#7 slice work and the
+# 236d18a9 harness baseline). The suite pins 326 checks / floor 306 and the full run is green
+# at this compiled tree (local preflight verification: 326/326, floor 306); advance the pin
+# deliberately and refresh this comment when the harness pins or the tip move
+# (workflow_dispatch can compile any commit).
 env:
-  MAUI_OHOS_REF: ${{ github.event.inputs.maui_ohos_ref || 'fc7fbfdc03913a7e3ce0bfccc7ec7481bf7974d5' }}
+  MAUI_OHOS_REF: ${{ github.event.inputs.maui_ohos_ref || '31f4dbacdbded1f96dc56dda2a0d2507c3cb4600' }}
   # setup-dotnet installs the requested 11.0.x preview into DOTNET_INSTALL_DIR; on Linux that
   # defaults to /usr/share/dotnet, which a per-user cache cannot persist. Point it at ~/.dotnet
   # (the action resolves the ~ prefix against $HOME) so the cache step below actually avoids the
