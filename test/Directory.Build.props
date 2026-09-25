@@ -1,0 +1,25 @@
+<Project>
+  <!-- Test-tree defaults (audit V3): the suite projects must build from any checkout, so the
+       cross-repo maui-ohos slice resolves relative to this repository by default and every
+       consumer can override it explicitly. Machine-specific absolute paths are rejected by
+       scripts/check-no-absolute-paths.sh (CI + preflight).
+
+       Precedence: explicit -p: value > MSBuild property > MAUI_SLICE_DIR / HOSTING_DLL /
+       OPENHARMONY_GRAPHICS_DLL environment variables > the sibling-repo default. The first-party
+       host/graphics assemblies are ProjectReferences ($(HostingProject) / $(GraphicsProject))
+       unless a caller pins a prebuilt assembly through the environment/override. -->
+
+  <!-- Keep the repository-wide policy (Directory.Build.props at the repo root): the SDK stops at
+       the nearest Directory.Build.props, so this file must chain to the root one explicitly. -->
+  <Import Project="$([MSBuild]::GetPathOfFileAbove('Directory.Build.props', '$(MSBuildThisFileDirectory)..'))" />
+
+  <PropertyGroup>
+    <OhosWorkloadRoot>$([MSBuild]::NormalizeDirectory('$(MSBuildThisFileDirectory)', '..'))</OhosWorkloadRoot>
+    <MauiSliceDir Condition="'$(MauiSliceDir)' == ''">$(MAUI_SLICE_DIR)</MauiSliceDir>
+    <MauiSliceDir Condition="'$(MauiSliceDir)' == ''">$([MSBuild]::NormalizeDirectory('$(OhosWorkloadRoot)', '..', 'maui-ohos', 'src', 'Core', 'src', 'Platform', 'OpenHarmony'))</MauiSliceDir>
+    <HostingDll Condition="'$(HostingDll)' == ''">$(HOSTING_DLL)</HostingDll>
+    <OpenHarmonyGraphicsDll Condition="'$(OpenHarmonyGraphicsDll)' == ''">$(OPENHARMONY_GRAPHICS_DLL)</OpenHarmonyGraphicsDll>
+    <HostingProject>$(OhosWorkloadRoot)src/Microsoft.OpenHarmony.Hosting/Microsoft.OpenHarmony.Hosting.csproj</HostingProject>
+    <GraphicsProject>$(OhosWorkloadRoot)src/Microsoft.OpenHarmony.Maui.Graphics/Microsoft.OpenHarmony.Maui.Graphics.csproj</GraphicsProject>
+  </PropertyGroup>
+</Project>

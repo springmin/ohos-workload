@@ -1,12 +1,19 @@
 #!/bin/sh
-# Local preflight for ohos-workload: the four CI gates, with a PASS/FAIL/SKIP per step and a
+# Local preflight for ohos-workload: the five CI gates, with a PASS/FAIL/SKIP per step and a
 # summary at the end.
-#   1. sh -n over scripts/*.sh
-#   2. markdownlint-cli2@0.23.3 (skipped when npx is missing)
-#   3. interaction suite, test/maui-platform-verify: rebuilt from this tree before it runs; its
+#   1. repository gates, scripts/selftest-ridgraph.sh + scripts/selftest-packs.sh +
+#      scripts/selftest-repo-hygiene.sh: the pack RID graph copies must match
+#      sdk-ohos/eng/PortableRuntimeIdentifierGraph.openharmony.json (byte-level when the sibling
+#      checkout is present, digest-level otherwise), the packed UseRidGraph branch must hold, every
+#      pack props/targets file must have an importer or be an entry point, a double import of
+#      Sdk.targets must not duplicate the platform items, and the build inputs must carry no
+#      machine-specific absolute paths (test/Directory.Build.props relative roots)
+#   2. sh -n over scripts/*.sh
+#   3. markdownlint-cli2@0.23.3 (skipped when npx is missing)
+#   4. interaction suite, test/maui-platform-verify: rebuilt from this tree before it runs; its
 #      own "[suite] checks=... floor=... assert=True" line is the only floor (no fallback
 #      literal), so a stale harness fails loudly instead of checking an old threshold
-#   4. pixel suite, test/headless-render: requires "PIXEL ASSERTIONS PASSED"
+#   5. pixel suite, test/headless-render: requires "PIXEL ASSERTIONS PASSED"
 #
 # The suites need the Release hosting assemblies CI builds first; this script checks their
 # usual locations and prints the build commands when they are missing.
@@ -33,9 +40,10 @@ usage() {
     cat <<EOF
 usage: $0 [--skip-lint] [--skip-interaction] [--skip-pixel] [--quick]
 
-Runs the CI gates locally: sh -n (scripts/*.sh), markdownlint-cli2 0.23.3, the
-test/maui-platform-verify interaction suite and the test/headless-render pixel suite.
---quick skips both suites (same as --skip-interaction --skip-pixel).
+Runs the CI gates locally: the RID graph single-source check, sh -n (scripts/*.sh),
+markdownlint-cli2 0.23.3, the test/maui-platform-verify interaction suite and the
+test/headless-render pixel suite. --quick skips both suites (same as
+--skip-interaction --skip-pixel), not the RID graph or the lint.
 EOF
 }
 
@@ -61,6 +69,7 @@ fi
 mkdir -p "$LOG_DIR" || { warn "cannot create log dir: $LOG_DIR"; exit 1; }
 
 # status accumulators: PASS / FAIL / SKIP (+ a short detail for the summary)
+ST_RIDGRAPH="SKIP"
 ST_SH_N="SKIP"
 ST_LINT="SKIP"
 ST_INTERACTION="SKIP"
@@ -74,23 +83,54 @@ log "repo:   $W"
 log "logs:   $LOG_DIR"
 [ "$SKIP_LINT$SKIP_INTERACTION$SKIP_PIXEL" = "111" ] && warn "every step is skipped; nothing will be verified"
 
-# The suites compile the maui-ohos slice and reference two Release assemblies built from this
-# repo (CI builds them up front). Their absence is not fatal here: the suite build reports the
-# missing file anyway, but the commands to fix it are worth printing.
+# The suites compile the maui-ohos slice (the only cross-repo input; the first-party host and
+# graphics assemblies are ProjectReferences now) . Its absence is not fatal here: the suite build
+# reports it, but the command to fix it is worth printing.
 prereq_hints() {
-    SLICE="${MAUI_SLICE_DIR:-/storage/Users/currentUser/springsources/maui-ohos/src/Core/src/Platform/OpenHarmony}"
-    HOST_DLL="${HOSTING_DLL:-$W/src/Microsoft.OpenHarmony.Hosting/bin/Release/net11.0/Microsoft.OpenHarmony.Hosting.dll}"
-    GFX_DLL="${OPENHARMONY_GRAPHICS_DLL:-$W/src/Microsoft.OpenHarmony.Maui.Graphics/bin/Release/net11.0/Microsoft.OpenHarmony.Maui.Graphics.dll}"
-    [ -d "$SLICE" ] || warn "maui-ohos slice missing: $SLICE (set MAUI_SLICE_DIR=)"
-    [ -f "$HOST_DLL" ] || warn "hosting assembly missing: $HOST_DLL (build: $DOTNET build src/Microsoft.OpenHarmony.Hosting/Microsoft.OpenHarmony.Hosting.csproj -c Release)"
-    [ -f "$GFX_DLL" ] || warn "graphics assembly missing: $GFX_DLL (build: $DOTNET build src/Microsoft.OpenHarmony.Maui.Graphics/Microsoft.OpenHarmony.Maui.Graphics.csproj -c Release)"
+    SLICE="${MAUI_SLICE_DIR:-$W/../maui-ohos/src/Core/src/Platform/OpenHarmony}"
+    [ -d "$SLICE" ] || warn "maui-ohos slice missing: $SLICE (set MAUI_SLICE_DIR= to the src/Core/src/Platform/OpenHarmony checkout)"
+    if [ -n "${HOSTING_DLL:-}" ] && [ ! -f "$HOSTING_DLL" ]; then
+        warn "HOSTING_DLL override set but missing: $HOSTING_DLL (drop it to use the ProjectReference)"
+    fi
+    if [ -n "${OPENHARMONY_GRAPHICS_DLL:-}" ] && [ ! -f "$OPENHARMONY_GRAPHICS_DLL" ]; then
+        warn "OPENHARMONY_GRAPHICS_DLL override set but missing: $OPENHARMONY_GRAPHICS_DLL (drop it to use the ProjectReference)"
+    fi
 }
 if [ "$SKIP_INTERACTION" = 0 ] || [ "$SKIP_PIXEL" = 0 ]; then
     prereq_hints
 fi
 
-# ---------------------------------------------------------------- step 1: sh -n
-log "== step 1/4: sh -n over scripts/*.sh =="
+# ---------------------------------------------------------------- step 1: repository gates
+log "== step 1/5: repository gates (RID graph, pack lint, absolute-path check) =="
+PACK_GATE_DETAIL=""
+PACK_GATE_FAILED=0
+for gate in selftest-ridgraph.sh selftest-packs.sh selftest-repo-hygiene.sh; do
+    if [ ! -f "$W/scripts/$gate" ]; then
+        warn "missing scripts/$gate"
+        PACK_GATE_FAILED=1
+        PACK_GATE_DETAIL="$PACK_GATE_DETAIL $gate:missing"
+        continue
+    fi
+    if sh "$W/scripts/$gate" > "$LOG_DIR/${gate%.sh}.log" 2>&1; then
+        _n="$(grep -c '\[PASS\]' "$LOG_DIR/${gate%.sh}.log" || true)"
+        PACK_GATE_DETAIL="$PACK_GATE_DETAIL ${gate%.sh}:$_n"
+    else
+        sed 's/^/   /' "$LOG_DIR/${gate%.sh}.log" | tail -30 >&2
+        warn "$gate failed (full log: $LOG_DIR/${gate%.sh}.log)"
+        PACK_GATE_FAILED=1
+        PACK_GATE_DETAIL="$PACK_GATE_DETAIL ${gate%.sh}:FAIL"
+    fi
+done
+if [ "$PACK_GATE_FAILED" -eq 1 ]; then
+    ST_RIDGRAPH="FAIL ($PACK_GATE_DETAIL)"
+    FAILED=$((FAILED + 1))
+else
+    ST_RIDGRAPH="PASS ($PACK_GATE_DETAIL)"
+    log "   RID graph single-source and pack-layout gates green:$PACK_GATE_DETAIL"
+fi
+
+# ---------------------------------------------------------------- step 2: sh -n
+log "== step 2/5: sh -n over scripts/*.sh =="
 SH_N_FILES=0
 SH_N_BAD=0
 for f in "$W"/scripts/*.sh; do
@@ -117,7 +157,7 @@ else
 fi
 
 # ---------------------------------------------------------------- step 2: markdownlint
-log "== step 2/4: markdownlint-cli2 0.23.3 =="
+log "== step 3/5: markdownlint-cli2 0.23.3 =="
 if [ "$SKIP_LINT" = 1 ]; then
     log "   skipped (--skip-lint)"
     ST_LINT="SKIP (--skip-lint)"
@@ -138,7 +178,7 @@ else
 fi
 
 # ------------------------------------------------- step 3: interaction suite (maui-platform-verify)
-log "== step 3/4: interaction suite (test/maui-platform-verify) =="
+log "== step 4/5: interaction suite (test/maui-platform-verify) =="
 if [ "$SKIP_INTERACTION" = 1 ]; then
     log "   skipped (--skip-interaction)"
     ST_INTERACTION="SKIP (--skip-interaction)"
@@ -224,7 +264,7 @@ else
 fi
 
 # ------------------------------------------------- step 4: pixel suite (headless-render)
-log "== step 4/4: pixel suite (test/headless-render) =="
+log "== step 5/5: pixel suite (test/headless-render) =="
 if [ "$SKIP_PIXEL" = 1 ]; then
     log "   skipped (--skip-pixel)"
     ST_PIXEL="SKIP (--skip-pixel)"
@@ -260,6 +300,7 @@ fi
 
 # ---------------------------------------------------------------- summary
 log "== summary =="
+summary_line "repository gates (RID/lint/paths)" "$ST_RIDGRAPH"
 summary_line "sh -n scripts/*.sh" "$ST_SH_N"
 summary_line "markdownlint-cli2@0.23.3" "$ST_LINT"
 summary_line "interaction suite (maui-platform-verify)" "$ST_INTERACTION"

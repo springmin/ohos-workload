@@ -2,18 +2,18 @@ name: interaction-regression
 
 # CI gate for the headless interaction + performance suite (test/maui-platform-verify). The suite
 # compiles the MAUI OpenHarmony platform slice sources from the `springmin/maui-ohos` fork and
-# references two assemblies built from this repository through HintPaths, so the job materialises
-# both roots on the runner instead of depending on MAUI_SLICE_DIR / HOSTING_DLL repository
-# variables:
+# references the first-party host/graphics projects through ProjectReferences, so the job only
+# materialises the cross-repo root on the runner instead of depending on MAUI_SLICE_DIR
+# repository variables:
 #
 #   MAUI_SLICE_DIR           <- <workspace>/maui-ohos/src/Core/src/Platform/OpenHarmony
-#   HOSTING_DLL              <- <workspace>/src/Microsoft.OpenHarmony.Hosting/bin/Release/net11.0/Microsoft.OpenHarmony.Hosting.dll
-#   OPENHARMONY_GRAPHICS_DLL <- <workspace>/src/Microsoft.OpenHarmony.Maui.Graphics/bin/Release/net11.0/Microsoft.OpenHarmony.Maui.Graphics.dll
 #
-# verify.csproj turns those environment variables into MSBuild default properties (an explicit
-# -p: override still wins), so no other configuration is required. The job fails unless the suite
-# exits 0, prints its `[suite] checks=... floor=... assert=True` contract line at or above the
-# floor, logs no "Unhandled" line, and both perf lines carry the "within=True" budget marker:
+# test/Directory.Build.props turns that environment variable into an MSBuild default property (an
+# explicit -p: override still wins) and resolves the sibling-repo fallback relatively, so no other
+# configuration is required and no machine-specific absolute path exists in the build inputs
+# (scripts/check-no-absolute-paths.sh). The job fails unless the suite exits 0, prints its
+# `[suite] checks=... floor=... assert=True` contract line at or above the floor, logs no
+# "Unhandled" line, and both perf lines carry the "within=True" budget marker:
 #   * the frame-path gate - 200 timed OpenHarmonyWindowRenderer.Render frames over a fixed 401-node
 #     tree: average <= 20 ms, max <= 250 ms, raw max/average <= 100x, p95/average jitter <= 2x and
 #     the managed allocation <= 13,824 B/frame (3x the post-managed-perf-batch baseline);
@@ -101,16 +101,12 @@ jobs:
         with:
           dotnet-version: '11.0.x'
           dotnet-quality: 'preview'
-      - name: Build the hosting assemblies the harness references
-        run: |
-          dotnet build src/Microsoft.OpenHarmony.Hosting/Microsoft.OpenHarmony.Hosting.csproj -c Release -v:q
-          dotnet build src/Microsoft.OpenHarmony.Maui.Graphics/Microsoft.OpenHarmony.Maui.Graphics.csproj -c Release -v:q
+      - name: Reject machine-specific absolute paths in build inputs
+        run: sh scripts/check-no-absolute-paths.sh
       - name: Run the interaction + performance suite
         working-directory: test/maui-platform-verify
         env:
           MAUI_SLICE_DIR: ${{ github.workspace }}/maui-ohos/src/Core/src/Platform/OpenHarmony
-          HOSTING_DLL: ${{ github.workspace }}/src/Microsoft.OpenHarmony.Hosting/bin/Release/net11.0/Microsoft.OpenHarmony.Hosting.dll
-          OPENHARMONY_GRAPHICS_DLL: ${{ github.workspace }}/src/Microsoft.OpenHarmony.Maui.Graphics/bin/Release/net11.0/Microsoft.OpenHarmony.Maui.Graphics.dll
         run: |
           set -euo pipefail
           dotnet build -v:q

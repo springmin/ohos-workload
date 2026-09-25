@@ -1,16 +1,5 @@
 <Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
-    <!-- Portable roots: override with env vars or MSBuild properties (CI). The pixel workflow sets
-         MAUI_SLICE_DIR / HOSTING_DLL / OPENHARMONY_GRAPHICS_DLL; explicit -p: values still win
-         over both the environment and the absolute fallbacks below, so local runs need no setup. -->
-    <MauiSliceDir Condition="'$(MauiSliceDir)' == ''">$(MAUI_SLICE_DIR)</MauiSliceDir>
-    <HostingDll Condition="'$(HostingDll)' == ''">$(HOSTING_DLL)</HostingDll>
-    <OpenHarmonyGraphicsDll Condition="'$(OpenHarmonyGraphicsDll)' == ''">$(OPENHARMONY_GRAPHICS_DLL)</OpenHarmonyGraphicsDll>
-    <HostingDll Condition="'$(HostingDll)' == ''">/storage/Users/currentUser/springsources/ohos-workload/src/Microsoft.OpenHarmony.Hosting/bin/Release/net11.0/Microsoft.OpenHarmony.Hosting.dll</HostingDll>
-    <OpenHarmonyGraphicsDll Condition="'$(OpenHarmonyGraphicsDll)' == ''">/storage/Users/currentUser/springsources/ohos-workload/src/Microsoft.OpenHarmony.Maui.Graphics/bin/Release/net11.0/Microsoft.OpenHarmony.Maui.Graphics.dll</OpenHarmonyGraphicsDll>
-    <MauiSliceDir Condition="'$(MauiSliceDir)' == ''">/storage/Users/currentUser/springsources/maui-ohos/src/Core/src/Platform/OpenHarmony</MauiSliceDir>
-  </PropertyGroup>
-  <PropertyGroup>
     <OutputType>Exe</OutputType>
     <TargetFramework>net11.0</TargetFramework>
     <Nullable>enable</Nullable>
@@ -26,12 +15,28 @@
   <ItemGroup>
     <PackageReference Include="Microsoft.Maui.Controls" Version="11.0.0-rc.1.26451.6" />
     <PackageReference Include="Microsoft.Maui.Graphics" Version="11.0.0-rc.1.26451.6" />
-    <Reference Include="Microsoft.OpenHarmony.Hosting">
+    <!-- First-party assemblies default to ProjectReferences; a pinned HOSTING_DLL /
+         OPENHARMONY_GRAPHICS_DLL (or -p:HostingDll=) still wins. Roots come from
+         test/Directory.Build.props. -->
+    <ProjectReference Include="$(HostingProject)" Condition="'$(HostingDll)' == ''" />
+    <ProjectReference Include="$(GraphicsProject)" Condition="'$(OpenHarmonyGraphicsDll)' == ''" />
+    <Reference Include="Microsoft.OpenHarmony.Hosting" Condition="'$(HostingDll)' != ''">
       <HintPath>$(HostingDll)</HintPath>
     </Reference>
-    <Reference Include="Microsoft.OpenHarmony.Maui.Graphics">
+    <Reference Include="Microsoft.OpenHarmony.Maui.Graphics" Condition="'$(OpenHarmonyGraphicsDll)' != ''">
       <HintPath>$(OpenHarmonyGraphicsDll)</HintPath>
     </Reference>
     <Compile Include="$(MauiSliceDir)/*.cs" />
   </ItemGroup>
+
+  <Target Name="_VerifyHeadlessRenderInputs" BeforeTargets="PrepareForBuild">
+    <Error Condition="'$(MauiSliceDir)' == ''"
+           Text="MauiSliceDir is empty. Check out springmin/maui-ohos and set MAUI_SLICE_DIR (or pass -p:MauiSliceDir=&lt;dir&gt;)." />
+    <Error Condition="'$(MauiSliceDir)' != '' and !Exists('$(MauiSliceDir)')"
+           Text="The maui-ohos slice directory '$(MauiSliceDir)' does not exist. Check out springmin/maui-ohos next to ohos-workload, or set MAUI_SLICE_DIR (or -p:MauiSliceDir=&lt;dir&gt;) to src/Core/src/Platform/OpenHarmony." />
+    <Error Condition="'$(HostingDll)' != '' and !Exists('$(HostingDll)')"
+           Text="HostingDll '$(HostingDll)' does not exist; drop the override to use the ProjectReference to $(HostingProject)." />
+    <Error Condition="'$(OpenHarmonyGraphicsDll)' != '' and !Exists('$(OpenHarmonyGraphicsDll)')"
+           Text="OpenHarmonyGraphicsDll '$(OpenHarmonyGraphicsDll)' does not exist; drop the override to use the ProjectReference to $(GraphicsProject)." />
+  </Target>
 </Project>

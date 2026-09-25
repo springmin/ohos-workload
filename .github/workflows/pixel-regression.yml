@@ -1,17 +1,16 @@
 name: pixel-regression
 
 # CI gate for the headless pixel suite (test/headless-render). The project compiles the MAUI
-# OpenHarmony platform slice sources from the `springmin/maui-ohos` fork and references two
-# assemblies built from this repository, so the job points the build at the checkout with
-# environment variables instead of depending on the development machine layout:
+# OpenHarmony platform slice sources from the `springmin/maui-ohos` fork and references the
+# first-party host/graphics projects through ProjectReferences, so the job only points the build
+# at the cross-repo checkout through an environment variable instead of depending on the
+# development machine layout:
 #
-#   MAUI_SLICE_DIR           <- <workspace>/maui-ohos/src/Core/src/Platform/OpenHarmony
-#   HOSTING_DLL              <- <workspace>/src/Microsoft.OpenHarmony.Hosting/bin/Release/net11.0/Microsoft.OpenHarmony.Hosting.dll
-#   OPENHARMONY_GRAPHICS_DLL <- <workspace>/src/Microsoft.OpenHarmony.Maui.Graphics/bin/Release/net11.0/Microsoft.OpenHarmony.Maui.Graphics.dll
+#   MAUI_SLICE_DIR <- <workspace>/maui-ohos/src/Core/src/Platform/OpenHarmony
 #
-# headless-render.csproj turns those environment variables into MSBuild default properties (an
-# explicit -p: override still wins), keeping the /storage/Users/currentUser/springsources absolute
-# paths only as inert fallbacks so local runs need no setup. No runner-side symlinks are required.
+# test/Directory.Build.props turns the environment variable into an MSBuild default (an explicit
+# -p: override still wins) and resolves the sibling-repo default relatively, so no machine-specific
+# absolute path exists in the build inputs (scripts/check-no-absolute-paths.sh enforces that).
 # The suite runs exactly once (the run's stdout is teed to result.txt) and the job fails unless it
 # exits 0 and printed "PIXEL ASSERTIONS PASSED".
 #
@@ -92,19 +91,14 @@ jobs:
         with:
           dotnet-version: '11.0.x'
           dotnet-quality: 'preview'
-      - name: Build the hosting assemblies the pixel harness references
-        run: |
-          set -euo pipefail
-          dotnet build src/Microsoft.OpenHarmony.Hosting/Microsoft.OpenHarmony.Hosting.csproj -c Release -v:q
-          dotnet build src/Microsoft.OpenHarmony.Maui.Graphics/Microsoft.OpenHarmony.Maui.Graphics.csproj -c Release -v:q
+      - name: Reject machine-specific absolute paths in build inputs
+        run: sh scripts/check-no-absolute-paths.sh
       # One run only: the previous workflow ran the suite twice (once for the exit code, once for
       # the marker) with `|| true` on the second, which doubled the suite time for no coverage.
       - name: Run the headless pixel suite (single run)
         working-directory: test/headless-render
         env:
           MAUI_SLICE_DIR: ${{ github.workspace }}/maui-ohos/src/Core/src/Platform/OpenHarmony
-          HOSTING_DLL: ${{ github.workspace }}/src/Microsoft.OpenHarmony.Hosting/bin/Release/net11.0/Microsoft.OpenHarmony.Hosting.dll
-          OPENHARMONY_GRAPHICS_DLL: ${{ github.workspace }}/src/Microsoft.OpenHarmony.Maui.Graphics/bin/Release/net11.0/Microsoft.OpenHarmony.Maui.Graphics.dll
         run: |
           set -euo pipefail
           dotnet run -c Release | tee result.txt
