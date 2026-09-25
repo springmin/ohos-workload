@@ -71,6 +71,8 @@ typedef struct {
     InputMethod_ErrorCode (*InputMethodController_Attach)(InputMethod_TextEditorProxy *proxy,
                                                           InputMethod_AttachOptions *options,
                                                           InputMethod_InputMethodProxy **out);
+    InputMethod_ErrorCode (*InputMethodController_Detach)(InputMethod_InputMethodProxy *proxy);
+    void (*TextEditorProxy_Destroy)(InputMethod_TextEditorProxy *proxy);
     InputMethod_ErrorCode (*InputMethodProxy_ShowKeyboard)(InputMethod_InputMethodProxy *proxy);
     InputMethod_ErrorCode (*InputMethodProxy_HideKeyboard)(InputMethod_InputMethodProxy *proxy);
     bool available;
@@ -119,6 +121,7 @@ typedef struct {
 
 typedef struct {
     Location_RequestConfig *(*CreateRequestConfig)(void);
+    void (*DestroyRequestConfig)(Location_RequestConfig *config);
     void (*RequestConfigSetCallback)(Location_RequestConfig *config,
                                      Location_InfoCallback callback, void *userData);
     Location_ResultCode (*StartLocating)(const Location_RequestConfig *config);
@@ -283,6 +286,23 @@ static inline InputMethod_ErrorCode ohos_host_optional_ime_controller_attach(
         return (InputMethod_ErrorCode)-1;
     }
     return g_ohos_host_optional.ime.InputMethodController_Attach(proxy, options, out);
+}
+
+static inline InputMethod_ErrorCode ohos_host_optional_ime_controller_detach(
+    InputMethod_InputMethodProxy *proxy) {
+    ohos_host_optional_ensure();
+    if (g_ohos_host_optional.ime.InputMethodController_Detach == NULL) {
+        return (InputMethod_ErrorCode)-1;
+    }
+    return g_ohos_host_optional.ime.InputMethodController_Detach(proxy);
+}
+
+static inline void ohos_host_optional_ime_text_editor_proxy_destroy(
+    InputMethod_TextEditorProxy *proxy) {
+    ohos_host_optional_ensure();
+    if (g_ohos_host_optional.ime.TextEditorProxy_Destroy != NULL) {
+        g_ohos_host_optional.ime.TextEditorProxy_Destroy(proxy);
+    }
 }
 
 static inline InputMethod_ErrorCode ohos_host_optional_ime_proxy_show_keyboard(
@@ -555,6 +575,14 @@ static inline Location_RequestConfig *ohos_host_optional_location_create_request
         return NULL;
     }
     return g_ohos_host_optional.location.CreateRequestConfig();
+}
+
+static inline void ohos_host_optional_location_destroy_request_config(
+    Location_RequestConfig *config) {
+    ohos_host_optional_ensure();
+    if (g_ohos_host_optional.location.DestroyRequestConfig != NULL) {
+        g_ohos_host_optional.location.DestroyRequestConfig(config);
+    }
 }
 
 static inline void ohos_host_optional_location_request_config_set_callback(

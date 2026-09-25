@@ -12,7 +12,7 @@ using Microsoft.Maui.Platform;
 // after the fuzz tail) instead of letting every caller repeat its own threshold constant.
 VerifyLineCountingWriter verifyStdout = new(Console.Out);
 Console.SetOut(verifyStdout);
-const int verifyCheckTotal = 326;                     // documented full [verify] line count
+const int verifyCheckTotal = 329;                     // documented full [verify] line count
 const int verifyCheckFloor = verifyCheckTotal - 20;   // documented floor convention (total - 20)
 
 // A small image file for the Image handler.
@@ -2700,6 +2700,131 @@ Console.WriteLine($"[verify] kit3 degradation shareDispatch={kitShareTry} scanVa
 if (!kitDegradeOk)
 {
     throw new InvalidOperationException("the HMS kit bridges must degrade off-device instead of throwing");
+}
+
+// KIT4: the second-batch shell probes (Push/Account/Map) follow the KIT1 shape - the module
+// specifier stays in a variable and the resolved value is cast to a local structural interface,
+// the sinks register only when the runtime resolves the kit, and the probes run from
+// aboutToAppear; all three byte-identical packs carry the block.
+bool kitShellPush = kitShell.Contains("const kitName: string = '@kit.PushKit';") &&
+    kitShell.Contains("const kit = (await import(kitName)) as HmsPushKit;") &&
+    kitShell.Contains("host.registerPushSink((requestId: number, op: number): void => {") &&
+    kitShell.Contains("private async runPush(requestId: number, op: number): Promise<void> {") &&
+    kitShell.Contains("kit.pushService.getToken()") &&
+    kitShell.Contains("kit.pushService.deleteToken()") &&
+    kitShell.Contains("host.notifyPushResult(requestId, op, code, token);");
+bool kitShellAccount = kitShell.Contains("const kitName: string = '@kit.AccountKit';") &&
+    kitShell.Contains("const kit = (await import(kitName)) as HmsAccountKit;") &&
+    kitShell.Contains("host.registerAccountSink((requestId: number, op: number, scopes: string): void => {") &&
+    kitShell.Contains("private async runAccount(requestId: number, op: number, scopes: string): Promise<void> {") &&
+    kitShell.Contains("createAuthorizationWithHuaweiIDRequest()") &&
+    kitShell.Contains("request.scopes = ['quickLoginAnonymousPhone'];") &&
+    kitShell.Contains("request.forceAuthorization = false;") &&
+    kitShell.Contains("host.notifyAccountResult(requestId, op, code, payload);");
+bool kitShellMap = kitShell.Contains("const kitName: string = '@kit.MapKit';") &&
+    kitShell.Contains("const kit = (await import(kitName)) as HmsMapKit;") &&
+    kitShell.Contains("host.registerMapSink((requestId: number): void => {") &&
+    kitShell.Contains("private runMapProbe(requestId: number): void {") &&
+    kitShell.Contains("host.notifyMapResult(requestId, flags);");
+bool kitShellCallsites2 = kitShell.Contains("this.probePushKit();") && kitShell.Contains("this.probeAccountKit();") &&
+    kitShell.Contains("this.probeMapKit();") && kitShell.Contains("Push Kit unavailable on this device:");
+int kitShellPacks2 = 0;
+foreach (string kitPackVersion in kitShellPackVersions)
+{
+    string? kitPackPath2 = FindHostSource($"packs/Microsoft.OpenHarmony.Sdk/{kitPackVersion}/templates/ets/pages/Index.ets");
+    string kitPackShell2 = kitPackPath2 is null ? string.Empty : File.ReadAllText(kitPackPath2);
+    kitShellPacks2 += kitPackShell2.Contains("registerPushSink") && kitPackShell2.Contains("registerAccountSink") &&
+        kitPackShell2.Contains("registerMapSink") && kitPackShell2.Contains("this.probeMapKit();") ? 1 : 0;
+}
+bool kitShellOk2 = kitShellPush && kitShellAccount && kitShellMap && kitShellCallsites2 && kitShellPacks2 == kitShellPackVersions.Length;
+Console.WriteLine($"[verify] kit4 shell probe push={kitShellPush} account={kitShellAccount} map={kitShellMap} callsites={kitShellCallsites2} packs={kitShellPacks2}/{kitShellPackVersions.Length} assert={kitShellOk2}");
+if (!kitShellOk2)
+{
+    throw new InvalidOperationException("the Push/Account/Map kit shell probes/sinks are missing or drifted");
+}
+
+// KIT5: the host and managed halves of the second batch: the C ABI declarations, the NAPI
+// sink/notify names, the napi module table entries, the managed P/Invoke entry points with their
+// kit error-code maps, and the public API baseline entries.
+string? kitPushPath = FindHostSource("OpenHarmonyPush.cs");
+string kitPush = kitPushPath is null ? string.Empty : File.ReadAllText(kitPushPath);
+string? kitAccountPath = FindHostSource("OpenHarmonyAccount.cs");
+string kitAccount = kitAccountPath is null ? string.Empty : File.ReadAllText(kitAccountPath);
+string? kitMapPath = FindHostSource("OpenHarmonyMap.cs");
+string kitMap = kitMapPath is null ? string.Empty : File.ReadAllText(kitMapPath);
+bool kitHostHeader2 = kitHeader.Contains("int ohos_host_push_available(void);") &&
+    kitHeader.Contains("int ohos_host_push_request(int request_id, int op);") &&
+    kitHeader.Contains("void ohos_host_push_register_result(void* callback);") &&
+    kitHeader.Contains("void ohos_host_push_result(int request_id, int op, int code, const char* token);") &&
+    kitHeader.Contains("int ohos_host_account_available(void);") &&
+    kitHeader.Contains("int ohos_host_account_request(int request_id, int op, const char* scopes);") &&
+    kitHeader.Contains("void ohos_host_account_register_result(void* callback);") &&
+    kitHeader.Contains("void ohos_host_account_result(int request_id, int op, int code, const char* payload);") &&
+    kitHeader.Contains("int ohos_host_map_available(void);") &&
+    kitHeader.Contains("int ohos_host_map_probe(int request_id);") &&
+    kitHeader.Contains("void ohos_host_map_register_result(void* callback);") &&
+    kitHeader.Contains("void ohos_host_map_result(int request_id, int flags);");
+bool kitHostNapi2 = kitNapi.Contains("extern \"C\" int ohos_host_push_available(void)") &&
+    kitNapi.Contains("extern \"C\" int ohos_host_push_request(int request_id, int op)") &&
+    kitNapi.Contains("extern \"C\" int ohos_host_account_request(int request_id, int op, const char* scopes)") &&
+    kitNapi.Contains("extern \"C\" int ohos_host_map_probe(int request_id)") &&
+    kitNapi.Contains("HostSinkPost(g_push_sink, call)") &&
+    kitNapi.Contains("HostSinkPost(g_account_sink, call)") &&
+    kitNapi.Contains("HostSinkPost(g_map_sink, call)") &&
+    kitNapi.Contains("{\"registerPushSink\", nullptr, RegisterPushSink") &&
+    kitNapi.Contains("{\"notifyPushResult\", nullptr, NotifyPushResult") &&
+    kitNapi.Contains("{\"registerAccountSink\", nullptr, RegisterAccountSink") &&
+    kitNapi.Contains("{\"notifyAccountResult\", nullptr, NotifyAccountResult") &&
+    kitNapi.Contains("{\"registerMapSink\", nullptr, RegisterMapSink") &&
+    kitNapi.Contains("{\"notifyMapResult\", nullptr, NotifyMapResult");
+bool kitManagedOk2 = kitPush.Contains("EntryPoint = \"ohos_host_push_available\"") &&
+    kitPush.Contains("EntryPoint = \"ohos_host_push_request\"") &&
+    kitPush.Contains("EntryPoint = \"ohos_host_push_register_result\"") &&
+    kitPush.Contains("public static async Task<OpenHarmonyPushToken> GetTokenAsync") &&
+    kitPush.Contains("public static async Task<OpenHarmonyPushStatus> DeleteTokenAsync") &&
+    kitPush.Contains("AppAuthFailed = 1000900010") &&
+    kitPush.Contains("ServiceNotEnabled = 1000900012") &&
+    kitAccount.Contains("EntryPoint = \"ohos_host_account_available\"") &&
+    kitAccount.Contains("EntryPoint = \"ohos_host_account_request\"") &&
+    kitAccount.Contains("EntryPoint = \"ohos_host_account_register_result\"") &&
+    kitAccount.Contains("public static Task<OpenHarmonyAccountResult> GetQuickLoginAnonymousPhoneAsync") &&
+    kitAccount.Contains("public static Task<OpenHarmonyAccountResult> AuthorizeAsync") &&
+    kitAccount.Contains("ScopeNotApproved = 1001502014") &&
+    kitAccount.Contains("FingerprintMismatch = 1001500001") &&
+    kitMap.Contains("EntryPoint = \"ohos_host_map_available\"") &&
+    kitMap.Contains("EntryPoint = \"ohos_host_map_probe\"") &&
+    kitMap.Contains("EntryPoint = \"ohos_host_map_register_result\"") &&
+    kitMap.Contains("public static async Task<OpenHarmonyMapCapability?> QueryCapabilitiesAsync") &&
+    kitPublicApi.Contains("Microsoft.Maui.Platform.OpenHarmonyPush.GetTokenAsync(") &&
+    kitPublicApi.Contains("Microsoft.Maui.Platform.OpenHarmonyAccount.GetQuickLoginAnonymousPhoneAsync(") &&
+    kitPublicApi.Contains("Microsoft.Maui.Platform.OpenHarmonyMap.QueryCapabilitiesAsync(");
+bool kitPinsOk2 = kitHostHeader2 && kitHostNapi2 && kitManagedOk2;
+Console.WriteLine($"[verify] kit5 bridge pins header={kitHostHeader2} napi={kitHostNapi2} managed={kitManagedOk2} assert={kitPinsOk2}");
+if (!kitPinsOk2)
+{
+    throw new InvalidOperationException("the Push/Account/Map host/managed bridge contract drifted");
+}
+
+// KIT6: off-device degradation of the second batch (no host library): Push GetToken/DeleteToken
+// answer Unavailable (no token) and IsSupported false, Account answers Unavailable (no payload)
+// and IsSupported false, Map answers null and IsSupported false; all without throwing.
+OpenHarmonyPushToken kitPushToken = await OpenHarmonyPush.GetTokenAsync();
+OpenHarmonyPushStatus kitPushDelete = await OpenHarmonyPush.DeleteTokenAsync();
+bool kitPushSupported = OpenHarmonyPush.IsSupported;
+OpenHarmonyAccountResult kitAccountPhone = await OpenHarmonyAccount.GetQuickLoginAnonymousPhoneAsync();
+OpenHarmonyAccountResult kitAccountAuth = await OpenHarmonyAccount.AuthorizeAsync(new[] { "openid" });
+bool kitAccountSupported = OpenHarmonyAccount.IsSupported;
+OpenHarmonyMapCapability? kitMapCaps = await OpenHarmonyMap.QueryCapabilitiesAsync();
+bool kitMapSupported = OpenHarmonyMap.IsSupported;
+bool kitDegradeOk2 = kitPushToken.Status == OpenHarmonyPushStatus.Unavailable && kitPushToken.Token is null &&
+    kitPushDelete == OpenHarmonyPushStatus.Unavailable && !kitPushSupported &&
+    kitAccountPhone.Status == OpenHarmonyAccountStatus.Unavailable && kitAccountPhone.Payload is null &&
+    kitAccountAuth.Status == OpenHarmonyAccountStatus.Unavailable && !kitAccountSupported &&
+    kitMapCaps is null && !kitMapSupported;
+Console.WriteLine($"[verify] kit6 degradation pushToken={kitPushToken.Status} pushDelete={kitPushDelete} pushSupported={kitPushSupported} accountPhone={kitAccountPhone.Status} accountAuth={kitAccountAuth.Status} accountSupported={kitAccountSupported} mapCaps={(kitMapCaps is null ? "<null>" : kitMapCaps.ToString())} mapSupported={kitMapSupported} assert={kitDegradeOk2}");
+if (!kitDegradeOk2)
+{
+    throw new InvalidOperationException("the Push/Account/Map kit bridges must degrade off-device instead of throwing");
 }
 
 // ---- V8: on-demand app-context publish (native -> napi -> shell -> managed bridge) -------------

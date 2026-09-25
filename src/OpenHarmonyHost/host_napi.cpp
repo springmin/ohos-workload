@@ -266,6 +266,10 @@ struct HostBinding {
     // fails and the sinks stay unset, so both exports answer -1 and the managed side degrades.
     HostSink share_kit{"share kit", false};
     HostSink scan{"scan", false};
+    // HMS Kits (Push/Account/Map; KIT-EXT2 2026-09-25): same contract for the second batch.
+    HostSink push{"push", false};
+    HostSink account{"account", false};
+    HostSink map{"map", false};
 };
 
 struct HostBindingSlot {
@@ -319,6 +323,9 @@ static HostBinding* g_host = &g_binding_slots[0].binding;
 #define g_vibration_sink (g_host->vibration)
 #define g_share_kit_sink (g_host->share_kit)
 #define g_scan_sink (g_host->scan)
+#define g_push_sink (g_host->push)
+#define g_account_sink (g_host->account)
+#define g_map_sink (g_host->map)
 
 // Table-driven sink registry: the single enumeration of every per-env sink, so HostSinkReset
 // cannot miss one on a page rebuild or env teardown. Keep this list aligned with the members.
@@ -355,6 +362,9 @@ static void HostForEachSink(HostBinding& binding, F&& visit) {
     visit(binding.vibration);
     visit(binding.share_kit);
     visit(binding.scan);
+    visit(binding.push);
+    visit(binding.account);
+    visit(binding.map);
 }
 
 std::string GetStringArg(napi_env env, napi_value value);
@@ -1187,6 +1197,195 @@ napi_value NotifyScanResult(napi_env env, napi_callback_info info) {
         value = GetStringArg(env, argv[2]);
     }
     ohos_host_scan_result(requestId, code, value.c_str());
+    napi_value undefined = nullptr;
+    napi_get_undefined(env, &undefined);
+    return undefined;
+}
+
+// HMS Kits (Push/Account/Map; KIT-EXT2 2026-09-25). Same shape as Share/Scan: each sink exists
+// only when the ArkTS shell's runtime provides the kit, so the default OpenHarmony SDK build
+// registers none, every export answers "unavailable" and the managed side keeps its documented
+// degradation. Push and Account are asynchronous (the user may be shown UI / the AGC call may
+// take time), so they follow the TTS/Scan shape: the managed side queues a request id, the
+// shell answers through host.notifyPushResult/host.notifyAccountResult. Map is the reserved
+// capability sink (MapComponent is an ArkUI component and needs the HarmonyOS flavor build).
+//
+// Push: op 0 getToken (rc 0 + token), op 1 deleteToken (rc 0). rc -1 = unavailable, a positive
+// rc = the Push Kit BusinessError code (1000900010/1000900012, ...). Account: op 0 quick-login
+// anonymous phone, op 1 authorize the '\n'-separated scopes (rc 0 + payload, -1 unavailable or
+// state mismatch, positive = the Account Kit BusinessError code). Map: rc = the capability
+// flags (bit 0 = @kit.MapKit resolved, bit 1 = MapComponent overlay implemented = 0 here).
+static void (*g_push_result_listener)(int request_id, int op, int code, const char* token) = nullptr;
+static void (*g_account_result_listener)(int request_id, int op, int code, const char* payload) = nullptr;
+static void (*g_map_result_listener)(int request_id, int flags) = nullptr;
+
+// Called from managed code (P/Invoke): 1 when the shell registered the Push sink. The managed
+// OpenHarmonyPush.IsSupported probe must not trigger a token request just to answer.
+extern "C" int ohos_host_push_available(void) {
+    return g_push_sink.tsfn != nullptr ? 1 : 0;
+}
+
+// Called from managed code (P/Invoke): queues one Push operation. 0 queued, -1 when the sink is
+// unregistered (the answer then never arrives and the managed side reports unavailable).
+extern "C" int ohos_host_push_request(int request_id, int op) {
+    SinkCall* call = new SinkCall();
+    call->AddInt(request_id);
+    call->AddInt(op);
+    return HostSinkPost(g_push_sink, call) ? 0 : -1;
+}
+
+// The managed side registers the callback that completes a pending push request.
+extern "C" void ohos_host_push_register_result(void* callback) {
+    g_push_result_listener = (void (*)(int, int, int, const char*))callback;
+}
+
+// Called by the NAPI notify below: hands the shell's answer back to managed code. token is "" for
+// a non-zero rc.
+extern "C" void ohos_host_push_result(int request_id, int op, int code, const char* token) {
+    if (g_push_result_listener != nullptr) {
+        g_push_result_listener(request_id, op, code, token != nullptr ? token : "");
+    }
+}
+
+// ArkTS calls host.registerPushSink(fn) when the Push Kit probe succeeded.
+napi_value RegisterPushSink(napi_env env, napi_callback_info info) {
+    return HostSinkRegisterFromArgs(env, info, g_push_sink);
+}
+
+// ArkTS calls host.notifyPushResult(requestId, op, code, token) when the call finished.
+napi_value NotifyPushResult(napi_env env, napi_callback_info info) {
+    size_t argc = 4;
+    napi_value argv[4] = {nullptr, nullptr, nullptr, nullptr};
+    napi_get_cb_info(env, info, &argc, argv, nullptr, nullptr);
+    int requestId = 0;
+    int op = 0;
+    int code = -1;
+    std::string token;
+    if (argc >= 1) {
+        napi_get_value_int32(env, argv[0], &requestId);
+    }
+    if (argc >= 2) {
+        napi_get_value_int32(env, argv[1], &op);
+    }
+    if (argc >= 3) {
+        napi_get_value_int32(env, argv[2], &code);
+    }
+    if (argc >= 4) {
+        token = GetStringArg(env, argv[3]);
+    }
+    ohos_host_push_result(requestId, op, code, token.c_str());
+    napi_value undefined = nullptr;
+    napi_get_undefined(env, &undefined);
+    return undefined;
+}
+
+// Called from managed code (P/Invoke): 1 when the shell registered the Account sink.
+extern "C" int ohos_host_account_available(void) {
+    return g_account_sink.tsfn != nullptr ? 1 : 0;
+}
+
+// Called from managed code (P/Invoke): queues one Account operation with its '\n'-separated
+// scope list (empty for op 0, which fixes quickLoginAnonymousPhone in the shell). 0 queued, -1
+// when the sink is unregistered or the scope string exceeds the control-string cap.
+extern "C" int ohos_host_account_request(int request_id, int op, const char* scopes) {
+    if (scopes != nullptr && !ControlStringFits(scopes, "account_scopes")) {
+        return -1;
+    }
+    SinkCall* call = new SinkCall();
+    call->AddInt(request_id);
+    call->AddInt(op);
+    call->AddString(scopes != nullptr ? scopes : "", kMaxControlBytes);
+    return HostSinkPost(g_account_sink, call) ? 0 : -1;
+}
+
+// The managed side registers the callback that completes a pending account request.
+extern "C" void ohos_host_account_register_result(void* callback) {
+    g_account_result_listener = (void (*)(int, int, int, const char*))callback;
+}
+
+// Called by the NAPI notify below: payload is "" for a non-zero rc.
+extern "C" void ohos_host_account_result(int request_id, int op, int code, const char* payload) {
+    if (g_account_result_listener != nullptr) {
+        g_account_result_listener(request_id, op, code, payload != nullptr ? payload : "");
+    }
+}
+
+// ArkTS calls host.registerAccountSink(fn) when the Account Kit probe succeeded.
+napi_value RegisterAccountSink(napi_env env, napi_callback_info info) {
+    return HostSinkRegisterFromArgs(env, info, g_account_sink);
+}
+
+// ArkTS calls host.notifyAccountResult(requestId, op, code, payload) when the request finished.
+napi_value NotifyAccountResult(napi_env env, napi_callback_info info) {
+    size_t argc = 4;
+    napi_value argv[4] = {nullptr, nullptr, nullptr, nullptr};
+    napi_get_cb_info(env, info, &argc, argv, nullptr, nullptr);
+    int requestId = 0;
+    int op = 0;
+    int code = -1;
+    std::string payload;
+    if (argc >= 1) {
+        napi_get_value_int32(env, argv[0], &requestId);
+    }
+    if (argc >= 2) {
+        napi_get_value_int32(env, argv[1], &op);
+    }
+    if (argc >= 3) {
+        napi_get_value_int32(env, argv[2], &code);
+    }
+    if (argc >= 4) {
+        payload = GetStringArg(env, argv[3]);
+    }
+    ohos_host_account_result(requestId, op, code, payload.c_str());
+    napi_value undefined = nullptr;
+    napi_get_undefined(env, &undefined);
+    return undefined;
+}
+
+// Called from managed code (P/Invoke): 1 when the shell registered the Map capability sink.
+extern "C" int ohos_host_map_available(void) {
+    return g_map_sink.tsfn != nullptr ? 1 : 0;
+}
+
+// Called from managed code (P/Invoke): queues one capability probe. 0 queued, -1 when the sink
+// is unregistered.
+extern "C" int ohos_host_map_probe(int request_id) {
+    SinkCall* call = new SinkCall();
+    call->AddInt(request_id);
+    return HostSinkPost(g_map_sink, call) ? 0 : -1;
+}
+
+// The managed side registers the callback that completes a pending map probe.
+extern "C" void ohos_host_map_register_result(void* callback) {
+    g_map_result_listener = (void (*)(int, int))callback;
+}
+
+// Called by the NAPI notify below: hands the capability bits back to managed code.
+extern "C" void ohos_host_map_result(int request_id, int flags) {
+    if (g_map_result_listener != nullptr) {
+        g_map_result_listener(request_id, flags);
+    }
+}
+
+// ArkTS calls host.registerMapSink(fn) when the Map Kit probe succeeded (reserved sink).
+napi_value RegisterMapSink(napi_env env, napi_callback_info info) {
+    return HostSinkRegisterFromArgs(env, info, g_map_sink);
+}
+
+// ArkTS calls host.notifyMapResult(requestId, flags) when the capability probe finished.
+napi_value NotifyMapResult(napi_env env, napi_callback_info info) {
+    size_t argc = 2;
+    napi_value argv[2] = {nullptr, nullptr};
+    napi_get_cb_info(env, info, &argc, argv, nullptr, nullptr);
+    int requestId = 0;
+    int flags = 0;
+    if (argc >= 1) {
+        napi_get_value_int32(env, argv[0], &requestId);
+    }
+    if (argc >= 2) {
+        napi_get_value_int32(env, argv[1], &flags);
+    }
+    ohos_host_map_result(requestId, flags);
     napi_value undefined = nullptr;
     napi_get_undefined(env, &undefined);
     return undefined;
@@ -3173,6 +3372,12 @@ napi_value Init(napi_env env, napi_value exports) {
         {"registerShareKitSink", nullptr, RegisterShareKitSink, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"registerScanSink", nullptr, RegisterScanSink, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"notifyScanResult", nullptr, NotifyScanResult, nullptr, nullptr, nullptr, napi_default, nullptr},
+        {"registerPushSink", nullptr, RegisterPushSink, nullptr, nullptr, nullptr, napi_default, nullptr},
+        {"notifyPushResult", nullptr, NotifyPushResult, nullptr, nullptr, nullptr, napi_default, nullptr},
+        {"registerAccountSink", nullptr, RegisterAccountSink, nullptr, nullptr, nullptr, napi_default, nullptr},
+        {"notifyAccountResult", nullptr, NotifyAccountResult, nullptr, nullptr, nullptr, napi_default, nullptr},
+        {"registerMapSink", nullptr, RegisterMapSink, nullptr, nullptr, nullptr, napi_default, nullptr},
+        {"notifyMapResult", nullptr, NotifyMapResult, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"registerContactsSink", nullptr, RegisterContactsSink, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"notifyContactsResult", nullptr, NotifyContactsResult, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"registerCalendarSink", nullptr, RegisterCalendarSink, nullptr, nullptr, nullptr, napi_default, nullptr},

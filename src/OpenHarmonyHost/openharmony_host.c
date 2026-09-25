@@ -1025,6 +1025,11 @@ struct OhosHostAppHandle {
     char* context_json;
     OhosRetiredContext* retired_contexts;
     void* node_content;
+    // Identity of the NodeContent the shell handed over. A page re-entry publishes a new
+    // ArkUI NodeContent while the managed side still holds the previous one; the setter logs
+    // the replacement so the rebind is visible in the device log, and the accessibility
+    // provider uses the same identity to re-add its CUSTOM node to the new content.
+    void* node_content_identity;
     void (*bridge_lifecycle)(int);
     void (*bridge_node)(void*);
     void (*bridge_surface)(void*, int, int, int);
@@ -1357,6 +1362,7 @@ int ohos_host_start_app(const char* app_dir, const char* app_assembly_file,
     if (g_pending_node_content != NULL) {
         handle->node_content = g_pending_node_content;
         g_pending_node_content = NULL;
+        handle->node_content_identity = handle->node_content;
     }
     // A bridge registered before this handle existed is bound atomically with the publish, so
     // a racing notify sees the real callbacks and never queues an event behind a registration
@@ -1516,9 +1522,40 @@ static char* g_bundle_version = NULL;
 static char* g_bundle_build = NULL;
 static char* g_bundle_name = NULL;
 
-// Replaces one field. A replaced string is deliberately not freed: the getters return the
-// stored pointer and a managed reader may still be copying it while a re-publish lands. The
-// shell publishes once per page, so the bounded leak (a few bytes) is the safe failure mode.
+// The getters hand out a copy in per-thread storage instead of the stored pointer, so a
+// re-publish (a page re-entry calls setBundleInfo again) can free the replaced string under
+// the mutex without invalidating a reader that is still copying it. The three fields live in
+// one per-thread set so the three getters can be used together; the storage hangs off a
+// pthread key (freed on thread exit) like the accessibility copies, for dlopen'ed-library
+// portability (no __thread/emutls relocations). A thread that cannot have copies gets "".
+#define OHOS_BUNDLE_FIELD_COUNT 3
+
+typedef struct OhosBundleCopySet {
+    char* fields[OHOS_BUNDLE_FIELD_COUNT];
+    size_t sizes[OHOS_BUNDLE_FIELD_COUNT];
+} OhosBundleCopySet;
+
+static pthread_key_t g_bundle_copy_key;
+static pthread_once_t g_bundle_copy_once = PTHREAD_ONCE_INIT;
+static int g_bundle_copy_key_ready = 0;
+
+static void OhosBundleCopySetDestroy(void* value) {
+    OhosBundleCopySet* set = (OhosBundleCopySet*)value;
+    if (set == NULL) {
+        return;
+    }
+    for (int i = 0; i < OHOS_BUNDLE_FIELD_COUNT; i++) {
+        free(set->fields[i]);
+    }
+    free(set);
+}
+
+static void OhosBundleCopyKeyInit(void) {
+    g_bundle_copy_key_ready = pthread_key_create(&g_bundle_copy_key, OhosBundleCopySetDestroy) == 0;
+}
+
+// Replaces one field and frees the string it replaces (the readers copy under the same mutex,
+// so no reader can hold the old pointer any more). Caller does not hold the mutex.
 static void OhosHostStoreBundleField(char** slot, const char* value) {
     char* copy = NULL;
     if (value != NULL && value[0] != '\0') {
@@ -1528,6 +1565,7 @@ static void OhosHostStoreBundleField(char** slot, const char* value) {
         }
     }
     pthread_mutex_lock(&g_bundle_info_mutex);
+    free(*slot);
     *slot = copy;
     pthread_mutex_unlock(&g_bundle_info_mutex);
 }
@@ -1544,11 +1582,41 @@ int ohos_host_set_bundle_info(const char* version, const char* build, const char
     return 0;
 }
 
+// Copies the named field into the calling thread's set and returns that stable pointer ("" 
+// when the field is unset or the per-thread copy cannot be made). The stored string is read
+// and copied under the mutex, so the store path may free a replaced value in place.
 static const char* OhosHostReadBundleField(char** slot) {
+    pthread_once(&g_bundle_copy_once, OhosBundleCopyKeyInit);
+    int index = slot == &g_bundle_version ? 0 : (slot == &g_bundle_build ? 1 : 2);
+    const char* result = "";
     pthread_mutex_lock(&g_bundle_info_mutex);
     const char* value = *slot != NULL ? *slot : "";
+    if (value[0] != '\0' && g_bundle_copy_key_ready) {
+        OhosBundleCopySet* set = (OhosBundleCopySet*)pthread_getspecific(g_bundle_copy_key);
+        if (set == NULL) {
+            set = (OhosBundleCopySet*)calloc(1, sizeof(OhosBundleCopySet));
+            if (set != NULL && pthread_setspecific(g_bundle_copy_key, set) != 0) {
+                free(set);
+                set = NULL;
+            }
+        }
+        if (set != NULL) {
+            size_t length = strlen(value) + 1;
+            if (set->sizes[index] < length) {
+                char* grown = (char*)realloc(set->fields[index], length);
+                if (grown != NULL) {
+                    set->fields[index] = grown;
+                    set->sizes[index] = length;
+                }
+            }
+            if (set->fields[index] != NULL && set->sizes[index] >= length) {
+                memcpy(set->fields[index], value, length);
+                result = set->fields[index];
+            }
+        }
+    }
     pthread_mutex_unlock(&g_bundle_info_mutex);
-    return value;
+    return result;
 }
 
 const char* ohos_host_get_bundle_version(void) {
@@ -1980,6 +2048,11 @@ int ohos_host_location_stop(void) {
         return 0;
     }
     int32_t rc = OH_Location_StopLocating(g_location_config);
+    // The request config is the session: destroy it with the stop so a later start rebuilds a
+    // fresh one (the old code kept it for the process lifetime, so a page re-entry could never
+    // replace the callback or the session state). The newest fix stays readable.
+    ohos_host_optional_location_destroy_request_config(g_location_config);
+    g_location_config = NULL;
     return (int)rc;
 }
 
@@ -2153,9 +2226,37 @@ static int EnsureInputMethod(void) {
     if (rc != 0) {
         fprintf(stderr, "[openharmony-host] input method attach rc=%d\n", rc);
         g_inputmethod_proxy = NULL;
+        // The attach refused the proxy: destroy it instead of keeping a half-bound object for
+        // the process lifetime; the next keyboard call builds a fresh one.
+        ohos_host_optional_ime_text_editor_proxy_destroy(g_editor_proxy);
+        g_editor_proxy = NULL;
         return (int)rc;
     }
     return 0;
+}
+
+// Releases the IME attach state. The proxy has to be detached before it is destroyed (the
+// platform owns it until detach), and both handles are cleared so a later keyboard call
+// re-attaches for the new app/page. Called when the app handle is joined.
+static void OhosHostReleaseInputMethod(void) {
+    if (g_inputmethod_proxy != NULL) {
+        OH_InputMethodController_Detach(g_inputmethod_proxy);
+        g_inputmethod_proxy = NULL;
+    }
+    if (g_editor_proxy != NULL) {
+        ohos_host_optional_ime_text_editor_proxy_destroy(g_editor_proxy);
+        g_editor_proxy = NULL;
+    }
+    g_ime_text[0] = '\0';
+}
+
+// Drops the system-bridge state that belongs to one app generation (location session, IME
+// attach). Called by ohos_host_join_app once the app thread has finished, so the statics cannot
+// outlive the handle they were created for; every entry point rebuilds them on demand.
+static void OhosHostReleaseAppGenerationState(void) {
+    ohos_host_location_stop();
+    g_location_has_fix = 0;
+    OhosHostReleaseInputMethod();
 }
 
 // ---------------------------------------------------------------------------
@@ -2756,6 +2857,16 @@ void ohos_host_set_node_content(OhosHostAppHandle* handle, void* node_content) {
     // outside the lock; a clear (NULL) still notifies the managed side like before.
     void (*callback)(void*) = NULL;
     pthread_mutex_lock(&g_context_mutex);
+    // A new NodeContent (page re-entry) replaces the identity the managed side last saw; log it
+    // so a lost accessibility attach on the new page is diagnosable, and keep the newest value
+    // for the provider's rebind path.
+    if (node_content != NULL && handle->node_content_identity != NULL &&
+        handle->node_content_identity != node_content) {
+        fprintf(stderr, "[openharmony-host] node content replaced %p -> %p, rebinding the app\n",
+                handle->node_content_identity, node_content);
+        fflush(stderr);
+    }
+    handle->node_content_identity = node_content;
     handle->node_content = node_content;
     if (handle->bridge_node != NULL) {
         callback = handle->bridge_node;
@@ -2782,6 +2893,10 @@ int ohos_host_join_app(OhosHostAppHandle* handle) {
         pthread_join(handle->thread, NULL);
         handle->joined = 1;
     }
+    // The app generation is over: release the location session and the IME attach that were
+    // created for it (both were process-lifetime statics before, so a re-entered page kept a
+    // stale session and the platform proxy forever). A later app/page rebuilds them on demand.
+    OhosHostReleaseAppGenerationState();
     // Detach and free under the lock get/set_app_context use: a getter that already resolved
     // g_app is serialized with the free, and a setter that runs after sees g_app == NULL and
     // parks its snapshot in the pending slot instead of touching the freed handle.
@@ -2805,8 +2920,45 @@ int ohos_host_join_app(OhosHostAppHandle* handle) {
 // ---------------------------------------------------------------------------
 
 static OH_Drawing_Bitmap* g_canvas_bitmap = NULL;
-static OH_Drawing_ShaderEffect* g_brush_shader = NULL;
-static OH_Drawing_ShadowLayer* g_brush_shadow = NULL;
+
+// One owned effect generation. A pixelmap shader does not own its pixelmap, so the state owns
+// everything a pattern needs: the shader, its OH_Drawing_PixelMap wrapper and the native
+// pixelmap that backs it (plus the shadow layer). Replacing or clearing the effects destroys
+// the shader first, dissolves the wrapper, then releases the native pixelmap - the order the
+// drawing canvas documents - so no combination of setter/clear can leak or dangle them.
+typedef struct {
+    OH_Drawing_ShaderEffect* shader;            // owned by the effect state
+    OH_Drawing_ShadowLayer* shadow;             // owned by the effect state
+    OH_Drawing_PixelMap* shader_pixelmap;       // owned wrapper of an image-pattern shader
+    OH_PixelmapNative* shader_native_pixelmap;  // owned native pixelmap behind the wrapper
+} OhosEffectState;
+
+static OhosEffectState g_effects;
+
+// Releases the pixelmap pair of a pixelmap shader. The wrapper is dissolved before its native
+// pixelmap is released; callers that still hold the shader must destroy it first.
+static void OhosEffectReleasePixelMap(void) {
+    if (g_effects.shader_pixelmap != NULL) {
+        OH_Drawing_PixelMapDissolve(g_effects.shader_pixelmap);
+        g_effects.shader_pixelmap = NULL;
+    }
+    if (g_effects.shader_native_pixelmap != NULL) {
+        OH_PixelmapNative_Release(g_effects.shader_native_pixelmap);
+        g_effects.shader_native_pixelmap = NULL;
+    }
+}
+
+static void OhosEffectReleaseAll(void) {
+    if (g_effects.shader != NULL) {
+        OH_Drawing_ShaderEffectDestroy(g_effects.shader);
+        g_effects.shader = NULL;
+    }
+    OhosEffectReleasePixelMap();
+    if (g_effects.shadow != NULL) {
+        OH_Drawing_ShadowLayerDestroy(g_effects.shadow);
+        g_effects.shadow = NULL;
+    }
+}
 
 // The effects above are the state the next fill/text brush picks up. The managed canvas
 // clears them on every fill-colour assignment (hundreds of times per frame), so
@@ -2833,14 +2985,7 @@ static void OhosResolvePendingClear(void) {
     // Cached brushes captured the effect objects (shader/shadow) they were built with, so
     // they are dropped before the objects are destroyed.
     OhosFlushFillBrushCache();
-    if (g_brush_shader != NULL) {
-        OH_Drawing_ShaderEffectDestroy(g_brush_shader);
-        g_brush_shader = NULL;
-    }
-    if (g_brush_shadow != NULL) {
-        OH_Drawing_ShadowLayerDestroy(g_brush_shadow);
-        g_brush_shadow = NULL;
-    }
+    OhosEffectReleaseAll();
 }
 
 // --- fill/text brush cache ---------------------------------------------------------
@@ -2909,11 +3054,11 @@ static OH_Drawing_Brush* OhosFillBrushGet(unsigned int argb) {
         return NULL;
     }
     OH_Drawing_BrushSetColor(brush, (uint32_t)argb);
-    if (g_brush_shader != NULL) {
-        OH_Drawing_BrushSetShaderEffect(brush, g_brush_shader);
+    if (g_effects.shader != NULL) {
+        OH_Drawing_BrushSetShaderEffect(brush, g_effects.shader);
     }
-    if (g_brush_shadow != NULL) {
-        OH_Drawing_BrushSetShadowLayer(brush, g_brush_shadow);
+    if (g_effects.shadow != NULL) {
+        OH_Drawing_BrushSetShadowLayer(brush, g_effects.shadow);
     }
     entry->argb = argb;
     entry->serial = serial;
@@ -2922,28 +3067,35 @@ static OH_Drawing_Brush* OhosFillBrushGet(unsigned int argb) {
     return brush;
 }
 
-static void OhosSetShaderEffect(OH_Drawing_ShaderEffect* shader) {
+// Installs a shader (NULL clears it). The previous shader is destroyed, then the previous
+// pixelmap pair is released; ownership of the arguments passes to the effect state.
+static void OhosSetShaderEffect(OH_Drawing_ShaderEffect* shader, OH_Drawing_PixelMap* drawing_pixelmap,
+                                OH_PixelmapNative* native_pixelmap) {
     OhosResolvePendingClear();
     OhosFlushFillBrushCache();
-    if (g_brush_shader != NULL) {
-        OH_Drawing_ShaderEffectDestroy(g_brush_shader);
+    if (g_effects.shader != NULL) {
+        OH_Drawing_ShaderEffectDestroy(g_effects.shader);
+        g_effects.shader = NULL;
     }
-    g_brush_shader = shader;
+    OhosEffectReleasePixelMap();
+    g_effects.shader = shader;
+    g_effects.shader_pixelmap = drawing_pixelmap;
+    g_effects.shader_native_pixelmap = native_pixelmap;
     OhosBumpEffectState();
 }
 
 static void OhosSetShadowLayer(OH_Drawing_ShadowLayer* shadow) {
     OhosResolvePendingClear();
     OhosFlushFillBrushCache();
-    if (g_brush_shadow != NULL) {
-        OH_Drawing_ShadowLayerDestroy(g_brush_shadow);
+    if (g_effects.shadow != NULL) {
+        OH_Drawing_ShadowLayerDestroy(g_effects.shadow);
     }
-    g_brush_shadow = shadow;
+    g_effects.shadow = shadow;
     OhosBumpEffectState();
 }
 
 void ohos_host_draw_clear_effects(void) {
-    if (g_effects_clear_pending || (g_brush_shader == NULL && g_brush_shadow == NULL)) {
+    if (g_effects_clear_pending || (g_effects.shader == NULL && g_effects.shadow == NULL)) {
         return;
     }
     g_effects_clear_pending = 1;
