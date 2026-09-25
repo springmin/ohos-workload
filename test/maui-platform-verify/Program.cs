@@ -3947,12 +3947,12 @@ FieldInfo d1Availability = typeof(OpenHarmonyAccessibility).GetField("_available
 bool d1AvailabilityBefore = (bool)d1Availability.GetValue(null)!;
 MethodInfo? d1AnnouncePinvoke = typeof(OpenHarmonyAccessibility).GetMethod(
     "AccessibilityAnnounce", BindingFlags.NonPublic | BindingFlags.Static);
-DllImportAttribute? d1AnnounceImport = d1AnnouncePinvoke?.GetCustomAttribute<DllImportAttribute>();
+LibraryImportAttribute? d1AnnounceImport = d1AnnouncePinvoke?.GetCustomAttribute<LibraryImportAttribute>();
 ParameterInfo[] d1AnnounceParameters = d1AnnouncePinvoke?.GetParameters() ?? Array.Empty<ParameterInfo>();
 bool d1Managed = d1AnnounceImport is not null &&
     d1AnnounceImport.EntryPoint == "ohos_host_accessibility_announce" &&
-    d1AnnounceImport.Value == "libopenharmonyhost.so" &&
-    d1AnnounceImport.CharSet == CharSet.Ansi &&
+    d1AnnounceImport.LibraryName == "libopenharmonyhost.so" &&
+    d1AnnounceImport.StringMarshalling == StringMarshalling.Utf8 &&
     d1AnnouncePinvoke?.ReturnType == typeof(int) &&
     d1AnnounceParameters.Length == 1 &&
     d1AnnounceParameters[0].ParameterType == typeof(string) &&
@@ -4187,10 +4187,10 @@ string? n4ShellHandlerPath = FindHostSource("OpenHarmonyShellHandler.cs");
 string n4ShellHandler = n4ShellHandlerPath is null ? string.Empty : File.ReadAllText(n4ShellHandlerPath);
 bool n4ManagedOk = n4Extras.Contains("private const string SearchSetEntryPoint = \"ohos_host_shell_search_set\";") &&
     n4Extras.Contains("private const string SearchListenerEntryPoint = \"ohos_host_shell_search_set_listener\";") &&
-    n4Extras.Contains("[DllImport(HostLibrary, EntryPoint = SearchSetEntryPoint, CharSet = CharSet.Ansi)]") &&
-    n4Extras.Contains("[DllImport(HostLibrary, EntryPoint = SearchListenerEntryPoint)]") &&
+    n4Extras.Contains("[LibraryImport(HostLibrary, EntryPoint = SearchSetEntryPoint, StringMarshalling = StringMarshalling.Utf8)]") &&
+    n4Extras.Contains("[LibraryImport(HostLibrary, EntryPoint = SearchListenerEntryPoint)]") &&
     n4Extras.Contains("private delegate void SearchInteractionCallback(int op, IntPtr text);") &&
-    n4Extras.Contains("private static extern int ShellSearchSetNative(");
+    n4Extras.Contains("private static partial int ShellSearchSetNative(");
 bool n4PublishOk = n4Extras.Contains("private static void PublishSearch(OpenHarmonyShellSearchState state)") &&
     n4Extras.Contains("ShellSearchSetNative(") &&
     n4Extras.Contains("state.IsVisible ? state.Query : null,") &&
@@ -4223,8 +4223,8 @@ string? n5FlyoutPath = n4ExtrasPath;
 string n5Flyout = n4Extras;
 bool n5PublishOk = n5Flyout.Contains("private const string FlyoutHeaderEntryPoint = \"ohos_host_shell_flyout_header\";") &&
     n5Flyout.Contains("private const string FlyoutFooterEntryPoint = \"ohos_host_shell_flyout_footer\";") &&
-    n5Flyout.Contains("private static extern int ShellFlyoutHeaderNative(") &&
-    n5Flyout.Contains("private static extern int ShellFlyoutFooterNative(") &&
+    n5Flyout.Contains("private static partial int ShellFlyoutHeaderNative(") &&
+    n5Flyout.Contains("private static partial int ShellFlyoutFooterNative(") &&
     n5Flyout.Contains("internal static void SetFlyoutSections(string? header, string? footer)") &&
     n5Flyout.Contains("PublishFlyoutSection(0, header);") &&
     n5Flyout.Contains("PublishFlyoutSection(1, footer);") &&
@@ -4272,10 +4272,10 @@ string? n7WindowPath = FindHostSource("OpenHarmonyWindowHandler.cs");
 string n7Window = n7WindowPath is null ? string.Empty : File.ReadAllText(n7WindowPath);
 bool n7ImportsOk = n7Window.Contains("private const string TitleEntryPoint = \"ohos_host_set_window_title\";") &&
     n7Window.Contains("private const string RectEntryPoint = \"ohos_host_set_window_rect\";") &&
-    n7Window.Contains("[DllImport(HostLibrary, EntryPoint = TitleEntryPoint, CharSet = CharSet.Ansi)]") &&
-    n7Window.Contains("[DllImport(HostLibrary, EntryPoint = RectEntryPoint)]") &&
-    n7Window.Contains("private static extern int SetWindowTitleNative(") &&
-    n7Window.Contains("private static extern int SetWindowRectNative(int x, int y, int w, int h);");
+    n7Window.Contains("[LibraryImport(HostLibrary, EntryPoint = TitleEntryPoint, StringMarshalling = StringMarshalling.Utf8)]") &&
+    n7Window.Contains("[LibraryImport(HostLibrary, EntryPoint = RectEntryPoint)]") &&
+    n7Window.Contains("private static partial int SetWindowTitleNative(") &&
+    n7Window.Contains("private static partial int SetWindowRectNative(int x, int y, int w, int h);");
 bool n7MappersOk = n7Window.Contains("[nameof(IWindow.X)] = MapX,") &&
     n7Window.Contains("[nameof(IWindow.Y)] = MapY,") &&
     n7Window.Contains("[nameof(IWindow.Width)] = MapWidth,") &&
