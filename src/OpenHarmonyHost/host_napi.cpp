@@ -875,6 +875,50 @@ static int HostCxxBoundary(const char* where, F&& body) {
     return -1;
 }
 
+// Same boundary for the void exports and the host-core callbacks: the notification is dropped
+// and logged instead of unwinding through a C frame.
+template <typename F>
+static void HostCxxBoundaryVoid(const char* where, F&& body) {
+    try {
+        body();
+    } catch (const std::exception& e) {
+        OH_LOG_ERROR(LOG_APP, "[openharmony-host] %{public}s: native exception: %{public}s", where, e.what());
+    } catch (...) {
+        OH_LOG_ERROR(LOG_APP, "[openharmony-host] %{public}s: native exception (unknown)", where);
+    }
+}
+
+// The unified NAPI entry boundary. Init rewrites every exported method in the property table to
+// point here, with the real handler carried in the descriptor's data field: a C++ exception
+// thrown while a handler builds its arguments must not unwind through the engine's C frame, so
+// it is caught here and surfaced as a JS exception instead.
+static napi_value HostNapiEntry(napi_env env, napi_callback_info info) {
+    void* data = nullptr;
+    napi_value this_arg = nullptr;
+    napi_value argv[1] = {nullptr};
+    size_t argc = 1;
+    if (env == nullptr || napi_get_cb_info(env, info, &argc, argv, &this_arg, &data) != napi_ok ||
+        data == nullptr) {
+        if (env != nullptr) {
+            napi_throw_error(env, nullptr, "host: entry point is not bound");
+        }
+        return nullptr;
+    }
+    napi_callback handler = reinterpret_cast<napi_callback>(data);
+    try {
+        return handler(env, info);
+    } catch (const std::exception& e) {
+        HostClearPendingException(env, "host entry");
+        OH_LOG_ERROR(LOG_APP, "[openharmony-host] host entry: native exception: %{public}s", e.what());
+        napi_throw_error(env, nullptr, e.what());
+    } catch (...) {
+        HostClearPendingException(env, "host entry");
+        OH_LOG_ERROR(LOG_APP, "[openharmony-host] host entry: native exception (unknown)");
+        napi_throw_error(env, nullptr, "host: native exception");
+    }
+    return nullptr;
+}
+
 
 void OnSurfaceCreated(OH_NativeXComponent* component, void* window) {
     uint64_t width = 0;

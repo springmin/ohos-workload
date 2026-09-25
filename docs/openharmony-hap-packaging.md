@@ -421,6 +421,52 @@ without the kit registers no sink and the managed side degrades (see the KIT-IMP
 The branch is scaffold-verified (`--scaffold-only` plus the selftest T14); a full build needs the
 HarmonyOS SDK present, which the current build host does not have.
 
+### Kit feature probes and AGC prerequisites (Push / Account / Map)
+
+The second batch of HMS Kits (KIT-EXT2, 2026-09-25) rides the same split: each shell template
+carries a *probe* that compiles on the OpenHarmony SDK, and only a runtime that actually provides
+the kit registers the sink. A device without the kit (or the default OpenHarmony build) keeps the
+managed side's documented degradation - no throw, no silent guess:
+
+| Kit | Managed API | Shell sink / answer | Status map |
+|-----|-------------|---------------------|------------|
+| Push | `OpenHarmonyPush.GetTokenAsync` / `DeleteTokenAsync` / `IsSupported` | `pushService.getToken()` / `deleteToken()`; `host.notifyPushResult(id, op, rc, token)` | rc 0 = success (token for op 0), -1 = unavailable; positive rc is the Push Kit code, e.g. `1000900010` (AGC push service not enabled / signing profile mismatch), `1000900012` (entitlement not enabled), `1000900011` (no network), `1000900014` (device unsupported) |
+| Account | `OpenHarmonyAccount.GetQuickLoginAnonymousPhoneAsync` / `AuthorizeAsync(scopes)` / `IsSupported` | `createAuthorizationWithHuaweiIDRequest()` + `AuthenticationController.executeRequest()`; `host.notifyAccountResult(id, op, rc, payload)` | rc 0 = success (op 0 payload = anonymous phone, op 1 payload = `response.data.authorizationCode`), -1 = unavailable/state mismatch; positive rc is the Account Kit code, e.g. `1001502014` (scope not applied for/approved), `1001500001` (signing fingerprint mismatch), `1001502001` (no Huawei ID signed in), `1001502012` (user cancelled), `1001500003` (scope unsupported) |
+| Map | `OpenHarmonyMap.QueryCapabilitiesAsync` (reserved capability sink) / `IsSupported` | `@kit.MapKit` capability probe; `host.notifyMapResult(id, flags)`; bit 0 = kit resolved, bit 1 = MapComponent overlay implemented (0 today) | flags value, `null` when the sink is unregistered |
+
+Host exports (all in the `host-exports.txt` contract): `ohos_host_push_{available,request,register_result,result}`,
+`ohos_host_account_{available,request,register_result,result}`, `ohos_host_map_{available,probe,register_result,result}`.
+Push and Account are asynchronous (the AGC call and the system authorization UI), Map is the
+reserved capability probe.
+
+Map's map view is the ArkUI `MapComponent`, not a plain module API: a literal
+`import('@kit.MapKit')` is a hard ArkTS compile error on the OpenHarmony SDK and the component
+needs a compile-time declaration, so the current templates can only carry the runtime probe. The
+documented option (a) is a shell-side `MapComponent` overlay controlled by the managed side (the
+XComponent/ArkWeb pattern: create/show/hide/destroy + markers/camera ops forwarded to the
+`MapComponentController`); it can only be built in the `ARKTS_SDK_FLAVOR=harmony` branch and needs
+the AGC map service AppKey. Option (b) - managed capability discovery plus this documentation - is
+what is landed.
+
+AGC / device prerequisites (all external to this repository; the KIT-GAP report
+`runtime-ohos/docs/plans/2026-09-24-ohos-kit-gap-analysis.md` tracks them):
+
+- **All three**: HarmonyOS SDK build (`ARKTS_SDK_FLAVOR=harmony`), an HMS device, and an app
+  registration in AppGallery Connect whose signing certificate fingerprint and bundle name match
+  the build.
+- **Push**: enable Push in AGC (增长 > 推送服务) and re-generate the signing profile with the push
+  entitlement; no `module.json5` permission is needed for `getToken()`.
+- **Account**: apply for the Huawei ID one-tap login permission
+  (`quickLoginAnonymousPhone` scope) and reference the resulting scope in the authorization
+  request; the anonymous phone is exchanged for the real number on the app's server.
+- **Map**: enable the map service in AGC and configure the AppKey; the overlay additionally needs
+  the `MapComponent` implementation described above.
+
+Verification without an HMS device: `test/maui-platform-verify` pins the shell probe/sink shape,
+the host/managed contract and the off-device degradation (`[verify] kit4/kit5/kit6`), while
+`scripts/build-arkts-shell.sh` keeps the abc at `13.0.1.0` and the source contract (no `@ohos.*`
+imports, variable kit specifiers) enforced.
+
 ### Templates / abc sync strategy
 
 `OpenHarmonyArktsModulesAbc` defaults to the checked-in prebuilt shells: `templates/ets/modules.ui.abc`

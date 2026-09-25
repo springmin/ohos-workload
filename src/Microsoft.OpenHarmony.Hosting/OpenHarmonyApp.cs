@@ -9,6 +9,7 @@ using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using System.Threading;
+using System.Runtime.CompilerServices;
 
 namespace Microsoft.OpenHarmony.Hosting;
 
@@ -179,12 +180,12 @@ public static partial class OpenHarmonyBridge
     [LibraryImport(HostLibrary, EntryPoint = "ohos_host_location_get")]
     private static partial int LocationGetNative(out double latitude, out double longitude, out double altitude);
 
-    // FIX-P2-INTEROP: the host invokes every reverse entry with the platform C ABI; declare it
-    // on each thunk type instead of relying on the default (matters on any future x86 host and
-    // documents the ABI at the delegate seam). These stay delegates, not [UnmanagedCallersOnly]
-    // + delegate* unmanaged: the interaction harness drives all ten thunks directly from managed
-    // code (audit3 host-callback audit) and a method with UnmanagedCallersOnly cannot be invoked
-    // from managed code; the delegate fields below root each thunk for the process lifetime.
+    // FIX-P2-INTEROP / FIX-R1-MARSHAL-OFF: the host invokes every reverse entry with the platform
+    // C ABI. The entries themselves are [UnmanagedCallersOnly(CallConvCdecl)] thunks and the
+    // static pointer fields below are created with delegate* unmanaged[Cdecl]<...>&Thunk, so the
+    // assembly needs no runtime marshalling (DisableRuntimeMarshalling is on). These delegate
+    // declarations stay as the frozen reverse-entry ABI record; the interaction harness pins the
+    // same signatures when it drives the entries through the pointers (never through reflection).
     [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
     private delegate void NativeLifecycleDelegate(int evt);
     [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
@@ -212,16 +213,16 @@ public static partial class OpenHarmonyBridge
     private static int s_refreshing;
     private static IntPtr s_nodeContent;
     private static bool s_attached;
-    private static NativeLifecycleDelegate? s_lifecycleThunk;
-    private static NativeNodeDelegate? s_nodeThunk;
-    private static NativeSurfaceDelegate? s_surfaceThunk;
-    private static NativeTouchDelegate? s_touchThunk;
-    private static NativeFrameDelegate? s_frameThunk;
-    private static NativeTextInputDelegate? s_textInputThunk;
-    private static NativeTextSubmittedDelegate? s_textSubmittedThunk;
-    private static NativeKeystoreResultDelegate? s_keystoreResultThunk;
-    private static NativePickerResultDelegate? s_pickerResultThunk;
-    private static NativeWebEventDelegate? s_webEventThunk;
+    private static unsafe IntPtr s_lifecycleThunk = (IntPtr)(delegate* unmanaged[Cdecl]<int, void>)&OnLifecycleNative;
+    private static unsafe IntPtr s_nodeThunk = (IntPtr)(delegate* unmanaged[Cdecl]<IntPtr, void>)&OnNodeNative;
+    private static unsafe IntPtr s_surfaceThunk = (IntPtr)(delegate* unmanaged[Cdecl]<IntPtr, int, int, int, void>)&OnSurfaceNative;
+    private static unsafe IntPtr s_touchThunk = (IntPtr)(delegate* unmanaged[Cdecl]<int, float, float, int, int, void>)&OnTouchNative;
+    private static unsafe IntPtr s_frameThunk = (IntPtr)(delegate* unmanaged[Cdecl]<long, long, void>)&OnFrameNative;
+    private static unsafe IntPtr s_textInputThunk = (IntPtr)(delegate* unmanaged[Cdecl]<IntPtr, void>)&OnTextInputNative;
+    private static unsafe IntPtr s_textSubmittedThunk = (IntPtr)(delegate* unmanaged[Cdecl]<void>)&OnTextSubmittedNative;
+    private static unsafe IntPtr s_keystoreResultThunk = (IntPtr)(delegate* unmanaged[Cdecl]<int, int, IntPtr, void>)&OnKeystoreResultNative;
+    private static unsafe IntPtr s_pickerResultThunk = (IntPtr)(delegate* unmanaged[Cdecl]<int, int, IntPtr, IntPtr, void>)&OnPickerResultNative;
+    private static unsafe IntPtr s_webEventThunk = (IntPtr)(delegate* unmanaged[Cdecl]<IntPtr, IntPtr, void>)&OnWebEventNative;
     private static readonly List<OpenHarmonyLifecycleEvent> s_pending = new();
     private static Action<OpenHarmonySurfaceInfo>? s_surfaceHandlers;
     private static Action<OpenHarmonyTouchEventArgs>? s_touchHandlers;
@@ -237,7 +238,7 @@ public static partial class OpenHarmonyBridge
     public static event Action<int, double, float, float>? Pinch;
 
     private static bool _pinchRegistered;
-    private static PinchCallback? _pinchCallback;
+    private static unsafe IntPtr _pinchCallback = (IntPtr)(delegate* unmanaged[Cdecl]<int, double, float, float, void>)&OnPinch;
 
     /// <summary>Registers the managed pinch listener with the host (idempotent, device only).</summary>
     public static void RegisterPinchListener()
@@ -247,10 +248,9 @@ public static partial class OpenHarmonyBridge
             return;
         }
         _pinchRegistered = true;
-        _pinchCallback = OnPinch;
         try
         {
-            RegisterPinch(Marshal.GetFunctionPointerForDelegate(_pinchCallback));
+            RegisterPinch(_pinchCallback);
         }
         catch (Exception)
         {
@@ -258,6 +258,7 @@ public static partial class OpenHarmonyBridge
         }
     }
 
+    [UnmanagedCallersOnly(CallConvs = new[] { typeof(CallConvCdecl) })]
     private static void OnPinch(int phase, double scale, float x, float y)
     {
         // A reverse P/Invoke entry: the pinch callback runs application handlers directly.
@@ -828,30 +829,20 @@ public static partial class OpenHarmonyBridge
         bool registered = false;
         try
         {
-            s_lifecycleThunk = OnLifecycleNative;
-            s_nodeThunk = OnNodeNative;
-            s_surfaceThunk = OnSurfaceNative;
             RegisterBridgeNative(
-                Marshal.GetFunctionPointerForDelegate(s_lifecycleThunk),
-                Marshal.GetFunctionPointerForDelegate(s_nodeThunk),
-                Marshal.GetFunctionPointerForDelegate(s_surfaceThunk));
-            s_touchThunk = OnTouchNative;
-            s_frameThunk = OnFrameNative;
+                s_lifecycleThunk,
+                s_nodeThunk,
+                s_surfaceThunk);
             RegisterInputNative(
-                Marshal.GetFunctionPointerForDelegate(s_touchThunk),
-                Marshal.GetFunctionPointerForDelegate(s_frameThunk));
-            s_textInputThunk = OnTextInputNative;
+                s_touchThunk,
+                s_frameThunk);
             try
             {
-                RegisterTextInputNative(Marshal.GetFunctionPointerForDelegate(s_textInputThunk));
-                s_textSubmittedThunk = OnTextSubmittedNative;
-                RegisterTextSubmittedNative(Marshal.GetFunctionPointerForDelegate(s_textSubmittedThunk));
-                s_keystoreResultThunk = OnKeystoreResultNative;
-                RegisterKeystoreResultNative(Marshal.GetFunctionPointerForDelegate(s_keystoreResultThunk));
-                s_pickerResultThunk = OnPickerResultNative;
-                RegisterPickerResultNative(Marshal.GetFunctionPointerForDelegate(s_pickerResultThunk));
-                s_webEventThunk = OnWebEventNative;
-                RegisterWebEventNative(Marshal.GetFunctionPointerForDelegate(s_webEventThunk));
+                RegisterTextInputNative(s_textInputThunk);
+                RegisterTextSubmittedNative(s_textSubmittedThunk);
+                RegisterKeystoreResultNative(s_keystoreResultThunk);
+                RegisterPickerResultNative(s_pickerResultThunk);
+                RegisterWebEventNative(s_webEventThunk);
             }
             catch (Exception ex)
             {
@@ -1109,6 +1100,7 @@ public static partial class OpenHarmonyBridge
         return value.Length > CallbackFailureMaxChars ? result + "..." : result;
     }
 
+    [UnmanagedCallersOnly(CallConvs = new[] { typeof(CallConvCdecl) })]
     private static void OnLifecycleNative(int evt)
     {
         try
@@ -1139,6 +1131,7 @@ public static partial class OpenHarmonyBridge
         }
     }
 
+    [UnmanagedCallersOnly(CallConvs = new[] { typeof(CallConvCdecl) })]
     private static void OnTouchNative(int type, float x, float y, int pointerCount, int pointerId)
     {
         // Input is a hot path: the guard below adds no allocation on the normal path.
@@ -1158,6 +1151,7 @@ public static partial class OpenHarmonyBridge
         }
     }
 
+    [UnmanagedCallersOnly(CallConvs = new[] { typeof(CallConvCdecl) })]
     private static void OnTextInputNative(IntPtr utf8)
     {
         try
@@ -1176,6 +1170,7 @@ public static partial class OpenHarmonyBridge
         }
     }
 
+    [UnmanagedCallersOnly(CallConvs = new[] { typeof(CallConvCdecl) })]
     private static void OnWebEventNative(IntPtr stateUtf8, IntPtr urlUtf8)
     {
         try
@@ -1190,6 +1185,7 @@ public static partial class OpenHarmonyBridge
         }
     }
 
+    [UnmanagedCallersOnly(CallConvs = new[] { typeof(CallConvCdecl) })]
     private static void OnPickerResultNative(int requestId, int rc, IntPtr nameUtf8, IntPtr dataUtf8)
     {
         try
@@ -1204,6 +1200,7 @@ public static partial class OpenHarmonyBridge
         }
     }
 
+    [UnmanagedCallersOnly(CallConvs = new[] { typeof(CallConvCdecl) })]
     private static void OnKeystoreResultNative(int requestId, int rc, IntPtr dataUtf8)
     {
         try
@@ -1217,6 +1214,7 @@ public static partial class OpenHarmonyBridge
         }
     }
 
+    [UnmanagedCallersOnly(CallConvs = new[] { typeof(CallConvCdecl) })]
     private static void OnTextSubmittedNative()
     {
         try
@@ -1234,6 +1232,7 @@ public static partial class OpenHarmonyBridge
         }
     }
 
+    [UnmanagedCallersOnly(CallConvs = new[] { typeof(CallConvCdecl) })]
     private static void OnFrameNative(long timestamp, long targetTimestamp)
     {
         // Frames are the hottest path: with no subscriber (the idle app before the renderer
@@ -1261,6 +1260,7 @@ public static partial class OpenHarmonyBridge
         }
     }
 
+    [UnmanagedCallersOnly(CallConvs = new[] { typeof(CallConvCdecl) })]
     private static void OnSurfaceNative(IntPtr window, int width, int height, int state)
     {
         try
@@ -1286,6 +1286,7 @@ public static partial class OpenHarmonyBridge
         }
     }
 
+    [UnmanagedCallersOnly(CallConvs = new[] { typeof(CallConvCdecl) })]
     private static void OnNodeNative(IntPtr node)
     {
         lock (s_sync)
