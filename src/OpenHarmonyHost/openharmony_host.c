@@ -746,6 +746,85 @@ static void OhosHostApplyExecMemoryPolicy(const char* caller, const char* app_di
 // the import fail (host === undefined, every shell call unavailable). Keep every hostfxr_*
 // call routed through this dlopen/dlsym table; scripts/build-host.sh fails the build if a
 // DT_NEEDED on libhostfxr.so appears.
+//
+// --- NativeAOT payloads (FIX-INTEROP #2) ------------------------------------
+// A NativeAOT publish has no hostfxr and no managed assembly: it ships one app library
+// (<app_dir>/lib<assembly stem>.so, NativeLib=Shared) whose own
+// [UnmanagedCallersOnly(EntryPoint = "openharmony_app_main")] export is the launch surface.
+// The host calls that export directly; hostfxr stays the JIT-only route. The library name is
+// derived from the assembly file name the shell already passes (MyApp.dll -> libMyApp.so), so
+// both payload shapes use the same start_app/run_app arguments.
+static int OhosHostAotLibName(char* dst, size_t dst_size, const char* app_assembly_file) {
+    const char* name = strrchr(app_assembly_file, '/');
+    name = name != NULL ? name + 1 : app_assembly_file;
+    const char* dot = strrchr(name, '.');
+    size_t stem_len = dot != NULL ? (size_t)(dot - name) : strlen(name);
+    if (stem_len == 0) {
+        return -1;
+    }
+    int written = snprintf(dst, dst_size, "lib%.*s.so", (int)stem_len, name);
+    return written > 0 && (size_t)written < dst_size ? 0 : -1;
+}
+
+// Fills dst with the AOT app library path for this payload. Returns 0 on success; -1 when the
+// assembly name cannot form a library name or the path does not fit.
+static int OhosHostAotLibPath(char* dst, size_t dst_size, const char* app_dir, const char* app_assembly_file) {
+    char lib_name[256];
+    if (OhosHostAotLibName(lib_name, sizeof(lib_name), app_assembly_file) != 0) {
+        return -1;
+    }
+    return path_join(dst, dst_size, app_dir, lib_name);
+}
+
+// AOT direct launch: dlopen the application's native library and call its own
+// [UnmanagedCallersOnly] openharmony_app_main export with the same payload contract the
+// hostfxr route uses (line 1 = application path, following lines = arguments). Returns 1 when
+// the payload was an AOT app (exit code in *exit_code, library kept loaded: the runtime may own
+// process-lifetime state); 0 when there is no AOT library on this launch, so the caller
+// continues with the hostfxr route.
+static int OhosHostTryRunAotApp(const char* tag, const char* app_dir, const char* app_assembly_file,
+                                const char* app_assembly_path, int argc, const char* const* argv,
+                                int* exit_code) {
+    char lib_path[4096];
+    if (OhosHostAotLibPath(lib_path, sizeof(lib_path), app_dir, app_assembly_file) != 0) {
+        return 0;
+    }
+    void* app_lib = dlopen(lib_path, RTLD_NOW | RTLD_LOCAL);
+    if (app_lib == NULL) {
+        return 0;  // the usual JIT payload: no app library next to the assembly
+    }
+    int (*entry)(const char*) = (int (*)(const char*))dlsym(app_lib, "openharmony_app_main");
+    if (entry == NULL) {
+        OH_LOG_WARN(LOG_APP,
+                    "[openharmony-host] %{public}s: %{public}s has no openharmony_app_main export; "
+                    "falling back to the hostfxr route", tag, lib_path);
+        dlclose(app_lib);
+        return 0;
+    }
+
+    size_t payload_len = strlen(app_assembly_path) + 1;
+    for (int i = 0; i < argc; i++) {
+        payload_len += strlen(argv[i]) + 1;
+    }
+    char* payload = (char*)malloc(payload_len);
+    if (payload == NULL) {
+        dlclose(app_lib);
+        return 0;
+    }
+    char* cursor = payload;
+    cursor += sprintf(cursor, "%s", app_assembly_path);
+    for (int i = 0; i < argc; i++) {
+        cursor += sprintf(cursor, "\n%s", argv[i]);
+    }
+
+    OH_LOG_INFO(LOG_APP, "[openharmony-host] %{public}s: NativeAOT payload %{public}s", tag, lib_path);
+    *exit_code = entry(payload);
+    free(payload);
+    // Deliberately no dlclose: the AOT runtime may have started threads or registered atexit
+    // work in the library, and the process is a one-shot launch from here.
+    return 1;
+}
+
 int ohos_host_run_app(const char* app_dir, const char* app_assembly_file, int argc, const char* const* argv) {
     char hostfxr_path[4096];
     char app_assembly_path[4096];
@@ -771,6 +850,15 @@ int ohos_host_run_app(const char* app_dir, const char* app_assembly_file, int ar
     // Pin the executable-memory policy (and probe it once) before hostfxr can initialize
     // coreclr. run_app has no context JSON, so xwe.txt is looked up in app_dir / its parent.
     OhosHostApplyExecMemoryPolicy("run_app", effective_app_dir, NULL);
+
+    // NativeAOT payloads launch through their own export; only JIT payloads continue into
+    // hostfxr below (see OhosHostTryRunAotApp).
+    int aot_exit_code = 0;
+    if (OhosHostTryRunAotApp("run_app", effective_app_dir, app_assembly_file, app_assembly_path,
+                             argc, argv, &aot_exit_code)) {
+        OH_LOG_INFO(LOG_APP, "[openharmony-host] run_app AOT Main exited rc=%{public}d", aot_exit_code);
+        return aot_exit_code;
+    }
 
     void* hostfxr = OhosHostOpenHostfxr("run_app", effective_app_dir, hostfxr_path, sizeof(hostfxr_path));
     if (hostfxr == NULL) {
@@ -1149,6 +1237,20 @@ int ohos_host_start_app(const char* app_dir, const char* app_assembly_file,
     // The start context carries filesDir on every current shell, so the A/B file and the probe
     // status line land in the app sandbox; a pending context adopted below is re-applied.
     OhosHostApplyExecMemoryPolicy("start_app", effective_app_dir, context_json);
+
+    // Bridged start_app needs the managed bridge (register_bridge calls from the hosting
+    // assembly), which a NativeAOT app only provides through its own export and handle
+    // management; until that route is designed (FIX-INTEROP #2 documents the one-shot AOT
+    // route in run_app), fail with an explicit message instead of a generic hostfxr error.
+    char aot_lib_path[4096];
+    if (OhosHostAotLibPath(aot_lib_path, sizeof(aot_lib_path), effective_app_dir, app_assembly_file) == 0 &&
+        access(aot_lib_path, F_OK) == 0) {
+        OH_LOG_ERROR(LOG_APP,
+                     "[openharmony-host] start_app: NativeAOT payload %{public}s requires the one-shot "
+                     "run_app route; bridged start_app supports JIT payloads only", aot_lib_path);
+        OhosHostEndLaunch();
+        return -1;
+    }
 
     void* hostfxr = OhosHostOpenHostfxr("start_app", effective_app_dir, hostfxr_path, sizeof(hostfxr_path));
     if (hostfxr == NULL) {
