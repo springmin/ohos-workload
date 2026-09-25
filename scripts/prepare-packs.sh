@@ -2,6 +2,11 @@
 # Build the thin platform ref assembly and lay out every local workload pack.
 #   scripts/prepare-packs.sh [--sha256 <hex>] [--record-sha256] [path-to-Microsoft.NETCore.App.Runtime.openharmony-arm64.nupkg]
 #
+# The pack ridgraph/PortableRuntimeIdentifierGraph.openharmony.json copies are generated first
+# from the canonical sdk-ohos/eng graph by scripts/sync-ridgraph.sh (byte-identical; the recorded
+# digest guards offline runs). Drift fails the layout instead of shipping a pack with a stale RID
+# graph.
+#
 # The BCL runtime pack artifact is verified against an expected sha256 *before* it is
 # unpacked. The expectation is (in order): RUNTIME_PACK_SHA256 / --sha256 (an explicit
 # digest always wins), the <artifact>.sha256 sidecar recorded by a previous run (it only
@@ -85,6 +90,12 @@ check_artifact() {
     fi
     echo "   sha256 OK ($_label) $_got"
 }
+
+echo "== 0/2 RID graph single source =="
+# The pack ridgraph copies are generated from the canonical sdk-ohos/eng graph (byte-identical);
+# without the sibling checkout the recorded digest still guards against hand edits. A drift is a
+# hard failure: the SDK and the workload would resolve different RID sets.
+sh "$W/scripts/sync-ridgraph.sh"
 
 echo "== 1/2 platform ref assembly =="
 "$DOTNET" build "$W/src/Microsoft.OpenHarmony.Ref/Microsoft.OpenHarmony.Ref.csproj" -c Release -v:q --nologo

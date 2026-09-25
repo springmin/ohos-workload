@@ -1,0 +1,59 @@
+name: ridgraph-sync
+
+# CI gate for the portable RID graph single source (audit V1). The workload SDK packs ship a copy
+# of sdk-ohos/eng/PortableRuntimeIdentifierGraph.openharmony.json; if the two drift, the SDK build
+# and the workload restore resolve different RID sets (the AOT linux-musl fallback was added on the
+# sdk-ohos side only). The gate checks out the canonical sdk-ohos graph at a pinned commit and
+# runs the byte-level comparison, so the digest record cannot hide a stale copy.
+#
+# The same check runs offline in scripts/preflight.sh (digest level when the sibling checkout is
+# missing); this workflow is the cross-repo half.
+on:
+  workflow_dispatch:
+    inputs:
+      sdk_ohos_ref:
+        description: 'sdk-ohos commit SHA carrying the canonical eng graph (defaults to the pinned tip)'
+        required: false
+        type: string
+        default: '32e1719359bcebae9aca3d5d914547756a13963c'
+  push:
+    branches: [ master ]
+  pull_request:
+
+permissions:
+  contents: read
+
+env:
+  # The commit that introduced/kept the AOT-enabled openharmony RID imports plus the pack
+  # mirroring (aot: map openharmony RIDs to the linux-musl AOT packs and mirror the packs).
+  # Advance it together with scripts/sync-ridgraph.sh when the canonical graph changes.
+  SDK_OHOS_REF: ${{ github.event.inputs.sdk_ohos_ref || '32e1719359bcebae9aca3d5d914547756a13963c' }}
+
+jobs:
+  ridgraph:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out the workload (this repository)
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - name: Check out the canonical sdk-ohos graph
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          repository: springmin/sdk-ohos
+          ref: ${{ env.SDK_OHOS_REF }}
+          path: sdk-ohos
+          fetch-depth: 1
+          persist-credentials: false
+      - name: Byte-compare the pack copies with the canonical graph
+        env:
+          SDK_OHOS_ENG_GRAPH: ${{ github.workspace }}/sdk-ohos/eng/PortableRuntimeIdentifierGraph.openharmony.json
+        run: |
+          set -eu
+          sh scripts/sync-ridgraph.sh --check
+      - name: Run the RID graph selftest with the canonical checked out
+        env:
+          SDK_OHOS_ENG_GRAPH: ${{ github.workspace }}/sdk-ohos/eng/PortableRuntimeIdentifierGraph.openharmony.json
+        run: |
+          set -eu
+          sh scripts/selftest-ridgraph.sh
