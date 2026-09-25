@@ -1,9 +1,23 @@
-<Project Sdk="Microsoft.NET.Sdk">
+<Project Sdk="Microsoft.NET.Sdk.Razor">
   <PropertyGroup>
     <TargetFrameworks>net11.0-openharmony20.0;net11.0-openharmony26.0</TargetFrameworks>
     <OutputType>Exe</OutputType>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
+    <!-- The Razor SDK (not plain Microsoft.NET.Sdk) is what runs the static-web-assets publish
+         pipeline for the BlazorWebView package: `wwwroot` content plus the package's
+         PackageAssets manifest produce @(StaticWebAsset) with `_framework/blazor.webview.js`,
+         which the hap targets stage into the payload (they no longer guess a NuGet-cache copy).
+         A MAUI SDK app gets the same pipeline through UseMaui; this repo builds the demo without
+         the MAUI workload, so the Razor SDK is the explicit equivalent. -->
+    <!-- The OpenHarmony RID graph maps openharmony-arm64 to linux-musl-arm64 (AOT toolchain
+         resolution), so the SDK now sees the AspNetCore shared framework, pulled transitively by
+         the MAUI BlazorWebView packages, as RID-compatible and asks restore for
+         Microsoft.AspNetCore.App.Runtime.linux-musl-arm64 - a pack that is not published for the
+         RC1 band. The demo consumes the Blazor assemblies from the packages themselves and never
+         loads the shared framework, so the transitive framework downloads are suppressed instead
+         of failing restore (a direct FrameworkReference would still require its pack). -->
+    <DisableTransitiveFrameworkReferenceDownloads>true</DisableTransitiveFrameworkReferenceDownloads>
     <!-- S1: this project compiles the platform slice sources directly (the Compile Include
          below), and the slice's BlazorWebView handler/registration is behind this constant
          (OpenHarmonyBlazorWebViewHandler.cs and the IBlazorWebView entry in
@@ -22,6 +36,13 @@
     <OpenHarmonyBundleName Condition=" '$(OpenHarmonyBundleName)' == '' ">com.example.hellomauiapp</OpenHarmonyBundleName>
   </PropertyGroup>
   <ItemGroup>
+    <!-- The Razor SDK publishes every *.json in the project (static-web-assets content rules),
+         which would pull the stale hand-built hap fixtures (module.json, resources/**) into the
+         payload. The hap staging generates the real module.json/resources into its own stage
+         directory, so keep the fixtures out of the publish set (app_icon.png and the rawfile
+         dotnet.zip stay None items and were never published). -->
+    <Content Remove="module.json" />
+    <Content Remove="resources/**" />
     <PackageReference Include="Microsoft.Maui.Controls" Version="11.0.0-rc.1.26451.6" />
     <PackageReference Include="Microsoft.Maui.Graphics" Version="11.0.0-rc.1.26451.6" />
     <!-- S1: the BlazorWebView control, IBlazorWebView/RootComponent types and the

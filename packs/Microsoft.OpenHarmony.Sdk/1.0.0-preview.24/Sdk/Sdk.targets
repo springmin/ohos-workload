@@ -6,6 +6,11 @@
   <PropertyGroup Condition=" '$(TargetPlatformIdentifier)' == 'openharmony' ">
     <_OpenHarmonySdkTargetsAlreadyImported Condition=" '$(MicrosoftOpenHarmonySdkTargetsImported)' == 'true' ">true</_OpenHarmonySdkTargetsAlreadyImported>
     <MicrosoftOpenHarmonySdkTargetsImported>true</MicrosoftOpenHarmonySdkTargetsImported>
+    <!-- The pack root for the Hap.targets asset lookups. Sdk.props carries the same value for
+         consumers that import it explicitly, but the workload manifest imports only Sdk.targets
+         (the resolver imports an SDK's props only for a project-level Sdk attribute), so the
+         property must be live here or every hap packaging build loses the templates/hosts. -->
+    <_OpenHarmonySdkPackDir>$([MSBuild]::NormalizeDirectory('$(MSBuildThisFileDirectory)', '..'))</_OpenHarmonySdkPackDir>
   </PropertyGroup>
   <PropertyGroup Condition=" '$(TargetPlatformIdentifier)' == 'openharmony' and '$(_OpenHarmonySdkTargetsAlreadyImported)' != 'true' ">
     <TargetPlatformSupported>true</TargetPlatformSupported>

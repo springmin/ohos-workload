@@ -19,7 +19,7 @@
 #                    1 KiB only warns (resources/permissions grew -> review the expectation).
 #   abc header       ets/modules.abc must be a PANDA file whose 4-byte version field at 0x0c is
 #                    13.0.1.0 (FAIL otherwise), and its size must be one of the current
-#                    expectations - 215680 for the ui/shell shell, 18308 for the headless shell
+#                    expectations - 234620 for the ui/shell shell, 18532 for the headless shell
 #                    (--expected-abc <bytes[,bytes]> / KIT_EXPECTED_ABC pins the set; a size
 #                    outside it then FAILs instead of warning, so a historical kit's old abc
 #                    does not kill the run).
@@ -38,7 +38,7 @@
 #                    check by design.
 #   dotnet.zip       readable -> must carry no .so (an unsigned duplicate would be dlopen'd from
 #                    the extracted app dir and rejected by an enforcing device -> FAIL) and its
-#                    entry count is expected to stay 253 (drift = WARN).
+#                    entry count is expected to stay 254 (drift = WARN).
 #   host ELF         libs/arm64-v8a/libopenharmonyhost.so: DT_NEEDED (readelf -d equivalent)
 #                    must be a subset of the host-deps.conf [needed] whitelist, must not name
 #                    libhostfxr.so (resolved through the dlopen handle, never at load time), and
@@ -156,10 +156,10 @@ OH_LOG_
 HOST_DEPS_EOF
 )"
 
-# Current abc size expectations: the ui/shell ArkTS shell (215680 B) and the headless shell
-# (18308 B). --expected-abc <bytes[,bytes]> / KIT_EXPECTED_ABC replaces the set and turns a
+# Current abc size expectations: the ui/shell ArkTS shell (234620 B) and the headless shell
+# (18532 B). --expected-abc <bytes[,bytes]> / KIT_EXPECTED_ABC replaces the set and turns a
 # mismatch from a historical-kit WARN into a FAIL (the kit builder uses that strict form).
-EXPECT_ABC="${KIT_EXPECTED_ABC:-215680,18308}"
+EXPECT_ABC="${KIT_EXPECTED_ABC:-234620,18532}"
 EXPECT_ABC_PINNED="${KIT_EXPECTED_ABC:+1}"
 HOST_DEPS_FILE="${KIT_HOST_DEPS:-}"
 
@@ -257,7 +257,7 @@ Without an argument the current directory is used (it must contain SHA256SUMS).
                         fail unless the extracted tree matches this digest (the value comes
                         with the delivery, e.g. the release notes)
   --expected-abc <bytes[,bytes]>
-                        abc size expectation (default: 215680,18308 = the ui/shell and the
+                        abc size expectation (default: 234620,18532 = the ui/shell and the
                         headless ArkTS shell); a size outside the set warns by default and
                         fails when this option pins the set
   --host-deps <path>    read the host dependency policy from this file instead of the
@@ -299,7 +299,7 @@ while [ $# -gt 0 ]; do
             ;;
         --expected-abc)
             shift
-            [ $# -gt 0 ] || { warn "--expected-abc 需要逗号分隔的字节数（如 215680,18308）"; usage >&2; exit 2; }
+            [ $# -gt 0 ] || { warn "--expected-abc 需要逗号分隔的字节数（如 234620,18532）"; usage >&2; exit 2; }
             EXPECT_ABC="$1"
             EXPECT_ABC_PINNED=1
             ;;
@@ -337,7 +337,7 @@ KIT="$(cd "$KIT" && pwd)"
 EXPECT_ABC="$(printf '%s' "$EXPECT_ABC" | tr ',' ' ')"
 for _abc in $EXPECT_ABC; do
     case "$_abc" in
-        ''|*[!0-9]*) warn "--expected-abc 需要逗号/空格分隔的字节数（如 215680,18308），得到: $EXPECT_ABC"; usage >&2; exit 2 ;;
+        ''|*[!0-9]*) warn "--expected-abc 需要逗号/空格分隔的字节数（如 234620,18532），得到: $EXPECT_ABC"; usage >&2; exit 2 ;;
     esac
 done
 [ -n "$EXPECT_ABC" ] || { warn "--expected-abc 不能为空"; usage >&2; exit 2; }
@@ -539,7 +539,7 @@ abc_pinned = sys.argv[7] == "1"
 
 # Current-generation expectations; the abc sizes come from the shell (--expected-abc).
 EXPECT_LIBS = 14            # host + libc++ + 12 runtime ELF under libs/arm64-v8a/
-EXPECT_ZIP_ENTRIES = 253    # dotnet.zip entries (deterministic writer with the ELF names excluded)
+EXPECT_ZIP_ENTRIES = 254    # dotnet.zip entries (deterministic writer with the ELF names excluded)
 INDEX_SANE_MAX = 1024       # resources.index measured 579 B (API 26) / 707 B (API 20)
 ABC_VERSION = "13.0.1.0"    # 4-byte PANDA version field at offset 0x0c
 LIBS_DIR = "libs/arm64-v8a/"
