@@ -522,6 +522,60 @@ targets that must run after the SDK's publish copy and before the hap staging (e
 generation step whose output the staging packs). The staged `libs/<abi>/` tree is re-signed after
 the payload staging and before the payload zip, so the signature always covers the final tree.
 
+## Framework pack resolution (RID default, apphost, AspNetCore band)
+
+Three resolution defaults in the platform pack keep a RID-specific restore working without
+per-project switches:
+
+- `Sdk/Sdk.targets` defaults `RuntimeIdentifier` to `openharmony-arm64` for executable projects
+  that do not set one. With `SelfContained=true` (the platform default), the SDK inference
+  (`Microsoft.NET.RuntimeIdentifierInference.targets`, imported after the workload targets)
+  otherwise falls back to the SDK host RID (`NETCoreSdkPortableRuntimeIdentifier =
+  ohos-arm64`), which the workload RID graph does not carry: framework-reference processing then
+  failed `NETSDK1083: The specified RuntimeIdentifier 'ohos-arm64' is not recognized` before any
+  pack could resolve. That hit a plain `dotnet restore` and `dotnet restore -r openharmony-arm64`
+  (the CLI puts the RID in the plural `RuntimeIdentifiers`). An explicit `-r`/`RuntimeIdentifier`
+  still wins.
+- The same file sets `EnableAppHostPackDownload=false`: there is no openharmony apphost pack (the
+  .hap host loads hostfxr), but `ResolveAppHosts` still emits apphost `PackageDownload`s for
+  every RID in `RuntimeIdentifiers`. With the RID graph mapping openharmony-arm64 to
+  linux-musl-arm64, a restore with `-r` requested
+  `Microsoft.NETCore.App.Host.linux-musl-arm64` at the unpublished SDK-band version and failed
+  NU1102. `UseAppHost` stays false; a project that explicitly turns apphost packs back on keeps
+  the SDK behavior.
+- `targets/OpenHarmony.PlatformItems.targets` pins the net11.0 `Microsoft.AspNetCore.App`
+  `KnownFrameworkReference` (targeting pack and runtime) to the published RC1 GA band
+  `11.0.0-rc.1.26425.128`. The SDK's bundled KFR points at an SDK-band daily
+  (`11.0.0-rc.1.26452.110`) whose runtime pack was never published: any project that references
+  AspNetCore transitively (e.g. the MAUI BlazorWebView packages) failed restore with
+  `NU1102: Unable to find package Microsoft.AspNetCore.App.Runtime.linux-musl-arm64 with
+  version (= 11.0.0-rc.1.26452.110)` (`Nearest version: 11.0.0-rc.1.26425.128`). The workload RID
+  graph (openharmony-arm64 imports linux-musl-arm64, the same mapping the NativeAOT packs use)
+  resolves the runtime pack to the linux-musl-arm64 assets; managed assemblies are portable, and
+  the ref pack is pinned with the runtime so compile and run come from one published build. The
+  pin is scoped to net11.0; the net10.0 KFR already points at a published 10.0.x version.
+
+Consumer effect: `dotnet restore` and `dotnet publish -r openharmony-arm64` work out of the box
+for projects that pull AspNetCore in transitively; `test/hello-maui-app` no longer carries the
+`DisableTransitiveFrameworkReferenceDownloads` workaround. A transitive framework pack is
+downloaded for restore but not staged into the app output (the demo payload is unchanged); a
+*direct* `FrameworkReference` would stage the linux-musl-arm64 shared framework, so apps that
+actually host ASP.NET Core on the device still wait for the openharmony-native AspNetCore runtime
+pack (aspnetcore-ohos). A clean machine downloads the two RC1 GA packs once; for an offline
+build pre-seed them, e.g.:
+
+```sh
+curl -fL -o Microsoft.AspNetCore.App.Ref.11.0.0-rc.1.26425.128.nupkg \
+  https://api.nuget.org/v3-flatcontainer/microsoft.aspnetcore.app.ref/11.0.0-rc.1.26425.128/microsoft.aspnetcore.app.ref.11.0.0-rc.1.26425.128.nupkg
+curl -fL -o Microsoft.AspNetCore.App.Runtime.linux-musl-arm64.11.0.0-rc.1.26425.128.nupkg \
+  https://api.nuget.org/v3-flatcontainer/microsoft.aspnetcore.app.runtime.linux-musl-arm64/11.0.0-rc.1.26425.128/microsoft.aspnetcore.app.runtime.linux-musl-arm64.11.0.0-rc.1.26425.128.nupkg
+```
+
+Version coupling: the pin is one constant in the three pack copies (identical apart from their
+own preview.NN strings). When the SDK band moves, check which AspNetCore GA version that band
+publishes and update the pin; `scripts/selftest-packs.sh` T7 gates the evaluated pin, the RID
+default and the apphost download opt-out.
+
 ## Known follow-ups (scheduled)
 
 - **Task assembly**: the pipeline's UsingTasks are still inline `RoslynCodeTaskFactory` code

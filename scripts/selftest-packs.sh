@@ -21,7 +21,7 @@
 # Exit: 0 = all checks passed; 1 = at least one check failed (work dir kept for triage).
 set -u
 
-SELFTEST_VERSION="1 (2026-09-24)"
+SELFTEST_VERSION="2 (2026-09-26)"
 
 log()     { printf '[%s] %s\n' "$(date '+%H:%M:%S')" "$*"; }
 section() { printf '\n=== %s ===\n' "$*"; }
@@ -183,6 +183,87 @@ EOF
         fi
     else
         fail_ "T5 the fixture did not write probe.txt (see $WORK/T5-build.log)"
+    fi
+fi
+
+# ---- T7: the openharmony resolution contract -------------------------------------------
+section "T7 platform resolution contract"
+same_sdk=1
+for v in 1.0.0-preview.22 1.0.0-preview.23 1.0.0-preview.24; do
+    cmp -s "$W/packs/Microsoft.OpenHarmony.Sdk/$v/Sdk/Sdk.targets" "$PACK/Sdk/Sdk.targets" || same_sdk=0
+    grep -qF 'EnableAppHostPackDownload Condition=' "$W/packs/Microsoft.OpenHarmony.Sdk/$v/Sdk/Sdk.targets" || same_sdk=0
+    grep -qF '>false</EnableAppHostPackDownload>' "$W/packs/Microsoft.OpenHarmony.Sdk/$v/Sdk/Sdk.targets" || same_sdk=0
+    grep -qF 'RuntimeIdentifier Condition=' "$W/packs/Microsoft.OpenHarmony.Sdk/$v/Sdk/Sdk.targets" || same_sdk=0
+    grep -qF '>openharmony-arm64</RuntimeIdentifier>' "$W/packs/Microsoft.OpenHarmony.Sdk/$v/Sdk/Sdk.targets" || same_sdk=0
+    grep -qF 'KnownFrameworkReference Update="Microsoft.AspNetCore.App"' "$W/packs/Microsoft.OpenHarmony.Sdk/$v/targets/OpenHarmony.PlatformItems.targets" || same_sdk=0
+    grep -qF 'DefaultRuntimeFrameworkVersion="11.0.0-rc.1.26425.128"' "$W/packs/Microsoft.OpenHarmony.Sdk/$v/targets/OpenHarmony.PlatformItems.targets" || same_sdk=0
+done
+[ "$same_sdk" -eq 1 ] && pass_ "T7 all packs carry the RID default, the apphost download opt-out and the AspNetCore published-band pin" \
+                       || fail_ "T7 the resolution contract is missing or differs between pack versions"
+if ! command -v "$DOTNET" >/dev/null 2>&1; then
+    skip_ "T7 evaluation fixture needs dotnet (set DOTNET= to run it)"
+else
+    FIXR="$WORK/resolution"
+    mkdir -p "$FIXR"
+    cat > "$FIXR/resolution.proj" <<'EOF'
+<Project>
+  <PropertyGroup>
+    <TargetPlatformIdentifier>openharmony</TargetPlatformIdentifier>
+    <TargetPlatformVersion>26.0</TargetPlatformVersion>
+    <TargetFramework>net11.0-openharmony26.0</TargetFramework>
+    <TargetFrameworkVersion>v11.0</TargetFrameworkVersion>
+    <OutputType>Exe</OutputType>
+    <MicrosoftNETBuildTasksAssembly>$(MSBuildToolsPath)/Microsoft.Build.Tasks.Core.dll</MicrosoftNETBuildTasksAssembly>
+  </PropertyGroup>
+  <ItemGroup>
+    <!-- Stand-in for the SDK's bundled net11.0 AspNetCore KFR (un-pinned version). -->
+    <KnownFrameworkReference Include="Microsoft.AspNetCore.App"
+                              TargetFramework="net11.0"
+                              TargetingPackVersion="11.0.0-rc.1.26452.110"
+                              DefaultRuntimeFrameworkVersion="11.0.0-rc.1.26452.110"
+                              LatestRuntimeFrameworkVersion="11.0.0-rc.1.26452.110" />
+  </ItemGroup>
+  <Import Project="$(PackA)/Sdk/Sdk.targets" />
+  <Target Name="Probe">
+    <PropertyGroup>
+      <_AspNetTargeting>@(KnownFrameworkReference->WithMetadataValue('Identity','Microsoft.AspNetCore.App')->'%(TargetingPackVersion)')</_AspNetTargeting>
+      <_AspNetDefault>@(KnownFrameworkReference->WithMetadataValue('Identity','Microsoft.AspNetCore.App')->'%(DefaultRuntimeFrameworkVersion)')</_AspNetDefault>
+    </PropertyGroup>
+    <WriteLinesToFile File="$(ProbeOut)" Overwrite="true" Lines="RID=$(RuntimeIdentifier)" />
+    <WriteLinesToFile File="$(ProbeOut)" Lines="APPHOST=$(EnableAppHostPackDownload)" />
+    <WriteLinesToFile File="$(ProbeOut)" Lines="ASPNET=$(_AspNetTargeting)|$(_AspNetDefault)" />
+  </Target>
+</Project>
+EOF
+    ( cd "$FIXR" && "$DOTNET" msbuild resolution.proj -t:Probe -v:q -nologo \
+        -p:PackA="$PACK" -p:ProbeOut="$FIXR/probe11.txt" ) > "$WORK/T7-build11.log" 2>&1
+    assert_rc 0 $? "T7 the net11.0 fixture evaluates"
+    if [ -f "$FIXR/probe11.txt" ]; then
+        if grep -qF "RID=openharmony-arm64" "$FIXR/probe11.txt"; then
+            pass_ "T7 an Exe without RuntimeIdentifier defaults to openharmony-arm64"
+        else
+            fail_ "T7 RID default: $(grep -F RID= "$FIXR/probe11.txt" | tr '\n' ' ')"
+        fi
+        if grep -qF "APPHOST=false" "$FIXR/probe11.txt"; then
+            pass_ "T7 apphost pack downloads default off"
+        else
+            fail_ "T7 apphost default: $(grep -F APPHOST= "$FIXR/probe11.txt" | tr '\n' ' ')"
+        fi
+        if grep -qF "ASPNET=11.0.0-rc.1.26425.128|11.0.0-rc.1.26425.128" "$FIXR/probe11.txt"; then
+            pass_ "T7 the net11.0 AspNetCore KFR is pinned to the published RC1 GA band"
+        else
+            fail_ "T7 AspNetCore pin: $(grep -F ASPNET= "$FIXR/probe11.txt" | tr '\n' ' ')"
+        fi
+    else
+        fail_ "T7 the net11.0 fixture did not write probe11.txt (see $WORK/T7-build11.log)"
+    fi
+    ( cd "$FIXR" && "$DOTNET" msbuild resolution.proj -t:Probe -v:q -nologo \
+        -p:PackA="$PACK" -p:ProbeOut="$FIXR/probe10.txt" -p:TargetFrameworkVersion=v10.0 ) > "$WORK/T7-build10.log" 2>&1
+    assert_rc 0 $? "T7 the net10.0 fixture evaluates"
+    if [ -f "$FIXR/probe10.txt" ] && grep -qF "ASPNET=11.0.0-rc.1.26452.110|11.0.0-rc.1.26452.110" "$FIXR/probe10.txt"; then
+        pass_ "T7 the pin is scoped to net11.0 (net10.0 KFR untouched)"
+    else
+        fail_ "T7 the net10.0 KFR must not be re-pointed: $(grep -F ASPNET= "$FIXR/probe10.txt" 2>/dev/null | tr '\n' ' ')"
     fi
 fi
 

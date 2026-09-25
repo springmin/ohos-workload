@@ -21,8 +21,21 @@
     <SupportedOSPlatformVersion Condition=" '$(SupportedOSPlatformVersion)' != '' and !$(SupportedOSPlatformVersion.Contains('.')) ">$(SupportedOSPlatformVersion).0</SupportedOSPlatformVersion>
     <!-- Host model: the .hap host, not a classic apphost. -->
     <UseAppHost Condition=" '$(UseAppHost)' == '' ">false</UseAppHost>
+    <!-- No openharmony apphost pack exists; the .hap host loads hostfxr. ResolveAppHosts still
+         emitted apphost PackageDownloads for every RID in RuntimeIdentifiers (e.g. a restore
+         with -r, where the SDK maps openharmony-arm64 to the linux-musl apphost pack at an
+         unpublished SDK-band version -> NU1102). Disable the download by default; a project
+         that sets EnableAppHostPackDownload explicitly keeps the SDK behavior. -->
+    <EnableAppHostPackDownload Condition=" '$(EnableAppHostPackDownload)' == '' ">false</EnableAppHostPackDownload>
     <SelfContained Condition=" '$(SelfContained)' == '' ">true</SelfContained>
     <AllowSelfContainedWithoutRuntimeIdentifier Condition=" '$(AllowSelfContainedWithoutRuntimeIdentifier)' == '' ">true</AllowSelfContainedWithoutRuntimeIdentifier>
+    <!-- Device-first default RID. With SelfContained=true the SDK inference
+         (Microsoft.NET.RuntimeIdentifierInference.targets, imported after this file) otherwise
+         falls back to the SDK host RID (NETCoreSdkPortableRuntimeIdentifier = ohos-arm64), which
+         the workload RID graph does not carry: framework-reference processing then failed
+         NETSDK1083 before any runtime pack could resolve. Setting the device RID here keeps
+         restore/build/publish on one RID; an explicit -r / RuntimeIdentifier still wins. -->
+    <RuntimeIdentifier Condition=" '$(RuntimeIdentifier)' == '' and '$(IsRidAgnostic)' != 'true' and ( '$(OutputType)' == 'Exe' or '$(OutputType)' == 'WinExe' ) ">openharmony-arm64</RuntimeIdentifier>
     <GenerateDependencyFile Condition=" '$(GenerateDependencyFile)' == '' ">false</GenerateDependencyFile>
     <CopyLocalLockFileAssemblies Condition=" '$(CopyLocalLockFileAssemblies)' == '' ">true</CopyLocalLockFileAssemblies>
     <!-- No classic apphost: the .hap host (NAPI) loads hostfxr. The SDK's built-in

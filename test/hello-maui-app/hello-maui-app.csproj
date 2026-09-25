@@ -10,14 +10,14 @@
          which the hap targets stage into the payload (they no longer guess a NuGet-cache copy).
          A MAUI SDK app gets the same pipeline through UseMaui; this repo builds the demo without
          the MAUI workload, so the Razor SDK is the explicit equivalent. -->
-    <!-- The OpenHarmony RID graph maps openharmony-arm64 to linux-musl-arm64 (AOT toolchain
-         resolution), so the SDK now sees the AspNetCore shared framework, pulled transitively by
-         the MAUI BlazorWebView packages, as RID-compatible and asks restore for
-         Microsoft.AspNetCore.App.Runtime.linux-musl-arm64 - a pack that is not published for the
-         RC1 band. The demo consumes the Blazor assemblies from the packages themselves and never
-         loads the shared framework, so the transitive framework downloads are suppressed instead
-         of failing restore (a direct FrameworkReference would still require its pack). -->
-    <DisableTransitiveFrameworkReferenceDownloads>true</DisableTransitiveFrameworkReferenceDownloads>
+    <!-- Transitive AspNetCore framework references (the MAUI BlazorWebView packages) resolve
+         their runtime pack through the workload RID graph (openharmony-arm64 imports
+         linux-musl-arm64) and the published-band pin in the Microsoft.OpenHarmony.Sdk pack
+         (PlatformItems.targets pins AspNetCore ref+runtime to the published RC1 GA
+         11.0.0-rc.1.26425.128 instead of the unpublished SDK-band daily). Restore therefore
+         needs no DisableTransitiveFrameworkReferenceDownloads workaround; the demo keeps
+         consuming the Blazor assemblies from the packages themselves (the shared framework is
+         never loaded, and a transitive framework pack is not staged into the app output). -->
     <!-- S1: this project compiles the platform slice sources directly (the Compile Include
          below), and the slice's BlazorWebView handler/registration is behind this constant
          (OpenHarmonyBlazorWebViewHandler.cs and the IBlazorWebView entry in

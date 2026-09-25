@@ -19,6 +19,22 @@
     <SdkSupportedTargetPlatformVersion Include="26.0" MinimumNETVersion="10.0" />
     <FrameworkReference Condition=" '$(DisableImplicitFrameworkReferences)' != 'true' "
                         Include="Microsoft.OpenHarmony" IsImplicitlyDefined="true" Pack="false" PrivateAssets="All" />
+  </ItemGroup>
+  <!-- Published-band AspNetCore runtime pack: the SDK's bundled net11.0 AspNetCore
+       KnownFrameworkReference points at an SDK-band daily build (11.0.0-rc.1.26452.110) whose
+       runtime pack was never published to nuget.org. With the workload RID graph,
+       openharmony-arm64 imports linux-musl-arm64, so a RID-specific restore resolves
+       Microsoft.AspNetCore.App.Runtime.linux-musl-arm64 - at the unpublished SDK version it
+       failed NU1102. Pin ref+runtime to the published RC1 band so projects that reference
+       AspNetCore transitively (Microsoft.AspNetCore.Components.WebView.Maui and friends)
+       restore. net10.0 does not need this: its KFR points at a published 10.0.x version. -->
+  <ItemGroup Condition=" '$(TargetPlatformIdentifier)' == 'openharmony' and '$(TargetFrameworkVersion)' == 'v11.0' ">
+    <KnownFrameworkReference Update="Microsoft.AspNetCore.App"
+                              TargetingPackVersion="11.0.0-rc.1.26425.128"
+                              DefaultRuntimeFrameworkVersion="11.0.0-rc.1.26425.128"
+                              LatestRuntimeFrameworkVersion="11.0.0-rc.1.26425.128" />
+  </ItemGroup>
+  <ItemGroup Condition=" '$(TargetPlatformIdentifier)' == 'openharmony' ">
     <!-- Version-only TargetFramework: this item only exists for openharmony projects. -->
     <KnownFrameworkReference Include="Microsoft.OpenHarmony"
                               TargetFramework="net11.0"
