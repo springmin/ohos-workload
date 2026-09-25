@@ -576,16 +576,39 @@ own preview.NN strings). When the SDK band moves, check which AspNetCore GA vers
 publishes and update the pin; `scripts/selftest-packs.sh` T7 gates the evaluated pin, the RID
 default and the apphost download opt-out.
 
+## Packaging task assembly
+
+The pipeline's MSBuild tasks are compiled into `Microsoft.OpenHarmony.Tasks.dll` instead of being
+defined inline with `RoslynCodeTaskFactory` (task-assembly migration, audit V8):
+
+- **Layout**: `src/Microsoft.OpenHarmony.Tasks/` holds the six task classes
+  (`OpenHarmonyDeterministicZip`, `OpenHarmonyStageRuntimeLibs`, `OpenHarmonyStagePayloadLibs`,
+  `OpenHarmonyWritePayloadMarker`, `OpenHarmonyResolvePermissions`,
+  `OpenHarmonyGenerateModuleJson`). Each class body is the former inline code verbatim, so the task
+  parameters, the log/error strings and the produced bytes are unchanged.
+- **Target framework**: `netstandard2.0`, so the same assembly loads under the .NET Framework MSBuild
+  host (Visual Studio / `MSBuild.exe`, net472+) and under the .NET MSBuild host (`dotnet build`);
+  `Microsoft.Build.Framework`/`Microsoft.Build.Utilities.Core` are compile-only references
+  (`ExcludeAssets="runtime"`) because the host provides them at task-load time. The assembly is
+  deterministic; no deps.json is shipped.
+- **Distribution**: `scripts/prepare-packs.sh` builds it and copies it into
+  `packs/Microsoft.OpenHarmony.Sdk/<version>/tools/`. The pack targets load it with
+  `UsingTask AssemblyFile="$(MSBuildThisFileDirectory)../tools/Microsoft.OpenHarmony.Tasks.dll"`.
+  The DLL is committed into all three preview packs (the pack targets must stay byte-identical), and
+  `scripts/lint-packs.sh` fails the pack lint when a `UsingTask` reference does not resolve to a file
+  the pack actually ships.
+- **Tests**: `test/openharmony-tasks-tests/` runs the six classes with a stub `IBuildEngine` (95
+  checks: zip determinism/ordinal order/fixed timestamp/skip names, runtime-ELF staging, payload
+  staging layout, payload-marker schema + escaping, feature-permission matrix/request-point/strict
+  mode, module.json substitution/escaping/insertions/negatives). `scripts/selftest-tasks.sh` builds
+  the assembly and the test host, runs the suite, and fails when the committed pack copies drift from
+  the freshly built Release assembly (re-run `scripts/prepare-packs.sh`); it is part of the
+  `scripts/preflight.sh` repository gates. `scripts/selftest-hap-targets.sh` T1 additionally pins
+  the six `UsingTask` entries and the absence of inline code, and its T2/T3/T5 fixtures run the
+  compiled tasks through the real pack targets.
+
 ## Known follow-ups (scheduled)
 
-- **Task assembly**: the pipeline's UsingTasks are still inline `RoslynCodeTaskFactory` code
-  (`OpenHarmonyDeterministicZip`, `OpenHarmonyStageRuntimeLibs`, `OpenHarmonyStagePayloadLibs`,
-  `OpenHarmonyWritePayloadMarker`, `OpenHarmonyGenerateModuleJson`). They should move to a
-  compiled `Microsoft.OpenHarmony.Tasks.dll` (a first-party net11.0 project referencing the MSBuild
-  assemblies, built by `scripts/prepare-packs.sh` and shipped in `packs/*/tools/`) with unit tests
-  for the zip determinism and the skip lists. Scheduled with the next SDK/workload release
-  (RELEASE-25): it needs the new project, the DLL committed into the three packs and a full hap
-  publish re-verification.
 - **Functional clean regression**: the FileWrites registration is gated statically (the interaction
   suite and `eng/ohos-install/tests/test-codesign-filewrites.sh`); a `dotnet clean` run over a real
   publish (device kit or a stub-toolchain fixture) is scheduled with RELEASE-25, together with the
