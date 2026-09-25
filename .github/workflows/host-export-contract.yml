@@ -1,0 +1,61 @@
+name: host-export-contract
+
+# CI gate for FIX-INTEROP #1: libopenharmonyhost.so is compiled as C++, so a host function
+# without C linkage exports only a _Z... mangled symbol and the managed DllImport EntryPoint
+# lookup fails at runtime - on device, after the app ships. The NDK build enforces the built
+# library in scripts/build-host.sh (nm -D against src/OpenHarmonyHost/host-exports.txt); this
+# job is the NDK-free half and catches a regression before merge:
+#   1. static linkage check - every name in host-exports.txt must either be declared in
+#      openharmony_host.h (whose extern "C" block covers the header) or have a definition
+#      inside an extern "C" region in the native sources;
+#   2. full managed cross-check - resolve every DllImport EntryPoint (including
+#      EntryPoint = <const> forms) in the maui-ohos platform slice and this repository's
+#      hosting/graphics sources against host-exports.txt and fail when a managed requirement
+#      is not listed (a new DllImport must update the contract in the same PR).
+#
+# Least privilege: both checkouts are read-only (persist-credentials: false), nothing is
+# pushed or published, no secrets are requested.
+on:
+  workflow_dispatch:
+    inputs:
+      maui_ohos_ref:
+        description: 'maui-ohos commit SHA to cross-check (defaults to the pinned slice tip)'
+        required: false
+        type: string
+        default: '635bbd0e940b70cb2729dec2fb5c236f8bff9610'
+  push:
+    branches: [ master ]
+  pull_request:
+
+permissions:
+  contents: read
+
+# Reproducible cross-repo check: the slice is checked out at an exact commit, not the mutable
+# feature/openharmony branch, so a push to the fork cannot change what this gate verifies.
+# Advance the pin deliberately, in lockstep with the interaction/pixel gates.
+env:
+  MAUI_OHOS_REF: ${{ github.event.inputs.maui_ohos_ref || '635bbd0e940b70cb2729dec2fb5c236f8bff9610' }}
+
+jobs:
+  contract:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out the workload (this repository)
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - name: Check out the maui-ohos slice sources
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          repository: springmin/maui-ohos
+          ref: ${{ env.MAUI_OHOS_REF }}
+          path: maui-ohos
+          fetch-depth: 1
+          persist-credentials: false
+      - name: Check the host export contract (static + managed cross-check)
+        run: |
+          set -euo pipefail
+          python3 scripts/check-host-exports.py --cross-check \
+            --maui-dir maui-ohos/src/Core/src/Platform/OpenHarmony | tee contract.txt
+          grep -q '^OK: ' contract.txt
+          echo "host export contract verified (see the report above)"

@@ -111,6 +111,35 @@ done
 }
 echo "    ok: no optional-library symbol in nm -D -u"
 
+# --- gate 3: the managed export contract (FIX-INTEROP #1) ---------------------------
+# The library is compiled as C++, so a host function lacking C linkage exports only a _Z...
+# mangled symbol and the managed EntryPoint lookup fails at runtime. Every name in
+# host-exports.txt (the unique DllImport EntryPoints of the managed slice/hosting) must be a
+# plain defined symbol. scripts/check-host-exports.py enforces the static half in CI; this is
+# the built-library half.
+EXPORTS_CONTRACT="$SRC/host-exports.txt"
+[ -f "$EXPORTS_CONTRACT" ] || { echo "ERROR: missing export contract $EXPORTS_CONTRACT" >&2; exit 1; }
+export_list="$("$NM" -D "$OUT/libopenharmonyhost.so" 2>/dev/null | awk '$2 ~ /^[TtWw]$/ {print $NF}')"
+echo "== managed export contract: $EXPORTS_CONTRACT =="
+missing_exports=""
+expected_count=0
+while IFS= read -r name; do
+    case "$name" in ''|'#'*) continue ;; esac
+    expected_count=$((expected_count + 1))
+    printf '%s\n' "$export_list" | grep -qxF "$name" || missing_exports="$missing_exports $name"
+done < "$EXPORTS_CONTRACT"
+if [ -n "$missing_exports" ]; then
+    echo "ERROR: libopenharmonyhost.so is missing managed EntryPoints:$missing_exports" >&2
+    echo "       a symbol that exists only as _Z... means the definition lost its C linkage;" >&2
+    echo "       declare it in src/OpenHarmonyHost/openharmony_host.h (extern \"C\" block)." >&2
+    echo "       mangled candidates found:" >&2
+    for name in $missing_exports; do
+        printf '%s\n' "$export_list" | grep -F "_Z" | grep -F "$name" | sed 's/^/         /' >&2
+    done
+    exit 1
+fi
+echo "    ok: all $expected_count expected exports present as plain symbols"
+
 if [ "${SKIP_SIGN:-0}" = "1" ]; then
     echo "== signing skipped (SKIP_SIGN=1) =="
     exit 0
