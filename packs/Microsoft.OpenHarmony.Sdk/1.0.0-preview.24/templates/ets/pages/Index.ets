@@ -15,9 +15,11 @@ import display from '@ohos.display';
 import Want from '@ohos.app.ability.Want';
 import wantConstant from '@ohos.app.ability.wantConstant';
 import fileIo from '@ohos.file.fs';
+import fileUri from '@ohos.file.fileuri';
 import host from 'libopenharmonyhost.so';
 import picker from '@ohos.file.picker';
 import pasteboard from '@ohos.pasteboard';
+import { uniformTypeDescriptor as utd } from '@kit.ArkData';
 import fs from '@ohos.file.fs';
 import util from '@ohos.util';
 import web_webview from '@ohos.web.webview';
@@ -167,6 +169,61 @@ interface BluetoothGattMtuAnswer {
   mtu: number;
 }
 
+// HMS Kit feature probes (KIT-IMPL 2026-09-25; Share + Scan). The OpenHarmony SDK this shell
+// builds against by default has no @kit.ShareKit/@kit.ScanKit declarations, so a literal
+// import('@kit.X') is a hard ArkTS compile error (10505001 "Cannot find module ..."; verified
+// by the KIT-IMPL probe). The probe therefore keeps the specifier in a variable - the loader
+// leaves it as an unresolved runtime import - and casts the resolved value to a local
+// structural interface naming exactly the members the sink calls (without the cast the linter
+// rejects the unresolved module object as any/unknown: 10605008). On a device whose runtime
+// provides the kit the import resolves and the sink registers; anywhere else it throws, the
+// failure is cached and the feature stays unavailable (the host export then answers -1 and the
+// managed side records the degradation).
+interface HmsShareRecord {
+  utd: string;
+  uri: string;
+  title?: string;
+}
+
+interface HmsShareData {
+  addRecord(record: HmsShareRecord): void;
+}
+
+interface HmsShareShowOptions {
+  // Reserved for the Share Kit panel options (anchor/previewMode). The default SINGLE-selection
+  // panel is what a single target dispatch needs, so the empty object is intentional.
+  previewMode?: number;
+}
+
+interface HmsShareController {
+  show(context: Object, options: HmsShareShowOptions): Promise<void>;
+  on(event: string, callback: (result: Object) => void): void;
+}
+
+interface HmsSystemShare {
+  // The constructors are ESObject (not an interface with a construct signature: the ArkTS
+  // linter rejects those with arkts-no-ctor-signatures-iface). `new ctor(...)` on an ESObject
+  // crosses into the dynamic shape the unresolved kit module actually has.
+  SharedData: ESObject;
+  ShareController: ESObject;
+}
+
+interface HmsShareKit {
+  systemShare: HmsSystemShare;
+}
+
+interface HmsScanResult {
+  originalValue: string;
+}
+
+interface HmsScanBarcode {
+  startScanForResult(context: Object): Promise<HmsScanResult>;
+}
+
+interface HmsScanKit {
+  scanBarcode: HmsScanBarcode;
+}
+
 @Entry
 @Component
 struct Index {
@@ -286,6 +343,13 @@ struct Index {
   // failure is cached here so the feature keeps answering its existing "unavailable" result
   // without re-importing or re-logging on every request.
   private lazyFailures: Map<string, string> = new Map();
+  // HMS Kit feature probes (Share/Scan; see the interface block at the top of the file): the
+  // resolved module object once the import succeeded, and the cached failure so the probe runs
+  // once per page. A kit whose probe failed keeps its sink unregistered.
+  private hmsShareKit: HmsShareKit | undefined = undefined;
+  private hmsScanKit: HmsScanKit | undefined = undefined;
+  private hmsShareUnavailable: boolean = false;
+  private hmsScanUnavailable: boolean = false;
   // Camera Kit is preloaded asynchronously (dynamic import) because the flashlight sink is
   // synchronous: the API surface the sink needs is cached as soon as the module resolves,
   // and the sink answers false while the module is not there yet (or is unavailable).
@@ -340,6 +404,138 @@ struct Index {
     this.hostUnavailable.add(api);
     const detail: string = error !== undefined ? ` (${error.message})` : '';
     console.error(`[maui] host export unavailable: ${api}${detail}`);
+  }
+
+  // HMS Kit probes (Share/Scan; see the interface block at the top of the file). Both run once
+  // per page: a resolved kit registers its sink, a missing kit caches the failure (one log) and
+  // leaves the sink unregistered - the host export then answers -1 and the managed side records
+  // the degradation instead of guessing. The specifiers stay in variables so the OpenHarmony SDK
+  // build (no @kit.ShareKit/@kit.ScanKit declarations) still compiles; see the probe note above.
+  private async probeShareKit(): Promise<void> {
+    if (this.hmsShareUnavailable || this.hmsShareKit !== undefined) {
+      return;
+    }
+    const kitName: string = '@kit.ShareKit';
+    try {
+      const kit = (await import(kitName)) as HmsShareKit;
+      if (kit.systemShare === undefined || kit.systemShare.SharedData === undefined || kit.systemShare.ShareController === undefined) {
+        throw new Error('the resolved module has no systemShare.SharedData/ShareController');
+      }
+      this.hmsShareKit = kit;
+      this.hostCall('registerShareKitSink', typeof host !== 'undefined' && typeof host.registerShareKitSink === 'function', (): void => {
+        host.registerShareKitSink((uris: string, title: string): boolean => {
+          return this.dispatchShareKit(uris, title);
+        });
+      });
+      console.info('[maui] Share Kit available: multi-file share sink registered');
+    } catch (shareProbeError) {
+      this.hmsShareUnavailable = true;
+      console.error(`[maui] Share Kit unavailable on this device: ${(shareProbeError as Error).message}`);
+    }
+  }
+
+  private async probeScanKit(): Promise<void> {
+    if (this.hmsScanUnavailable || this.hmsScanKit !== undefined) {
+      return;
+    }
+    if (!canIUse('SystemCapability.Multimedia.Scan.ScanBarcode')) {
+      this.hmsScanUnavailable = true;
+      console.error('[maui] Scan Kit unavailable: the device reports no ScanBarcode syscap');
+      return;
+    }
+    const kitName: string = '@kit.ScanKit';
+    try {
+      const kit = (await import(kitName)) as HmsScanKit;
+      if (kit.scanBarcode === undefined || kit.scanBarcode.startScanForResult === undefined) {
+        throw new Error('the resolved module has no scanBarcode.startScanForResult');
+      }
+      this.hmsScanKit = kit;
+      this.hostCall('registerScanSink', typeof host !== 'undefined' && typeof host.registerScanSink === 'function', (): void => {
+        host.registerScanSink((requestId: number): void => {
+          this.runScan(requestId);
+        });
+      });
+      console.info('[maui] Scan Kit available: default-scan sink registered');
+    } catch (scanProbeError) {
+      this.hmsScanUnavailable = true;
+      console.error(`[maui] Scan Kit unavailable on this device: ${(scanProbeError as Error).message}`);
+    }
+  }
+
+  // Share Kit sink body: one SharedData record per file:// URI (converted with
+  // fileUri.getUriFromPath so the receiver gets a readable sandbox URI) and the system panel.
+  // The show() promise outcome is logged; the boolean answer only reports that the panel was
+  // dispatched, matching the ability sink's synchronous contract.
+  private dispatchShareKit(uris: string, title: string): boolean {
+    const kit = this.hmsShareKit;
+    if (kit === undefined || uris.length === 0) {
+      return false;
+    }
+    try {
+      const dataCtor: ESObject = kit.systemShare.SharedData;
+      let data: HmsShareData | undefined = undefined;
+      for (const entry of uris.split('\n')) {
+        if (entry.length === 0) {
+          continue;
+        }
+        let uri: string = entry;
+        try {
+          const path: string = entry.startsWith('file://') ? entry.substring(7) : entry;
+          uri = fileUri.getUriFromPath(path);
+        } catch (uriError) {
+          // An unconvertible entry keeps its plain file:// form; the panel decides.
+        }
+        const record: HmsShareRecord = title.length > 0
+          ? { utd: utd.UniformDataType.FILE, uri: uri, title: title }
+          : { utd: utd.UniformDataType.FILE, uri: uri };
+        if (data === undefined) {
+          data = new dataCtor(record) as HmsShareData;
+        } else {
+          data.addRecord(record);
+        }
+      }
+      if (data === undefined) {
+        return false;
+      }
+      const controllerCtor: ESObject = kit.systemShare.ShareController;
+      const controller: HmsShareController = new controllerCtor(data) as HmsShareController;
+      controller.on('shareCompleted', (result: Object): void => {
+        console.info('[maui] share panel completed');
+      });
+      const showOptions: HmsShareShowOptions = {};
+      controller.show(getContext(this) as Object, showOptions).then((): void => {
+        console.info('[maui] share panel dispatched');
+      }).catch((showError: Error): void => {
+        console.error(`[maui] share panel failed: ${showError.message}`);
+      });
+      return true;
+    } catch (shareDispatchError) {
+      console.error(`[maui] share dispatch failed: ${(shareDispatchError as Error).message}`);
+      return false;
+    }
+  }
+
+  // Scan Kit sink body: runs the default-UI scan and answers the host. rc (see
+  // OpenHarmonyScan.ResultCode): 0 the value was scanned, -1 unavailable/failed, -2 cancelled
+  // (Scan Kit error 1000500002).
+  private async runScan(requestId: number): Promise<void> {
+    const kit = this.hmsScanKit;
+    let code: number = -1;
+    let value: string = '';
+    if (kit !== undefined) {
+      try {
+        const result = await kit.scanBarcode.startScanForResult(getContext(this) as Object);
+        value = result.originalValue;
+        code = 0;
+      } catch (scanError) {
+        const scanCode: number = (scanError as BusinessError).code;
+        code = scanCode === 1000500002 ? -2 : -1;
+        console.error(`[maui] scan request failed: code=${scanCode} ${(scanError as Error).message}`);
+      }
+    }
+    this.hostCall('notifyScanResult', typeof host !== 'undefined' && typeof host.notifyScanResult === 'function', (): void => {
+      host.notifyScanResult(requestId, code, value);
+    });
   }
 
   // Host-export guard (device-compat): runs a host call behind an explicit existence check
@@ -2731,6 +2927,11 @@ struct Index {
       });
     });
     this.pullMenu();
+
+    // HMS Kit feature probes (Share/Scan): the sinks register only after the kit resolves, so a
+    // device without the kit keeps the managed side's documented degradation (see the probes).
+    this.probeShareKit();
+    this.probeScanKit();
   }
 
   // Picker result framing (managed OpenHarmonyPickerClient.Complete): a cancel/unavailable

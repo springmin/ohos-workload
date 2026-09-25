@@ -261,6 +261,11 @@ struct HostBinding {
     HostSink clipboard{"clipboard", false};
     HostSink geocode{"geocode", false};
     HostSink vibration{"vibration", true};
+    // HMS Kits (Share/Scan; KIT-IMPL 2026-09-25): registered by the shell only when its runtime
+    // provides @kit.ShareKit / @kit.ScanKit. On the default OpenHarmony SDK build the probe
+    // fails and the sinks stay unset, so both exports answer -1 and the managed side degrades.
+    HostSink share_kit{"share kit", false};
+    HostSink scan{"scan", false};
 };
 
 struct HostBindingSlot {
@@ -312,6 +317,8 @@ static HostBinding* g_host = &g_binding_slots[0].binding;
 #define g_clipboard_sink (g_host->clipboard)
 #define g_geocode_sink (g_host->geocode)
 #define g_vibration_sink (g_host->vibration)
+#define g_share_kit_sink (g_host->share_kit)
+#define g_scan_sink (g_host->scan)
 
 // Table-driven sink registry: the single enumeration of every per-env sink, so HostSinkReset
 // cannot miss one on a page rebuild or env teardown. Keep this list aligned with the members.
@@ -346,6 +353,8 @@ static void HostForEachSink(HostBinding& binding, F&& visit) {
     visit(binding.clipboard);
     visit(binding.geocode);
     visit(binding.vibration);
+    visit(binding.share_kit);
+    visit(binding.scan);
 }
 
 std::string GetStringArg(napi_env env, napi_value value);
@@ -1081,6 +1090,103 @@ napi_value NotifyTtsResult(napi_env env, napi_callback_info info) {
         napi_get_value_int32(env, argv[1], &code);
     }
     ohos_host_tts_result(requestId, code);
+    napi_value undefined = nullptr;
+    napi_get_undefined(env, &undefined);
+    return undefined;
+}
+
+// HMS Kits (Share/Scan; KIT-IMPL 2026-09-25). Both sinks exist only when the ArkTS shell's
+// runtime provides the kit: the default OpenHarmony SDK build registers neither (the shell's
+// variable-specifier import() probe fails and the failure is cached), so every export below
+// answers "unavailable" and the managed side keeps its documented degradation. On an HMS device
+// (the ARKTS_SDK_FLAVOR=harmony shell) the probe resolves, the sink registers and the calls
+// reach systemShare / scanBarcode.
+//
+// Share (multi-file): ohos_host_share_kit_share hands the '\n'-separated file:// URI list and
+// the optional title to the shell sink, which builds systemShare.SharedData/ShareController and
+// calls show(); the sink's synchronous boolean answer (dispatched or not) is consumed through
+// HostCallJs, the same shape as the ability sink. No result round-trip: MAUI's IShare contract
+// completes when the request is handed to the platform.
+static void (*g_scan_result_listener)(int request_id, int code, const char* value) = nullptr;
+
+// Called from managed code (P/Invoke): forwards a multi-file share to the ArkTS shell sink.
+// Returns 0 when the sink accepted (dispatched), -1 when it is unregistered or the dispatch
+// failed (the managed side then reports the once-per-process Share Kit note).
+extern "C" int ohos_host_share_kit_share(const char* uris, const char* title) {
+    if (uris == nullptr || uris[0] == '\0' || !ControlStringFits(uris, "share_kit_uris")) {
+        return -1;
+    }
+    if (title != nullptr && !ControlStringFits(title, "share_kit_title")) {
+        return -1;
+    }
+    return HostCxxBoundary("share_kit_share", [uris, title] {
+        SinkCall* call = new SinkCall();
+        call->AddString(uris, kMaxControlBytes);
+        call->AddString(title != nullptr ? title : "", kMaxControlBytes);
+        bool handled = false;
+        napi_status status = HostCallJs(g_share_kit_sink, call, &handled, nullptr);
+        return status == napi_ok && handled ? 0 : -1;
+    });
+}
+
+// ArkTS calls host.registerShareKitSink(fn) when the Share Kit probe succeeded.
+napi_value RegisterShareKitSink(napi_env env, napi_callback_info info) {
+    return HostSinkRegisterFromArgs(env, info, g_share_kit_sink);
+}
+
+// Scan (default UI): the scan is asynchronous (the user scans in the system UI), so it follows
+// the TTS shape. ohos_host_scan_request(request_id) queues the request; the shell answers with
+// host.notifyScanResult(requestId, code, value), which lands in the callback registered by
+// ohos_host_scan_register_result. rc: 0 success (value = result.originalValue), -1 unavailable
+// or failed, -2 the user cancelled (Scan Kit error 1000500002).
+extern "C" int ohos_host_scan_request(int request_id) {
+    SinkCall* call = new SinkCall();
+    call->AddInt(request_id);
+    return HostSinkPost(g_scan_sink, call) ? 0 : -1;
+}
+
+// 1 when the ArkTS shell registered the scan sink (the managed OpenHarmonyScan.IsSupported
+// probe: it must not launch the scanner just to answer availability).
+extern "C" int ohos_host_scan_available(void) {
+    return g_scan_sink.tsfn != nullptr ? 1 : 0;
+}
+
+// The managed side registers the callback that completes a pending scan request.
+extern "C" void ohos_host_scan_register_result(void* callback) {
+    g_scan_result_listener = (void (*)(int, int, const char*))callback;
+}
+
+// Called by the NAPI notify below: hands the shell's answer back to managed code. value is NULL
+// for a non-zero rc and delivered as "".
+extern "C" void ohos_host_scan_result(int request_id, int code, const char* value) {
+    if (g_scan_result_listener != nullptr) {
+        g_scan_result_listener(request_id, code, value != nullptr ? value : "");
+    }
+}
+
+// ArkTS calls host.registerScanSink(fn) when the Scan Kit probe succeeded.
+napi_value RegisterScanSink(napi_env env, napi_callback_info info) {
+    return HostSinkRegisterFromArgs(env, info, g_scan_sink);
+}
+
+// ArkTS calls host.notifyScanResult(requestId, code, value) when the scan finished/cancelled.
+napi_value NotifyScanResult(napi_env env, napi_callback_info info) {
+    size_t argc = 3;
+    napi_value argv[3] = {nullptr, nullptr, nullptr};
+    napi_get_cb_info(env, info, &argc, argv, nullptr, nullptr);
+    int requestId = 0;
+    int code = -1;
+    std::string value;
+    if (argc >= 1) {
+        napi_get_value_int32(env, argv[0], &requestId);
+    }
+    if (argc >= 2) {
+        napi_get_value_int32(env, argv[1], &code);
+    }
+    if (argc >= 3) {
+        value = GetStringArg(env, argv[2]);
+    }
+    ohos_host_scan_result(requestId, code, value.c_str());
     napi_value undefined = nullptr;
     napi_get_undefined(env, &undefined);
     return undefined;
@@ -3064,6 +3170,9 @@ napi_value Init(napi_env env, napi_value exports) {
         {"registerNotificationSink", nullptr, RegisterNotificationSink, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"registerTtsSink", nullptr, RegisterTtsSink, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"notifyTtsResult", nullptr, NotifyTtsResult, nullptr, nullptr, nullptr, napi_default, nullptr},
+        {"registerShareKitSink", nullptr, RegisterShareKitSink, nullptr, nullptr, nullptr, napi_default, nullptr},
+        {"registerScanSink", nullptr, RegisterScanSink, nullptr, nullptr, nullptr, napi_default, nullptr},
+        {"notifyScanResult", nullptr, NotifyScanResult, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"registerContactsSink", nullptr, RegisterContactsSink, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"notifyContactsResult", nullptr, NotifyContactsResult, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"registerCalendarSink", nullptr, RegisterCalendarSink, nullptr, nullptr, nullptr, napi_default, nullptr},

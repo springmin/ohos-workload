@@ -24,7 +24,9 @@ typedef enum {
 typedef struct OhosHostAppHandle OhosHostAppHandle;
 
 /// One-shot launch: runs the application's Main and returns its exit code.
-/// Self-contained and framework-dependent publish outputs are both supported.
+/// Self-contained and framework-dependent publish outputs are both supported. A NativeAOT
+/// payload (lib<assembly stem>.so with its own openharmony_app_main export) is launched
+/// directly; the hostfxr route below serves JIT payloads only.
 /// Before hostfxr is initialized the host ensures app_dir exposes the runtime natives the
 /// runtime resolves by directory (libhostpolicy/libcoreclr/libclrjit/libclrgc) as symlinks onto
 /// the signed libs/<abi>/ copies; that bridge is best effort and never fails the launch (see
@@ -100,6 +102,18 @@ void ohos_host_notify_text_input(const char* utf8);
 /// Essentials over the NDK: vibration (OH_Vibrator_PlayVibration).
 int ohos_host_vibrate(int duration_ms);
 
+/// Sensors (OH_Sensor_*): the managed side registers a listener for readings and starts/stops
+/// one subscription; the host probes support per sensor type. listener:
+/// void (*)(int type, float x, float y, float z, float w, long long timestamp).
+/// These are C++-compiled definitions in openharmony_host.c, so they MUST stay declared here:
+/// without a C-linkage declaration clang++ mangles them (_Z...) and the managed EntryPoint
+/// lookup fails at runtime (the FIX-INTEROP #1 regression; scripts/check-host-exports.py and
+/// the build-host.sh nm gate enforce the whole surface).
+void ohos_host_sensor_set_listener(void* listener);
+int ohos_host_sensor_is_supported(int type);
+int ohos_host_sensor_start(int type, int interval_ms);
+void ohos_host_sensor_stop(void);
+
 /// Essentials over the NDK: network access (0 unknown, 1 none, 2 local, 3 internet).
 int ohos_host_network_access(void);
 
@@ -155,6 +169,28 @@ void ohos_host_picker_set_listener(void (*listener)(int request_id, int kind));
 void ohos_host_picker_register_result(void* callback);
 void ohos_host_picker_request(int request_id, int kind);
 void ohos_host_picker_complete(int request_id, int rc, const char* name, const char* data_base64);
+
+/// HMS Kits (Share/Scan; KIT-IMPL 2026-09-25): the managed side reaches the two kit sinks the
+/// ArkTS shell registers only when its runtime provides @kit.ShareKit / @kit.ScanKit. On the
+/// default OpenHarmony SDK shell neither is registered, every call answers "unavailable" and
+/// the managed side keeps its documented degradation.
+///
+/// Share: ohos_host_share_kit_share forwards the '\n'-separated file:// URI list (and an
+/// optional title) to the shell, which builds systemShare.SharedData / ShareController and
+/// calls show(). Returns 0 when the sink dispatched the panel, -1 when no sink is registered
+/// (the OpenHarmony shell) or the dispatch failed.
+int ohos_host_share_kit_share(const char* uris, const char* title);
+
+/// Scan: ohos_host_scan_available() reports whether the sink is registered and never launches
+/// the scanner (the managed OpenHarmonyScan.IsSupported probe). ohos_host_scan_request
+/// (request_id) queues the default-UI scan; the shell answers through host.notifyScanResult ->
+/// ohos_host_scan_result with rc 0 (value = result.originalValue), -1 (unavailable/failed) or
+/// -2 (the user cancelled; Scan Kit error 1000500002). The managed callback is registered with
+/// ohos_host_scan_register_result.
+int ohos_host_scan_available(void);
+int ohos_host_scan_request(int request_id);
+void ohos_host_scan_register_result(void* callback);
+void ohos_host_scan_result(int request_id, int code, const char* value);
 
 /// Raw HAP resources: the managed side (maui-ohos OpenHarmonyFileSystem) asks for one file
 /// shipped raw in the HAP (resources/rawfile/**) through ohos_host_raw_file_request; the
@@ -257,6 +293,14 @@ void ohos_host_notification_permission_set_listener(void (*listener)(int op, int
 void ohos_host_notification_permission_request(int op, int request_id);
 void ohos_host_notification_permission_register_result(void* callback);
 void ohos_host_notification_permission_complete(int request_id, int granted);
+
+/// Notification Kit publishing: the managed side asks the shell to publish one notification
+/// (the shell's registerNotificationSink handler backs it). Returns 0 when the request
+/// reached the shell sink and -1 when the sink is missing or title is NULL. Like the sensor
+/// entry points above (and every other host export) this declaration is what gives the
+/// C++-compiled definition in openharmony_host.c its C linkage; dropping it silently mangles
+/// the symbol (FIX-INTEROP #1).
+int ohos_host_notification_show(int id, const char* title, const char* text);
 
 /// Clipboard: the managed side asks the ArkTS shell to run one pasteboard operation through
 /// host.registerClipboardSink. op: 0 has text, 1 get text, 2 set text; `text` carries the
