@@ -154,6 +154,18 @@ XML
 done
 echo "   MauiGraphics backend placed into the two platform runtime packs"
 
+echo "== 1d/2 packaging task assembly =="
+# The hap-packaging tasks are compiled once and shipped in every SDK pack's tools/ (the pack
+# targets load them with UsingTask AssemblyFile; scripts/selftest-tasks.sh asserts both the build
+# and the committed copies stay byte-identical).
+"$DOTNET" build "$W/src/Microsoft.OpenHarmony.Tasks/Microsoft.OpenHarmony.Tasks.csproj" -c Release -v:q --nologo
+TASKS_DLL="$W/src/Microsoft.OpenHarmony.Tasks/bin/Release/netstandard2.0/Microsoft.OpenHarmony.Tasks.dll"
+for P in "$W"/packs/Microsoft.OpenHarmony.Sdk/*/; do
+  mkdir -p "$P/tools"
+  cp "$TASKS_DLL" "$P/tools/"
+done
+echo "   placed tools/Microsoft.OpenHarmony.Tasks.dll into every Microsoft.OpenHarmony.Sdk pack"
+
 echo "== 2/2 BCL runtime pack =="
 if [ -f "$BCL/data/RuntimeList.xml" ]; then echo "   already laid out"; exit 0; fi
 if [ -z "$NPKG" ]; then

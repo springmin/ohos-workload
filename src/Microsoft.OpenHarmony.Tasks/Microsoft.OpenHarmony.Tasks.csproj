@@ -1,0 +1,36 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!-- The compiled OpenHarmony hap-packaging tasks (task-assembly migration, audit V8).
+
+       The tasks replace the inline RoslynCodeTaskFactory definitions that OpenHarmony.Hap.targets
+       used to compile at project-evaluation time. The assembly is built by
+       scripts/prepare-packs.sh, committed into packs/Microsoft.OpenHarmony.Sdk/<version>/tools/
+       and imported by the pack targets with UsingTask AssemblyFile=....
+
+       netstandard2.0 is deliberate: a single assembly has to load under the .NET Framework MSBuild
+       host (Visual Studio / MSBuild.exe on Windows, net472+) and under the .NET MSBuild host
+       (dotnet build), and netstandard2.0 is the only surface both accept - Microsoft.Build.Utilities.Core
+       itself ships netstandard2.0 assets for the same reason. The task code only uses BCL APIs that
+       exist in netstandard2.0 (System.IO.Compression, System.Security.Cryptography, LINQ).
+
+       The MSBuild reference packages are compile-only: the host provides Microsoft.Build.Framework
+       and Microsoft.Build.Utilities.Core at task-load time, so ExcludeAssets=runtime keeps them out
+       of the task output (the pack ships Microsoft.OpenHarmony.Tasks.dll alone). -->
+  <PropertyGroup>
+    <TargetFramework>netstandard2.0</TargetFramework>
+    <AssemblyName>Microsoft.OpenHarmony.Tasks</AssemblyName>
+    <RootNamespace>Microsoft.OpenHarmony.Tasks</RootNamespace>
+    <Nullable>enable</Nullable>
+    <LangVersion>latest</LangVersion>
+    <!-- The pack DLL is shipped as bytes; a rebuilt assembly must not embed the build machine. -->
+    <Deterministic>true</Deterministic>
+    <ContinuousIntegrationBuild Condition="'$(CI)' == 'true'">true</ContinuousIntegrationBuild>
+    <DebugType>portable</DebugType>
+    <GenerateDocumentationFile>false</GenerateDocumentationFile>
+  </PropertyGroup>
+  <ItemGroup>
+    <!-- The netstandard2.0 reference assemblies come from the implicit NETStandard.Library
+         package (a restore input, not a shipped dependency). -->
+    <PackageReference Include="Microsoft.Build.Framework" Version="17.11.48" ExcludeAssets="runtime" PrivateAssets="all" />
+    <PackageReference Include="Microsoft.Build.Utilities.Core" Version="17.11.48" ExcludeAssets="runtime" PrivateAssets="all" />
+  </ItemGroup>
+</Project>
