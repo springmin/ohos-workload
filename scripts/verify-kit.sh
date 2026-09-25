@@ -16,7 +16,7 @@
 #                    0f26b74: dotnet publish must pack it with --index-path, or the device
 #                    ResourceManager rejects the rawfile read with "GetRawFileContent failed,
 #                    name is empty" and the managed bootstrap never starts). A size above
-#                    1 KiB only warns (resources/permissions grew -> review the expectation).
+#                    2 KiB only warns (resources/permissions grew -> review the expectation).
 #   abc header       ets/modules.abc must be a PANDA file whose 4-byte version field at 0x0c is
 #                    13.0.1.0 (FAIL otherwise), and its size must be one of the current
 #                    expectations - 234620 for the ui/shell shell, 18532 for the headless shell
@@ -540,7 +540,7 @@ abc_pinned = sys.argv[7] == "1"
 # Current-generation expectations; the abc sizes come from the shell (--expected-abc).
 EXPECT_LIBS = 14            # host + libc++ + 12 runtime ELF under libs/arm64-v8a/
 EXPECT_ZIP_ENTRIES = 254    # dotnet.zip entries (deterministic writer with the ELF names excluded)
-INDEX_SANE_MAX = 1024       # resources.index measured 579 B (API 26) / 707 B (API 20)
+INDEX_SANE_MAX = 2048       # resources.index measured 1588 B (API 26) / 1780 B (API 20)
 ABC_VERSION = "13.0.1.0"    # 4-byte PANDA version field at offset 0x0c
 LIBS_DIR = "libs/arm64-v8a/"
 HOST_SO = LIBS_DIR + "libopenharmonyhost.so"
@@ -757,7 +757,7 @@ for name, purpose in haps:
                     grade("FAIL", "%s: resources.index 是 0 B 空文件（FIX-DEV3 0f26b74 之后不应出现；需重打包）" % name)
                 else:
                     print("      index  resources.index %d B%s"
-                          % (len(idx), "（≤1 KiB 合理范围）" if len(idx) <= INDEX_SANE_MAX else "（> 1 KiB）"))
+                          % (len(idx), "（≤2 KiB 合理范围）" if len(idx) <= INDEX_SANE_MAX else "（> 2 KiB）"))
                     if len(idx) > INDEX_SANE_MAX:
                         grade("WARN", "%s: resources.index %d B 超出预期 ≤%d B — 资源/权限增加时正常，确认后更新本检查"
                                       % (name, len(idx), INDEX_SANE_MAX))

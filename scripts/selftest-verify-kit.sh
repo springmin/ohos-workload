@@ -8,13 +8,13 @@
 #   S0 policy     the HOST_DEPS_DEFAULT copy embedded in verify-kit.sh carries exactly the
 #                 [needed]/[undefined] entries of src/OpenHarmonyHost/host-deps.conf
 #   S1 good       a kit that satisfies the current contract -> exit 0, KIT OK, every 2b
-#                 assertion passes (index 579 B, abc 234620 B / PANDA 13.0.1.0, 14 .so,
+#                 assertion passes (index 1588 B, abc 234620 B / PANDA 13.0.1.0, 14 .so,
 #                 payload-in-libs marker (assembly + 19 entries + zip sha), DT_NEEDED=5,
 #                 denylist 0, dotnet.zip 254 entries / 0 .so); S1b reruns the same kit to
 #                 prove the check leaves no state behind
 #   S2 noindex    one hap loses resources.index -> exit 1, FAIL names it and FIX-DEV3 0f26b74
 #   S3 emptyindex resources.index is 0 B -> exit 1 ("0 B 空文件")
-#   S4 bigindex   resources.index 2048 B -> WARN only, exit 0 (historical/soft drift)
+#   S4 bigindex   resources.index 4096 B -> WARN only, exit 0 (historical/soft drift)
 #   S5 abcdrift   abc 214000 B -> WARN + KIT OK by default; --expected-abc 234620 -> FAIL;
 #                 abc 18532 B (the headless shell) stays accepted without a warning
 #   S6 abcver     abc PANDA version 12.9.9.9 -> exit 1
@@ -148,7 +148,7 @@ MODULE = {
 }
 ABC_SIZE = 234620
 ABC_VERSION = (13, 0, 1, 0)
-INDEX_SIZE = 579
+INDEX_SIZE = 1588
 DOTNET_ENTRIES = 254
 # Payload-in-libs fixture: the marker plus the small synthetic payload the selftest stages in
 # libs/arm64-v8a/. The marker's entry count describes the real libs file count (marker
@@ -440,7 +440,7 @@ cp "$LOG_FILE" "$WORK/S1a.log"
 assert_rc 0 "$RC" "S1 good kit"
 assert_contains "S1 KIT OK" "KIT OK" "$LOG_FILE"
 assert_contains "S1 all 2b assertions pass" "全部关键断言通过" "$LOG_FILE"
-assert_contains "S1 index 579 B listed" "resources.index 579 B（≤1 KiB 合理范围）" "$LOG_FILE"
+assert_contains "S1 index 1588 B listed" "resources.index 1588 B（≤2 KiB 合理范围）" "$LOG_FILE"
 assert_contains "S1 abc 234620 / PANDA 13.0.1.0" "ets/modules.abc 234620 B，PANDA 头版本 13.0.1.0" "$LOG_FILE"
 assert_contains "S1 libs .so=14" "libs/arm64-v8a/: 14 个 .so" "$LOG_FILE"
 assert_contains "S1 payload-in-libs marker staged + counted" "payload-in-libs: assembly=hello-maui-app.dll，条目=19（实测 19）" "$LOG_FILE"
@@ -490,12 +490,12 @@ assert_rc 1 "$RC" "S3 empty index fails"
 assert_contains "S3 reports the empty file" "resources.index 是 0 B 空文件" "$LOG_FILE"
 
 # ---- S4: an oversized index warns but keeps the run green ----------------------------
-section "S4 oversized resources.index (2048 B) -> WARN only"
+section "S4 oversized resources.index (4096 B) -> WARN only"
 K="$(new_kit kit-bigindex)"
-python3 "$WORK/fixture.py" patch "$K" big-index 2048
+python3 "$WORK/fixture.py" patch "$K" big-index 4096
 run_verify "$K"
 assert_rc 0 "$RC" "S4 oversized index still KIT OK"
-assert_contains "S4 warns about the size" "超出预期 ≤1024 B" "$LOG_FILE"
+assert_contains "S4 warns about the size" "超出预期 ≤2048 B" "$LOG_FILE"
 assert_contains "S4 KIT OK carries the WARN count" "KIT OK（5 条 WARN" "$LOG_FILE"
 
 # ---- S5: abc size drift is a WARN by default, a FAIL when pinned ---------------------
