@@ -51,7 +51,7 @@ permissions:
 # The default is the feature/openharmony tip: fc7fbfdc, which carries the FIX-INTEROP slice
 # work (#4-#7: source-generated JSON payloads, trim/AOT-safe handler wiring) on top of the
 # Share/Scan kit extra; the pixel expectations are unchanged by that work (no drawing behavior
-# changes). The interaction harness pins 324 checks / floor 304; advance the pin in lockstep
+# changes). The interaction harness pins 326 checks / floor 306; advance the pin in lockstep
 # with the interaction gate and change it deliberately (workflow_dispatch can compile any other
 # commit SHA).
 env:

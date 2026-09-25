@@ -21,7 +21,7 @@ name: interaction-regression
 #     tree (Refresh + Publish render step and Publish-alone pass), skip/republish average/max
 #     ceilings and documented republish/skip ratio floors (render >= 1.25x, publish >= 2x).
 #
-# The check-count floor (301 = 321 - 20, the documented convention) is declared once in
+# The check-count floor (306 = 326 - 20, the documented convention) is declared once in
 # test/maui-platform-verify/Program.cs, next to the constants that count the executed suite's own
 # [verify] lines; this job reads the `[suite]` line the run prints (and cross-checks it against
 # `grep -c`) instead of repeating a literal, exactly like scripts/preflight.sh, so the local gate
@@ -54,10 +54,10 @@ permissions:
 # mutable feature/openharmony branch, so a push to the fork cannot change what this gate compiles.
 # The default is the feature/openharmony tip: fc7fbfdc, which carries the FIX-INTEROP slice
 # work (#4-#7: source-generated JSON payloads, trim/AOT-safe handler wiring) on top of the
-# Share/Scan kit extra and the 236d18a9 harness baseline. The suite pins 324 checks / floor 304
-# and the full run is green at this compiled tree (FIX-INTEROP verification: 324/324, floor 304);
-# advance the pin deliberately and refresh this comment when the harness pins or the tip move
-# (workflow_dispatch can compile any commit).
+# Share/Scan kit extra and the 236d18a9 harness baseline. The suite pins 326 checks / floor 306
+# and the full run is green at this compiled tree (local preflight verification: 326/326,
+# floor 306); advance the pin deliberately and refresh this comment when the harness pins or
+# the tip move (workflow_dispatch can compile any commit).
 env:
   MAUI_OHOS_REF: ${{ github.event.inputs.maui_ohos_ref || 'fc7fbfdc03913a7e3ce0bfccc7ec7481bf7974d5' }}
   # setup-dotnet installs the requested 11.0.x preview into DOTNET_INSTALL_DIR; on Linux that

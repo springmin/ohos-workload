@@ -18,7 +18,8 @@
 #
 # The tampered copies live in a scratch packs dir (RIDGRAPH_PACKS) and never touch the repo.
 #
-# Env: SELFTEST_TMPDIR=<dir>              work dir base (default: the approved opencode tmp dir)
+# Env: SELFTEST_TMPDIR=<dir>              work dir base (default: the approved opencode tmp dir
+#                                         on this host, else TMPDIR, else /tmp)
 #      SELFTEST_RIDGRAPH_CANONICAL=<path> explicit canonical graph for the cross-repo tests
 #                                         (default: the sibling sdk-ohos checkout when present)
 #      SELFTEST_KEEP=1                    keep the work dir even when all checks pass
@@ -33,7 +34,19 @@ section() { printf '\n=== %s ===\n' "$*"; }
 W="$(cd "$(dirname "$0")/.." && pwd)"
 SYNC="$W/scripts/sync-ridgraph.sh"
 PACKS="${RIDGRAPH_PACKS:-$W/packs}"
-WORK_BASE="${SELFTEST_TMPDIR:-/data/storage/el2/base/tmp/opencode}"
+WORK_BASE="${SELFTEST_TMPDIR:-}"
+if [ -z "$WORK_BASE" ]; then
+    # Same portable chain as scripts/selftest-tester-run.sh: CI runners have neither the
+    # approved opencode dir nor (usually) TMPDIR, so the hardcoded host path must not be the
+    # only option (a bare `mktemp -d <missing dir>` aborts the whole selftest).
+    if [ -d /data/storage/el2/base/tmp/opencode ]; then
+        WORK_BASE="/data/storage/el2/base/tmp/opencode"
+    elif [ -n "${TMPDIR:-}" ]; then
+        WORK_BASE="$TMPDIR"
+    else
+        WORK_BASE="/tmp"
+    fi
+fi
 KEEP="${SELFTEST_KEEP:-0}"
 
 [ -f "$SYNC" ] || { printf 'FATAL: sync-ridgraph.sh not found: %s\n' "$SYNC" >&2; exit 1; }
