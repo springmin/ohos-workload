@@ -40,6 +40,12 @@
 #                 (dotnet-payload/bundleCodeDir/payload-in-libs) and the dotnet.zip fallback
 #                 (dotnet.marker); each missing literal fails with its name, an unreadable file
 #                 is exit 2 and a missing argument is refused
+#   T14 flavor    `ARKTS_SDK_FLAVOR=harmony` scaffolding: a fake DevEco-style HarmonyOS SDK
+#                 fixture (default/openharmony/ets + default/hms/ets with metadata) makes
+#                 `--scaffold-only` emit runtimeOS HarmonyOS with compatibleSdkVersion/target
+#                 6.1.0(23) and a clean `--check-project-deps`; a missing SDK root or a root
+#                 without hms/ets is refused with the documented message; the default flavor
+#                 stays OpenHarmony/18 and the abc ceiling stays 13.0.1.0 (source pins)
 #
 # No network, no node, no SDK, no real unpack: the malicious tarballs are created with python3's
 # tarfile into a temp dir and only ever listed (`tar tzf`), the scaffold is written by the script's
@@ -52,8 +58,7 @@
 # Exit: 0 = all checks passed; 1 = at least one check failed (work dir kept for triage).
 set -u
 
-SELFTEST_VERSION="2 (2026-09-24)"
-
+SELFTEST_VERSION="3 (2026-09-25)"
 log()     { printf '[%s] %s\n' "$(date '+%H:%M:%S')" "$*"; }
 section() { printf '\n=== %s ===\n' "$*"; }
 
@@ -373,6 +378,61 @@ sh "$BUILD_SCRIPT" --check-abc "$WORK/does-not-exist.abc" > "$WORK/T13-missing.l
 assert_rc 2 "$_rc" "T13 an unreadable abc is bad input (exit 2)"
 sh "$BUILD_SCRIPT" --check-abc > "$WORK/T13-usage.log" 2>&1 && _rc=0 || _rc=$?
 assert_rc 1 "$_rc" "T13 --check-abc without a file is refused"
+
+# ---- T14: the SDK flavor branch (ARKTS_SDK_FLAVOR) --------------------------------------
+section "T14 harmony SDK flavor scaffolding"
+# A fake DevEco-style HarmonyOS SDK: <root>/default/openharmony/ets (toolchain metadata) and
+# <root>/default/hms/ets (the HMS kit declarations). No node/hvigor is involved; only the
+# generated build-profile and the flavor validation are exercised.
+HARMONY_FAKE="$WORK/harmony-sdk"
+mkdir -p "$HARMONY_FAKE/default/openharmony/ets" "$HARMONY_FAKE/default/hms/ets"
+cat > "$HARMONY_FAKE/default/openharmony/ets/oh-uni-package.json" <<'EOF'
+{ "apiVersion": "23", "platformVersion": "6.1.0", "releaseType": "Release", "version": "6.1.0.105" }
+EOF
+HSCAFFOLD="$WORK/scaffold-harmony"
+( cd "$SELFTEST_DIR/.." && ARKTS_SDK_FLAVOR=harmony ARKTS_HARMONY_SDK_ROOT="$HARMONY_FAKE" \
+    sh "$BUILD_SCRIPT" --scaffold-only "$HSCAFFOLD" ) > "$LOG_FILE" 2>&1
+assert_rc 0 $? "T14 harmony scaffold exits 0 with a DevEco-style SDK"
+HBPROF="$HSCAFFOLD/build-profile.json5"
+assert_contains "T14 harmony build-profile sets runtimeOS HarmonyOS" "runtimeOS: 'HarmonyOS'" "$HBPROF"
+assert_contains "T14 harmony compatibleSdkVersion defaults to 6.1.0(23)" "compatibleSdkVersion: '6.1.0(23)'" "$HBPROF"
+assert_contains "T14 harmony targetSdkVersion is the combined 6.1.0(23)" "targetSdkVersion: '6.1.0(23)'" "$HBPROF"
+assert_contains "T14 harmony compileSdkVersion is the combined 6.1.0(23)" "compileSdkVersion: '6.1.0(23)'" "$HBPROF"
+assert_contains "T14 harmony keeps useNormalizedOHMUrl false" "useNormalizedOHMUrl: false" "$HBPROF"
+assert_contains "T14 the flavor info line names harmony" "flavor harmony" "$LOG_FILE"
+( cd "$SELFTEST_DIR/.." && sh "$BUILD_SCRIPT" --check-project-deps "$HSCAFFOLD" ) > "$LOG_FILE" 2>&1
+assert_rc 0 $? "T14 --check-project-deps accepts the harmony scaffold"
+# The compatibleSdkVersion override stays available (the abc gate is the real ceiling guard).
+HSCAFFOLD2="$WORK/scaffold-harmony-override"
+( cd "$SELFTEST_DIR/.." && ARKTS_SDK_FLAVOR=harmony ARKTS_HARMONY_SDK_ROOT="$HARMONY_FAKE" \
+    ARKTS_COMPATIBLE_SDK_VERSION="5.0.5(17)" sh "$BUILD_SCRIPT" --scaffold-only "$HSCAFFOLD2" ) > "$LOG_FILE" 2>&1
+assert_rc 0 $? "T14 the compatibleSdkVersion override is honoured"
+assert_contains "T14 override lands in the build-profile" "compatibleSdkVersion: '5.0.5(17)'" "$HSCAFFOLD2/build-profile.json5"
+# Missing SDK root / a root without hms: refused with the documented message.
+( cd "$SELFTEST_DIR/.." && env -u ARKTS_HARMONY_SDK_ROOT -u DEVECO_SDK_HOME ARKTS_SDK_FLAVOR=harmony \
+    sh "$BUILD_SCRIPT" --scaffold-only "$WORK/scaffold-harmony-nosdk" ) > "$LOG_FILE" 2>&1
+RC=$?
+if [ "$RC" -ne 0 ] && grep -qF "needs a HarmonyOS SDK" "$LOG_FILE"; then
+    pass_ "T14 a harmony scaffold without an SDK root is refused clearly"
+else
+    fail_ "T14 the missing-SDK refusal changed (exit $RC, see $LOG_FILE)"
+fi
+HARMONY_NOHMS="$WORK/harmony-sdk-nohms"
+mkdir -p "$HARMONY_NOHMS/default/openharmony/ets"
+cp "$HARMONY_FAKE/default/openharmony/ets/oh-uni-package.json" "$HARMONY_NOHMS/default/openharmony/ets/"
+( cd "$SELFTEST_DIR/.." && ARKTS_SDK_FLAVOR=harmony ARKTS_HARMONY_SDK_ROOT="$HARMONY_NOHMS" \
+    sh "$BUILD_SCRIPT" --scaffold-only "$WORK/scaffold-harmony-nohms" ) > "$LOG_FILE" 2>&1
+RC=$?
+if [ "$RC" -ne 0 ] && grep -qF "has no hms/ets" "$LOG_FILE"; then
+    pass_ "T14 a HarmonyOS SDK without hms/ets is refused clearly"
+else
+    fail_ "T14 the no-hms refusal changed (exit $RC, see $LOG_FILE)"
+fi
+# Source pins: the default flavor and the abc ceiling must not move.
+assert_contains "T14 default flavor is openharmony" 'SDK_FLAVOR="${ARKTS_SDK_FLAVOR:-openharmony}"' "$BUILD_SCRIPT"
+assert_contains "T14 the harmony branch pins runtimeOS HarmonyOS" "RUNTIME_OS=HarmonyOS" "$BUILD_SCRIPT"
+assert_contains "T14 the abc ceiling default stays 13.0.1.0" 'MAX_BC_VERSION="${ARKTS_MAX_BC_VERSION:-13.0.1.0}"' "$BUILD_SCRIPT"
+assert_contains "T14 the abc version check reads the header back" "abc version" "$BUILD_SCRIPT"
 
 # ---- summary -------------------------------------------------------------------------
 section "summary"

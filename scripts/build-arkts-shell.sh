@@ -38,10 +38,22 @@
 # project and replace entry/src/main/ets, the path that unblocked the device build).
 # modelVersion is the DevEco-created 6.0.2 in the two files hvigor requires to agree
 # (hvigor-config.json5 and oh-package.json5; a mismatch is INCONSISTENT_MODEL_VERSION), while
-# runtimeOS stays OpenHarmony: this tree builds against the OpenHarmony SDK 26.0.0, and with
-# runtimeOS HarmonyOS hvigor requires a '26.0.0'-style string compatibleSdkVersion for API >= 26
-# (verified error 00306042), which raises es2abc above the device's 13.0.1.0 abc limit. strictMode
-# already carries the DevEco values caseSensitiveCheck=true / useNormalizedOHMUrl=false.
+# runtimeOS stays OpenHarmony by default: this tree builds against the OpenHarmony SDK 26.0.0, and
+# with runtimeOS HarmonyOS hvigor requires a '26.0.0'-style string compatibleSdkVersion for API
+# >= 26 (verified error 00306042), which raises es2abc above the device's 13.0.1.0 abc limit.
+# strictMode already carries the DevEco values caseSensitiveCheck=true / useNormalizedOHMUrl=false.
+#
+# ARKTS_SDK_FLAVOR=harmony (opt-in, default openharmony) selects a DevEco-style HarmonyOS SDK for
+# the HMS-kit shell variant (Share/Scan/... need the hms/ets declarations the OpenHarmony SDK does
+# not ship). It is the only branch that can compile the HMS Kit code paths: a literal
+# import('@kit.ShareKit') is a hard ArkTS compile error on the OpenHarmony SDK (KIT-IMPL probe a,
+# 2026-09-25). The branch changes three things and nothing else: the SDK root comes from
+# ARKTS_HARMONY_SDK_ROOT (or DEVECO_SDK_HOME), runtimeOS is HarmonyOS and compatibleSdkVersion
+# defaults to 6.1.0(23) - the value the device-side DevEco build used to emit the accepted
+# 13.0.1.0 abc (MyApplication, 2026-09-21). The abc header gate (ARKTS_MAX_BC_VERSION 13.0.1.0)
+# is unchanged, so a HarmonyOS build that raises es2abc above the device limit still fails here.
+# The branch is scaffold-verified (--scaffold-only) but a full build needs the SDK present; see
+# docs/openharmony-hap-packaging.md "HarmonyOS SDK branch".
 # --diagnose-log <file>, --check-project-deps <dir> and --scaffold-only <dir> expose those pieces
 # to scripts/selftest-build-arkts-shell.sh without node, hvigor or an SDK.
 if [ -z "${BASH_VERSION:-}" ] && command -v bash >/dev/null 2>&1; then
@@ -49,7 +61,14 @@ if [ -z "${BASH_VERSION:-}" ] && command -v bash >/dev/null 2>&1; then
 fi
 set -e
 W="$(cd "$(dirname "$0")/.." && pwd)"
-SDK="${OHOS_SDK_ROOT:-$HOME/.harmonybrew/Cellar/ohos-sdk/26.0.0.18_2}"
+# SDK flavor (opt-in): openharmony (default, unchanged behaviour) or harmony (DevEco-style
+# HarmonyOS SDK with hms/ets, see the header). The harmony branch needs ARKTS_HARMONY_SDK_ROOT or
+# DEVECO_SDK_HOME; nothing below changes for the default.
+SDK_FLAVOR="${ARKTS_SDK_FLAVOR:-openharmony}"
+case "$SDK_FLAVOR" in
+    openharmony|harmony) ;;
+    *) printf "ERROR: ARKTS_SDK_FLAVOR must be 'openharmony' or 'harmony' (got '%s')\n" "$SDK_FLAVOR" >&2; exit 1 ;;
+esac
 VER=1.0.0-preview.24
 TPL="$W/packs/Microsoft.OpenHarmony.Sdk/$VER/templates"
 BUILD="${ARKTS_BUILD_DIR:-$W/.arkts-build}"
@@ -65,10 +84,11 @@ OUT_DIR="${OUT_DIR:-$W/dist/ets}"
 # Bundle name of the generated shell app; see the useNormalizedOHMUrl note above. Keep it in
 # sync with the HAP's OpenHarmonyBundleName (default com.example.<assembly minus hyphens>).
 BUNDLE_NAME="${ARKTS_SHELL_BUNDLE_NAME:-${KIT_BUNDLE_NAME:-com.example.hellomauiapp}}"
-# compatibleSdkVersion of the generated hvigor project. 18 is the lowest API level whose
-# es2abc output is 13.0.1.0, the newest abc the device runtime accepts (see the abc note
-# in the header). Raise it only together with ARKTS_MAX_BC_VERSION.
-COMPATIBLE_SDK_VERSION="${ARKTS_COMPATIBLE_SDK_VERSION:-18}"
+# compatibleSdkVersion of the generated hvigor project depends on the flavor (see below):
+# openharmony 18 is the lowest API level whose es2abc output is 13.0.1.0, the newest abc the
+# device runtime accepts (see the abc note in the header); harmony 6.1.0(23) is the value the
+# device-side DevEco build used to emit the same 13.0.1.0 abc. Raise it only together with
+# ARKTS_MAX_BC_VERSION.
 MAX_BC_VERSION="${ARKTS_MAX_BC_VERSION:-13.0.1.0}"
 # modelVersion of the generated project (hvigor-config.json5 *and* oh-package.json5 must agree, or
 # hvigor exits with INCONSISTENT_MODEL_VERSION). 6.0.2 is what a DevEco-created project carries;
@@ -83,9 +103,41 @@ VARIANT="${ARKTS_SHELL_VARIANT:-ui}"
 info() { printf '==> %s\n' "$*"; }
 die() { printf 'ERROR: %s\n' "$*" >&2; exit 1; }
 
+# ---- SDK flavor resolution (needs die, so it runs after the definition) ------------------
+# openharmony: the OpenHarmony SDK root (OHOS_SDK_ROOT or the harmonybrew default).
+# harmony: a DevEco-style HarmonyOS SDK root (ARKTS_HARMONY_SDK_ROOT or DEVECO_SDK_HOME). The
+#   root either is the SDK home that contains default/ (DevEco layout, e.g. .../sdk.org/sdk_1.0.0)
+#   or the versioned directory itself. The OpenHarmony toolchain half lives under
+#   <base>/openharmony/{ets,js,native,previewer,toolchains}; the HMS kit declarations live under
+#   <base>/hms/ets and are added to externalApiPaths.
+# RUNTIME_OS / SDK_ETS_ROOT / SDK_ETS_EXTRA / COMPATIBLE_SDK_VERSION / TARGET_VERSION come out of
+# here; the rest of the script reads them.
+if [ "$SDK_FLAVOR" = harmony ]; then
+    SDK="${ARKTS_HARMONY_SDK_ROOT:-${DEVECO_SDK_HOME:-}}"
+    [ -n "$SDK" ] || die "ARKTS_SDK_FLAVOR=harmony needs a HarmonyOS SDK: set ARKTS_HARMONY_SDK_ROOT (or DEVECO_SDK_HOME) to the DevEco SDK root"
+    if [ -d "$SDK/default/openharmony/ets" ]; then
+        HARMONY_SDK_BASE="$SDK/default"
+    elif [ -d "$SDK/openharmony/ets" ]; then
+        HARMONY_SDK_BASE="$SDK"
+    else
+        die "no DevEco-style HarmonyOS SDK under $SDK (expected <root>/default/openharmony/ets or <root>/openharmony/ets)"
+    fi
+    [ -d "$HARMONY_SDK_BASE/hms/ets" ] || die "the HarmonyOS SDK at $SDK has no hms/ets (the HMS kit declarations Share/Scan/... need); pass the full DevEco SDK root"
+    RUNTIME_OS=HarmonyOS
+    SDK_ETS_ROOT="$HARMONY_SDK_BASE/openharmony/ets"
+    SDK_ETS_EXTRA="$HARMONY_SDK_BASE/hms/ets"
+    COMPATIBLE_SDK_VERSION="${ARKTS_COMPATIBLE_SDK_VERSION:-6.1.0(23)}"
+else
+    SDK="${OHOS_SDK_ROOT:-$HOME/.harmonybrew/Cellar/ohos-sdk/26.0.0.18_2}"
+    RUNTIME_OS=OpenHarmony
+    SDK_ETS_ROOT="$SDK/ets"
+    SDK_ETS_EXTRA=""
+    COMPATIBLE_SDK_VERSION="${ARKTS_COMPATIBLE_SDK_VERSION:-18}"
+fi
+
 # SDK metadata (platformVersion/apiVersion); defined here so --scaffold-only can read it without
 # reaching the full SDK validation of the main path.
-read_sdk_meta() { python3 -c "import json;print(json.load(open('$SDK/ets/oh-uni-package.json'))['$1'])"; }
+read_sdk_meta() { python3 -c "import json;print(json.load(open('$SDK_ETS_ROOT/oh-uni-package.json'))['$1'])"; }
 
 # Directories every generated configuration file lives in (the ets sources are copied separately).
 make_project_dirs() {
@@ -100,9 +152,9 @@ make_project_dirs() {
 # dependencies stay empty, modelVersion agreement and the strictMode values).
 write_project_configs() {
 python3 - "$PROJ" "$PLATFORM_VERSION" "$API_VERSION" "$TYPECHECK" "$BUNDLE_NAME" \
-    "$COMPATIBLE_SDK_VERSION" "$VARIANT" "$MODEL_VERSION" <<'PY'
+    "$COMPATIBLE_SDK_VERSION" "$VARIANT" "$MODEL_VERSION" "$RUNTIME_OS" "$TARGET_VERSION" <<'PY'
 import json, os, sys
-proj, platform_version, api_version, typecheck, bundle_name, compatible_sdk_version, variant, model_version = sys.argv[1:9]
+proj, platform_version, api_version, typecheck, bundle_name, compatible_sdk_version, variant, model_version, runtime_os, target_version = sys.argv[1:11]
 typecheck_json = 'true' if typecheck == '1' else 'false'
 def w(rel, text):
     with open(os.path.join(proj, rel), 'w') as f: f.write(text)
@@ -180,10 +232,10 @@ w('build-profile.json5', f"""{{
     products: [
       {{
         name: 'default',
-        compileSdkVersion: '{platform_version}',
+        compileSdkVersion: '{target_version}',
         compatibleSdkVersion: '{compatible_sdk_version}',
-        targetSdkVersion: '{platform_version}',
-        runtimeOS: 'OpenHarmony',
+        targetSdkVersion: '{target_version}',
+        runtimeOS: '{runtime_os}',
         buildOption: {{
           strictMode: {{
             caseSensitiveCheck: true,
@@ -435,12 +487,18 @@ fi
 if [ "${1:-}" = "--scaffold-only" ]; then
     [ -n "${2:-}" ] || die "usage: $0 --scaffold-only <dir>"
     PROJ="$2"
-    if [ -f "$SDK/ets/oh-uni-package.json" ]; then
+    if [ -f "$SDK_ETS_ROOT/oh-uni-package.json" ]; then
         PLATFORM_VERSION="$(read_sdk_meta platformVersion)"
         API_VERSION="$(read_sdk_meta apiVersion)"
     else
         PLATFORM_VERSION="${ARKTS_PLATFORM_VERSION:-26.0.0}"
         API_VERSION="${ARKTS_API_VERSION:-26}"
+    fi
+    if [ "$SDK_FLAVOR" = harmony ]; then
+        # DevEco-style combined version string (compatibleSdkVersion/targetSdkVersion alike).
+        TARGET_VERSION="$PLATFORM_VERSION($API_VERSION)"
+    else
+        TARGET_VERSION="$PLATFORM_VERSION"
     fi
     make_project_dirs
     write_project_configs
@@ -448,7 +506,7 @@ if [ "${1:-}" = "--scaffold-only" ]; then
     if [ "$_crc" -ne 0 ]; then
         die "the generated hvigor-config.json5 failed the hvigor-plugin dependency guard (see above)"
     fi
-    info "scaffold configs written: $PROJ (modelVersion $MODEL_VERSION, runtimeOS OpenHarmony, compatibleSdkVersion $COMPATIBLE_SDK_VERSION)"
+    info "scaffold configs written: $PROJ (flavor $SDK_FLAVOR, modelVersion $MODEL_VERSION, runtimeOS $RUNTIME_OS, compatibleSdkVersion $COMPATIBLE_SDK_VERSION, targetSdkVersion $TARGET_VERSION)"
     exit 0
 fi
 
@@ -466,7 +524,7 @@ if ! node_runs "$NODE_BIN"; then
         die "node '$NODE_BIN' cannot run a trivial script (set NODE= to a working node >= 18)"
     fi
 fi
-[ -f "$SDK/ets/oh-uni-package.json" ] || die "oh-uni-package.json not found under $SDK (set OHOS_SDK_ROOT)"
+[ -f "$SDK_ETS_ROOT/oh-uni-package.json" ] || die "oh-uni-package.json not found under $SDK_ETS_ROOT (set OHOS_SDK_ROOT, or ARKTS_HARMONY_SDK_ROOT for the harmony flavor)"
 
 # hvigor's own hap packaging needs java; the ArkTS compilation does not. Use JAVA_HOME or
 # a harmonybrew JDK when present.
@@ -480,7 +538,13 @@ fi
 
 PLATFORM_VERSION="$(read_sdk_meta platformVersion)"
 API_VERSION="$(read_sdk_meta apiVersion)"
-info "SDK $SDK (platform $PLATFORM_VERSION, API $API_VERSION)"
+if [ "$SDK_FLAVOR" = harmony ]; then
+    # DevEco-style combined version string (compatibleSdkVersion/targetSdkVersion alike).
+    TARGET_VERSION="$PLATFORM_VERSION($API_VERSION)"
+else
+    TARGET_VERSION="$PLATFORM_VERSION"
+fi
+info "SDK $SDK (flavor $SDK_FLAVOR, platform $PLATFORM_VERSION, API $API_VERSION)"
 
 # 1) hvigor ------------------------------------------------------------------
 # The two tarballs are downloaded and then executed by node (hvigor.js assembleHap), so they
@@ -582,11 +646,19 @@ if [ ! -f "$HVIGOR_JS" ]; then
 fi
 
 # 2) version-nested SDK root -------------------------------------------------
-SDK_ROOT="$BUILD/sdk"
-rm -rf "$SDK_ROOT"; mkdir -p "$SDK_ROOT/$PLATFORM_VERSION"
-for c in ets js native previewer toolchains; do
-    [ -e "$SDK/$c" ] && ln -s "$SDK/$c" "$SDK_ROOT/$PLATFORM_VERSION/$c"
-done
+# The default flavor exposes a version-nested symlink root for local.properties (hvigor resolves
+# the SDK from it). The harmony flavor keeps the DevEco SDK home as-is: its layout already carries
+# default/openharmony (toolchain) and default/hms (kits), and hvigor resolves both from
+# DEVECO_SDK_HOME.
+if [ "$SDK_FLAVOR" = harmony ]; then
+    SDK_ROOT="$SDK"
+else
+    SDK_ROOT="$BUILD/sdk"
+    rm -rf "$SDK_ROOT"; mkdir -p "$SDK_ROOT/$PLATFORM_VERSION"
+    for c in ets js native previewer toolchains; do
+        [ -e "$SDK/$c" ] && ln -s "$SDK/$c" "$SDK_ROOT/$PLATFORM_VERSION/$c"
+    done
+fi
 
 # 3) project scaffold --------------------------------------------------------
 case "$VARIANT" in
@@ -636,12 +708,19 @@ info "running hvigor assembleHap"
 # hvigor's own PackageHap step needs java (for the packing jar); the ArkTS compilation
 # (everything this script needs) runs before it, so a failed PackageHap is tolerated.
 LOG="$BUILD/hvigor-build.log"
+# externalApiPaths: the OpenHarmony ets declarations always; the harmony flavor additionally
+# exposes the HMS kit declarations (hms/ets), which is what lets the Share/Scan/... sinks compile
+# against their real types there (the OpenHarmony SDK has no @kit.ShareKit declaration at all).
+case "$SDK_FLAVOR" in
+    harmony) EXTERNAL_API_PATHS="$HARMONY_SDK_BASE/openharmony/ets/api:$HARMONY_SDK_BASE/openharmony/ets/kits:$HARMONY_SDK_BASE/openharmony/ets/arkts:$SDK_ETS_EXTRA" ;;
+    *)       EXTERNAL_API_PATHS="$SDK/ets/api:$SDK/ets/kits:$SDK/ets/arkts" ;;
+esac
 run_hvigor() {
     ( cd "$PROJ" && \
       env -i PATH="$(dirname "$NODE_BIN")${JAVA_HOME:+:$JAVA_HOME/bin}:/usr/bin:/bin" HOME="$HOME" \
           ${JAVA_HOME:+JAVA_HOME="$JAVA_HOME"} \
           OHOS_BASE_SDK_HOME="$SDK" DEVECO_SDK_HOME="$SDK" \
-          externalApiPaths="$SDK/ets/api:$SDK/ets/kits:$SDK/ets/arkts" \
+          externalApiPaths="$EXTERNAL_API_PATHS" \
           "$NODE_BIN" "$HVIGOR_JS" \
             assembleHap -m module -p module=entry@default -p product=default -p buildMode=debug \
             > "$LOG" 2>&1 )
