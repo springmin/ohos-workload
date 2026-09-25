@@ -54,9 +54,10 @@ permissions:
 # mutable feature/openharmony branch, so a push to the fork cannot change what this gate compiles.
 # The default is the feature/openharmony tip: fc7fbfdc, which carries the FIX-INTEROP slice
 # work (#4-#7: source-generated JSON payloads, trim/AOT-safe handler wiring) on top of the
-# Share/Scan kit extra and the 236d18a9 harness baseline. The suite pins 321 checks / floor 301
-# and they hold at this compiled tree; advance the pin deliberately and refresh this comment
-# when the harness pins or the tip move (workflow_dispatch can compile any commit).
+# Share/Scan kit extra and the 236d18a9 harness baseline. The suite pins 324 checks / floor 304
+# and the full run is green at this compiled tree (FIX-INTEROP verification: 324/324, floor 304);
+# advance the pin deliberately and refresh this comment when the harness pins or the tip move
+# (workflow_dispatch can compile any commit).
 env:
   MAUI_OHOS_REF: ${{ github.event.inputs.maui_ohos_ref || 'fc7fbfdc03913a7e3ce0bfccc7ec7481bf7974d5' }}
   # setup-dotnet installs the requested 11.0.x preview into DOTNET_INSTALL_DIR; on Linux that
