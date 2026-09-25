@@ -3140,10 +3140,22 @@ int a7ThreadGuardAt = a7ThreadAt < 0 ? -1 : s2Napi.IndexOf("std::lock_guard<std:
 int a7ThreadFailAt = a7ThreadGuardAt < 0 ? -1 : s2Napi.IndexOf("g_launch_requested = false;   // the launch failed: a retry is allowed", a7ThreadGuardAt, StringComparison.Ordinal);
 int a7HandleAt = a7ThreadAt < 0 ? -1 : s2Napi.IndexOf("g_handle = handle;", a7ThreadAt, StringComparison.Ordinal);
 int a7CreateFailAt = a7SetAt < 0 ? -1 : s2Napi.IndexOf("g_launch_requested = false;   // nothing was launched: a retry is allowed", a7SetAt, StringComparison.Ordinal);
+// A7c: the NAPI host state is per-env and JS-thread-disciplined: every binding registers an
+// env cleanup hook, tears its references and threadsafe functions down with the env that
+// created them, and a new env replaces (never mutates) the previous binding; every shell
+// callback goes through HostCallCallback's JS-thread/env gate and the request/answer sinks
+// (launcher/browser/share, flashlight, focus) answer through the HostCallJs reply instead of a
+// cross-thread napi_call_function.
+bool a7EnvCleanup = s2Napi.Contains("napi_add_env_cleanup_hook(env, HostEnvCleanup, slot)") &&
+    s2Napi.Contains("napi_delete_reference(env, binding.exports_ref);") &&
+    s2Napi.Contains("HostBindingTeardown(&g_binding_slots[i], false);") &&
+    s2Napi.Contains("static napi_status HostCallCallback(napi_env env, napi_value this_arg, napi_value function,") &&
+    s2Napi.Contains("if (env == nullptr || g_host->env != env || !HostIsJsThread()) {") &&
+    s2Napi.Contains("static napi_status HostCallJs(HostSink& sink, SinkCall* call, bool* bool_out, int32_t* int_out)");
 bool a7NapiOk = s2Napi.Contains(a7NapiGlobals) && a7GuardAt > a7StartAt && a7RejectAt > a7GuardAt && a7SetAt > a7RejectAt &&
     a7ThreadFailAt > a7ThreadGuardAt && a7ThreadFailAt - a7ThreadGuardAt < 200 &&
-    a7ThreadFailAt < a7HandleAt && a7CreateFailAt > a7SetAt;
-Console.WriteLine($"[verify] a7 napi launch guard lock={s2Napi.Contains(a7NapiGlobals)} rejectSecond={a7RejectAt > a7GuardAt && a7SetAt > a7RejectAt} launchFailedCleared={a7ThreadFailAt > a7ThreadGuardAt} createFailedCleared={a7CreateFailAt > a7SetAt} handlePublished={a7ThreadFailAt < a7HandleAt} source='{s2NapiPath ?? "<missing>"}' assert={a7NapiOk}");
+    a7ThreadFailAt < a7HandleAt && a7CreateFailAt > a7SetAt && a7EnvCleanup;
+Console.WriteLine($"[verify] a7 napi launch guard lock={s2Napi.Contains(a7NapiGlobals)} rejectSecond={a7RejectAt > a7GuardAt && a7SetAt > a7RejectAt} launchFailedCleared={a7ThreadFailAt > a7ThreadGuardAt} createFailedCleared={a7CreateFailAt > a7SetAt} handlePublished={a7ThreadFailAt < a7HandleAt} envCleanup={a7EnvCleanup} source='{s2NapiPath ?? "<missing>"}' assert={a7NapiOk}");
 if (!a7NapiOk)
 {
     throw new InvalidOperationException(
@@ -3155,7 +3167,7 @@ if (!a7NapiOk)
 // A7b: the native entry's guard (g_launch_in_progress under g_context_mutex) rejects a second
 // start before anything is allocated, is set and cleared under the lock and cleared again when
 // the handle is published; every failure path before that runs OhosHostEndLaunch(), including
-// the payload-in-libs app_dir resolution failure (six calls, all before the handle publish).
+// the payload-in-libs app_dir resolution failure and the NativeAOT start_app rejection (seven calls, all before the handle publish).
 int a7NativeAt = cSource?.IndexOf("int ohos_host_start_app(const char* app_dir,", StringComparison.Ordinal) ?? -1;
 int a7NativeLockAt = a7NativeAt < 0 ? -1 : cSource!.IndexOf("pthread_mutex_lock(&g_context_mutex);", a7NativeAt, StringComparison.Ordinal);
 int a7NativeRejectAt = a7NativeLockAt < 0 ? -1 : cSource!.IndexOf("if (g_app != NULL || g_launch_in_progress) {", a7NativeLockAt, StringComparison.Ordinal);
@@ -3166,8 +3178,8 @@ bool a7NativeOk = cSource?.Contains("static int g_launch_in_progress = 0;") == t
     a7NativeRejectAt > a7NativeLockAt && a7NativeSetAt > a7NativeRejectAt && a7NativeUnlockAt > a7NativeSetAt &&
     cSource.Contains("g_app = handle;\n    g_launch_in_progress = 0;") &&
     cSource.Contains("static void OhosHostEndLaunch(void) {\n    pthread_mutex_lock(&g_context_mutex);\n    g_launch_in_progress = 0;") &&
-    a7EndLaunchCalls == 6;
-Console.WriteLine($"[verify] a7 native launch guard guard={cSource?.Contains("static int g_launch_in_progress = 0;") == true} rejectSecond={a7NativeRejectAt > a7NativeLockAt && a7NativeSetAt > a7NativeRejectAt} setUnderLock={a7NativeSetAt > a7NativeRejectAt && a7NativeUnlockAt > a7NativeSetAt} clearedOnPublish={cSource?.Contains("g_app = handle;\n    g_launch_in_progress = 0;") == true} failurePaths={a7EndLaunchCalls}/6 source='{cSourcePath ?? "<missing>"}' assert={a7NativeOk}");
+    a7EndLaunchCalls == 7;
+Console.WriteLine($"[verify] a7 native launch guard guard={cSource?.Contains("static int g_launch_in_progress = 0;") == true} rejectSecond={a7NativeRejectAt > a7NativeLockAt && a7NativeSetAt > a7NativeRejectAt} setUnderLock={a7NativeSetAt > a7NativeRejectAt && a7NativeUnlockAt > a7NativeSetAt} clearedOnPublish={cSource?.Contains("g_app = handle;\n    g_launch_in_progress = 0;") == true} failurePaths={a7EndLaunchCalls}/7 source='{cSourcePath ?? "<missing>"}' assert={a7NativeOk}");
 if (!a7NativeOk)
 {
     throw new InvalidOperationException(
@@ -3344,7 +3356,7 @@ bool b1PermissionNative = cSource?.Contains("void ohos_host_request_permission(c
     cSource.Contains("g_app->bridge_permission_result(request_id, granted != 0 ? 1 : 0);") &&
     hSource?.Contains("void ohos_host_request_permission(const char* permission, int request_id);") == true &&
     hSource.Contains("void ohos_host_register_permission_result(void* callback);") == true;
-bool b1PermissionNapi = s2Napi.Contains("HostSink g_permission_sink(\"permission\", false);") &&
+bool b1PermissionNapi = s2Napi.Contains("HostSink permission{\"permission\", false};") &&
     s2Napi.Contains("ohos_host_permission_set_listener(OnPermissionRequest);") &&
     s2Napi.Contains("ohos_host_permission_complete(requestId, granted);") &&
     s2Napi.Contains("\"registerPermissionSink\"") && s2Napi.Contains("\"permissionResult\"");
@@ -3430,7 +3442,7 @@ bool b1ClipboardNative = cSource?.Contains("void ohos_host_clipboard_request(int
     cSource.Contains("g_app->bridge_clipboard_changed();") &&
     hSource?.Contains("void ohos_host_clipboard_request(int request_id, int op, const char* text);") == true &&
     hSource.Contains("void ohos_host_clipboard_register_changed(void* callback);") == true;
-bool b1ClipboardNapi = s2Napi.Contains("HostSink g_clipboard_sink(\"clipboard\", false);") &&
+bool b1ClipboardNapi = s2Napi.Contains("HostSink clipboard{\"clipboard\", false};") &&
     s2Napi.Contains("ohos_host_clipboard_set_listener(OnClipboardRequest);") &&
     s2Napi.Contains("ohos_host_clipboard_complete(requestId, rc, text.c_str());") &&
     s2Napi.Contains("ohos_host_clipboard_notify_changed();") &&
@@ -3887,7 +3899,7 @@ bool b2ScreenshotManaged = b2ScreenshotImport is not null &&
     b2ScreenshotPinvoke?.GetParameters() is { Length: 1 } b2ScreenshotParams &&
     b2ScreenshotParams[0].ParameterType == typeof(string);
 bool b2ScreenshotNative = s2Napi.Contains("extern \"C\" int ohos_host_screenshot(const char* out_path)") &&
-    s2Napi.Contains("HostSink g_screenshot_sink(\"screenshot\", false);") &&
+    s2Napi.Contains("HostSink screenshot{\"screenshot\", false};") &&
     hSource?.Contains("int ohos_host_screenshot(const char* out_path);") == true;
 bool b2ScreenshotShell = b1Shell.Contains("this.hostCall('registerScreenshotSink', typeof host !== 'undefined' && typeof host.registerScreenshotSink === 'function'") &&
     b1Shell.Contains("host.registerScreenshotSink(async (outPath: string): Promise<void>") &&
@@ -3926,7 +3938,7 @@ bool b2GeocodeNative = cSource?.Contains("int ohos_host_geocode_request(int op, 
     hSource?.Contains("int ohos_host_geocode_request(int op, const char* arg, int request_id);") == true &&
     hSource.Contains("void ohos_host_register_geocode_result(void* callback);") == true &&
     hSource.Contains("void ohos_host_geocode_complete(int request_id, int rc, const char* json);") == true;
-bool b2GeocodeNapi = s2Napi.Contains("HostSink g_geocode_sink(\"geocode\", false);") &&
+bool b2GeocodeNapi = s2Napi.Contains("HostSink geocode{\"geocode\", false};") &&
     s2Napi.Contains("ohos_host_geocode_set_listener(OnGeocodeRequest);") &&
     s2Napi.Contains("ohos_host_geocode_complete(requestId, rc, json.c_str());") &&
     s2Napi.Contains("\"registerGeocodeSink\"") && s2Napi.Contains("\"geocodeResult\"");
