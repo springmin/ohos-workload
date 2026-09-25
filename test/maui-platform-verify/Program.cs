@@ -12,7 +12,7 @@ using Microsoft.Maui.Platform;
 // after the fuzz tail) instead of letting every caller repeat its own threshold constant.
 VerifyLineCountingWriter verifyStdout = new(Console.Out);
 Console.SetOut(verifyStdout);
-const int verifyCheckTotal = 321;                     // documented full [verify] line count
+const int verifyCheckTotal = 324;                     // documented full [verify] line count
 const int verifyCheckFloor = verifyCheckTotal - 20;   // documented floor convention (total - 20)
 
 // A small image file for the Image handler.
@@ -1172,8 +1172,8 @@ if (!jsMessageOk)
 // plus InvokeJavaScriptAsync over the same message protocol) ride the same shell channel. The
 // handler is registered in SliceHandlers, completes requests off-device instead of hanging, and
 // inbound __RawMessage payloads (and plain dotnetHost payloads) reach RawMessageReceived.
-bool hybridRegistered = MauiOpenHarmonyExtensions.SliceHandlers.TryGetValue(typeof(IHybridWebView), out Type? hybridType) &&
-                        hybridType == typeof(OpenHarmonyHybridWebViewHandler);
+bool hybridRegistered = MauiOpenHarmonyExtensions.SliceHandlers.TryGetValue(typeof(IHybridWebView), out SliceHandlerRegistration? hybridType) &&
+                        hybridType?.HandlerType == typeof(OpenHarmonyHybridWebViewHandler);
 var hybridProbe = new Microsoft.Maui.Controls.HybridWebView { HeightRequest = 200 };
 OpenHarmonyHandlerConnector.Connect(hybridProbe);
 string? hybridEval = null;
@@ -2418,7 +2418,7 @@ bool s1HandlerOk = s1Handler.Contains("OpenHarmonyBlazorWebViewHandler : OpenHar
     s1Handler.Contains("AddToWebViewManagerAsync") &&
     s1Handler.Contains("RemoveFromWebViewManagerAsync");
 bool s1RegistrationOk = s1Extensions.Contains("#if OPENHARMONY_BLAZOR_WEBVIEW") &&
-    s1Extensions.Contains("[typeof(Microsoft.AspNetCore.Components.WebView.Maui.IBlazorWebView)] = typeof(OpenHarmonyBlazorWebViewHandler)");
+    s1Extensions.Contains("[typeof(Microsoft.AspNetCore.Components.WebView.Maui.IBlazorWebView)] = new(typeof(OpenHarmonyBlazorWebViewHandler))");
 bool s1SourceOk = s1HandlerOk && s1RegistrationOk;
 Console.WriteLine($"[verify] s1 blazor handler/manager handler={s1Handler.Length > 0} startup={s1Handler.Contains("StartWebViewCoreIfPossible")} rootComponents={s1Handler.Contains("AddToWebViewManagerAsync")} registered={s1RegistrationOk} gated={s1Extensions.Contains("#if OPENHARMONY_BLAZOR_WEBVIEW")} source='{s1HandlerPath ?? "<missing>"}' assert={s1SourceOk}");
 if (!s1SourceOk)
@@ -2602,6 +2602,104 @@ Console.WriteLine($"[verify] s4 share uri='{s4UriAbsolute}' relative='{s4UriRela
 if (!s4DispatchOk)
 {
     throw new InvalidOperationException("the S4 share dispatch/URI assertion failed");
+}
+
+// ---- KIT-IMPL: HMS Kit platform extensions (Share Kit multi-file + Scan Kit default UI) -------
+// The shell compiles these probes on the OpenHarmony SDK only because the module specifiers stay
+// in variables and the resolved value is cast to a local structural interface: a literal
+// import('@kit.ShareKit') is a hard ArkTS compile error there (10505001, KIT-IMPL probe a). The
+// sinks register only when the runtime provides the kit, so the default OpenHarmony shell
+// registers neither and the managed bridges degrade off-device (no host library) without
+// throwing. These checks pin the shell probe/sink shape, the host+managed contract and that
+// degradation.
+
+// KIT1: the shell template (preview.24) carries both probes and their sinks, the call sites sit
+// in aboutToAppear, and all three pack templates carry the same block.
+string? kitShellPath = FindHostSource("packs/Microsoft.OpenHarmony.Sdk/1.0.0-preview.24/templates/ets/pages/Index.ets");
+string kitShell = kitShellPath is null ? string.Empty : File.ReadAllText(kitShellPath);
+bool kitShellShare = kitShell.Contains("const kitName: string = '@kit.ShareKit';") &&
+    kitShell.Contains("const kit = (await import(kitName)) as HmsShareKit;") &&
+    kitShell.Contains("host.registerShareKitSink((uris: string, title: string): boolean => {") &&
+    kitShell.Contains("private dispatchShareKit(uris: string, title: string): boolean {") &&
+    kitShell.Contains("fileUri.getUriFromPath(path)") &&
+    kitShell.Contains("utd.UniformDataType.FILE");
+bool kitShellScan = kitShell.Contains("canIUse('SystemCapability.Multimedia.Scan.ScanBarcode')") &&
+    kitShell.Contains("const kitName: string = '@kit.ScanKit';") &&
+    kitShell.Contains("const kit = (await import(kitName)) as HmsScanKit;") &&
+    kitShell.Contains("host.registerScanSink((requestId: number): void => {") &&
+    kitShell.Contains("private async runScan(requestId: number): Promise<void> {") &&
+    kitShell.Contains("host.notifyScanResult(requestId, code, value);") &&
+    kitShell.Contains("scanCode === 1000500002 ? -2 : -1");
+bool kitShellCallsites = kitShell.Contains("this.probeShareKit();") && kitShell.Contains("this.probeScanKit();") &&
+    kitShell.Contains("Share Kit unavailable on this device:");
+int kitShellPacks = 0;
+string[] kitShellPackVersions = { "1.0.0-preview.22", "1.0.0-preview.23", "1.0.0-preview.24" };
+foreach (string kitPackVersion in kitShellPackVersions)
+{
+    string? kitPackPath = FindHostSource($"packs/Microsoft.OpenHarmony.Sdk/{kitPackVersion}/templates/ets/pages/Index.ets");
+    string kitPackShell = kitPackPath is null ? string.Empty : File.ReadAllText(kitPackPath);
+    kitShellPacks += kitPackShell.Contains("registerShareKitSink") && kitPackShell.Contains("registerScanSink") &&
+        kitPackShell.Contains("canIUse('SystemCapability.Multimedia.Scan.ScanBarcode')") ? 1 : 0;
+}
+bool kitShellOk = kitShellShare && kitShellScan && kitShellCallsites && kitShellPacks == kitShellPackVersions.Length;
+Console.WriteLine($"[verify] kit1 shell probe share={kitShellShare} scan={kitShellScan} callsites={kitShellCallsites} packs={kitShellPacks}/{kitShellPackVersions.Length} assert={kitShellOk}");
+if (!kitShellOk)
+{
+    throw new InvalidOperationException("the HMS kit shell probes/sinks are missing or drifted");
+}
+
+// KIT2: the host and managed halves: the C ABI declarations, the NAPI sink/notify names, the
+// napi module table entries and the managed P/Invoke entry points + public API baseline.
+string? kitHeaderPath = FindHostSource("src/OpenHarmonyHost/openharmony_host.h");
+string kitHeader = kitHeaderPath is null ? string.Empty : File.ReadAllText(kitHeaderPath);
+string? kitNapiPath = FindHostSource("src/OpenHarmonyHost/host_napi.cpp");
+string kitNapi = kitNapiPath is null ? string.Empty : File.ReadAllText(kitNapiPath);
+string? kitManagedPath = FindHostSource("OpenHarmonyHmsKits.cs");
+string kitManaged = kitManagedPath is null ? string.Empty : File.ReadAllText(kitManagedPath);
+string? kitLauncherPath = FindHostSource("OpenHarmonyAppLauncher.cs");
+string kitLauncher = kitLauncherPath is null ? string.Empty : File.ReadAllText(kitLauncherPath);
+string? kitPublicApiPath = FindHostSource("src/Core/src/PublicAPI/net-openharmony/PublicAPI.Unshipped.txt");
+string kitPublicApi = kitPublicApiPath is null ? string.Empty : File.ReadAllText(kitPublicApiPath);
+bool kitHostHeader = kitHeader.Contains("int ohos_host_share_kit_share(const char* uris, const char* title);") &&
+    kitHeader.Contains("int ohos_host_scan_available(void);") &&
+    kitHeader.Contains("int ohos_host_scan_request(int request_id);") &&
+    kitHeader.Contains("void ohos_host_scan_register_result(void* callback);") &&
+    kitHeader.Contains("void ohos_host_scan_result(int request_id, int code, const char* value);");
+bool kitHostNapi = kitNapi.Contains("extern \"C\" int ohos_host_share_kit_share(const char* uris, const char* title)") &&
+    kitNapi.Contains("HostCallJs(g_share_kit_sink, call, &handled, nullptr)") &&
+    kitNapi.Contains("extern \"C\" int ohos_host_scan_available(void)") &&
+    kitNapi.Contains("g_scan_sink.tsfn != nullptr") &&
+    kitNapi.Contains("extern \"C\" int ohos_host_scan_request(int request_id)") &&
+    kitNapi.Contains("{\"registerShareKitSink\", nullptr, RegisterShareKitSink") &&
+    kitNapi.Contains("{\"registerScanSink\", nullptr, RegisterScanSink") &&
+    kitNapi.Contains("{\"notifyScanResult\", nullptr, NotifyScanResult");
+bool kitManagedOk = kitManaged.Contains("EntryPoint = \"ohos_host_share_kit_share\"") &&
+    kitManaged.Contains("EntryPoint = \"ohos_host_scan_available\"") &&
+    kitManaged.Contains("EntryPoint = \"ohos_host_scan_request\"") &&
+    kitManaged.Contains("EntryPoint = \"ohos_host_scan_register_result\"") &&
+    kitManaged.Contains("public static async Task<string?> ScanAsync") &&
+    kitManaged.Contains("public static bool IsSupported") &&
+    kitLauncher.Contains("OpenHarmonyShareKitBridge.TryShare(uris, request!.Title)") &&
+    kitPublicApi.Contains("Microsoft.Maui.Platform.OpenHarmonyScan.ScanAsync(");
+bool kitPinsOk = kitHostHeader && kitHostNapi && kitManagedOk;
+Console.WriteLine($"[verify] kit2 bridge pins header={kitHostHeader} napi={kitHostNapi} managed={kitManagedOk} assert={kitPinsOk}");
+if (!kitPinsOk)
+{
+    throw new InvalidOperationException("the HMS kit host/managed bridge contract drifted");
+}
+
+// KIT3: off-device degradation of the two managed bridges (no host library): the Share Kit
+// dispatch answers false, ScanAsync completes with null and IsSupported answers false; all
+// without throwing (the status notes are written by the bridges themselves).
+bool kitShareTry = OpenHarmonyShareKitBridge.TryShare(
+    new[] { "file:///data/verify-a.txt", "file:///data/verify-b.txt" }, "verify");
+string? kitScanValue = await OpenHarmonyScan.ScanAsync();
+bool kitScanSupported = OpenHarmonyScan.IsSupported;
+bool kitDegradeOk = !kitShareTry && kitScanValue is null && !kitScanSupported;
+Console.WriteLine($"[verify] kit3 degradation shareDispatch={kitShareTry} scanValue={(kitScanValue ?? "<null>")} scanSupported={kitScanSupported} assert={kitDegradeOk}");
+if (!kitDegradeOk)
+{
+    throw new InvalidOperationException("the HMS kit bridges must degrade off-device instead of throwing");
 }
 
 // ---- V8: on-demand app-context publish (native -> napi -> shell -> managed bridge) -------------
@@ -3261,12 +3359,12 @@ string? b3BlazorPath = FindHostSource("OpenHarmonyBlazorWebViewHandler.cs");
 string b3Blazor = b3BlazorPath is null ? string.Empty : File.ReadAllText(b3BlazorPath);
 bool b3HybridOk = b3Hybrid.Contains("private async Task SendRawMessageCoreAsync(string json)") &&
     b3Hybrid.Contains("\"if(window.__ohHybridId!==id){return 'skip';}\" +") &&
-    b3Hybrid.Contains("JsonSerializer.Serialize(_pageId) + \",\" + json + \")\"") &&
+    b3Hybrid.Contains("JsonSerializer.Serialize(_pageId, OpenHarmonySliceJsonContext.Default.String) + \",\" + json + \")\"") &&
     b3Hybrid.Contains("result is not null && result.Trim().Trim('\"') == \"skip\"") &&
     b3Hybrid.Contains("hybrid raw message skipped: the loaded document is not this handler's page");
 bool b3BlazorOk = b3Blazor.Contains("protected override void SendMessage(string message)") &&
     b3Blazor.Contains("\"if(window.__ohBlazorId!==id){return 'skip';}\" +") &&
-    b3Blazor.Contains("JsonSerializer.Serialize(_pageDocumentId) + \",\" + JsonSerializer.Serialize(message) + \")\"") &&
+    b3Blazor.Contains("JsonSerializer.Serialize(_pageDocumentId, OpenHarmonySliceJsonContext.Default.String) + \",\" + JsonSerializer.Serialize(message, OpenHarmonySliceJsonContext.Default.String) + \")\"") &&
     b3Blazor.Contains("result is not null && result.Trim().Trim('\"') == \"skip\"") &&
     b3Blazor.Contains("blazor message skipped: the loaded document is not this handler's page");
 bool b3MarkerChecks = b3Hybrid.Contains("if(window.__ohHybridId!==id){return 'skip';}") &&
@@ -3801,8 +3899,8 @@ if (!b2GeoParseOk)
 // ModuleInitializer (verified, no registration added); the window handler was already
 // registered (verified too).
 bool b2ImageButtonRegistered = MauiOpenHarmonyExtensions.SliceHandlers.TryGetValue(
-        typeof(Microsoft.Maui.Controls.ImageButton), out Type? b2ImageButtonType) &&
-    b2ImageButtonType == typeof(OpenHarmonyImageButtonHandler) &&
+        typeof(Microsoft.Maui.Controls.ImageButton), out SliceHandlerRegistration? b2ImageButtonType) &&
+    b2ImageButtonType?.HandlerType == typeof(OpenHarmonyImageButtonHandler) &&
     OpenHarmonyHandlerConnector.FindSliceHandlerType(typeof(Microsoft.Maui.Controls.ImageButton)) == typeof(OpenHarmonyImageButtonHandler);
 var b2ImageButton = new Microsoft.Maui.Controls.ImageButton { HeightRequest = 40, WidthRequest = 40 };
 OpenHarmonyHandlerConnector.Connect(b2ImageButton);
@@ -3818,8 +3916,8 @@ if (!(b2ImageButtonRegistered && b2ImageButtonConnected))
 // recorded because the shell-side setter lands separately). This is the optional window pin.
 bool b2ScreenReaderOk = OpenHarmonySemanticScreenReader.IsInstalled &&
     Microsoft.Maui.Accessibility.SemanticScreenReader.Default is OpenHarmonySemanticScreenReader;
-bool b2WindowRegistered = MauiOpenHarmonyExtensions.SliceHandlers.TryGetValue(typeof(IWindow), out Type? b2WindowType) &&
-    b2WindowType == typeof(OpenHarmonyWindowHandler) &&
+bool b2WindowRegistered = MauiOpenHarmonyExtensions.SliceHandlers.TryGetValue(typeof(IWindow), out SliceHandlerRegistration? b2WindowType) &&
+    b2WindowType?.HandlerType == typeof(OpenHarmonyWindowHandler) &&
     OpenHarmonyHandlerConnector.FindSliceHandlerType(typeof(IWindow)) == typeof(OpenHarmonyWindowHandler);
 bool b2WindowMapperKey = OpenHarmonyWindowHandler.Mapper is Microsoft.Maui.IPropertyMapper b2WindowMapper &&
     b2WindowMapper.GetKeys().Contains(nameof(IWindow.Title));
@@ -4880,9 +4978,15 @@ if (!n27ApiOk)
 }
 
 // RB-3: the SupportedPlatform declaration in this repository's Directory.Build.props (the CA1418
-// fix: one declaration for every project instead of per-project NoWarn suppressions).
-string? n28PropsPath = FindHostSource("Directory.Build.props");
-string n28Props = n28PropsPath is null ? string.Empty : File.ReadAllText(n28PropsPath);
+// fix: one declaration for every project instead of per-project NoWarn suppressions). The
+// declaration lives in the *repository root* props; the plain name resolves to the nearest
+// Directory.Build.props, which is the test tree's (test/Directory.Build.props), so anchor the
+// lookup on the repository-root marker instead.
+string? n28PreflightPath = FindHostSource("scripts/preflight.sh");
+string? n28PropsPath = n28PreflightPath is null
+    ? null
+    : Path.Combine(Path.GetDirectoryName(Path.GetDirectoryName(n28PreflightPath)!)!, "Directory.Build.props");
+string n28Props = n28PropsPath is not null && File.Exists(n28PropsPath) ? File.ReadAllText(n28PropsPath) : string.Empty;
 bool n28PropsOk = n28Props.Contains("<SupportedPlatform Include=\"openharmony\" />") &&
     n28Props.Contains("it once for every project (the SDK's SupportedPlatform pattern)");
 Console.WriteLine($"[verify] rb supportedplatform declared={n28PropsOk} source='{n28PropsPath ?? "<missing>"}' assert={n28PropsOk}");
