@@ -24,6 +24,11 @@
     <!-- The pack DLL is shipped as bytes; a rebuilt assembly must not embed the build machine. -->
     <Deterministic>true</Deterministic>
     <ContinuousIntegrationBuild Condition="'$(CI)' == 'true'">true</ContinuousIntegrationBuild>
+    <!-- Reproducibility across commits: the SDK otherwise embeds the git revision in
+         AssemblyInformationalVersion, so the shipped bytes would change with every commit (and
+         the pack-drift gate in scripts/selftest-tasks.sh S3 could never settle). The assembly
+         version is the task contract; the revision belongs to the source, not the artifact. -->
+    <IncludeSourceRevisionInInformationalVersion>false</IncludeSourceRevisionInInformationalVersion>
     <DebugType>portable</DebugType>
     <GenerateDocumentationFile>false</GenerateDocumentationFile>
   </PropertyGroup>
