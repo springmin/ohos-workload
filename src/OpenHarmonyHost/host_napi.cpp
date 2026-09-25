@@ -21,7 +21,12 @@
 #include <string.h>
 #include <unistd.h>
 
+#include <chrono>
+#include <condition_variable>
+#include <exception>
+#include <memory>
 #include <mutex>
+#include <utility>
 
 // Forward declarations: the module function table below references these (defined at the end).
 napi_value AttachAccessibilityNode(napi_env env, napi_callback_info info);
@@ -48,10 +53,9 @@ OhosHostAppHandle* g_handle = nullptr;
 std::mutex g_launch_lock;
 bool g_launch_requested = false;
 
-// XComponent (surface) support -------------------------------------------------
-napi_env g_env = nullptr;
-napi_ref g_exports_ref = nullptr;
-OH_NativeXComponent* g_xcomponent = nullptr;
+// XComponent (surface) support: the env, the exports reference and the bound XComponent live
+// in the current HostBinding (see the g_* accessors below); nothing here is a process-wide
+// global any more.
 
 // Host -> shell dispatch over napi_threadsafe_function ---------------------------
 // The managed app runs on its own thread, but ArkTS values and the shell's callbacks may
@@ -93,7 +97,38 @@ struct SinkArg {
     std::string string_value;
 };
 
-// One notification: the argument vector the shell callback will be invoked with.
+struct HostJsReply;
+struct HostMenuSnapshot;
+
+// The result a synchronous HostCallJs() call consumes. kBool backs the shell's boolean
+// "handled" answers, kInt the numeric ones; kNone is a fire-and-forget notification.
+enum class HostJsResult {
+    kNone,
+    kBool,
+    kInt,
+};
+
+// Completion slot of one synchronous shell call. Heap-owned and shared: the waiting caller
+// and the JS-thread dispatch both hold a shared_ptr, so a timeout (the caller gives up but the
+// call is already queued) cannot free the slot under the dispatcher. The dispatcher never
+// writes into an abandoned slot, and HostSinkReset completes every queued slot with
+// napi_closing when the threadsafe function is aborted.
+struct HostJsReply {
+    std::mutex mutex;
+    std::condition_variable cv;
+    bool done = false;
+    bool abandoned = false;
+    bool has_bool = false;
+    bool bool_value = false;
+    bool has_int = false;
+    int32_t int_value = 0;
+    napi_status status = napi_generic_failure;
+};
+
+// One notification: the argument vector the shell callback will be invoked with. A call is
+// either asynchronous (result kNone, reply null) or synchronous through HostCallJs (a reply
+// slot plus the expected result kind). The menu change sink additionally carries the immutable
+// menu table snapshot handed to the JS side.
 struct SinkCall {
     enum { kMaxArgs = 5 };
     int count = 0;
@@ -101,6 +136,9 @@ struct SinkCall {
     // Set when an AddString argument exceeded its cap: a notification with a missing or partial
     // argument must not be delivered (see HostSinkPost).
     bool overflow = false;
+    HostJsResult result_kind = HostJsResult::kNone;
+    std::shared_ptr<HostJsReply> reply;
+    std::shared_ptr<const HostMenuSnapshot> menu_snapshot;
 
     void AddInt(int32_t value) {
         if (count < kMaxArgs) {
@@ -159,9 +197,267 @@ struct HostSink {
     std::vector<SinkCall*> pending;
 };
 
+// The managed-side menu table is published as an immutable snapshot: ohos_host_menu_begin/item
+// fill a builder vector on the managed thread, commit copies it into a fresh snapshot and hands
+// that snapshot to the JS thread through the menu sink. The JS-thread menu getters read the
+// snapshot the JS thread received (or, before the first delivery, the last published one), so
+// no mutable table is ever read across threads.
+struct HostMenuItem {
+    std::string text;
+    bool enabled = false;
+};
+
+struct HostMenuSnapshot {
+    std::vector<HostMenuItem> items;
+};
+
+// Everything the host binds to one JS environment: the env handle, the exports/XComponent
+// references, the JS-thread identity and every registered sink with its threadsafe function.
+// A page rebuild (or an ability restart) calls Init with a new env; the previous binding is
+// torn down with the env that created its references and a new one is claimed, so a stale
+// napi_ref is never deleted (or used) through the wrong env.
+struct HostBinding {
+    napi_env env = nullptr;
+    pthread_t js_thread{};
+    bool js_thread_valid = false;
+    napi_ref exports_ref = nullptr;
+    napi_ref xcomponent_export_ref = nullptr;
+    OH_NativeXComponent* xcomponent = nullptr;
+
+    // Menu tables: the builder and the last published snapshot are managed-thread state under
+    // menu_lock; menu_js is the immutable snapshot the JS thread is currently serving (only
+    // the JS thread reads or writes it, so it needs no lock).
+    std::mutex menu_lock;
+    std::vector<HostMenuItem> menu_build;
+    std::shared_ptr<const HostMenuSnapshot> menu_latest;
+    std::shared_ptr<const HostMenuSnapshot> menu_js;
+
+    HostSink text_input{"text input", true};
+    HostSink keystore{"keystore", true};
+    HostSink notification{"notification", false};
+    HostSink tts{"tts", false};
+    HostSink contacts{"contacts", false};
+    HostSink calendar{"calendar", false};
+    HostSink bluetooth{"bluetooth", false};
+    HostSink bluetooth_gatt{"bluetooth gatt", false};
+    HostSink print{"print", false};
+    HostSink ability{"ability", false};
+    HostSink flashlight{"flashlight", false};
+    HostSink focus{"focus", false};
+    HostSink menu_changed{"menu", false};
+    HostSink picker{"picker", true};
+    HostSink web{"web", true};
+    HostSink keep_screen_on{"keep screen on", false};
+    HostSink window_title{"window title", false};
+    HostSink window_rect{"window rect", false};
+    HostSink screenshot{"screenshot", false};
+    HostSink shell_search{"shell search", false};
+    HostSink shell_flyout{"shell flyout", false};
+    HostSink web_eval{"web eval", false};
+    HostSink hybrid_invoke_result{"hybrid invoke result", false};
+    HostSink raw_file{"raw file", false};
+    HostSink permission{"permission", false};
+    HostSink notification_permission{"notification permission", false};
+    HostSink clipboard{"clipboard", false};
+    HostSink geocode{"geocode", false};
+    HostSink vibration{"vibration", true};
+};
+
+struct HostBindingSlot {
+    HostBinding binding;
+    bool active = false;
+    bool hook_registered = false;
+};
+
+// Static storage (never freed) so an env cleanup hook can hold the slot address safely.
+// Slot 0 is the home slot: it backs the g_host pointer before the first Init and after the
+// current binding is torn down, so HostSinkPost from a stray managed call drops instead of
+// dereferencing a dangling binding.
+constexpr int kHostBindingSlotCount = 4;
+static HostBindingSlot g_binding_slots[kHostBindingSlotCount];
+static HostBinding* g_host = &g_binding_slots[0].binding;
+
+// The g_* names are the call sites' (and the regression pins') vocabulary; each expands to the
+// current binding's member so no call can reach another environment's sinks or references.
+#define g_env (g_host->env)
+#define g_exports_ref (g_host->exports_ref)
+#define g_xcomponent (g_host->xcomponent)
+#define g_xcomponent_export_ref (g_host->xcomponent_export_ref)
+#define g_text_input_sink (g_host->text_input)
+#define g_keystore_sink (g_host->keystore)
+#define g_notification_sink (g_host->notification)
+#define g_tts_sink (g_host->tts)
+#define g_contacts_sink (g_host->contacts)
+#define g_calendar_sink (g_host->calendar)
+#define g_bluetooth_sink (g_host->bluetooth)
+#define g_bluetooth_gatt_sink (g_host->bluetooth_gatt)
+#define g_print_sink (g_host->print)
+#define g_ability_sink (g_host->ability)
+#define g_flashlight_sink (g_host->flashlight)
+#define g_focus_sink (g_host->focus)
+#define g_menu_changed_sink (g_host->menu_changed)
+#define g_picker_sink (g_host->picker)
+#define g_web_sink (g_host->web)
+#define g_keep_screen_on_sink (g_host->keep_screen_on)
+#define g_window_title_sink (g_host->window_title)
+#define g_window_rect_sink (g_host->window_rect)
+#define g_screenshot_sink (g_host->screenshot)
+#define g_shell_search_sink (g_host->shell_search)
+#define g_shell_flyout_sink (g_host->shell_flyout)
+#define g_web_eval_sink (g_host->web_eval)
+#define g_hybrid_invoke_result_sink (g_host->hybrid_invoke_result)
+#define g_raw_file_sink (g_host->raw_file)
+#define g_permission_sink (g_host->permission)
+#define g_notification_permission_sink (g_host->notification_permission)
+#define g_clipboard_sink (g_host->clipboard)
+#define g_geocode_sink (g_host->geocode)
+#define g_vibration_sink (g_host->vibration)
+
+// Table-driven sink registry: the single enumeration of every per-env sink, so HostSinkReset
+// cannot miss one on a page rebuild or env teardown. Keep this list aligned with the members.
+template <typename F>
+static void HostForEachSink(HostBinding& binding, F&& visit) {
+    visit(binding.text_input);
+    visit(binding.keystore);
+    visit(binding.notification);
+    visit(binding.tts);
+    visit(binding.contacts);
+    visit(binding.calendar);
+    visit(binding.bluetooth);
+    visit(binding.bluetooth_gatt);
+    visit(binding.print);
+    visit(binding.ability);
+    visit(binding.flashlight);
+    visit(binding.focus);
+    visit(binding.menu_changed);
+    visit(binding.picker);
+    visit(binding.web);
+    visit(binding.keep_screen_on);
+    visit(binding.window_title);
+    visit(binding.window_rect);
+    visit(binding.screenshot);
+    visit(binding.shell_search);
+    visit(binding.shell_flyout);
+    visit(binding.web_eval);
+    visit(binding.hybrid_invoke_result);
+    visit(binding.raw_file);
+    visit(binding.permission);
+    visit(binding.notification_permission);
+    visit(binding.clipboard);
+    visit(binding.geocode);
+    visit(binding.vibration);
+}
+
+std::string GetStringArg(napi_env env, napi_value value);
+
+// --- JS-thread identity, env binding and exception discipline ---------------------
+
+// True only on the JS/UI thread that Init() ran on. Every napi call in this file goes through
+// HostCallCallback (or a TSFN dispatch, which the engine runs there), and this predicate is the
+// gate: a cross-thread napi touch is reported once and turned into a safe failure.
+static bool HostIsJsThread() {
+    HostBinding* binding = g_host;
+    return binding != nullptr && binding->js_thread_valid && pthread_equal(pthread_self(), binding->js_thread);
+}
+
+// The binding that belongs to env, or null when that env no longer owns one.
+static HostBinding* HostBindingFor(napi_env env) {
+    if (env == nullptr) {
+        return nullptr;
+    }
+    for (int i = 0; i < kHostBindingSlotCount; i++) {
+        HostBindingSlot& slot = g_binding_slots[i];
+        if (slot.active && slot.binding.env == env) {
+            return &slot.binding;
+        }
+    }
+    return nullptr;
+}
+
+// Completes one synchronous call. Runs on the JS thread (dispatch) or during a sink reset;
+// an abandoned reply (the caller timed out) is left untouched but still woken.
+static void HostJsReplyComplete(const std::shared_ptr<HostJsReply>& reply, napi_status status,
+                                bool has_bool, bool bool_value, bool has_int, int32_t int_value) {
+    if (!reply) {
+        return;
+    }
+    std::lock_guard<std::mutex> guard(reply->mutex);
+    if (!reply->abandoned) {
+        reply->status = status;
+        reply->has_bool = has_bool;
+        reply->bool_value = bool_value;
+        reply->has_int = has_int;
+        reply->int_value = int_value;
+        reply->done = true;
+    }
+    reply->cv.notify_all();
+}
+
+// Consumes a pending JS exception after a shell callback ran. The callback's own error handling
+// is its business, but an exception left pending at the napi boundary would abort the next
+// napi call on the thread; every HostCallCallback therefore drains it and logs the value.
+static void HostClearPendingException(napi_env env, const char* where) {
+    bool pending = false;
+    if (napi_is_exception_pending(env, &pending) != napi_ok || !pending) {
+        return;
+    }
+    napi_value exception = nullptr;
+    if (napi_get_and_clear_last_exception(env, &exception) != napi_ok) {
+        OH_LOG_WARN(LOG_APP, "[openharmony-host] %{public}s: shell callback left a pending exception that could not be cleared", where);
+        return;
+    }
+    std::string message;
+    napi_value as_string = nullptr;
+    if (exception != nullptr && napi_coerce_to_string(env, exception, &as_string) == napi_ok && as_string != nullptr) {
+        message = GetStringArg(env, as_string);
+    }
+    if (message.empty()) {
+        message = "<non-string exception>";
+    } else if (message.size() > 256) {
+        message.resize(256);
+    }
+    OH_LOG_WARN(LOG_APP, "[openharmony-host] %{public}s: shell callback threw: %{public}s", where, message.c_str());
+}
+
+// Builds the callback argument vector from a SinkCall. Every slot is initialized: an argument
+// whose napi creation fails is replaced by undefined instead of being passed uninitialized.
+static void HostMakeArgs(napi_env env, const SinkCall& call, napi_value* argv) {
+    for (int i = 0; i < call.count && i < SinkCall::kMaxArgs; i++) {
+        napi_status status = napi_generic_failure;
+        if (call.args[i].is_string) {
+            status = napi_create_string_utf8(env, call.args[i].string_value.c_str(), NAPI_AUTO_LENGTH, &argv[i]);
+        } else {
+            status = napi_create_int32(env, call.args[i].int_value, &argv[i]);
+        }
+        if (status != napi_ok || argv[i] == nullptr) {
+            argv[i] = nullptr;
+            napi_get_undefined(env, &argv[i]);
+        }
+    }
+}
+
+// The single door every napi_call_function in this file goes through: the JS-thread/env gate,
+// the call itself and the exception drain. Returns the napi status; a rejected call (wrong
+// thread or env) reports napi_generic_failure without touching the engine.
+static napi_status HostCallCallback(napi_env env, napi_value this_arg, napi_value function,
+                                    size_t argc, napi_value* argv, napi_value* result, const char* where) {
+    if (env == nullptr || g_host->env != env || !HostIsJsThread()) {
+        static bool offThreadLogged = false;
+        if (!offThreadLogged) {
+            offThreadLogged = true;
+            OH_LOG_WARN(LOG_APP, "[openharmony-host] %{public}s: napi callback attempted off the JS thread or env, ignored", where);
+        }
+        return napi_generic_failure;
+    }
+    napi_status status = napi_call_function(env, this_arg, function, argc, argv, result);
+    HostClearPendingException(env, where);
+    return status;
+}
+
 // Runs on the JS/UI thread: builds the arguments, calls the shell callback and releases
-// the payload. A throwing callback is ignored, exactly like the discarded
-// napi_call_function return value used to be.
+// the payload. A throwing callback is cleared and ignored, exactly like the discarded
+// napi_call_function return value used to be. A synchronous call's reply is completed here,
+// with the answer converted while the JS values are still valid.
 static void HostSinkDispatch(napi_env env, napi_value js_callback, void* context, void* data) {
     HostSink* sink = static_cast<HostSink*>(context);
     SinkCall* call = static_cast<SinkCall*>(data);
@@ -177,35 +473,48 @@ static void HostSinkDispatch(napi_env env, napi_value js_callback, void* context
             }
         }
     }
-    if (env != nullptr && js_callback != nullptr) {
-        // Every slot is initialized: an argument whose napi creation fails is replaced by
-        // undefined instead of being passed uninitialized to the shell callback.
-        napi_value argv[SinkCall::kMaxArgs] = {};
-        for (int i = 0; i < call->count; i++) {
-            napi_status status = napi_generic_failure;
-            if (call->args[i].is_string) {
-                status = napi_create_string_utf8(env, call->args[i].string_value.c_str(), NAPI_AUTO_LENGTH, &argv[i]);
-            } else {
-                status = napi_create_int32(env, call->args[i].int_value, &argv[i]);
-            }
-            if (status != napi_ok || argv[i] == nullptr) {
-                argv[i] = nullptr;
-                napi_get_undefined(env, &argv[i]);
-            }
+    // The menu table snapshot is delivered before the callback so the shell's pull
+    // (menuCount/menuItem) reads exactly the version the notification announced.
+    if (env != nullptr && call->menu_snapshot) {
+        HostBinding* binding = HostBindingFor(env);
+        if (binding != nullptr) {
+            binding->menu_js = std::move(call->menu_snapshot);
         }
+    }
+    napi_status call_status = napi_generic_failure;
+    bool has_bool = false;
+    bool bool_value = false;
+    bool has_int = false;
+    int32_t int_value = 0;
+    if (env != nullptr && js_callback != nullptr) {
+        napi_value argv[SinkCall::kMaxArgs] = {};
+        HostMakeArgs(env, *call, argv);
         napi_value this_arg = js_callback;
         if (sink != nullptr && sink->global_this && napi_get_global(env, &this_arg) != napi_ok) {
             this_arg = js_callback;
         }
         napi_value result = nullptr;
-        napi_call_function(env, this_arg, js_callback, (size_t)call->count, argv, &result);
+        call_status = HostCallCallback(env, this_arg, js_callback, (size_t)call->count, argv, &result,
+                                       sink != nullptr ? sink->name : "sink");
+        if (call_status == napi_ok && call->reply) {
+            if (call->result_kind == HostJsResult::kBool && result != nullptr) {
+                has_bool = napi_get_value_bool(env, result, &bool_value) == napi_ok;
+            } else if (call->result_kind == HostJsResult::kInt && result != nullptr) {
+                has_int = napi_get_value_int32(env, result, &int_value) == napi_ok;
+            }
+        }
+    }
+    if (call->reply) {
+        HostJsReplyComplete(call->reply, call_status, has_bool, bool_value, has_int, int_value);
     }
     delete call;
 }
 
 // Destroys the sink's threadsafe function and frees anything still queued. Runs on the JS
-// thread (Register*Sink), so it cannot overlap a HostSinkDispatch that is executing there;
-// aborting drops the pending items without calling the dispatch, hence the explicit free.
+// thread (Register*Sink, env teardown), so it cannot overlap a HostSinkDispatch that is
+// executing there; aborting drops the pending items without calling the dispatch, hence the
+// explicit free. Every queued synchronous call is completed with napi_closing first, so a
+// waiting managed thread never has to wait out its timeout.
 static void HostSinkReset(HostSink& sink) {
     std::lock_guard<std::mutex> guard(sink.lock);
     if (sink.tsfn != nullptr) {
@@ -213,6 +522,7 @@ static void HostSinkReset(HostSink& sink) {
         sink.tsfn = nullptr;
     }
     for (SinkCall* call : sink.pending) {
+        HostJsReplyComplete(call->reply, napi_closing, false, false, false, 0);
         delete call;
     }
     sink.pending.clear();
@@ -233,7 +543,7 @@ static bool HostSinkPost(HostSink& sink, SinkCall* call) {
         return false;
     }
     bool posted = false;
-    {
+    try {
         std::lock_guard<std::mutex> guard(sink.lock);
         if (sink.tsfn != nullptr) {
             sink.pending.push_back(call);
@@ -252,6 +562,10 @@ static bool HostSinkPost(HostSink& sink, SinkCall* call) {
                 }
             }
         }
+    } catch (...) {
+        // A failed pending-vector growth owns nothing: the payload is freed below.
+        OH_LOG_ERROR(LOG_APP, "[openharmony-host] %{public}s: could not queue the notification", sink.name);
+        posted = false;
     }
     if (!posted) {
         delete call;
@@ -259,9 +573,126 @@ static bool HostSinkPost(HostSink& sink, SinkCall* call) {
     return posted;
 }
 
+// Synchronous shell call over the sink's threadsafe function: the call is queued for the JS
+// thread and the managed caller waits for the reply. This is the only legitimate shape for the
+// request/answer sinks (launcher/browser/share, flashlight, focus): the answer is consumed
+// synchronously, but the napi objects are only ever touched by the JS thread.
+constexpr int kHostCallTimeoutMs = 5000;
+
+// Exactly one of bool_out/int_out selects the expected answer type. Returns napi_ok when the
+// shell callback ran (the out parameter then carries its answer, defaulting to false/0 when the
+// shell returned nothing convertible) and a failure status when no sink was registered, the
+// queue was unavailable or the shell did not answer within the timeout.
+static napi_status HostCallJs(HostSink& sink, SinkCall* call, bool* bool_out, int32_t* int_out) {
+    if (call == nullptr || (bool_out == nullptr && int_out == nullptr)) {
+        delete call;
+        return napi_invalid_arg;
+    }
+    if (call->overflow) {
+        // An argument exceeded its cap (already logged by AddString): the request is invalid.
+        delete call;
+        return napi_invalid_arg;
+    }
+    call->result_kind = bool_out != nullptr ? HostJsResult::kBool : HostJsResult::kInt;
+    bool posted = false;
+    napi_status status = napi_generic_failure;
+    std::shared_ptr<HostJsReply> reply;
+    try {
+        call->reply = std::make_shared<HostJsReply>();
+        reply = call->reply;
+        std::lock_guard<std::mutex> guard(sink.lock);
+        if (sink.tsfn != nullptr) {
+            sink.pending.push_back(call);
+            status = napi_call_threadsafe_function(sink.tsfn, call, napi_tsfn_nonblocking);
+            if (status == napi_ok) {
+                posted = true;
+            } else {
+                // Not enqueued: our entry is still the last one (the lock keeps the
+                // dispatch from mutating `pending` meanwhile).
+                sink.pending.pop_back();
+            }
+        } else {
+            status = napi_generic_failure;
+        }
+    } catch (...) {
+        // Allocation failure while building/queueing the reply: the call is still ours.
+        OH_LOG_ERROR(LOG_APP, "[openharmony-host] %{public}s: could not queue the synchronous call", sink.name);
+    }
+    if (!posted) {
+        // Still ours: no dispatch or reset can have seen it (the lock covered the hand-off).
+        delete call;
+        return status;
+    }
+
+    // From here on the dispatcher (or a sink reset) owns the call; only the reply is shared.
+    std::unique_lock<std::mutex> lock(reply->mutex);
+    if (!reply->cv.wait_for(lock, std::chrono::milliseconds(kHostCallTimeoutMs), [&reply] { return reply->done; })) {
+        reply->abandoned = true;
+        if (bool_out != nullptr) {
+            *bool_out = false;
+        }
+        if (int_out != nullptr) {
+            *int_out = 0;
+        }
+        OH_LOG_WARN(LOG_APP, "[openharmony-host] %{public}s: shell callback did not answer within %{public}d ms; request failed",
+                    sink.name, kHostCallTimeoutMs);
+        return napi_generic_failure;
+    }
+    status = reply->status;
+    if (bool_out != nullptr) {
+        *bool_out = reply->has_bool && reply->bool_value;
+    }
+    if (int_out != nullptr) {
+        *int_out = reply->has_int ? reply->int_value : 0;
+    }
+    return status;
+}
+
+// Replaces a reference slot with a fresh +1 reference, or clears it for a null value. The new
+// reference is created and validated before the old one is deleted, so a failed create leaves
+// the previous value in place (no half-updated slot). JS thread only.
+static napi_status HostRefReplace(napi_env env, napi_ref* slot, napi_value value) {
+    if (env == nullptr || slot == nullptr) {
+        return napi_invalid_arg;
+    }
+    if (g_host->env != env || !HostIsJsThread()) {
+        OH_LOG_WARN(LOG_APP, "[openharmony-host] reference update attempted off the JS thread or env, ignored");
+        return napi_generic_failure;
+    }
+    if (value == nullptr) {
+        if (*slot != nullptr) {
+            napi_delete_reference(env, *slot);
+            *slot = nullptr;
+        }
+        return napi_ok;
+    }
+    napi_ref created = nullptr;
+    napi_status status = napi_create_reference(env, value, 1, &created);
+    if (status != napi_ok || created == nullptr) {
+        OH_LOG_WARN(LOG_APP, "[openharmony-host] could not create a reference (%{public}d)", (int)status);
+        return status != napi_ok ? status : napi_generic_failure;
+    }
+    if (*slot != nullptr) {
+        napi_delete_reference(env, *slot);
+    }
+    *slot = created;
+    return napi_ok;
+}
+
 // Creates (or replaces) the sink's threadsafe function from the ArkTS callback. Runs on
-// the JS thread; the previous function, if any, is aborted here and never carries over.
+// the JS thread; the previous function, if any, is aborted here and never carries over. The
+// single type check for every register*Sink handler lives here: a non-function argument is
+// logged and ignored, so no handler can forget it.
 static void HostSinkRegister(napi_env env, HostSink& sink, napi_value function) {
+    if (g_host->env != env || !HostIsJsThread()) {
+        OH_LOG_WARN(LOG_APP, "[openharmony-host] %{public}s: registration attempted off the JS thread or env, ignored", sink.name);
+        return;
+    }
+    napi_valuetype type = napi_undefined;
+    if (function == nullptr || napi_typeof(env, function, &type) != napi_ok || type != napi_function) {
+        OH_LOG_WARN(LOG_APP, "[openharmony-host] %{public}s: sink is not a function, ignored", sink.name);
+        return;
+    }
     HostSinkReset(sink);
     napi_value resource_name = nullptr;
     napi_create_string_utf8(env, sink.name, NAPI_AUTO_LENGTH, &resource_name);
@@ -277,10 +708,138 @@ static void HostSinkRegister(napi_env env, HostSink& sink, napi_value function) 
         sink.tsfn = nullptr;
         OH_LOG_WARN(LOG_APP, "[openharmony-host] %{public}s: callback queue unavailable (%{public}d)",
                     sink.name, (int)status);
+    } else {
+        OH_LOG_INFO(LOG_APP, "[openharmony-host] %{public}s sink registered", sink.name);
     }
 }
 
-HostSink g_text_input_sink("text input", true);
+// Shared body of the register*Sink napi handlers: pulls the single callback argument and
+// installs it through HostSinkRegister (the one place that type-checks and asserts the JS
+// thread). Returns undefined, like every handler did.
+static napi_value HostSinkRegisterFromArgs(napi_env env, napi_callback_info info, HostSink& sink) {
+    size_t argc = 1;
+    napi_value argv[1] = {nullptr};
+    napi_get_cb_info(env, info, &argc, argv, nullptr, nullptr);
+    if (argc >= 1) {
+        HostSinkRegister(env, sink, argv[0]);
+    }
+    napi_value undefined = nullptr;
+    napi_get_undefined(env, &undefined);
+    return undefined;
+}
+
+// --- per-env lifetime --------------------------------------------------------------
+
+// Releases every threadsafe function a binding owns (and any queued call).
+static void HostResetAllSinks(HostBinding& binding) {
+    HostForEachSink(binding, [](HostSink& sink) { HostSinkReset(sink); });
+}
+
+static void HostEnvCleanup(void* arg);
+
+// Tears a binding down using the env that created it: a page rebuild with a new env must never
+// delete the old env's references through the new env. from_hook is set when the engine calls
+// HostEnvCleanup itself (the hook entry is already gone then).
+static void HostBindingTeardown(HostBindingSlot* slot, bool from_hook) {
+    if (slot == nullptr || !slot->active) {
+        return;
+    }
+    HostBinding& binding = slot->binding;
+    napi_env env = binding.env;
+    HostResetAllSinks(binding);
+    if (env != nullptr) {
+        if (binding.exports_ref != nullptr) {
+            napi_delete_reference(env, binding.exports_ref);
+            binding.exports_ref = nullptr;
+        }
+        if (binding.xcomponent_export_ref != nullptr) {
+            napi_delete_reference(env, binding.xcomponent_export_ref);
+            binding.xcomponent_export_ref = nullptr;
+        }
+    }
+    binding.xcomponent = nullptr;
+    {
+        std::lock_guard<std::mutex> guard(binding.menu_lock);
+        binding.menu_build.clear();
+        binding.menu_latest.reset();
+    }
+    binding.menu_js.reset();
+    binding.env = nullptr;
+    binding.js_thread_valid = false;
+    slot->active = false;
+    if (!from_hook && env != nullptr && slot->hook_registered) {
+        napi_remove_env_cleanup_hook(env, HostEnvCleanup, slot);
+    }
+    slot->hook_registered = false;
+    if (g_host == &binding) {
+        g_host = &g_binding_slots[0].binding;
+    }
+    OH_LOG_INFO(LOG_APP, "[openharmony-host] binding for env %{public}p torn down", (void*)env);
+}
+
+// The env is going away: release the binding it owns and drop every napi object with it.
+static void HostEnvCleanup(void* arg) {
+    HostBindingTeardown(static_cast<HostBindingSlot*>(arg), true);
+}
+
+// Returns the binding for env, creating (and claiming a slot for) it when Init runs for a new
+// env. Init re-entering with the same env reuses the binding and keeps its sinks; a different
+// env first tears the previous bindings down with their own env.
+static HostBinding* HostEnsureBinding(napi_env env) {
+    if (env == nullptr) {
+        return g_host;
+    }
+    HostBinding* existing = HostBindingFor(env);
+    if (existing != nullptr) {
+        g_host = existing;
+        return g_host;
+    }
+    for (int i = 0; i < kHostBindingSlotCount; i++) {
+        if (g_binding_slots[i].active) {
+            HostBindingTeardown(&g_binding_slots[i], false);
+        }
+    }
+    HostBindingSlot* slot = nullptr;
+    for (int i = 0; i < kHostBindingSlotCount; i++) {
+        if (!g_binding_slots[i].active) {
+            slot = &g_binding_slots[i];
+            break;
+        }
+    }
+    if (slot == nullptr) {
+        OH_LOG_WARN(LOG_APP, "[openharmony-host] Init with a new env while all bindings are live");
+        return g_host;
+    }
+    slot->binding.env = env;
+    slot->binding.js_thread = pthread_self();
+    slot->binding.js_thread_valid = true;
+    slot->active = true;
+    if (!slot->hook_registered) {
+        napi_status hook = napi_add_env_cleanup_hook(env, HostEnvCleanup, slot);
+        if (hook == napi_ok) {
+            slot->hook_registered = true;
+        } else {
+            OH_LOG_WARN(LOG_APP, "[openharmony-host] could not register the env cleanup hook (%{public}d)", (int)hook);
+        }
+    }
+    g_host = &slot->binding;
+    return g_host;
+}
+
+// Thin wrapper for the managed-facing C exports that allocate: a C++ exception is flattened
+// into a logged failure instead of unwinding into the P/Invoke frame.
+template <typename F>
+static int HostCxxBoundary(const char* where, F&& body) {
+    try {
+        return body();
+    } catch (const std::exception& e) {
+        OH_LOG_ERROR(LOG_APP, "[openharmony-host] %{public}s: native exception: %{public}s", where, e.what());
+    } catch (...) {
+        OH_LOG_ERROR(LOG_APP, "[openharmony-host] %{public}s: native exception (unknown)", where);
+    }
+    return -1;
+}
+
 
 void OnSurfaceCreated(OH_NativeXComponent* component, void* window) {
     uint64_t width = 0;
@@ -375,49 +934,61 @@ void OnFrame(OH_NativeXComponent* component, uint64_t timestamp, uint64_t target
 // The framework exposes the native XComponent through the module exports
 // (OH_NATIVE_XCOMPONENT_OBJ) when the page uses <XComponent libraryname="...">.
 void TryRegisterXComponent() {
-    if (g_env == nullptr || g_exports_ref == nullptr || g_xcomponent != nullptr) {
+    HostBinding* binding = g_host;
+    if (binding->env == nullptr || binding->exports_ref == nullptr || binding->xcomponent != nullptr) {
         return;
     }
+    if (!HostIsJsThread()) {
+        OH_LOG_WARN(LOG_APP, "[openharmony-host] registerXComponent: not on the JS thread, ignored");
+        return;
+    }
+    napi_env env = binding->env;
     napi_value exports = nullptr;
-    if (napi_get_reference_value(g_env, g_exports_ref, &exports) != napi_ok || exports == nullptr) {
+    if (napi_get_reference_value(env, binding->exports_ref, &exports) != napi_ok || exports == nullptr) {
         return;
     }
     napi_value exportInstance = nullptr;
-    if (napi_get_named_property(g_env, exports, OH_NATIVE_XCOMPONENT_OBJ, &exportInstance) != napi_ok) {
+    if (napi_get_named_property(env, exports, OH_NATIVE_XCOMPONENT_OBJ, &exportInstance) != napi_ok) {
         return;
     }
     void* native = nullptr;
-    if (napi_unwrap(g_env, exportInstance, &native) != napi_ok || native == nullptr) {
+    if (napi_unwrap(env, exportInstance, &native) != napi_ok || native == nullptr) {
         return;
     }
-    g_xcomponent = reinterpret_cast<OH_NativeXComponent*>(native);
+    // Keep the JS object that owns the native XComponent alive for the binding's lifetime: a
+    // collected wrapper would leave the raw pointer below dangling. The reference is released
+    // by HostBindingTeardown (a page rebuild re-binds it to the new env's object).
+    if (HostRefReplace(env, &binding->xcomponent_export_ref, exportInstance) != napi_ok) {
+        return;
+    }
+    binding->xcomponent = reinterpret_cast<OH_NativeXComponent*>(native);
     static OH_NativeXComponent_Callback callback = {
         .OnSurfaceCreated = OnSurfaceCreated,
         .OnSurfaceChanged = OnSurfaceChanged,
         .OnSurfaceDestroyed = OnSurfaceDestroyed,
         .DispatchTouchEvent = OnTouch,
     };
-    if (OH_NativeXComponent_RegisterCallback(g_xcomponent, &callback) != 0) {
-        OH_LOG_WARN(LOG_APP, "[openharmony-host] RegisterCallback failed");
-        g_xcomponent = nullptr;
-        return;
-    }
     static OH_NativeXComponent_MouseEvent_Callback mouseCallback = {
         .DispatchMouseEvent = OnMouse,
         .DispatchHoverEvent = nullptr,
     };
-    OH_NativeXComponent_RegisterMouseEventCallback(g_xcomponent, &mouseCallback);
-    OH_NativeXComponent_RegisterOnFrameCallback(g_xcomponent, OnFrame);
+    if (OH_NativeXComponent_RegisterCallback(binding->xcomponent, &callback) != 0) {
+        OH_LOG_WARN(LOG_APP, "[openharmony-host] RegisterCallback failed");
+        binding->xcomponent = nullptr;
+        return;
+    }
+    OH_NativeXComponent_RegisterMouseEventCallback(binding->xcomponent, &mouseCallback);
+    OH_NativeXComponent_RegisterOnFrameCallback(binding->xcomponent, OnFrame);
     char id[128] = {0};
     uint64_t size = sizeof(id);
-    if (OH_NativeXComponent_GetXComponentId(g_xcomponent, id, &size) == 0) {
+    if (OH_NativeXComponent_GetXComponentId(binding->xcomponent, id, &size) == 0) {
         OH_LOG_INFO(LOG_APP, "[openharmony-host] xcomponent '%{public}s' registered (touch+frame)", id);
     }
 }
 
 std::string GetStringArg(napi_env env, napi_value value);
 
-HostSink g_keystore_sink("keystore", true);
+// (sink moved into the current HostBinding; see the g_* accessors above)
 
 // Called by the host core (managed side) to run a HUKS operation in the ArkTS shell.
 void OnKeystoreRequest(int requestId, const char* op, const char* alias, const char* dataBase64) {
@@ -430,7 +1001,7 @@ void OnKeystoreRequest(int requestId, const char* op, const char* alias, const c
 }
 
 // ArkTS calls host.registerKeystoreSink(fn) to receive keystore requests.
-HostSink g_notification_sink("notification", false);
+// (sink moved into the current HostBinding; see the g_* accessors above)
 
 extern "C" void OhosNotifyPinch(int phase, double scale, float x, float y);
 
@@ -461,20 +1032,13 @@ extern "C" void OhosNotifyNotification(int id, const char* title, const char* te
 
 // ArkTS calls host.registerNotificationSink(fn) to publish notifications.
 napi_value RegisterNotificationSink(napi_env env, napi_callback_info info) {
-    size_t argc = 1;
-    napi_value argv[1];
-    napi_get_cb_info(env, info, &argc, argv, nullptr, nullptr);
-    if (argc < 1) {
-        return nullptr;
-    }
-    HostSinkRegister(env, g_notification_sink, argv[0]);
-    return nullptr;
+    return HostSinkRegisterFromArgs(env, info, g_notification_sink);
 }
 
 // TextToSpeech: the managed side forwards speak requests through ohos_host_tts_speak; the
 // ArkTS shell's sink (registerTtsSink) owns the Speech Kit call and answers with
 // host.notifyTtsResult(requestId, code).
-HostSink g_tts_sink("tts", false);
+// (sink moved into the current HostBinding; see the g_* accessors above)
 static void (*g_tts_result_listener)(int request_id, int code) = nullptr;
 
 // Called from the host C layer (managed P/Invoke): forwards a speak request to ArkTS.
@@ -500,19 +1064,7 @@ extern "C" void ohos_host_tts_result(int request_id, int code) {
 
 // ArkTS calls host.registerTtsSink(fn) to receive speak requests.
 napi_value RegisterTtsSink(napi_env env, napi_callback_info info) {
-    size_t argc = 1;
-    napi_value argv[1] = {nullptr};
-    napi_get_cb_info(env, info, &argc, argv, nullptr, nullptr);
-    if (argc >= 1) {
-        napi_valuetype type = napi_undefined;
-        napi_typeof(env, argv[0], &type);
-        if (type == napi_function) {
-            HostSinkRegister(env, g_tts_sink, argv[0]);
-        }
-    }
-    napi_value undefined = nullptr;
-    napi_get_undefined(env, &undefined);
-    return undefined;
+    return HostSinkRegisterFromArgs(env, info, g_tts_sink);
 }
 
 // ArkTS calls host.notifyTtsResult(requestId, code) when the engine finished.
@@ -542,8 +1094,8 @@ napi_value NotifyTtsResult(napi_env env, napi_callback_info info) {
 // separated fields (contacts: name, phone; calendar: title, start ISO-8601, end ISO-8601);
 // code 0 means the answer is complete (an empty payload is a valid "no records"), code -1 means
 // the kit, the permission or the sink was unavailable.
-HostSink g_contacts_sink("contacts", false);
-HostSink g_calendar_sink("calendar", false);
+// (sink moved into the current HostBinding; see the g_* accessors above)
+// (sink moved into the current HostBinding; see the g_* accessors above)
 static void (*g_contacts_result_listener)(int request_id, int code, const char* payload) = nullptr;
 static void (*g_calendar_result_listener)(int request_id, int code, const char* payload) = nullptr;
 
@@ -571,20 +1123,7 @@ extern "C" void ohos_host_contacts_result(int request_id, int code, const char* 
 
 // ArkTS calls host.registerContactsSink(fn) to receive contacts lookups.
 napi_value RegisterContactsSink(napi_env env, napi_callback_info info) {
-    size_t argc = 1;
-    napi_value argv[1] = {nullptr};
-    napi_get_cb_info(env, info, &argc, argv, nullptr, nullptr);
-    if (argc >= 1) {
-        napi_valuetype type = napi_undefined;
-        napi_typeof(env, argv[0], &type);
-        if (type == napi_function) {
-            HostSinkRegister(env, g_contacts_sink, argv[0]);
-            OH_LOG_INFO(LOG_APP, "[openharmony-host] contacts sink registered");
-        }
-    }
-    napi_value undefined = nullptr;
-    napi_get_undefined(env, &undefined);
-    return undefined;
+    return HostSinkRegisterFromArgs(env, info, g_contacts_sink);
 }
 
 // ArkTS calls host.notifyContactsResult(requestId, code, payload) when a lookup finished.
@@ -643,20 +1182,7 @@ extern "C" void ohos_host_calendar_result(int request_id, int code, const char* 
 
 // ArkTS calls host.registerCalendarSink(fn) to receive calendar list/add requests.
 napi_value RegisterCalendarSink(napi_env env, napi_callback_info info) {
-    size_t argc = 1;
-    napi_value argv[1] = {nullptr};
-    napi_get_cb_info(env, info, &argc, argv, nullptr, nullptr);
-    if (argc >= 1) {
-        napi_valuetype type = napi_undefined;
-        napi_typeof(env, argv[0], &type);
-        if (type == napi_function) {
-            HostSinkRegister(env, g_calendar_sink, argv[0]);
-            OH_LOG_INFO(LOG_APP, "[openharmony-host] calendar sink registered");
-        }
-    }
-    napi_value undefined = nullptr;
-    napi_get_undefined(env, &undefined);
-    return undefined;
+    return HostSinkRegisterFromArgs(env, info, g_calendar_sink);
 }
 
 // ArkTS calls host.notifyCalendarResult(requestId, code, payload) when a request finished.
@@ -685,7 +1211,7 @@ napi_value NotifyCalendarResult(napi_env env, napi_callback_info info) {
 // answers through host.notifyBluetoothResult. The payload is a '\n' separated table of
 // "name\taddress" records (paired devices) or the decimal access.BluetoothState (state);
 // code 0 is a complete answer, -1 unavailable, -2 a transient kit failure.
-HostSink g_bluetooth_sink("bluetooth", false);
+// (sink moved into the current HostBinding; see the g_* accessors above)
 static void (*g_bluetooth_result_listener)(int request_id, int code, const char* payload) = nullptr;
 
 // Called from managed code (P/Invoke): forwards a Bluetooth operation to the ArkTS sink;
@@ -711,20 +1237,7 @@ extern "C" void ohos_host_bluetooth_result(int request_id, int code, const char*
 
 // ArkTS calls host.registerBluetoothSink(fn) to receive Bluetooth requests.
 napi_value RegisterBluetoothSink(napi_env env, napi_callback_info info) {
-    size_t argc = 1;
-    napi_value argv[1] = {nullptr};
-    napi_get_cb_info(env, info, &argc, argv, nullptr, nullptr);
-    if (argc >= 1) {
-        napi_valuetype type = napi_undefined;
-        napi_typeof(env, argv[0], &type);
-        if (type == napi_function) {
-            HostSinkRegister(env, g_bluetooth_sink, argv[0]);
-            OH_LOG_INFO(LOG_APP, "[openharmony-host] bluetooth sink registered");
-        }
-    }
-    napi_value undefined = nullptr;
-    napi_get_undefined(env, &undefined);
-    return undefined;
+    return HostSinkRegisterFromArgs(env, info, g_bluetooth_sink);
 }
 
 // ArkTS calls host.notifyBluetoothResult(requestId, code, payload) when a request finished.
@@ -785,7 +1298,7 @@ napi_value NotifyBluetoothDeviceFound(napi_env env, napi_callback_info info) {
 // unavailable, -2 a transient kit failure. The request payload is capped by AddString (a
 // missing shell sink or an over-long payload answers -1 without dispatching). The device-event
 // push lives on its own export so a host without it still serves the request/response half.
-HostSink g_bluetooth_gatt_sink("bluetooth gatt", false);
+// (sink moved into the current HostBinding; see the g_* accessors above)
 static void (*g_bluetooth_gatt_result_listener)(int request_id, int code, const char* payload) = nullptr;
 static void (*g_bluetooth_gatt_event_listener)(const char* payload) = nullptr;
 
@@ -831,22 +1344,7 @@ extern "C" void ohos_host_bluetooth_gatt_event(const char* payload) {
 
 // ArkTS calls host.registerBluetoothGattSink(fn) to receive GATT requests.
 napi_value RegisterBluetoothGattSink(napi_env env, napi_callback_info info) {
-    size_t argc = 1;
-    napi_value argv[1] = {nullptr};
-    napi_get_cb_info(env, info, &argc, argv, nullptr, nullptr);
-    if (argc >= 1) {
-        napi_valuetype type = napi_undefined;
-        napi_typeof(env, argv[0], &type);
-        if (type == napi_function) {
-            HostSinkRegister(env, g_bluetooth_gatt_sink, argv[0]);
-            OH_LOG_INFO(LOG_APP, "[openharmony-host] bluetooth gatt sink registered");
-        } else {
-            OH_LOG_WARN(LOG_APP, "[openharmony-host] bluetooth gatt sink: not a function, ignored");
-        }
-    }
-    napi_value undefined = nullptr;
-    napi_get_undefined(env, &undefined);
-    return undefined;
+    return HostSinkRegisterFromArgs(env, info, g_bluetooth_gatt_sink);
 }
 
 // ArkTS calls host.notifyBluetoothGattResult(requestId, code, payload) when a request finished.
@@ -884,7 +1382,7 @@ napi_value NotifyBluetoothGattEvent(napi_env env, napi_callback_info info) {
 // (ohos.permission.PRINT is system_grant, so the shell does not prompt) and answers through
 // host.notifyPrintResult with code 0 when the system print UI accepted the job and -1 when
 // the framework rejected it. The message carries the framework error for the host log.
-HostSink g_print_sink("print", false);
+// (sink moved into the current HostBinding; see the g_* accessors above)
 static void (*g_print_result_listener)(int request_id, int code, const char* message) = nullptr;
 
 // Called from managed code (P/Invoke): forwards a print file path to the ArkTS sink.
@@ -909,20 +1407,7 @@ extern "C" void ohos_host_print_result(int request_id, int code, const char* mes
 
 // ArkTS calls host.registerPrintSink(fn) to receive print requests.
 napi_value RegisterPrintSink(napi_env env, napi_callback_info info) {
-    size_t argc = 1;
-    napi_value argv[1] = {nullptr};
-    napi_get_cb_info(env, info, &argc, argv, nullptr, nullptr);
-    if (argc >= 1) {
-        napi_valuetype type = napi_undefined;
-        napi_typeof(env, argv[0], &type);
-        if (type == napi_function) {
-            HostSinkRegister(env, g_print_sink, argv[0]);
-            OH_LOG_INFO(LOG_APP, "[openharmony-host] print sink registered");
-        }
-    }
-    napi_value undefined = nullptr;
-    napi_get_undefined(env, &undefined);
-    return undefined;
+    return HostSinkRegisterFromArgs(env, info, g_print_sink);
 }
 
 // ArkTS calls host.notifyPrintResult(requestId, code, message) when a request finished.
@@ -951,46 +1436,33 @@ napi_value NotifyPrintResult(napi_env env, napi_callback_info info) {
 // name; the shell tries that Want first and falls back to the implicit 'ohos.settings' action
 // when the explicit form does not resolve (a device whose settings bundle differs).
 //
-// This is the one sink that deliberately stays on a direct napi_call_function: the managed side
-// consumes the shell's boolean answer (Launcher.CanOpenAsync / TryOpenAsync return it), and a
-// napi_threadsafe_function only reports "queued", not "handled". Moving it to the TSFN would
-// silently report every request as dispatched. The call is synchronous with the .NET thread and
-// the shell-side deferral covers the JS/UI-thread hop.
-napi_ref g_ability_sink_ref = nullptr;
+// This sink answers the managed side synchronously: the shell callback returns true when it
+// dispatched (or, for the probe, the target is available). The answer travels through the
+// TSFN reply (HostCallJs), so the napi call still runs on the JS thread; the old direct
+// napi_call_function from the .NET thread was a cross-thread napi use.
 
 // Flags for ohos_host_ability_start_ex: bit 0 is FLAG_AUTH_READ_URI_PERMISSION (the shell asks
 // the ability manager to grant the receiver read access to a file:// uri); the host forwards
 // the bits as-is.
 //
-// Direct-call implementation shared by the three- and five-argument exports (the fifth is the
+// Synchronous implementation shared by the three- and five-argument exports (the fifth is the
 // optional title; NULL/"" keeps the previous shape, and the shell only adds
 // wantConstant.Params.CONTENT_TITLE_KEY for a non-empty title).
 static int AbilityStartInternal(int kind, const char* uri, const char* text, const char* title, int flags) {
-    if (g_env == nullptr || g_ability_sink_ref == nullptr) {
-        return -1;
-    }
     if (title != nullptr && !ControlStringFits(title, "ability_start_title")) {
         return -1;
     }
-    napi_value sink = nullptr;
-    if (napi_get_reference_value(g_env, g_ability_sink_ref, &sink) != napi_ok || sink == nullptr) {
-        return -1;
-    }
-    napi_value argv[5];
-    napi_create_int32(g_env, kind, &argv[0]);
-    napi_create_string_utf8(g_env, uri != nullptr ? uri : "", NAPI_AUTO_LENGTH, &argv[1]);
-    napi_create_string_utf8(g_env, text != nullptr ? text : "", NAPI_AUTO_LENGTH, &argv[2]);
-    napi_create_string_utf8(g_env, title != nullptr ? title : "", NAPI_AUTO_LENGTH, &argv[3]);
-    napi_create_int32(g_env, flags, &argv[4]);
-    napi_value result = nullptr;
-    if (napi_call_function(g_env, sink, sink, 5, argv, &result) != napi_ok) {
-        return -1;
-    }
-    bool handled = false;
-    if (result == nullptr || napi_get_value_bool(g_env, result, &handled) != napi_ok || !handled) {
-        return -1;
-    }
-    return 0;
+    return HostCxxBoundary("ability_start", [kind, uri, text, title, flags] {
+        SinkCall* call = new SinkCall();
+        call->AddInt(kind);
+        call->AddString(uri != nullptr ? uri : "");
+        call->AddString(text != nullptr ? text : "");
+        call->AddString(title != nullptr ? title : "", kMaxControlBytes);
+        call->AddInt(flags);
+        bool handled = false;
+        napi_status status = HostCallJs(g_host->ability, call, &handled, nullptr);
+        return status == napi_ok && handled ? 0 : -1;
+    });
 }
 
 // Called from managed code (P/Invoke): forwards an ability-start request to the ArkTS shell and
@@ -1012,23 +1484,7 @@ extern "C" int ohos_host_ability_start_ex(int kind, const char* uri, const char*
 
 // ArkTS calls host.registerAbilitySink(fn) to receive launcher/browser/share requests.
 napi_value RegisterAbilitySink(napi_env env, napi_callback_info info) {
-    size_t argc = 1;
-    napi_value argv[1] = {nullptr};
-    napi_get_cb_info(env, info, &argc, argv, nullptr, nullptr);
-    if (argc >= 1) {
-        napi_valuetype type = napi_undefined;
-        napi_typeof(env, argv[0], &type);
-        if (type == napi_function) {
-            if (g_ability_sink_ref != nullptr) {
-                napi_delete_reference(env, g_ability_sink_ref);
-            }
-            napi_create_reference(env, argv[0], 1, &g_ability_sink_ref);
-            OH_LOG_INFO(LOG_APP, "[openharmony-host] ability sink registered");
-        }
-    }
-    napi_value undefined = nullptr;
-    napi_get_undefined(env, &undefined);
-    return undefined;
+    return HostSinkRegisterFromArgs(env, info, g_host->ability);
 }
 
 // Flashlight (Camera Kit torch): the managed side calls ohos_host_flashlight_set(on) and
@@ -1038,131 +1494,82 @@ napi_value RegisterAbilitySink(napi_env env, napi_callback_info info) {
 // calls setTorchMode(camera.TorchMode.ON/OFF); setTorchMode is synchronous and throws on
 // failure, so the callback answers whether the kit accepted the request.
 //
-// Like the ability sink above, this one deliberately stays on a direct napi_call_function:
-// the managed side consumes the boolean answer (IFlashlight.IsSupportedAsync and the
-// turn-on/off result) and a napi_threadsafe_function only reports "queued", not "handled".
-// The shell callback answers synchronously and catches its own errors, so there is nothing
-// to await; a missing sink or a non-boolean answer is reported as "not handled".
-napi_ref g_flashlight_sink_ref = nullptr;
+// Like the ability sink above, this one answers synchronously through HostCallJs: the managed
+// side consumes the boolean answer (IFlashlight.IsSupportedAsync and the turn-on/off result)
+// while the shell callback still runs on the JS thread. The shell callback catches its own
+// errors; a missing sink or a non-boolean answer is reported as "not handled".
 
 // Called from managed code (P/Invoke): asks the ArkTS shell to set or probe the torch.
 // Returns 0 when the sink answered true, -1 when no sink is registered, the call failed or
 // the answer was false.
 extern "C" int ohos_host_flashlight_set(int on) {
-    if (g_env == nullptr || g_flashlight_sink_ref == nullptr) {
-        return -1;
-    }
-    napi_value sink = nullptr;
-    if (napi_get_reference_value(g_env, g_flashlight_sink_ref, &sink) != napi_ok || sink == nullptr) {
-        return -1;
-    }
-    napi_value argv[1];
-    napi_create_int32(g_env, on, &argv[0]);
-    napi_value result = nullptr;
-    if (napi_call_function(g_env, sink, sink, 1, argv, &result) != napi_ok) {
-        return -1;
-    }
-    bool handled = false;
-    if (result == nullptr || napi_get_value_bool(g_env, result, &handled) != napi_ok || !handled) {
-        return -1;
-    }
-    return 0;
+    return HostCxxBoundary("flashlight_set", [on] {
+        SinkCall* call = new SinkCall();
+        call->AddInt(on);
+        bool handled = false;
+        napi_status status = HostCallJs(g_host->flashlight, call, &handled, nullptr);
+        return status == napi_ok && handled ? 0 : -1;
+    });
 }
 
 // ArkTS calls host.registerFlashlightSink(fn) to receive torch set/probe requests.
 napi_value RegisterFlashlightSink(napi_env env, napi_callback_info info) {
-    size_t argc = 1;
-    napi_value argv[1] = {nullptr};
-    napi_get_cb_info(env, info, &argc, argv, nullptr, nullptr);
-    if (argc >= 1) {
-        napi_valuetype type = napi_undefined;
-        napi_typeof(env, argv[0], &type);
-        if (type == napi_function) {
-            if (g_flashlight_sink_ref != nullptr) {
-                napi_delete_reference(env, g_flashlight_sink_ref);
-            }
-            napi_create_reference(env, argv[0], 1, &g_flashlight_sink_ref);
-            OH_LOG_INFO(LOG_APP, "[openharmony-host] flashlight sink registered");
-        }
-    }
-    napi_value undefined = nullptr;
-    napi_get_undefined(env, &undefined);
-    return undefined;
+    return HostSinkRegisterFromArgs(env, info, g_host->flashlight);
 }
 
 // Focus: the managed side (VisualElement.Focus()/Unfocus() on the text handlers) asks the
 // ArkTS shell to hand ArkUI focus to a target id through ohos_host_request_focus; the shell's
 // registerFocusSink handler calls focusControl.requestFocus(id) and answers whether it did.
-// Same direct napi_call_function shape as the ability/flashlight sinks: the managed side
-// consumes the boolean answer (a queued TSFN call cannot report "handled"). The target id is a
-// control string: a NULL/empty/over-cap id is rejected before the call.
-napi_ref g_focus_sink_ref = nullptr;
-
+// Synchronous through HostCallJs, like the ability/flashlight sinks: the managed side consumes
+// the boolean answer while the shell callback runs on the JS thread. The target id is a control
+// string: a NULL/empty/over-cap id is rejected before the call.
 extern "C" int ohos_host_request_focus(const char* target_id) {
-    if (g_env == nullptr || g_focus_sink_ref == nullptr) {
-        return -1;
-    }
     if (target_id == nullptr || target_id[0] == '\0' || !ControlStringFits(target_id, "request_focus")) {
         return -1;
     }
-    napi_value sink = nullptr;
-    if (napi_get_reference_value(g_env, g_focus_sink_ref, &sink) != napi_ok || sink == nullptr) {
-        return -1;
-    }
-    napi_value argv[1];
-    napi_create_string_utf8(g_env, target_id, NAPI_AUTO_LENGTH, &argv[0]);
-    napi_value result = nullptr;
-    if (napi_call_function(g_env, sink, sink, 1, argv, &result) != napi_ok) {
-        return -1;
-    }
-    bool handled = false;
-    if (result == nullptr || napi_get_value_bool(g_env, result, &handled) != napi_ok || !handled) {
-        return -1;
-    }
-    return 0;
+    return HostCxxBoundary("request_focus", [target_id] {
+        SinkCall* call = new SinkCall();
+        call->AddString(target_id, kMaxControlBytes);
+        bool handled = false;
+        napi_status status = HostCallJs(g_host->focus, call, &handled, nullptr);
+        return status == napi_ok && handled ? 0 : -1;
+    });
 }
 
 // ArkTS calls host.registerFocusSink(fn) to receive focus requests.
 napi_value RegisterFocusSink(napi_env env, napi_callback_info info) {
-    size_t argc = 1;
-    napi_value argv[1] = {nullptr};
-    napi_get_cb_info(env, info, &argc, argv, nullptr, nullptr);
-    if (argc >= 1) {
-        napi_valuetype type = napi_undefined;
-        napi_typeof(env, argv[0], &type);
-        if (type == napi_function) {
-            if (g_focus_sink_ref != nullptr) {
-                napi_delete_reference(env, g_focus_sink_ref);
-            }
-            napi_create_reference(env, argv[0], 1, &g_focus_sink_ref);
-            OH_LOG_INFO(LOG_APP, "[openharmony-host] focus sink registered");
-        }
-    }
-    napi_value undefined = nullptr;
-    napi_get_undefined(env, &undefined);
-    return undefined;
+    return HostSinkRegisterFromArgs(env, info, g_host->focus);
 }
 
 // Menus: the managed side publishes the current page's menu items as a flat table
-// (ohos_host_menu_begin/item/commit). The ArkTS shell pulls it back through menuCount/menuItem
-// after registerMenuChangedSink fires (count, also sent for an empty table so the menu hides),
-// and reports a tap with host.notifyMenuAction(index) -> the managed activation callback.
-// The table carries text/enabled only: nested MenuFlyoutSubItems are flattened by the managed
-// publisher, which drops the depth information because this table has no column for it.
-struct HostMenuItem {
-    std::string text;
-    bool enabled;
-};
-
-static std::vector<HostMenuItem> g_menu_items;
-HostSink g_menu_changed_sink("menu", false);
+// (ohos_host_menu_begin/item/commit). commit copies the builder into an immutable snapshot and
+// hands that snapshot to the JS thread through the menu sink, so the shell's pull
+// (menuCount/menuItem) always serves a fixed value instead of a table being rewritten under it.
+// The ArkTS shell pulls it back after registerMenuChangedSink fires (count, also sent for an
+// empty table so the menu hides) and reports a tap with host.notifyMenuAction(index) -> the
+// managed activation callback. The table carries text/enabled only: nested MenuFlyoutSubItems
+// are flattened by the managed publisher, which drops the depth information because this table
+// has no column for it.
 static void (*g_menu_action_listener)(int index) = nullptr;
+
+// The snapshot the JS thread serves from: the one the newest dispatch delivered, or the last
+// published one when the shell pulls before any delivery. menu_js is JS-thread-only; the
+// fallback copies menu_latest under the lock, so the pull never touches the builder.
+static std::shared_ptr<const HostMenuSnapshot> HostMenuSnapshotForJs() {
+    HostBinding* binding = g_host;
+    if (binding->menu_js) {
+        return binding->menu_js;
+    }
+    std::lock_guard<std::mutex> guard(binding->menu_lock);
+    return binding->menu_latest;
+}
 
 // ArkTS calls host.menuCount() to size its @State array.
 napi_value MenuCount(napi_env env, napi_callback_info info) {
     (void)info;
+    const std::shared_ptr<const HostMenuSnapshot> snapshot = HostMenuSnapshotForJs();
     napi_value result = nullptr;
-    napi_create_int32(env, (int32_t)g_menu_items.size(), &result);
+    napi_create_int32(env, snapshot ? (int32_t)snapshot->items.size() : 0, &result);
     return result;
 }
 
@@ -1175,12 +1582,13 @@ napi_value MenuGetItem(napi_env env, napi_callback_info info) {
     if (argc >= 1) {
         napi_get_value_int32(env, argv[0], &index);
     }
-    if (index < 0 || (size_t)index >= g_menu_items.size()) {
+    const std::shared_ptr<const HostMenuSnapshot> snapshot = HostMenuSnapshotForJs();
+    if (snapshot == nullptr || index < 0 || (size_t)index >= snapshot->items.size()) {
         napi_value undefined = nullptr;
         napi_get_undefined(env, &undefined);
         return undefined;
     }
-    const HostMenuItem& item = g_menu_items[(size_t)index];
+    const HostMenuItem& item = snapshot->items[(size_t)index];
     napi_value object = nullptr;
     napi_create_object(env, &object);
     napi_value text = nullptr;
@@ -1192,21 +1600,45 @@ napi_value MenuGetItem(napi_env env, napi_callback_info info) {
     return object;
 }
 
-// Asks the shell to rebuild its menu state from the table just committed. The item count is
-// captured here (the table may be rebuilt before the JS thread drains the queue).
-static void NotifyMenuChanged() {
+// Snapshots the builder, stores it as the latest published table and queues the count plus the
+// snapshot itself for the JS thread. Returns the published item count.
+static int HostMenuPublish() {
+    HostBinding* binding = g_host;
+    std::shared_ptr<HostMenuSnapshot> published = std::make_shared<HostMenuSnapshot>();
+    int32_t count = 0;
+    {
+        std::lock_guard<std::mutex> guard(binding->menu_lock);
+        published->items = binding->menu_build;
+        count = (int32_t)published->items.size();
+        binding->menu_latest = published;
+    }
+    std::shared_ptr<const HostMenuSnapshot> snapshot = published;
     SinkCall* call = new SinkCall();
-    call->AddInt((int32_t)g_menu_items.size());
-    HostSinkPost(g_menu_changed_sink, call);
+    call->AddInt(count);
+    call->menu_snapshot = snapshot;
+    if (!HostSinkPost(g_menu_changed_sink, call)) {
+        // No shell sink registered: the snapshot stays available to a later pull. The commit
+        // itself is a success; the shell will rebuild when the sink arrives.
+        static bool noSinkLogged = false;
+        if (!noSinkLogged) {
+            noSinkLogged = true;
+            OH_LOG_WARN(LOG_APP, "[openharmony-host] menu: no shell menu sink; the table is kept for the next pull");
+        }
+    }
+    return (int)count;
 }
 
 // Managed P/Invoke: opens a new menu table (drops the previous one).
 extern "C" int ohos_host_menu_begin(int count) {
-    g_menu_items.clear();
-    if (count > 0) {
-        g_menu_items.reserve((size_t)count);
-    }
-    return 0;
+    return HostCxxBoundary("menu_begin", [count] {
+        HostBinding* binding = g_host;
+        std::lock_guard<std::mutex> guard(binding->menu_lock);
+        binding->menu_build.clear();
+        if (count > 0) {
+            binding->menu_build.reserve((size_t)count);
+        }
+        return 0;
+    });
 }
 
 // Managed P/Invoke: sets one row; index is the row position published back to the shell.
@@ -1214,19 +1646,22 @@ extern "C" int ohos_host_menu_item(int index, const char* text, int enabled) {
     if (index < 0) {
         return -1;
     }
-    size_t position = (size_t)index;
-    if (position >= g_menu_items.size()) {
-        g_menu_items.resize(position + 1);
-    }
-    g_menu_items[position].text = text != nullptr ? text : "";
-    g_menu_items[position].enabled = enabled != 0;
-    return 0;
+    return HostCxxBoundary("menu_item", [index, text, enabled] {
+        HostBinding* binding = g_host;
+        std::lock_guard<std::mutex> guard(binding->menu_lock);
+        size_t position = (size_t)index;
+        if (position >= binding->menu_build.size()) {
+            binding->menu_build.resize(position + 1);
+        }
+        binding->menu_build[position].text = text != nullptr ? text : "";
+        binding->menu_build[position].enabled = enabled != 0;
+        return 0;
+    });
 }
 
 // Managed P/Invoke: publishes the table and reports the new count.
 extern "C" int ohos_host_menu_commit(void) {
-    NotifyMenuChanged();
-    return (int)g_menu_items.size();
+    return HostCxxBoundary("menu_commit", [] { return HostMenuPublish(); });
 }
 
 // Managed P/Invoke: registers the callback invoked by host.notifyMenuAction(index).
@@ -1236,20 +1671,7 @@ extern "C" void ohos_host_menu_set_listener(void* callback) {
 
 // ArkTS calls host.registerMenuChangedSink(fn) to be told when the table changed.
 napi_value RegisterMenuChangedSink(napi_env env, napi_callback_info info) {
-    size_t argc = 1;
-    napi_value argv[1] = {nullptr};
-    napi_get_cb_info(env, info, &argc, argv, nullptr, nullptr);
-    if (argc >= 1) {
-        napi_valuetype type = napi_undefined;
-        napi_typeof(env, argv[0], &type);
-        if (type == napi_function) {
-            HostSinkRegister(env, g_menu_changed_sink, argv[0]);
-            OH_LOG_INFO(LOG_APP, "[openharmony-host] menu sink registered");
-        }
-    }
-    napi_value undefined = nullptr;
-    napi_get_undefined(env, &undefined);
-    return undefined;
+    return HostSinkRegisterFromArgs(env, info, g_menu_changed_sink);
 }
 
 // ArkTS calls host.notifyMenuAction(index) when a menu row is tapped.
@@ -1269,8 +1691,8 @@ napi_value NotifyMenuAction(napi_env env, napi_callback_info info) {
     return undefined;
 }
 
-HostSink g_picker_sink("picker", true);
-HostSink g_web_sink("web", true);
+// (sink moved into the current HostBinding; see the g_* accessors above)
+// (sink moved into the current HostBinding; see the g_* accessors above)
 
 void OnPickerRequest(int requestId, int kind) {
     SinkCall* call = new SinkCall();
@@ -1288,20 +1710,9 @@ void OnWebCommand(const char* op, const char* arg) {
 
 // ArkTS calls host.registerWebSink(fn) to receive web commands.
 napi_value RegisterWebSink(napi_env env, napi_callback_info info) {
-    size_t argc = 1;
-    napi_value argv[1] = {nullptr};
-    napi_get_cb_info(env, info, &argc, argv, nullptr, nullptr);
-    if (argc >= 1) {
-        napi_valuetype type = napi_undefined;
-        napi_typeof(env, argv[0], &type);
-        if (type == napi_function) {
-            HostSinkRegister(env, g_web_sink, argv[0]);
-            ohos_host_web_set_listener(OnWebCommand);
-        }
-    }
-    napi_value undefined = nullptr;
-    napi_get_undefined(env, &undefined);
-    return undefined;
+    napi_value result = HostSinkRegisterFromArgs(env, info, g_web_sink);
+    ohos_host_web_set_listener(OnWebCommand);
+    return result;
 }
 
 // ArkTS calls host.notifyAvoidArea(top, bottom, left, right).
@@ -1423,7 +1834,7 @@ napi_value NotifyDisplay(napi_env env, napi_callback_info info) {
 // (window.getLastWindow) and applies setWindowKeepScreenOn, which is asynchronous, so this is
 // one-way: the managed getter reflects the last value the host accepted (post succeeded),
 // and no answer travels back. A missing sink, no window or a rejected call degrades silently.
-HostSink g_keep_screen_on_sink("keep screen on", false);
+// (sink moved into the current HostBinding; see the g_* accessors above)
 
 // Called from managed code (P/Invoke): returns 0 when the request was queued for the shell.
 extern "C" int ohos_host_keep_screen_on(int on) {
@@ -1434,20 +1845,7 @@ extern "C" int ohos_host_keep_screen_on(int on) {
 
 // ArkTS calls host.registerKeepScreenOnSink(fn) to receive keep-screen-on changes.
 napi_value RegisterKeepScreenOnSink(napi_env env, napi_callback_info info) {
-    size_t argc = 1;
-    napi_value argv[1] = {nullptr};
-    napi_get_cb_info(env, info, &argc, argv, nullptr, nullptr);
-    if (argc >= 1) {
-        napi_valuetype type = napi_undefined;
-        napi_typeof(env, argv[0], &type);
-        if (type == napi_function) {
-            HostSinkRegister(env, g_keep_screen_on_sink, argv[0]);
-            OH_LOG_INFO(LOG_APP, "[openharmony-host] keep screen on sink registered");
-        }
-    }
-    napi_value undefined = nullptr;
-    napi_get_undefined(env, &undefined);
-    return undefined;
+    return HostSinkRegisterFromArgs(env, info, g_keep_screen_on_sink);
 }
 
 // ---------------------------------------------------------------------------
@@ -1457,8 +1855,8 @@ napi_value RegisterKeepScreenOnSink(napi_env env, napi_callback_info info) {
 // SessionManager API 15+; window.moveWindowTo + window.resize, API 11+). One-way like
 // keep-screen-on: the return value only reports whether the request was queued for the shell.
 // ---------------------------------------------------------------------------
-HostSink g_window_title_sink("window title", false);
-HostSink g_window_rect_sink("window rect", false);
+// (sink moved into the current HostBinding; see the g_* accessors above)
+// (sink moved into the current HostBinding; see the g_* accessors above)
 
 // Called from managed code (P/Invoke): returns 0 when the title was queued for the shell.
 extern "C" int ohos_host_set_window_title(const char* utf8) {
@@ -1526,38 +1924,12 @@ extern "C" int ohos_host_set_window_rect(int x, int y, int w, int h) {
 
 // ArkTS calls host.registerWindowTitleSink(fn) to receive window title changes.
 napi_value RegisterWindowTitleSink(napi_env env, napi_callback_info info) {
-    size_t argc = 1;
-    napi_value argv[1] = {nullptr};
-    napi_get_cb_info(env, info, &argc, argv, nullptr, nullptr);
-    if (argc >= 1) {
-        napi_valuetype type = napi_undefined;
-        napi_typeof(env, argv[0], &type);
-        if (type == napi_function) {
-            HostSinkRegister(env, g_window_title_sink, argv[0]);
-            OH_LOG_INFO(LOG_APP, "[openharmony-host] window title sink registered");
-        }
-    }
-    napi_value undefined = nullptr;
-    napi_get_undefined(env, &undefined);
-    return undefined;
+    return HostSinkRegisterFromArgs(env, info, g_window_title_sink);
 }
 
 // ArkTS calls host.registerWindowRectSink(fn) to receive window rectangle changes.
 napi_value RegisterWindowRectSink(napi_env env, napi_callback_info info) {
-    size_t argc = 1;
-    napi_value argv[1] = {nullptr};
-    napi_get_cb_info(env, info, &argc, argv, nullptr, nullptr);
-    if (argc >= 1) {
-        napi_valuetype type = napi_undefined;
-        napi_typeof(env, argv[0], &type);
-        if (type == napi_function) {
-            HostSinkRegister(env, g_window_rect_sink, argv[0]);
-            OH_LOG_INFO(LOG_APP, "[openharmony-host] window rect sink registered");
-        }
-    }
-    napi_value undefined = nullptr;
-    napi_get_undefined(env, &undefined);
-    return undefined;
+    return HostSinkRegisterFromArgs(env, info, g_window_rect_sink);
 }
 
 // ---------------------------------------------------------------------------
@@ -1565,7 +1937,7 @@ napi_value RegisterWindowRectSink(napi_env env, napi_callback_info info) {
 // PNG to an app-owned path (window.snapshot + image.createImagePacker). One-way: the shell
 // logs a failed write itself and the managed caller reads the file when it is ready.
 // ---------------------------------------------------------------------------
-HostSink g_screenshot_sink("screenshot", false);
+// (sink moved into the current HostBinding; see the g_* accessors above)
 
 // Called from managed code (P/Invoke): returns 0 when the request was queued for the shell.
 extern "C" int ohos_host_screenshot(const char* out_path) {
@@ -1591,20 +1963,7 @@ extern "C" int ohos_host_screenshot(const char* out_path) {
 
 // ArkTS calls host.registerScreenshotSink(fn) to receive screenshot requests.
 napi_value RegisterScreenshotSink(napi_env env, napi_callback_info info) {
-    size_t argc = 1;
-    napi_value argv[1] = {nullptr};
-    napi_get_cb_info(env, info, &argc, argv, nullptr, nullptr);
-    if (argc >= 1) {
-        napi_valuetype type = napi_undefined;
-        napi_typeof(env, argv[0], &type);
-        if (type == napi_function) {
-            HostSinkRegister(env, g_screenshot_sink, argv[0]);
-            OH_LOG_INFO(LOG_APP, "[openharmony-host] screenshot sink registered");
-        }
-    }
-    napi_value undefined = nullptr;
-    napi_get_undefined(env, &undefined);
-    return undefined;
+    return HostSinkRegisterFromArgs(env, info, g_screenshot_sink);
 }
 
 // ---------------------------------------------------------------------------
@@ -1614,7 +1973,7 @@ napi_value RegisterScreenshotSink(napi_env env, napi_callback_info info) {
 // reports interactions back through host.notifyShellSearch -> the managed listener registered
 // by ohos_host_shell_search_set_listener (op 0 query changed, 1 submit, 2 cancel).
 // ---------------------------------------------------------------------------
-HostSink g_shell_search_sink("shell search", false);
+// (sink moved into the current HostBinding; see the g_* accessors above)
 std::mutex g_shell_search_lock;
 std::string g_shell_search_query;
 std::string g_shell_search_placeholder;
@@ -1649,20 +2008,7 @@ extern "C" int ohos_host_shell_search_set(const char* query, const char* placeho
 
 // ArkTS calls host.registerShellSearchChangedSink(fn) to receive the managed search state.
 napi_value RegisterShellSearchChangedSink(napi_env env, napi_callback_info info) {
-    size_t argc = 1;
-    napi_value argv[1] = {nullptr};
-    napi_get_cb_info(env, info, &argc, argv, nullptr, nullptr);
-    if (argc >= 1) {
-        napi_valuetype type = napi_undefined;
-        napi_typeof(env, argv[0], &type);
-        if (type == napi_function) {
-            HostSinkRegister(env, g_shell_search_sink, argv[0]);
-            OH_LOG_INFO(LOG_APP, "[openharmony-host] shell search sink registered");
-        }
-    }
-    napi_value undefined = nullptr;
-    napi_get_undefined(env, &undefined);
-    return undefined;
+    return HostSinkRegisterFromArgs(env, info, g_shell_search_sink);
 }
 
 // Current search state for the shell (host.shellSearchQuery()/shellSearchPlaceholder()/
@@ -1740,7 +2086,7 @@ napi_value NotifyShellSearch(napi_env env, napi_callback_info info) {
 // host.registerShellFlyoutChangedSink applies it to the shell panel labels (op 0 header,
 // 1 footer, empty text clears). The stored copies back host.shellFlyoutHeader()/Footer().
 // ---------------------------------------------------------------------------
-HostSink g_shell_flyout_sink("shell flyout", false);
+// (sink moved into the current HostBinding; see the g_* accessors above)
 std::mutex g_shell_flyout_lock;
 std::string g_shell_flyout_header;
 std::string g_shell_flyout_footer;
@@ -1777,20 +2123,7 @@ extern "C" int ohos_host_shell_flyout_footer(const char* text) {
 
 // ArkTS calls host.registerShellFlyoutChangedSink(fn) to receive the flyout section text.
 napi_value RegisterShellFlyoutChangedSink(napi_env env, napi_callback_info info) {
-    size_t argc = 1;
-    napi_value argv[1] = {nullptr};
-    napi_get_cb_info(env, info, &argc, argv, nullptr, nullptr);
-    if (argc >= 1) {
-        napi_valuetype type = napi_undefined;
-        napi_typeof(env, argv[0], &type);
-        if (type == napi_function) {
-            HostSinkRegister(env, g_shell_flyout_sink, argv[0]);
-            OH_LOG_INFO(LOG_APP, "[openharmony-host] shell flyout sink registered");
-        }
-    }
-    napi_value undefined = nullptr;
-    napi_get_undefined(env, &undefined);
-    return undefined;
+    return HostSinkRegisterFromArgs(env, info, g_shell_flyout_sink);
 }
 
 // Current flyout header/footer for the shell (host.shellFlyoutHeader()/shellFlyoutFooter()).
@@ -1834,7 +2167,7 @@ napi_value NotifyWebEvent(napi_env env, napi_callback_info info) {
 // host.notifyWebEvalResult(requestId, result, error). Page messages posted from JavaScript
 // through the dotnetHost proxy arrive as host.notifyJsMessage(payload) and are forwarded to the
 // managed callback registered with ohos_host_web_js_register_message.
-HostSink g_web_eval_sink("web eval", false);
+// (sink moved into the current HostBinding; see the g_* accessors above)
 static void (*g_web_eval_result_listener)(int request_id, const char* result, int error) = nullptr;
 static void (*g_web_js_message_listener)(const char* payload) = nullptr;
 
@@ -1858,20 +2191,7 @@ extern "C" void ohos_host_web_js_register_message(void* callback) {
 
 // ArkTS calls host.registerWebEvalSink(fn) to receive script evaluation requests.
 napi_value RegisterWebEvalSink(napi_env env, napi_callback_info info) {
-    size_t argc = 1;
-    napi_value argv[1] = {nullptr};
-    napi_get_cb_info(env, info, &argc, argv, nullptr, nullptr);
-    if (argc >= 1) {
-        napi_valuetype type = napi_undefined;
-        napi_typeof(env, argv[0], &type);
-        if (type == napi_function) {
-            HostSinkRegister(env, g_web_eval_sink, argv[0]);
-            OH_LOG_INFO(LOG_APP, "[openharmony-host] web eval sink registered");
-        }
-    }
-    napi_value undefined = nullptr;
-    napi_get_undefined(env, &undefined);
-    return undefined;
+    return HostSinkRegisterFromArgs(env, info, g_web_eval_sink);
 }
 
 // ArkTS calls host.notifyWebEvalResult(requestId, result, error) when runJavaScript finished.
@@ -1914,7 +2234,7 @@ napi_value NotifyJsMessage(napi_env env, napi_callback_info info) {
 // HybridWebView handler answers through ohos_host_hwv_invoke_result(requestId, payloadJson),
 // which hands the result to the shell's registerHybridInvokeResultSink callback so the
 // response can be completed.
-HostSink g_hybrid_invoke_result_sink("hybrid invoke result", false);
+// (sink moved into the current HostBinding; see the g_* accessors above)
 static void (*g_hybrid_invoke_listener)(int request_id, const char* method, const char* args_json) = nullptr;
 
 // The managed side registers the callback that services a JS invocation (P/Invoke).
@@ -1947,19 +2267,7 @@ napi_value NotifyHybridInvoke(napi_env env, napi_callback_info info) {
 
 // ArkTS calls host.registerHybridInvokeResultSink(fn) to receive invocation results.
 napi_value RegisterHybridInvokeResultSink(napi_env env, napi_callback_info info) {
-    size_t argc = 1;
-    napi_value argv[1] = {nullptr};
-    napi_get_cb_info(env, info, &argc, argv, nullptr, nullptr);
-    if (argc >= 1) {
-        napi_valuetype type = napi_undefined;
-        napi_typeof(env, argv[0], &type);
-        if (type == napi_function) {
-            HostSinkRegister(env, g_hybrid_invoke_result_sink, argv[0]);
-        }
-    }
-    napi_value undefined = nullptr;
-    napi_get_undefined(env, &undefined);
-    return undefined;
+    return HostSinkRegisterFromArgs(env, info, g_hybrid_invoke_result_sink);
 }
 
 // Called from managed code (P/Invoke) with the invocation result. Returns 0 when the result
@@ -1973,20 +2281,9 @@ extern "C" int ohos_host_hwv_invoke_result(int request_id, const char* payload_j
 
 // ArkTS calls host.registerPickerSink(fn) to receive picker requests.
 napi_value RegisterPickerSink(napi_env env, napi_callback_info info) {
-    size_t argc = 1;
-    napi_value argv[1] = {nullptr};
-    napi_get_cb_info(env, info, &argc, argv, nullptr, nullptr);
-    if (argc >= 1) {
-        napi_valuetype type = napi_undefined;
-        napi_typeof(env, argv[0], &type);
-        if (type == napi_function) {
-            HostSinkRegister(env, g_picker_sink, argv[0]);
-            ohos_host_picker_set_listener(OnPickerRequest);
-        }
-    }
-    napi_value undefined = nullptr;
-    napi_get_undefined(env, &undefined);
-    return undefined;
+    napi_value result = HostSinkRegisterFromArgs(env, info, g_picker_sink);
+    ohos_host_picker_set_listener(OnPickerRequest);
+    return result;
 }
 
 // ArkTS calls host.notifyPickerResult(requestId, rc, name, dataBase64).
@@ -2017,7 +2314,7 @@ napi_value NotifyPickerResult(napi_env env, napi_callback_info info) {
 // base64 argument the same way, so neither side can be made to allocate past the base64 form
 // of the cap. The content travels as one base64 string - no temp files or shared paths cross
 // the bridge, hence no cleanup or name-collision race.
-HostSink g_raw_file_sink("raw file", false);
+// (sink moved into the current HostBinding; see the g_* accessors above)
 
 // ceil(bytes / 3) * 4, computed without overflowing.
 constexpr size_t kMaxRawFileBase64Bytes =
@@ -2048,21 +2345,9 @@ void OnRawFileRequest(int requestId, int op, const char* name) {
 
 // ArkTS calls host.registerRawFileSink(fn) to receive raw-resource requests.
 napi_value RegisterRawFileSink(napi_env env, napi_callback_info info) {
-    size_t argc = 1;
-    napi_value argv[1] = {nullptr};
-    napi_get_cb_info(env, info, &argc, argv, nullptr, nullptr);
-    if (argc >= 1) {
-        napi_valuetype type = napi_undefined;
-        napi_typeof(env, argv[0], &type);
-        if (type == napi_function) {
-            HostSinkRegister(env, g_raw_file_sink, argv[0]);
-            ohos_host_raw_file_set_listener(OnRawFileRequest);
-            OH_LOG_INFO(LOG_APP, "[openharmony-host] raw file sink registered");
-        }
-    }
-    napi_value undefined = nullptr;
-    napi_get_undefined(env, &undefined);
-    return undefined;
+    napi_value result = HostSinkRegisterFromArgs(env, info, g_raw_file_sink);
+    ohos_host_raw_file_set_listener(OnRawFileRequest);
+    return result;
 }
 
 // ArkTS calls host.notifyRawFileResult(requestId, rc, dataBase64) when the read/probe finished
@@ -2201,7 +2486,7 @@ napi_value NotifyRawFileFd(napi_env env, napi_callback_info info) {
 // handler runs abilityAccessCtrl.requestPermissionsFromUser and answers with
 // host.permissionResult(requestId, granted). Argument order matches the C listener
 // (permission first, request id second).
-HostSink g_permission_sink("permission", false);
+// (sink moved into the current HostBinding; see the g_* accessors above)
 
 void OnPermissionRequest(const char* permission, int requestId) {
     if (!ControlStringFits(permission, "permission")) {
@@ -2215,20 +2500,9 @@ void OnPermissionRequest(const char* permission, int requestId) {
 
 // ArkTS calls host.registerPermissionSink(fn) to receive permission requests.
 napi_value RegisterPermissionSink(napi_env env, napi_callback_info info) {
-    size_t argc = 1;
-    napi_value argv[1] = {nullptr};
-    napi_get_cb_info(env, info, &argc, argv, nullptr, nullptr);
-    if (argc >= 1) {
-        napi_valuetype type = napi_undefined;
-        napi_typeof(env, argv[0], &type);
-        if (type == napi_function) {
-            HostSinkRegister(env, g_permission_sink, argv[0]);
-            ohos_host_permission_set_listener(OnPermissionRequest);
-        }
-    }
-    napi_value undefined = nullptr;
-    napi_get_undefined(env, &undefined);
-    return undefined;
+    napi_value result = HostSinkRegisterFromArgs(env, info, g_permission_sink);
+    ohos_host_permission_set_listener(OnPermissionRequest);
+    return result;
 }
 
 // ArkTS calls host.permissionResult(requestId, granted) when the prompt was answered.
@@ -2251,7 +2525,7 @@ napi_value NotifyPermissionResult(napi_env env, napi_callback_info info) {
 // notificationManager.isNotificationEnabledSync (op 0) or requestEnableNotification (op 1) and
 // answers with host.notificationPermissionResult(requestId, granted). Argument order matches
 // the C listener (op first, request id second).
-HostSink g_notification_permission_sink("notification permission", false);
+// (sink moved into the current HostBinding; see the g_* accessors above)
 
 void OnNotificationPermissionRequest(int op, int requestId) {
     SinkCall* call = new SinkCall();
@@ -2262,20 +2536,9 @@ void OnNotificationPermissionRequest(int op, int requestId) {
 
 // ArkTS calls host.registerNotificationPermissionSink(fn) to receive enablement requests.
 napi_value RegisterNotificationPermissionSink(napi_env env, napi_callback_info info) {
-    size_t argc = 1;
-    napi_value argv[1] = {nullptr};
-    napi_get_cb_info(env, info, &argc, argv, nullptr, nullptr);
-    if (argc >= 1) {
-        napi_valuetype type = napi_undefined;
-        napi_typeof(env, argv[0], &type);
-        if (type == napi_function) {
-            HostSinkRegister(env, g_notification_permission_sink, argv[0]);
-            ohos_host_notification_permission_set_listener(OnNotificationPermissionRequest);
-        }
-    }
-    napi_value undefined = nullptr;
-    napi_get_undefined(env, &undefined);
-    return undefined;
+    napi_value result = HostSinkRegisterFromArgs(env, info, g_notification_permission_sink);
+    ohos_host_notification_permission_set_listener(OnNotificationPermissionRequest);
+    return result;
 }
 
 // ArkTS calls host.notificationPermissionResult(requestId, granted) when the shell answered.
@@ -2297,7 +2560,7 @@ napi_value NotifyNotificationPermissionResult(napi_env env, napi_callback_info i
 // the sink's handler runs the @ohos.pasteboard call and answers with
 // host.clipboardResult(requestId, rc, text). The pasteboard 'update' observer pushes
 // host.notifyClipboardChanged() through the no-argument notify below.
-HostSink g_clipboard_sink("clipboard", false);
+// (sink moved into the current HostBinding; see the g_* accessors above)
 
 void OnClipboardRequest(int requestId, int op, const char* text) {
     if (!ControlStringFits(text, "clipboard")) {
@@ -2312,20 +2575,9 @@ void OnClipboardRequest(int requestId, int op, const char* text) {
 
 // ArkTS calls host.registerClipboardSink(fn) to receive clipboard operations.
 napi_value RegisterClipboardSink(napi_env env, napi_callback_info info) {
-    size_t argc = 1;
-    napi_value argv[1] = {nullptr};
-    napi_get_cb_info(env, info, &argc, argv, nullptr, nullptr);
-    if (argc >= 1) {
-        napi_valuetype type = napi_undefined;
-        napi_typeof(env, argv[0], &type);
-        if (type == napi_function) {
-            HostSinkRegister(env, g_clipboard_sink, argv[0]);
-            ohos_host_clipboard_set_listener(OnClipboardRequest);
-        }
-    }
-    napi_value undefined = nullptr;
-    napi_get_undefined(env, &undefined);
-    return undefined;
+    napi_value result = HostSinkRegisterFromArgs(env, info, g_clipboard_sink);
+    ohos_host_clipboard_set_listener(OnClipboardRequest);
+    return result;
 }
 
 // ArkTS calls host.clipboardResult(requestId, rc, text) with the pasteboard answer.
@@ -2414,7 +2666,7 @@ napi_value KeyEvent(napi_env env, napi_callback_info info) {
 // address as arg, op 1 location -> address with "lat,lon" as arg); the shell's
 // @ohos.geoLocationManager call answers with host.geocodeResult(requestId, rc, json) and the
 // host delivers it to the managed callback registered with ohos_host_register_geocode_result.
-HostSink g_geocode_sink("geocode", false);
+// (sink moved into the current HostBinding; see the g_* accessors above)
 
 void OnGeocodeRequest(int requestId, int op, const char* arg) {
     if (!ControlStringFits(arg, "geocode")) {
@@ -2429,21 +2681,9 @@ void OnGeocodeRequest(int requestId, int op, const char* arg) {
 
 // ArkTS calls host.registerGeocodeSink(fn) to receive geocoding requests.
 napi_value RegisterGeocodeSink(napi_env env, napi_callback_info info) {
-    size_t argc = 1;
-    napi_value argv[1] = {nullptr};
-    napi_get_cb_info(env, info, &argc, argv, nullptr, nullptr);
-    if (argc >= 1) {
-        napi_valuetype type = napi_undefined;
-        napi_typeof(env, argv[0], &type);
-        if (type == napi_function) {
-            HostSinkRegister(env, g_geocode_sink, argv[0]);
-            ohos_host_geocode_set_listener(OnGeocodeRequest);
-            OH_LOG_INFO(LOG_APP, "[openharmony-host] geocode sink registered");
-        }
-    }
-    napi_value undefined = nullptr;
-    napi_get_undefined(env, &undefined);
-    return undefined;
+    napi_value result = HostSinkRegisterFromArgs(env, info, g_geocode_sink);
+    ohos_host_geocode_set_listener(OnGeocodeRequest);
+    return result;
 }
 
 // ArkTS calls host.geocodeResult(requestId, rc, json) with the geocoder's answer.
@@ -2465,7 +2705,7 @@ napi_value NotifyGeocodeResult(napi_env env, napi_callback_info info) {
 
 // ArkTS calls host.registerVibrationSink(fn) to receive vibration requests (the preferred
 // path is the NDK export ohos_host_vibrate; this sink stays for shells that provide one).
-HostSink g_vibration_sink("vibration", true);
+// (sink moved into the current HostBinding; see the g_* accessors above)
 
 void OnVibrationRequest(int durationMs) {
     SinkCall* call = new SinkCall();
@@ -2474,38 +2714,16 @@ void OnVibrationRequest(int durationMs) {
 }
 
 napi_value RegisterVibrationSink(napi_env env, napi_callback_info info) {
-    size_t argc = 1;
-    napi_value argv[1] = {nullptr};
-    napi_get_cb_info(env, info, &argc, argv, nullptr, nullptr);
-    if (argc >= 1) {
-        napi_valuetype type = napi_undefined;
-        napi_typeof(env, argv[0], &type);
-        if (type == napi_function) {
-            HostSinkRegister(env, g_vibration_sink, argv[0]);
-            ohos_host_set_vibration_listener(OnVibrationRequest);
-        }
-    }
-    napi_value undefined = nullptr;
-    napi_get_undefined(env, &undefined);
-    return undefined;
+    napi_value result = HostSinkRegisterFromArgs(env, info, g_vibration_sink);
+    ohos_host_set_vibration_listener(OnVibrationRequest);
+    return result;
 }
 
 // ArkTS calls host.registerKeystoreSink(fn) to receive keystore requests.
 napi_value RegisterKeystoreSink(napi_env env, napi_callback_info info) {
-    size_t argc = 1;
-    napi_value argv[1] = {nullptr};
-    napi_get_cb_info(env, info, &argc, argv, nullptr, nullptr);
-    if (argc >= 1) {
-        napi_valuetype type = napi_undefined;
-        napi_typeof(env, argv[0], &type);
-        if (type == napi_function) {
-            HostSinkRegister(env, g_keystore_sink, argv[0]);
-            ohos_host_keystore_set_listener(OnKeystoreRequest);
-        }
-    }
-    napi_value undefined = nullptr;
-    napi_get_undefined(env, &undefined);
-    return undefined;
+    napi_value result = HostSinkRegisterFromArgs(env, info, g_keystore_sink);
+    ohos_host_keystore_set_listener(OnKeystoreRequest);
+    return result;
 }
 
 // ArkTS calls host.notifyKeystoreResult(requestId, rc, dataBase64).
@@ -2540,21 +2758,9 @@ void OnTextInputRequest(int show) {
 
 // ArkTS calls host.registerTextInputSink(fn) so the shell can show/hide its input.
 napi_value RegisterTextInputSink(napi_env env, napi_callback_info info) {
-    size_t argc = 1;
-    napi_value argv[1] = {nullptr};
-    napi_get_cb_info(env, info, &argc, argv, nullptr, nullptr);
-    if (argc >= 1) {
-        napi_valuetype type = napi_undefined;
-        napi_typeof(env, argv[0], &type);
-        if (type == napi_function) {
-            HostSinkRegister(env, g_text_input_sink, argv[0]);
-            ohos_host_set_text_input_listener(OnTextInputRequest);
-            OH_LOG_INFO(LOG_APP, "[openharmony-host] text input sink registered");
-        }
-    }
-    napi_value undefined = nullptr;
-    napi_get_undefined(env, &undefined);
-    return undefined;
+    napi_value result = HostSinkRegisterFromArgs(env, info, g_text_input_sink);
+    ohos_host_set_text_input_listener(OnTextInputRequest);
+    return result;
 }
 
 // ArkTS calls host.notifyTextSubmitted(text) when the return key is pressed.
@@ -2588,10 +2794,15 @@ napi_value NotifyTextInput(napi_env env, napi_callback_info info) {
 
 napi_value RegisterXComponent(napi_env env, napi_callback_info info) {
     (void)info;
-    if (g_env == nullptr) {
-        g_env = env;
+    // Init already bound this env; refresh the recorded JS thread (this is a JS callback) and
+    // retry the XComponent bind. A different env never silently rebinds here.
+    if (g_host->env == env) {
+        g_host->js_thread = pthread_self();
+        g_host->js_thread_valid = true;
+        TryRegisterXComponent();
+    } else {
+        OH_LOG_WARN(LOG_APP, "[openharmony-host] registerXComponent: unknown env, ignored");
     }
-    TryRegisterXComponent();
     napi_value undefined = nullptr;
     napi_get_undefined(env, &undefined);
     return undefined;
@@ -2823,14 +3034,21 @@ napi_value Init(napi_env env, napi_value exports) {
     // function once per name it binds. Each call returns its own exports object with the same
     // property table; the newest exports stays the XComponent reference source, and
     // TryRegisterXComponent retries until it has one (it returns early once bound).
-    g_env = env;
-    if (g_exports_ref != nullptr) {
-        napi_delete_reference(env, g_exports_ref);
-        g_exports_ref = nullptr;
-        OH_LOG_INFO(LOG_APP, "[openharmony-host] Init re-entered (module bound under more than one name)");
+    //
+    // A page rebuild (or an ability restart) hands this function a new env: HostEnsureBinding
+    // tears the previous binding down with the env that created its references, aborts its
+    // threadsafe functions and claims a fresh binding, so no stale napi_ref is deleted (or
+    // used) through the new env. Re-entry with the same env keeps the registered sinks.
+    HostBinding* binding = HostEnsureBinding(env);
+    if (binding == g_host && binding->env == env) {
+        if (binding->exports_ref != nullptr) {
+            OH_LOG_INFO(LOG_APP, "[openharmony-host] Init re-entered (module bound under more than one name)");
+        }
+        if (HostRefReplace(env, &binding->exports_ref, exports) != napi_ok) {
+            OH_LOG_WARN(LOG_APP, "[openharmony-host] Init could not keep the exports object");
+        }
+        TryRegisterXComponent();
     }
-    napi_create_reference(env, exports, 1, &g_exports_ref);
-    TryRegisterXComponent();
     napi_property_descriptor properties[] = {
         {"registerXComponent", nullptr, RegisterXComponent, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"registerTextInputSink", nullptr, RegisterTextInputSink, nullptr, nullptr, nullptr, napi_default, nullptr},
