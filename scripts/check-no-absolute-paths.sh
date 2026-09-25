@@ -26,7 +26,10 @@ if [ $# -gt 0 ]; then
         FILES="$FILES $f"
     done
 else
-    FILES="$(cd "$W" && git ls-files -- '*.csproj' '*.props' '*.targets' '*.proj' '*.sln' '*.slnx' '*.fsproj' '*.vbproj' 'scripts/*.sh' '.github/workflows/*.yml' '.github/workflows/*.yaml' 2>/dev/null)"
+    # The gate and its selftest carry the rejected patterns as fixture data/comments, so the
+    # default scan excludes those two files; the explicit-file mode used by the selftest does not.
+    FILES="$(cd "$W" && git ls-files -- '*.csproj' '*.props' '*.targets' '*.proj' '*.sln' '*.slnx' '*.fsproj' '*.vbproj' 'scripts/*.sh' '.github/workflows/*.yml' '.github/workflows/*.yaml' 2>/dev/null \
+        | grep -vE '^scripts/(check-no-absolute-paths|selftest-repo-hygiene)\.sh$' || true)"
 fi
 
 [ -n "$FILES" ] || { echo "no build input files found" >&2; exit 1; }
