@@ -12,7 +12,7 @@ using Microsoft.Maui.Platform;
 // after the fuzz tail) instead of letting every caller repeat its own threshold constant.
 VerifyLineCountingWriter verifyStdout = new(Console.Out);
 Console.SetOut(verifyStdout);
-const int verifyCheckTotal = 320;                     // documented full [verify] line count
+const int verifyCheckTotal = 321;                     // documented full [verify] line count
 const int verifyCheckFloor = verifyCheckTotal - 20;   // documented floor convention (total - 20)
 
 // A small image file for the Image handler.
@@ -4914,7 +4914,7 @@ if (!n29FreezeOk)
 //     hard error when the set is empty; the deterministic zip receives exactly that set through
 //     ExcludeFileNames (@(...->'%(Filename)%(Extension)')) and drops the names before packing;
 //   * the staged libs are re-signed in place by the shared ElfSigner task, and the libc++_shared
-//     staging keeps its SDK/NDK/harmonybrew lookup, the explicit override and the missing error;
+//     staging keeps its SDK root/OHOS_NDK lookup, the explicit override and the missing error;
 //   * openharmony_host.c bridges the signed libs/<abi>/ runtime natives into app_dir (symlink,
 //     copy fallback, one summary log) on both launch paths before hostfxr is initialized;
 //   * scripts/build-host.sh fails the build when libhostfxr appears in DT_NEEDED, before signing.
@@ -4981,7 +4981,9 @@ foreach (string pg2Version in pg2PackVersions)
     pg2LibcxxPath ??= pg2Path;
     string pg2Text = pg2Path is null ? string.Empty : File.ReadAllText(pg2Path);
     pg2LibcxxLookupOk &= pg2Text.Contains("<_OpenHarmonyNativeAbi Condition=\" '$(OpenHarmonyAbi)' == 'arm64-v8a' \">aarch64-linux-ohos</_OpenHarmonyNativeAbi>") &&
-        pg2Text.Contains("<_OpenHarmonyLibCxxShared Include=\"$([System.Environment]::GetEnvironmentVariable('HOME'))/.harmonybrew/Cellar/ohos-sdk/*/native/llvm/lib/$(_OpenHarmonyNativeAbi)/libc++_shared.so\" />") &&
+        !pg2Text.Contains("harmonybrew/Cellar") &&
+        !pg2Text.Contains("GetEnvironmentVariable('HOME')") &&
+        pg2Text.Contains("Set OpenHarmonySdkRoot (or OHOS_SDK_ROOT) to the SDK root that contains toolchains/lib") &&
         pg2Text.Contains("<_OpenHarmonyLibCxxShared Condition=\" '$(_OpenHarmonyNdkRootDir)' != '' and Exists('$(_OpenHarmonyNdkRootDir)llvm/lib/$(_OpenHarmonyNativeAbi)/libc++_shared.so') \"") &&
         pg2Text.Contains("<_OpenHarmonyLibCxxShared Condition=\" '$(OpenHarmonyLibCxxShared)' != '' \" Include=\"$(OpenHarmonyLibCxxShared)\" />");
     pg2LibcxxErrorsOk &= pg2Text.Contains("<Error Condition=\" '$(OpenHarmonyLibCxxShared)' != '' and !Exists('$(OpenHarmonyLibCxxShared)') \"") &&
@@ -5000,6 +5002,47 @@ if (!pg2LibcxxOk)
         $"the PG2 libc++_shared staging / re-sign contract drifted: lookup={pg2LibcxxLookupOk} " +
         $"errors={pg2LibcxxErrorsOk} copy={pg2LibcxxCopyOk} resign={pg2ResignOk} " +
         $"source={pg2LibcxxPath ?? "<missing>"}");
+}
+
+// PG2b2: the pack target contracts added by the audit follow-up: the JSON-aware module.json
+// task (no ReadLinesFromFile line contract), the @(StaticWebAsset)-only Blazor staging (no
+// NuGet-cache glob), the FileWrites registration of every created artifact, and the
+// OpenHarmonyAfterPublishDependsOn hook on the AfterTargets=Publish staging target.
+bool pg2ModuleJsonOk = true;
+bool pg2BlazorOk = true;
+bool pg2FileWritesOk = true;
+bool pg2HookOk = true;
+string? pg2ContractsPath = null;
+foreach (string pg2Version in pg2PackVersions)
+{
+    string? pg2Path = FindHostSource($"packs/Microsoft.OpenHarmony.Sdk/{pg2Version}/targets/OpenHarmony.Hap.targets");
+    pg2ContractsPath ??= pg2Path;
+    string pg2Text = pg2Path is null ? string.Empty : File.ReadAllText(pg2Path);
+    pg2ModuleJsonOk &= pg2Text.Contains("<UsingTask TaskName=\"OpenHarmonyGenerateModuleJson\"") &&
+        pg2Text.Contains("class OpenHarmonyGenerateModuleJson") &&
+        pg2Text.Contains("IsJsonLiteral") &&
+        pg2Text.Contains("EscapeJsonString") &&
+        !pg2Text.Contains("<ReadLinesFromFile File=\"$(_OpenHarmonyTemplatesDir)module.json.template\">") &&
+        pg2Text.Contains("<OpenHarmonyGenerateModuleJson TemplateFile=\"$(_OpenHarmonyTemplatesDir)module.json.template\"") &&
+        pg2Text.Contains("ExtraPermissions=\"@(_OpenHarmonyModuleJsonPermission)\"");
+    pg2BlazorOk &= pg2Text.Contains("the project carries wwwroot content but @(StaticWebAsset) has no blazor.webview.js") &&
+        !pg2Text.Contains("$(NuGetPackageRoot)microsoft.aspnetcore.components.webview") &&
+        !pg2Text.Contains("blazor.webview.js was not found in @(StaticWebAsset)");
+    pg2FileWritesOk &= pg2Text.Contains("<FileWrites Include=\"$(_OpenHarmonyHapStageDir)**/*\" />") &&
+        pg2Text.Contains("<FileWrites Include=\"$(_OpenHarmonyResourceIndexDir)**/*\" />") &&
+        pg2Text.Contains("<FileWrites Include=\"$(_OpenHarmonyHapUnsigned)\" />") &&
+        pg2Text.Contains("<FileWrites Include=\"$(_OpenHarmonyHapFile)\" />");
+    pg2HookOk &= pg2Text.Contains("AfterTargets=\"Publish\"") &&
+        pg2Text.Contains("DependsOnTargets=\"$(OpenHarmonyAfterPublishDependsOn);_OpenHarmonyDetectToolchain;");
+}
+bool pg2ContractsOk = pg2ModuleJsonOk && pg2BlazorOk && pg2FileWritesOk && pg2HookOk;
+Console.WriteLine($"[verify] pg2 pack contracts moduleJson={pg2ModuleJsonOk} blazorStatic={pg2BlazorOk} fileWrites={pg2FileWritesOk} afterPublishHook={pg2HookOk} packs=22,23,24 source='{pg2ContractsPath ?? "<missing>"}' assert={pg2ContractsOk}");
+if (!pg2ContractsOk)
+{
+    throw new InvalidOperationException(
+        $"the PG2 module.json / Blazor / FileWrites / AfterPublish contracts drifted: " +
+        $"moduleJson={pg2ModuleJsonOk} blazorStatic={pg2BlazorOk} fileWrites={pg2FileWritesOk} " +
+        $"afterPublishHook={pg2HookOk} source={pg2ContractsPath ?? "<missing>"}");
 }
 
 // PG2c: the host's runtime-lib bridge (openharmony_host.c). The bridge runs on both launch paths
