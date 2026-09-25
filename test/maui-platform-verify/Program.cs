@@ -3167,19 +3167,26 @@ if (!a7NapiOk)
 // A7b: the native entry's guard (g_launch_in_progress under g_context_mutex) rejects a second
 // start before anything is allocated, is set and cleared under the lock and cleared again when
 // the handle is published; every failure path before that runs OhosHostEndLaunch(), including
-// the payload-in-libs app_dir resolution failure and the NativeAOT start_app rejection (seven calls, all before the handle publish).
+// the payload-in-libs app_dir resolution failure, plus the NativeAOT start_app rejection when
+// that path is present (six calls on the JIT-only source, seven once the AOT rejection landed;
+// all before the handle publish).
 int a7NativeAt = cSource?.IndexOf("int ohos_host_start_app(const char* app_dir,", StringComparison.Ordinal) ?? -1;
 int a7NativeLockAt = a7NativeAt < 0 ? -1 : cSource!.IndexOf("pthread_mutex_lock(&g_context_mutex);", a7NativeAt, StringComparison.Ordinal);
 int a7NativeRejectAt = a7NativeLockAt < 0 ? -1 : cSource!.IndexOf("if (g_app != NULL || g_launch_in_progress) {", a7NativeLockAt, StringComparison.Ordinal);
 int a7NativeSetAt = a7NativeRejectAt < 0 ? -1 : cSource!.IndexOf("g_launch_in_progress = 1;", a7NativeRejectAt, StringComparison.Ordinal);
 int a7NativeUnlockAt = a7NativeSetAt < 0 ? -1 : cSource!.IndexOf("pthread_mutex_unlock(&g_context_mutex);", a7NativeSetAt, StringComparison.Ordinal);
 int a7EndLaunchCalls = CountOccurrences(cSource, "OhosHostEndLaunch();");
+// The AOT rejection of a payload in start_app adds one more failure path that must release the
+// launch guard; the expected count follows the source so the JIT-only and AOT-capable trees are
+// both checked exactly.
+bool a7AotRejection = cSource?.Contains("bridged start_app supports JIT payloads only") == true;
+int a7ExpectedEndLaunchCalls = a7AotRejection ? 7 : 6;
 bool a7NativeOk = cSource?.Contains("static int g_launch_in_progress = 0;") == true &&
     a7NativeRejectAt > a7NativeLockAt && a7NativeSetAt > a7NativeRejectAt && a7NativeUnlockAt > a7NativeSetAt &&
     cSource.Contains("g_app = handle;\n    g_launch_in_progress = 0;") &&
     cSource.Contains("static void OhosHostEndLaunch(void) {\n    pthread_mutex_lock(&g_context_mutex);\n    g_launch_in_progress = 0;") &&
-    a7EndLaunchCalls == 7;
-Console.WriteLine($"[verify] a7 native launch guard guard={cSource?.Contains("static int g_launch_in_progress = 0;") == true} rejectSecond={a7NativeRejectAt > a7NativeLockAt && a7NativeSetAt > a7NativeRejectAt} setUnderLock={a7NativeSetAt > a7NativeRejectAt && a7NativeUnlockAt > a7NativeSetAt} clearedOnPublish={cSource?.Contains("g_app = handle;\n    g_launch_in_progress = 0;") == true} failurePaths={a7EndLaunchCalls}/7 source='{cSourcePath ?? "<missing>"}' assert={a7NativeOk}");
+    a7EndLaunchCalls == a7ExpectedEndLaunchCalls;
+Console.WriteLine($"[verify] a7 native launch guard guard={cSource?.Contains("static int g_launch_in_progress = 0;") == true} rejectSecond={a7NativeRejectAt > a7NativeLockAt && a7NativeSetAt > a7NativeRejectAt} setUnderLock={a7NativeSetAt > a7NativeRejectAt && a7NativeUnlockAt > a7NativeSetAt} clearedOnPublish={cSource?.Contains("g_app = handle;\n    g_launch_in_progress = 0;") == true} failurePaths={a7EndLaunchCalls}/{a7ExpectedEndLaunchCalls} source='{cSourcePath ?? "<missing>"}' assert={a7NativeOk}");
 if (!a7NativeOk)
 {
     throw new InvalidOperationException(
