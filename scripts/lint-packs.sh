@@ -12,6 +12,11 @@
 # SupportedPlatforms.props / Microsoft.OpenHarmony.Sdk.targets shipped with no importer) and can
 # silently drift from the live definitions in Sdk/Sdk.targets.
 #
+# Every <UsingTask AssemblyFile="$(MSBuildThisFileDirectory)..."> reference must resolve to a file
+# the pack actually ships (the task-assembly migration puts the compiled packaging tasks in
+# tools/Microsoft.OpenHarmony.Tasks.dll; a UsingTask pointing at a missing DLL must fail here, not
+# at the first consuming build).
+#
 #   scripts/lint-packs.sh            lint the repo packs
 #   LINT_PACKS_ROOTS=<dir>           lint another packs root (selftest fixtures)
 #
@@ -76,6 +81,21 @@ for rel, target in imports:
         if b not in {os.path.basename(x) for x in layout}:
             dangling.append((rel, target))
 
+# Task assemblies referenced by a pack's UsingTask must be shipped in that pack: a UsingTask
+# pointing at a tools/ file the pack does not carry compiles the task at evaluation time (the
+# historical inline RoslynCodeTaskFactory behaviour) or fails late, and the task-assembly
+# migration (audit V8) requires the compiled DLL to be a pack artifact.
+task_ref = re.compile(r'AssemblyFile\s*=\s*"\$\(MSBuildThisFileDirectory\)([^"]*)"')
+missing_task = []
+for rel in layout:
+    path = os.path.join(roots, rel)
+    text = open(path, encoding='utf-8', errors='replace').read()
+    for m in task_ref.finditer(text):
+        target = m.group(1).lstrip('/')
+        resolved = os.path.normpath(os.path.join(os.path.dirname(path), target))
+        if not os.path.isfile(resolved):
+            missing_task.append((rel, target))
+
 print(f'pack lint: {roots}')
 for rel in layout:
     base = os.path.basename(rel)
@@ -96,11 +116,15 @@ for pack in packs:
 for rel, target in dangling:
     print(f'  DANGLING import in {rel}: {target}', file=sys.stderr)
 
+for rel, target in missing_task:
+    print(f'  MISSING task assembly referenced by {rel}: {target}', file=sys.stderr)
+
 total = len(layout)
-if dead or missing_entry or dangling:
+if dead or missing_entry or dangling or missing_task:
     print(f'pack lint FAILED: {len(dead)} dead file(s), {len(dangling)} dangling import(s), '
-          f'{len(missing_entry)} missing entry point(s) of {total} file(s) in {len(packs)} pack(s)',
+          f'{len(missing_entry)} missing entry point(s), {len(missing_task)} missing task assembly reference(s) '
+          f'of {total} file(s) in {len(packs)} pack(s)',
           file=sys.stderr)
     sys.exit(1)
-print(f'pack lint OK: {total} file(s) in {len(packs)} pack(s), every non-entry file has an importer')
+print(f'pack lint OK: {total} file(s) in {len(packs)} pack(s), every non-entry file has an importer, every task assembly reference resolves')
 PY

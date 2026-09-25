@@ -11,8 +11,13 @@
 #                   KnownFrameworkReference must each be applied exactly once
 #   T6 hap import   the same fixture proves OpenHarmony.Hap.targets was imported exactly once
 #                   (its marker property survives; the guarded import is a no-op on re-import)
+#   T7 resolution  all packs carry the RID/apphost/AspNetCore-pin contract and the net11.0
+#                  fixture proves the pin is applied (net10.0 untouched)
+#   T8 task DLL    every pack ships the same tools/Microsoft.OpenHarmony.Tasks.dll and a scratch
+#                  pack without it fails the lint (the UsingTask AssemblyFile reference must
+#                  resolve inside the pack)
 #
-# T2-T4 tamper with scratch copies; T5/T6 run `dotnet msbuild` on a fixture (skipped with a
+# T2-T4/T8 tamper with scratch copies; T5/T6/T7 run `dotnet msbuild` on a fixture (skipped with a
 # [SKIP] line when dotnet is unavailable, so the lint half still gates offline).
 #
 # Env: SELFTEST_TMPDIR=<dir>  work dir base (default: the approved opencode tmp dir)
@@ -266,6 +271,29 @@ EOF
         fail_ "T7 the net10.0 KFR must not be re-pointed: $(grep -F ASPNET= "$FIXR/probe10.txt" 2>/dev/null | tr '\n' ' ')"
     fi
 fi
+
+# ---- T8: the compiled task assembly ships with every pack -------------------------------
+section "T8 task assembly layout"
+TASKS_DLL_REL="tools/Microsoft.OpenHarmony.Tasks.dll"
+same_tasks=1
+for v in 1.0.0-preview.22 1.0.0-preview.23 1.0.0-preview.24; do
+    [ -f "$W/packs/Microsoft.OpenHarmony.Sdk/$v/$TASKS_DLL_REL" ] || {
+        same_tasks=0
+        echo "    missing pack assembly: packs/Microsoft.OpenHarmony.Sdk/$v/$TASKS_DLL_REL" >&2
+    }
+    cmp -s "$W/packs/Microsoft.OpenHarmony.Sdk/$v/$TASKS_DLL_REL" "$PACK/$TASKS_DLL_REL" || same_tasks=0
+done
+[ "$same_tasks" -eq 1 ] && pass_ "T8 every pack ships the same $TASKS_DLL_REL (task-assembly migration)" \
+                       || fail_ "T8 the pack task assemblies are missing or differ"
+# Negative: dropping the DLL from a scratch pack must fail the lint, because the shipped
+# OpenHarmony.Hap.targets UsingTask points at that exact pack-relative path.
+S8="$WORK/packs-taskdll"
+scratch_packs "$S8"
+rm -f "$S8/Microsoft.OpenHarmony.Sdk/1.0.0-preview.24/$TASKS_DLL_REL"
+LINT_PACKS_ROOTS="$S8" sh "$LINT" > "$WORK/T8.log" 2>&1
+assert_rc 1 $? "T8 a pack without the task assembly fails the lint"
+assert_contains "T8 names the missing task assembly reference" "MISSING task assembly referenced by" "$WORK/T8.log"
+assert_contains "T8 names the missing DLL" "Microsoft.OpenHarmony.Tasks.dll" "$WORK/T8.log"
 
 # ---- summary ---------------------------------------------------------------------------
 section "summary"

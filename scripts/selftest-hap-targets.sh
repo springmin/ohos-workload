@@ -2,8 +2,10 @@
 # selftest-hap-targets.sh - repeatable functional selftest for the hap packaging contracts that
 # can run without a device, the OpenHarmony SDK or a full publish:
 #
-#   T1 static      the three packs stay byte-identical and carry the JSON-aware module.json task
-#                  (no ReadLinesFromFile template read)
+#   T1 static      the three packs stay byte-identical; the tasks are loaded from the pack's
+#                  tools/Microsoft.OpenHarmony.Tasks.dll (six UsingTask AssemblyFile entries, no
+#                  RoslynCodeTaskFactory inline code, the DLL shipped byte-identically in all
+#                  three packs) and the ReadLinesFromFile template read stays gone
 #   T2 golden      the task reproduces the documented module.json bytes for the API 20 band, the
 #                  device band with compileSdk+permissions, and a multi-line template
 #   T3 negatives   an unknown template placeholder, a bare non-literal value and a malformed
@@ -30,7 +32,7 @@
 # Exit: 0 = all checks passed; 1 = at least one check failed (work dir kept for triage).
 set -u
 
-SELFTEST_VERSION="1 (2026-09-25)"
+SELFTEST_VERSION="2 (2026-09-26)"
 
 log()     { printf '[%s] %s\n' "$(date '+%H:%M:%S')" "$*"; }
 section() { printf '\n=== %s ===\n' "$*"; }
@@ -72,12 +74,53 @@ for v in $PACK_VERSIONS; do
 done
 [ "$same" -eq 1 ] && pass_ "T1 preview.22/23/24 OpenHarmony.Hap.targets are byte-identical" \
                   || fail_ "T1 the three pack targets differ"
-if grep -qF '<UsingTask TaskName="OpenHarmonyGenerateModuleJson"' "$REF" &&
-   grep -qF 'class OpenHarmonyGenerateModuleJson' "$REF" &&
-   ! grep -qF '<ReadLinesFromFile File="$(_OpenHarmonyTemplatesDir)module.json.template">' "$REF"; then
-    pass_ "T1 the module.json task is present and the ReadLinesFromFile template read is gone"
+# Task-assembly migration (audit V8): every task is loaded from the pack's tools/ DLL; no inline
+# RoslynCodeTaskFactory code and no inline class body may come back, and the three pack copies of
+# the assembly must stay byte-identical (the drift gate against the built assembly is
+# scripts/selftest-tasks.sh).
+TASKS_DLL_REL="tools/Microsoft.OpenHarmony.Tasks.dll"
+TASKS_TARGET='AssemblyFile="$(MSBuildThisFileDirectory)../tools/Microsoft.OpenHarmony.Tasks.dll"'
+tasks_ok=1
+for task in OpenHarmonyDeterministicZip OpenHarmonyStageRuntimeLibs OpenHarmonyStagePayloadLibs \
+            OpenHarmonyWritePayloadMarker OpenHarmonyResolvePermissions OpenHarmonyGenerateModuleJson; do
+    grep -qF "<UsingTask TaskName=\"$task\" $TASKS_TARGET />" "$REF" || { tasks_ok=0; echo "    missing UsingTask: $task" >&2; }
+done
+if grep -qF 'TaskFactory="RoslynCodeTaskFactory"' "$REF"; then
+    tasks_ok=0; echo "    inline TaskFactory remains" >&2
+fi
+if grep -qF '<Code Type=' "$REF"; then
+    tasks_ok=0; echo "    inline <Code> block remains" >&2
+fi
+[ "$tasks_ok" -eq 1 ] && pass_ "T1 the six tasks load $TASKS_DLL_REL and no inline code remains" \
+                      || fail_ "T1 the task-assembly UsingTask contract drifted"
+if grep -qF 'class OpenHarmonyGenerateModuleJson' "$REF"; then
+    fail_ "T1 the inline module.json class body is still in the targets"
 else
-    fail_ "T1 the module.json task contract drifted"
+    pass_ "T1 the task bodies live only in src/Microsoft.OpenHarmony.Tasks"
+fi
+tasks_dll_ok=1
+tasks_first=""
+for v in $PACK_VERSIONS; do
+    _dll="$W/packs/Microsoft.OpenHarmony.Sdk/$v/$TASKS_DLL_REL"
+    if [ ! -f "$_dll" ]; then
+        tasks_dll_ok=0
+        echo "    missing pack assembly: packs/Microsoft.OpenHarmony.Sdk/$v/$TASKS_DLL_REL" >&2
+        continue
+    fi
+    _sha="$(sha256sum "$_dll" | cut -d' ' -f1)"
+    if [ -z "$tasks_first" ]; then
+        tasks_first="$_sha"
+    elif [ "$_sha" != "$tasks_first" ]; then
+        tasks_dll_ok=0
+        echo "    pack assembly differs: $v ($_sha != $tasks_first)" >&2
+    fi
+done
+[ "$tasks_dll_ok" -eq 1 ] && pass_ "T1 preview.22/23/24 ship byte-identical $TASKS_DLL_REL" \
+                         || fail_ "T1 the pack task assemblies are missing or differ"
+if ! grep -qF '<ReadLinesFromFile File="$(_OpenHarmonyTemplatesDir)module.json.template">' "$REF"; then
+    pass_ "T1 the ReadLinesFromFile template read is gone"
+else
+    fail_ "T1 the ReadLinesFromFile template read came back"
 fi
 
 # ---- T2/T3: the functional fixture -------------------------------------------------------

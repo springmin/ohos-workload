@@ -1,0 +1,27 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!-- Unit tests for the compiled OpenHarmony hap-packaging tasks (task-assembly migration,
+       audit V8). The project runs the six task classes directly with a stub IBuildEngine, so the
+       determinism / skip-name / JSON / marker contracts are verified without a publish, an SDK or
+       a device; scripts/selftest-tasks.sh builds and runs it and also asserts the committed pack
+       copies are byte-identical to the freshly built assembly. -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net11.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <AssemblyName>openharmony-tasks-tests</AssemblyName>
+    <RootNamespace>OpenHarmonyTasksTests</RootNamespace>
+    <!-- Run as `dotnet <dll>` like the other console suites; no apphost, so a rebuild does not
+         have to rewrite an executed launcher (the SDK's OpenHarmony codesign pass refuses to
+         rewrite a binary the OS marked as executed). -->
+    <UseAppHost>false</UseAppHost>
+  </PropertyGroup>
+  <ItemGroup>
+    <!-- The tasks' compile-time MSBuild references are marked compile-only in the task project
+         (the host provides them at load time), so the test host references the runtime assets it
+         needs to actually construct and execute the task classes. -->
+    <PackageReference Include="Microsoft.Build.Framework" Version="17.11.48" />
+    <PackageReference Include="Microsoft.Build.Utilities.Core" Version="17.11.48" />
+    <ProjectReference Include="../../src/Microsoft.OpenHarmony.Tasks/Microsoft.OpenHarmony.Tasks.csproj" />
+  </ItemGroup>
+</Project>
