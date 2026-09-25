@@ -15,6 +15,9 @@
   <ItemGroup>
     <PackageReference Include="Microsoft.Maui.Controls" Version="11.0.0-rc.1.26451.6" />
     <PackageReference Include="Microsoft.Maui.Graphics" Version="11.0.0-rc.1.26451.6" />
+    <!-- The slice's BlazorWebView handler compiles against these types (test/Directory.Build.props
+         defines OPENHARMONY_BLAZOR_WEBVIEW, matching the slice's own compile vehicle). -->
+    <PackageReference Include="Microsoft.AspNetCore.Components.WebView.Maui" Version="11.0.0-rc.1.26451.6" />
     <!-- First-party assemblies default to ProjectReferences; a pinned HOSTING_DLL /
          OPENHARMONY_GRAPHICS_DLL (or -p:HostingDll=) still wins. Roots come from
          test/Directory.Build.props. -->

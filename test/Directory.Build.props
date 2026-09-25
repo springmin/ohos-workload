@@ -21,5 +21,11 @@
     <OpenHarmonyGraphicsDll Condition="'$(OpenHarmonyGraphicsDll)' == ''">$(OPENHARMONY_GRAPHICS_DLL)</OpenHarmonyGraphicsDll>
     <HostingProject>$(OhosWorkloadRoot)src/Microsoft.OpenHarmony.Hosting/Microsoft.OpenHarmony.Hosting.csproj</HostingProject>
     <GraphicsProject>$(OhosWorkloadRoot)src/Microsoft.OpenHarmony.Maui.Graphics/Microsoft.OpenHarmony.Maui.Graphics.csproj</GraphicsProject>
+    <!-- The slice sources compiled by the test projects carry the same BlazorWebView switch as
+         the slice's own compile vehicle: the projects reference Microsoft.Maui.Controls, which
+         restores Microsoft.AspNetCore.Components.WebView.Maui, so the handler and the
+         source-generated JSON context compile against the package types instead of being
+         skipped. -->
+    <DefineConstants>$(DefineConstants);OPENHARMONY_BLAZOR_WEBVIEW</DefineConstants>
   </PropertyGroup>
 </Project>
