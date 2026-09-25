@@ -49,7 +49,7 @@ allocation and jitter) budgets are exceeded.
 # (or the MauiSliceDir / HostingDll / OpenHarmonyGraphicsDll MSBuild properties) before building
 # elsewhere; an explicit -p: value wins over the environment and the absolute fallbacks.
 dotnet build -v:q
-dotnet bin/Debug/net11.0/verify.dll | grep -c '\[verify\]'   # expect 324 (311 checks + 4 fuzz + 1 frame perf + 8 a11y perf)
+dotnet bin/Debug/net11.0/verify.dll | grep -c '\[verify\]'   # expect 326 (313 checks + 4 fuzz + 1 frame perf + 8 a11y perf)
 ```
 
 The `interaction-regression` workflow (`.github/workflows/interaction-regression.yml`) runs the
@@ -60,7 +60,7 @@ suite on a GitHub runner as a real gate (on push to `master`, on pull requests a
 points `MAUI_SLICE_DIR` / `HOSTING_DLL` / `OPENHARMONY_GRAPHICS_DLL` at those roots, and fails the
 job unless the run exits 0, the suite's own `[suite]` contract line reports `assert=True` with at
 least the floor declared in `Program.cs`, both perf lines report `within=True`, and no `Unhandled`
-line is logged. The floor (304 = 324 - 20, the documented convention) lives only in `Program.cs`;
+line is logged. The floor (306 = 326 - 20, the documented convention) lives only in `Program.cs`;
 the workflow and `scripts/preflight.sh` both read the printed `[suite] checks=... floor=...` line
 instead of repeating a literal, so the two local/CI thresholds cannot drift apart.
 
@@ -169,7 +169,7 @@ jitter ~1.08x and 72,056 B/frame, and the a11y block reported ~0.3/0.5 ms for th
 ~0.07/0.28 ms for the publish pass (skip/republish). The post-batch run (commit a10b73e) reported
 avg 0.488 ms, p95 0.698 ms, jitter 1.43x and 3,720 B/frame, i.e. the ceiling is 3.72x the CI
 baseline. Every run ends with the `[suite]` contract line
-(`checks=324 total=324 floor=304 assert=True`), which the workflow and `scripts/preflight.sh`
+(`checks=326 total=326 floor=306 assert=True`), which the workflow and `scripts/preflight.sh`
 parse.
 
 ## Notes
@@ -178,8 +178,8 @@ parse.
   blocks codesigned ELF apphosts on some machines).
 - The suite fails loudly (unhandled exception) when a slice change breaks startup or when an
   assertion for the gesture flows (including the drag-and-drop checks) does not hold; keep it at
-  307 checks plus the 4 fuzz lines plus the 1 frame-perf line plus the 8 a11y-perf lines
-  (324 `[verify]` lines) when touching the platform slice. The total and the floor (total - 20)
+  313 checks plus the 4 fuzz lines plus the 1 frame-perf line plus the 8 a11y-perf lines
+  (326 `[verify]` lines) when touching the platform slice. The total and the floor (total - 20)
   are declared in `Program.cs`; the run ends with a `[suite] checks=... floor=... assert=...`
   line and fails itself when the printed count is below the floor, so the CI job and
   `scripts/preflight.sh` do not repeat the threshold.
@@ -191,10 +191,11 @@ parse.
   shell half imports `@kit.ContactsKit`/`@kit.CalendarKit` (both compile with the ArkTS toolchain)
   and requires `ohos.permission.READ_CONTACTS` (contacts) and `ohos.permission.READ_CALENDAR` /
   `ohos.permission.WRITE_CALENDAR` (calendar) at runtime; without the manifest declaration the
-  sinks answer "unavailable" instead of guessing. The packaging target declares them on request:
-  `-p:'OpenHarmonyExtraPermissions="ohos.permission.READ_CONTACTS;ohos.permission.READ_CALENDAR"'`
-  appends the minimal `requestPermissions` array to the generated module.json (preview.22 and
-  preview.23 packs; unset keeps the file byte-identical).
+  sinks answer "unavailable" instead of guessing. The packaging target declares them by feature:
+  `-p:'OpenHarmonyFeatures="contacts;calendar"'` emits the `requestPermissions` entries with their
+  reason and usedScene (COMP-ARKTS S1), and an undeclared shell request point is reported (strict
+  mode fails) by `_OpenHarmonyResolvePermissions`; `OpenHarmonyExtraPermissions` remains for raw
+  permission names.
 - Bluetooth/printing coverage: `OpenHarmonyBluetooth.IsEnabledAsync`,
   `GetPairedDevicesAsync`, `StartDiscoveryAsync`, `StopDiscoveryAsync` and
   `GetDiscoveredDevicesAsync` return false/empty without throwing off-device and `IsSupported`
@@ -216,10 +217,12 @@ parse.
   header, `/Length`-delimited streams followed by `endstream`, escaped parentheses/slashes and
   the Latin-1 octal escape, plus 3-page pagination of a 120-line document (the same documents
   were also validated with an independent Python xref/stream parser). The shell half compiles
-  `access`/`connection` from `@kit.ConnectivityKit` and `print` from `@ohos.print` and requires
+  `access`/`connection` from `@kit.ConnectivityKit` and `print` from `@kit.BasicServicesKit`,
+  gates the print path on `canIUse('SystemCapability.Print.PrintFramework')` and requires
   `ohos.permission.ACCESS_BLUETOOTH` (user_grant, requested at call time) and
-  `ohos.permission.PRINT` (system_grant); pass them through the same
-  `-p:'OpenHarmonyExtraPermissions="..."'` list so the packaged module.json declares them.
+  `ohos.permission.PRINT` (system_grant); declare them with
+  `-p:'OpenHarmonyFeatures="bluetooth;print"'` so the packaged module.json carries the entries
+  with reason/usedScene.
 - JavaScript bridge coverage: `WebView.EvaluateJavaScriptAsync` completes with null/empty and
   never throws off-device (no host library), the native `notifyJsMessage` callback raises
   `OpenHarmonyWebViewHandler.JsMessage` with the `dotnetHost.postMessage` payload, and the
@@ -592,5 +595,6 @@ parse.
   routing and the `OpenHarmonyScan` public-API baseline entry. `kit3 degradation` drives both
   managed bridges with no host library: the Share Kit dispatch answers false, `ScanAsync`
   completes with null and `IsSupported` answers false, all without throwing. That is 3 lines:
-  321 + 3 = 324 = 311 interaction checks + 4 fuzz + 1 frame perf + 8 a11y perf; the workflow
-  floor moves with the total (324 - 20 = 304).
+  321 + 3 = 324 base lines, plus the two COMP-ARKTS conformance lines (sources + abc
+  provenance) = 326 = 313 interaction checks + 4 fuzz + 1 frame perf + 8 a11y perf; the workflow
+  floor moves with the total (326 - 20 = 306).

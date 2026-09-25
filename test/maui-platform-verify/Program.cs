@@ -12,7 +12,7 @@ using Microsoft.Maui.Platform;
 // after the fuzz tail) instead of letting every caller repeat its own threshold constant.
 VerifyLineCountingWriter verifyStdout = new(Console.Out);
 Console.SetOut(verifyStdout);
-const int verifyCheckTotal = 324;                     // documented full [verify] line count
+const int verifyCheckTotal = 326;                     // documented full [verify] line count
 const int verifyCheckFloor = verifyCheckTotal - 20;   // documented floor convention (total - 20)
 
 // A small image file for the Image handler.
@@ -2828,12 +2828,14 @@ if (!v8ShellMethodOk)
 }
 
 // V8h: the return contract at the call site: the rc is read as a number and a refusal is logged
-// (the C/napi side returns 0 stored/kept, -1 rejected), so a failed publish stays observable.
+// through hilog (the C/napi side returns 0 stored/kept, -1 rejected), so a failed publish stays
+// observable. COMP-ARKTS S3 migrated the shell's console.* logging to hilog, so the pin asserts
+// the this.logError calls (same messages).
 bool v8ShellRcOk = v8Shell24.Contains("const rc: number = host.setAppContext(json) as number;") &&
     v8Shell24.Contains("if (rc !== 0) {") &&
-    v8Shell24.Contains("console.error(`[maui] app context publish declined: ${rc}`);") &&
-    v8Shell24.Contains("console.error(`[maui] app context publish failed: ${(contextError as Error).message}`);");
-Console.WriteLine($"[verify] v8 shell rc rcNumber={v8Shell24.Contains("const rc: number = host.setAppContext(json) as number;")} refusalLog={v8Shell24.Contains("if (rc !== 0) {")} failureLog={v8Shell24.Contains("console.error(`[maui] app context publish failed:")} assert={v8ShellRcOk}");
+    v8Shell24.Contains("this.logError(`[maui] app context publish declined: ${rc}`);") &&
+    v8Shell24.Contains("this.logError(`[maui] app context publish failed: ${(contextError as Error).message}`);");
+Console.WriteLine($"[verify] v8 shell rc rcNumber={v8Shell24.Contains("const rc: number = host.setAppContext(json) as number;")} refusalLog={v8Shell24.Contains("if (rc !== 0) {")} failureLog={v8Shell24.Contains("this.logError(`[maui] app context publish failed:")} assert={v8ShellRcOk}");
 if (!v8ShellRcOk)
 {
     throw new InvalidOperationException("the shell template's setAppContext rc/error handling is missing");
@@ -3553,7 +3555,7 @@ bool b1ClipboardNapi = s2Napi.Contains("HostSink clipboard{\"clipboard\", false}
     s2Napi.Contains("ohos_host_clipboard_notify_changed();") &&
     s2Napi.Contains("\"registerClipboardSink\"") && s2Napi.Contains("\"clipboardResult\"") &&
     s2Napi.Contains("\"notifyClipboardChanged\"");
-bool b1ClipboardShell = b1Shell.Contains("import pasteboard from '@ohos.pasteboard';") &&
+bool b1ClipboardShell = b1Shell.Contains("import { pasteboard } from '@kit.BasicServicesKit';") &&
     b1Shell.Contains("this.hostCall('registerClipboardSink', typeof host !== 'undefined' && typeof host.registerClipboardSink === 'function'") &&
     b1Shell.Contains("host.registerClipboardSink(async (requestId: number, op: number, text: string): Promise<void>") &&
     b1Shell.Contains("systemPasteboard.setDataSync(pasteboard.createPlainTextData(text));") &&
@@ -4052,8 +4054,12 @@ bool b2GeocodeShell = b1Shell.Contains("this.hostCall('registerGeocodeSink', typ
     b1Shell.Contains("this.hostCall('geocodeResult', typeof host !== 'undefined' && typeof host.geocodeResult === 'function'") &&
     b1Shell.Contains("host.geocodeResult(requestId, rc, json);") &&
     b1Shell.Contains("const query = JSON.parse(arg) as GeocodeAddressQuery;") &&
-    b1Shell.Contains("geo.default.getAddressesFromLocationName(request)") &&
-    b1Shell.Contains("geo.default.getAddressesFromLocation(request)");
+    b1Shell.Contains("geo.geoLocationManager.getAddressesFromLocationName(request)") &&
+    b1Shell.Contains("geo.geoLocationManager.getAddressesFromLocation(request)") &&
+    // COMP-ARKTS S2: the geocoder entry probe and the kit error-code mapping.
+    b1Shell.Contains("geo.geoLocationManager.isGeocoderAvailable()") &&
+    b1Shell.Contains("private geocodeErrorRc(error: BusinessError): number {") &&
+    b1Shell.Contains("code === 3301300 || code === 3301400");
 bool b2GeocodeContract = b2GeocodeManaged && b2GeocodeNative && b2GeocodeNapi && b2GeocodeShell;
 Console.WriteLine($"[verify] batch2 geocode contract managed={b2GeocodeManaged} native={b2GeocodeNative} napi={b2GeocodeNapi} shell={b2GeocodeShell} assert={b2GeocodeContract}");
 if (!b2GeocodeContract)
@@ -4367,6 +4373,89 @@ string ShellSource(string version) =>
         ? File.ReadAllText(shellPath)
         : string.Empty;
 
+// COMP-ARKTS conformance (FIX-ARKTS): the shell sources in all three preview packs must stay on
+// the audited API surface - @kit.* imports only, the component-scoped host context, the one-shot
+// decoder, the syscap/geocoder entry probes and the S3 rewrites (FocusController, RegExp
+// constructor, build() helpers, callback deregistration ledger, hilog logging). The three packs
+// stay byte-identical; a partial pack update fails here.
+bool arktsMigrationOk = true;
+bool arktsEntryOk = true;
+bool arktsS3Ok = true;
+string? arktsSourcePath = null;
+foreach (string arktsVersion in new[] { "1.0.0-preview.22", "1.0.0-preview.23", "1.0.0-preview.24" })
+{
+    string arktsUi = ShellSource(arktsVersion);
+    string? arktsAbilityPath = FindHostSource($"packs/Microsoft.OpenHarmony.Sdk/{arktsVersion}/templates/ets/entryability/EntryAbility.ets");
+    string? arktsAbilityUiPath = FindHostSource($"packs/Microsoft.OpenHarmony.Sdk/{arktsVersion}/templates/ets/entryability/EntryAbility.ui.ets");
+    arktsSourcePath ??= FindHostSource($"packs/Microsoft.OpenHarmony.Sdk/{arktsVersion}/templates/ets/pages/Index.ets");
+    string arktsAbility = arktsAbilityPath is null ? string.Empty : File.ReadAllText(arktsAbilityPath);
+    string arktsAbilityUi = arktsAbilityUiPath is null ? string.Empty : File.ReadAllText(arktsAbilityUiPath);
+    arktsMigrationOk &= arktsUi.Length > 0 && arktsAbility.Length > 0 && arktsAbilityUi.Length > 0 &&
+        !arktsUi.Contains("@ohos") && !arktsAbility.Contains("@ohos") && !arktsAbilityUi.Contains("@ohos") &&
+        arktsUi.Contains("private hostContext(): common.UIAbilityContext {") &&
+        !arktsUi.Contains("getContext(") &&
+        arktsAbility.Contains("util.TextDecoder.create('utf-8').decodeToString(bytes)") &&
+        arktsAbilityUi.Contains("JSON.parse(decodeUtf8(raw)) as AppConfig") &&
+        !arktsAbility.Contains(".decodeWithStream(") && !arktsAbilityUi.Contains(".decodeWithStream(");
+    arktsEntryOk &= arktsUi.Contains("isGeocoderAvailable()") &&
+        arktsUi.Contains("geocodeErrorRc") &&
+        arktsUi.Contains("code === 3301300 || code === 3301400") &&
+        arktsUi.Contains("SystemCapability.Print.PrintFramework") &&
+        arktsUi.Contains("new picker.DocumentViewPicker(this.hostContext())");
+    arktsS3Ok &= !arktsUi.Contains("focusControl") &&
+        arktsUi.Contains("this.getUIContext().getFocusController().requestFocus(") &&
+        arktsUi.Contains("new RegExp('^(.+)\\\\.[0-9a-f]{8,32}$').exec(stem)") &&
+        arktsUi.Contains("private webVisibility(): Visibility {") &&
+        arktsUi.Contains("private shellSearchHitTest(): HitTestMode {") &&
+        arktsUi.Contains("private runDisposers(): void {") &&
+        arktsUi.Contains("this.runDisposers();") &&
+        arktsUi.Contains("this.logError(") && !arktsUi.Contains("console.");
+}
+bool arktsConformanceOk = arktsMigrationOk && arktsEntryOk && arktsS3Ok;
+Console.WriteLine($"[verify] arkts conformance migration={arktsMigrationOk} entry={arktsEntryOk} s3={arktsS3Ok} source='{arktsSourcePath ?? "<missing>"}' assert={arktsConformanceOk}");
+if (!arktsConformanceOk)
+{
+    throw new InvalidOperationException(
+        $"the COMP-ARKTS shell conformance drifted: migration={arktsMigrationOk} entry={arktsEntryOk} s3={arktsS3Ok}");
+}
+
+// COMP-ARKTS abc provenance: the three packs carry the rebuilt variants and the provenance
+// record that pins them (size/sha/abc version/source hashes); the redundant modules.shell.abc
+// duplicate stays deleted.
+bool arktsAbcOk = true;
+string? arktsAbcPath = null;
+string arktsProvenanceFirst = string.Empty;
+foreach (string arktsVersion in new[] { "1.0.0-preview.22", "1.0.0-preview.23", "1.0.0-preview.24" })
+{
+    string? provenancePath = FindHostSource($"packs/Microsoft.OpenHarmony.Sdk/{arktsVersion}/templates/ets/abc-provenance.json");
+    string? uiPath = FindHostSource($"packs/Microsoft.OpenHarmony.Sdk/{arktsVersion}/templates/ets/modules.ui.abc");
+    string? headlessPath = FindHostSource($"packs/Microsoft.OpenHarmony.Sdk/{arktsVersion}/templates/ets/modules.abc");
+    string? redundantPath = FindHostSource($"packs/Microsoft.OpenHarmony.Sdk/{arktsVersion}/templates/ets/modules.shell.abc");
+    arktsAbcPath ??= uiPath;
+    string provenance = provenancePath is null ? string.Empty : File.ReadAllText(provenancePath);
+    if (arktsProvenanceFirst.Length == 0)
+    {
+        arktsProvenanceFirst = provenance;
+    }
+    byte[]? uiBytes = uiPath is null ? null : File.ReadAllBytes(uiPath);
+    byte[]? headlessBytes = headlessPath is null ? null : File.ReadAllBytes(headlessPath);
+    string uiSha = uiBytes is null ? string.Empty : Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(uiBytes)).ToLowerInvariant();
+    string headlessSha = headlessBytes is null ? string.Empty : Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(headlessBytes)).ToLowerInvariant();
+    arktsAbcOk &= provenance.Length > 0 && provenance == arktsProvenanceFirst &&
+        uiBytes is not null && headlessBytes is not null && redundantPath is null &&
+        provenance.Contains($"\"sha256\": \"{uiSha}\"") &&
+        provenance.Contains($"\"sha256\": \"{headlessSha}\"") &&
+        provenance.Contains("\"abcVersion\": \"13.0.1.0\"") &&
+        uiBytes.AsSpan().IndexOf("dotnet-payload"u8) >= 0 &&
+        uiBytes.AsSpan().IndexOf("ohos_dotnet_surface"u8) >= 0 &&
+        headlessBytes.AsSpan().IndexOf("ohos_dotnet_surface"u8) < 0;
+}
+Console.WriteLine($"[verify] arkts abc provenance packs=22,23,24 identical={arktsAbcOk} source='{arktsAbcPath ?? "<missing>"}' assert={arktsAbcOk}");
+if (!arktsAbcOk)
+{
+    throw new InvalidOperationException("the COMP-ARKTS abc provenance contract drifted");
+}
+
 // Audit2-1: BLE GATT (platform extra). The managed side declares the request/result/event
 // P/Invokes plus the two callback delegates (ACCESS_BLUETOOTH probe), the shared header declares
 // and the NAPI layer implements the five exports (sink post, result/event dispatch, module-table
@@ -4560,8 +4649,8 @@ foreach (string n13Version in b3ShellVersions)
         n13Shell.Contains("host.setBundleInfo(info.versionName, `${info.versionCode}`, info.name);") &&
         n13Shell.Contains("this.hostCall('registerNotificationPermissionSink', typeof host !== 'undefined' && typeof host.registerNotificationPermissionSink === 'function', (): void => {") &&
         n13Shell.Contains("host.registerNotificationPermissionSink(async (op: number, requestId: number): Promise<void> => {") &&
-        n13Shell.Contains("await nm.default.requestEnableNotification(context);") &&
-        n13Shell.Contains("granted = nm.default.isNotificationEnabledSync();") &&
+        n13Shell.Contains("await nm.notificationManager.requestEnableNotification(this.hostContext());") &&
+        n13Shell.Contains("granted = nm.notificationManager.isNotificationEnabledSync();") &&
         n13Shell.Contains("host.notificationPermissionResult(requestId, granted ? 1 : 0);");
 }
 bool n13SettingsBundleOk = n13SettingsOk && n13BundleOk && n13NotificationsOk && n13ShellOk;
