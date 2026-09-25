@@ -339,3 +339,22 @@ removes the packaging residue instead of leaving `obj/.../openharmony-hap/` and 
 targets that must run after the SDK's publish copy and before the hap staging (e.g. an asset
 generation step whose output the staging packs). The staged `libs/<abi>/` tree is re-signed after
 the payload staging and before the payload zip, so the signature always covers the final tree.
+
+## Known follow-ups (scheduled)
+
+- **Task assembly**: the pipeline's UsingTasks are still inline `RoslynCodeTaskFactory` code
+  (`OpenHarmonyDeterministicZip`, `OpenHarmonyStageRuntimeLibs`, `OpenHarmonyStagePayloadLibs`,
+  `OpenHarmonyWritePayloadMarker`, `OpenHarmonyGenerateModuleJson`). They should move to a
+  compiled `Microsoft.OpenHarmony.Tasks.dll` (a first-party net11.0 project referencing the MSBuild
+  assemblies, built by `scripts/prepare-packs.sh` and shipped in `packs/*/tools/`) with unit tests
+  for the zip determinism and the skip lists. Scheduled with the next SDK/workload release
+  (RELEASE-25): it needs the new project, the DLL committed into the three packs and a full hap
+  publish re-verification.
+- **Functional clean regression**: the FileWrites registration is gated statically (the interaction
+  suite and `eng/ohos-install/tests/test-codesign-filewrites.sh`); a `dotnet clean` run over a real
+  publish (device kit or a stub-toolchain fixture) is scheduled with RELEASE-25, together with the
+  SDK rebuild that carries the codesign-stamp registration.
+- **RID graph CI pin**: `scripts/sync-ridgraph.sh` single-sources the pack copies from
+  `sdk-ohos/eng/PortableRuntimeIdentifierGraph.openharmony.json`; the cross-repo gate
+  (`.github/workflows/ridgraph-sync.yml`) pins the sdk-ohos commit `32e1719359` and must be bumped
+  in lockstep with the sync whenever the canonical graph changes.
