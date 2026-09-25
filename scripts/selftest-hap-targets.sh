@@ -8,6 +8,8 @@
 #                  device band with compileSdk+permissions, and a multi-line template
 #   T3 negatives   an unknown template placeholder, a bare non-literal value and a malformed
 #                  template all fail the build instead of packing a broken manifest
+#   T4 toolchain   the strict toolchain resolution fails without a root / with a root that has no
+#                  toolchains/lib, naming the property or the missing file (no $HOME probe)
 #
 # The fixture imports the real pack targets (so the UsingTask under test is the shipped one) and
 # calls the task directly. Needs a dotnet SDK; when dotnet is unavailable the functional half is
@@ -152,6 +154,12 @@ proj = f'''<Project>
   <Target Name="BadJson">
     <OpenHarmonyGenerateModuleJson TemplateFile="$(TplBad)" OutputFile="out-bad-json.json" Replacements="@(_R)" />
   </Target>
+  <Target Name="DetectNoRoot">
+    <CallTarget Targets="_OpenHarmonyDetectToolchain" />
+  </Target>
+  <Target Name="DetectBadRoot">
+    <CallTarget Targets="_OpenHarmonyDetectToolchain" />
+  </Target>
 </Project>
 '''
 open(os.path.join(fix, 'fixture.proj'), 'w').write(proj)
@@ -189,6 +197,23 @@ PY
         || fail_ "T3 BadRaw does not name the JSON-literal requirement"
     grep -qF 'not valid JSON' "$WORK/BadJson.log" && pass_ "T3 BadJson reports the JSON validation failure" \
         || fail_ "T3 BadJson does not report the JSON validation failure"
+
+    # T4: the strict toolchain resolution (no $HOME probe): with neither root set the target
+    # fails naming the property, with a bad root it names the missing toolchains/lib.
+    ( cd "$FIX" && env -u OHOS_SDK_ROOT -u OHOS_SDK -u OpenHarmonySdkRoot -u OpenHarmonyToolchainDir \
+        "$DOTNET" msbuild fixture.proj -t:DetectNoRoot -nologo -v:m -p:OpenHarmonyHapPackage=true \
+        -p:OpenHarmonySdkRoot= -p:OpenHarmonyToolchainDir= ) > "$WORK/DetectNoRoot.log" 2>&1
+    assert_rc 1 $? "T4 DetectNoRoot fails without an SDK root"
+    grep -qF 'Set OpenHarmonySdkRoot (or OHOS_SDK_ROOT)' "$WORK/DetectNoRoot.log" \
+        && pass_ "T4 DetectNoRoot names the property to set" \
+        || fail_ "T4 DetectNoRoot does not name the property to set"
+    ( cd "$FIX" && env -u OHOS_SDK_ROOT -u OHOS_SDK -u OpenHarmonySdkRoot -u OpenHarmonyToolchainDir \
+        "$DOTNET" msbuild fixture.proj -t:DetectBadRoot -nologo -v:m -p:OpenHarmonyHapPackage=true \
+        -p:OpenHarmonySdkRoot="$WORK/does-not-exist" -p:OpenHarmonyToolchainDir= ) > "$WORK/DetectBadRoot.log" 2>&1
+    assert_rc 1 $? "T4 DetectBadRoot fails on a root without toolchains/lib"
+    grep -qF 'does not contain toolchains/lib/ohos_packing_tool' "$WORK/DetectBadRoot.log" \
+        && pass_ "T4 DetectBadRoot names the missing toolchain path" \
+        || fail_ "T4 DetectBadRoot does not name the missing toolchain path"
 fi
 
 # ---- summary ---------------------------------------------------------------------------
