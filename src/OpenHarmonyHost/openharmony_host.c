@@ -1519,34 +1519,46 @@ void ohos_host_register_bridge(void* lifecycle, void* node, void* surface) {
 
 // --- surface buffer presentation cache --------------------------------------------
 // The XComponent surface presents into a native window whose gralloc buffers are stable
-// while that window lives, so the fd-backed mapping is cached by (fd, size) instead of
-// being rebuilt every frame, and the buffer geometry/format/usage are only re-applied
-// when the window or its size changed (they are driver-level calls). Mappings are
-// dropped when the window is replaced or destroyed; a geometry change also drops them,
-// because the pool then hands out differently sized buffers. No fd is ever duplicated
-// (mmap borrows it), so the cache owns nothing but the mappings themselves.
+// while that window lives, so the fd-backed mapping is cached instead of being rebuilt every
+// frame, and the buffer geometry/format/usage are only re-applied when the window or its size
+// changed (they are driver-level calls). The cache key is (window, pool generation, fd, size):
+// the window and the generation keep a mapping from ever matching another surface's pool, and
+// the slot owns a dup() of the buffer fd, so a closed-and-reused fd number from the graphics
+// stack cannot alias an old mapping. Mappings are dropped when the window is replaced or
+// destroyed or when the geometry changes.
 #define OHOS_PRESENT_MAP_MAX 8
 typedef struct {
-    int fd;
+    int fd;              // owned duplicate of the buffer fd; -1 when the slot holds no mapping
     size_t size;
     void* addr;
+    void* window;        // the native window the mapping was created for
+    uint64_t generation; // g_present_map_generation at insert time (bumped on every invalidation)
     uint64_t last_used;
 } OhosPresentMapping;
 
 static OhosPresentMapping g_present_maps[OHOS_PRESENT_MAP_MAX];
 static uint64_t g_present_map_clock = 0;
+static uint64_t g_present_map_generation = 0;
 static void* g_native_window_configured = NULL;
 static int g_native_window_width = 0;
 static int g_native_window_height = 0;
 
 static void OhosHostPresentMapReleaseAll(void) {
+    // Bumping the generation first makes every old entry unmatchable even before it is
+    // evicted, so a concurrent frame can never pick up a mapping of the previous pool.
+    g_present_map_generation++;
     for (int i = 0; i < OHOS_PRESENT_MAP_MAX; i++) {
         if (g_present_maps[i].addr != NULL) {
             munmap(g_present_maps[i].addr, g_present_maps[i].size);
             g_present_maps[i].addr = NULL;
             g_present_maps[i].size = 0;
         }
+        if (g_present_maps[i].fd >= 0) {
+            close(g_present_maps[i].fd);
+        }
         g_present_maps[i].fd = -1;
+        g_present_maps[i].window = NULL;
+        g_present_maps[i].generation = 0;
     }
     g_present_map_clock = 0;
 }
@@ -1586,10 +1598,12 @@ static int OhosHostNativeWindowConfigure(void* window, int width, int height) {
     return 0;
 }
 
-// Borrowed mapping of fd, cached across frames; NULL when the mmap fails (the caller
-// still flushes the buffer, it just does not write pixels into it).
-static void* OhosHostPresentMapAcquire(int fd, const void* hint, size_t size) {
-    if (fd < 0 || size == 0) {
+// Borrowed mapping of the buffer, cached across frames; NULL when the mmap/dup fails (the
+// caller still flushes the buffer, it just does not write pixels into it). The cache owns the
+// dup'd fd, so it must be released through OhosHostPresentMapReleaseAll (or overridden by a
+// newer mapping in the same slot), never by the caller.
+static void* OhosHostPresentMapAcquire(void* window, int fd, const void* hint, size_t size) {
+    if (window == NULL || fd < 0 || size == 0) {
         return NULL;
     }
     int slot = -1;
@@ -1601,7 +1615,8 @@ static void* OhosHostPresentMapAcquire(int fd, const void* hint, size_t size) {
             }
             continue;
         }
-        if (mapping->fd == fd && mapping->size == size) {
+        if (mapping->window == window && mapping->generation == g_present_map_generation &&
+            mapping->fd == fd && mapping->size == size) {
             mapping->last_used = ++g_present_map_clock;
             return mapping->addr;
         }
@@ -1622,16 +1637,28 @@ static void* OhosHostPresentMapAcquire(int fd, const void* hint, size_t size) {
     if (mapping->addr != NULL) {
         munmap(mapping->addr, mapping->size);
         mapping->addr = NULL;
-    }
-    void* addr = mmap((void*)hint, size, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
-    if (addr == MAP_FAILED) {
-        mapping->fd = -1;
         mapping->size = 0;
+    }
+    if (mapping->fd >= 0) {
+        close(mapping->fd);
+        mapping->fd = -1;
+    }
+    int owned_fd = dup(fd);
+    if (owned_fd < 0) {
         return NULL;
     }
-    mapping->fd = fd;
+    void* addr = mmap((void*)hint, size, PROT_READ | PROT_WRITE, MAP_SHARED, owned_fd, 0);
+    if (addr == MAP_FAILED) {
+        close(owned_fd);
+        mapping->window = NULL;
+        mapping->generation = 0;
+        return NULL;
+    }
+    mapping->fd = owned_fd;
     mapping->size = size;
     mapping->addr = addr;
+    mapping->window = window;
+    mapping->generation = g_present_map_generation;
     mapping->last_used = ++g_present_map_clock;
     return addr;
 }
@@ -1684,8 +1711,11 @@ static int OhosDrawFrame(void* window, int width, int height, int mode, unsigned
     }
     BufferHandle* handle = OH_NativeWindow_GetBufferHandleFromNative(buffer);
     if (handle != NULL) {
-        void* addr = mmap(handle->virAddr, handle->size, PROT_READ | PROT_WRITE, MAP_SHARED, handle->fd, 0);
-        if (addr != MAP_FAILED) {
+        // Served from the presentation cache (see above): the slot owns a dup of the fd, so the
+        // graphics stack may close its own descriptor without invalidating the mapping, and a
+        // reused fd number can never alias another buffer's mapping.
+        void* addr = OhosHostPresentMapAcquire(window, handle->fd, handle->virAddr, (size_t)handle->size);
+        if (addr != NULL) {
             uint8_t* base = (uint8_t*)addr;
             for (int y = 0; y < height; y++) {
                 uint32_t* row = (uint32_t*)(base + (size_t)y * handle->stride);
@@ -1699,7 +1729,6 @@ static int OhosDrawFrame(void* window, int width, int height, int mode, unsigned
                     }
                 }
             }
-            munmap(addr, handle->size);
         }
     }
     Region region = { NULL, 0 };
@@ -3063,6 +3092,7 @@ typedef struct OhosTextBlobEntry {
     uint64_t hash;
     char* text;
     size_t text_len;
+    size_t bytes;  // accounted heap bytes of text (text_len + 1); the eviction subtracts this
     float size;
     unsigned int face_serial;
     OH_Drawing_TextBlob* blob;
@@ -3169,7 +3199,7 @@ static void OhosTextCacheEvict(OhosTextBlobEntry* entry) {
         OH_Drawing_TextBlobDestroy(entry->blob);
     }
     free(entry->text);
-    g_text_cached_bytes -= entry->text_len;
+    g_text_cached_bytes -= entry->bytes;
     memset(entry, 0, sizeof(*entry));
     entry->bucket_next = g_text_free_list;
     g_text_free_list = entry;
@@ -3240,6 +3270,7 @@ static int OhosTextBlobCachePut(const char* utf8, size_t len, float size,
     entry->hash = hash;
     entry->text = copy;
     entry->text_len = len;
+    entry->bytes = bytes;
     entry->size = size;
     entry->face_serial = face_serial;
     entry->blob = blob;
@@ -3673,7 +3704,7 @@ int ohos_host_draw_present(void) {
     }
     BufferHandle* handle = OH_NativeWindow_GetBufferHandleFromNative(buffer);
     if (handle != NULL && handle->fd >= 0 && handle->size > 0 && handle->stride > 0) {
-        void* addr = OhosHostPresentMapAcquire(handle->fd, handle->virAddr, (size_t)handle->size);
+        void* addr = OhosHostPresentMapAcquire(native_window, handle->fd, handle->virAddr, (size_t)handle->size);
         if (addr != NULL) {
             OhosHostPresentCopyRows(addr, (size_t)handle->stride, pixels,
                                     (size_t)width * 4, height, (size_t)handle->size);
