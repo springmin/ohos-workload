@@ -17,6 +17,18 @@ libs/<abi>/{libopenharmonyhost.so, libc++_shared.so, <.NET runtime *.so>,
 resources/base/..., resources/rawfile/{app.json, dotnet.zip}
 ```
 
+## module.json generation
+
+`module.json` is produced by the `OpenHarmonyGenerateModuleJson` task (using task in the targets
+file) from `templates/module.json.template`: the task reads the whole template, substitutes the
+`@NAME@` tokens in their JSON context (a token inside a string is escaped as a JSON string, a bare
+token must be a JSON literal such as `60000020` or `true`), inserts `compileSdkVersion`/
+`compileSdkType` after `app.apiReleaseType` and the opt-in `requestPermissions` member, and
+validates the result as JSON before writing it (only when the bytes changed). A template with an
+unknown token, a non-literal bare token or otherwise invalid JSON fails the build instead of
+packing a broken manifest. The previous implementation read the template line-by-line and joined
+the lines, so a template with any other formatting silently produced invalid JSON.
+
 ## Resource index
 
 `resources.index` is compiled by the SDK's `restool` from the staged `resources/` tree and the
@@ -59,11 +71,12 @@ packaging writes `module.json`, `ets/`, `resources/` and `libs/` into it.
 
 `libopenharmonyhost.so` links the shared C++ runtime (`DT_NEEDED libc++_shared.so`) and the device
 loader refuses a hap whose `libs/<abi>/` lacks the dependency, so the staging copies the SDK's
-`libc++_shared.so` next to the host. It is looked up under the SDK roots the targets file already
-knows - `OpenHarmonySdkRoot` (or `OHOS_SDK_ROOT`), both as `<root>/native/llvm` and with the root
-itself as the native root, `OHOS_NDK`, and the harmonybrew Cellar install
-`_OpenHarmonyDetectToolchain` falls back to - in the LLVM triple matching `OpenHarmonyAbi`
-(arm64-v8a -> aarch64-linux-ohos). A
+`libc++_shared.so` next to the host. It is looked up only under explicit roots:
+`OpenHarmonySdkRoot` (or `OHOS_SDK_ROOT`), both as `<root>/native/llvm` and with the root itself as
+the native root, and `OHOS_NDK`, in the LLVM triple matching `OpenHarmonyAbi`
+(arm64-v8a -> aarch64-linux-ohos). Nothing under `$HOME` is probed (a stale homebrew Cellar install
+must not satisfy a build silently); callers such as `scripts/make-device-test-kit.sh` resolve the
+local Cellar layout and export `OpenHarmonySdkRoot` explicitly. A
 missing library is a hard error; `OpenHarmonyLibCxxShared` pins an explicit file.
 
 ## Runtime native libraries
@@ -289,16 +302,40 @@ copies it into the publish payload as `wwwroot/**`, so the hap's
 `<base>/<root>/<path>` convention the ArkTS shell already serves for the hybrid origin
 (`https://0.0.0.1/`): Blazor's origin `https://0.0.0.0/` is answered from
 `<AppDir>/<root>/<request path>`. The framework script is staged alongside as
-`wwwroot/_framework/blazor.webview.js`: the project's static web assets (`@(StaticWebAsset)`) are
-the canonical source when the Razor/static-web-assets pipeline ran, otherwise it is read from the
-NuGet cache
-(`$(NuGetPackageRoot)microsoft.aspnetcore.components.webview/*/staticwebassets/`); a
-`@(MauiAsset)` list with `wwwroot/<TargetPath>` entries (`ConvertStaticWebAssetsToMauiAssets`) is
-consumed too when a MAUI SDK produced it. This is the OpenHarmony port's stand-in for the
-MauiAsset consumer, which does not exist in this tree.
+`wwwroot/_framework/blazor.webview.js` from `@(StaticWebAsset)`, the canonical source the
+Razor/static-web-assets publish pipeline produces; a `wwwroot` without that asset is a hard error
+naming the fix (the workload does not guess a NuGet-cache copy of a package version the SDK does
+not own). A `@(MauiAsset)` list with `wwwroot/<TargetPath>` entries
+(`ConvertStaticWebAssetsToMauiAssets`) is consumed too when a MAUI SDK produced it. This is the
+OpenHarmony port's stand-in for the MauiAsset consumer, which does not exist in this tree.
 
 NOTE (native model): the OpenHarmony host runs the managed app in-process on CoreCLR, so Blazor
 Hybrid here is the native model (like Android/iOS), not the WebAssembly one - the WebView only
 needs `blazor.webview.js` and the message transport, and no
 `dotnet.js`/`dotnet.native.wasm`/`_*.dll` browser assets are staged. A project without `wwwroot`
 is untouched, so its payload stays byte-identical.
+
+## Toolchain resolution
+
+`_OpenHarmonyDetectToolchain` resolves the packing tool from `OpenHarmonyToolchainDir` or
+`OpenHarmonySdkRoot`/`OHOS_SDK_ROOT` + `toolchains/lib`; nothing under `$HOME` is probed. When the
+toolchain (or `restool`, resolved from the same root) is missing, the build fails with the property
+to set. Scripts that build haps for a local homebrew install (`scripts/make-device-test-kit.sh`)
+resolve that layout themselves and export `OpenHarmonySdkRoot`, so the pack stays location-neutral.
+
+## Clean contract
+
+Every target registers the files it creates in `FileWrites` in the same target: the hap staging
+tree (`_OpenHarmonyStageHap`), restool's output (`_OpenHarmonyGenerateResourceIndex`), the unsigned
+hap (`_OpenHarmonyPackHap`) and the signed hap (`_OpenHarmonySignHap`). `dotnet clean` therefore
+removes the packaging residue instead of leaving `obj/.../openharmony-hap/` and the haps in
+`bin/<tfm>/<rid>/` behind. The OpenHarmony codesign passes in the SDK
+(`_OpenHarmonyCodeSignBuildOutputs`/`PublishOutputs`) register their stamps the same way.
+
+## Extension hook
+
+`_OpenHarmonyStageHap` runs `AfterTargets="Publish"` and consumes
+`$(OpenHarmonyAfterPublishDependsOn)` before its own dependencies, so a project can list custom
+targets that must run after the SDK's publish copy and before the hap staging (e.g. an asset
+generation step whose output the staging packs). The staged `libs/<abi>/` tree is re-signed after
+the payload staging and before the payload zip, so the signature always covers the final tree.

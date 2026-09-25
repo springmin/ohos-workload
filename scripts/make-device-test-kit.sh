@@ -145,6 +145,34 @@ need_file() {
     [ -f "$1" ] || { warn "missing input: $1${2:+ ($2)}"; exit 1; }
 }
 
+# The hap packaging targets resolve the toolchain explicitly (audit V5): OpenHarmonyToolchainDir
+# or OpenHarmonySdkRoot (OHOS_SDK_ROOT) + toolchains/lib. Nothing under $HOME is probed by the
+# pack, so this script resolves the local homebrew Cellar layout itself (or takes an explicit
+# root) and exports the properties the targets consume. OHOS_NDK/c++ lookup then works too.
+resolve_ohos_sdk_root() {
+    if [ -n "${OpenHarmonySdkRoot:-}" ] || [ -n "${OHOS_SDK_ROOT:-}" ]; then
+        return 0
+    fi
+    _candidate=""
+    if [ -n "${OHOS_SDK:-}" ] && [ -x "${OHOS_SDK}/toolchains/lib/ohos_packing_tool" ]; then
+        _candidate="$OHOS_SDK"
+    else
+        # Local dev convenience only; the resolution is explicit and logged, not a silent probe.
+        for _dir in "$HOME"/.harmonybrew/Cellar/ohos-sdk/*/; do
+            [ -x "${_dir}toolchains/lib/ohos_packing_tool" ] && _candidate="${_dir%/}"
+        done
+    fi
+    if [ -z "$_candidate" ]; then
+        warn "no OpenHarmony SDK root found: set OpenHarmonySdkRoot (or OHOS_SDK_ROOT/OHOS_SDK) to the SDK root that contains toolchains/lib and toolchains/restool"
+        exit 1
+    fi
+    export OpenHarmonySdkRoot="$_candidate"
+    export OHOS_SDK_ROOT="${OHOS_SDK_ROOT:-$_candidate}"
+    export OHOS_NDK="${OHOS_NDK:-$_candidate/native}"
+    log "OpenHarmony SDK root: $OpenHarmonySdkRoot"
+}
+resolve_ohos_sdk_root
+
 STAGE="$KIT_DIR.stage.$$"
 LOG_DIR="$STAGE/.logs"
 trap 'rm -rf "$STAGE"' 0 1 2 15

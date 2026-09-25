@@ -916,11 +916,11 @@ public class OpenHarmonyGenerateModuleJson : Task
   </Target>
 
   <!-- restool comes from the toolchain the packing tool was resolved from: the toolchain
-       directory's sibling (<toolchain dir>/../restool is the SDK's toolchains/restool in the
-       harmonybrew layout), then the configured SDK root. _OpenHarmonyDetectToolchain above
-       already resolved an unset OpenHarmonyToolchainDir (including the Cellar fallback), so
-       either lookup covers the explicit SDK root and the Cellar install; OpenHarmonyRestool
-       overrides both. See "Resource index" in the packaging doc. -->
+       directory's sibling (<toolchain dir>/../restool is the SDK's toolchains/restool), then the
+       configured SDK root. _OpenHarmonyDetectToolchain above resolved an unset
+       OpenHarmonyToolchainDir from OpenHarmonySdkRoot (no $HOME probing), so either lookup
+       covers the explicit SDK root; OpenHarmonyRestool overrides both. See "Resource index" in
+       the packaging doc. -->
   <Target Name="_OpenHarmonyResolveRestool"
           DependsOnTargets="_OpenHarmonyDetectToolchain"
           Condition=" '$(OpenHarmonyHapPackage)' == 'true' and '$(TargetPlatformIdentifier)' == 'openharmony' ">
