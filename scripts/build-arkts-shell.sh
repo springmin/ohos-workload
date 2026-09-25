@@ -453,6 +453,261 @@ if [ "${1:-}" = "--check-abc" ]; then
     esac
 fi
 
+# ---- source contract (audit ARKTS-S2/S3) ------------------------------------------------
+# The shell sources must not carry the migrated patterns: '@ohos' module/dynamic imports
+# (the @kit.* migration), the global getContext(), the deprecated decodeWithStream() decoder or
+# a global focusControl call. Comments may name the migrated APIs in prose, so the patterns
+# match the import/global-call forms only.
+check_source_tokens() { # <templates-dir>
+    _dir="$1"
+    _bad=0
+    # Each spec is <ERE>|<label>; the parentheses are escaped so every pattern is a valid ERE
+    # (an invalid pattern makes grep exit 2, which must never be mistaken for "no match").
+    for _spec in "from '@ohos|a module import from '@ohos" "import\('@ohos|a dynamic import from '@ohos" \
+                 "getContext\(|the global getContext()" "decodeWithStream\(|the deprecated decodeWithStream()" \
+                 "focusControl\.|the global focusControl"; do
+        _re="$(printf '%s' "$_spec" | sed 's/|.*//')"
+        _label="$(printf '%s' "$_spec" | sed 's/^[^|]*|//')"
+        _probe=0
+        grep -qE "$_re" /dev/null || _probe=$?
+        if [ "$_probe" -eq 2 ]; then
+            printf 'ERROR: internal: the source gate regex %s is not a valid ERE\n' "$_re" >&2
+            _bad=1
+            continue
+        fi
+        if grep -rnE "$_re" "$_dir/ets" --include='*.ets' >/dev/null 2>&1; then
+            printf 'ERROR: %s still appears in %s:\n' "$_label" "$_dir" >&2
+            grep -rnE "$_re" "$_dir/ets" --include='*.ets' | sed 's/^/  /' >&2
+            _bad=1
+        fi
+    done
+    return $_bad
+}
+
+# pack_sources_hash <templates-dir>: one hash over the ets/**/*.ets file list and contents, so
+# the three preview packs can be compared without diffing directories.
+pack_sources_hash() { # <templates-dir>
+    python3 - "$1" <<'PY'
+import hashlib, os, sys
+tpl = sys.argv[1]
+h = hashlib.sha256()
+root = os.path.join(tpl, 'ets')
+for dirpath, dirnames, filenames in os.walk(root):
+    dirnames.sort()
+    for name in sorted(filenames):
+        if not name.endswith('.ets'):
+            continue
+        path = os.path.join(dirpath, name)
+        rel = os.path.relpath(path, tpl).replace(os.sep, '/')
+        h.update(rel.encode())
+        h.update(b'\0')
+        h.update(hashlib.sha256(open(path, 'rb').read()).digest())
+print(h.hexdigest())
+PY
+}
+
+# check_sources_contract [templates-dir]: the token gate for one pack, plus the cross-pack
+# byte-identity check when no directory is given (the packaging harness pins the sources).
+check_sources_contract() { # [<templates-dir>]
+    if [ -n "${1:-}" ]; then
+        check_source_tokens "$1"
+        return $?
+    fi
+    _hash=""
+    _root="${ARKTS_PACK_ROOT:-$W}"
+    for _v in 1.0.0-preview.22 1.0.0-preview.23 1.0.0-preview.24; do
+        _tpl="$_root/packs/Microsoft.OpenHarmony.Sdk/$_v/templates"
+        check_source_tokens "$_tpl" || return 1
+        _h="$(pack_sources_hash "$_tpl")" || return 1
+        if [ -z "$_hash" ]; then
+            _hash="$_h"
+            _first="$_v"
+        elif [ "$_h" != "$_hash" ]; then
+            printf 'ERROR: %s/templates/ets sources differ from %s/templates/ets (all three preview packs must stay byte-identical)\n' "$_v" "$_first" >&2
+            return 1
+        fi
+    done
+    printf '    shell sources clean (no @ohos import, getContext(), decodeWithStream() or focusControl) and byte-identical across preview.22/23/24 (sources %s)\n' "$_hash"
+}
+
+# pack_abc_provenance_json <dist-dir>: prints the provenance document for the two dist
+# artifacts (schema pinned by the pack gate below).
+pack_abc_provenance_json() { # <dist-dir>
+    python3 - "$1" "${ARKTS_PACK_ROOT:-$W}" <<'PY'
+import hashlib, json, os, sys
+dist, root = sys.argv[1], sys.argv[2]
+tpl = os.path.join(root, 'packs/Microsoft.OpenHarmony.Sdk/1.0.0-preview.24/templates')
+
+def sha(path):
+    return hashlib.sha256(open(path, 'rb').read()).hexdigest()
+
+def abc_version(path):
+    raw = open(path, 'rb').read(0x10)
+    if raw[:5] != b'PANDA':
+        sys.exit('not an abc file: ' + path)
+    return '.'.join(str(b) for b in raw[0x0c:0x10])
+
+variants = {}
+for name, dist_name, pack_name, sources in (
+    ('headless', 'modules.headless.abc', 'modules.abc',
+     ['entryability/EntryAbility.ets']),
+    ('ui', 'modules.abc', 'modules.ui.abc',
+     ['entryability/EntryAbility.ui.ets', 'pages/Index.ets']),
+):
+    dist_path = os.path.join(dist, dist_name)
+    if not os.path.exists(dist_path):
+        sys.exit('missing dist artifact: ' + dist_path)
+    variants[name] = {
+        'file': pack_name,
+        'dist': dist_name,
+        'bytes': os.path.getsize(dist_path),
+        'sha256': sha(dist_path),
+        'abcVersion': abc_version(dist_path),
+        'sources': {rel: sha(os.path.join(tpl, 'ets', rel)) for rel in sources},
+    }
+
+print(json.dumps({
+    'schema': 1,
+    'compiler': {
+        'script': 'scripts/build-arkts-shell.sh',
+        'flavor': 'openharmony',
+        'compatibleSdkVersion': '18',
+        'modelVersion': '6.0.2',
+        'hvigor': '6.26.4',
+        'abcVersion': '13.0.1.0',
+    },
+    'variants': variants,
+}, indent=2, sort_keys=True))
+PY
+}
+
+# check_pack_abc [dist-dir]: the abc provenance gate. Verifies, per preview pack, the
+# provenance record (size/sha/abc version), the per-variant literal contract, the source hashes
+# (a source edit without a rebuild fails here), the absence of the redundant modules.shell.abc
+# and the byte-identity across the three packs; with a dist dir the freshly rebuilt artifacts
+# must match the installed packs byte-for-byte.
+check_pack_abc() { # [<dist-dir>]
+    python3 - "${ARKTS_PACK_ROOT:-$W}" "${1:-}" <<'PY'
+import hashlib, json, os, sys
+root, dist = sys.argv[1], sys.argv[2]
+versions = ['1.0.0-preview.22', '1.0.0-preview.23', '1.0.0-preview.24']
+common = ['dotnet-payload', 'bundleCodeDir', 'payload-in-libs', 'dotnet.marker']
+ui_only = ['ohos_dotnet_surface', 'ohos_dotnet_input', '__hwvInvokeDotNet']
+errors = []
+provenance_ref = None
+abc_ref = {}
+for version in versions:
+    ets = os.path.join(root, 'packs/Microsoft.OpenHarmony.Sdk', version, 'templates/ets')
+    prov_path = os.path.join(ets, 'abc-provenance.json')
+    if not os.path.exists(prov_path):
+        errors.append('%s: missing abc-provenance.json (run --install-packs)' % version)
+        continue
+    prov = json.load(open(prov_path))
+    if provenance_ref is None:
+        provenance_ref = (version, prov)
+    elif prov != provenance_ref[1]:
+        errors.append('%s: abc-provenance.json differs from %s' % (version, provenance_ref[0]))
+    for variant, meta in sorted(prov.get('variants', {}).items()):
+        path = os.path.join(ets, meta['file'])
+        if not os.path.exists(path):
+            errors.append('%s: missing %s' % (version, meta['file']))
+            continue
+        raw = open(path, 'rb').read()
+        if len(raw) != meta['bytes']:
+            errors.append('%s: %s is %d bytes, provenance records %d' % (version, meta['file'], len(raw), meta['bytes']))
+        if hashlib.sha256(raw).hexdigest() != meta['sha256']:
+            errors.append('%s: %s sha256 does not match the provenance' % (version, meta['file']))
+        version_read = '.'.join(str(b) for b in raw[0x0c:0x10]) if raw[:5] == b'PANDA' else '<not abc>'
+        if version_read != prov['compiler']['abcVersion']:
+            errors.append('%s: %s abc version %s, provenance records %s' % (version, meta['file'], version_read, prov['compiler']['abcVersion']))
+        for literal in common:
+            if literal.encode() not in raw:
+                errors.append('%s: %s lacks the payload literal %s' % (version, meta['file'], literal))
+        if variant == 'ui':
+            for literal in ui_only:
+                if literal.encode() not in raw:
+                    errors.append('%s: ui abc lacks the UI literal %s' % (version, literal))
+        if variant == 'headless':
+            for literal in ui_only:
+                if literal.encode() in raw:
+                    errors.append('%s: headless abc carries the UI literal %s' % (version, literal))
+        for rel, want in sorted(meta.get('sources', {}).items()):
+            source = os.path.join(ets, rel)
+            if not os.path.exists(source):
+                errors.append('%s: provenance names a missing source %s' % (version, rel))
+            elif hashlib.sha256(open(source, 'rb').read()).hexdigest() != want:
+                errors.append('%s: source drift in %s (rebuild the abc and run --install-packs)' % (version, rel))
+        if variant in abc_ref:
+            if abc_ref[variant][1] != raw:
+                errors.append('%s: %s differs from %s' % (version, meta['file'], abc_ref[variant][0]))
+        else:
+            abc_ref[variant] = (version, raw)
+        if dist:
+            rebuilt = os.path.join(dist, meta['dist'])
+            if not os.path.exists(rebuilt):
+                errors.append('%s: rebuilt %s is missing from %s' % (version, meta['dist'], dist))
+            elif open(rebuilt, 'rb').read() != raw:
+                errors.append('%s: %s differs from the installed %s (rebuild all variants and run --install-packs)' % (version, meta['dist'], meta['file']))
+    if os.path.exists(os.path.join(ets, 'modules.shell.abc')):
+        errors.append('%s: redundant modules.shell.abc is still present (use modules.ui.abc)' % version)
+if errors:
+    for error in errors:
+        print('ERROR: ' + error, file=sys.stderr)
+    sys.exit(1)
+variants = sorted(provenance_ref[1]['variants']) if provenance_ref else []
+print('    pack abc provenance clean: %s variants=%s packs=%s' % (
+    provenance_ref[0] if provenance_ref else '<none>',
+    ','.join(variants),
+    ','.join(versions)))
+for variant, (version, raw) in sorted(abc_ref.items()):
+    print('    %s %s: %d bytes sha256=%s abcVersion=%s' % (
+        variant, version, len(raw), hashlib.sha256(raw).hexdigest(), '.'.join(str(b) for b in raw[0x0c:0x10])))
+PY
+}
+
+# --check-sources [templates-dir]: run just the source contract gate.
+if [ "${1:-}" = "--check-sources" ]; then
+    if check_sources_contract "${2:-}"; then
+        info "shell source contract clean${2:+: $2}"
+        exit 0
+    fi
+    die "the shell source contract check failed (see above)"
+fi
+
+# --check-pack-abc [dist-dir]: run just the abc provenance gate.
+if [ "${1:-}" = "--check-pack-abc" ]; then
+    if check_pack_abc "${2:-}"; then
+        info "pack abc provenance gate passed${2:+ against $2}"
+        exit 0
+    fi
+    die "the pack abc provenance gate failed (see above)"
+fi
+
+# --install-packs [dist-dir]: install the two rebuilt abc artifacts into all three preview
+# packs (ui -> modules.ui.abc, headless -> modules.abc), drop the redundant modules.shell.abc
+# and refresh the abc-provenance.json record, then re-run the gate. No node/hvigor needed.
+if [ "${1:-}" = "--install-packs" ]; then
+    _dist="${2:-${OUT_DIR:-$W/dist/ets}}"
+    _root="${ARKTS_PACK_ROOT:-$W}"
+    [ -d "$_dist" ] || die "no dist directory: $_dist"
+    _prov="$(pack_abc_provenance_json "$_dist")" || die "cannot derive the abc provenance from $_dist"
+    _prov_tmp="$(mktemp "${TMPDIR:-/tmp}/abc-provenance.XXXXXX")"
+    printf '%s\n' "$_prov" > "$_prov_tmp" || die "cannot write the provenance temp file"
+    for _v in 1.0.0-preview.22 1.0.0-preview.23 1.0.0-preview.24; do
+        _ets="$_root/packs/Microsoft.OpenHarmony.Sdk/$_v/templates/ets"
+        [ -d "$_ets" ] || die "missing pack templates: $_ets"
+        cp "$_dist/modules.abc" "$_ets/modules.ui.abc" || die "cannot install the ui abc into $_v"
+        cp "$_dist/modules.headless.abc" "$_ets/modules.abc" || die "cannot install the headless abc into $_v"
+        rm -f "$_ets/modules.shell.abc"
+        cp "$_prov_tmp" "$_ets/abc-provenance.json" || die "cannot write the provenance into $_v"
+        info "installed abc into $_v (ui $(stat -c%s "$_ets/modules.ui.abc") B, headless $(stat -c%s "$_ets/modules.abc") B)"
+    done
+    rm -f "$_prov_tmp"
+    check_pack_abc "$_dist" || die "the installed packs failed the abc provenance gate"
+    info "pack abc installed and verified across preview.22/23/24"
+    exit 0
+fi
+
 # --diagnose-log <file>: attribute a saved hvigor log and exit. Needs no node or SDK, so it also
 # works on a log copied from another machine; scripts/selftest-build-arkts-shell.sh drives the
 # 00302013 positive and negative cases through it. Exit 0 = signature found (handling steps
@@ -509,6 +764,10 @@ if [ "${1:-}" = "--scaffold-only" ]; then
     info "scaffold configs written: $PROJ (flavor $SDK_FLAVOR, modelVersion $MODEL_VERSION, runtimeOS $RUNTIME_OS, compatibleSdkVersion $COMPATIBLE_SDK_VERSION, targetSdkVersion $TARGET_VERSION)"
     exit 0
 fi
+
+# Source contract (audit ARKTS-S2/S3): the shell sources must not carry the migrated patterns
+# and all three preview packs must stay byte-identical before a build consumes them.
+check_sources_contract || die "the shell source contract gate failed (fix the sources or run --check-sources)"
 
 [ -x "$NODE_BIN" ] || die "node not found (set NODE=)"
 # NODE= overrides the host node. The device's /data/service/hnp node (v24.13.0) aborts with a
@@ -785,6 +1044,18 @@ info "ArkTS shell compiled ($VARIANT): $OUT_FILE ($(stat -c%s "$OUT_FILE") bytes
 # template) still compiles and passes the version check but would always take the extraction
 # path, so fail here; --check-abc exposes the same check to the selftest.
 check_abc_contract "$OUT_FILE" || die "the compiled shell lacks the payload-in-libs probe; rebuild from packs/.../templates/ets/entryability"
+# Variant/provenance gate: when both variant artifacts are present, the freshly built abc must
+# match the installed packs byte-for-byte and carry the per-variant literals (run
+# ARKTS_SHELL_VARIANT=headless too to complete the pair).
+if [ -f "$OUT_DIR/modules.abc" ] && [ -f "$OUT_DIR/modules.headless.abc" ]; then
+    if [ -f "$TPL/ets/abc-provenance.json" ]; then
+        check_pack_abc "$OUT_DIR" || die "the built abc does not match the installed packs (rebuild both variants and run --install-packs)"
+    else
+        info "no abc-provenance.json in the packs yet; run --install-packs to install and pin the rebuilt abc"
+    fi
+else
+    info "variant/provenance gate not run: build both ARKTS_SHELL_VARIANT=ui and =headless first (the other artifact is missing from $OUT_DIR)"
+fi
 if [ "$VARIANT" = ui ]; then
     info "package it with: -p:OpenHarmonyUIPage=pages/Index -p:OpenHarmonyArktsModulesAbc=$OUT_FILE"
 else

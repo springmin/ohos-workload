@@ -6,9 +6,9 @@
 // ability forwards lifecycle events.
 import { UIAbility, AbilityConstant, Want } from '@kit.AbilityKit';
 import { hilog } from '@kit.PerformanceAnalysisKit';
-import zlib from '@ohos.zlib';
-import fs from '@ohos.file.fs';
-import util from '@ohos.util';
+import { zlib } from '@kit.BasicServicesKit';
+import { fileIo as fs } from '@kit.CoreFileKit';
+import { util } from '@kit.ArkTS';
 import host from 'libopenharmonyhost.so';
 
 const DOMAIN = 0x0002;
@@ -21,6 +21,13 @@ const LIFECYCLE_BACKGROUND = 3;
 
 interface AppConfig {
   assembly: string;
+}
+
+// App descriptor decoding (audit ARKTS-S2): the rawfile bytes are UTF-8 JSON. decodeToString is
+// the one-shot decoder for a whole buffer (decodeWithStream is the streaming form and is not
+// needed here); TextDecoder.create validates the encoding name once instead of per call.
+function decodeUtf8(bytes: Uint8Array): string {
+  return util.TextDecoder.create('utf-8').decodeToString(bytes);
 }
 
 // Payload marker (P17): pins the zip identity (rawfile byte length + mtime) and the entry
@@ -276,7 +283,7 @@ export default class EntryAbility extends UIAbility {
 
   private async bootstrap(): Promise<void> {
     const raw = await this.context.resourceManager.getRawFileContent('app.json');
-    const config = JSON.parse(new util.TextDecoder('utf-8').decodeWithStream(raw)) as AppConfig;
+    const config = JSON.parse(decodeUtf8(raw)) as AppConfig;
 
     const payloadDir = `${this.context.filesDir}/dotnet`;
     const markerPath = `${this.context.filesDir}/dotnet.marker`;

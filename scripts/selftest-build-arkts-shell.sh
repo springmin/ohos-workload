@@ -40,6 +40,13 @@
 #                 (dotnet-payload/bundleCodeDir/payload-in-libs) and the dotnet.zip fallback
 #                 (dotnet.marker); each missing literal fails with its name, an unreadable file
 #                 is exit 2 and a missing argument is refused
+#   T15 sources   `--check-sources` accepts the shipped packs (token gate + cross-pack source
+#                 identity) and rejects an injected @ohos import, getContext() call,
+#                 decodeWithStream() call or focusControl call, naming the pattern
+#   T16 provenance `--check-pack-abc` accepts the shipped packs (size/sha/abc-version/literal/
+#                 source-hash provenance) and, on a self-contained pack copy, rejects a corrupted
+#                 abc, a source edit without a rebuild, a missing provenance record and a stale
+#                 rebuilt artifact against the installed pack
 #   T14 flavor    `ARKTS_SDK_FLAVOR=harmony` scaffolding: a fake DevEco-style HarmonyOS SDK
 #                 fixture (default/openharmony/ets + default/hms/ets with metadata) makes
 #                 `--scaffold-only` emit runtimeOS HarmonyOS with compatibleSdkVersion/target
@@ -378,6 +385,104 @@ sh "$BUILD_SCRIPT" --check-abc "$WORK/does-not-exist.abc" > "$WORK/T13-missing.l
 assert_rc 2 "$_rc" "T13 an unreadable abc is bad input (exit 2)"
 sh "$BUILD_SCRIPT" --check-abc > "$WORK/T13-usage.log" 2>&1 && _rc=0 || _rc=$?
 assert_rc 1 "$_rc" "T13 --check-abc without a file is refused"
+
+# ---- T15: the shell source contract gate ------------------------------------------------
+section "T15 shell source contract (--check-sources)"
+( cd "$SELFTEST_DIR/.." && sh "$BUILD_SCRIPT" --check-sources ) > "$WORK/T15-clean.log" 2>&1
+assert_rc 0 $? "T15 the shipped packs pass the source contract"
+assert_contains "T15 reports the sources byte-identical" "byte-identical across preview.22/23/24" "$WORK/T15-clean.log"
+SRC_FAKE="$WORK/source-fake"
+mkdir -p "$SRC_FAKE/ets/pages"
+REAL_SOURCE="$SELFTEST_DIR/../packs/Microsoft.OpenHarmony.Sdk/1.0.0-preview.24/templates/ets/pages/Index.ets"
+cp "$REAL_SOURCE" "$SRC_FAKE/ets/pages/Index.ets"
+sh "$BUILD_SCRIPT" --check-sources "$SRC_FAKE" > "$WORK/T15-copy.log" 2>&1
+assert_rc 0 $? "T15 an unmodified source copy passes the token gate"
+# Each case is <label>|<snippet>; the split uses sed because this host's shell does not expand
+# the %%|* parameter forms reliably.
+for _case in "getContext():|getContext(this)" "kit import:|from '@ohos.file.fs'" \
+             "dynamic kit import:|import('@ohos.file.fs')" "decodeWithStream():|decodeWithStream(raw)" \
+             "focusControl:|focusControl.requestFocus('x')"; do
+    _re="$(printf '%s' "$_case" | sed 's/|.*//')"
+    _snippet="$(printf '%s' "$_case" | sed 's/^[^|]*|//')"
+    cp "$REAL_SOURCE" "$SRC_FAKE/ets/pages/Index.ets"
+    printf '\nconst injectedProbe: string = "%s";\n' "$_snippet" >> "$SRC_FAKE/ets/pages/Index.ets"
+    sh "$BUILD_SCRIPT" --check-sources "$SRC_FAKE" > "$WORK/T15-case.log" 2>&1 && _rc=0 || _rc=$?
+    assert_rc 1 "$_rc" "T15 the gate rejects $_re"
+    if grep -qF "$_snippet" "$WORK/T15-case.log"; then
+        pass_ "T15 the rejection names $_re"
+    else
+        fail_ "T15 the rejection does not name $_re (see $WORK/T15-case.log)"
+    fi
+done
+cp "$REAL_SOURCE" "$SRC_FAKE/ets/pages/Index.ets"
+
+# ---- T16: the abc provenance gate ---------------------------------------------------------
+section "T16 abc provenance gate (--check-pack-abc)"
+( cd "$SELFTEST_DIR/.." && sh "$BUILD_SCRIPT" --check-pack-abc ) > "$WORK/T16-clean.log" 2>&1
+assert_rc 0 $? "T16 the shipped packs pass the abc provenance gate"
+assert_contains "T16 reports the ui variant" "ui" "$WORK/T16-clean.log"
+assert_contains "T16 reports the headless variant" "headless" "$WORK/T16-clean.log"
+# A self-contained copy of the packs: the negative cases mutate only the copy (ARKTS_PACK_ROOT).
+FAKE_REPO="$WORK/fake-repo"
+for _v in 22 23 24; do
+    mkdir -p "$FAKE_REPO/packs/Microsoft.OpenHarmony.Sdk/1.0.0-preview.$_v"
+    cp -R "$SELFTEST_DIR/../packs/Microsoft.OpenHarmony.Sdk/1.0.0-preview.$_v/templates" \
+          "$FAKE_REPO/packs/Microsoft.OpenHarmony.Sdk/1.0.0-preview.$_v/templates"
+done
+run_pack_gate() { ( cd "$SELFTEST_DIR/.." && ARKTS_PACK_ROOT="$FAKE_REPO" sh "$BUILD_SCRIPT" --check-pack-abc ) > "$WORK/T16-case.log" 2>&1; }
+run_pack_gate
+assert_rc 0 $? "T16 the copied packs pass"
+FAKE_UI="$FAKE_REPO/packs/Microsoft.OpenHarmony.Sdk/1.0.0-preview.23/templates/ets/modules.ui.abc"
+python3 - "$FAKE_UI" <<'PY'
+import sys
+path = sys.argv[1]
+data = bytearray(open(path, 'rb').read())
+data[-1] ^= 0xFF
+open(path, 'wb').write(bytes(data))
+PY
+run_pack_gate && _rc=0 || _rc=$?
+assert_rc 1 "$_rc" "T16 a corrupted abc fails"
+assert_contains "T16 names the sha mismatch" "sha256 does not match" "$WORK/T16-case.log"
+python3 - "$FAKE_UI" <<'PY'
+import sys
+path = sys.argv[1]
+data = bytearray(open(path, 'rb').read())
+data[-1] ^= 0xFF
+open(path, 'wb').write(bytes(data))
+PY
+printf '\n// source drift probe\n' >> "$FAKE_REPO/packs/Microsoft.OpenHarmony.Sdk/1.0.0-preview.24/templates/ets/pages/Index.ets"
+run_pack_gate && _rc=0 || _rc=$?
+assert_rc 1 "$_rc" "T16 a source edit without a rebuild fails"
+assert_contains "T16 names the source drift" "source drift" "$WORK/T16-case.log"
+rm -f "$FAKE_REPO/packs/Microsoft.OpenHarmony.Sdk/1.0.0-preview.24/templates/ets/abc-provenance.json"
+run_pack_gate && _rc=0 || _rc=$?
+assert_rc 1 "$_rc" "T16 a missing provenance record fails"
+assert_contains "T16 names the missing record" "missing abc-provenance.json" "$WORK/T16-case.log"
+rm -rf "$FAKE_REPO"
+# The freshly built dist must match the installed packs (both variants required).
+if [ -f "$SELFTEST_DIR/../dist/ets/modules.abc" ] && [ -f "$SELFTEST_DIR/../dist/ets/modules.headless.abc" ]; then
+    ( cd "$SELFTEST_DIR/.." && sh "$BUILD_SCRIPT" --check-pack-abc "$SELFTEST_DIR/../dist/ets" ) > "$WORK/T16-dist.log" 2>&1
+    assert_rc 0 $? "T16 the built dist matches the installed packs"
+    mkdir -p "$WORK/dist-mismatch"
+    cp "$SELFTEST_DIR/../dist/ets/modules.abc" "$WORK/dist-mismatch/modules.abc"
+    python3 - "$WORK/dist-mismatch/modules.abc" <<'PY'
+import sys
+path = sys.argv[1]
+data = bytearray(open(path, 'rb').read())
+data[64] ^= 0xFF
+open(path, 'wb').write(bytes(data))
+PY
+    cp "$SELFTEST_DIR/../dist/ets/modules.headless.abc" "$WORK/dist-mismatch/modules.headless.abc"
+    ( cd "$SELFTEST_DIR/.." && sh "$BUILD_SCRIPT" --check-pack-abc "$WORK/dist-mismatch" ) > "$WORK/T16-mismatch.log" 2>&1 && _rc=0 || _rc=$?
+    assert_rc 1 "$_rc" "T16 a stale rebuilt artifact fails against the installed pack"
+    assert_contains "T16 names the dist mismatch" "differs from the installed" "$WORK/T16-mismatch.log"
+else
+    skip_ "T16 no dist/ets pair to compare against (build both variants to enable the dist check)"
+fi
+# Source pins for the gate plumbing.
+assert_contains "T16 the gate supports a pack-root override" 'ARKTS_PACK_ROOT' "$BUILD_SCRIPT"
+assert_contains "T16 the gate records the abc provenance" "abc-provenance.json" "$BUILD_SCRIPT"
+assert_contains "T16 the gate can install the packs" "--install-packs" "$BUILD_SCRIPT"
 
 # ---- T14: the SDK flavor branch (ARKTS_SDK_FLAVOR) --------------------------------------
 section "T14 harmony SDK flavor scaffolding"

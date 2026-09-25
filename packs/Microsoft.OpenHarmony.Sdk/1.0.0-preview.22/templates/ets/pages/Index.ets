@@ -8,22 +8,16 @@
 // the managed app (Microsoft.OpenHarmony.Hosting.OpenHarmonyBridge.SurfaceChanged) as the
 // rendering target for Skia/MAUI. The ContentSlot next to it hosts native ArkUI nodes that
 // managed code attaches through OpenHarmonyBridge.NodeContent.
-import { NodeContent } from '@ohos.arkui.node';
-import abilityAccessCtrl, { Permissions } from '@ohos.abilityAccessCtrl';
-import type common from '@ohos.app.ability.common';
-import display from '@ohos.display';
-import Want from '@ohos.app.ability.Want';
-import wantConstant from '@ohos.app.ability.wantConstant';
-import fileIo from '@ohos.file.fs';
-import fileUri from '@ohos.file.fileuri';
+import { NodeContent } from '@kit.ArkUI';
+import { abilityAccessCtrl, common, Permissions, Want, wantConstant } from '@kit.AbilityKit';
+import { display, window } from '@kit.ArkUI';
+import { fileIo, fileIo as fs, fileUri, picker } from '@kit.CoreFileKit';
 import host from 'libopenharmonyhost.so';
-import picker from '@ohos.file.picker';
-import pasteboard from '@ohos.pasteboard';
+import { pasteboard } from '@kit.BasicServicesKit';
 import { uniformTypeDescriptor as utd } from '@kit.ArkData';
-import fs from '@ohos.file.fs';
-import util from '@ohos.util';
-import web_webview from '@ohos.web.webview';
-import window from '@ohos.window';
+import { hilog } from '@kit.PerformanceAnalysisKit';
+import { util } from '@kit.ArkTS';
+import { webview as web_webview } from '@kit.ArkWeb';
 // Device-compat (lazy SDK modules): the optional feature modules are deliberately NOT
 // imported statically. A device whose framework lacks one of them would otherwise fail this
 // page at load time (JsError), taking the whole bridge down. They are pulled in on first use
@@ -39,20 +33,19 @@ import window from '@ohos.window';
 //   connection        - Network Kit (Connectivity change observer)
 //   print             - Print Kit
 //   commonEventManager, BusinessError - Basic Services Kit (battery events)
-import type camera from '@ohos.multimedia.camera';
+import type { camera } from '@kit.CameraKit';
 import type { calendarManager } from '@kit.CalendarKit';
 import type { access, ble } from '@kit.ConnectivityKit';
 import type { connection } from '@kit.NetworkKit';
-import type commonEventManager from '@ohos.commonEventManager';
-import type print from '@ohos.print';
+import type { commonEventManager, print } from '@kit.BasicServicesKit';
 import type { BusinessError } from '@kit.BasicServicesKit';
 // Geocoding (Essentials): the module itself is imported lazily (device-compat, see
 // runGeocode); this type-only import is erased by the compiler and only names the request
 // shapes used in annotations.
-import type geoLocationManager from '@ohos.geoLocationManager';
+import type { geoLocationManager } from '@kit.LocationKit';
 // Raw HAP resources (resources/rawfile/**): names the ResourceManager type the ability context
 // exposes; the type-only import is erased by the compiler.
-import type resourceManager from '@ohos.resourceManager';
+import type { resourceManager } from '@kit.LocalizationKit';
 
 // Menu bridge: the managed side publishes the current page's menu bars (MenuBarItem/MenuFlyout)
 // as a flat table through the host. registerMenuChangedSink fires after every commit - including
@@ -224,6 +217,11 @@ interface HmsScanKit {
   scanBarcode: HmsScanBarcode;
 }
 
+// Logging (audit ARKTS-S3): the shell logs through hilog with one domain/tag pair; the private
+// log helpers in the struct keep the %{public}s format so device logs stay readable.
+const DOMAIN = 0x0002;
+const TAG = 'OHOS_MAUI';
+
 @Entry
 @Component
 struct Index {
@@ -288,8 +286,10 @@ struct Index {
   private clipboardObserverRegistered: boolean = false;
   private clipboardObserver: (() => void) | null = null;
   // Connectivity (Essentials): the NetworkKit connection observer registers once per page
-  // (lazily imported; see subscribeNetworkChanges).
+  // (lazily imported; see subscribeNetworkChanges). Disposal flips networkDisposed so a late
+  // kit callback cannot reach the host after the page is gone.
   private networkObserverRegistered: boolean = false;
+  private networkDisposed: boolean = false;
   // Safe area (soft input): the window's avoid-area observer tracks the keyboard
   // (AvoidAreaType.TYPE_KEYBOARD) and pushes its height through host.notifySoftInputArea so the
   // managed SafeArea can pad SafeAreaEdges.SoftInput/All above the keyboard. The system avoid
@@ -298,6 +298,16 @@ struct Index {
   private softInputRegistered: boolean = false;
   private softInputWindow: window.Window | null = null;
   private softInputListener: ((data: window.AvoidAreaOptions) => void) | null = null;
+  // Overlay avoid-area (audit ARKTS-S3): the status/navigation bars and the soft keyboard
+  // inset the overlay controls (shell panel, menu handle, A11Y button) so a full-screen
+  // managed surface cannot hide them. The managed/self-drawn content keeps its existing path
+  // (host.notifyAvoidArea/notifySoftInputArea -> managed SafeArea); this state is only read by
+  // the overlay layout in build().
+  @State avoidTop: number = 0;
+  @State avoidBottom: number = 0;
+  @State avoidLeft: number = 0;
+  @State avoidRight: number = 0;
+  @State keyboardBottom: number = 0;
   // Window chrome (Window handler): the managed title/rect setters push through the
   // registerWindowTitleSink/registerWindowRectSink handlers. The ArkUI window is resolved on
   // demand; setWindowTitle needs the SessionManager syscap (API 15+) and degrades by logging.
@@ -393,7 +403,7 @@ struct Index {
     }
     const detail: string = error !== undefined ? error.message : 'not available';
     this.lazyFailures.set(name, detail);
-    console.error(`[maui] ${name} unavailable on this device: ${detail}`);
+    this.logError(`[maui] ${name} unavailable on this device: ${detail}`);
   }
 
   // Host-export guard (device-compat): logs a missing/failed host export once per page.
@@ -403,7 +413,7 @@ struct Index {
     }
     this.hostUnavailable.add(api);
     const detail: string = error !== undefined ? ` (${error.message})` : '';
-    console.error(`[maui] host export unavailable: ${api}${detail}`);
+    this.logError(`[maui] host export unavailable: ${api}${detail}`);
   }
 
   // HMS Kit probes (Share/Scan; see the interface block at the top of the file). Both run once
@@ -427,10 +437,10 @@ struct Index {
           return this.dispatchShareKit(uris, title);
         });
       });
-      console.info('[maui] Share Kit available: multi-file share sink registered');
+      this.logInfo('[maui] Share Kit available: multi-file share sink registered');
     } catch (shareProbeError) {
       this.hmsShareUnavailable = true;
-      console.error(`[maui] Share Kit unavailable on this device: ${(shareProbeError as Error).message}`);
+      this.logError(`[maui] Share Kit unavailable on this device: ${(shareProbeError as Error).message}`);
     }
   }
 
@@ -440,7 +450,7 @@ struct Index {
     }
     if (!canIUse('SystemCapability.Multimedia.Scan.ScanBarcode')) {
       this.hmsScanUnavailable = true;
-      console.error('[maui] Scan Kit unavailable: the device reports no ScanBarcode syscap');
+      this.logError('[maui] Scan Kit unavailable: the device reports no ScanBarcode syscap');
       return;
     }
     const kitName: string = '@kit.ScanKit';
@@ -455,10 +465,10 @@ struct Index {
           this.runScan(requestId);
         });
       });
-      console.info('[maui] Scan Kit available: default-scan sink registered');
+      this.logInfo('[maui] Scan Kit available: default-scan sink registered');
     } catch (scanProbeError) {
       this.hmsScanUnavailable = true;
-      console.error(`[maui] Scan Kit unavailable on this device: ${(scanProbeError as Error).message}`);
+      this.logError(`[maui] Scan Kit unavailable on this device: ${(scanProbeError as Error).message}`);
     }
   }
 
@@ -482,7 +492,7 @@ struct Index {
         try {
           const path: string = entry.startsWith('file://') ? entry.substring(7) : entry;
           uri = fileUri.getUriFromPath(path);
-        } catch (uriError) {
+        } catch {
           // An unconvertible entry keeps its plain file:// form; the panel decides.
         }
         const record: HmsShareRecord = title.length > 0
@@ -500,17 +510,17 @@ struct Index {
       const controllerCtor: ESObject = kit.systemShare.ShareController;
       const controller: HmsShareController = new controllerCtor(data) as HmsShareController;
       controller.on('shareCompleted', (result: Object): void => {
-        console.info('[maui] share panel completed');
+        this.logInfo('[maui] share panel completed');
       });
       const showOptions: HmsShareShowOptions = {};
-      controller.show(getContext(this) as Object, showOptions).then((): void => {
-        console.info('[maui] share panel dispatched');
+      controller.show(this.hostContext() as Object, showOptions).then((): void => {
+        this.logInfo('[maui] share panel dispatched');
       }).catch((showError: Error): void => {
-        console.error(`[maui] share panel failed: ${showError.message}`);
+        this.logError(`[maui] share panel failed: ${showError.message}`);
       });
       return true;
     } catch (shareDispatchError) {
-      console.error(`[maui] share dispatch failed: ${(shareDispatchError as Error).message}`);
+      this.logError(`[maui] share dispatch failed: ${(shareDispatchError as Error).message}`);
       return false;
     }
   }
@@ -524,13 +534,13 @@ struct Index {
     let value: string = '';
     if (kit !== undefined) {
       try {
-        const result = await kit.scanBarcode.startScanForResult(getContext(this) as Object);
+        const result = await kit.scanBarcode.startScanForResult(this.hostContext() as Object);
         value = result.originalValue;
         code = 0;
       } catch (scanError) {
         const scanCode: number = (scanError as BusinessError).code;
         code = scanCode === 1000500002 ? -2 : -1;
-        console.error(`[maui] scan request failed: code=${scanCode} ${(scanError as Error).message}`);
+        this.logError(`[maui] scan request failed: code=${scanCode} ${(scanError as Error).message}`);
       }
     }
     this.hostCall('notifyScanResult', typeof host !== 'undefined' && typeof host.notifyScanResult === 'function', (): void => {
@@ -558,6 +568,47 @@ struct Index {
     }
   }
 
+  // Page context (audit ARKTS-S2): the global context API is deprecated in favour of the
+  // component-scoped host context; every page-level context read goes through this helper.
+  private hostContext(): common.UIAbilityContext {
+    return this.getUIContext().getHostContext() as common.UIAbilityContext;
+  }
+
+  // Logging (audit ARKTS-S3): console logging is replaced by hilog under the shared DOMAIN/TAG.
+  private logInfo(message: string): void {
+    hilog.info(DOMAIN, TAG, '%{public}s', message);
+  }
+
+  private logWarn(message: string): void {
+    hilog.warn(DOMAIN, TAG, '%{public}s', message);
+  }
+
+  private logError(message: string): void {
+    hilog.error(DOMAIN, TAG, '%{public}s', message);
+  }
+
+  // Callback deregistration ledger (audit ARKTS-S3): every page-scoped kit listener registers a
+  // disposer here and aboutToDisappear runs them all, so no callback outlives the page (display,
+  // battery common events, connectivity, bluetooth discovery). Window, clipboard and GATT keep
+  // their dedicated stored fields because they need the exact listener instance.
+  private disposers: Array<() => void> = [];
+
+  private trackDisposer(dispose: () => void): void {
+    this.disposers.push(dispose);
+  }
+
+  private runDisposers(): void {
+    const pending: Array<() => void> = this.disposers;
+    this.disposers = [];
+    for (const dispose of pending) {
+      try {
+        dispose();
+      } catch (disposeError) {
+        this.logWarn(`callback unregister failed: ${(disposeError as Error).message}`);
+      }
+    }
+  }
+
   // Forwards the current device colour mode (1 = dark, 0 = light) to the managed app.
   private reportTheme(): void {
     try {
@@ -565,7 +616,7 @@ struct Index {
       this.hostCall('notifyTheme', typeof host !== 'undefined' && typeof host.notifyTheme === 'function', (): void => {
         host.notifyTheme(mode === ColorMode.DARK ? 1 : 0);
       });
-    } catch (themeError) {
+    } catch {
       // A host library without the theme export leaves the managed default in place.
     }
   }
@@ -592,7 +643,7 @@ struct Index {
         this.hostCall('notifyBattery', typeof host !== 'undefined' && typeof host.notifyBattery === 'function', (): void => {
           host.notifyBattery(payload);
         });
-      } catch (batteryError) {
+      } catch {
         // The managed side keeps its Unknown defaults.
       }
     } catch (kitError) {
@@ -610,7 +661,7 @@ struct Index {
       this.hostCall('notifyDisplay', typeof host !== 'undefined' && typeof host.notifyDisplay === 'function', (): void => {
         host.notifyDisplay(payload);
       });
-    } catch (displayError) {
+    } catch {
       // The managed side keeps its empty display info.
     }
   }
@@ -626,15 +677,15 @@ struct Index {
     }
     this.bundleInfoReported = true;
     try {
-      const modules = await import('@ohos.bundle.bundleManager');
+      const modules = await import('@kit.AbilityKit');
       try {
-        const info = modules.default.getBundleInfoForSelfSync(
-          modules.default.BundleFlag.GET_BUNDLE_INFO_WITH_APPLICATION);
+        const info = modules.bundleManager.getBundleInfoForSelfSync(
+          modules.bundleManager.BundleFlag.GET_BUNDLE_INFO_WITH_APPLICATION);
         this.hostCall('setBundleInfo', typeof host !== 'undefined' && typeof host.setBundleInfo === 'function', (): void => {
           host.setBundleInfo(info.versionName, `${info.versionCode}`, info.name);
         });
       } catch (bundleError) {
-        console.error(`[maui] bundle info read failed: ${(bundleError as Error).message}`);
+        this.logError(`[maui] bundle info read failed: ${(bundleError as Error).message}`);
       }
     } catch (bundleImportError) {
       this.noteLazyFailure('bundleManager', bundleImportError as Error);
@@ -661,14 +712,19 @@ struct Index {
             basicServices.commonEventManager.Support.COMMON_EVENT_POWER_SAVE_MODE_CHANGED,
           ],
         });
-        basicServices.commonEventManager.subscribe(subscriber, (subscribeError: BusinessError, event: commonEventManager.CommonEventData): void => {
+        const eventHandler = (subscribeError: BusinessError, event: commonEventManager.CommonEventData): void => {
           if (!subscribeError) {
             this.reportBattery();
           }
+        };
+        basicServices.commonEventManager.subscribe(subscriber, eventHandler);
+        this.trackDisposer((): void => {
+          basicServices.commonEventManager.unsubscribe(subscriber);
+          this.batteryEventsRegistered = false;
         });
         this.batteryEventsRegistered = true;
       } catch (batteryEventError) {
-        console.error(`[maui] battery events unavailable: ${(batteryEventError as Error).message}`);
+        this.logError(`[maui] battery events unavailable: ${(batteryEventError as Error).message}`);
       }
     } catch (kitError) {
       this.noteLazyFailure('basicServices', kitError as Error);
@@ -682,12 +738,17 @@ struct Index {
       return;
     }
     try {
-      display.on('change', (displayId: number): void => {
+      const displayListener = (displayId: number): void => {
         this.reportDisplay();
+      };
+      display.on('change', displayListener);
+      this.trackDisposer((): void => {
+        display.off('change', displayListener);
+        this.displayChangeRegistered = false;
       });
       this.displayChangeRegistered = true;
     } catch (displayEventError) {
-      console.error(`[maui] display change events unavailable: ${(displayEventError as Error).message}`);
+      this.logError(`[maui] display change events unavailable: ${(displayEventError as Error).message}`);
     }
   }
 
@@ -702,21 +763,46 @@ struct Index {
     if (this.networkObserverRegistered || this.lazyUnavailable('networkKit')) {
       return;
     }
+    this.networkDisposed = false;
     try {
       const kit = await import('@kit.NetworkKit');
       try {
         const netConnection = kit.connection.createNetConnection();
-        netConnection.on('netAvailable', (_handle: connection.NetHandle): void => {
-          this.reportNetworkAccess();
-        });
-        netConnection.on('netLost', (_handle: connection.NetHandle): void => {
-          this.reportNetworkAccess();
-        });
-        netConnection.on('netCapabilitiesChange', (info: connection.NetCapabilityInfo): void => {
-          this.reportNetworkAccess(this.encodeBearerTypes(info));
-        });
-        netConnection.on('netUnavailable', (): void => {
-          this.reportNetworkAccess();
+        const availableHandler = (_handle: connection.NetHandle): void => {
+          if (!this.networkDisposed) {
+            this.reportNetworkAccess();
+          }
+        };
+        const lostHandler = (_handle: connection.NetHandle): void => {
+          if (!this.networkDisposed) {
+            this.reportNetworkAccess();
+          }
+        };
+        const capabilitiesHandler = (info: connection.NetCapabilityInfo): void => {
+          if (!this.networkDisposed) {
+            this.reportNetworkAccess(this.encodeBearerTypes(info));
+          }
+        };
+        const unavailableHandler = (): void => {
+          if (!this.networkDisposed) {
+            this.reportNetworkAccess();
+          }
+        };
+        netConnection.on('netAvailable', availableHandler);
+        netConnection.on('netLost', lostHandler);
+        netConnection.on('netCapabilitiesChange', capabilitiesHandler);
+        netConnection.on('netUnavailable', unavailableHandler);
+        this.trackDisposer((): void => {
+          // API 26 declares on(...) without off(...): unregister(callback) is the declared
+          // cancellation entry for the connection observer, and the disposed flag makes a late
+          // callback a no-op even when the kit keeps delivering it (see the report note).
+          this.networkDisposed = true;
+          this.networkObserverRegistered = false;
+          netConnection.unregister((unregisterError: BusinessError): void => {
+            if (unregisterError) {
+              this.logWarn(`network observer unregister failed: ${unregisterError.message}`);
+            }
+          });
         });
         this.networkObserverRegistered = true;
       } catch (networkObserverError) {
@@ -754,7 +840,7 @@ struct Index {
       }
       return encoded;
     } catch (capabilitiesError) {
-      console.error(`[maui] network capabilities read failed: ${(capabilitiesError as Error).message}`);
+      this.logError(`[maui] network capabilities read failed: ${(capabilitiesError as Error).message}`);
       return '';
     }
   }
@@ -777,7 +863,7 @@ struct Index {
   // The system avoid-area report above is unaffected. Best effort: a missing Window API only
   // costs the soft-input inset, and the managed side keeps its zero default.
   private subscribeSoftInputArea(): void {
-    window.getLastWindow(getContext(this)).then((win) => {
+    window.getLastWindow(this.hostContext()).then((win) => {
       if (this.softInputRegistered) {
         return;
       }
@@ -792,16 +878,17 @@ struct Index {
         this.softInputListener = listener;
         this.softInputRegistered = true;
       } catch (softInputError) {
-        console.error(`[maui] soft input observer unavailable: ${(softInputError as Error).message}`);
+        this.logError(`[maui] soft input observer unavailable: ${(softInputError as Error).message}`);
       }
     }).catch((softInputWindowError: Error): void => {
-      console.error(`[maui] soft input window unavailable: ${softInputWindowError.message}`);
+      this.logError(`[maui] soft input window unavailable: ${softInputWindowError.message}`);
     });
   }
 
   // Forwards the keyboard height (pixels, 0 when hidden). The host clamps negatives.
   private reportSoftInputArea(bottom: number): void {
     const height: number = bottom > 0 ? Math.floor(bottom) : 0;
+    this.keyboardBottom = height;
     this.hostCall('notifySoftInputArea', typeof host !== 'undefined' && typeof host.notifySoftInputArea === 'function', (): void => {
       host.notifySoftInputArea(height);
     });
@@ -823,7 +910,7 @@ struct Index {
       return false;
     }
     try {
-      const context = getContext(this) as common.UIAbilityContext;
+      const context = this.hostContext();
       const permissions: Permissions[] = ['ohos.permission.READ_PASTEBOARD'];
       const atManager = abilityAccessCtrl.createAtManager();
       const granted = await atManager.requestPermissionsFromUser(context, permissions);
@@ -832,7 +919,7 @@ struct Index {
       return this.clipboardReadGranted;
     } catch (clipboardPermissionError) {
       this.clipboardReadDenied = true;
-      console.error(`[maui] clipboard permission request failed: ${(clipboardPermissionError as Error).message}`);
+      this.logError(`[maui] clipboard permission request failed: ${(clipboardPermissionError as Error).message}`);
       return false;
     }
   }
@@ -845,7 +932,7 @@ struct Index {
       const atManager = abilityAccessCtrl.createAtManager();
       return atManager.getSelfPermissionStatus('ohos.permission.READ_PASTEBOARD') ===
         abilityAccessCtrl.PermissionStatus.GRANTED;
-    } catch (clipboardStatusError) {
+    } catch {
       return false;
     }
   }
@@ -868,10 +955,10 @@ struct Index {
   // asynchronous setWindowKeepScreenOn result is only logged; a rejected call leaves the
   // managed cached value as it was, since the host call only reports the queueing.
   private applyKeepScreenOn(on: number): void {
-    window.getLastWindow(getContext(this)).then((win) => {
+    window.getLastWindow(this.hostContext()).then((win) => {
       return win.setWindowKeepScreenOn(on === 1);
     }).catch((keepScreenOnError: Error): void => {
-      console.error(`[maui] keep screen on failed: ${keepScreenOnError.message}`);
+      this.logError(`[maui] keep screen on failed: ${keepScreenOnError.message}`);
     });
   }
 
@@ -880,22 +967,22 @@ struct Index {
   // keep-screen-on use). setWindowTitle is a SessionManager API (15+), so a device without the
   // syscap rejects the promise; that is logged and leaves the shell title in place.
   private applyWindowTitle(title: string): void {
-    window.getLastWindow(getContext(this)).then((win) => {
+    window.getLastWindow(this.hostContext()).then((win) => {
       return win.setWindowTitle(title);
     }).catch((windowTitleError: Error): void => {
-      console.error(`[maui] set window title failed: ${windowTitleError.message}`);
+      this.logError(`[maui] set window title failed: ${windowTitleError.message}`);
     });
   }
 
   // Window chrome: the managed rect setter pushes through ohos_host_set_window_rect; the
   // position and size are applied with moveWindowTo + resize (API 11+), both asynchronous.
   private applyWindowRect(x: number, y: number, w: number, h: number): void {
-    window.getLastWindow(getContext(this)).then((win) => {
+    window.getLastWindow(this.hostContext()).then((win) => {
       return win.moveWindowTo(x, y).then(() => {
         return win.resize(w, h);
       });
     }).catch((windowRectError: Error): void => {
-      console.error(`[maui] set window rect failed: ${windowRectError.message}`);
+      this.logError(`[maui] set window rect failed: ${windowRectError.message}`);
     });
   }
 
@@ -925,7 +1012,7 @@ struct Index {
       return null;
     }
     const canonical: string = '/' + normalized.join('/');
-    const context = getContext(this) as common.UIAbilityContext;
+    const context = this.hostContext();
     const roots: string[] = [context.tempDir, context.cacheDir];
     let root: string = '';
     for (let i = 0; i < roots.length; i++) {
@@ -975,22 +1062,22 @@ struct Index {
     try {
       safePath = this.canonicalScreenshotPath(outPath);
     } catch (pathError) {
-      console.error(`[maui] screenshot path check failed: ${(pathError as Error).message}`);
+      this.logError(`[maui] screenshot path check failed: ${(pathError as Error).message}`);
       return -1;
     }
     if (safePath === null) {
-      console.error('[maui] screenshot rejected: output path is not under the app temp/cache dir');
+      this.logError('[maui] screenshot rejected: output path is not under the app temp/cache dir');
       return -1;
     }
     if (this.lazyUnavailable('imagePacker')) {
       return -1;
     }
     try {
-      const image = await import('@ohos.multimedia.image');
+      const image = await import('@kit.ImageKit');
       try {
-        const win = await window.getLastWindow(getContext(this));
+        const win = await window.getLastWindow(this.hostContext());
         const pixelMap = await win.snapshot();
-        const packer = image.default.createImagePacker();
+        const packer = image.image.createImagePacker();
         const file = fileIo.openSync(safePath, fileIo.OpenMode.READ_WRITE | fileIo.OpenMode.CREATE
           | fileIo.OpenMode.TRUNC);
         try {
@@ -1002,7 +1089,7 @@ struct Index {
           await pixelMap.release();
         }
       } catch (screenshotError) {
-        console.error(`[maui] screenshot failed: ${(screenshotError as Error).message}`);
+        this.logError(`[maui] screenshot failed: ${(screenshotError as Error).message}`);
         return -1;
       }
     } catch (imageImportError) {
@@ -1014,8 +1101,9 @@ struct Index {
   // Geocoding (Essentials): op 0 (address -> location) parses a JSON object with at least a
   // description and calls getAddressesFromLocationName; op 1 (location -> address) parses
   // "lat,lon", asks for the location permission (the device location is user_grant) and calls
-  // getAddressesFromLocation. The module is imported lazily; any failure answers rc -1 with an
-  // empty JSON so the managed caller degrades without throwing.
+  // getAddressesFromLocation. The entry probe isGeocoderAvailable() runs before any query and
+  // the kit error codes map to distinct rc values (see geocodeErrorRc); every failure answers an
+  // empty JSON with a non-zero rc so the managed caller degrades without throwing.
   private async runGeocode(requestId: number, op: number, arg: string): Promise<void> {
     let rc: number = -1;
     let json: string = '';
@@ -1024,7 +1112,21 @@ struct Index {
       return;
     }
     try {
-      const geo = await import('@ohos.geoLocationManager');
+      const geo = await import('@kit.LocationKit');
+      // Geocoder entry probe (audit ARKTS-S2): a device without the geocoding syscap answers
+      // before any query (isGeocoderAvailable throws 801 on unsupported devices). The reverse
+      // lookup additionally reads the device location (user_grant), so its permission is
+      // pre-checked instead of failing inside the kit call.
+      let available: boolean = false;
+      try {
+        available = geo.geoLocationManager.isGeocoderAvailable();
+      } catch (geocoderProbeError) {
+        rc = this.geocodeErrorRc(geocoderProbeError as BusinessError);
+      }
+      if (!available) {
+        this.answerGeocode(requestId, rc, json);
+        return;
+      }
       if (op === 0) {
         const query = JSON.parse(arg) as GeocodeAddressQuery;
         if (query.description !== undefined && query.description.length > 0) {
@@ -1036,7 +1138,7 @@ struct Index {
           if (query.minLongitude !== undefined) { request.minLongitude = query.minLongitude; }
           if (query.maxLatitude !== undefined) { request.maxLatitude = query.maxLatitude; }
           if (query.maxLongitude !== undefined) { request.maxLongitude = query.maxLongitude; }
-          const addresses = await geo.default.getAddressesFromLocationName(request);
+          const addresses = await geo.geoLocationManager.getAddressesFromLocationName(request);
           json = JSON.stringify(addresses);
           rc = 0;
         }
@@ -1044,20 +1146,40 @@ struct Index {
         const parts: string[] = arg.split(',');
         const latitude: number = parts.length > 0 ? Number.parseFloat(parts[0]) : Number.NaN;
         const longitude: number = parts.length > 1 ? Number.parseFloat(parts[1]) : Number.NaN;
-        if (Number.isFinite(latitude) && Number.isFinite(longitude) && await this.ensureLocationPermission()) {
-          const request: geoLocationManager.ReverseGeoCodeRequest = {
-            latitude: latitude,
-            longitude: longitude
-          };
-          const addresses = await geo.default.getAddressesFromLocation(request);
-          json = JSON.stringify(addresses);
-          rc = 0;
+        if (!Number.isFinite(latitude) || !Number.isFinite(longitude)) {
+          this.answerGeocode(requestId, rc, json);
+          return;
         }
+        if (!(await this.ensureLocationPermission())) {
+          // Permission denied: the feature answers unavailable (rc -1), never throws.
+          this.answerGeocode(requestId, rc, json);
+          return;
+        }
+        const request: geoLocationManager.ReverseGeoCodeRequest = {
+          latitude: latitude,
+          longitude: longitude
+        };
+        const addresses = await geo.geoLocationManager.getAddressesFromLocation(request);
+        json = JSON.stringify(addresses);
+        rc = 0;
       }
     } catch (geocodeError) {
-      console.error(`[maui] geocode op ${op} failed: ${(geocodeError as Error).message}`);
+      rc = this.geocodeErrorRc(geocodeError as BusinessError);
+      this.logError(`[maui] geocode op ${op} failed: ${(geocodeError as Error).message}`);
     }
     this.answerGeocode(requestId, rc, json);
+  }
+
+  // Location Kit geocoding error mapping (audit ARKTS-S2): 3301000 (location service
+  // unavailable) and 801 (no geocoding syscap) answer -1, the managed side's "no result" code;
+  // 3301300 (reverse geocoding query failed) and 3301400 (geocoding query failed) answer -2,
+  // the query-failure code. Every other code keeps -1.
+  private geocodeErrorRc(error: BusinessError): number {
+    const code: number = error?.code ?? 0;
+    if (code === 3301300 || code === 3301400) {
+      return -2;
+    }
+    return -1;
   }
 
   // Geocoding (Essentials): completes the pending managed request through host.geocodeResult.
@@ -1075,13 +1197,13 @@ struct Index {
       return true;
     }
     try {
-      const context = getContext(this) as common.UIAbilityContext;
+      const context = this.hostContext();
       const permissions: Permissions[] = ['ohos.permission.APPROXIMATELY_LOCATION'];
       const atManager = abilityAccessCtrl.createAtManager();
       const granted = await atManager.requestPermissionsFromUser(context, permissions);
       this.locationGranted = granted.authResults.length > 0 && granted.authResults[0] === 0;
     } catch (locationPermissionError) {
-      console.error(`[maui] location permission request failed: ${(locationPermissionError as Error).message}`);
+      this.logError(`[maui] location permission request failed: ${(locationPermissionError as Error).message}`);
     }
     return this.locationGranted;
   }
@@ -1147,14 +1269,14 @@ struct Index {
             if (typeof this.webController.getLastJavascriptProxyCallingFrameUrl === 'function') {
               callerUrl = this.webController.getLastJavascriptProxyCallingFrameUrl();
             }
-          } catch (callingError) {
+          } catch {
             callerUrl = '';
           }
           if (typeof callerUrl === 'string' && callerUrl.length > 0) {
             let mainUrl: string = '';
             try {
               mainUrl = this.webController.getUrl();
-            } catch (urlError) {
+            } catch {
               mainUrl = '';
             }
             if (callerUrl !== mainUrl) {
@@ -1168,7 +1290,7 @@ struct Index {
       }, 'dotnetHost', ['postMessage']);
       this.dotNetHostRegistered = true;
     } catch (proxyError) {
-      console.error(`[maui] dotnetHost proxy registration failed: ${(proxyError as Error).message}`);
+      this.logError(`[maui] dotnetHost proxy registration failed: ${(proxyError as Error).message}`);
     }
   }
 
@@ -1184,7 +1306,7 @@ struct Index {
     let url: string = '';
     try {
       url = this.webController.getUrl();
-    } catch (urlError) {
+    } catch {
       url = '';
     }
     let documentId: string = '';
@@ -1294,7 +1416,7 @@ struct Index {
     let id: string = '';
     try {
       id = util.generateRandomUUID(true);
-    } catch (uuidError) {
+    } catch {
       id = `${now.toString(16)}-${Math.random().toString(16).substring(2)}`;
     }
     this.navPending.set(id, { url: url, expires: now + this.navPendingTtlMs });
@@ -1325,7 +1447,7 @@ struct Index {
     this.navApproved = { url: pending.url, expires: Date.now() + this.navPendingTtlMs };
     try {
       this.webController.loadUrl(pending.url);
-    } catch (approvalError) {
+    } catch {
       // The reload failed (e.g., the controller detached); the navigation stays cancelled.
     }
   }
@@ -1398,7 +1520,7 @@ struct Index {
         () => {
           // The bridge is best-effort; an error leaves the page with dotnetHost only.
         });
-    } catch (bridgeError) {
+    } catch {
       // A page that rejects the injection script must not take the app down.
     }
   }
@@ -1494,7 +1616,7 @@ struct Index {
       });
     } catch (bootstrapError) {
       this.blazorBootstrapped = false;
-      console.error(`[maui] blazor bootstrap injection failed: ${(bootstrapError as Error).message}`);
+      this.logError(`[maui] blazor bootstrap injection failed: ${(bootstrapError as Error).message}`);
     }
   }
 
@@ -1512,7 +1634,7 @@ struct Index {
     }, 0);
   }
 
-  // Device-compat (lazy SDK modules): @ohos.multimedia.camera is imported dynamically (the
+  // Device-compat (lazy SDK modules): @kit.CameraKit camera is imported dynamically (the
   // device may lack it), so the API surface the synchronous flashlight sink needs is
   // preloaded once and cached here. A failed import is cached too and the feature degrades.
   private async preloadCamera(): Promise<void> {
@@ -1520,11 +1642,11 @@ struct Index {
       return;
     }
     try {
-      const cams = await import('@ohos.multimedia.camera');
-      this.cameraGetManager = (context: common.Context): camera.CameraManager => cams.default.getCameraManager(context);
-      this.cameraTorchOn = cams.default.TorchMode.ON;
-      this.cameraTorchOff = cams.default.TorchMode.OFF;
-      this.cameraBackPosition = cams.default.CameraPosition.CAMERA_POSITION_BACK;
+      const cams = await import('@kit.CameraKit');
+      this.cameraGetManager = (context: common.Context): camera.CameraManager => cams.camera.getCameraManager(context);
+      this.cameraTorchOn = cams.camera.TorchMode.ON;
+      this.cameraTorchOff = cams.camera.TorchMode.OFF;
+      this.cameraBackPosition = cams.camera.CameraPosition.CAMERA_POSITION_BACK;
     } catch (cameraLoadError) {
       this.noteLazyFailure('camera', cameraLoadError as Error);
     }
@@ -1538,7 +1660,7 @@ struct Index {
   private ensureFlashlightManager(): camera.CameraManager | undefined {
     let manager: camera.CameraManager | undefined = this.flashlightManager;
     if (manager === undefined && this.cameraGetManager !== undefined) {
-      manager = this.cameraGetManager(getContext(this));
+      manager = this.cameraGetManager(this.hostContext());
       this.flashlightManager = manager;
     }
     return manager;
@@ -1590,7 +1712,7 @@ struct Index {
       try {
         value = new util.Base64Helper().encodeToStringSync(new Uint8Array(characteristic.characteristicValue));
       } catch (encodeError) {
-        console.error(`[maui] bluetooth gatt value encoding failed: ${(encodeError as Error).message}`);
+        this.logError(`[maui] bluetooth gatt value encoding failed: ${(encodeError as Error).message}`);
         return;
       }
       this.hostCall('notifyBluetoothGattEvent', typeof host !== 'undefined' && typeof host.notifyBluetoothGattEvent === 'function', (): void => {
@@ -1664,7 +1786,7 @@ struct Index {
       try {
         client.connect();
       } catch (connectError) {
-        console.error(`[maui] bluetooth gatt connect failed: ${(connectError as Error).message}`);
+        this.logError(`[maui] bluetooth gatt connect failed: ${(connectError as Error).message}`);
         finish(-2);
       }
     });
@@ -1693,7 +1815,7 @@ struct Index {
       try {
         client.setBLEMtuSize(mtu);
       } catch (mtuError) {
-        console.error(`[maui] bluetooth gatt mtu request failed: ${(mtuError as Error).message}`);
+        this.logError(`[maui] bluetooth gatt mtu request failed: ${(mtuError as Error).message}`);
         finish(-2, 0);
       }
     });
@@ -1730,7 +1852,7 @@ struct Index {
   private async runBluetoothGatt(op: number, payload: string): Promise<BluetoothGattAnswer> {
     const kit = await import('@kit.ConnectivityKit');
     try {
-      const context = getContext(this) as common.UIAbilityContext;
+      const context = this.hostContext();
       const permissions: Permissions[] = ['ohos.permission.ACCESS_BLUETOOTH'];
       const atManager = abilityAccessCtrl.createAtManager();
       const granted = await atManager.requestPermissionsFromUser(context, permissions);
@@ -1864,7 +1986,7 @@ struct Index {
       }
       return { code: -2, payload: `unsupported bluetooth gatt op ${op}` };
     } catch (gattError) {
-      console.error(`[maui] bluetooth gatt op ${op} failed: ${(gattError as Error).message}`);
+      this.logError(`[maui] bluetooth gatt op ${op} failed: ${(gattError as Error).message}`);
       return { code: -2, payload: (gattError as Error).message };
     }
   }
@@ -1966,8 +2088,13 @@ struct Index {
     // Safe area: report the system avoid area so the managed layout can inset its content, and
     // subscribe to the keyboard's avoid-area change so the soft-input inset reaches the managed
     // SafeArea (SafeAreaEdges.SoftInput/All) through host.notifySoftInputArea.
-    window.getLastWindow(getContext(this)).then((win) => {
+    window.getLastWindow(this.hostContext()).then((win) => {
       const area = win.getWindowAvoidArea(window.AvoidAreaType.TYPE_SYSTEM);
+      // Overlay avoid-area: the overlay controls below are inset from the system bars.
+      this.avoidTop = area.topRect.height;
+      this.avoidBottom = area.bottomRect.height;
+      this.avoidLeft = area.leftRect.width;
+      this.avoidRight = area.rightRect.width;
       this.hostCall('notifyAvoidArea', typeof host !== 'undefined' && typeof host.notifyAvoidArea === 'function', (): void => {
         host.notifyAvoidArea(area.topRect.height, area.bottomRect.height,
                              area.leftRect.width, area.rightRect.width);
@@ -2009,7 +2136,7 @@ struct Index {
               // BlazorWebView asset root registration from the managed handler (milestone 3).
               this.registerBlazorAssets(arg);
             }
-          } catch (error) {
+          } catch {
             // Web errors never take the app down.
           }
         });
@@ -2057,7 +2184,7 @@ struct Index {
     // managed accumulator can complete, and a cancel/unavailable pick answers rc=-1.
     //
     // Modes 1/2 use the photoAccessHelper PhotoViewPicker (media-only gallery UI; the
-    // @ohos.file.picker PhotoViewPicker is deprecated in its favour) and modes 3/4 are the
+    // @kit.CoreFileKit picker PhotoViewPicker is deprecated in its favour) and modes 3/4 are the
     // separate camera-capture path (cameraPicker). Device-compat: photoAccessHelper, camera
     // and cameraPicker are imported lazily; when camera/cameraPicker is missing the capture
     // branch answers -1 (the managed side reports IsSupported == false), and when
@@ -2081,8 +2208,8 @@ struct Index {
           let cameraPosition: camera.CameraPosition | undefined = this.cameraBackPosition;
           if (cameraPosition === undefined) {
             try {
-              const cams = await import('@ohos.multimedia.camera');
-              cameraPosition = cams.default.CameraPosition.CAMERA_POSITION_BACK;
+              const cams = await import('@kit.CameraKit');
+              cameraPosition = cams.camera.CameraPosition.CAMERA_POSITION_BACK;
               this.cameraBackPosition = cameraPosition;
             } catch (cameraPickImportError) {
               this.noteLazyFailure('camera', cameraPickImportError as Error);
@@ -2096,10 +2223,10 @@ struct Index {
           }
           const backPosition: camera.CameraPosition = cameraPosition;
           try {
-            const pickers = await import('@ohos.multimedia.cameraPicker');
+            const pickers = await import('@kit.CameraKit');
             try {
-              const mediaType = mode === 3 ? pickers.default.PickerMediaType.PHOTO : pickers.default.PickerMediaType.VIDEO;
-              const picked = await pickers.default.pick(getContext(this), [mediaType], {
+              const mediaType = mode === 3 ? pickers.cameraPicker.PickerMediaType.PHOTO : pickers.cameraPicker.PickerMediaType.VIDEO;
+              const picked = await pickers.cameraPicker.pick(this.hostContext(), [mediaType], {
                 cameraPosition: backPosition,
               });
               const captureUri: string = picked.resultUri;
@@ -2113,7 +2240,7 @@ struct Index {
                 host.notifyPickerResult(requestId, 0, captureName, captureBase64);
               });
             } catch (captureError) {
-              console.error(`camera capture failed: ${(captureError as Error).message}`);
+              this.logError(`camera capture failed: ${(captureError as Error).message}`);
               this.hostCall('notifyPickerResult', typeof host !== 'undefined' && typeof host.notifyPickerResult === 'function', (): void => {
                 host.notifyPickerResult(requestId, -1, '', '');
               });
@@ -2140,8 +2267,8 @@ struct Index {
             return;
           }
         }
-        // Documents (and the media fallback) stay on the static @ohos.file.picker /
-        // @ohos.file.fs imports, with the caller's maxSelectNumber (1 for single-select).
+        // Documents (and the media fallback) stay on the static @kit.CoreFileKit picker /
+        // @kit.CoreFileKit fileIo imports, with the caller's maxSelectNumber (1 for single-select).
         await this.selectDocumentUris(requestId, multi, count);
       });
     });
@@ -2171,7 +2298,7 @@ struct Index {
             await manager.closeRawFd(relative);
           } catch (closeError) {
             // The answer (if any) is already delivered; a close failure must not change it.
-            console.error(`[maui] rawfile closeRawFd failed: ${(closeError as Error).message}`);
+            this.logError(`[maui] rawfile closeRawFd failed: ${(closeError as Error).message}`);
           }
         };
         const relative: string = name.replace(/\\/g, '/').replace(/^\/+/, '');
@@ -2184,7 +2311,7 @@ struct Index {
           if (manager === undefined) {
             // Stage model: the ability context owns the app's resource manager (resolved on
             // the first request, then cached; no import at page start).
-            const context = getContext(this) as common.UIAbilityContext;
+            const context = this.hostContext();
             manager = context.resourceManager;
             this.rawFileManager = manager;
           }
@@ -2208,7 +2335,7 @@ struct Index {
             let info: resourceManager.RawFileDescriptor | undefined = undefined;
             try {
               info = await manager.getRawFd(relative);
-            } catch (fdError) {
+            } catch {
               // No descriptor (missing rawfile, older SDK, unsupported entry): the base64
               // read below answers and reports the rc exactly as before.
               info = undefined;
@@ -2226,7 +2353,7 @@ struct Index {
                   answered = (host.notifyRawFileFd(requestId, info.fd, info.offset, info.length) as number) === 1;
                 }
               } catch (fdReadError) {
-                console.error(`[maui] rawfile fd read failed: ${(fdReadError as Error).message}`);
+                this.logError(`[maui] rawfile fd read failed: ${(fdReadError as Error).message}`);
               } finally {
                 await closeRawFd(manager, relative);
               }
@@ -2249,7 +2376,7 @@ struct Index {
           }
           if (!this.rawFileErrorLogged) {
             this.rawFileErrorLogged = true;
-            console.error(`[maui] rawfile read failed: ${(rawFileError as Error).message}`);
+            this.logError(`[maui] rawfile read failed: ${(rawFileError as Error).message}`);
           }
           answer(-1, '');
         }
@@ -2264,13 +2391,13 @@ struct Index {
       host.registerPermissionSink(async (permission: string, requestId: number): Promise<void> => {
         let granted: boolean = false;
         try {
-          const context = getContext(this) as common.UIAbilityContext;
+          const context = this.hostContext();
           const permissions: Permissions[] = [permission as Permissions];
           const atManager = abilityAccessCtrl.createAtManager();
           const result = await atManager.requestPermissionsFromUser(context, permissions);
           granted = result.authResults.length > 0 && result.authResults[0] === 0;
         } catch (permissionError) {
-          console.error(`[maui] permission request failed: ${(permissionError as Error).message}`);
+          this.logError(`[maui] permission request failed: ${(permissionError as Error).message}`);
         }
         this.hostCall('permissionResult', typeof host !== 'undefined' && typeof host.permissionResult === 'function', (): void => {
           host.permissionResult(requestId, granted ? 1 : 0);
@@ -2301,7 +2428,7 @@ struct Index {
             rc = 0;
           }
         } catch (clipboardError) {
-          console.error(`[maui] clipboard op ${op} failed: ${(clipboardError as Error).message}`);
+          this.logError(`[maui] clipboard op ${op} failed: ${(clipboardError as Error).message}`);
         }
         this.hostCall('clipboardResult', typeof host !== 'undefined' && typeof host.clipboardResult === 'function', (): void => {
           host.clipboardResult(requestId, rc, value);
@@ -2321,13 +2448,13 @@ struct Index {
         this.clipboardObserver = clipboardObserver;
         this.clipboardObserverRegistered = true;
       } catch (clipboardObserverError) {
-        console.error(`[maui] clipboard observer unavailable: ${(clipboardObserverError as Error).message}`);
+        this.logError(`[maui] clipboard observer unavailable: ${(clipboardObserverError as Error).message}`);
       }
     }
 
     // Geocoding (Essentials): the managed geolocation service asks through
     // ohos_host_geocode_request (op 0 address -> location, op 1 location -> address); the shell
-    // runs the lazily imported @ohos.geoLocationManager (permission-aware for the reverse
+    // runs the lazily imported @kit.LocationKit geoLocationManager (permission-aware for the reverse
     // lookup) and answers host.geocodeResult(requestId, rc, json).
     this.hostCall('registerGeocodeSink', typeof host !== 'undefined' && typeof host.registerGeocodeSink === 'function', (): void => {
       host.registerGeocodeSink(async (requestId: number, op: number, arg: string): Promise<void> => {
@@ -2345,17 +2472,17 @@ struct Index {
           return;
         }
         try {
-          const nm = await import('@ohos.notificationManager');
+          const nm = await import('@kit.NotificationKit');
           try {
-            await nm.default.publish({
+            await nm.notificationManager.publish({
               id: notificationId,
               content: {
-                notificationContentType: nm.default.ContentType.NOTIFICATION_CONTENT_BASIC_TEXT,
+                notificationContentType: nm.notificationManager.ContentType.NOTIFICATION_CONTENT_BASIC_TEXT,
                 normal: { title: notificationTitle, text: notificationText, additionalText: '' }
               }
             });
           } catch (publishError) {
-            console.error(`notification publish failed: ${(publishError as Error).message}`);
+            this.logError(`notification publish failed: ${(publishError as Error).message}`);
           }
         } catch (notificationImportError) {
           this.noteLazyFailure('notificationManager', notificationImportError as Error);
@@ -2374,17 +2501,17 @@ struct Index {
         let granted: boolean = false;
         if (!this.lazyUnavailable('notificationManager')) {
           try {
-            const nm = await import('@ohos.notificationManager');
+            const nm = await import('@kit.NotificationKit');
             try {
               if (op === 1) {
-                const context = getContext(this) as common.UIAbilityContext;
-                await nm.default.requestEnableNotification(context);
+                const context = this.hostContext();
+                await nm.notificationManager.requestEnableNotification(this.hostContext());
               }
-              granted = nm.default.isNotificationEnabledSync();
+              granted = nm.notificationManager.isNotificationEnabledSync();
             } catch (notificationPermissionError) {
               // A refused dialog (1600004) or a missing service: answer the last known state.
               // Not a lazy-module failure, so it is not cached.
-              console.error(`[maui] notification enablement ${op === 1 ? 'request' : 'check'} failed: ${(notificationPermissionError as Error).message}`);
+              this.logError(`[maui] notification enablement ${op === 1 ? 'request' : 'check'} failed: ${(notificationPermissionError as Error).message}`);
             }
           } catch (notificationImportError) {
             // Device-compat: cache the missing module once; later requests answer granted=false
@@ -2418,7 +2545,7 @@ struct Index {
 
     // TextToSpeech: speak requests arrive from the managed side (ohos_host_tts_speak). The
     // OpenHarmony SDK this shell compiles against has no speech synthesis module: both
-    // '@kit.CoreSpeechKit' and '@ohos.ai.tts' fail with "Cannot find module ... or its
+    // '@kit.CoreSpeechKit' and '@kit.CoreSpeechKit tts' fail with "Cannot find module ... or its
     // corresponding type declarations", so - like the keystore sink above - the request is
     // answered with "unavailable" (rc=-1) and the managed side degrades (it never throws).
     // With a Speech Kit SDK: create the engine once (textToSpeech.createEngine), call
@@ -2449,7 +2576,7 @@ struct Index {
         try {
           const kit = await import('@kit.ContactsKit');
           try {
-            const context = getContext(this) as common.UIAbilityContext;
+            const context = this.hostContext();
             const permissions: Permissions[] = ['ohos.permission.READ_CONTACTS'];
             const atManager = abilityAccessCtrl.createAtManager();
             const granted = await atManager.requestPermissionsFromUser(context, permissions);
@@ -2477,7 +2604,7 @@ struct Index {
               host.notifyContactsResult(requestId, 0, rows.join('\n'));
             });
           } catch (contactsError) {
-            console.error(`[maui] contacts query failed: ${(contactsError as Error).message}`);
+            this.logError(`[maui] contacts query failed: ${(contactsError as Error).message}`);
             this.hostCall('notifyContactsResult', typeof host !== 'undefined' && typeof host.notifyContactsResult === 'function', (): void => {
               host.notifyContactsResult(requestId, -1, '');
             });
@@ -2508,7 +2635,7 @@ struct Index {
         try {
           const kit = await import('@kit.CalendarKit');
           try {
-            const context = getContext(this) as common.UIAbilityContext;
+            const context = this.hostContext();
             const permissions: Permissions[] = op === 0
               ? ['ohos.permission.READ_CALENDAR']
               : ['ohos.permission.READ_CALENDAR', 'ohos.permission.WRITE_CALENDAR'];
@@ -2550,7 +2677,7 @@ struct Index {
               host.notifyCalendarResult(requestId, 0, '');
             });
           } catch (calendarError) {
-            console.error(`[maui] calendar request failed: ${(calendarError as Error).message}`);
+            this.logError(`[maui] calendar request failed: ${(calendarError as Error).message}`);
             this.hostCall('notifyCalendarResult', typeof host !== 'undefined' && typeof host.notifyCalendarResult === 'function', (): void => {
               host.notifyCalendarResult(requestId, -1, '');
             });
@@ -2583,7 +2710,7 @@ struct Index {
         try {
           const kit = await import('@kit.ConnectivityKit');
           try {
-            const context = getContext(this) as common.UIAbilityContext;
+            const context = this.hostContext();
             const permissions: Permissions[] = ['ohos.permission.ACCESS_BLUETOOTH'];
             const atManager = abilityAccessCtrl.createAtManager();
             const granted = await atManager.requestPermissionsFromUser(context, permissions);
@@ -2627,12 +2754,12 @@ struct Index {
                 // name with getRemoteDeviceName while discovery runs.
                 this.discoveredBluetooth.clear();
                 if (!this.bluetoothDeviceRegistered) {
-                  kit.connection.on('bluetoothDeviceFind', (devices: Array<string>): void => {
+                  const findListener = (devices: Array<string>): void => {
                     for (const deviceId of devices) {
                       let name: string = '';
                       try {
                         name = kit.connection.getRemoteDeviceName(deviceId);
-                      } catch (nameError) {
+                      } catch {
                         name = '';
                       }
                       this.discoveredBluetooth.set(deviceId, name);
@@ -2640,6 +2767,11 @@ struct Index {
                         host.notifyBluetoothDeviceFound(`${this.escapeRecordField(name)}\t${this.escapeRecordField(deviceId)}`);
                       });
                     }
+                  };
+                  kit.connection.on('bluetoothDeviceFind', findListener);
+                  this.trackDisposer((): void => {
+                    kit.connection.off('bluetoothDeviceFind', findListener);
+                    this.bluetoothDeviceRegistered = false;
                   });
                   this.bluetoothDeviceRegistered = true;
                 }
@@ -2649,7 +2781,7 @@ struct Index {
                 if (this.bluetoothDeviceRegistered) {
                   try {
                     kit.connection.off('bluetoothDeviceFind');
-                  } catch (offError) {
+                  } catch {
                     // Stopping discovery already succeeded; a stale listener is harmless.
                   }
                   this.bluetoothDeviceRegistered = false;
@@ -2674,7 +2806,7 @@ struct Index {
               let name: string = '';
               try {
                 name = kit.connection.getRemoteDeviceName(deviceId);
-              } catch (nameError) {
+              } catch {
                 name = '';
               }
               rows.push(`${this.escapeRecordField(name)}\t${this.escapeRecordField(deviceId)}`);
@@ -2683,7 +2815,7 @@ struct Index {
               host.notifyBluetoothResult(requestId, 0, rows.join('\n'));
             });
           } catch (bluetoothError) {
-            console.error(`[maui] bluetooth request failed: ${(bluetoothError as Error).message}`);
+            this.logError(`[maui] bluetooth request failed: ${(bluetoothError as Error).message}`);
             this.hostCall('notifyBluetoothResult', typeof host !== 'undefined' && typeof host.notifyBluetoothResult === 'function', (): void => {
               host.notifyBluetoothResult(requestId, -1, '');
             });
@@ -2737,22 +2869,31 @@ struct Index {
           });
           return;
         }
+        if (!canIUse('SystemCapability.Print.PrintFramework')) {
+          // Entry probe (audit ARKTS-S2): a device without the print framework answers
+          // unavailable before the module is imported, matching the syscap-declared capability.
+          this.logWarn('print unavailable: the device reports no PrintFramework syscap');
+          this.hostCall('notifyPrintResult', typeof host !== 'undefined' && typeof host.notifyPrintResult === 'function', (): void => {
+            host.notifyPrintResult(requestId, -1, '');
+          });
+          return;
+        }
         try {
-          const printer = await import('@ohos.print');
+          const printer = await import('@kit.BasicServicesKit');
           try {
-            const context = getContext(this) as common.UIAbilityContext;
-            const task: print.PrintTask = await printer.default.print([path], context);
+            const context = this.hostContext();
+            const task: print.PrintTask = await printer.print.print([path], context);
             task.on('fail', (): void => {
-              console.error('[maui] print task reported failure');
+              this.logError('[maui] print task reported failure');
             });
             task.on('cancel', (): void => {
-              console.info('[maui] print task cancelled');
+              this.logInfo('[maui] print task cancelled');
             });
             this.hostCall('notifyPrintResult', typeof host !== 'undefined' && typeof host.notifyPrintResult === 'function', (): void => {
               host.notifyPrintResult(requestId, 0, '');
             });
           } catch (printError) {
-            console.error(`[maui] print request failed: ${(printError as Error).message}`);
+            this.logError(`[maui] print request failed: ${(printError as Error).message}`);
             this.hostCall('notifyPrintResult', typeof host !== 'undefined' && typeof host.notifyPrintResult === 'function', (): void => {
               host.notifyPrintResult(requestId, -1, (printError as Error).message);
             });
@@ -2780,7 +2921,7 @@ struct Index {
     // Title: the managed side passes ShareTextRequest.Title/Subject and ShareFileRequest.Title
     // as the fifth/fourth sink argument; it travels under
     // wantConstant.Params.CONTENT_TITLE_KEY ('ohos.extra.param.key.contentTitle'), which this
-    // SDK declares in @ohos.app.ability.wantConstant. The key is only set when non-empty; a
+    // SDK declares in @kit.AbilityKit wantConstant. The key is only set when non-empty; a
     // receiver that ignores it simply shows its own title.
     // Read grant: wantConstant.Flags.FLAG_AUTH_READ_URI_PERMISSION (0x1) asks the ability manager
     // to grant the receiver read access to the file:// uri. Kind 3 always sets it, and kind 0
@@ -2794,7 +2935,7 @@ struct Index {
     this.hostCall('registerAbilitySink', typeof host !== 'undefined' && typeof host.registerAbilitySink === 'function', (): void => {
       host.registerAbilitySink((kind: number, uri: string, text: string, title: string): boolean => {
         try {
-          const context = getContext(this) as common.UIAbilityContext;
+          const context = this.hostContext();
           if (kind === 2) {
             return context !== undefined && context !== null;
           }
@@ -2803,14 +2944,14 @@ struct Index {
             explicitWant.bundleName = uri;
             explicitWant.abilityName = text;
             context.startAbility(explicitWant).then((): void => {
-              console.info('[maui] settings ability start dispatched (explicit)');
+              this.logInfo('[maui] settings ability start dispatched (explicit)');
             }).catch((explicitError: Error): void => {
               const implicitWant: Want = new Want();
               implicitWant.action = 'ohos.settings';
               context.startAbility(implicitWant).then((): void => {
-                console.info('[maui] settings ability start dispatched (implicit)');
+                this.logInfo('[maui] settings ability start dispatched (implicit)');
               }).catch((implicitError: Error): void => {
-                console.error(`[maui] settings ability start failed: explicit=${explicitError.message} implicit=${implicitError.message}`);
+                this.logError(`[maui] settings ability start failed: explicit=${explicitError.message} implicit=${implicitError.message}`);
               });
             });
             return true;
@@ -2844,13 +2985,13 @@ struct Index {
             }
           }
           context.startAbility(want).then((): void => {
-            console.info(`[maui] ability start dispatched: kind=${kind}`);
+            this.logInfo(`[maui] ability start dispatched: kind=${kind}`);
           }).catch((startError: Error): void => {
-            console.error(`[maui] ability start failed: kind=${kind} ${startError.message}`);
+            this.logError(`[maui] ability start failed: kind=${kind} ${startError.message}`);
           });
           return true;
         } catch (startError) {
-          console.error(`[maui] ability start threw: ${(startError as Error).message}`);
+          this.logError(`[maui] ability start threw: ${(startError as Error).message}`);
           return false;
         }
       });
@@ -2882,7 +3023,7 @@ struct Index {
           manager.setTorchMode(on === 1 ? this.cameraTorchOn : this.cameraTorchOff);
           return true;
         } catch (flashlightError) {
-          console.error(`[maui] flashlight request failed: ${(flashlightError as Error).message}`);
+          this.logError(`[maui] flashlight request failed: ${(flashlightError as Error).message}`);
           this.flashlightManager = undefined;
           return false;
         }
@@ -2897,10 +3038,10 @@ struct Index {
       host.registerFocusSink((id: string): boolean => {
         try {
           const target: string = id.length > 0 ? id : 'ohos_dotnet_surface';
-          focusControl.requestFocus(target);
+          this.getUIContext().getFocusController().requestFocus(target);
           return true;
         } catch (focusError) {
-          console.error(`[maui] focus request failed: ${(focusError as Error).message}`);
+          this.logError(`[maui] focus request failed: ${(focusError as Error).message}`);
           return false;
         }
       });
@@ -2911,9 +3052,9 @@ struct Index {
       host.registerTextInputSink((show: number) => {
         if (show === 1) {
           this.controller.caretPosition(0);
-          focusControl.requestFocus('ohos_dotnet_input');
+          this.getUIContext().getFocusController().requestFocus('ohos_dotnet_input');
         } else {
-          focusControl.requestFocus('ohos_dotnet_surface');
+          this.getUIContext().getFocusController().requestFocus('ohos_dotnet_surface');
         }
       });
     });
@@ -2922,7 +3063,7 @@ struct Index {
     // A host library without the menu exports degrades to no menu instead of failing the page.
     this.hostCall('registerMenuChangedSink', typeof host !== 'undefined' && typeof host.registerMenuChangedSink === 'function', (): void => {
       host.registerMenuChangedSink((count: number): void => {
-        console.info(`[maui] menu table changed: ${count} rows`);
+        this.logInfo(`[maui] menu table changed: ${count} rows`);
         this.pullMenu();
       });
     });
@@ -2962,7 +3103,7 @@ struct Index {
         // An unreadable file (or one whose base64 exceeds the host's per-result cap) is
         // reported with empty data and dropped by the managed side instead of failing the
         // whole selection.
-        console.error(`[maui] picker read failed: ${(readError as Error).message}`);
+        this.logError(`[maui] picker read failed: ${(readError as Error).message}`);
         encoded = '';
       }
       this.hostCall('notifyPickerResult', typeof host !== 'undefined' && typeof host.notifyPickerResult === 'function', (): void => {
@@ -2980,7 +3121,7 @@ struct Index {
   // maxSelectNumber (1 for every single-select request, so those keep their exact behaviour).
   private async selectDocumentUris(requestId: number, multi: boolean, count: number): Promise<void> {
     try {
-      const documentPicker = new picker.DocumentViewPicker();
+      const documentPicker = new picker.DocumentViewPicker(this.hostContext());
       const uris = await documentPicker.select({ maxSelectNumber: count });
       if (!uris || uris.length === 0) {
         this.answerPickerCancel(requestId);
@@ -2988,7 +3129,7 @@ struct Index {
       }
       this.answerPickerFiles(requestId, multi, uris);
     } catch (error) {
-      console.error(`[maui] document picker failed: ${(error as Error).message}`);
+      this.logError(`[maui] document picker failed: ${(error as Error).message}`);
       this.answerPickerCancel(requestId);
     }
   }
@@ -3001,19 +3142,19 @@ struct Index {
       return null;
     }
     try {
-      const photoAccess = await import('@ohos.file.photoAccessHelper');
+      const photoAccess = await import('@kit.MediaLibraryKit');
       try {
-        const selectOptions = new photoAccess.default.PhotoSelectOptions();
+        const selectOptions = new photoAccess.photoAccessHelper.PhotoSelectOptions();
         selectOptions.MIMEType = mode === 1
-          ? photoAccess.default.PhotoViewMIMETypes.IMAGE_TYPE
-          : photoAccess.default.PhotoViewMIMETypes.VIDEO_TYPE;
+          ? photoAccess.photoAccessHelper.PhotoViewMIMETypes.IMAGE_TYPE
+          : photoAccess.photoAccessHelper.PhotoViewMIMETypes.VIDEO_TYPE;
         selectOptions.maxSelectNumber = count;
-        const photoPicker = new photoAccess.default.PhotoViewPicker();
+        const photoPicker = new photoAccess.photoAccessHelper.PhotoViewPicker();
         const picked = await photoPicker.select(selectOptions);
         const uris: string[] = picked.photoUris;
         return uris ? uris : [];
       } catch (pickError) {
-        console.error(`[maui] photo picker failed: ${(pickError as Error).message}`);
+        this.logError(`[maui] photo picker failed: ${(pickError as Error).message}`);
         return [];
       }
     } catch (importError) {
@@ -3040,7 +3181,7 @@ struct Index {
         this.reportHostUnavailable('setAppContext', undefined);
         return;
       }
-      const context = getContext(this) as common.UIAbilityContext;
+      const context = this.hostContext();
       const payloadDir = `${context.filesDir}/dotnet`;
       const json = JSON.stringify({
         appDir: payloadDir,
@@ -3052,10 +3193,10 @@ struct Index {
       });
       const rc: number = host.setAppContext(json) as number;
       if (rc !== 0) {
-        console.error(`[maui] app context publish declined: ${rc}`);
+        this.logError(`[maui] app context publish declined: ${rc}`);
       }
     } catch (contextError) {
-      console.error(`[maui] app context publish failed: ${(contextError as Error).message}`);
+      this.logError(`[maui] app context publish failed: ${(contextError as Error).message}`);
     }
   }
 
@@ -3077,11 +3218,14 @@ struct Index {
   // extra) are closed for the same reason: their kit listeners are bound to this page instance.
   // The soft-input avoid-area listener is window-scoped and is unregistered the same way.
   aboutToDisappear(): void {
+    // Callback deregistration ledger first: the kit listeners (display, battery events,
+    // connectivity, bluetooth discovery) must not outlive the page.
+    this.runDisposers();
     if (this.softInputRegistered && this.softInputWindow !== null && this.softInputListener !== null) {
       try {
         this.softInputWindow.off('avoidAreaChange', this.softInputListener);
       } catch (softInputOffError) {
-        console.error(`[maui] soft input observer unregister failed: ${(softInputOffError as Error).message}`);
+        this.logError(`[maui] soft input observer unregister failed: ${(softInputOffError as Error).message}`);
       }
       this.softInputRegistered = false;
       this.softInputWindow = null;
@@ -3091,7 +3235,7 @@ struct Index {
       try {
         pasteboard.getSystemPasteboard().off('update', this.clipboardObserver);
       } catch (clipboardOffError) {
-        console.error(`[maui] clipboard observer unregister failed: ${(clipboardOffError as Error).message}`);
+        this.logError(`[maui] clipboard observer unregister failed: ${(clipboardOffError as Error).message}`);
       }
       this.clipboardObserverRegistered = false;
       this.clipboardObserver = null;
@@ -3100,7 +3244,7 @@ struct Index {
       try {
         client.close();
       } catch (gattCloseError) {
-        console.error(`[maui] bluetooth gatt close failed for ${address}: ${(gattCloseError as Error).message}`);
+        this.logError(`[maui] bluetooth gatt close failed for ${address}: ${(gattCloseError as Error).message}`);
       }
     });
     this.gattClients.clear();
@@ -3141,7 +3285,7 @@ struct Index {
     let statusText: string = 'unavailable (the host does not export accessibilityStatus)';
     try {
       statusText = this.accessibilityStatusText(host.accessibilityStatus() as number);
-    } catch (statusError) {
+    } catch {
       statusText = 'unavailable (the host does not export accessibilityStatus)';
     }
     let message: string = `accessibilityStatus: ${statusText}`;
@@ -3151,7 +3295,7 @@ struct Index {
       if (typeof host !== 'undefined' && typeof host.accessibilityNodeCount === 'function') {
         message += `\naccessibilityNodeCount: ${host.accessibilityNodeCount() as number}`;
       }
-    } catch (nodeCountError) {
+    } catch {
       message += '\naccessibilityNodeCount: unavailable';
     }
     this.getUIContext().showAlertDialog({
@@ -3197,7 +3341,7 @@ struct Index {
       const safeLayout: boolean = this.isSafeLayoutPart(this.hybridRoot)
         && this.isSafeLayoutPart(this.hybridDefaultFile);
       if (!safeLayout) {
-        console.error('[maui] hybrid assets registration rejected: root/defaultFile are not safe relative paths');
+        this.logError('[maui] hybrid assets registration rejected: root/defaultFile are not safe relative paths');
       }
       this.hybridRegistered = safeLayout && this.hybridBase.length > 0 && this.hybridRoot.length > 0
         && this.hybridDefaultFile.length > 0;
@@ -3206,7 +3350,7 @@ struct Index {
         this.webController.loadUrl(this.hybridOrigin);
       }
     } catch (hybridError) {
-      console.error(`[maui] hybrid assets registration failed: ${(hybridError as Error).message}`);
+      this.logError(`[maui] hybrid assets registration failed: ${(hybridError as Error).message}`);
       this.hybridRegistered = false;
     }
   }
@@ -3229,7 +3373,7 @@ struct Index {
       const safeLayout: boolean = this.isSafeLayoutPart(this.blazorRoot)
         && this.isSafeLayoutPart(this.blazorDefaultFile);
       if (!safeLayout) {
-        console.error('[maui] blazor assets registration rejected: root/defaultFile are not safe relative paths');
+        this.logError('[maui] blazor assets registration rejected: root/defaultFile are not safe relative paths');
       }
       this.blazorRegistered = safeLayout && this.blazorBase.length > 0 && this.blazorRoot.length > 0
         && this.blazorDefaultFile.length > 0;
@@ -3238,7 +3382,7 @@ struct Index {
         this.webController.loadUrl(this.blazorOrigin);
       }
     } catch (blazorError) {
-      console.error(`[maui] blazor assets registration failed: ${(blazorError as Error).message}`);
+      this.logError(`[maui] blazor assets registration failed: ${(blazorError as Error).message}`);
       this.blazorRegistered = false;
     }
   }
@@ -3262,7 +3406,7 @@ struct Index {
     }
     try {
       path = decodeURIComponent(path);
-    } catch (decodeError) {
+    } catch {
       return '';
     }
     while (path.startsWith('/')) {
@@ -3301,7 +3445,7 @@ struct Index {
     }
     try {
       path = decodeURIComponent(path);
-    } catch (decodeError) {
+    } catch {
       return '';
     }
     while (path.startsWith('/')) {
@@ -3395,7 +3539,7 @@ struct Index {
     }
     const stem: string = filePath.substring(nameStart, dot);
     const extension: string = filePath.substring(dot);
-    const match = /^(.+)\.[0-9a-f]{8,32}$/.exec(stem);
+    const match = new RegExp('^(.+)\\.[0-9a-f]{8,32}$').exec(stem);
     if (match === null) {
       return filePath;
     }
@@ -3438,13 +3582,13 @@ struct Index {
       response.setResponseData(buffer);
       response.setResponseHeader(this.payloadCacheHeaders(fingerprinted));
       return response;
-    } catch (ioError) {
+    } catch {
       return undefined;
     } finally {
       if (fd >= 0) {
         try {
           fileIo.closeSync(fd);
-        } catch (closeError) {
+        } catch {
           // The handle is released with the response in the worst case.
         }
       }
@@ -3452,7 +3596,7 @@ struct Index {
   }
 
   // ArkWeb needs the intercepted response synchronously, and payload assets are small, so the
-  // file is read inline through @ohos.file.fs (open/read/close). '' (an unknown or unsafe path)
+  // file is read inline through @kit.CoreFileKit fileIo (open/read/close). '' (an unknown or unsafe path)
   // is answered with 404, so both bridges share the read path. The exact request path always
   // wins; only a fingerprinted name whose exact file is missing retries the base name once.
   private servePayloadFile(filePath: string): WebResourceResponse {
@@ -3545,7 +3689,7 @@ struct Index {
         pending.response.setReasonMessage('OK');
         pending.response.setResponseIsReady(true);
       } catch (completeError) {
-        console.error(`[maui] hybrid invoke response failed: ${(completeError as Error).message}`);
+        this.logError(`[maui] hybrid invoke response failed: ${(completeError as Error).message}`);
       }
     });
   }
@@ -3586,7 +3730,7 @@ struct Index {
       if (data.ParamValues !== undefined) {
         argsJson = JSON.stringify(data.ParamValues);
       }
-    } catch (parseError) {
+    } catch {
       return this.hybridErrorResponse(400);
     }
     if (method.length === 0) {
@@ -3617,11 +3761,27 @@ struct Index {
     return response;
   }
 
+  // Overlay avoid-area (audit ARKTS-S3): the keyboard inset can exceed the static system
+  // bottom inset while it is up, so the overlay bottom uses the larger of the two.
+  private overlayBottomInset(): number {
+    return Math.max(this.avoidBottom, this.keyboardBottom);
+  }
+
+  // build() stays ternary-free (audit ARKTS-S3): the visibility and hit-test decisions live in
+  // named helpers so the declarative tree remains reviewable.
+  private webVisibility(): Visibility {
+    return this.webVisible ? Visibility.Visible : Visibility.None;
+  }
+
+  private shellSearchHitTest(): HitTestMode {
+    return this.shellSearchVisible ? HitTestMode.Default : HitTestMode.None;
+  }
+
   build() {
     Stack() {
       // ArkWeb: hidden until the managed WebView asks for it.
       Web({ src: '', controller: this.webController })
-        .visibility(this.webVisible ? Visibility.Visible : Visibility.None)
+        .visibility(this.webVisibility())
         // The controller is attached here; registering the dotnetHost proxy any earlier fails
         // with BusinessError 17100001 (controller not associated with a Web component).
         .onControllerAttached(() => {
@@ -3649,7 +3809,7 @@ struct Index {
             }
             this.askManagedAboutNavigation(url);
             return true;
-          } catch (interceptError) {
+          } catch {
             // An unexpected event shape must not take the page down; allow the load.
             return false;
           }
@@ -3675,7 +3835,7 @@ struct Index {
               return this.hybridMessageResponse(event);
             }
             return this.serveHybridFile(url);
-          } catch (interceptError) {
+          } catch {
             return null;
           }
         })
@@ -3819,8 +3979,8 @@ struct Index {
         .align(Alignment.TopStart)
         .backgroundColor('#CC101010')
         .borderRadius(8)
-        .margin({ top: 8, left: 8 })
-        .hitTestBehavior(this.shellSearchVisible ? HitTestMode.Default : HitTestMode.None)
+        .margin({ top: 8 + this.avoidTop, left: 8 + this.avoidLeft })
+        .hitTestBehavior(this.shellSearchHitTest())
       }
 
       // Menu handle: only present while the managed page publishes menu bars. The ArkUI menu is
@@ -3828,7 +3988,7 @@ struct Index {
       if (this.menuItems.length > 0) {
         Button('Menu')
           .align(Alignment.TopEnd)
-          .margin({ top: 8, right: 8 })
+          .margin({ top: 8 + this.avoidTop, right: 8 + this.avoidRight })
           .height(40)
           .fontSize(18)
           .bindMenu(this.buildMenuElements())
@@ -3839,7 +3999,7 @@ struct Index {
       // ContentSlot keep their full size); tapping it shows the provider state.
       Button('A11Y')
         .align(Alignment.BottomStart)
-        .margin({ bottom: 4, left: 4 })
+        .margin({ bottom: 4 + this.overlayBottomInset(), left: 4 + this.avoidLeft })
         .width(44)
         .height(24)
         .fontSize(10)
