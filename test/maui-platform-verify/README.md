@@ -49,7 +49,7 @@ allocation and jitter) budgets are exceeded.
 # (or the MauiSliceDir / HostingDll / OpenHarmonyGraphicsDll MSBuild properties) before building
 # elsewhere; an explicit -p: value wins over the environment and the absolute fallbacks.
 dotnet build -v:q
-dotnet bin/Debug/net11.0/verify.dll | grep -c '\[verify\]'   # expect 320 (307 checks + 4 fuzz + 1 frame perf + 8 a11y perf)
+dotnet bin/Debug/net11.0/verify.dll | grep -c '\[verify\]'   # expect 321 (308 checks + 4 fuzz + 1 frame perf + 8 a11y perf)
 ```
 
 The `interaction-regression` workflow (`.github/workflows/interaction-regression.yml`) runs the
@@ -60,7 +60,7 @@ suite on a GitHub runner as a real gate (on push to `master`, on pull requests a
 points `MAUI_SLICE_DIR` / `HOSTING_DLL` / `OPENHARMONY_GRAPHICS_DLL` at those roots, and fails the
 job unless the run exits 0, the suite's own `[suite]` contract line reports `assert=True` with at
 least the floor declared in `Program.cs`, both perf lines report `within=True`, and no `Unhandled`
-line is logged. The floor (300 = 320 - 20, the documented convention) lives only in `Program.cs`;
+line is logged. The floor (301 = 321 - 20, the documented convention) lives only in `Program.cs`;
 the workflow and `scripts/preflight.sh` both read the printed `[suite] checks=... floor=...` line
 instead of repeating a literal, so the two local/CI thresholds cannot drift apart.
 
@@ -169,7 +169,7 @@ jitter ~1.08x and 72,056 B/frame, and the a11y block reported ~0.3/0.5 ms for th
 ~0.07/0.28 ms for the publish pass (skip/republish). The post-batch run (commit a10b73e) reported
 avg 0.488 ms, p95 0.698 ms, jitter 1.43x and 3,720 B/frame, i.e. the ceiling is 3.72x the CI
 baseline. Every run ends with the `[suite]` contract line
-(`checks=320 total=320 floor=300 assert=True`), which the workflow and `scripts/preflight.sh`
+(`checks=321 total=321 floor=301 assert=True`), which the workflow and `scripts/preflight.sh`
 parse.
 
 ## Notes
@@ -179,7 +179,7 @@ parse.
 - The suite fails loudly (unhandled exception) when a slice change breaks startup or when an
   assertion for the gesture flows (including the drag-and-drop checks) does not hold; keep it at
   307 checks plus the 4 fuzz lines plus the 1 frame-perf line plus the 8 a11y-perf lines
-  (320 `[verify]` lines) when touching the platform slice. The total and the floor (total - 20)
+  (321 `[verify]` lines) when touching the platform slice. The total and the floor (total - 20)
   are declared in `Program.cs`; the run ends with a `[suite] checks=... floor=... assert=...`
   line and fails itself when the printed count is below the floor, so the CI job and
   `scripts/preflight.sh` do not repeat the threshold.
@@ -455,8 +455,8 @@ parse.
   templates (which stay byte-identical). That is 9 lines: 275 + 9 = 284 = 271 interaction
   checks + 4 fuzz + 1 frame perf + 8 a11y perf; the workflow floor moves with the total
   (284 - 20 = 264).
-- PG2 packaging/host invariants (staged runtime natives / libc++ / host bridge / build-host
-  guard): four `[verify]` lines, all parsing committed sources. `pg2 pack runtime libs` pins the
+- PG2 packaging/host invariants (staged runtime natives / libc++ / module.json + Blazor +
+  FileWrites / host bridge / build-host guard): five `[verify]` lines, all parsing committed sources. `pg2 pack runtime libs` pins the
   preview.22/23/24 `OpenHarmony.Hap.targets` files (which stay byte-identical): the publish
   `*.so` glob (`_OpenHarmonyPayloadNativeLib`), the ELF-magic validation and the host/libc++
   skip names, the copy into `libs/$(OpenHarmonyAbi)/` with the `_OpenHarmonyStagedRuntimeLib` /
@@ -464,11 +464,14 @@ parse.
   error when the set is empty, and the deterministic zip half: `ExcludeFileNames` receives
   `@(_OpenHarmonyStagedRuntimeLib->'%(Filename)%(Extension)')` and drops those names
   (`Path.GetFileName` + `ExcludedCount`), with the staging before the `OpenHarmonyCodesign`
-  pass and the zip after it. `pg2 pack libcxx` pins the `libc++_shared.so` lookup (harmonybrew
-  Cellar, `OHOS_NDK`, `OpenHarmonySdkRoot`, the explicit `OpenHarmonyLibCxxShared` override),
-  the missing-library hard errors, the `libs/<abi>/` copy and the in-place re-sign of the
+  pass and the zip after it. `pg2 pack libcxx` pins the `libc++_shared.so` lookup (the explicit
+  `OpenHarmonySdkRoot`/`OHOS_NDK` roots and the `OpenHarmonyLibCxxShared` override; no `$HOME`
+  probe), the missing-library hard errors, the `libs/<abi>/` copy and the in-place re-sign of the
   staged libs (the vendor `.codesign` rationale plus the missing
-  `MicrosoftNETBuildTasksAssembly` failure). `pg2 host runtime bridge` parses
+  `MicrosoftNETBuildTasksAssembly` failure). `pg2 pack contracts` pins the JSON-aware
+  `OpenHarmonyGenerateModuleJson` task (no `ReadLinesFromFile`), the `@(StaticWebAsset)`-only
+  Blazor staging, the four `FileWrites` registrations and the
+  `OpenHarmonyAfterPublishDependsOn` hook. `pg2 host runtime bridge` parses
   `openharmony_host.c`: `OhosHostEnsureRuntimeLibs` is called on both the `run_app` and
   `start_app` paths before their `OhosHostOpenHostfxr`, its libs directory is derived through
   `dladdr` on `ohos_host_run_app`, the symlink is backed by the tmp+rename copy fallback
@@ -476,9 +479,9 @@ parse.
   scan/link bounds, and the one summary log reports ensured/copied/failed with the last errno.
   `pg2 build-host guard` pins `scripts/build-host.sh`: the `READELF` default/fallback/no-readelf
   error, the `grep -q 'libhostfxr'` DT_NEEDED failure with its exit 1 message, and the guard's
-  position after the link and before the self-sign pass. That is 4 lines: 284 + 4 = 288 = 275
+  position after the link and before the self-sign pass. That is 5 lines: 284 + 5 = 289 = 276
   interaction checks + 4 fuzz + 1 frame perf + 8 a11y perf; the workflow floor moves with the
-  total (288 - 20 = 268).
+  total (289 - 20 = 269).
 - Audit batch-2 pins (BLE GATT / lifecycle / list extras / settings / WebAuth / soft input + profiles /
   PE2 / Shell chrome / PJ): nine `[verify]` lines cover the surfaces the second audit found with
   zero source-contract coverage. `audit2 ble gatt` pins the managed request/result/event
@@ -509,8 +512,8 @@ parse.
   handler's chrome instance. `audit2 pj` pins PJ1 (animation loop register/pump/frame hook,
   scroll-physics tunables, the OpenHarmonyView offset/draw hooks, scrollbars and focus ring) and
   PJ2 (the tooltip manager's `ToolTip` mapper entry + present hook and the keyboard accelerator
-  manager's key codes/handler/install). That is 9 lines: 288 + 9 = 297 = 284 interaction checks +
-  4 fuzz + 1 frame perf + 8 a11y perf; the workflow floor moves with the total (297 - 20 = 277).
+  manager's key codes/handler/install). That is 9 lines: 289 + 9 = 298 = 285 interaction checks +
+  4 fuzz + 1 frame perf + 8 a11y perf; the workflow floor moves with the total (298 - 20 = 278).
 - PI1/PI2/RB pins (app-package root / Create=0 + pre-Run activation / carousel grouping /
   shadows / SecureStorage note / platform application / window overlays / TFM gating / public API /
   SupportedPlatform / frozen ABI): eleven `[verify]` lines for the newest slice surfaces, which
@@ -534,8 +537,8 @@ parse.
   header and the two PI2 types in the baseline. `rb supportedplatform` pins the single
   `<SupportedPlatform Include="openharmony" />` declaration in this repository's
   Directory.Build.props. `rb frozenabi` pins the `ohos_host_*`/`OHOS_HOST_APP_CONTEXT` ABI-freeze
-  comment. That is 11 lines: 297 + 11 = 308 = 295 interaction checks + 4 fuzz + 1 frame perf +
-  8 a11y perf; the workflow floor moves with the total (308 - 20 = 288).
+  comment. That is 11 lines: 298 + 11 = 309 = 296 interaction checks + 4 fuzz + 1 frame perf +
+  8 a11y perf; the workflow floor moves with the total (309 - 20 = 289).
 - Audit batch-3 pins (FIX-MAUI residues: MB-1 bounded approval table / MB-2 guarded native
   callbacks / MB-3 app-package names / H-C2 approval + load channels): seven `[verify]` lines for
   the fixes that shipped without behavioural coverage here. `audit3 mb1` fills the web approval
@@ -556,7 +559,7 @@ parse.
   text submitted, lifecycle, surface, pinch, web event, picker and keystore result): each private
   handler delegate is swapped for a thrower, the native entry is invoked, the delegate is
   restored and the ten inline `ReportCallbackFailure` guards are pinned in the source. That is 7
-  lines: 308 + 7 = 315 = 302 interaction checks + 4 fuzz + 1 frame perf + 8 a11y perf.
+  lines: 309 + 7 = 316 = 303 interaction checks + 4 fuzz + 1 frame perf + 8 a11y perf.
 - PG2e pins (payload-in-libs app_dir resolution / payload marker / exec-memory policy + probe):
   five `[verify]` lines for the payload-in-libs launch path the host probes before hostfxr.
   `pg2 host resolve app dir` pins `OhosHostResolveAppDir` and both launch-path calls (the
@@ -571,8 +574,8 @@ parse.
   both forms; `pg2 host exec memory probe` pins the one-shot `OHOS_DOTNET probe:` mapping line
   and its `dotnet-status.txt` append (and the A7 native pin counts all six failure-path
   `OhosHostEndLaunch()` calls, the app_dir resolution failure included). That is 5 lines:
-  315 + 5 = 320 = 307 interaction checks + 4 fuzz + 1 frame perf + 8 a11y perf; the suite's
-  documented floor convention is total - 20 = 300, declared once in `Program.cs` (the
+  316 + 5 = 321 = 308 interaction checks + 4 fuzz + 1 frame perf + 8 a11y perf; the suite's
+  documented floor convention is total - 20 = 301, declared once in `Program.cs` (the
   `verifyCheckTotal`/`verifyCheckFloor` constants behind the `[suite]` line). When checks are
   added or removed, update that one constant and the totals in this README; the workflow and
   preflight pick the floor up from the printed line automatically.

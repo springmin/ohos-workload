@@ -52,8 +52,8 @@ permissions:
 # `git ls-remote https://github.com/springmin/maui-ohos feature/openharmony` on 2026-09-24
 # (236d18a9: refresh the platform slice harness baseline to the then-current 315 checks /
 # floor 295 - docs-only on top of c05db90f, the scroll-ticker idle fix and the frame-path
-# allocation cuts that pass this pixel suite; the interaction harness now pins 320 checks /
-# floor 300); advanced in lockstep with the interaction gate; change it deliberately
+# allocation cuts that pass this pixel suite; the interaction harness now pins 321 checks /
+# floor 301); advanced in lockstep with the interaction gate; change it deliberately
 # (workflow_dispatch can compile any other commit SHA).
 env:
   MAUI_OHOS_REF: ${{ github.event.inputs.maui_ohos_ref || '236d18a9919b02b07df80083c1520080d50b65ad' }}
