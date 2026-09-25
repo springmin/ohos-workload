@@ -10,14 +10,10 @@
          test fails immediately if the Hosting assembly regresses to reflection-based
          System.Text.Json instead of its source-generated HostJsonContext. -->
     <JsonSerializerIsReflectionEnabledByDefault>false</JsonSerializerIsReflectionEnabledByDefault>
-    <!-- The hosting assembly under test: built from this repository (CI builds it in Release
-         before the test). Override with -p:OpenHarmonyHostingAssembly=<path>. -->
-    <OpenHarmonyHostingAssembly Condition=" '$(OpenHarmonyHostingAssembly)' == '' ">$(MSBuildThisFileDirectory)../../src/Microsoft.OpenHarmony.Hosting/bin/Release/net11.0/Microsoft.OpenHarmony.Hosting.dll</OpenHarmonyHostingAssembly>
+    <!-- The hosting assembly under test is built from this repository; a ProjectReference
+         keeps `dotnet run` self-contained (no pre-built DLL required). -->
   </PropertyGroup>
   <ItemGroup>
-    <Reference Include="Microsoft.OpenHarmony.Hosting">
-      <HintPath>$(OpenHarmonyHostingAssembly)</HintPath>
-      <Private>true</Private>
-    </Reference>
+    <ProjectReference Include="../../src/Microsoft.OpenHarmony.Hosting/Microsoft.OpenHarmony.Hosting.csproj" />
   </ItemGroup>
 </Project>

@@ -39,7 +39,7 @@ on:
         description: 'maui-ohos commit SHA to compile (defaults to the pinned feature/openharmony tip)'
         required: false
         type: string
-        default: '236d18a9919b02b07df80083c1520080d50b65ad'
+        default: 'fc7fbfdc03913a7e3ce0bfccc7ec7481bf7974d5'
 
 # Least privilege: the job only reads this repository and the public springmin/maui-ohos fork;
 # no step pushes anywhere.
@@ -48,15 +48,14 @@ permissions:
 
 # Reproducible cross-repo compile: the MAUI slice is checked out at an exact commit, not the
 # mutable feature/openharmony branch, so a push to the fork cannot change what this gate compiles.
-# The default is the feature/openharmony tip verified with
-# `git ls-remote https://github.com/springmin/maui-ohos feature/openharmony` on 2026-09-24
-# (236d18a9: refresh the platform slice harness baseline to the then-current 315 checks /
-# floor 295 - docs-only on top of c05db90f, the scroll-ticker idle fix and the frame-path
-# allocation cuts that pass this pixel suite; the interaction harness now pins 321 checks /
-# floor 301); advanced in lockstep with the interaction gate; change it deliberately
-# (workflow_dispatch can compile any other commit SHA).
+# The default is the feature/openharmony tip: fc7fbfdc, which carries the FIX-INTEROP slice
+# work (#4-#7: source-generated JSON payloads, trim/AOT-safe handler wiring) on top of the
+# Share/Scan kit extra; the pixel expectations are unchanged by that work (no drawing behavior
+# changes). The interaction harness pins 321 checks / floor 301; advance the pin in lockstep
+# with the interaction gate and change it deliberately (workflow_dispatch can compile any other
+# commit SHA).
 env:
-  MAUI_OHOS_REF: ${{ github.event.inputs.maui_ohos_ref || '236d18a9919b02b07df80083c1520080d50b65ad' }}
+  MAUI_OHOS_REF: ${{ github.event.inputs.maui_ohos_ref || 'fc7fbfdc03913a7e3ce0bfccc7ec7481bf7974d5' }}
   # Same as the interaction gate: keep the setup-dotnet preview SDK in a cacheable per-user path
   # instead of the runner's /usr/share/dotnet; a newer 11.0.x preview is still downloaded (the
   # action re-resolves the channel), the cache only skips the ~200 MB download when it moved.

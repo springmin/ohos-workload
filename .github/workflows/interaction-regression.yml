@@ -40,7 +40,7 @@ on:
         description: 'maui-ohos commit SHA to compile (defaults to the pinned feature/openharmony tip)'
         required: false
         type: string
-        default: '236d18a9919b02b07df80083c1520080d50b65ad'
+        default: 'fc7fbfdc03913a7e3ce0bfccc7ec7481bf7974d5'
   push:
     branches: [ master ]
   pull_request:
@@ -52,16 +52,13 @@ permissions:
 
 # Reproducible cross-repo compile: the MAUI slice is checked out at an exact commit, not the
 # mutable feature/openharmony branch, so a push to the fork cannot change what this gate compiles.
-# The default is the feature/openharmony tip verified with
-# `git ls-remote https://github.com/springmin/maui-ohos feature/openharmony` on 2026-09-24
-# (236d18a9: refresh the platform slice harness baseline to the then-current 315 checks /
-# floor 295 - docs-only on top of c05db90f, the scroll ticker dropping its frame registration as
-# soon as no fling can start and the frame path no longer allocating; the suite now pins 321
-# checks / floor 301 after the pack-contract pin refresh, and its pins
-# hold at the same compiled tree); advance it deliberately (workflow_dispatch can compile any
-# commit).
+# The default is the feature/openharmony tip: fc7fbfdc, which carries the FIX-INTEROP slice
+# work (#4-#7: source-generated JSON payloads, trim/AOT-safe handler wiring) on top of the
+# Share/Scan kit extra and the 236d18a9 harness baseline. The suite pins 321 checks / floor 301
+# and they hold at this compiled tree; advance the pin deliberately and refresh this comment
+# when the harness pins or the tip move (workflow_dispatch can compile any commit).
 env:
-  MAUI_OHOS_REF: ${{ github.event.inputs.maui_ohos_ref || '236d18a9919b02b07df80083c1520080d50b65ad' }}
+  MAUI_OHOS_REF: ${{ github.event.inputs.maui_ohos_ref || 'fc7fbfdc03913a7e3ce0bfccc7ec7481bf7974d5' }}
   # setup-dotnet installs the requested 11.0.x preview into DOTNET_INSTALL_DIR; on Linux that
   # defaults to /usr/share/dotnet, which a per-user cache cannot persist. Point it at ~/.dotnet
   # (the action resolves the ~ prefix against $HOME) so the cache step below actually avoids the
@@ -103,6 +100,36 @@ jobs:
           dotnet-quality: 'preview'
       - name: Reject machine-specific absolute paths in build inputs
         run: sh scripts/check-no-absolute-paths.sh
+      - name: Build the hosting assemblies the slice gate references
+        run: |
+          set -euo pipefail
+          dotnet build src/Microsoft.OpenHarmony.Hosting/Microsoft.OpenHarmony.Hosting.csproj -c Release -v:q
+          dotnet build src/Microsoft.OpenHarmony.Maui.Graphics/Microsoft.OpenHarmony.Maui.Graphics.csproj -c Release -v:q
+      - name: Hosting context JSON smoke (FIX-INTEROP #3)
+        run: |
+          set -euo pipefail
+          dotnet run --project test/hosting-context-json -c Release | tee hosting-json.txt
+          grep -q 'HOSTING CONTEXT JSON SMOKE PASSED' hosting-json.txt
+      - name: Slice trim/AOT analyzer gate (FIX-INTEROP #10)
+        # The full MAUI tree's targets force the trim analyzer off when PublishAot != true, so
+        # an ordinary app build can hide IL2026/IL3050 in the slice. This step builds the
+        # standalone slice vehicle with the switches explicit and promotes the two IDs to
+        # errors; a regression fails here instead of on device.
+        run: |
+          set -euo pipefail
+          dotnet build maui-ohos/src/Core/src/Platform/OpenHarmony/Microsoft.Maui.Platform.OpenHarmony.csproj \
+            -c Release -v:m \
+            -p:IsAotCompatible=true -p:EnableTrimAnalyzer=true -p:EnableAotAnalyzer=true \
+            -warnaserror:IL2026,IL3050 \
+            -p:OpenHarmonyHostingAssembly="${GITHUB_WORKSPACE}/src/Microsoft.OpenHarmony.Hosting/bin/Release/net11.0/Microsoft.OpenHarmony.Hosting.dll" \
+            -p:OpenHarmonyGraphicsAssembly="${GITHUB_WORKSPACE}/src/Microsoft.OpenHarmony.Maui.Graphics/bin/Release/net11.0/Microsoft.OpenHarmony.Maui.Graphics.dll" \
+            | tee slice-il.txt
+          grep -q 'Build succeeded' slice-il.txt
+          if grep -qE 'warning IL[0-9]+' slice-il.txt; then
+            echo "::error::the slice build produced IL warnings under the trim/AOT analyzers"
+            exit 1
+          fi
+          echo "slice trim/AOT analyzer gate green: no IL warnings"
       - name: Run the interaction + performance suite
         working-directory: test/maui-platform-verify
         env:
