@@ -335,6 +335,21 @@ against the permissions the shipped shell can request at runtime (the quoted
 declare. The manifest describes the shipped shell; an app that passes a custom
 `OpenHarmonyArktsModulesAbc` owns its own request points and can opt out of the gate.
 
+Verification status (2026-09-25, no device attached to the build host):
+
+- `scripts/selftest-hap-targets.sh` T5 drives the real pack targets: the bluetooth feature
+  resolves to the asserted `module.json` bytes (name/reason/usedScene), `all` emits the eight
+  unique permissions once each, an unknown feature id and the strict mode fail, and the raw
+  `OpenHarmonyExtraPermissions` path keeps its minimal form plus the warning.
+- The generated `module.json` and the `permission_reason_*` strings compile through the SDK
+  `restool` (a `resources.index` is produced), so the resource side of the chain accepts the
+  feature declarations.
+- T6 is the device half: with `OHOS_TEST_HAP=<signed hap>` and an `hdc` device it installs the
+  hap and reads the installed `requestPermissions` back through `bm dump`, asserting that every
+  entry carries name/reason/usedScene. A full signed `dotnet publish` with these permissions on
+  a device remains the device-test-kit path (`scripts/make-device-test-kit.sh`, whose
+  `check_permissions` reads the packaged module.json).
+
 Install-time and runtime notes: declaring a permission never grants a user_grant permission - the
 managed app still requests it at runtime. `ohos.permission.APPROXIMATELY_LOCATION` is the
 permission the reverse-geocoding path requests; whether a device also needs it for
