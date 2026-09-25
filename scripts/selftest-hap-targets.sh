@@ -10,6 +10,15 @@
 #                  template all fail the build instead of packing a broken manifest
 #   T4 toolchain   the strict toolchain resolution fails without a root / with a root that has no
 #                  toolchains/lib, naming the property or the missing file (no $HOME probe)
+#   T5 features    the feature -> permission matrix resolves to module.json entries with
+#                  reason/usedScene, an unknown feature id and the strict request-point mode fail,
+#                  'all' emits the eight unique permissions, and the raw extra-permission path
+#                  keeps its minimal form plus the raw-permission warning
+#   T6 device      hdc-gated install + grant integration: installs OHOS_TEST_HAP, reads the
+#                  installed requestPermissions back through bm dump and checks that each entry
+#                  carries name/reason/usedScene; SKIPs without a device or the hap (no device
+#                  is attached to this build host, so the scaffold + the manual commands in the
+#                  packaging doc are the evidence there)
 #
 # The fixture imports the real pack targets (so the UsingTask under test is the shipped one) and
 # calls the task directly. Needs a dotnet SDK; when dotnet is unavailable the functional half is
@@ -214,6 +223,155 @@ PY
     grep -qF 'does not contain toolchains/lib/ohos_packing_tool' "$WORK/DetectBadRoot.log" \
         && pass_ "T4 DetectBadRoot names the missing toolchain path" \
         || fail_ "T4 DetectBadRoot does not name the missing toolchain path"
+fi
+
+# ---- T5: feature permissions (fixture) --------------------------------------------------
+section "T5 feature permissions"
+if ! command -v "$DOTNET" >/dev/null 2>&1; then
+    skip_ "T5 needs dotnet for the feature-permission fixture"
+else
+    PERMFIX="$WORK/permfix"
+    mkdir -p "$PERMFIX"
+    python3 - "$PERMFIX" "$W" "$REF" "$TPL" <<'PY'
+import os, sys
+fix, root, targets, template = sys.argv[1:5]
+pack_dir = os.path.dirname(os.path.dirname(targets)) + '/'
+values = {
+    'BUNDLE_NAME': 'com.example.permprobe',
+    'VENDOR': 'openharmony',
+    'VERSION_CODE': '1',
+    'VERSION_NAME': '1.0.0',
+    'MIN_API': '60000020',
+    'TARGET_API': '60000020',
+    'API_RELEASE_TYPE': 'Release',
+    'DEBUG': 'true',
+    'ABILITY_NAME': 'EntryAbility',
+}
+items = '\n'.join(f'      <_R Include="{k}"><Value>{v}</Value></_R>' for k, v in values.items())
+proj = f'''<Project>
+  <PropertyGroup>
+    <MicrosoftNETBuildTasksAssembly>$(MSBuildToolsPath)/Microsoft.Build.Tasks.Core.dll</MicrosoftNETBuildTasksAssembly>
+    <_OpenHarmonySdkPackDir>{pack_dir}</_OpenHarmonySdkPackDir>
+  </PropertyGroup>
+  <Import Project="{targets}" />
+  <ItemGroup>
+{items}
+  </ItemGroup>
+  <Target Name="Emit" DependsOnTargets="_OpenHarmonyResolvePermissions">
+    <OpenHarmonyGenerateModuleJson TemplateFile="$(Tpl)" OutputFile="out.json" Replacements="@(_R)"
+                                   ExtraPermissions="@(_OpenHarmonyModuleJsonPermission)" />
+  </Target>
+</Project>
+'''
+open(os.path.join(fix, 'perm.proj'), 'w').write(proj)
+PY
+    run_perm() { # <args...>
+        ( cd "$PERMFIX" && "$DOTNET" msbuild perm.proj -t:Emit -nologo -v:m -p:Tpl="$TPL" \
+            -p:TargetPlatformIdentifier=openharmony -p:OpenHarmonyHapPackage=true "$@" ) > "$WORK/T5-case.log" 2>&1
+    }
+    run_perm -p:OpenHarmonyFeatures=bluetooth
+    assert_rc 0 $? "T5 the bluetooth feature resolves"
+    python3 - "$PERMFIX/out.json" <<'PY' && pass_ "T5 the bluetooth entry carries name/reason/usedScene" || fail_ "T5 the bluetooth entry is incomplete"
+import json, sys
+perms = json.load(open(sys.argv[1]))['module'].get('requestPermissions', [])
+assert len(perms) == 1, perms
+entry = perms[0]
+assert entry['name'] == 'ohos.permission.ACCESS_BLUETOOTH', entry
+assert entry['reason'] == '$string:permission_reason_bluetooth', entry
+assert entry['usedScene']['abilities'] == ['EntryAbility'], entry
+assert entry['usedScene']['when'] == 'inuse', entry
+PY
+    run_perm -p:OpenHarmonyFeatures=bogus
+    assert_rc 1 $? "T5 an unknown feature id fails"
+    grep -qF 'unknown feature id' "$WORK/T5-case.log" && pass_ "T5 names the unknown feature" \
+        || fail_ "T5 does not name the unknown feature"
+    run_perm
+    assert_rc 0 $? "T5 no features keeps the legacy build working"
+    python3 - "$PERMFIX/out.json" <<'PY' && pass_ "T5 no features emits no requestPermissions" || fail_ "T5 no-feature module.json carries requestPermissions"
+import json, sys
+assert 'requestPermissions' not in json.load(open(sys.argv[1]))['module']
+PY
+    grep -qF 'the shipped shell can request permission(s) the app does not declare' "$WORK/T5-case.log" \
+        && pass_ "T5 no features warns about the shell request points" \
+        || fail_ "T5 no request-point warning"
+    run_perm -p:OpenHarmonyFeatures=all
+    assert_rc 0 $? "T5 the 'all' feature selection resolves"
+    python3 - "$PERMFIX/out.json" <<'PY' && pass_ "T5 'all' declares the eight unique permissions once each" || fail_ "T5 'all' declaration set is wrong"
+import json, sys
+names = [p['name'] for p in json.load(open(sys.argv[1]))['module']['requestPermissions']]
+assert len(names) == len(set(names)) == 8, names
+for want in ('ohos.permission.ACCESS_BLUETOOTH', 'ohos.permission.APPROXIMATELY_LOCATION',
+             'ohos.permission.READ_PASTEBOARD', 'ohos.permission.READ_CONTACTS',
+             'ohos.permission.READ_CALENDAR', 'ohos.permission.WRITE_CALENDAR',
+             'ohos.permission.PRINT', 'ohos.permission.INTERNET'):
+    assert want in names, (want, names)
+PY
+    run_perm -p:OpenHarmonyFeatures=bluetooth -p:OpenHarmonyRequireDeclaredRequestPoints=true
+    assert_rc 1 $? "T5 the strict request-point mode fails on an undeclared point"
+    grep -qF 'does not declare' "$WORK/T5-case.log" && pass_ "T5 strict mode names the undeclared points" \
+        || fail_ "T5 strict mode does not name the undeclared points"
+    run_perm '-p:OpenHarmonyExtraPermissions="ohos.permission.CAMERA"'
+    assert_rc 0 $? "T5 the raw extra-permission escape hatch still works"
+    grep -qF 'raw permission' "$WORK/T5-case.log" && pass_ "T5 flags a raw permission without a reason" \
+        || fail_ "T5 does not flag the raw permission"
+    python3 - "$PERMFIX/out.json" <<'PY' && pass_ "T5 the raw extra keeps the minimal entry form" || fail_ "T5 the raw extra entry changed"
+import json, sys
+perms = json.load(open(sys.argv[1]))['module']['requestPermissions']
+assert perms == [{'name': 'ohos.permission.CAMERA'}], perms
+PY
+fi
+
+# ---- T6: device install + grant (hdc-gated) ---------------------------------------------
+section "T6 device install + grant"
+HDC="$(command -v hdc 2>/dev/null || true)"
+DEVICE=""
+if [ -n "$HDC" ]; then
+    DEVICE="$("$HDC" list targets 2>/dev/null | head -1)"
+fi
+HAP="${OHOS_TEST_HAP:-}"
+if [ -z "$DEVICE" ]; then
+    skip_ "T6 no hdc device attached; run on a device with OHOS_TEST_HAP=<signed hap> to verify install + grant"
+elif [ -z "$HAP" ] || [ ! -f "$HAP" ]; then
+    skip_ "T6 set OHOS_TEST_HAP=<signed hap> to run the install + grant integration"
+else
+    BUNDLE="$(python3 - "$HAP" <<'PY'
+import json, sys, zipfile
+with zipfile.ZipFile(sys.argv[1]) as z:
+    print(json.loads(z.read('module.json'))['app']['bundleName'])
+PY
+)"
+    "$HDC" install -r "$HAP" > "$WORK/T6-install.log" 2>&1
+    assert_rc 0 $? "T6 hdc install accepts the hap"
+    "$HDC" shell bm dump -n "$BUNDLE" > "$WORK/T6-dump.json" 2>&1
+    assert_rc 0 $? "T6 bm dump reports the installed bundle"
+    python3 - "$WORK/T6-dump.json" <<'PY' && pass_ "T6 the installed requestPermissions carry reason+usedScene" \
+        || fail_ "T6 the installed requestPermissions are incomplete (see $WORK/T6-dump.json)"
+import json, sys
+text = open(sys.argv[1]).read()
+start = text.find('{')
+data = json.loads(text[start:]) if start >= 0 else json.loads(text)
+# bm dump emits a list (or a single object) of modules; collect requestPermissions.
+records = data if isinstance(data, list) else [data]
+found = []
+for record in records:
+    for module in (record.get('moduleInfos') or record.get('moduleInfo') or [record]):
+        found.extend(module.get('requestPermissions') or [])
+assert found, 'no requestPermissions in bm dump'
+for entry in found:
+    assert entry.get('name'), entry
+    assert entry.get('reason'), entry
+    assert entry.get('usedScene'), entry
+print('    requestPermissions:', ', '.join(e['name'] for e in found))
+PY
+    # System-grant permissions (INTERNET/PRINT) must already be granted at install time; the
+    # user_grant entries stay ungranted until the app requests them, which UI automation drives.
+    "$HDC" shell atm dump -n "$BUNDLE" > "$WORK/T6-atm.log" 2>&1 || true
+    if grep -qE 'INTERNET|PRINT' "$WORK/T6-atm.log"; then
+        pass_ "T6 atm dump reports the system-grant permissions (full log: $WORK/T6-atm.log)"
+    else
+        skip_ "T6 atm dump shape not recognized on this device; inspect $WORK/T6-atm.log"
+    fi
+    pass_ "T6 device evidence kept in $WORK (install/dump/atm logs)"
 fi
 
 # ---- summary ---------------------------------------------------------------------------

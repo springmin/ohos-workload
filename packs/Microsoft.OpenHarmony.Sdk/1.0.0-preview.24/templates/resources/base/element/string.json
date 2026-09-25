@@ -3,6 +3,14 @@
     { "name": "app_name", "value": "@APP_NAME@" },
     { "name": "module_desc", "value": "@APP_NAME@" },
     { "name": "EntryAbility_desc", "value": "@APP_NAME@" },
-    { "name": "EntryAbility_label", "value": "@APP_NAME@" }
+    { "name": "EntryAbility_label", "value": "@APP_NAME@" },
+    { "name": "permission_reason_bluetooth", "value": "Bluetooth is used to discover, connect to and exchange data with nearby devices." },
+    { "name": "permission_reason_location", "value": "Approximate location is used to turn coordinates into addresses and to search nearby places." },
+    { "name": "permission_reason_clipboard", "value": "Clipboard content is read only when the app explicitly asks for it." },
+    { "name": "permission_reason_contacts", "value": "Contacts are looked up to fill in the names and phone numbers the app asks for." },
+    { "name": "permission_reason_calendar_read", "value": "Calendar events are read to show the schedule the app requests." },
+    { "name": "permission_reason_calendar_write", "value": "Calendar events are created when the app adds an event." },
+    { "name": "permission_reason_print", "value": "Documents the app renders can be sent to the system print service." },
+    { "name": "permission_reason_internet", "value": "Internet access is used when the app loads network content or calls web services." }
   ]
 }

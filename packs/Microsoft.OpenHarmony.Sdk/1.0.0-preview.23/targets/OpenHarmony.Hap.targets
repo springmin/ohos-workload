@@ -40,8 +40,19 @@
     <OpenHarmonyCompileSdkVersion Condition=" '$(OpenHarmonyCompileSdkVersion)' == '' and '$(TargetPlatformVersion)' != '20.0' ">6.0.2.130</OpenHarmonyCompileSdkVersion>
     <OpenHarmonyHapDebug Condition=" '$(OpenHarmonyHapDebug)' == '' ">true</OpenHarmonyHapDebug>
     <OpenHarmonyAbi Condition=" '$(OpenHarmonyAbi)' == '' ">arm64-v8a</OpenHarmonyAbi>
-    <!-- Opt-in module.json requestPermissions: ';'/',' separated permission names (see the opt-in permissions section in the packaging doc). Empty (the default) leaves the generated module.json untouched. -->
+    <!-- Feature-driven module.json requestPermissions (see "Feature permissions" in the
+         packaging doc). OpenHarmonyFeatures is a ';'/',' separated list of feature ids (or
+         'all'); every selected feature declares its permission(s) with the reason resource and
+         the usedScene the platform requires. OpenHarmonyExtraPermissions stays for arbitrary raw
+         permission names (minimal entry, no reason/usedScene). OpenHarmonyPermissionsOptOut
+         lists request points the app deliberately does not declare;
+         OpenHarmonyRequireDeclaredRequestPoints upgrades the undeclared-request-point warning to
+         an error. All empty/false defaults keep the generated module.json byte-identical to the
+         raw-name behaviour for the same inputs. -->
     <OpenHarmonyExtraPermissions Condition=" '$(OpenHarmonyExtraPermissions)' == '' "></OpenHarmonyExtraPermissions>
+    <OpenHarmonyFeatures Condition=" '$(OpenHarmonyFeatures)' == '' "></OpenHarmonyFeatures>
+    <OpenHarmonyPermissionsOptOut Condition=" '$(OpenHarmonyPermissionsOptOut)' == '' "></OpenHarmonyPermissionsOptOut>
+    <OpenHarmonyRequireDeclaredRequestPoints Condition=" '$(OpenHarmonyRequireDeclaredRequestPoints)' == '' ">false</OpenHarmonyRequireDeclaredRequestPoints>
     <!-- Payload-in-libs (see "Payload in libs" in the packaging doc): stage the whole managed
          publish payload into libs/<abi>/ next to the host and write the .dotnet-payload.json
          marker, so the runtime starts in place from the signed bundle directory - the only
@@ -379,6 +390,240 @@
     </Task>
   </UsingTask>
 
+    <!-- Feature-driven requestPermissions resolution and the request-point/declaration
+       cross-check (see "Feature permissions" in the packaging doc). The task expands
+       OpenHarmonyFeatures through the _OpenHarmonyFeaturePermission table, merges
+       OpenHarmonyExtraPermissions, scans the shell sources for the permissions the shell can
+       request at runtime, and reports:
+         * an error when the shell requests a permission no feature/opt-out covers (the matrix
+           drifted), or when a selected feature id is unknown;
+         * an error when a selected feature's entry has no reason/usedScene;
+         * an error (strict mode) or a high-importance warning when a request point is not in the
+           declaration set, naming the feature to enable. -->
+  <UsingTask TaskName="OpenHarmonyResolvePermissions"
+             TaskFactory="RoslynCodeTaskFactory"
+             AssemblyFile="$(MSBuildToolsPath)/Microsoft.Build.Tasks.Core.dll">
+    <Task>
+      <Code Type="Class" Language="cs"><![CDATA[
+using System;
+using System.Collections.Generic;
+using System.IO;
+using System.Linq;
+using System.Text.RegularExpressions;
+using Microsoft.Build.Framework;
+using Microsoft.Build.Utilities;
+
+public class OpenHarmonyResolvePermissions : Task
+{
+    // A quoted permission literal in the shell sources is a request point (the shell only ever
+    // names a permission in code as a quoted literal; prose mentions are unquoted and ignored).
+    private static readonly Regex RequestPoint = new Regex("['\"](ohos\\.permission\\.[A-Za-z0-9_]+)['\"]", RegexOptions.Compiled);
+
+    [Required] public ITaskItem[] FeatureTable { get; set; }
+    public string Features { get; set; }
+    public string ExtraPermissions { get; set; }
+    public ITaskItem[] ShellSources { get; set; }
+    public string AbilityName { get; set; }
+    public string OptOut { get; set; }
+    public bool RequireDeclaredRequestPoints { get; set; }
+    [Output] public ITaskItem[] Permissions { get; set; }
+    [Output] public string RequestedPoints { get; set; }
+    [Output] public string UndeclaredPoints { get; set; }
+
+    private sealed class Entry
+    {
+        public string Name;
+        public string Feature;
+        public string GrantMode;
+        public string Reason;
+        public string When;
+    }
+
+    public override bool Execute()
+    {
+        var table = new List<Entry>();
+        foreach (var item in FeatureTable)
+        {
+            var entry = new Entry
+            {
+                Name = (item.ItemSpec ?? "").Trim(),
+                Feature = (item.GetMetadata("Feature") ?? "").Trim(),
+                GrantMode = (item.GetMetadata("GrantMode") ?? "").Trim(),
+                Reason = (item.GetMetadata("Reason") ?? "").Trim(),
+                When = (item.GetMetadata("UsedSceneWhen") ?? "").Trim(),
+            };
+            if (entry.Name.Length == 0 || entry.Feature.Length == 0)
+            {
+                Log.LogError("OpenHarmony permissions: a feature-table entry is missing its permission name or feature id");
+                return false;
+            }
+            table.Add(entry);
+        }
+        if (table.Count == 0)
+        {
+            Log.LogError("OpenHarmony permissions: the feature table is empty; the pack is corrupt");
+            return false;
+        }
+
+        var known = new HashSet<string>(table.Select(e => e.Feature), StringComparer.Ordinal);
+        var selected = Split(Features);
+        var unknown = selected.Where(s => s != "all" && !known.Contains(s)).Distinct().ToList();
+        if (unknown.Count > 0)
+        {
+            Log.LogError("OpenHarmony features: unknown feature id(s) '{0}'; known ids: {1} (use 'all' for every feature)",
+                string.Join(";", unknown), string.Join(";", known.OrderBy(f => f, StringComparer.Ordinal)));
+            return false;
+        }
+        if (selected.Contains("all"))
+        {
+            selected = known.ToList();
+        }
+
+        var optOut = new HashSet<string>(Split(OptOut), StringComparer.Ordinal);
+
+        // Declaration set: selected features first (table order), then raw extras that are not
+        // already covered. A raw extra that names a table permission inherits its metadata.
+        var declared = new List<Entry>();
+        var declaredNames = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var feature in selected)
+        {
+            foreach (var entry in table.Where(e => e.Feature == feature))
+            {
+                if (entry.Reason.Length == 0)
+                {
+                    Log.LogError("OpenHarmony permissions: feature '{0}' permission '{1}' has no reason resource; every declared user_grant permission needs one (see the feature table)",
+                        feature, entry.Name);
+                    return false;
+                }
+                if (entry.When != "inuse" && entry.When != "always")
+                {
+                    Log.LogError("OpenHarmony permissions: feature '{0}' permission '{1}' has usedScene when='{2}'; use 'inuse' or 'always'",
+                        feature, entry.Name, entry.When);
+                    return false;
+                }
+                if (declaredNames.Add(entry.Name))
+                {
+                    declared.Add(entry);
+                }
+            }
+        }
+        foreach (var name in Split(ExtraPermissions))
+        {
+            if (!declaredNames.Add(name))
+            {
+                continue;
+            }
+            var knownEntry = table.FirstOrDefault(e => e.Name == name);
+            if (knownEntry != null)
+            {
+                declared.Add(knownEntry);
+            }
+            else
+            {
+                // Raw escape hatch: the module.json entry keeps the historical minimal form, but
+                // it is flagged because a user_grant permission declared without a reason can be
+                // ignored by the platform.
+                Log.LogWarning("OpenHarmony permissions: raw permission '{0}' has no feature-table entry, so its module.json entry carries no reason/usedScene; prefer OpenHarmonyFeatures", name);
+                declared.Add(new Entry { Name = name, Reason = "", When = "" });
+            }
+        }
+
+        // Request-point scan over the shell sources (the shipped template by default).
+        var requested = new SortedSet<string>(StringComparer.Ordinal);
+        long scanned = 0;
+        if (ShellSources != null)
+        {
+            foreach (var source in ShellSources)
+            {
+                var path = source.ItemSpec;
+                if (string.IsNullOrEmpty(path) || !File.Exists(path))
+                {
+                    continue;
+                }
+                scanned++;
+                foreach (Match match in RequestPoint.Matches(File.ReadAllText(path)))
+                {
+                    requested.Add(match.Groups[1].Value);
+                }
+            }
+        }
+        RequestedPoints = string.Join(";", requested);
+        Log.LogMessage(MessageImportance.Low, "OpenHarmony permissions: scanned {0} shell source file(s), request points: {1}", scanned, RequestedPoints);
+
+        // The request-point manifest must stay covered by the feature table: a permission the
+        // shell requests that no feature declares is a matrix drift and fails the build.
+        var uncovered = requested.Where(p => !table.Any(e => e.Name == p) && !optOut.Contains(p)).ToList();
+        if (uncovered.Count > 0)
+        {
+            Log.LogError("OpenHarmony permissions: the shell requests permission(s) no feature declares: {0}. Add the permission to the _OpenHarmonyFeaturePermission table (or to OpenHarmonyPermissionsOptOut with a documented reason); the request-point manifest and the declaration set must stay in sync.",
+                string.Join(";", uncovered));
+            return false;
+        }
+
+        // Undeclared request points: the app has not enabled the matching feature. Strict mode
+        // fails the build; the default warns and names the feature to enable.
+        var undeclared = requested.Where(p => !declaredNames.Contains(p) && !optOut.Contains(p)).ToList();
+        UndeclaredPoints = string.Join(";", undeclared);
+        bool ok = true;
+        if (undeclared.Count > 0)
+        {
+            var message = string.Format(
+                "OpenHarmony permissions: the shipped shell can request permission(s) the app does not declare: {0}. Enable the matching feature with -p:OpenHarmonyFeatures=<feature> (see the feature matrix in docs/openharmony-hap-packaging.md) or list the permission in OpenHarmonyPermissionsOptOut when the app never exercises it. An undeclared request answers 'unavailable' at runtime.",
+                string.Join(";", undeclared));
+            if (RequireDeclaredRequestPoints)
+            {
+                Log.LogError(message);
+                ok = false;
+            }
+            else
+            {
+                Log.LogWarning(message);
+            }
+        }
+
+        Permissions = declared.Select(d =>
+        {
+            var item = new TaskItem(d.Name);
+            if (!string.IsNullOrEmpty(d.Reason))
+            {
+                item.SetMetadata("Reason", d.Reason);
+            }
+            if (!string.IsNullOrEmpty(d.When))
+            {
+                item.SetMetadata("UsedSceneWhen", d.When);
+                if (!string.IsNullOrEmpty(AbilityName))
+                {
+                    item.SetMetadata("UsedSceneAbilities", AbilityName);
+                }
+            }
+            return item;
+        }).ToArray();
+        Log.LogMessage(MessageImportance.Low, "OpenHarmony permissions: declared {0} permission(s) for features '{1}'", Permissions.Length, string.Join(";", selected));
+        return ok && !Log.HasLoggedErrors;
+    }
+
+    private static List<string> Split(string value)
+    {
+        var result = new List<string>();
+        if (string.IsNullOrEmpty(value))
+        {
+            return result;
+        }
+        foreach (var part in value.Replace(',', ';').Split(new[] { ';' }, StringSplitOptions.RemoveEmptyEntries))
+        {
+            var trimmed = part.Trim();
+            if (trimmed.Length > 0)
+            {
+                result.Add(trimmed);
+            }
+        }
+        return result;
+    }
+}
+      ]]></Code>
+    </Task>
+  </UsingTask>
+
     <!-- module.json generation (module.json is not valid JSON before the @PLACEHOLDER@ tokens
        are substituted, so the task lexes the template, substitutes with JSON string escaping and
        validates the result as JSON; see the task's own comments). It replaced the former
@@ -595,7 +840,45 @@ public class OpenHarmonyGenerateModuleJson : Task
                 {
                     fragment.Append(',');
                 }
-                fragment.Append("{\"name\":\"").Append(EscapeJsonString(ExtraPermissions[n].ItemSpec)).Append("\"}");
+                var permissionName = ExtraPermissions[n].ItemSpec;
+                fragment.Append("{\"name\":\"").Append(EscapeJsonString(permissionName)).Append('"');
+                var reason = (ExtraPermissions[n].GetMetadata("Reason") ?? "").Trim();
+                if (reason.Length > 0)
+                {
+                    fragment.Append(",\"reason\":\"").Append(EscapeJsonString(reason)).Append('"');
+                }
+                var when = (ExtraPermissions[n].GetMetadata("UsedSceneWhen") ?? "").Trim();
+                var abilities = (ExtraPermissions[n].GetMetadata("UsedSceneAbilities") ?? "").Trim();
+                if (when.Length > 0 || abilities.Length > 0)
+                {
+                    fragment.Append(",\"usedScene\":{");
+                    bool wroteMember = false;
+                    if (abilities.Length > 0)
+                    {
+                        fragment.Append("\"abilities\":[");
+                        var names = abilities.Split(new[] { ';' }, StringSplitOptions.RemoveEmptyEntries);
+                        for (int a = 0; a < names.Length; a++)
+                        {
+                            if (a > 0)
+                            {
+                                fragment.Append(',');
+                            }
+                            fragment.Append('"').Append(EscapeJsonString(names[a].Trim())).Append('"');
+                        }
+                        fragment.Append(']');
+                        wroteMember = true;
+                    }
+                    if (when.Length > 0)
+                    {
+                        if (wroteMember)
+                        {
+                            fragment.Append(',');
+                        }
+                        fragment.Append("\"when\":\"").Append(EscapeJsonString(when)).Append('"');
+                    }
+                    fragment.Append('}');
+                }
+                fragment.Append('}');
             }
             fragment.Append(']');
             int at = module.End - 1;   // before the module object's closing brace
@@ -1023,13 +1306,99 @@ public class OpenHarmonyGenerateModuleJson : Task
        the pack self-contained: consumers only need the OpenHarmony-enabled .NET SDK. -->
   <UsingTask TaskName="OpenHarmonyCodesign" AssemblyFile="$(MicrosoftNETBuildTasksAssembly)" />
 
+  <!-- Feature permissions (see "Feature permissions" in the packaging doc): the single feature
+       -> permission matrix, the request-point scan over the shell sources and the validation.
+       Runs before _OpenHarmonyStageHap so the generated module.json carries the resolved
+       requestPermissions and a drifted matrix fails the build instead of shipping silently. -->
+  <Target Name="_OpenHarmonyResolvePermissions"
+          Condition=" '$(OpenHarmonyHapPackage)' == 'true' and '$(TargetPlatformIdentifier)' == 'openharmony' ">
+    <PropertyGroup>
+      <_OpenHarmonyTemplatesDir>$(_OpenHarmonySdkPackDir)templates/</_OpenHarmonyTemplatesDir>
+    </PropertyGroup>
+    <ItemGroup>
+      <!-- Feature -> permission matrix. Feature is the id selected through OpenHarmonyFeatures;
+           GrantMode records the platform grant mode (user_grant entries need the reason);
+           Reason names a template string resource (templates/resources/base/element/string.json);
+           When is the usedScene value. -->
+      <_OpenHarmonyFeaturePermission Include="ohos.permission.ACCESS_BLUETOOTH">
+        <Feature>bluetooth</Feature>
+        <GrantMode>user_grant</GrantMode>
+        <Reason>$string:permission_reason_bluetooth</Reason>
+        <UsedSceneWhen>inuse</UsedSceneWhen>
+      </_OpenHarmonyFeaturePermission>
+      <_OpenHarmonyFeaturePermission Include="ohos.permission.APPROXIMATELY_LOCATION">
+        <Feature>location</Feature>
+        <GrantMode>user_grant</GrantMode>
+        <Reason>$string:permission_reason_location</Reason>
+        <UsedSceneWhen>inuse</UsedSceneWhen>
+      </_OpenHarmonyFeaturePermission>
+      <_OpenHarmonyFeaturePermission Include="ohos.permission.READ_PASTEBOARD">
+        <Feature>clipboard</Feature>
+        <GrantMode>user_grant</GrantMode>
+        <Reason>$string:permission_reason_clipboard</Reason>
+        <UsedSceneWhen>inuse</UsedSceneWhen>
+      </_OpenHarmonyFeaturePermission>
+      <_OpenHarmonyFeaturePermission Include="ohos.permission.READ_CONTACTS">
+        <Feature>contacts</Feature>
+        <GrantMode>user_grant</GrantMode>
+        <Reason>$string:permission_reason_contacts</Reason>
+        <UsedSceneWhen>inuse</UsedSceneWhen>
+      </_OpenHarmonyFeaturePermission>
+      <_OpenHarmonyFeaturePermission Include="ohos.permission.READ_CALENDAR">
+        <Feature>calendar-read</Feature>
+        <GrantMode>user_grant</GrantMode>
+        <Reason>$string:permission_reason_calendar_read</Reason>
+        <UsedSceneWhen>inuse</UsedSceneWhen>
+      </_OpenHarmonyFeaturePermission>
+      <_OpenHarmonyFeaturePermission Include="ohos.permission.READ_CALENDAR">
+        <Feature>calendar</Feature>
+        <GrantMode>user_grant</GrantMode>
+        <Reason>$string:permission_reason_calendar_read</Reason>
+        <UsedSceneWhen>inuse</UsedSceneWhen>
+      </_OpenHarmonyFeaturePermission>
+      <_OpenHarmonyFeaturePermission Include="ohos.permission.WRITE_CALENDAR">
+        <Feature>calendar</Feature>
+        <GrantMode>user_grant</GrantMode>
+        <Reason>$string:permission_reason_calendar_write</Reason>
+        <UsedSceneWhen>inuse</UsedSceneWhen>
+      </_OpenHarmonyFeaturePermission>
+      <_OpenHarmonyFeaturePermission Include="ohos.permission.PRINT">
+        <Feature>print</Feature>
+        <GrantMode>system_grant</GrantMode>
+        <Reason>$string:permission_reason_print</Reason>
+        <UsedSceneWhen>inuse</UsedSceneWhen>
+      </_OpenHarmonyFeaturePermission>
+      <_OpenHarmonyFeaturePermission Include="ohos.permission.INTERNET">
+        <Feature>network</Feature>
+        <GrantMode>system_grant</GrantMode>
+        <Reason>$string:permission_reason_internet</Reason>
+        <UsedSceneWhen>inuse</UsedSceneWhen>
+      </_OpenHarmonyFeaturePermission>
+      <!-- The request-point manifest: the shipped shell sources. They are scanned for quoted
+           ohos.permission.* literals; the declaration set must keep covering them. -->
+      <_OpenHarmonyShellSource Include="$(_OpenHarmonyTemplatesDir)ets/**/*.ets" />
+    </ItemGroup>
+    <OpenHarmonyResolvePermissions FeatureTable="@(_OpenHarmonyFeaturePermission)"
+                                   Features="$(OpenHarmonyFeatures)"
+                                   ExtraPermissions="$(OpenHarmonyExtraPermissions)"
+                                   ShellSources="@(_OpenHarmonyShellSource)"
+                                   AbilityName="$(OpenHarmonyAbilityName)"
+                                   OptOut="$(OpenHarmonyPermissionsOptOut)"
+                                   RequireDeclaredRequestPoints="$(OpenHarmonyRequireDeclaredRequestPoints)">
+      <Output TaskParameter="Permissions" ItemName="_OpenHarmonyModuleJsonPermission" />
+      <Output TaskParameter="RequestedPoints" PropertyName="_OpenHarmonyRequestedPermissions" />
+      <Output TaskParameter="UndeclaredPoints" PropertyName="_OpenHarmonyUndeclaredPermissions" />
+    </OpenHarmonyResolvePermissions>
+    <Message Importance="high" Text="OpenHarmony: permissions features='$(OpenHarmonyFeatures)' declared=@(_OpenHarmonyModuleJsonPermission->Count()) shellRequests='$(_OpenHarmonyRequestedPermissions)' undeclared='$(_OpenHarmonyUndeclaredPermissions)'" />
+  </Target>
+
   <!-- AfterTargets=Publish order: consumers can inject targets that must run after the SDK's
        publish copy and before the hap staging by listing them in OpenHarmonyAfterPublishDependsOn
        (e.g. a custom asset staging target). The staged libs are re-signed below, after the payload
        staging and before the zip, so the .codesign pass always covers the final libs/<abi>/ tree. -->
   <Target Name="_OpenHarmonyStageHap"
           AfterTargets="Publish"
-          DependsOnTargets="$(OpenHarmonyAfterPublishDependsOn);_OpenHarmonyDetectToolchain;_OpenHarmonyResolveHapStageDir;_OpenHarmonyStageBlazorAssets"
+          DependsOnTargets="$(OpenHarmonyAfterPublishDependsOn);_OpenHarmonyDetectToolchain;_OpenHarmonyResolveHapStageDir;_OpenHarmonyStageBlazorAssets;_OpenHarmonyResolvePermissions"
           Condition=" '$(OpenHarmonyHapPackage)' == 'true' and '$(TargetPlatformIdentifier)' == 'openharmony' ">
     <PropertyGroup>
       <_OpenHarmonyTemplatesDir>$(_OpenHarmonySdkPackDir)templates/</_OpenHarmonyTemplatesDir>
@@ -1058,16 +1427,10 @@ public class OpenHarmonyGenerateModuleJson : Task
       <_OpenHarmonyModuleJsonReplacement Include="DEBUG"><Value>$(OpenHarmonyHapDebug)</Value></_OpenHarmonyModuleJsonReplacement>
       <_OpenHarmonyModuleJsonReplacement Include="ABILITY_NAME"><Value>$(OpenHarmonyAbilityName)</Value></_OpenHarmonyModuleJsonReplacement>
     </ItemGroup>
-    <!-- Opt-in requestPermissions: inject only when OpenHarmonyExtraPermissions is set and
-         non-empty, so an unset property leaves module.json byte-identical. The list is split on
-         ';' and ',' with empty entries dropped (MSBuild trims each item). The minimal
-         {"name": "..."} form is used because usedScene/ability entries would need resources. -->
-    <PropertyGroup Condition=" '$(OpenHarmonyExtraPermissions)' != '' ">
-      <_OpenHarmonyNormalizedPermissions>$(OpenHarmonyExtraPermissions.Replace(',', ';'))</_OpenHarmonyNormalizedPermissions>
-    </PropertyGroup>
-    <ItemGroup Condition=" '$(OpenHarmonyExtraPermissions)' != '' ">
-      <_OpenHarmonyModuleJsonPermission Include="$([MSBuild]::Unescape('$(_OpenHarmonyNormalizedPermissions)'))" />
-    </ItemGroup>
+    <!-- requestPermissions: resolved by _OpenHarmonyResolvePermissions (a dependency of this
+         target) from OpenHarmonyFeatures/OpenHarmonyExtraPermissions, with the reason and
+         usedScene each entry needs; the resolve target also validated the request-point
+         manifest. -->
     <OpenHarmonyGenerateModuleJson TemplateFile="$(_OpenHarmonyTemplatesDir)module.json.template"
                                    OutputFile="$(_OpenHarmonyHapStageDir)module.json"
                                    Replacements="@(_OpenHarmonyModuleJsonReplacement)"
