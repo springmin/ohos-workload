@@ -5100,7 +5100,9 @@ if (!n29FreezeOk)
 // ---- PG2: packaging/host invariants (staged runtime libs, libc++, bridge, host guard) ----------
 // The "runtime natives ship only in the signed libs/<abi>/" increment relies on four invariants
 // that this section pins to the committed sources, so a regression fails this off-device run
-// instead of shipping a pack built from drifted files:
+// instead of shipping a pack built from drifted files (the packaging bodies live in the compiled
+// src/Microsoft.OpenHarmony.Tasks/ assembly; the targets import them via UsingTask and this
+// section checks both halves):
 //   * the preview.22/23/24 hap staging enumerates the publish payload's *.so files, validates the
 //     ELF magic, copies them into libs/<abi>/ (skipping the host and libc++_shared.so the SDK
 //     already staged) and exposes the copied set as the _OpenHarmonyStagedRuntimeLib item, with a
@@ -5121,6 +5123,15 @@ bool pg2StageOrderOk = true;
 bool pg2PackIdentical = true;
 string? pg2PackPath = null;
 string pg2PackFirst = string.Empty;
+// The staging and deterministic-zip bodies are compiled into the pack's
+// tools/Microsoft.OpenHarmony.Tasks.dll (task-assembly migration): their implementation strings
+// moved from OpenHarmony.Hap.targets into these committed sources, so the body assertions anchor
+// here while the loop keeps the targets'/invocation surface (UsingTask, items, parameters,
+// ordering, messages).
+string? pg2StageTaskPath = FindHostSource("src/Microsoft.OpenHarmony.Tasks/OpenHarmonyStageRuntimeLibs.cs");
+string pg2StageTask = pg2StageTaskPath is null ? string.Empty : File.ReadAllText(pg2StageTaskPath);
+string? pg2ZipTaskPath = FindHostSource("src/Microsoft.OpenHarmony.Tasks/OpenHarmonyDeterministicZip.cs");
+string pg2ZipTask = pg2ZipTaskPath is null ? string.Empty : File.ReadAllText(pg2ZipTaskPath);
 foreach (string pg2Version in pg2PackVersions)
 {
     string? pg2Path = FindHostSource($"packs/Microsoft.OpenHarmony.Sdk/{pg2Version}/targets/OpenHarmony.Hap.targets");
@@ -5143,11 +5154,12 @@ foreach (string pg2Version in pg2PackVersions)
         pg2Text.Contains("<Output TaskParameter=\"CopiedBytes\" PropertyName=\"_OpenHarmonyStagedRuntimeLibBytes\" />") &&
         pg2Text.Contains("<Error Condition=\" '$(_OpenHarmonyStagedRuntimeLibCount)' == '0' or '$(_OpenHarmonyStagedRuntimeLibCount)' == '' \"") &&
         pg2Text.Contains("no ELF runtime library (*.so) found in the publish payload");
-    pg2StageElfOk &= pg2Text.Contains("return magic[0] == 0x7F && magic[1] == (byte)'E' && magic[2] == (byte)'L' && magic[3] == (byte)'F';") &&
-        pg2Text.Contains("OpenHarmony runtime libs: skipping non-ELF");
-    pg2ZipOk &= pg2Text.Contains("<ExcludeFileNames ParameterType=\"System.String\" />") &&
-        pg2Text.Contains("if (exclude.Contains(System.IO.Path.GetFileName(file)))") &&
-        pg2Text.Contains("ExcludedCount++;") &&
+    pg2StageElfOk &= pg2StageTask.Contains("return magic[0] == 0x7F && magic[1] == (byte)'E' && magic[2] == (byte)'L' && magic[3] == (byte)'F';") &&
+        pg2StageTask.Contains("OpenHarmony runtime libs: skipping non-ELF");
+    pg2ZipOk &= pg2Text.Contains("<UsingTask TaskName=\"OpenHarmonyDeterministicZip\"") &&
+        pg2ZipTask.Contains("public string ExcludeFileNames { get; set; }") &&
+        pg2ZipTask.Contains("if (exclude.Contains(System.IO.Path.GetFileName(file)))") &&
+        pg2ZipTask.Contains("ExcludedCount++;") &&
         pg2Text.Contains("runtime native libraries that ship in libs/$(OpenHarmonyAbi)/ only");
     pg2StageOrderOk &= pg2StageAt >= 0 && pg2CodesignAt > pg2StageAt && pg2ZipAt > pg2CodesignAt &&
         pg2ExcludeAt > pg2ZipAt && pg2Text.Contains("excluded from dotnet.zip");
@@ -5206,15 +5218,19 @@ bool pg2BlazorOk = true;
 bool pg2FileWritesOk = true;
 bool pg2HookOk = true;
 string? pg2ContractsPath = null;
+// The module.json body (JSON literal handling and escaping) is in the compiled task sources;
+// the targets keep the UsingTask entry and the invocation parameters (task-assembly migration).
+string? pg2ModuleJsonTaskPath = FindHostSource("src/Microsoft.OpenHarmony.Tasks/OpenHarmonyGenerateModuleJson.cs");
+string pg2ModuleJsonTask = pg2ModuleJsonTaskPath is null ? string.Empty : File.ReadAllText(pg2ModuleJsonTaskPath);
 foreach (string pg2Version in pg2PackVersions)
 {
     string? pg2Path = FindHostSource($"packs/Microsoft.OpenHarmony.Sdk/{pg2Version}/targets/OpenHarmony.Hap.targets");
     pg2ContractsPath ??= pg2Path;
     string pg2Text = pg2Path is null ? string.Empty : File.ReadAllText(pg2Path);
     pg2ModuleJsonOk &= pg2Text.Contains("<UsingTask TaskName=\"OpenHarmonyGenerateModuleJson\"") &&
-        pg2Text.Contains("class OpenHarmonyGenerateModuleJson") &&
-        pg2Text.Contains("IsJsonLiteral") &&
-        pg2Text.Contains("EscapeJsonString") &&
+        pg2ModuleJsonTask.Contains("class OpenHarmonyGenerateModuleJson") &&
+        pg2ModuleJsonTask.Contains("IsJsonLiteral") &&
+        pg2ModuleJsonTask.Contains("EscapeJsonString") &&
         !pg2Text.Contains("<ReadLinesFromFile File=\"$(_OpenHarmonyTemplatesDir)module.json.template\">") &&
         pg2Text.Contains("<OpenHarmonyGenerateModuleJson TemplateFile=\"$(_OpenHarmonyTemplatesDir)module.json.template\"") &&
         pg2Text.Contains("ExtraPermissions=\"@(_OpenHarmonyModuleJsonPermission)\"");
@@ -5344,15 +5360,19 @@ if (!pg2ResolveLogOk)
 bool pg2MarkerTargetsOk = true;
 bool pg2MarkerShellOk = true;
 string? pg2MarkerPath = null;
+// The marker body is compiled into the pack's tools/ assembly; the targets keep MarkerFileName
+// and the invocation. The fragment assertions anchor on the committed task source.
+string? pg2MarkerTaskPath = FindHostSource("src/Microsoft.OpenHarmony.Tasks/OpenHarmonyWritePayloadMarker.cs");
+string pg2MarkerTask = pg2MarkerTaskPath is null ? string.Empty : File.ReadAllText(pg2MarkerTaskPath);
 foreach (string pg2Version in pg2PackVersions)
 {
     string? pg2TargetsPath = FindHostSource($"packs/Microsoft.OpenHarmony.Sdk/{pg2Version}/targets/OpenHarmony.Hap.targets");
     pg2MarkerPath ??= pg2TargetsPath;
     string pg2Targets = pg2TargetsPath is null ? string.Empty : File.ReadAllText(pg2TargetsPath);
     pg2MarkerTargetsOk &= pg2Targets.Contains("MarkerFileName=\".dotnet-payload.json\"") &&
-        pg2Targets.Contains("json.Append(\",\\\"payloadEntries\\\":\").Append(PayloadEntries);") &&
-        pg2Targets.Contains("json.Append(\",\\\"zipEntries\\\":\").Append(ZipEntries);") &&
-        pg2Targets.Contains("json.Append(\",\\\"zipSha256\\\":\\\"\").Append(zipSha).Append('\"');");
+        pg2MarkerTask.Contains("json.Append(\",\\\"payloadEntries\\\":\").Append(PayloadEntries);") &&
+        pg2MarkerTask.Contains("json.Append(\",\\\"zipEntries\\\":\").Append(ZipEntries);") &&
+        pg2MarkerTask.Contains("json.Append(\",\\\"zipSha256\\\":\\\"\").Append(zipSha).Append('\"');");
     foreach (string pg2ShellName in new[] { "EntryAbility.ets", "EntryAbility.ui.ets" })
     {
         string? pg2ShellPath = FindHostSource($"packs/Microsoft.OpenHarmony.Sdk/{pg2Version}/templates/ets/entryability/{pg2ShellName}");
