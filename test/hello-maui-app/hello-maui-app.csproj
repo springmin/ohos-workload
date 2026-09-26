@@ -37,6 +37,19 @@
          hyphens). Still overridable: -p:OpenHarmonyBundleName=... wins, and the pack's
          _OpenHarmonyValidateBundleName fails the build early on an illegal effective value. -->
     <OpenHarmonyBundleName Condition=" '$(OpenHarmonyBundleName)' == '' ">com.example.hellomauiapp</OpenHarmonyBundleName>
+    <!-- NativeAOT variant (AOT-MAUI). The marker is inferred from PublishAot so the documented
+         `dotnet publish -p:PublishAot=true` needs no extra property; -p:OpenHarmonyAotApp=true is
+         the short form and turns the AOT publish properties on itself. The variant compiles the
+         app to a native shared library (NativeLib=Shared) with its own openharmony_app_main
+         export (AotEntry.cs under OPENHARMONY_AOT) because the hosting assembly's export is the
+         JIT-only hostfxr route. The hap packaging targets consume the same marker to emit the
+         AOT hap variant (docs/openharmony-hap-packaging.md, "NativeAOT HAP variant"). -->
+    <OpenHarmonyAotApp Condition=" '$(OpenHarmonyAotApp)' == '' and '$(PublishAot)' == 'true' ">true</OpenHarmonyAotApp>
+    <PublishAot Condition=" '$(OpenHarmonyAotApp)' == 'true' ">true</PublishAot>
+    <NativeLib Condition=" '$(OpenHarmonyAotApp)' == 'true' and '$(NativeLib)' == '' ">Shared</NativeLib>
+  </PropertyGroup>
+  <PropertyGroup Condition=" '$(OpenHarmonyAotApp)' == 'true' ">
+    <DefineConstants>$(DefineConstants);OPENHARMONY_AOT</DefineConstants>
   </PropertyGroup>
   <ItemGroup>
     <!-- The Razor SDK publishes every *.json in the project (static-web-assets content rules),
