@@ -405,48 +405,65 @@ ARKTS_HARMONY_SDK_ROOT=<sdk root> \          # or DEVECO_SDK_HOME
 scripts/build-arkts-shell.sh
 ```
 
-The branch changes exactly three things: the SDK root comes from `ARKTS_HARMONY_SDK_ROOT` /
+The branch changes exactly four things: the SDK root comes from `ARKTS_HARMONY_SDK_ROOT` /
 `DEVECO_SDK_HOME` (must carry `<root>/default/openharmony/ets` and `<root>/default/hms/ets`, or the
-build fails with the property to set), `runtimeOS` becomes `HarmonyOS`, and `compatibleSdkVersion`
+build fails with the property to set), `runtimeOS` becomes `HarmonyOS`, `compatibleSdkVersion`
 defaults to `6.1.0(23)` (override with `ARKTS_COMPATIBLE_SDK_VERSION`) - the value the device-side
-DevEco build used to emit the accepted abc. `externalApiPaths` additionally exposes `hms/ets`, which
-is what lets the Share/Scan sinks compile against the real kit types. The abc header gate is
+DevEco build used to emit the accepted abc - and the UI variant additionally copies the Map
+overlay module `templates/ets/map/MapOverlay.ets` into the project (R2-3 2026-09-26). `externalApiPaths`
+additionally exposes `hms/ets`, which is what lets the Share/Scan sinks and the Map overlay
+compile against the real kit types. The abc header gate is
 unchanged: `ARKTS_MAX_BC_VERSION` stays `13.0.1.0` (the device runtime ceiling; the DevEco build at
 `6.1.0(23)` produced exactly `13.0.1.0`), so a HarmonyOS SDK whose es2abc emits a newer abc still
 fails here. On the default flavor the shell compiles the Share/Scan *probe* only: the specifier
 stays in a variable and the resolved module is cast to a local structural interface, so a device
 without the kit registers no sink and the managed side degrades (see the KIT-IMPL report in
-`runtime-ohos/docs/plans/2026-09-24-ohos-kit-gap-analysis.md`).
+`runtime-ohos/docs/plans/2026-09-24-ohos-kit-gap-analysis.md`). The Map overlay follows the same
+rule: the default flavor never copies `MapOverlay.ets`, the page's dynamic `./map/MapOverlay`
+import fails at runtime there, and the Map sink reports capability bit 1 = 0.
 
 The branch is scaffold-verified (`--scaffold-only` plus the selftest T14); a full build needs the
 HarmonyOS SDK present, which the current build host does not have.
 
 ### Kit feature probes and AGC prerequisites (Push / Account / Map)
 
-The second batch of HMS Kits (KIT-EXT2, 2026-09-25) rides the same split: each shell template
-carries a *probe* that compiles on the OpenHarmony SDK, and only a runtime that actually provides
-the kit registers the sink. A device without the kit (or the default OpenHarmony build) keeps the
-managed side's documented degradation - no throw, no silent guess:
+The second batch of HMS Kits (KIT-EXT2, 2026-09-25; Map overlay R2-3, 2026-09-26) rides the same
+split: each shell template carries a *probe* that compiles on the OpenHarmony SDK, and only a
+runtime that actually provides the kit registers the sink. A device without the kit (or the
+default OpenHarmony build) keeps the managed side's documented degradation - no throw, no silent
+guess:
 
 | Kit | Managed API | Shell sink / answer | Status map |
 |-----|-------------|---------------------|------------|
 | Push | `OpenHarmonyPush.GetTokenAsync` / `DeleteTokenAsync` / `IsSupported` | `pushService.getToken()` / `deleteToken()`; `host.notifyPushResult(id, op, rc, token)` | rc 0 = success (token for op 0), -1 = unavailable; positive rc is the Push Kit code, e.g. `1000900010` (AGC push service not enabled / signing profile mismatch), `1000900012` (entitlement not enabled), `1000900011` (no network), `1000900014` (device unsupported) |
 | Account | `OpenHarmonyAccount.GetQuickLoginAnonymousPhoneAsync` / `AuthorizeAsync(scopes)` / `IsSupported` | `createAuthorizationWithHuaweiIDRequest()` + `AuthenticationController.executeRequest()`; `host.notifyAccountResult(id, op, rc, payload)` | rc 0 = success (op 0 payload = anonymous phone, op 1 payload = `response.data.authorizationCode`), -1 = unavailable/state mismatch; positive rc is the Account Kit code, e.g. `1001502014` (scope not applied for/approved), `1001500001` (signing fingerprint mismatch), `1001502001` (no Huawei ID signed in), `1001502012` (user cancelled), `1001500003` (scope unsupported) |
-| Map | `OpenHarmonyMap.QueryCapabilitiesAsync` (reserved capability sink) / `IsSupported` | `@kit.MapKit` capability probe; `host.notifyMapResult(id, flags)`; bit 0 = kit resolved, bit 1 = MapComponent overlay implemented (0 today) | flags value, `null` when the sink is unregistered |
+| Map | `OpenHarmonyMap.QueryCapabilitiesAsync` / `IsSupported` / `IsOverlayAvailable` / `ShowAsync` / `HideAsync` / `CloseAsync` / `SetRegionAsync` / `AddMarkerAsync` / `Ready`/`MarkerClick`/`CameraIdle` | `@kit.MapKit` + `SystemCapability.Map.Core` probe, then the `MapComponent` overlay driven through `host.registerMapSink` / `host.notifyMapResult(id, op, code, payload)`; bit 0 = kit resolved, bit 1 = overlay module resolved (the harmony build) | flags value (0/1/3), `null` when the sink is unregistered; ops 0 probe / 1 create / 2 destroy / 3 show / 4 hide / 5 set region / 6 add marker, code 0 applied, -1 unavailable, -2 overlay refused; events with id 0 (1 ready, 2 marker click, 3 camera idle) |
 
-Host exports (all in the `host-exports.txt` contract): `ohos_host_push_{available,request,register_result,result}`,
-`ohos_host_account_{available,request,register_result,result}`, `ohos_host_map_{available,probe,register_result,result}`.
-Push and Account are asynchronous (the AGC call and the system authorization UI), Map is the
-reserved capability probe.
+Host exports (all in the `host-exports.txt` contract, 130 names): `ohos_host_push_{available,request,register_result,result}`,
+`ohos_host_account_{available,request,register_result,result}`, `ohos_host_map_{available,command,register_result,result}`
+(the R2-3 overlay folded the reserved probe into `ohos_host_map_command(id, op, args)`; the export
+count is unchanged because the overlay reuses the same four Map exports and one answer callback).
+Push and Account are asynchronous (the AGC call and the system authorization UI); the Map overlay
+commands are asynchronous in the same way (the shell answers when the op was dispatched).
 
 Map's map view is the ArkUI `MapComponent`, not a plain module API: a literal
 `import('@kit.MapKit')` is a hard ArkTS compile error on the OpenHarmony SDK and the component
-needs a compile-time declaration, so the current templates can only carry the runtime probe. The
-documented option (a) is a shell-side `MapComponent` overlay controlled by the managed side (the
-XComponent/ArkWeb pattern: create/show/hide/destroy + markers/camera ops forwarded to the
-`MapComponentController`); it can only be built in the `ARKTS_SDK_FLAVOR=harmony` branch and needs
-the AGC map service AppKey. Option (b) - managed capability discovery plus this documentation - is
-what is landed.
+needs a compile-time declaration. Both documented options are now landed: (b) managed capability
+discovery - `QueryCapabilitiesAsync`/`IsSupported` over the runtime probe - and (a) the
+shell-side `MapComponent` overlay. The overlay lives in the harmony-flavor-only template module
+`packs/Microsoft.OpenHarmony.Sdk/<ver>/templates/ets/map/MapOverlay.ets` (literal `@kit.MapKit`
+import, `MapComponent` builder mounted through a `NodeController`/`BuilderNode` in the page
+`Stack`); `pages/Index.ets` imports it dynamically through the variable specifier
+`'./map/MapOverlay'`, casts the resolved module to local structural interfaces, and mounts a
+`NodeContainer` only while the managed side created the overlay. The managed side drives it
+through `OpenHarmonyMap` (create/show/hide/destroy/region/marker plus the ready/marker-click/
+camera-idle events) and every call first checks the availability bits.
+
+Decision point: **the overlay needs the `ARKTS_SDK_FLAVOR=harmony` shell build plus the AGC map
+service AppKey** - the default OpenHarmony SDK build cannot compile the component declaration, and
+without the AppKey the map view fails to initialize (logged by `MapOverlay.ets`, no event fires).
+So a device/HAP built with the default flavor answers `IsOverlayAvailable=false` even when
+`IsSupported=true` (the kit itself resolved): the capability answer distinguishes the two.
 
 AGC / device prerequisites (all external to this repository; the KIT-GAP report
 `runtime-ohos/docs/plans/2026-09-24-ohos-kit-gap-analysis.md` tracks them):
@@ -459,13 +476,18 @@ AGC / device prerequisites (all external to this repository; the KIT-GAP report
 - **Account**: apply for the Huawei ID one-tap login permission
   (`quickLoginAnonymousPhone` scope) and reference the resulting scope in the authorization
   request; the anonymous phone is exchanged for the real number on the app's server.
-- **Map**: enable the map service in AGC and configure the AppKey; the overlay additionally needs
-  the `MapComponent` implementation described above.
+- **Map**: enable the map service in AGC and configure the AppKey (the harmony shell build plus a
+  matching bundle name/signing fingerprint); without it the `MapComponent` initialization fails
+  and no `Ready` event fires, so `IsOverlayAvailable` stays true (the shell has the overlay) while
+  no map is shown. Map data use is subject to the AGC map service terms.
 
 Verification without an HMS device: `test/maui-platform-verify` pins the shell probe/sink shape,
-the host/managed contract and the off-device degradation (`[verify] kit4/kit5/kit6`), while
-`scripts/build-arkts-shell.sh` keeps the abc at `13.0.1.0` and the source contract (no `@ohos.*`
-imports, variable kit specifiers) enforced.
+the overlay module and its flavor gate, the host/managed contract and the off-device degradation
+(`[verify] kit4/kit5/kit6/kit7`), while `scripts/build-arkts-shell.sh` keeps the abc at
+`13.0.1.0`, carries the `./map/MapOverlay` literal in the UI abc (the provenance gate) and enforces
+the source contract (no `@ohos.*` imports, variable kit specifiers). The host-side gate is
+`scripts/build-host.sh` (nm -D: all 130 `host-exports.txt` names present as plain symbols) plus
+`scripts/check-host-exports.py --cross-check`.
 
 ### Templates / abc sync strategy
 
@@ -493,11 +515,14 @@ explicit `-p:OpenHarmonyArktsModulesAbc=<file>` overrides both. The former
     packs' sources must be byte-identical (the fixture harness pins them too);
   - abc provenance: per variant the recorded size/sha256/abc version, the payload literals
     (`dotnet-payload`/`bundleCodeDir`/`payload-in-libs`/`dotnet.marker`) and the UI literals
-    (`ohos_dotnet_surface`/`ohos_dotnet_input`/`__hwvInvokeDotNet`, which the headless variant must
-    not carry), the recorded source hashes (a source edit without a rebuild fails), the absence of
-    `modules.shell.abc`, byte-identity across the three packs, and - when a dist dir is given - the
-    freshly built artifacts against the installed packs. `scripts/build-arkts-shell.sh` runs the
-    pack gate automatically after a build once both variants exist in `dist/ets`.
+    (`ohos_dotnet_surface`/`ohos_dotnet_input`/`__hwvInvokeDotNet`/`./map/MapOverlay`, which the
+    headless variant must not carry), the recorded source hashes (a source edit without a rebuild
+    fails), the absence of `modules.shell.abc`, byte-identity across the three packs, and - when a
+    dist dir is given - the freshly built artifacts against the installed packs.
+    `scripts/build-arkts-shell.sh` runs the pack gate automatically after a build once both
+    variants exist in `dist/ets`. The `./map/MapOverlay` literal is the page's dynamic overlay
+    import: it must survive in the UI abc (R2-3), while the overlay module itself is never part of
+    the default-flavor abc (only the harmony branch compiles it).
 - **HarmonyOS flavor**: the compiled abc is flavor-specific (the HarmonyOS es2abc/toolchain), so do
   not overwrite the checked-in OpenHarmony abc with it - the default packs must stay buildable
   without the HarmonyOS SDK. Build the flavor and pass the result to the packaging invocation, or
