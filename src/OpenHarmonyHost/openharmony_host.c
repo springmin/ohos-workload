@@ -776,6 +776,27 @@ static int OhosHostAotLibPath(char* dst, size_t dst_size, const char* app_dir, c
     return path_join(dst, dst_size, app_dir, lib_name);
 }
 
+// Builds the '\n'-separated openharmony_app_main payload (line 1 = application path, following
+// lines = arguments), the contract shared by the one-shot run_app route and the bridged
+// start_app route (R2-SHELL-EXT). Returns NULL when the allocation fails; the caller owns the
+// buffer.
+static char* OhosHostBuildAotPayload(const char* app_assembly_path, int argc, const char* const* argv) {
+    size_t payload_len = strlen(app_assembly_path) + 1;
+    for (int i = 0; i < argc; i++) {
+        payload_len += strlen(argv[i]) + 1;
+    }
+    char* payload = (char*)malloc(payload_len);
+    if (payload == NULL) {
+        return NULL;
+    }
+    char* cursor = payload;
+    cursor += sprintf(cursor, "%s", app_assembly_path);
+    for (int i = 0; i < argc; i++) {
+        cursor += sprintf(cursor, "\n%s", argv[i]);
+    }
+    return payload;
+}
+
 // AOT direct launch: dlopen the application's native library and call its own
 // [UnmanagedCallersOnly] openharmony_app_main export with the same payload contract the
 // hostfxr route uses (line 1 = application path, following lines = arguments). Returns 1 when
@@ -802,27 +823,35 @@ static int OhosHostTryRunAotApp(const char* tag, const char* app_dir, const char
         return 0;
     }
 
-    size_t payload_len = strlen(app_assembly_path) + 1;
-    for (int i = 0; i < argc; i++) {
-        payload_len += strlen(argv[i]) + 1;
-    }
-    char* payload = (char*)malloc(payload_len);
+    char* payload = OhosHostBuildAotPayload(app_assembly_path, argc, argv);
     if (payload == NULL) {
         dlclose(app_lib);
         return 0;
     }
-    char* cursor = payload;
-    cursor += sprintf(cursor, "%s", app_assembly_path);
-    for (int i = 0; i < argc; i++) {
-        cursor += sprintf(cursor, "\n%s", argv[i]);
-    }
 
-    OH_LOG_INFO(LOG_APP, "[openharmony-host] %{public}s: NativeAOT payload %{public}s", tag, lib_path);
+    OH_LOG_INFO(LOG_APP, "[openharmony-host] %{public}s: NativeAOT payload %{public}s aot=1", tag, lib_path);
     *exit_code = entry(payload);
     free(payload);
     // Deliberately no dlclose: the AOT runtime may have started threads or registered atexit
     // work in the library, and the process is a one-shot launch from here.
     return 1;
+}
+
+// Bridged AOT launch state (R2-SHELL-EXT): the entry point start_app resolved from the
+// application library plus the payload built for it. The handle owns the struct; the app-thread
+// trampoline below frees both after the entry returns (the library itself stays loaded, same
+// process-lifetime rationale as OhosHostTryRunAotApp).
+typedef struct OhosAotLaunch {
+    int (*entry)(const char*);
+    char* payload;
+} OhosAotLaunch;
+
+static int OhosAotLaunchRun(void* arg) {
+    OhosAotLaunch* launch = (OhosAotLaunch*)arg;
+    int exit_code = launch->entry(launch->payload);
+    free(launch->payload);
+    free(launch);
+    return exit_code;
 }
 
 int ohos_host_run_app(const char* app_dir, const char* app_assembly_file, int argc, const char* const* argv) {
@@ -1243,51 +1272,88 @@ int ohos_host_start_app(const char* app_dir, const char* app_assembly_file,
     // status line land in the app sandbox; a pending context adopted below is re-applied.
     OhosHostApplyExecMemoryPolicy("start_app", effective_app_dir, context_json);
 
-    // Bridged start_app needs the managed bridge (register_bridge calls from the hosting
-    // assembly), which a NativeAOT app only provides through its own export and handle
-    // management; until that route is designed (FIX-INTEROP #2 documents the one-shot AOT
-    // route in run_app), fail with an explicit message instead of a generic hostfxr error.
+    // --- NativeAOT payload detection (R2-SHELL-EXT) ---------------------------
+    // A NativeAOT payload ships <app_dir>/lib<assembly stem>.so and no hostfxr; the same
+    // dlopen + openharmony_app_main surface run_app uses serves the bridged launch too, on the
+    // app thread, so the managed bridge registration and the lifecycle/node pushes keep working
+    // (the AOT app calls ohos_host_register_bridge itself, like the JIT hosting assembly). The
+    // probe is synchronous: a missing library, a library that does not load or one without the
+    // export is not an AOT payload, logs aot=0 and the hostfxr route below serves the JIT
+    // payload unchanged. The resolved library stays loaded for the process lifetime.
+    int aot = 0;
+    void* aot_lib = NULL;
+    int (*aot_entry)(const char*) = NULL;
+    char* aot_payload = NULL;
     char aot_lib_path[4096];
-    if (OhosHostAotLibPath(aot_lib_path, sizeof(aot_lib_path), effective_app_dir, app_assembly_file) == 0 &&
-        access(aot_lib_path, F_OK) == 0) {
-        OH_LOG_ERROR(LOG_APP,
-                     "[openharmony-host] start_app: NativeAOT payload %{public}s requires the one-shot "
-                     "run_app route; bridged start_app supports JIT payloads only", aot_lib_path);
-        OhosHostEndLaunch();
-        return -1;
+    if (OhosHostAotLibPath(aot_lib_path, sizeof(aot_lib_path), effective_app_dir, app_assembly_file) == 0) {
+        aot_lib = dlopen(aot_lib_path, RTLD_NOW | RTLD_LOCAL);
+        if (aot_lib != NULL) {
+            aot_entry = (int (*)(const char*))dlsym(aot_lib, "openharmony_app_main");
+            if (aot_entry == NULL) {
+                OH_LOG_WARN(LOG_APP,
+                            "[openharmony-host] start_app: %{public}s has no openharmony_app_main export; "
+                            "aot=0, falling back to the hostfxr route", aot_lib_path);
+                dlclose(aot_lib);
+                aot_lib = NULL;
+            } else {
+                aot_payload = OhosHostBuildAotPayload(app_assembly_path, 0, NULL);
+                if (aot_payload == NULL) {
+                    OH_LOG_WARN(LOG_APP,
+                                "[openharmony-host] start_app: AOT payload allocation failed for %{public}s; "
+                                "aot=0, falling back to the hostfxr route", aot_lib_path);
+                    dlclose(aot_lib);
+                    aot_lib = NULL;
+                    aot_entry = NULL;
+                } else {
+                    aot = 1;
+                    OH_LOG_INFO(LOG_APP, "[openharmony-host] start_app: NativeAOT payload %{public}s aot=1",
+                                aot_lib_path);
+                }
+            }
+        }
     }
+    OH_LOG_INFO(LOG_APP, "[openharmony-host] start_app: aot=%{public}d dir=%{public}s",
+                aot, effective_app_dir != NULL ? effective_app_dir : "(null)");
+    fprintf(stderr, "[openharmony-host] start_app: aot=%d dir=%s\n", aot,
+            effective_app_dir != NULL ? effective_app_dir : "(null)");
 
-    void* hostfxr = OhosHostOpenHostfxr("start_app", effective_app_dir, hostfxr_path, sizeof(hostfxr_path));
-    if (hostfxr == NULL) {
-        OH_LOG_ERROR(LOG_APP, "[openharmony-host] start_app: could not load libhostfxr.so (last tried %{public}s)",
-                     hostfxr_path);
-        OhosHostEndLaunch();
-        return -1;
-    }
-    OH_LOG_INFO(LOG_APP, "[openharmony-host] start_app: loaded %{public}s", hostfxr_path);
+    void* hostfxr = NULL;
+    void* ctx = NULL;
+    ohos_initialize_for_dotnet_command_line_fn initialize = NULL;
+    ohos_close_fn close_ctx = NULL;
+    ohos_run_app_fn run_app = NULL;
+    if (!aot) {
+        hostfxr = OhosHostOpenHostfxr("start_app", effective_app_dir, hostfxr_path, sizeof(hostfxr_path));
+        if (hostfxr == NULL) {
+            OH_LOG_ERROR(LOG_APP, "[openharmony-host] start_app: could not load libhostfxr.so (last tried %{public}s)",
+                         hostfxr_path);
+            OhosHostEndLaunch();
+            return -1;
+        }
+        OH_LOG_INFO(LOG_APP, "[openharmony-host] start_app: loaded %{public}s", hostfxr_path);
 
-    ohos_set_error_writer_fn set_error_writer = (ohos_set_error_writer_fn)dlsym(hostfxr, "hostfxr_set_error_writer");
-    if (set_error_writer != NULL) {
-        set_error_writer(ohos_error_writer);
-    }
+        ohos_set_error_writer_fn set_error_writer = (ohos_set_error_writer_fn)dlsym(hostfxr, "hostfxr_set_error_writer");
+        if (set_error_writer != NULL) {
+            set_error_writer(ohos_error_writer);
+        }
 
-    ohos_initialize_for_dotnet_command_line_fn initialize =
-        (ohos_initialize_for_dotnet_command_line_fn)dlsym(hostfxr, "hostfxr_initialize_for_dotnet_command_line");
-    ohos_close_fn close_ctx = (ohos_close_fn)dlsym(hostfxr, "hostfxr_close");
-    ohos_run_app_fn run_app = (ohos_run_app_fn)dlsym(hostfxr, "hostfxr_run_app");
-    if (initialize == NULL || close_ctx == NULL || run_app == NULL) {
-        // Same contract as run_app: the dlopen handle exists but an entry point is missing, so
-        // the log names every export the bridged launch needs.
-        fprintf(stderr, "[openharmony-host] hostfxr symbols missing in %s (initialize=%s close=%s run_app=%s)\n",
-                hostfxr_path, initialize == NULL ? "missing" : "ok",
-                close_ctx == NULL ? "missing" : "ok", run_app == NULL ? "missing" : "ok");
-        OH_LOG_ERROR(LOG_APP,
-                     "[openharmony-host] start_app: hostfxr exports missing in %{public}s "
-                     "(initialize_for_dotnet_command_line=%{public}s close=%{public}s run_app=%{public}s)",
-                     hostfxr_path, initialize == NULL ? "missing" : "ok",
-                     close_ctx == NULL ? "missing" : "ok", run_app == NULL ? "missing" : "ok");
-        OhosHostEndLaunch();
-        return -1;
+        initialize = (ohos_initialize_for_dotnet_command_line_fn)dlsym(hostfxr, "hostfxr_initialize_for_dotnet_command_line");
+        close_ctx = (ohos_close_fn)dlsym(hostfxr, "hostfxr_close");
+        run_app = (ohos_run_app_fn)dlsym(hostfxr, "hostfxr_run_app");
+        if (initialize == NULL || close_ctx == NULL || run_app == NULL) {
+            // Same contract as run_app: the dlopen handle exists but an entry point is missing, so
+            // the log names every export the bridged launch needs.
+            fprintf(stderr, "[openharmony-host] hostfxr symbols missing in %s (initialize=%s close=%s run_app=%s)\n",
+                    hostfxr_path, initialize == NULL ? "missing" : "ok",
+                    close_ctx == NULL ? "missing" : "ok", run_app == NULL ? "missing" : "ok");
+            OH_LOG_ERROR(LOG_APP,
+                         "[openharmony-host] start_app: hostfxr exports missing in %{public}s "
+                         "(initialize_for_dotnet_command_line=%{public}s close=%{public}s run_app=%{public}s)",
+                         hostfxr_path, initialize == NULL ? "missing" : "ok",
+                         close_ctx == NULL ? "missing" : "ok", run_app == NULL ? "missing" : "ok");
+            OhosHostEndLaunch();
+            return -1;
+        }
     }
 
     // A context published before this call (ohos_host_set_app_context while no handle
@@ -1306,26 +1372,49 @@ int ohos_host_start_app(const char* app_dir, const char* app_assembly_file,
     params.host_path = effective_app_dir;
     params.dotnet_root = getenv("DOTNET_ROOT");
 
-    void* ctx = NULL;
-    int rc = initialize(1, argv, &params, &ctx);
-    if (rc != 0 || ctx == NULL) {
-        fprintf(stderr, "[openharmony-host] initialize_for_dotnet_command_line rc=0x%x\n", rc);
-        OH_LOG_ERROR(LOG_APP, "[openharmony-host] start_app: hostfxr command-line init rc=0x%{public}x dir=%{public}s",
-                     (unsigned)rc, effective_app_dir != NULL ? effective_app_dir : "(null)");
-        OhosHostEndLaunch();
-        return -1;
+    if (!aot) {
+        int rc = initialize(1, argv, &params, &ctx);
+        if (rc != 0 || ctx == NULL) {
+            fprintf(stderr, "[openharmony-host] initialize_for_dotnet_command_line rc=0x%x\n", rc);
+            OH_LOG_ERROR(LOG_APP, "[openharmony-host] start_app: hostfxr command-line init rc=0x%{public}x dir=%{public}s",
+                         (unsigned)rc, effective_app_dir != NULL ? effective_app_dir : "(null)");
+            OhosHostEndLaunch();
+            return -1;
+        }
     }
 
     OhosHostAppHandle* handle = (OhosHostAppHandle*)calloc(1, sizeof(OhosHostAppHandle));
     if (handle == NULL) {
-        close_ctx(ctx);
+        if (aot) {
+            dlclose(aot_lib);
+            free(aot_payload);
+        } else {
+            close_ctx(ctx);
+        }
         OhosHostEndLaunch();
         return -1;
     }
-    handle->hostfxr = hostfxr;
-    handle->ctx = ctx;
-    handle->run_app = run_app;
-    handle->close_ctx = close_ctx;
+    if (aot) {
+        // The bridged AOT handle runs the resolved export through the trampoline; the app
+        // thread (or the run-sync path) frees the launch state once the entry returns.
+        OhosAotLaunch* launch = (OhosAotLaunch*)malloc(sizeof(OhosAotLaunch));
+        if (launch == NULL) {
+            free(aot_payload);
+            dlclose(aot_lib);
+            free(handle);
+            OhosHostEndLaunch();
+            return -1;
+        }
+        launch->entry = aot_entry;
+        launch->payload = aot_payload;
+        handle->run_app = OhosAotLaunchRun;
+        handle->ctx = launch;
+    } else {
+        handle->hostfxr = hostfxr;
+        handle->ctx = ctx;
+        handle->run_app = run_app;
+        handle->close_ctx = close_ctx;
+    }
     (void)args_json;
     // Resolve the pending context and publish the handle under one lock: a set_app_context
     // that ran before this critical section left its snapshot in the pending slot and is
@@ -1402,7 +1491,7 @@ int ohos_host_start_app(const char* app_dir, const char* app_assembly_file,
         }
         // Hand the handle out first so the shell can push events while the app runs.
         *out_handle = handle;
-        handle->exit_code = run_app(ctx);
+        handle->exit_code = run_app(handle->ctx);
         handle->joined = 1;
         return 0;
     }
@@ -1437,7 +1526,18 @@ int ohos_host_start_app(const char* app_dir, const char* app_assembly_file,
         handle->context_json = NULL;
         OhosHostFreeRetiredContexts(handle);
         pthread_mutex_unlock(&g_context_mutex);
-        close_ctx(ctx);
+        if (aot) {
+            // The trampoline never ran: free the launch state the handle owned. The library
+            // itself is left loaded (a later start_app may retry with the same payload).
+            OhosAotLaunch* launch = (OhosAotLaunch*)handle->ctx;
+            if (launch != NULL) {
+                free(launch->payload);
+                free(launch);
+                handle->ctx = NULL;
+            }
+        } else if (close_ctx != NULL) {
+            close_ctx(ctx);
+        }
         free(context_json);
         free(handle);
         return -1;

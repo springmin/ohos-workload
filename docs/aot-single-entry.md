@@ -32,16 +32,20 @@ public static int AotEntry(IntPtr payload)
 }
 ```
 
-The host calls this on the shell's launch thread (one-shot `run_app`). The payload encoding is
-identical to the JIT route, so the shell keeps passing `MyApp.dll` as the assembly file name and
-the host derives `libMyApp.so` from it. `openharmony-arm64` is the RuntimeIdentifier; publishing
-a MAUI app as a shared library also produces the platform slice archive handled by the app
-packaging targets.
+The host calls this on the shell's launch thread (one-shot `run_app`) or on the bridged app
+thread (`start_app`, R2-SHELL-EXT). The payload encoding is identical in both modes and to the
+JIT route, so the shell keeps passing `MyApp.dll` as the assembly file name and the host derives
+`libMyApp.so` from it. `openharmony-arm64` is the RuntimeIdentifier; publishing a MAUI app as a
+shared library also produces the platform slice archive handled by the app packaging targets.
 
-Bridged mode (`ohos_host_start_app`) stays JIT-only for now: the bridge needs the hosting
-assembly's `register_bridge` handshake and handle management, which the AOT app would have to
-reimplement. `start_app` detects a NativeAOT payload (`lib<stem>.so` present) and fails with an
-explicit message instead of a generic hostfxr error; wiring the bridged AOT route is a follow-up.
+Bridged mode (`ohos_host_start_app`) serves the same AOT surface: it probes
+`<app_dir>/lib<stem>.so` (dlopen + `dlsym("openharmony_app_main")`) before touching hostfxr and,
+when the export resolves, runs it on the bridged app thread with the same handle lifecycle as a
+JIT payload, so `ohos_host_register_bridge` and the lifecycle/node/context pushes work unchanged
+(the app calls `register_bridge` from its own `Program.Run`, exactly like the JIT hosting
+assembly). The decision is logged as `aot=1` (or `aot=0` when the probe falls through: a missing
+library, a library without the export, or an allocation failure) and a fall-through keeps the
+hostfxr route, so JIT payloads are unaffected. `run_app` keeps its one-shot probe.
 
 ## Publishing (host-side cross compile)
 
@@ -66,7 +70,10 @@ The ilc/runtime pack for `openharmony-arm64` must be available (see the runtime 
   (`OhosHostTryRunAotApp` + payload encoding) on a device/emulator with the OpenHarmony NDK,
   with no .NET AOT toolchain involved:
   `test_host <dir> FakeApp.dll a b` must log `run_app: NativeAOT payload .../libFakeApp.so`
-  and the recorded payload must be `.../FakeApp.dll\na\nb`.
+  and the recorded payload must be `.../FakeApp.dll\na\nb`. The bridged route rides the same
+  driver: `test_host --bridge <dir> FakeApp.dll '{}'` must log
+  `start_app: aot=1` and record `.../FakeApp.dll` with the same exit code. `run-local-smoke.sh`
+  runs both against a locally built host library.
 * `run-smoke.sh` attempts the real `dotnet publish -r openharmony-arm64 -p:PublishAot=true`
   of `smoke-lib/` (the same `[UnmanagedCallersOnly]` shape) and falls back to a documented
   SKIP when the AOT packs are missing.
@@ -75,8 +82,10 @@ The ilc/runtime pack for `openharmony-arm64` must be available (see the runtime 
 
 * A JIT payload keeps the previous route: the AOT probe only opens
   `<app_dir>/lib<stem>.so`, and a library that does not export `openharmony_app_main` logs a
-  warning and falls through to hostfxr (never blocks a JIT launch).
+  warning and falls through to hostfxr (never blocks a JIT launch). The bridged route shares
+  the probe and falls back the same way (`aot=0`).
 * The AOT library is deliberately not `dlclose`d: the runtime may own process-lifetime state and
-  `run_app` is a one-shot launch.
+  a launch is one-shot from the entry's point of view (the bridged handle only frees the payload
+  and launch bookkeeping, never the library).
 * `scripts/check-host-exports.py` + `build-host.sh` keep the export surface of the host itself
   covered; the AOT probe uses `dlsym` on the *application* library, not on the host.

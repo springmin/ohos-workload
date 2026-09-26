@@ -3508,33 +3508,44 @@ if (!a7NapiOk)
 // A7b: the native entry's guard (g_launch_in_progress under g_context_mutex) rejects a second
 // start before anything is allocated, is set and cleared under the lock and cleared again when
 // the handle is published; every failure path before that runs OhosHostEndLaunch(), including
-// the payload-in-libs app_dir resolution failure, plus the NativeAOT start_app rejection when
-// that path is present (six calls on the JIT-only source, seven once the AOT rejection landed;
-// all before the handle publish).
+// the payload-in-libs app_dir resolution failure and the NativeAOT bridged route's launch-state
+// allocation (R2-SHELL-EXT). The expected count follows the AOT route's presence: six calls on
+// a JIT-only source, seven once the route landed; all before the publish. The same pin keeps
+// the route itself covered: start_app probes what <app_dir>/lib<stem>.so contains (dlopen +
+// openharmony_app_main), logs the aot=0|1 decision in both log forms, falls back to the hostfxr
+// route on a missing library/symbol/allocation and runs the resolved export through the
+// trampoline (aot=1) on the app thread, while run_app keeps its one-shot probe.
 int a7NativeAt = cSource?.IndexOf("int ohos_host_start_app(const char* app_dir,", StringComparison.Ordinal) ?? -1;
 int a7NativeLockAt = a7NativeAt < 0 ? -1 : cSource!.IndexOf("pthread_mutex_lock(&g_context_mutex);", a7NativeAt, StringComparison.Ordinal);
 int a7NativeRejectAt = a7NativeLockAt < 0 ? -1 : cSource!.IndexOf("if (g_app != NULL || g_launch_in_progress) {", a7NativeLockAt, StringComparison.Ordinal);
 int a7NativeSetAt = a7NativeRejectAt < 0 ? -1 : cSource!.IndexOf("g_launch_in_progress = 1;", a7NativeRejectAt, StringComparison.Ordinal);
 int a7NativeUnlockAt = a7NativeSetAt < 0 ? -1 : cSource!.IndexOf("pthread_mutex_unlock(&g_context_mutex);", a7NativeSetAt, StringComparison.Ordinal);
 int a7EndLaunchCalls = CountOccurrences(cSource, "OhosHostEndLaunch();");
-// The AOT rejection of a payload in start_app adds one more failure path that must release the
-// launch guard; the expected count follows the source so the JIT-only and AOT-capable trees are
-// both checked exactly.
-bool a7AotRejection = cSource?.Contains("bridged start_app supports JIT payloads only") == true;
-int a7ExpectedEndLaunchCalls = a7AotRejection ? 7 : 6;
+// The AOT bridged route in start_app adds one more failure path that must release the launch
+// guard; the expected count follows the source so the JIT-only and AOT-capable trees are both
+// checked exactly.
+bool a7AotRoute = cSource?.Contains("static int OhosAotLaunchRun(void* arg)") == true &&
+    cSource.Contains("handle->run_app = OhosAotLaunchRun;");
+int a7ExpectedEndLaunchCalls = a7AotRoute ? 7 : 6;
+bool a7AotProbe = cSource?.Contains("OhosHostBuildAotPayload(app_assembly_path, 0, NULL)") == true &&
+    cSource.Contains("dlsym(aot_lib, \"openharmony_app_main\")") &&
+    cSource.Contains("\"aot=0, falling back to the hostfxr route\"") &&
+    cSource.Contains("[openharmony-host] start_app: aot=%{public}d dir=%{public}s") &&
+    cSource.Contains("fprintf(stderr, \"[openharmony-host] start_app: aot=%d dir=%s\\n\"") &&
+    cSource.Contains("handle->exit_code = run_app(handle->ctx);");
 bool a7NativeOk = cSource?.Contains("static int g_launch_in_progress = 0;") == true &&
     a7NativeRejectAt > a7NativeLockAt && a7NativeSetAt > a7NativeRejectAt && a7NativeUnlockAt > a7NativeSetAt &&
     cSource.Contains("g_app = handle;\n    g_launch_in_progress = 0;") &&
     cSource.Contains("static void OhosHostEndLaunch(void) {\n    pthread_mutex_lock(&g_context_mutex);\n    g_launch_in_progress = 0;") &&
-    a7EndLaunchCalls == a7ExpectedEndLaunchCalls;
-Console.WriteLine($"[verify] a7 native launch guard guard={cSource?.Contains("static int g_launch_in_progress = 0;") == true} rejectSecond={a7NativeRejectAt > a7NativeLockAt && a7NativeSetAt > a7NativeRejectAt} setUnderLock={a7NativeSetAt > a7NativeRejectAt && a7NativeUnlockAt > a7NativeSetAt} clearedOnPublish={cSource?.Contains("g_app = handle;\n    g_launch_in_progress = 0;") == true} failurePaths={a7EndLaunchCalls}/{a7ExpectedEndLaunchCalls} source='{cSourcePath ?? "<missing>"}' assert={a7NativeOk}");
+    a7EndLaunchCalls == a7ExpectedEndLaunchCalls && a7AotRoute && a7AotProbe;
+Console.WriteLine($"[verify] a7 native launch guard guard={cSource?.Contains("static int g_launch_in_progress = 0;") == true} rejectSecond={a7NativeRejectAt > a7NativeLockAt && a7NativeSetAt > a7NativeRejectAt} setUnderLock={a7NativeSetAt > a7NativeRejectAt && a7NativeUnlockAt > a7NativeSetAt} clearedOnPublish={cSource?.Contains("g_app = handle;\n    g_launch_in_progress = 0;") == true} failurePaths={a7EndLaunchCalls}/{a7ExpectedEndLaunchCalls} aotRoute={a7AotRoute} aotProbe={a7AotProbe} source='{cSourcePath ?? "<missing>"}' assert={a7NativeOk}");
 if (!a7NativeOk)
 {
     throw new InvalidOperationException(
         $"the A7 native start_app launch guard contract drifted: guard={cSource?.Contains("static int g_launch_in_progress = 0;") == true} " +
         $"reject={a7NativeRejectAt > a7NativeLockAt} set={a7NativeSetAt > a7NativeRejectAt} " +
         $"clearOnPublish={cSource?.Contains("g_app = handle;\n    g_launch_in_progress = 0;") == true} " +
-        $"endLaunchCalls={a7EndLaunchCalls} source={cSourcePath ?? "<missing>"}");
+        $"endLaunchCalls={a7EndLaunchCalls} aotRoute={a7AotRoute} aotProbe={a7AotProbe} source={cSourcePath ?? "<missing>"}");
 }
 
 // A8: both IME text paths truncate through ImeUtf8PrefixLength, which backs off over UTF-8

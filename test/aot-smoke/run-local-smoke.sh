@@ -1,14 +1,17 @@
 #!/bin/sh
-# Local NativeAOT single-entry smoke for a running OpenHarmony host (no device, no hdc):
-# the host's AOT route (docs/aot-single-entry.md) is exercised in-process with the
-# hand-written stand-in application library, exactly like the device instructions in
-# fake-aot-app.c, but using the local host's own libopenharmonyhost.so.
+# Local NativeAOT smoke for a running OpenHarmony host (no device, no hdc): both host AOT
+# routes (docs/aot-single-entry.md) are exercised in-process with the hand-written stand-in
+# application library, exactly like the device instructions in fake-aot-app.c, but using the
+# local host's own libopenharmonyhost.so.
 #
 #   clang --target=aarch64-linux-ohos  ->  libFakeApp.so + test_host
 #   binary-sign-tool -selfSign 1       ->  both binaries (see "codesign" below)
 #   LD_LIBRARY_PATH=<pack host dir>    ->  ./test_host <dir> FakeApp.dll alpha beta
 #   asserts: stdout "managed exit code = 7", payload-received.txt ==
 #            "<dir>/FakeApp.dll\nalpha\nbeta"
+#   LD_LIBRARY_PATH=<pack host dir>    ->  ./test_host --bridge <dir> FakeApp.dll '{}'
+#   asserts (R2-SHELL-EXT): the same payload file == "<dir>/FakeApp.dll" (no args on the
+#            bridged command line) and the same exit code, through start_app's aot=1 route
 #
 # codesign: an OpenHarmony kernel refuses an unsigned ELF twice - execve returns EACCES
 # ("Permission denied" from the shell) and dlopen of a library without a .codesign section
@@ -68,11 +71,25 @@ rc=$?
 
 expected="$(printf '%s/FakeApp.dll\nalpha\nbeta' "$OUT")"
 actual="$(cat payload-received.txt 2>/dev/null)"
+if [ "$rc" != "7" ] || [ "$actual" != "$expected" ]; then
+    echo "[FAIL] one-shot rc=$rc (expected 7); payload-received.txt:" >&2
+    printf '%s\n' "$actual" >&2
+    exit 1
+fi
+echo "[PASS] NativeAOT single-entry route: payload and exit code match (libFakeApp.so)"
+
+echo "== run the host's bridged AOT route (start_app) =="
+rm -f payload-received.txt
+timeout 60 ./test_host --bridge "$OUT" FakeApp.dll '{}'
+rc=$?
+
+expected="$(printf '%s/FakeApp.dll' "$OUT")"
+actual="$(cat payload-received.txt 2>/dev/null)"
 if [ "$rc" = "7" ] && [ "$actual" = "$expected" ]; then
-    echo "[PASS] NativeAOT single-entry route: payload and exit code match (libFakeApp.so)"
+    echo "[PASS] NativeAOT bridged route (start_app): payload and exit code match (aot=1)"
     [ "${KEEP:-0}" = "1" ] || rm -rf "$OUT"
     exit 0
 fi
-echo "[FAIL] rc=$rc (expected 7); payload-received.txt:" >&2
+echo "[FAIL] bridged rc=$rc (expected 7); payload-received.txt:" >&2
 printf '%s\n' "$actual" >&2
 exit 1
