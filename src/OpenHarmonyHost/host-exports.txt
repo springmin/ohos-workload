@@ -76,7 +76,7 @@ ohos_host_location_start
 ohos_host_location_stop
 ohos_host_measure_text
 ohos_host_map_available
-ohos_host_map_probe
+ohos_host_map_command
 ohos_host_map_register_result
 ohos_host_map_result
 ohos_host_menu_begin

@@ -224,18 +224,29 @@ int ohos_host_account_request(int request_id, int op, const char* scopes);
 void ohos_host_account_register_result(void* callback);
 void ohos_host_account_result(int request_id, int op, int code, const char* payload);
 
-/// Map (reserved sink, KIT-EXT2 design): MapComponent is an ArkUI component whose declaration
-/// only exists in the HarmonyOS SDK flavor, so the OpenHarmony shell can only probe the runtime
-/// module. ohos_host_map_available() reports whether the capability sink is registered;
-/// ohos_host_map_probe(request_id) asks for the capability bits, answered through
-/// host.notifyMapResult -> ohos_host_map_result: bit 0 = @kit.MapKit resolved in the shell
-/// runtime, bit 1 = a MapComponent overlay is implemented by the shell (0 in the current
-/// templates; the overlay needs the ARKTS_SDK_FLAVOR=harmony build). The managed callback is
-/// registered with ohos_host_map_register_result.
+/// Map (KIT-EXT2 capability probe + R2-3 overlay): MapComponent is an ArkUI component whose
+/// declaration only exists in the HarmonyOS SDK flavor, so the shell compiles the overlay module
+/// (templates/ets/map/MapOverlay.ets) only in the ARKTS_SDK_FLAVOR=harmony build and reports
+/// whether it is there through the capability bits. ohos_host_map_available() reports whether the
+/// Map sink is registered (the kit resolved in the shell runtime, so commands can be answered at
+/// all); ohos_host_map_command(request_id, op, args) queues one command and the shell answers
+/// through host.notifyMapResult -> ohos_host_map_result:
+///   op 0 probe        - code 0, payload = flags as text (bit 0 = @kit.MapKit resolved, bit 1 =
+///                       the overlay module resolved in this shell build)
+///   op 1 create       - args = JSON {"latitude","longitude","zoom"} initial region ("" = the
+///                       documented demo default); creates the overlay and shows it
+///   op 2 destroy      - releases the overlay (idempotent)
+///   op 3 show / op 4 hide - visibility toggle of an existing overlay
+///   op 5 set region   - args = JSON {"latitude","longitude","zoom"}
+///   op 6 add marker   - args = JSON {"id","latitude","longitude","title"}
+/// Answers carry code 0 (applied), -1 (no kit/overlay or unknown op) or -2 (the overlay call
+/// failed). Unsolicited overlay events arrive with request_id 0: op 1 map ready, op 2 marker
+/// click (payload = marker id), op 3 camera idle (payload = "latitude\tlongitude\tzoom"). The
+/// managed callback is registered with ohos_host_map_register_result.
 int ohos_host_map_available(void);
-int ohos_host_map_probe(int request_id);
+int ohos_host_map_command(int request_id, int op, const char* args);
 void ohos_host_map_register_result(void* callback);
-void ohos_host_map_result(int request_id, int flags);
+void ohos_host_map_result(int request_id, int op, int code, const char* payload);
 
 /// Raw HAP resources: the managed side (maui-ohos OpenHarmonyFileSystem) asks for one file
 /// shipped raw in the HAP (resources/rawfile/**) through ohos_host_raw_file_request; the

@@ -1294,22 +1294,26 @@ napi_value NotifyScanResult(napi_env env, napi_callback_info info) {
     return undefined;
 }
 
-// HMS Kits (Push/Account/Map; KIT-EXT2 2026-09-25). Same shape as Share/Scan: each sink exists
-// only when the ArkTS shell's runtime provides the kit, so the default OpenHarmony SDK build
-// registers none, every export answers "unavailable" and the managed side keeps its documented
-// degradation. Push and Account are asynchronous (the user may be shown UI / the AGC call may
-// take time), so they follow the TTS/Scan shape: the managed side queues a request id, the
-// shell answers through host.notifyPushResult/host.notifyAccountResult. Map is the reserved
-// capability sink (MapComponent is an ArkUI component and needs the HarmonyOS flavor build).
+// HMS Kits (Push/Account/Map; KIT-EXT2 2026-09-25; Map overlay R2-3 2026-09-26). Same shape as
+// Share/Scan: each sink exists only when the ArkTS shell's runtime provides the kit, so the
+// default OpenHarmony SDK build registers none, every export answers "unavailable" and the
+// managed side keeps its documented degradation. Push and Account are asynchronous (the user may
+// be shown UI / the AGC call may take time), so they follow the TTS/Scan shape: the managed side
+// queues a request id, the shell answers through host.notifyPushResult/host.notifyAccountResult.
+// Map: op 0 is the capability probe (bit 0 = @kit.MapKit resolved, bit 1 = the shell's overlay
+// module resolved, which needs the HarmonyOS flavor build); ops 1..6 drive the optional
+// MapComponent overlay (create/destroy/show/hide/set region/add marker) and the shell also pushes
+// unsolicited overlay events with request id 0 (ready / marker click / camera idle). All Map
+// answers and events travel through host.notifyMapResult, so the export set stays at four.
 //
 // Push: op 0 getToken (rc 0 + token), op 1 deleteToken (rc 0). rc -1 = unavailable, a positive
 // rc = the Push Kit BusinessError code (1000900010/1000900012, ...). Account: op 0 quick-login
 // anonymous phone, op 1 authorize the '\n'-separated scopes (rc 0 + payload, -1 unavailable or
-// state mismatch, positive = the Account Kit BusinessError code). Map: rc = the capability
-// flags (bit 0 = @kit.MapKit resolved, bit 1 = MapComponent overlay implemented = 0 here).
+// state mismatch, positive = the Account Kit BusinessError code). Map: see the header
+// documentation for the op/answer map.
 static std::atomic<void (*)(int, int, int, const char*)> g_push_result_listener{nullptr};
 static std::atomic<void (*)(int, int, int, const char*)> g_account_result_listener{nullptr};
-static std::atomic<void (*)(int, int)> g_map_result_listener{nullptr};
+static std::atomic<void (*)(int, int, int, const char*)> g_map_result_listener{nullptr};
 
 // Called from managed code (P/Invoke): 1 when the shell registered the Push sink. The managed
 // OpenHarmonyPush.IsSupported probe must not trigger a token request just to answer.
@@ -1440,53 +1444,70 @@ napi_value NotifyAccountResult(napi_env env, napi_callback_info info) {
     return undefined;
 }
 
-// Called from managed code (P/Invoke): 1 when the shell registered the Map capability sink.
+// Called from managed code (P/Invoke): 1 when the shell registered the Map sink.
 extern "C" int ohos_host_map_available(void) {
     return g_map_sink.tsfn != nullptr ? 1 : 0;
 }
 
-// Called from managed code (P/Invoke): queues one capability probe. 0 queued, -1 when the sink
-// is unregistered.
-extern "C" int ohos_host_map_probe(int request_id) {
-    return HostCxxBoundary("map probe", [&] {
+// Called from managed code (P/Invoke): queues one Map command (op + JSON args; see the header
+// for the op map). 0 queued, -1 when the sink is unregistered or the args string exceeds the
+// control-string cap.
+extern "C" int ohos_host_map_command(int request_id, int op, const char* args) {
+    return HostCxxBoundary("map command", [&] {
+        if (args != nullptr && !ControlStringFits(args, "map_args")) {
+            return -1;
+        }
         SinkCall* call = new SinkCall();
         call->AddInt(request_id);
+        call->AddInt(op);
+        call->AddString(args != nullptr ? args : "", kMaxControlBytes);
         return HostSinkPost(g_map_sink, call) ? 0 : -1;
     });
 }
 
-// The managed side registers the callback that completes a pending map probe.
+// The managed side registers the callback that completes a pending map command and receives the
+// unsolicited overlay events (request_id 0).
 extern "C" void ohos_host_map_register_result(void* callback) {
     HostListenerStore(g_map_result_listener, callback);
 }
 
-// Called by the NAPI notify below: hands the capability bits back to managed code.
-extern "C" void ohos_host_map_result(int request_id, int flags) {
+// Called by the NAPI notify below: hands one answer/event back to managed code. payload is ""
+// for a non-zero code (answers) and for the ready event.
+extern "C" void ohos_host_map_result(int request_id, int op, int code, const char* payload) {
     auto listener = HostListenerLoad(g_map_result_listener);
     if (listener != nullptr) {
-        listener(request_id, flags);
+        listener(request_id, op, code, payload != nullptr ? payload : "");
     }
 }
 
-// ArkTS calls host.registerMapSink(fn) when the Map Kit probe succeeded (reserved sink).
+// ArkTS calls host.registerMapSink(fn) when the Map Kit probe succeeded.
 napi_value RegisterMapSink(napi_env env, napi_callback_info info) {
     return HostSinkRegisterFromArgs(env, info, g_map_sink);
 }
 
-// ArkTS calls host.notifyMapResult(requestId, flags) when the capability probe finished.
+// ArkTS calls host.notifyMapResult(requestId, op, code, payload) when a command finished or the
+// overlay raised an event (requestId 0).
 napi_value NotifyMapResult(napi_env env, napi_callback_info info) {
-    size_t argc = 2;
-    napi_value argv[2] = {nullptr, nullptr};
+    size_t argc = 4;
+    napi_value argv[4] = {nullptr, nullptr, nullptr, nullptr};
     napi_get_cb_info(env, info, &argc, argv, nullptr, nullptr);
     int requestId = 0;
-    int flags = 0;
+    int op = 0;
+    int code = -1;
+    std::string payload;
     if (argc >= 1) {
         napi_get_value_int32(env, argv[0], &requestId);
     }
     if (argc >= 2) {
-        napi_get_value_int32(env, argv[1], &flags);
+        napi_get_value_int32(env, argv[1], &op);
     }
-    ohos_host_map_result(requestId, flags);
+    if (argc >= 3) {
+        napi_get_value_int32(env, argv[2], &code);
+    }
+    if (argc >= 4) {
+        payload = GetStringArg(env, argv[3]);
+    }
+    ohos_host_map_result(requestId, op, code, payload.c_str());
     napi_value undefined = nullptr;
     napi_get_undefined(env, &undefined);
     return undefined;
