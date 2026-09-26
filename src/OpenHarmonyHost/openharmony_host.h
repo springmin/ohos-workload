@@ -192,6 +192,51 @@ int ohos_host_scan_request(int request_id);
 void ohos_host_scan_register_result(void* callback);
 void ohos_host_scan_result(int request_id, int code, const char* value);
 
+/// HMS Kits (Push/Account/Map; KIT-EXT2 2026-09-25): the second batch of kit sinks the ArkTS
+/// shell registers only when its runtime provides @kit.PushKit / @kit.AccountKit / @kit.MapKit.
+/// On the default OpenHarmony SDK shell none is registered, every call answers "unavailable"
+/// and the managed side (maui-ohos OpenHarmonyPush/OpenHarmonyAccount/OpenHarmonyMap) keeps its
+/// documented degradation.
+///
+/// Push: ohos_host_push_available() reports whether the sink is registered (the managed
+/// OpenHarmonyPush.IsSupported probe). ohos_host_push_request(request_id, op) queues the call
+/// (op 0 getToken, 1 deleteToken); the shell answers through host.notifyPushResult ->
+/// ohos_host_push_result with rc 0 (token payload for op 0), -1 (unavailable or a non-positive
+/// kit code) or the Push Kit BusinessError code (1000900010 AGC configuration/signature,
+/// 1000900012 the push entitlement is not enabled, ...). The managed callback is registered
+/// with ohos_host_push_register_result.
+int ohos_host_push_available(void);
+int ohos_host_push_request(int request_id, int op);
+void ohos_host_push_register_result(void* callback);
+void ohos_host_push_result(int request_id, int op, int code, const char* token);
+
+/// Account: ohos_host_account_available() reports whether the sink is registered. An
+/// ohos_host_account_request(request_id, op, scopes) queues the authorization call: op 0 asks
+/// for the quick-login anonymous phone (quickLoginAnonymousPhone scope), op 1 authorizes the
+/// '\n'-separated scopes from the managed side. The shell answers through
+/// host.notifyAccountResult -> ohos_host_account_result with rc 0 (payload = anonymous phone
+/// for op 0 or authorization code for op 1, either may be empty), -1 (unavailable or a state
+/// mismatch) or the Account Kit BusinessError code (1001502014 the quick-login scope is not
+/// approved, 1001500001 the signing fingerprint does not match, 1001502012 user cancelled,
+/// ...). The managed callback is registered with ohos_host_account_register_result.
+int ohos_host_account_available(void);
+int ohos_host_account_request(int request_id, int op, const char* scopes);
+void ohos_host_account_register_result(void* callback);
+void ohos_host_account_result(int request_id, int op, int code, const char* payload);
+
+/// Map (reserved sink, KIT-EXT2 design): MapComponent is an ArkUI component whose declaration
+/// only exists in the HarmonyOS SDK flavor, so the OpenHarmony shell can only probe the runtime
+/// module. ohos_host_map_available() reports whether the capability sink is registered;
+/// ohos_host_map_probe(request_id) asks for the capability bits, answered through
+/// host.notifyMapResult -> ohos_host_map_result: bit 0 = @kit.MapKit resolved in the shell
+/// runtime, bit 1 = a MapComponent overlay is implemented by the shell (0 in the current
+/// templates; the overlay needs the ARKTS_SDK_FLAVOR=harmony build). The managed callback is
+/// registered with ohos_host_map_register_result.
+int ohos_host_map_available(void);
+int ohos_host_map_probe(int request_id);
+void ohos_host_map_register_result(void* callback);
+void ohos_host_map_result(int request_id, int flags);
+
 /// Raw HAP resources: the managed side (maui-ohos OpenHarmonyFileSystem) asks for one file
 /// shipped raw in the HAP (resources/rawfile/**) through ohos_host_raw_file_request; the
 /// ArkTS shell's registerRawFileSink handler reads it with resourceManager and answers through
