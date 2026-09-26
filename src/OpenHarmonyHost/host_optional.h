@@ -71,6 +71,8 @@ typedef struct {
     InputMethod_ErrorCode (*InputMethodController_Attach)(InputMethod_TextEditorProxy *proxy,
                                                           InputMethod_AttachOptions *options,
                                                           InputMethod_InputMethodProxy **out);
+    InputMethod_ErrorCode (*InputMethodController_Detach)(InputMethod_InputMethodProxy *proxy);
+    void (*TextEditorProxy_Destroy)(InputMethod_TextEditorProxy *proxy);
     InputMethod_ErrorCode (*InputMethodProxy_ShowKeyboard)(InputMethod_InputMethodProxy *proxy);
     InputMethod_ErrorCode (*InputMethodProxy_HideKeyboard)(InputMethod_InputMethodProxy *proxy);
     bool available;
@@ -119,6 +121,7 @@ typedef struct {
 
 typedef struct {
     Location_RequestConfig *(*CreateRequestConfig)(void);
+    void (*DestroyRequestConfig)(Location_RequestConfig *config);
     void (*RequestConfigSetCallback)(Location_RequestConfig *config,
                                      Location_InfoCallback callback, void *userData);
     Location_ResultCode (*StartLocating)(const Location_RequestConfig *config);
@@ -283,6 +286,23 @@ static inline InputMethod_ErrorCode ohos_host_optional_ime_controller_attach(
         return (InputMethod_ErrorCode)-1;
     }
     return g_ohos_host_optional.ime.InputMethodController_Attach(proxy, options, out);
+}
+
+static inline InputMethod_ErrorCode ohos_host_optional_ime_controller_detach(
+    InputMethod_InputMethodProxy *proxy) {
+    ohos_host_optional_ensure();
+    if (g_ohos_host_optional.ime.InputMethodController_Detach == NULL) {
+        return (InputMethod_ErrorCode)-1;
+    }
+    return g_ohos_host_optional.ime.InputMethodController_Detach(proxy);
+}
+
+static inline void ohos_host_optional_ime_text_editor_proxy_destroy(
+    InputMethod_TextEditorProxy *proxy) {
+    ohos_host_optional_ensure();
+    if (g_ohos_host_optional.ime.TextEditorProxy_Destroy != NULL) {
+        g_ohos_host_optional.ime.TextEditorProxy_Destroy(proxy);
+    }
 }
 
 static inline InputMethod_ErrorCode ohos_host_optional_ime_proxy_show_keyboard(
@@ -557,6 +577,14 @@ static inline Location_RequestConfig *ohos_host_optional_location_create_request
     return g_ohos_host_optional.location.CreateRequestConfig();
 }
 
+static inline void ohos_host_optional_location_destroy_request_config(
+    Location_RequestConfig *config) {
+    ohos_host_optional_ensure();
+    if (g_ohos_host_optional.location.DestroyRequestConfig != NULL) {
+        g_ohos_host_optional.location.DestroyRequestConfig(config);
+    }
+}
+
 static inline void ohos_host_optional_location_request_config_set_callback(
     Location_RequestConfig *config, Location_InfoCallback callback, void *userData) {
     ohos_host_optional_ensure();
@@ -739,9 +767,11 @@ static inline void ohos_host_optional_pixelmap_image_info_release(OH_Pixelmap_Im
     ohos_host_optional_ime_text_editor_proxy_set_delete_backward_func
 #define OH_TextEditorProxy_SetGetTextConfigFunc \
     ohos_host_optional_ime_text_editor_proxy_set_get_text_config_func
+#define OH_TextEditorProxy_Destroy ohos_host_optional_ime_text_editor_proxy_destroy
 #define OH_AttachOptions_Create ohos_host_optional_ime_attach_options_create
 #define OH_AttachOptions_Destroy ohos_host_optional_ime_attach_options_destroy
 #define OH_InputMethodController_Attach ohos_host_optional_ime_controller_attach
+#define OH_InputMethodController_Detach ohos_host_optional_ime_controller_detach
 #define OH_InputMethodProxy_ShowKeyboard ohos_host_optional_ime_proxy_show_keyboard
 #define OH_InputMethodProxy_HideKeyboard ohos_host_optional_ime_proxy_hide_keyboard
 
@@ -775,6 +805,7 @@ static inline void ohos_host_optional_pixelmap_image_info_release(OH_Pixelmap_Im
 #define OH_SensorEvent_GetTimestamp ohos_host_optional_sensor_event_get_timestamp
 
 #define OH_Location_CreateRequestConfig ohos_host_optional_location_create_request_config
+#define OH_Location_DestroyRequestConfig ohos_host_optional_location_destroy_request_config
 #define OH_LocationRequestConfig_SetCallback \
     ohos_host_optional_location_request_config_set_callback
 #define OH_Location_StartLocating ohos_host_optional_location_start_locating

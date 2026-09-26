@@ -1025,6 +1025,11 @@ struct OhosHostAppHandle {
     char* context_json;
     OhosRetiredContext* retired_contexts;
     void* node_content;
+    // Identity of the NodeContent the shell handed over. A page re-entry publishes a new
+    // ArkUI NodeContent while the managed side still holds the previous one; the setter logs
+    // the replacement so the rebind is visible in the device log, and the accessibility
+    // provider uses the same identity to re-add its CUSTOM node to the new content.
+    void* node_content_identity;
     void (*bridge_lifecycle)(int);
     void (*bridge_node)(void*);
     void (*bridge_surface)(void*, int, int, int);
@@ -1357,6 +1362,7 @@ int ohos_host_start_app(const char* app_dir, const char* app_assembly_file,
     if (g_pending_node_content != NULL) {
         handle->node_content = g_pending_node_content;
         g_pending_node_content = NULL;
+        handle->node_content_identity = handle->node_content;
     }
     // A bridge registered before this handle existed is bound atomically with the publish, so
     // a racing notify sees the real callbacks and never queues an event behind a registration
@@ -1516,9 +1522,40 @@ static char* g_bundle_version = NULL;
 static char* g_bundle_build = NULL;
 static char* g_bundle_name = NULL;
 
-// Replaces one field. A replaced string is deliberately not freed: the getters return the
-// stored pointer and a managed reader may still be copying it while a re-publish lands. The
-// shell publishes once per page, so the bounded leak (a few bytes) is the safe failure mode.
+// The getters hand out a copy in per-thread storage instead of the stored pointer, so a
+// re-publish (a page re-entry calls setBundleInfo again) can free the replaced string under
+// the mutex without invalidating a reader that is still copying it. The three fields live in
+// one per-thread set so the three getters can be used together; the storage hangs off a
+// pthread key (freed on thread exit) like the accessibility copies, for dlopen'ed-library
+// portability (no __thread/emutls relocations). A thread that cannot have copies gets "".
+#define OHOS_BUNDLE_FIELD_COUNT 3
+
+typedef struct OhosBundleCopySet {
+    char* fields[OHOS_BUNDLE_FIELD_COUNT];
+    size_t sizes[OHOS_BUNDLE_FIELD_COUNT];
+} OhosBundleCopySet;
+
+static pthread_key_t g_bundle_copy_key;
+static pthread_once_t g_bundle_copy_once = PTHREAD_ONCE_INIT;
+static int g_bundle_copy_key_ready = 0;
+
+static void OhosBundleCopySetDestroy(void* value) {
+    OhosBundleCopySet* set = (OhosBundleCopySet*)value;
+    if (set == NULL) {
+        return;
+    }
+    for (int i = 0; i < OHOS_BUNDLE_FIELD_COUNT; i++) {
+        free(set->fields[i]);
+    }
+    free(set);
+}
+
+static void OhosBundleCopyKeyInit(void) {
+    g_bundle_copy_key_ready = pthread_key_create(&g_bundle_copy_key, OhosBundleCopySetDestroy) == 0;
+}
+
+// Replaces one field and frees the string it replaces (the readers copy under the same mutex,
+// so no reader can hold the old pointer any more). Caller does not hold the mutex.
 static void OhosHostStoreBundleField(char** slot, const char* value) {
     char* copy = NULL;
     if (value != NULL && value[0] != '\0') {
@@ -1528,6 +1565,7 @@ static void OhosHostStoreBundleField(char** slot, const char* value) {
         }
     }
     pthread_mutex_lock(&g_bundle_info_mutex);
+    free(*slot);
     *slot = copy;
     pthread_mutex_unlock(&g_bundle_info_mutex);
 }
@@ -1544,11 +1582,41 @@ int ohos_host_set_bundle_info(const char* version, const char* build, const char
     return 0;
 }
 
+// Copies the named field into the calling thread's set and returns that stable pointer ("" 
+// when the field is unset or the per-thread copy cannot be made). The stored string is read
+// and copied under the mutex, so the store path may free a replaced value in place.
 static const char* OhosHostReadBundleField(char** slot) {
+    pthread_once(&g_bundle_copy_once, OhosBundleCopyKeyInit);
+    int index = slot == &g_bundle_version ? 0 : (slot == &g_bundle_build ? 1 : 2);
+    const char* result = "";
     pthread_mutex_lock(&g_bundle_info_mutex);
     const char* value = *slot != NULL ? *slot : "";
+    if (value[0] != '\0' && g_bundle_copy_key_ready) {
+        OhosBundleCopySet* set = (OhosBundleCopySet*)pthread_getspecific(g_bundle_copy_key);
+        if (set == NULL) {
+            set = (OhosBundleCopySet*)calloc(1, sizeof(OhosBundleCopySet));
+            if (set != NULL && pthread_setspecific(g_bundle_copy_key, set) != 0) {
+                free(set);
+                set = NULL;
+            }
+        }
+        if (set != NULL) {
+            size_t length = strlen(value) + 1;
+            if (set->sizes[index] < length) {
+                char* grown = (char*)realloc(set->fields[index], length);
+                if (grown != NULL) {
+                    set->fields[index] = grown;
+                    set->sizes[index] = length;
+                }
+            }
+            if (set->fields[index] != NULL && set->sizes[index] >= length) {
+                memcpy(set->fields[index], value, length);
+                result = set->fields[index];
+            }
+        }
+    }
     pthread_mutex_unlock(&g_bundle_info_mutex);
-    return value;
+    return result;
 }
 
 const char* ohos_host_get_bundle_version(void) {
@@ -1790,6 +1858,39 @@ static void OhosHostPresentCopyRows(void* dst_ptr, size_t dst_stride, const void
     }
 }
 
+// Pairs one RequestBuffer with exactly one FlushBuffer on every exit path: the constructor
+// requests, the destructor flushes, so a frame that cannot be filled (a failed mapping, a
+// missing handle) still returns the buffer to the graphics stack. The mapping half of the same
+// ownership is OhosHostPresentMapAcquire, whose key (window, generation, fd, size) plus the
+// slot-owned dup keep a stale mapping from matching a reused fd.
+class OhosPresentFrame {
+public:
+    OhosPresentFrame(OHNativeWindow* window, bool request) : window_(window) {
+        if (request &&
+            OH_NativeWindow_NativeWindowRequestBuffer(window_, &buffer_, &fence_) != 0) {
+            buffer_ = nullptr;
+        }
+    }
+    ~OhosPresentFrame() {
+        if (buffer_ != nullptr) {
+            Region region = { NULL, 0 };
+            OH_NativeWindow_NativeWindowFlushBuffer(window_, buffer_, fence_, region);
+        }
+    }
+    OhosPresentFrame(const OhosPresentFrame&) = delete;
+    OhosPresentFrame& operator=(const OhosPresentFrame&) = delete;
+    bool valid() const { return buffer_ != nullptr; }
+    OHNativeWindowBuffer* buffer() const { return buffer_; }
+    BufferHandle* handle() const {
+        return buffer_ != nullptr ? OH_NativeWindow_GetBufferHandleFromNative(buffer_) : nullptr;
+    }
+
+private:
+    OHNativeWindow* window_ = nullptr;
+    OHNativeWindowBuffer* buffer_ = nullptr;
+    int fence_ = -1;
+};
+
 // Draws a frame into the XComponent surface. mode 0 = RGBA gradient (first frame proof),
 // mode 1 = solid colour (managed request). Returns 0 on success.
 static int OhosDrawFrame(void* window, int width, int height, int mode, unsigned int argb) {
@@ -1805,13 +1906,12 @@ static int OhosDrawFrame(void* window, int width, int height, int mode, unsigned
     }
     OHNativeWindow* native_window = (OHNativeWindow*)window;
 
-    int fence = -1;
-    OHNativeWindowBuffer* buffer = NULL;
-    if (OH_NativeWindow_NativeWindowRequestBuffer(native_window, &buffer, &fence) != 0 || buffer == NULL) {
+    OhosPresentFrame frame(native_window, true);
+    if (!frame.valid()) {
         fprintf(stderr, "[openharmony-host] surface: request buffer failed\n");
         return -1;
     }
-    BufferHandle* handle = OH_NativeWindow_GetBufferHandleFromNative(buffer);
+    BufferHandle* handle = frame.handle();
     if (handle != NULL) {
         // Served from the presentation cache (see above): the slot owns a dup of the fd, so the
         // graphics stack may close its own descriptor without invalidating the mapping, and a
@@ -1833,8 +1933,7 @@ static int OhosDrawFrame(void* window, int width, int height, int mode, unsigned
             }
         }
     }
-    Region region = { NULL, 0 };
-    OH_NativeWindow_NativeWindowFlushBuffer(native_window, buffer, fence, region);
+    // frame's destructor flushes the requested buffer exactly once.
     fprintf(stderr, "[openharmony-host] surface: frame drawn (mode=%d %dx%d)\n", mode, width, height);
     fflush(stderr);
     return 0;
@@ -1980,6 +2079,11 @@ int ohos_host_location_stop(void) {
         return 0;
     }
     int32_t rc = OH_Location_StopLocating(g_location_config);
+    // The request config is the session: destroy it with the stop so a later start rebuilds a
+    // fresh one (the old code kept it for the process lifetime, so a page re-entry could never
+    // replace the callback or the session state). The newest fix stays readable.
+    ohos_host_optional_location_destroy_request_config(g_location_config);
+    g_location_config = NULL;
     return (int)rc;
 }
 
@@ -2153,9 +2257,37 @@ static int EnsureInputMethod(void) {
     if (rc != 0) {
         fprintf(stderr, "[openharmony-host] input method attach rc=%d\n", rc);
         g_inputmethod_proxy = NULL;
+        // The attach refused the proxy: destroy it instead of keeping a half-bound object for
+        // the process lifetime; the next keyboard call builds a fresh one.
+        ohos_host_optional_ime_text_editor_proxy_destroy(g_editor_proxy);
+        g_editor_proxy = NULL;
         return (int)rc;
     }
     return 0;
+}
+
+// Releases the IME attach state. The proxy has to be detached before it is destroyed (the
+// platform owns it until detach), and both handles are cleared so a later keyboard call
+// re-attaches for the new app/page. Called when the app handle is joined.
+static void OhosHostReleaseInputMethod(void) {
+    if (g_inputmethod_proxy != NULL) {
+        OH_InputMethodController_Detach(g_inputmethod_proxy);
+        g_inputmethod_proxy = NULL;
+    }
+    if (g_editor_proxy != NULL) {
+        ohos_host_optional_ime_text_editor_proxy_destroy(g_editor_proxy);
+        g_editor_proxy = NULL;
+    }
+    g_ime_text[0] = '\0';
+}
+
+// Drops the system-bridge state that belongs to one app generation (location session, IME
+// attach). Called by ohos_host_join_app once the app thread has finished, so the statics cannot
+// outlive the handle they were created for; every entry point rebuilds them on demand.
+static void OhosHostReleaseAppGenerationState(void) {
+    ohos_host_location_stop();
+    g_location_has_fix = 0;
+    OhosHostReleaseInputMethod();
 }
 
 // ---------------------------------------------------------------------------
@@ -2756,6 +2888,16 @@ void ohos_host_set_node_content(OhosHostAppHandle* handle, void* node_content) {
     // outside the lock; a clear (NULL) still notifies the managed side like before.
     void (*callback)(void*) = NULL;
     pthread_mutex_lock(&g_context_mutex);
+    // A new NodeContent (page re-entry) replaces the identity the managed side last saw; log it
+    // so a lost accessibility attach on the new page is diagnosable, and keep the newest value
+    // for the provider's rebind path.
+    if (node_content != NULL && handle->node_content_identity != NULL &&
+        handle->node_content_identity != node_content) {
+        fprintf(stderr, "[openharmony-host] node content replaced %p -> %p, rebinding the app\n",
+                handle->node_content_identity, node_content);
+        fflush(stderr);
+    }
+    handle->node_content_identity = node_content;
     handle->node_content = node_content;
     if (handle->bridge_node != NULL) {
         callback = handle->bridge_node;
@@ -2782,6 +2924,10 @@ int ohos_host_join_app(OhosHostAppHandle* handle) {
         pthread_join(handle->thread, NULL);
         handle->joined = 1;
     }
+    // The app generation is over: release the location session and the IME attach that were
+    // created for it (both were process-lifetime statics before, so a re-entered page kept a
+    // stale session and the platform proxy forever). A later app/page rebuilds them on demand.
+    OhosHostReleaseAppGenerationState();
     // Detach and free under the lock get/set_app_context use: a getter that already resolved
     // g_app is serialized with the free, and a setter that runs after sees g_app == NULL and
     // parks its snapshot in the pending slot instead of touching the freed handle.
@@ -2804,9 +2950,81 @@ int ohos_host_join_app(OhosHostAppHandle* handle) {
 // implemented with native_drawing (the Skia-backed platform 2D API).
 // ---------------------------------------------------------------------------
 
+// RAII holder for one OH_Drawing_* handle. The drawing C API hands out untyped pointers whose
+// destroy function is per type, and several call sites create more than one object before they
+// can fail (the two gradient points, the image rect/sampling set); wrapping every create here
+// guarantees that the early-return paths release exactly what they made. openharmony_host.c
+// keeps C linkage but is compiled as C++ (see the note in openharmony_host.h), which is what
+// makes the scope guard available.
+template <typename T>
+class OhosDrawingHandle {
+public:
+    explicit OhosDrawingHandle(void (*destroy)(T*)) : destroy_(destroy) {}
+    ~OhosDrawingHandle() { Reset(); }
+    OhosDrawingHandle(const OhosDrawingHandle&) = delete;
+    OhosDrawingHandle& operator=(const OhosDrawingHandle&) = delete;
+
+    T* Get() const { return handle_; }
+    // Takes ownership of handle, releasing whatever was held before.
+    void Adopt(T* handle) { Reset(handle); }
+    // Gives up ownership without destroying; used when a handle moves into a cache/effect.
+    T* Release() {
+        T* handle = handle_;
+        handle_ = nullptr;
+        return handle;
+    }
+    void Reset(T* handle = nullptr) {
+        if (handle_ != nullptr && destroy_ != nullptr) {
+            destroy_(handle_);
+        }
+        handle_ = handle;
+    }
+
+private:
+    T* handle_ = nullptr;
+    void (*destroy_)(T*) = nullptr;
+};
+
 static OH_Drawing_Bitmap* g_canvas_bitmap = NULL;
-static OH_Drawing_ShaderEffect* g_brush_shader = NULL;
-static OH_Drawing_ShadowLayer* g_brush_shadow = NULL;
+
+// One owned effect generation. A pixelmap shader does not own its pixelmap, so the state owns
+// everything a pattern needs: the shader, its OH_Drawing_PixelMap wrapper and the native
+// pixelmap that backs it (plus the shadow layer). Replacing or clearing the effects destroys
+// the shader first, dissolves the wrapper, then releases the native pixelmap - the order the
+// drawing canvas documents - so no combination of setter/clear can leak or dangle them.
+typedef struct {
+    OH_Drawing_ShaderEffect* shader;            // owned by the effect state
+    OH_Drawing_ShadowLayer* shadow;             // owned by the effect state
+    OH_Drawing_PixelMap* shader_pixelmap;       // owned wrapper of an image-pattern shader
+    OH_PixelmapNative* shader_native_pixelmap;  // owned native pixelmap behind the wrapper
+} OhosEffectState;
+
+static OhosEffectState g_effects;
+
+// Releases the pixelmap pair of a pixelmap shader. The wrapper is dissolved before its native
+// pixelmap is released; callers that still hold the shader must destroy it first.
+static void OhosEffectReleasePixelMap(void) {
+    if (g_effects.shader_pixelmap != NULL) {
+        OH_Drawing_PixelMapDissolve(g_effects.shader_pixelmap);
+        g_effects.shader_pixelmap = NULL;
+    }
+    if (g_effects.shader_native_pixelmap != NULL) {
+        OH_PixelmapNative_Release(g_effects.shader_native_pixelmap);
+        g_effects.shader_native_pixelmap = NULL;
+    }
+}
+
+static void OhosEffectReleaseAll(void) {
+    if (g_effects.shader != NULL) {
+        OH_Drawing_ShaderEffectDestroy(g_effects.shader);
+        g_effects.shader = NULL;
+    }
+    OhosEffectReleasePixelMap();
+    if (g_effects.shadow != NULL) {
+        OH_Drawing_ShadowLayerDestroy(g_effects.shadow);
+        g_effects.shadow = NULL;
+    }
+}
 
 // The effects above are the state the next fill/text brush picks up. The managed canvas
 // clears them on every fill-colour assignment (hundreds of times per frame), so
@@ -2833,14 +3051,7 @@ static void OhosResolvePendingClear(void) {
     // Cached brushes captured the effect objects (shader/shadow) they were built with, so
     // they are dropped before the objects are destroyed.
     OhosFlushFillBrushCache();
-    if (g_brush_shader != NULL) {
-        OH_Drawing_ShaderEffectDestroy(g_brush_shader);
-        g_brush_shader = NULL;
-    }
-    if (g_brush_shadow != NULL) {
-        OH_Drawing_ShadowLayerDestroy(g_brush_shadow);
-        g_brush_shadow = NULL;
-    }
+    OhosEffectReleaseAll();
 }
 
 // --- fill/text brush cache ---------------------------------------------------------
@@ -2909,11 +3120,11 @@ static OH_Drawing_Brush* OhosFillBrushGet(unsigned int argb) {
         return NULL;
     }
     OH_Drawing_BrushSetColor(brush, (uint32_t)argb);
-    if (g_brush_shader != NULL) {
-        OH_Drawing_BrushSetShaderEffect(brush, g_brush_shader);
+    if (g_effects.shader != NULL) {
+        OH_Drawing_BrushSetShaderEffect(brush, g_effects.shader);
     }
-    if (g_brush_shadow != NULL) {
-        OH_Drawing_BrushSetShadowLayer(brush, g_brush_shadow);
+    if (g_effects.shadow != NULL) {
+        OH_Drawing_BrushSetShadowLayer(brush, g_effects.shadow);
     }
     entry->argb = argb;
     entry->serial = serial;
@@ -2922,28 +3133,35 @@ static OH_Drawing_Brush* OhosFillBrushGet(unsigned int argb) {
     return brush;
 }
 
-static void OhosSetShaderEffect(OH_Drawing_ShaderEffect* shader) {
+// Installs a shader (NULL clears it). The previous shader is destroyed, then the previous
+// pixelmap pair is released; ownership of the arguments passes to the effect state.
+static void OhosSetShaderEffect(OH_Drawing_ShaderEffect* shader, OH_Drawing_PixelMap* drawing_pixelmap,
+                                OH_PixelmapNative* native_pixelmap) {
     OhosResolvePendingClear();
     OhosFlushFillBrushCache();
-    if (g_brush_shader != NULL) {
-        OH_Drawing_ShaderEffectDestroy(g_brush_shader);
+    if (g_effects.shader != NULL) {
+        OH_Drawing_ShaderEffectDestroy(g_effects.shader);
+        g_effects.shader = NULL;
     }
-    g_brush_shader = shader;
+    OhosEffectReleasePixelMap();
+    g_effects.shader = shader;
+    g_effects.shader_pixelmap = drawing_pixelmap;
+    g_effects.shader_native_pixelmap = native_pixelmap;
     OhosBumpEffectState();
 }
 
 static void OhosSetShadowLayer(OH_Drawing_ShadowLayer* shadow) {
     OhosResolvePendingClear();
     OhosFlushFillBrushCache();
-    if (g_brush_shadow != NULL) {
-        OH_Drawing_ShadowLayerDestroy(g_brush_shadow);
+    if (g_effects.shadow != NULL) {
+        OH_Drawing_ShadowLayerDestroy(g_effects.shadow);
     }
-    g_brush_shadow = shadow;
+    g_effects.shadow = shadow;
     OhosBumpEffectState();
 }
 
 void ohos_host_draw_clear_effects(void) {
-    if (g_effects_clear_pending || (g_brush_shader == NULL && g_brush_shadow == NULL)) {
+    if (g_effects_clear_pending || (g_effects.shader == NULL && g_effects.shadow == NULL)) {
         return;
     }
     g_effects_clear_pending = 1;
@@ -2955,16 +3173,16 @@ void ohos_host_draw_set_linear_gradient(float x0, float y0, float x1, float y1,
     if (colors == NULL || count < 2) {
         return;
     }
-    OH_Drawing_Point* start = OH_Drawing_PointCreate(x0, y0);
-    OH_Drawing_Point* end = OH_Drawing_PointCreate(x1, y1);
-    if (start == NULL || end == NULL) {
-        return;
+    OhosDrawingHandle<OH_Drawing_Point> start(OH_Drawing_PointDestroy);
+    OhosDrawingHandle<OH_Drawing_Point> end(OH_Drawing_PointDestroy);
+    start.Adopt(OH_Drawing_PointCreate(x0, y0));
+    end.Adopt(OH_Drawing_PointCreate(x1, y1));
+    if (start.Get() == NULL || end.Get() == NULL) {
+        return;  // both guards release whatever was created (the fixed leak: one point survived)
     }
-    OH_Drawing_ShaderEffect* shader = OH_Drawing_ShaderEffectCreateLinearGradient(start, end,
+    OH_Drawing_ShaderEffect* shader = OH_Drawing_ShaderEffectCreateLinearGradient(start.Get(), end.Get(),
         (const uint32_t*)colors, stops, (uint32_t)count, CLAMP);
-    OhosSetShaderEffect(shader);
-    OH_Drawing_PointDestroy(start);
-    OH_Drawing_PointDestroy(end);
+    OhosSetShaderEffect(shader, NULL, NULL);
 }
 
 void ohos_host_draw_set_radial_gradient(float cx, float cy, float radius,
@@ -2972,14 +3190,25 @@ void ohos_host_draw_set_radial_gradient(float cx, float cy, float radius,
     if (colors == NULL || count < 2 || radius <= 0.0f) {
         return;
     }
-    OH_Drawing_Point* center = OH_Drawing_PointCreate(cx, cy);
-    if (center == NULL) {
+    OhosDrawingHandle<OH_Drawing_Point> center(OH_Drawing_PointDestroy);
+    center.Adopt(OH_Drawing_PointCreate(cx, cy));
+    if (center.Get() == NULL) {
         return;
     }
-    OH_Drawing_ShaderEffect* shader = OH_Drawing_ShaderEffectCreateRadialGradient(center, radius,
+    OH_Drawing_ShaderEffect* shader = OH_Drawing_ShaderEffectCreateRadialGradient(center.Get(), radius,
         (const uint32_t*)colors, stops, (uint32_t)count, CLAMP);
-    OhosSetShaderEffect(shader);
-    OH_Drawing_PointDestroy(center);
+    OhosSetShaderEffect(shader, NULL, NULL);
+}
+
+// Adapters for the image-framework release functions: they return an Image_ErrorCode, while the
+// drawing scope guard stores a void destroy. The error is ignored exactly like before (the
+// release either succeeded or the handle is already gone).
+static void OhosImageSourceReleaseHandle(OH_ImageSourceNative* source) {
+    (void)OH_ImageSourceNative_Release(source);
+}
+
+static void OhosPixelmapReleaseHandle(OH_PixelmapNative* pixelmap) {
+    (void)OH_PixelmapNative_Release(pixelmap);
 }
 
 int ohos_host_draw_set_image_pattern(const void* data, int length, int tileModeX, int tileModeY,
@@ -2990,35 +3219,41 @@ int ohos_host_draw_set_image_pattern(const void* data, int length, int tileModeX
     if (data == NULL || length <= 0) {
         return -1;
     }
-    OH_ImageSourceNative* source = NULL;
-    if (OH_ImageSourceNative_CreateFromData((uint8_t*)data, (size_t)length, &source) != IMAGE_SUCCESS || source == NULL) {
+    OhosDrawingHandle<OH_ImageSourceNative> source(OhosImageSourceReleaseHandle);
+    OH_ImageSourceNative* created_source = NULL;
+    if (OH_ImageSourceNative_CreateFromData((uint8_t*)data, (size_t)length, &created_source) != IMAGE_SUCCESS ||
+        created_source == NULL) {
         return -1;
     }
-    OH_PixelmapNative* pixelmap = NULL;
-    int rc = -1;
-    if (OH_ImageSourceNative_CreatePixelmap(source, NULL, &pixelmap) == IMAGE_SUCCESS && pixelmap != NULL) {
-        OH_Drawing_PixelMap* drawingPixelMap = OH_Drawing_PixelMapGetFromOhPixelMapNative(pixelmap);
-        if (drawingPixelMap != NULL) {
-            OH_Drawing_SamplingOptions* sampling = OH_Drawing_SamplingOptionsCreate(FILTER_MODE_LINEAR, MIPMAP_MODE_LINEAR);
-            OH_Drawing_Matrix* matrix = NULL;
-            if (scaleX != 1.0f || scaleY != 1.0f) {
-                matrix = OH_Drawing_MatrixCreateScale(scaleX, scaleY, 0, 0);
-            }
-            OH_Drawing_ShaderEffect* shader = OH_Drawing_ShaderEffectCreatePixelMapShader(
-                drawingPixelMap, (OH_Drawing_TileMode)tileModeX, (OH_Drawing_TileMode)tileModeY, sampling, matrix);
-            if (shader != NULL) {
-                OhosSetShaderEffect(shader);
-                rc = 0;
-            }
-            if (matrix != NULL) {
-                OH_Drawing_MatrixDestroy(matrix);
-            }
-            OH_Drawing_SamplingOptionsDestroy(sampling);
-        }
-        OH_PixelmapNative_Release(pixelmap);
+    source.Adopt(created_source);
+    OhosDrawingHandle<OH_PixelmapNative> pixelmap(OhosPixelmapReleaseHandle);
+    OH_PixelmapNative* created_pixelmap = NULL;
+    if (OH_ImageSourceNative_CreatePixelmap(source.Get(), NULL, &created_pixelmap) != IMAGE_SUCCESS ||
+        created_pixelmap == NULL) {
+        return -1;
     }
-    OH_ImageSourceNative_Release(source);
-    return rc;
+    pixelmap.Adopt(created_pixelmap);
+    OhosDrawingHandle<OH_Drawing_PixelMap> drawingPixelMap(OH_Drawing_PixelMapDissolve);
+    drawingPixelMap.Adopt(OH_Drawing_PixelMapGetFromOhPixelMapNative(pixelmap.Get()));
+    if (drawingPixelMap.Get() == NULL) {
+        return -1;
+    }
+    OhosDrawingHandle<OH_Drawing_SamplingOptions> sampling(OH_Drawing_SamplingOptionsDestroy);
+    sampling.Adopt(OH_Drawing_SamplingOptionsCreate(FILTER_MODE_LINEAR, MIPMAP_MODE_LINEAR));
+    OhosDrawingHandle<OH_Drawing_Matrix> matrix(OH_Drawing_MatrixDestroy);
+    if (scaleX != 1.0f || scaleY != 1.0f) {
+        matrix.Adopt(OH_Drawing_MatrixCreateScale(scaleX, scaleY, 0, 0));
+    }
+    OH_Drawing_ShaderEffect* shader = OH_Drawing_ShaderEffectCreatePixelMapShader(
+        drawingPixelMap.Get(), (OH_Drawing_TileMode)tileModeX, (OH_Drawing_TileMode)tileModeY,
+        sampling.Get(), matrix.Get());
+    if (shader == NULL) {
+        return -1;  // every guard releases its object; the effect state keeps nothing partial
+    }
+    // The effect state takes over all three objects: the shader, the wrapper and the native
+    // pixelmap (a pixelmap shader does not own its pixelmap). The guards must not release them.
+    OhosSetShaderEffect(shader, drawingPixelMap.Release(), pixelmap.Release());
+    return 0;
 }
 
 void ohos_host_draw_set_shadow(float dx, float dy, float blur, unsigned int argb) {
@@ -3070,27 +3305,32 @@ void ohos_host_draw_rect(int x, int y, int width, int height, unsigned int argb,
     if (g_canvas == NULL) {
         return;
     }
-    OH_Drawing_Rect* rect = OH_Drawing_RectCreate((float)x, (float)y, (float)(x + width), (float)(y + height));
-    if (rect == NULL) {
+    OhosDrawingHandle<OH_Drawing_Rect> rect(OH_Drawing_RectDestroy);
+    rect.Adopt(OH_Drawing_RectCreate((float)x, (float)y, (float)(x + width), (float)(y + height)));
+    if (rect.Get() == NULL) {
         return;
     }
     if (filled) {
         OH_Drawing_Brush* brush = OhosFillBrushGet(argb);
         if (brush != NULL) {
             OH_Drawing_CanvasAttachBrush(g_canvas, brush);
-            OH_Drawing_CanvasDrawRect(g_canvas, rect);
+            OH_Drawing_CanvasDrawRect(g_canvas, rect.Get());
             OH_Drawing_CanvasDetachBrush(g_canvas);
         }
     } else {
-        OH_Drawing_Pen* pen = OH_Drawing_PenCreate();
-        OH_Drawing_PenSetColor(pen, (uint32_t)argb);
-        OH_Drawing_PenSetWidth(pen, 2.0f);
-        OH_Drawing_CanvasAttachPen(g_canvas, pen);
-        OH_Drawing_CanvasDrawRect(g_canvas, rect);
+        // A failed pen create must not be passed to the Pen setters/draw (a NULL handle there
+        // aborts); the rect guard still releases on the early return.
+        OhosDrawingHandle<OH_Drawing_Pen> pen(OH_Drawing_PenDestroy);
+        pen.Adopt(OH_Drawing_PenCreate());
+        if (pen.Get() == NULL) {
+            return;
+        }
+        OH_Drawing_PenSetColor(pen.Get(), (uint32_t)argb);
+        OH_Drawing_PenSetWidth(pen.Get(), 2.0f);
+        OH_Drawing_CanvasAttachPen(g_canvas, pen.Get());
+        OH_Drawing_CanvasDrawRect(g_canvas, rect.Get());
         OH_Drawing_CanvasDetachPen(g_canvas);
-        OH_Drawing_PenDestroy(pen);
     }
-    OH_Drawing_RectDestroy(rect);
 }
 
 static OH_Drawing_Typeface* g_custom_typeface = NULL;
@@ -3447,34 +3687,37 @@ void ohos_host_draw_polyline(const float* xy, int count, int closed, unsigned in
     if (g_canvas == NULL || xy == NULL || count < 2) {
         return;
     }
-    OH_Drawing_Path* path = OH_Drawing_PathCreate();
-    if (path == NULL) {
+    OhosDrawingHandle<OH_Drawing_Path> path(OH_Drawing_PathDestroy);
+    path.Adopt(OH_Drawing_PathCreate());
+    if (path.Get() == NULL) {
         return;
     }
-    OH_Drawing_PathMoveTo(path, xy[0], xy[1]);
+    OH_Drawing_PathMoveTo(path.Get(), xy[0], xy[1]);
     for (int i = 1; i < count; i++) {
-        OH_Drawing_PathLineTo(path, xy[i * 2], xy[i * 2 + 1]);
+        OH_Drawing_PathLineTo(path.Get(), xy[i * 2], xy[i * 2 + 1]);
     }
     if (closed) {
-        OH_Drawing_PathClose(path);
+        OH_Drawing_PathClose(path.Get());
     }
     if (filled) {
         OH_Drawing_Brush* brush = OhosFillBrushGet(argb);
         if (brush != NULL) {
             OH_Drawing_CanvasAttachBrush(g_canvas, brush);
-            OH_Drawing_CanvasDrawPath(g_canvas, path);
+            OH_Drawing_CanvasDrawPath(g_canvas, path.Get());
             OH_Drawing_CanvasDetachBrush(g_canvas);
         }
     } else {
-        OH_Drawing_Pen* pen = OH_Drawing_PenCreate();
-        OH_Drawing_PenSetColor(pen, (uint32_t)argb);
-        OH_Drawing_PenSetWidth(pen, stroke_width > 0.0f ? stroke_width : 1.0f);
-        OH_Drawing_CanvasAttachPen(g_canvas, pen);
-        OH_Drawing_CanvasDrawPath(g_canvas, path);
+        OhosDrawingHandle<OH_Drawing_Pen> pen(OH_Drawing_PenDestroy);
+        pen.Adopt(OH_Drawing_PenCreate());
+        if (pen.Get() == NULL) {
+            return;
+        }
+        OH_Drawing_PenSetColor(pen.Get(), (uint32_t)argb);
+        OH_Drawing_PenSetWidth(pen.Get(), stroke_width > 0.0f ? stroke_width : 1.0f);
+        OH_Drawing_CanvasAttachPen(g_canvas, pen.Get());
+        OH_Drawing_CanvasDrawPath(g_canvas, path.Get());
         OH_Drawing_CanvasDetachPen(g_canvas);
-        OH_Drawing_PenDestroy(pen);
     }
-    OH_Drawing_PathDestroy(path);
 }
 
 int ohos_host_measure_text(const char* utf8, float size, int* width, int* height) {
@@ -3762,14 +4005,16 @@ int ohos_host_draw_image_bytes(const void* data, int length, float x, float y, f
         // against a wrong-sized source.
         const float src_width = pixel_width > 0 ? (float)pixel_width : width;
         const float src_height = pixel_height > 0 ? (float)pixel_height : height;
-        OH_Drawing_Rect* src = OH_Drawing_RectCreate(0.0f, 0.0f, src_width, src_height);
-        OH_Drawing_Rect* dst = OH_Drawing_RectCreate(x, y, x + width, y + height);
-        OH_Drawing_SamplingOptions* sampling = OH_Drawing_SamplingOptionsCreate(FILTER_MODE_LINEAR, MIPMAP_MODE_LINEAR);
-        OH_Drawing_CanvasDrawPixelMapRect(g_canvas, drawing, src, dst, sampling);
-        OH_Drawing_SamplingOptionsDestroy(sampling);
-        OH_Drawing_RectDestroy(src);
-        OH_Drawing_RectDestroy(dst);
-        rc = 0;
+        OhosDrawingHandle<OH_Drawing_Rect> src(OH_Drawing_RectDestroy);
+        OhosDrawingHandle<OH_Drawing_Rect> dst(OH_Drawing_RectDestroy);
+        OhosDrawingHandle<OH_Drawing_SamplingOptions> sampling(OH_Drawing_SamplingOptionsDestroy);
+        src.Adopt(OH_Drawing_RectCreate(0.0f, 0.0f, src_width, src_height));
+        dst.Adopt(OH_Drawing_RectCreate(x, y, x + width, y + height));
+        sampling.Adopt(OH_Drawing_SamplingOptionsCreate(FILTER_MODE_LINEAR, MIPMAP_MODE_LINEAR));
+        if (src.Get() != NULL && dst.Get() != NULL && sampling.Get() != NULL) {
+            OH_Drawing_CanvasDrawPixelMapRect(g_canvas, drawing, src.Get(), dst.Get(), sampling.Get());
+            rc = 0;
+        }
     }
     if (owned_pixelmap != NULL) {
         // Uncached draw (over the hash cap, or the wrapper failed): drop the temporary
@@ -3799,12 +4044,11 @@ int ohos_host_draw_present(void) {
     if (OhosHostNativeWindowConfigure(native_window, width, height) != 0) {
         return -1;
     }
-    int fence = -1;
-    OHNativeWindowBuffer* buffer = NULL;
-    if (OH_NativeWindow_NativeWindowRequestBuffer(native_window, &buffer, &fence) != 0 || buffer == NULL) {
+    OhosPresentFrame frame(native_window, true);
+    if (!frame.valid()) {
         return -1;
     }
-    BufferHandle* handle = OH_NativeWindow_GetBufferHandleFromNative(buffer);
+    BufferHandle* handle = frame.handle();
     if (handle != NULL && handle->fd >= 0 && handle->size > 0 && handle->stride > 0) {
         void* addr = OhosHostPresentMapAcquire(native_window, handle->fd, handle->virAddr, (size_t)handle->size);
         if (addr != NULL) {
@@ -3812,8 +4056,7 @@ int ohos_host_draw_present(void) {
                                     (size_t)width * 4, height, (size_t)handle->size);
         }
     }
-    Region region = { NULL, 0 };
-    OH_NativeWindow_NativeWindowFlushBuffer(native_window, buffer, fence, region);
+    // frame's destructor flushes the requested buffer exactly once.
     fprintf(stderr, "[openharmony-host] canvas presented (%dx%d)\n", width, height);
     return 0;
 }

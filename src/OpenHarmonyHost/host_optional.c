@@ -103,6 +103,10 @@ static void OhosHostOptionalLoad(void) {
         OHOS_HOST_OPTIONAL_RESOLVE(ime, AttachOptions_Destroy, "OH_AttachOptions_Destroy");
         OHOS_HOST_OPTIONAL_RESOLVE(ime, InputMethodController_Attach,
                                    "OH_InputMethodController_Attach");
+        OHOS_HOST_OPTIONAL_RESOLVE(ime, InputMethodController_Detach,
+                                   "OH_InputMethodController_Detach");
+        OHOS_HOST_OPTIONAL_RESOLVE(ime, TextEditorProxy_Destroy,
+                                   "OH_TextEditorProxy_Destroy");
         OHOS_HOST_OPTIONAL_RESOLVE(ime, InputMethodProxy_ShowKeyboard,
                                    "OH_InputMethodProxy_ShowKeyboard");
         OHOS_HOST_OPTIONAL_RESOLVE(ime, InputMethodProxy_HideKeyboard,
@@ -195,6 +199,8 @@ static void OhosHostOptionalLoad(void) {
         missing = false;
         OHOS_HOST_OPTIONAL_RESOLVE(location, CreateRequestConfig,
                                    "OH_Location_CreateRequestConfig");
+        OHOS_HOST_OPTIONAL_RESOLVE(location, DestroyRequestConfig,
+                                   "OH_Location_DestroyRequestConfig");
         OHOS_HOST_OPTIONAL_RESOLVE(location, RequestConfigSetCallback,
                                    "OH_LocationRequestConfig_SetCallback");
         OHOS_HOST_OPTIONAL_RESOLVE(location, StartLocating, "OH_Location_StartLocating");
