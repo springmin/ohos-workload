@@ -5580,10 +5580,6 @@ if (!pg2ProbeOk)
 // probes share one throwaway bridge context (AppDir for the package probes, FilesDir for the
 // swallowed-exception status lines) that is restored afterwards.
 
-MethodInfo Audit3NativeEntry(Type type, string name)
-    => type.GetMethod(name, BindingFlags.NonPublic | BindingFlags.Static)
-        ?? throw new InvalidOperationException($"{type.Name}.{name} was not found; the audit batch-3 pins drive the native entry directly");
-
 // MB-1: 200 approved main-frame navigations leave the table bounded at the 64-entry cap with the
 // newest decision kept; an expired marker is pruned by a page event; a full table evicts the
 // entry closest to expiry; the matching "started" event still consumes its entry exactly once.
@@ -5776,7 +5772,9 @@ if (!n30LoadOk)
 // MB-2 (slice): a throwing application handler must not escape the reverse P/Invoke boundary.
 // Each probe attaches a throwing handler to the app-facing event and drives the private native
 // entry the shell's notification lands on; the matching source guard is pinned too, because the
-// menu/theme/hybrid entries cannot always be made to throw from a synthetic call.
+// menu/theme/hybrid entries cannot always be made to throw from a synthetic call. The entries
+// are [UnmanagedCallersOnly] now (FIX-R1-MARSHAL-OFF), so they are entered through the
+// registered native pointers with NativeThunks instead of managed reflection.
 var n30SliceEscapes = new List<string>();
 void Audit3ExpectGuarded(string name, Action invoke)
 {
@@ -5798,7 +5796,8 @@ Audit3ExpectGuarded("webview", () =>
     IntPtr n30Payload = Marshal.StringToCoTaskMemUTF8("{\"pad\":\"x\"}");
     try
     {
-        Audit3NativeEntry(typeof(OpenHarmonyWebViewHandler), "OnJsMessageNative").Invoke(null, new object?[] { n30Payload });
+        NativeThunks.Invoker<NativeThunks.PtrCallback>(
+            NativeThunks.Pointer(typeof(OpenHarmonyWebViewHandler), "s_jsMessageCallback"))(n30Payload);
     }
     finally
     {
@@ -5816,7 +5815,8 @@ Audit3ExpectGuarded("gatt", () =>
         "value\tAA:BB:CC\t0000fff0-0000-1000-8000-00805f9b34fb\t0000fff1-0000-1000-8000-00805f9b34fb\tAAECAwQ=");
     try
     {
-        Audit3NativeEntry(typeof(OpenHarmonyBluetoothGatt), "OnEventNative").Invoke(null, new object?[] { n30Payload });
+        NativeThunks.Invoker<NativeThunks.PtrCallback>(
+            NativeThunks.Pointer(typeof(OpenHarmonyBluetoothGatt), "s_eventCallback"))(n30Payload);
     }
     finally
     {
@@ -5827,7 +5827,8 @@ OpenHarmonyBluetoothGatt.ValueChanged -= n30GattThrower;
 
 Action n30ClipboardThrower = () => throw new InvalidOperationException("app clipboard handler failed");
 OpenHarmonyClipboardBridge.Changed += n30ClipboardThrower;
-Audit3ExpectGuarded("clipboard", () => Audit3NativeEntry(typeof(OpenHarmonyClipboardBridge), "OnNativeClipboardChanged").Invoke(null, null));
+Audit3ExpectGuarded("clipboard", () => NativeThunks.Invoker<NativeThunks.VoidCallback>(
+    NativeThunks.Pointer(typeof(OpenHarmonyClipboardBridge), "s_changedCallback"))());
 OpenHarmonyClipboardBridge.Changed -= n30ClipboardThrower;
 
 EventHandler<Microsoft.Maui.Devices.Sensors.AccelerometerChangedEventArgs> n30SensorThrower =
@@ -5837,22 +5838,24 @@ Audit3ExpectGuarded("sensors", () =>
 {
     foreach (int n30SensorType in new[] { 1, 2, 6, 8, 259 })
     {
-        Audit3NativeEntry(typeof(OpenHarmonySensors), "OnReading")
-            .Invoke(null, new object?[] { n30SensorType, 0f, 0f, 9.8f, 0f, 0L });
+        NativeThunks.Invoker<NativeThunks.SensorCallback>(
+            NativeThunks.Pointer(typeof(OpenHarmonySensors), "_callback"))(n30SensorType, 0f, 0f, 9.8f, 0f, 0L);
     }
 });
 OpenHarmonyAccelerometer.Instance.ReadingChanged -= n30SensorThrower;
 
-Audit3ExpectGuarded("menus", () => Audit3NativeEntry(typeof(OpenHarmonyMenus), "OnMenuActionNative").Invoke(null, new object?[] { 7 }));
-Audit3ExpectGuarded("theme", () => Audit3NativeEntry(typeof(OpenHarmonyTheme), "OnNativeTheme").Invoke(null, new object?[] { 1 }));
+Audit3ExpectGuarded("menus", () => NativeThunks.Invoker<NativeThunks.IntCallback>(
+    NativeThunks.Pointer(typeof(OpenHarmonyMenus), "s_actionThunk"))(7));
+Audit3ExpectGuarded("theme", () => NativeThunks.Invoker<NativeThunks.IntCallback>(
+    NativeThunks.Pointer(typeof(OpenHarmonyTheme), "s_callback"))(1));
 Audit3ExpectGuarded("hybrid", () =>
 {
     IntPtr n30Method = Marshal.StringToCoTaskMemUTF8("noop");
     IntPtr n30Arguments = Marshal.StringToCoTaskMemUTF8("[]");
     try
     {
-        Audit3NativeEntry(typeof(OpenHarmonyHybridWebViewHandler), "OnHybridInvokeNative")
-            .Invoke(null, new object?[] { 1, n30Method, n30Arguments });
+        NativeThunks.Invoker<NativeThunks.HybridInvokeCallback>(
+            NativeThunks.Pointer(typeof(OpenHarmonyHybridWebViewHandler), "s_hybridInvokeCallback"))(1, n30Method, n30Arguments);
     }
     finally
     {
@@ -5899,7 +5902,7 @@ if (!n30Mb2GuardsOk)
 // source contract pins the inline guards on all ten entries.
 int n30HostEntries = 0;
 var n30HostEscapes = new List<string>();
-void Audit3ProbeHostCallback(string boundary, string fieldName, string methodName, Delegate thrower, object?[] arguments)
+void Audit3ProbeHostCallback(string boundary, string fieldName, Delegate thrower, Action invoke)
 {
     FieldInfo n30Field = typeof(Microsoft.OpenHarmony.Hosting.OpenHarmonyBridge)
         .GetField(fieldName, BindingFlags.NonPublic | BindingFlags.Static)
@@ -5909,7 +5912,10 @@ void Audit3ProbeHostCallback(string boundary, string fieldName, string methodNam
     try
     {
         n30HostEntries++;
-        Audit3NativeEntry(typeof(Microsoft.OpenHarmony.Hosting.OpenHarmonyBridge), methodName).Invoke(null, arguments);
+        // FIX-R1-MARSHAL-OFF: the entry is [UnmanagedCallersOnly]; call it through the
+        // registered native pointer (memory is never written from the host frame, so the
+        // shared runtime cannot see a managed call here).
+        invoke();
     }
     catch (Exception ex)
     {
@@ -5924,41 +5930,61 @@ void Audit3ProbeHostCallback(string boundary, string fieldName, string methodNam
 
 Action<Microsoft.OpenHarmony.Hosting.OpenHarmonyTouchEventArgs> n30TouchThrower =
     _ => throw new InvalidOperationException("app touch handler failed");
-Audit3ProbeHostCallback("touch", "s_touchHandlers", "OnTouchNative", n30TouchThrower, new object?[] { 0, 0f, 0f, 1, 1 });
+Audit3ProbeHostCallback("touch", "s_touchHandlers", n30TouchThrower, () =>
+    NativeThunks.Invoker<NativeThunks.TouchCallback>(
+        NativeThunks.Pointer(typeof(Microsoft.OpenHarmony.Hosting.OpenHarmonyBridge), "s_touchThunk"))(0, 0f, 0f, 1, 1));
 
 Action<Microsoft.OpenHarmony.Hosting.OpenHarmonyFrameEventArgs> n30FrameThrower =
     _ => throw new InvalidOperationException("app frame handler failed");
-Audit3ProbeHostCallback("frame", "s_frameHandlers", "OnFrameNative", n30FrameThrower, new object?[] { 0L, 0L });
+Audit3ProbeHostCallback("frame", "s_frameHandlers", n30FrameThrower, () =>
+    NativeThunks.Invoker<NativeThunks.FrameCallback>(
+        NativeThunks.Pointer(typeof(Microsoft.OpenHarmony.Hosting.OpenHarmonyBridge), "s_frameThunk"))(0L, 0L));
 
 Action<string> n30TextInputThrower = _ => throw new InvalidOperationException("app text input handler failed");
-Audit3ProbeHostCallback("text input", "s_textInputHandlers", "OnTextInputNative", n30TextInputThrower, new object?[] { IntPtr.Zero });
+Audit3ProbeHostCallback("text input", "s_textInputHandlers", n30TextInputThrower, () =>
+    NativeThunks.Invoker<NativeThunks.PtrCallback>(
+        NativeThunks.Pointer(typeof(Microsoft.OpenHarmony.Hosting.OpenHarmonyBridge), "s_textInputThunk"))(IntPtr.Zero));
 
 Action n30TextSubmittedThrower = () => throw new InvalidOperationException("app text submitted handler failed");
-Audit3ProbeHostCallback("text submitted", "s_textSubmittedHandlers", "OnTextSubmittedNative", n30TextSubmittedThrower, Array.Empty<object?>());
+Audit3ProbeHostCallback("text submitted", "s_textSubmittedHandlers", n30TextSubmittedThrower, () =>
+    NativeThunks.Invoker<NativeThunks.VoidCallback>(
+        NativeThunks.Pointer(typeof(Microsoft.OpenHarmony.Hosting.OpenHarmonyBridge), "s_textSubmittedThunk"))());
 
 Action<Microsoft.OpenHarmony.Hosting.OpenHarmonyLifecycleEvent> n30LifecycleThrower =
     _ => throw new InvalidOperationException("app lifecycle handler failed");
-Audit3ProbeHostCallback("lifecycle", "s_lifecycleHandlers", "OnLifecycleNative", n30LifecycleThrower, new object?[] { 2 });
+Audit3ProbeHostCallback("lifecycle", "s_lifecycleHandlers", n30LifecycleThrower, () =>
+    NativeThunks.Invoker<NativeThunks.IntCallback>(
+        NativeThunks.Pointer(typeof(Microsoft.OpenHarmony.Hosting.OpenHarmonyBridge), "s_lifecycleThunk"))(2));
 
 Action<Microsoft.OpenHarmony.Hosting.OpenHarmonySurfaceInfo> n30SurfaceThrower =
     _ => throw new InvalidOperationException("app surface handler failed");
-Audit3ProbeHostCallback("surface", "s_surfaceHandlers", "OnSurfaceNative", n30SurfaceThrower, new object?[] { IntPtr.Zero, 1080, 1920, 0 });
+Audit3ProbeHostCallback("surface", "s_surfaceHandlers", n30SurfaceThrower, () =>
+    NativeThunks.Invoker<NativeThunks.SurfaceCallback>(
+        NativeThunks.Pointer(typeof(Microsoft.OpenHarmony.Hosting.OpenHarmonyBridge), "s_surfaceThunk"))(IntPtr.Zero, 1080, 1920, 0));
 
 Action<int, double, float, float> n30PinchThrower =
     (_, _, _, _) => throw new InvalidOperationException("app pinch handler failed");
-Audit3ProbeHostCallback("pinch", "Pinch", "OnPinch", n30PinchThrower, new object?[] { 1, 1.0, 0f, 0f });
+Audit3ProbeHostCallback("pinch", "Pinch", n30PinchThrower, () =>
+    NativeThunks.Invoker<NativeThunks.PinchCallback>(
+        NativeThunks.Pointer(typeof(Microsoft.OpenHarmony.Hosting.OpenHarmonyBridge), "_pinchCallback"))(1, 1.0, 0f, 0f));
 
 Action<string, string> n30WebEventThrower =
     (_, _) => throw new InvalidOperationException("app web event handler failed");
-Audit3ProbeHostCallback("web event", "WebEvent", "OnWebEventNative", n30WebEventThrower, new object?[] { IntPtr.Zero, IntPtr.Zero });
+Audit3ProbeHostCallback("web event", "WebEvent", n30WebEventThrower, () =>
+    NativeThunks.Invoker<NativeThunks.WebEventCallback>(
+        NativeThunks.Pointer(typeof(Microsoft.OpenHarmony.Hosting.OpenHarmonyBridge), "s_webEventThunk"))(IntPtr.Zero, IntPtr.Zero));
 
 Action<int, int, string, string> n30PickerThrower =
     (_, _, _, _) => throw new InvalidOperationException("app picker result handler failed");
-Audit3ProbeHostCallback("picker result", "PickerResult", "OnPickerResultNative", n30PickerThrower, new object?[] { 99999, 1, IntPtr.Zero, IntPtr.Zero });
+Audit3ProbeHostCallback("picker result", "PickerResult", n30PickerThrower, () =>
+    NativeThunks.Invoker<NativeThunks.PickerResultCallback>(
+        NativeThunks.Pointer(typeof(Microsoft.OpenHarmony.Hosting.OpenHarmonyBridge), "s_pickerResultThunk"))(99999, 1, IntPtr.Zero, IntPtr.Zero));
 
 Action<int, int, string> n30KeystoreThrower =
     (_, _, _) => throw new InvalidOperationException("app keystore result handler failed");
-Audit3ProbeHostCallback("keystore result", "KeystoreResult", "OnKeystoreResultNative", n30KeystoreThrower, new object?[] { 99999, 1, IntPtr.Zero });
+Audit3ProbeHostCallback("keystore result", "KeystoreResult", n30KeystoreThrower, () =>
+    NativeThunks.Invoker<NativeThunks.KeystoreResultCallback>(
+        NativeThunks.Pointer(typeof(Microsoft.OpenHarmony.Hosting.OpenHarmonyBridge), "s_keystoreResultThunk"))(99999, 1, IntPtr.Zero));
 
 // MB-2 (status channel): the swallowed failures reach dotnet-status.txt as one flattened line
 // per boundary, and the hosting bridge reports its own ten boundaries the same way.

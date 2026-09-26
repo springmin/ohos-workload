@@ -32,6 +32,24 @@ internal static class NativeThunks
     [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
     public delegate void HybridInvokeCallback(int requestId, IntPtr method, IntPtr arguments);
 
+    [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+    public delegate void TouchCallback(int type, float x, float y, int pointerCount, int pointerId);
+
+    [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+    public delegate void FrameCallback(long timestamp, long targetTimestamp);
+
+    [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+    public delegate void PinchCallback(int phase, double scale, float x, float y);
+
+    [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+    public delegate void WebEventCallback(IntPtr stateUtf8, IntPtr urlUtf8);
+
+    [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+    public delegate void PickerResultCallback(int requestId, int rc, IntPtr nameUtf8, IntPtr dataUtf8);
+
+    [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+    public delegate void KeystoreResultCallback(int requestId, int rc, IntPtr dataUtf8);
+
     /// <summary>
     /// Reads the registered native function pointer from a private static IntPtr field. Throws
     /// when the field is missing or not bound, so a slice that stops registering the thunk fails
