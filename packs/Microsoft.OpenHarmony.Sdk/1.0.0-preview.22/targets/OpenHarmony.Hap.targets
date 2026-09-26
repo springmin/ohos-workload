@@ -59,6 +59,19 @@
          directory the device namespace policy allows a dlopen from. Set false to keep the
          pre-payload-in-libs layout (the payload then travels only inside dotnet.zip). -->
     <OpenHarmonyHapPayloadInLibs Condition=" '$(OpenHarmonyHapPayloadInLibs)' == '' ">true</OpenHarmonyHapPayloadInLibs>
+    <!-- Payload zip (see "Payload in libs" in the packaging doc): keep the resources/rawfile/dotnet.zip
+         extraction fallback. With payload-in-libs on (default) the zip duplicates the staged
+         libs/<abi>/ payload; set OpenHarmonyHapPayloadZip=false to ship the staged copy only
+         (saves the zip bytes, ~20 MB for CDGSS, but drops the fallback older shells rely on, so
+         it must be validated on a device first). The marker's zip identity is then cleared
+         (zipEntries=0, zipSha256=""; see the marker below). OpenHarmonyHapPayloadZip=false
+         requires OpenHarmonyHapPayloadInLibs=true. Companion changes when opting out:
+         scripts/verify-kit.sh must skip the payload-vs-zip cross-assertions when zipEntries==0
+         (today payloadEntries!=zipEntries and a missing zipSha are FAILs; a missing dotnet.zip
+         is already only a WARN); EntryAbility.ets needs no change for the preview.22-24 shells
+         (findLibsPayloadDir reads only assembly/entries), but shells without the marker probe
+         have no fallback left at all. -->
+    <OpenHarmonyHapPayloadZip Condition=" '$(OpenHarmonyHapPayloadZip)' == '' ">true</OpenHarmonyHapPayloadZip>
     <!-- UI builds: point OpenHarmonyArktsModulesAbc at a modules.abc produced by the ArkTS
          toolchain (ets-loader/hvigor or DevEco Studio, which compiles both the ability and
          the ArkUI pages), and set OpenHarmonyUIPage to the page record (e.g. pages/Index).
@@ -535,19 +548,27 @@
          set, so the payload keeps every managed .dll/.json asset but no unsigned duplicate of
          a signed runtime ELF (see "Runtime native libraries" in the packaging doc for the resolution
          constraints this implies). -->
-    <OpenHarmonyDeterministicZip
+    <Error Condition=" '$(OpenHarmonyHapPayloadZip)' != 'true' and '$(OpenHarmonyHapPayloadInLibs)' != 'true' "
+           Text="OpenHarmonyHapPayloadZip=false requires OpenHarmonyHapPayloadInLibs=true: without the zip there would be no managed payload in the hap." />
+    <OpenHarmonyDeterministicZip Condition=" '$(OpenHarmonyHapPayloadZip)' == 'true' "
         SourceDirectory="$([MSBuild]::NormalizeDirectory('$(MSBuildProjectDirectory)', '$(PublishDir)'))"
         DestinationFile="$(_OpenHarmonyHapStageDir)resources/rawfile/dotnet.zip"
         ExcludeFileNames="@(_OpenHarmonyStagedRuntimeLib->'%(Filename)%(Extension)')">
       <Output TaskParameter="ExcludedCount" PropertyName="_OpenHarmonyPayloadZipExcluded" />
       <Output TaskParameter="IncludedCount" PropertyName="_OpenHarmonyPayloadZipIncluded" />
     </OpenHarmonyDeterministicZip>
-    <Message Importance="high" Text="OpenHarmony: dotnet.zip carries $(_OpenHarmonyPayloadZipIncluded) payload entries and excludes $(_OpenHarmonyPayloadZipExcluded) runtime native libraries that ship in libs/$(OpenHarmonyAbi)/ only" />
+    <Message Importance="high" Condition=" '$(OpenHarmonyHapPayloadZip)' == 'true' " Text="OpenHarmony: dotnet.zip carries $(_OpenHarmonyPayloadZipIncluded) payload entries and excludes $(_OpenHarmonyPayloadZipExcluded) runtime native libraries that ship in libs/$(OpenHarmonyAbi)/ only" />
+    <Message Importance="high" Condition=" '$(OpenHarmonyHapPayloadZip)' != 'true' " Text="OpenHarmony: OpenHarmonyHapPayloadZip=false - skipping resources/rawfile/dotnet.zip (the payload ships in libs/$(OpenHarmonyAbi)/ only, no extraction fallback)" />
 
     <!-- Payload-in-libs marker: see the OpenHarmonyWritePayloadMarker task above. Written after
          the zip so the recorded zip identity describes the packed bytes; the file count covers
          every file in libs/<abi>/ but the marker itself, so verify-kit.sh can assert the
-         marker against the real directory content. -->
+         marker against the real directory content. With OpenHarmonyHapPayloadZip=false there is
+         no zip to describe, so the identity is cleared (zipEntries=0, zipSha256=""). -->
+    <PropertyGroup>
+      <_OpenHarmonyPayloadZipIncluded Condition=" '$(OpenHarmonyHapPayloadZip)' != 'true' ">0</_OpenHarmonyPayloadZipIncluded>
+      <_OpenHarmonyPayloadZipFile Condition=" '$(OpenHarmonyHapPayloadZip)' == 'true' ">$(_OpenHarmonyHapStageDir)resources/rawfile/dotnet.zip</_OpenHarmonyPayloadZipFile>
+    </PropertyGroup>
     <OpenHarmonyWritePayloadMarker Condition=" '$(OpenHarmonyHapPayloadInLibs)' == 'true' "
                                     DestinationDirectory="$(_OpenHarmonyHapStageDir)libs/$(OpenHarmonyAbi)"
                                     MarkerFileName=".dotnet-payload.json"
@@ -555,7 +576,7 @@
                                     PayloadEntries="$(_OpenHarmonyPayloadInLibsEntries)"
                                     PayloadBytes="$(_OpenHarmonyPayloadInLibsBytes)"
                                     ZipEntries="$(_OpenHarmonyPayloadZipIncluded)"
-                                    ZipFile="$(_OpenHarmonyHapStageDir)resources/rawfile/dotnet.zip">
+                                    ZipFile="$(_OpenHarmonyPayloadZipFile)">
       <Output TaskParameter="LibsEntries" PropertyName="_OpenHarmonyLibsEntries" />
       <Output TaskParameter="MarkerPath" PropertyName="_OpenHarmonyPayloadMarkerPath" />
     </OpenHarmonyWritePayloadMarker>
