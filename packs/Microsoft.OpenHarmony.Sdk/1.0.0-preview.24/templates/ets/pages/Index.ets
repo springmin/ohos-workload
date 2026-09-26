@@ -217,6 +217,69 @@ interface HmsScanKit {
   scanBarcode: HmsScanBarcode;
 }
 
+// HMS Kit feature probes (KIT-EXT2 2026-09-25; Push + Account + Map). The same compile-safe
+// shape as Share/Scan: the module specifier stays in a variable (a literal import('@kit.X') is
+// a hard ArkTS compile error on the OpenHarmony SDK) and the resolved value is cast to a local
+// structural interface. The sinks register only when the runtime provides the kit.
+interface HmsPushService {
+  getToken(): Promise<string>;
+  deleteToken(): Promise<void>;
+}
+
+interface HmsPushKit {
+  pushService: HmsPushService;
+}
+
+interface HmsAuthorizationRequest {
+  scopes: string[];
+  permissions?: string[];
+  state: string;
+  forceAuthorization: boolean;
+}
+
+interface HmsAuthorizationExtraInfo {
+  quickLoginAnonymousPhone?: string;
+}
+
+interface HmsAuthorizationData {
+  authorizationCode?: string;
+  extraInfo?: HmsAuthorizationExtraInfo;
+}
+
+interface HmsAuthorizationResponse {
+  state?: string;
+  data?: HmsAuthorizationData;
+}
+
+interface HmsAuthorizationController {
+  executeRequest(request: HmsAuthorizationRequest): Promise<HmsAuthorizationResponse>;
+}
+
+interface HmsHuaweiIDProvider {
+  createAuthorizationWithHuaweiIDRequest(): HmsAuthorizationRequest;
+}
+
+// The provider/controller constructors are ESObject (the ArkTS linter rejects construct
+// signatures on interfaces: arkts-no-ctor-signatures-iface); `new ctor(...)` on an ESObject
+// crosses into the dynamic shape the unresolved kit module actually has.
+interface HmsAccountAuthentication {
+  HuaweiIDProvider: ESObject;
+  AuthenticationController: ESObject;
+}
+
+interface HmsAccountKit {
+  authentication: HmsAccountAuthentication;
+}
+
+// Map Kit probe (reserved sink): MapComponent is an ArkUI component whose declaration exists
+// only in the HarmonyOS SDK flavor, so this shell can only probe the runtime module and answer
+// the capability bits; the overlay is documented follow-up work (see the packaging doc).
+interface HmsMapKit {
+  MapComponent: ESObject;
+  map: ESObject;
+  mapCommon: ESObject;
+}
+
 // Logging (audit ARKTS-S3): the shell logs through hilog with one domain/tag pair; the private
 // log helpers in the struct keep the %{public}s format so device logs stay readable.
 const DOMAIN = 0x0002;
@@ -358,8 +421,14 @@ struct Index {
   // once per page. A kit whose probe failed keeps its sink unregistered.
   private hmsShareKit: HmsShareKit | undefined = undefined;
   private hmsScanKit: HmsScanKit | undefined = undefined;
+  private hmsPushKit: HmsPushKit | undefined = undefined;
+  private hmsAccountKit: HmsAccountKit | undefined = undefined;
+  private hmsMapKit: HmsMapKit | undefined = undefined;
   private hmsShareUnavailable: boolean = false;
   private hmsScanUnavailable: boolean = false;
+  private hmsPushUnavailable: boolean = false;
+  private hmsAccountUnavailable: boolean = false;
+  private hmsMapUnavailable: boolean = false;
   // Camera Kit is preloaded asynchronously (dynamic import) because the flashlight sink is
   // synchronous: the API surface the sink needs is cached as soon as the module resolves,
   // and the sink answers false while the module is not there yet (or is unavailable).
@@ -545,6 +614,176 @@ struct Index {
     }
     this.hostCall('notifyScanResult', typeof host !== 'undefined' && typeof host.notifyScanResult === 'function', (): void => {
       host.notifyScanResult(requestId, code, value);
+    });
+  }
+
+  // Push Kit probe (KIT-EXT2; see the interface block at the top of the file). Registers the
+  // token sink only when the runtime provides @kit.PushKit with getToken/deleteToken.
+  private async probePushKit(): Promise<void> {
+    if (this.hmsPushUnavailable || this.hmsPushKit !== undefined) {
+      return;
+    }
+    const kitName: string = '@kit.PushKit';
+    try {
+      const kit = (await import(kitName)) as HmsPushKit;
+      if (kit.pushService === undefined || kit.pushService.getToken === undefined || kit.pushService.deleteToken === undefined) {
+        throw new Error('the resolved module has no pushService.getToken/deleteToken');
+      }
+      this.hmsPushKit = kit;
+      this.hostCall('registerPushSink', typeof host !== 'undefined' && typeof host.registerPushSink === 'function', (): void => {
+        host.registerPushSink((requestId: number, op: number): void => {
+          this.runPush(requestId, op);
+        });
+      });
+      this.logInfo('[maui] Push Kit available: token sink registered');
+    } catch (pushProbeError) {
+      this.hmsPushUnavailable = true;
+      this.logError(`[maui] Push Kit unavailable on this device: ${(pushProbeError as Error).message}`);
+    }
+  }
+
+  // Push Kit sink body: op 0 getToken, op 1 deleteToken. rc (see OpenHarmonyPush.Status): 0 the
+  // call completed (the token payload for op 0), -1 the kit is unavailable or threw a
+  // non-positive code, a positive value is the Push Kit BusinessError code (1000900010 AGC
+  // configuration/signature, 1000900012 the push entitlement is not enabled, ...) which the
+  // managed side maps onto its own status.
+  private async runPush(requestId: number, op: number): Promise<void> {
+    const kit = this.hmsPushKit;
+    let code: number = -1;
+    let token: string = '';
+    if (kit !== undefined) {
+      try {
+        if (op === 1) {
+          await kit.pushService.deleteToken();
+        } else {
+          token = await kit.pushService.getToken();
+        }
+        code = 0;
+      } catch (pushError) {
+        const pushCode: number = (pushError as BusinessError).code;
+        code = pushCode > 0 ? pushCode : -1;
+        this.logError(`[maui] push request failed: op=${op} code=${code} ${(pushError as Error).message}`);
+      }
+    }
+    this.hostCall('notifyPushResult', typeof host !== 'undefined' && typeof host.notifyPushResult === 'function', (): void => {
+      host.notifyPushResult(requestId, op, code, token);
+    });
+  }
+
+  // Account Kit probe (KIT-EXT2): registers the authorization sink only when the runtime
+  // provides @kit.AccountKit authentication with the HuaweiIDProvider/AuthenticationController
+  // constructors.
+  private async probeAccountKit(): Promise<void> {
+    if (this.hmsAccountUnavailable || this.hmsAccountKit !== undefined) {
+      return;
+    }
+    const kitName: string = '@kit.AccountKit';
+    try {
+      const kit = (await import(kitName)) as HmsAccountKit;
+      if (kit.authentication === undefined || kit.authentication.HuaweiIDProvider === undefined ||
+        kit.authentication.AuthenticationController === undefined) {
+        throw new Error('the resolved module has no authentication.HuaweiIDProvider/AuthenticationController');
+      }
+      this.hmsAccountKit = kit;
+      this.hostCall('registerAccountSink', typeof host !== 'undefined' && typeof host.registerAccountSink === 'function', (): void => {
+        host.registerAccountSink((requestId: number, op: number, scopes: string): void => {
+          this.runAccount(requestId, op, scopes);
+        });
+      });
+      this.logInfo('[maui] Account Kit available: authorization sink registered');
+    } catch (accountProbeError) {
+      this.hmsAccountUnavailable = true;
+      this.logError(`[maui] Account Kit unavailable on this device: ${(accountProbeError as Error).message}`);
+    }
+  }
+
+  // Account Kit sink body: op 0 quick-login anonymous phone (scopes fixed to
+  // quickLoginAnonymousPhone, forceAuthorization=false), op 1 authorization with the
+  // '\n'-separated scopes from the managed side and permissions=['serviceauthcode'] so the
+  // answer carries the authorization code. rc follows OpenHarmonyAccount.Status: 0 success
+  // (payload = anonymous phone or authorization code, either may be empty), -1 unavailable or
+  // a state mismatch, a positive value is the Account Kit BusinessError code (1001502014 the
+  // quick-login scope is not approved, 1001500001 the signing fingerprint does not match, ...).
+  private async runAccount(requestId: number, op: number, scopes: string): Promise<void> {
+    const kit = this.hmsAccountKit;
+    let code: number = -1;
+    let payload: string = '';
+    if (kit !== undefined) {
+      try {
+        const providerCtor: ESObject = kit.authentication.HuaweiIDProvider;
+        const provider: HmsHuaweiIDProvider = new providerCtor() as HmsHuaweiIDProvider;
+        const request: HmsAuthorizationRequest = provider.createAuthorizationWithHuaweiIDRequest();
+        request.state = util.generateRandomUUID();
+        if (op === 0) {
+          request.scopes = ['quickLoginAnonymousPhone'];
+          request.forceAuthorization = false;
+        } else {
+          request.scopes = scopes.length > 0 ? scopes.split('\n') : ['openid'];
+          request.permissions = ['serviceauthcode'];
+          request.forceAuthorization = true;
+        }
+        const controllerCtor: ESObject = kit.authentication.AuthenticationController;
+        const controller: HmsAuthorizationController = new controllerCtor(this.hostContext()) as HmsAuthorizationController;
+        const response: HmsAuthorizationResponse = await controller.executeRequest(request);
+        if (response.state !== undefined && response.state !== request.state) {
+          // State mismatch: the response does not belong to this request (CSRF guard), so the
+          // answer stays the unavailable code instead of carrying an unverified payload.
+          code = -1;
+        } else if (op === 0) {
+          const extra = response.data?.extraInfo;
+          payload = extra !== undefined && extra.quickLoginAnonymousPhone !== undefined ? extra.quickLoginAnonymousPhone : '';
+          code = 0;
+        } else {
+          const data = response.data;
+          payload = data !== undefined && data.authorizationCode !== undefined ? data.authorizationCode : '';
+          code = 0;
+        }
+      } catch (accountError) {
+        const accountCode: number = (accountError as BusinessError).code;
+        code = accountCode > 0 ? accountCode : -1;
+        this.logError(`[maui] account request failed: op=${op} code=${code} ${(accountError as Error).message}`);
+      }
+    }
+    this.hostCall('notifyAccountResult', typeof host !== 'undefined' && typeof host.notifyAccountResult === 'function', (): void => {
+      host.notifyAccountResult(requestId, op, code, payload);
+    });
+  }
+
+  // Map Kit probe (KIT-EXT2, reserved sink): MapComponent is an ArkUI component whose
+  // declaration exists only in the HarmonyOS SDK flavor, so this shell cannot render it; the
+  // probe only records that the runtime module resolves (and future overlay ops can reuse the
+  // sink). On the OpenHarmony SDK/device the import fails, the sink stays unregistered and the
+  // managed OpenHarmonyMap probe degrades to null.
+  private async probeMapKit(): Promise<void> {
+    if (this.hmsMapUnavailable || this.hmsMapKit !== undefined) {
+      return;
+    }
+    const kitName: string = '@kit.MapKit';
+    try {
+      const kit = (await import(kitName)) as HmsMapKit;
+      if (kit.map === undefined || kit.mapCommon === undefined || kit.MapComponent === undefined) {
+        throw new Error('the resolved module has no MapComponent/map/mapCommon');
+      }
+      this.hmsMapKit = kit;
+      this.hostCall('registerMapSink', typeof host !== 'undefined' && typeof host.registerMapSink === 'function', (): void => {
+        host.registerMapSink((requestId: number): void => {
+          this.runMapProbe(requestId);
+        });
+      });
+      this.logInfo('[maui] Map Kit available: capability sink registered (MapComponent overlay is documented follow-up work)');
+    } catch (mapProbeError) {
+      this.hmsMapUnavailable = true;
+      this.logError(`[maui] Map Kit unavailable on this device: ${(mapProbeError as Error).message}`);
+    }
+  }
+
+  // Map Kit capability answer (reserved sink): bit 0 = @kit.MapKit resolved in this runtime;
+  // bit 1 = this shell can render a MapComponent overlay (always 0 here: the ArkUI component
+  // needs the HarmonyOS flavor build; see docs/openharmony-hap-packaging.md).
+  private runMapProbe(requestId: number): void {
+    const flags: number = this.hmsMapKit !== undefined ? 1 : 0;
+    this.hostCall('notifyMapResult', typeof host !== 'undefined' && typeof host.notifyMapResult === 'function', (): void => {
+      host.notifyMapResult(requestId, flags);
     });
   }
 
@@ -3069,10 +3308,14 @@ struct Index {
     });
     this.pullMenu();
 
-    // HMS Kit feature probes (Share/Scan): the sinks register only after the kit resolves, so a
-    // device without the kit keeps the managed side's documented degradation (see the probes).
+    // HMS Kit feature probes (Share/Scan/Push/Account/Map): the sinks register only after the
+    // kit resolves, so a device without the kit keeps the managed side's documented degradation
+    // (see the probes).
     this.probeShareKit();
     this.probeScanKit();
+    this.probePushKit();
+    this.probeAccountKit();
+    this.probeMapKit();
   }
 
   // Picker result framing (managed OpenHarmonyPickerClient.Complete): a cancel/unavailable
