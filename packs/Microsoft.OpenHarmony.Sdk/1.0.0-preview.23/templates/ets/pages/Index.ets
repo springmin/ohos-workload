@@ -10,7 +10,7 @@
 // managed code attaches through OpenHarmonyBridge.NodeContent.
 import { NodeContent } from '@kit.ArkUI';
 import { abilityAccessCtrl, common, Permissions, Want, wantConstant } from '@kit.AbilityKit';
-import { display, window } from '@kit.ArkUI';
+import { display, window, NodeController } from '@kit.ArkUI';
 import { fileIo, fileIo as fs, fileUri, picker } from '@kit.CoreFileKit';
 import host from 'libopenharmonyhost.so';
 import { pasteboard } from '@kit.BasicServicesKit';
@@ -271,13 +271,58 @@ interface HmsAccountKit {
   authentication: HmsAccountAuthentication;
 }
 
-// Map Kit probe (reserved sink): MapComponent is an ArkUI component whose declaration exists
-// only in the HarmonyOS SDK flavor, so this shell can only probe the runtime module and answer
-// the capability bits; the overlay is documented follow-up work (see the packaging doc).
+// Map Kit probe (KIT-EXT2 capability sink + R2-3 overlay, 2026-09-26): the MapComponent ArkUI
+// component only exists in the HarmonyOS SDK flavor, so the overlay lives in a separate template
+// module (ets/map/MapOverlay.ets) that the ARKTS_SDK_FLAVOR=harmony build compiles and installs
+// and the default OpenHarmony SDK build never sees. This shell pulls that module in through a
+// variable specifier (a literal './map/MapOverlay' import would be a hard ArkTS compile error in
+// the default build, and the module itself cannot compile without the component declaration) and
+// casts the resolved value to the local structural interfaces below. A runtime that provides
+// @kit.MapKit but no overlay module keeps the capability answer at bit 1 and the managed side on
+// its documented degradation; the sink ops then answer -1 instead of guessing.
 interface HmsMapKit {
   MapComponent: ESObject;
   map: ESObject;
   mapCommon: ESObject;
+}
+
+// Map overlay region/marker the managed side sends through the Map sink (JSON argument of the
+// corresponding op; see runMapCommand).
+interface HmsMapOverlayRegion {
+  latitude: number;
+  longitude: number;
+  zoom: number;
+}
+
+interface HmsMapOverlayMarker {
+  id: string;
+  latitude: number;
+  longitude: number;
+  title: string;
+}
+
+// Overlay -> shell events (forwarded through the Map sink with request id 0, code 0 and the
+// event op: 1 map ready, 2 marker click (payload = marker id), 3 camera idle (payload =
+// "latitude\tlongitude\tzoom")).
+interface HmsMapOverlayEvents {
+  onReady: () => void;
+  onMarkerClick: (id: string) => void;
+  onCameraIdle: (latitude: number, longitude: number, zoom: number) => void;
+}
+
+// Overlay proxy implemented by MapOverlay.ets. Only nodeController is read by build()
+// (NodeContainer); the rest are the control surface the sink ops drive.
+interface HmsMapOverlayProxy {
+  nodeController: NodeController;
+  setRegion: (region: HmsMapOverlayRegion) => void;
+  addMarker: (marker: HmsMapOverlayMarker) => void;
+  dispose: () => void;
+}
+
+// The resolved overlay module. The proxy constructor is an ESObject (the ArkTS linter rejects
+// construct signatures on interfaces: arkts-no-ctor-signatures-iface), like the kit ctors.
+interface HmsMapOverlayModule {
+  MapOverlayProxy: ESObject;
 }
 
 // Logging (audit ARKTS-S3): the shell logs through hilog with one domain/tag pair; the private
@@ -424,6 +469,16 @@ struct Index {
   private hmsPushKit: HmsPushKit | undefined = undefined;
   private hmsAccountKit: HmsAccountKit | undefined = undefined;
   private hmsMapKit: HmsMapKit | undefined = undefined;
+  // Map overlay (R2-3): the overlay module resolved in this shell build, the live proxy while
+  // the overlay exists, the cached capability flags (bit 0 = @kit.MapKit resolved, bit 1 = the
+  // overlay module resolved) and the cached overlay-module failure. mapOverlayActive is the
+  // @State build() reads (the proxy itself is a plain field: only its nodeController is used).
+  private hmsMapOverlay: HmsMapOverlayProxy | undefined = undefined;
+  private hmsMapOverlayModule: HmsMapOverlayModule | undefined = undefined;
+  private hmsMapOverlayUnavailable: boolean = false;
+  private hmsMapFlags: number = 0;
+  @State mapOverlayActive: boolean = false;
+  @State mapOverlayVisible: boolean = false;
   private hmsShareUnavailable: boolean = false;
   private hmsScanUnavailable: boolean = false;
   private hmsPushUnavailable: boolean = false;
@@ -749,13 +804,17 @@ struct Index {
     });
   }
 
-  // Map Kit probe (KIT-EXT2, reserved sink): MapComponent is an ArkUI component whose
-  // declaration exists only in the HarmonyOS SDK flavor, so this shell cannot render it; the
-  // probe only records that the runtime module resolves (and future overlay ops can reuse the
-  // sink). On the OpenHarmony SDK/device the import fails, the sink stays unregistered and the
-  // managed OpenHarmonyMap probe degrades to null.
+  // Map Kit probe (KIT-EXT2 capability sink + R2-3 overlay): the sink registers only when the
+  // runtime provides @kit.MapKit with MapComponent/map/mapCommon. The device syscap
+  // (SystemCapability.Map.Core) is checked first so a runtime without the map view never reports
+  // the kit as usable. The overlay module probe then decides bit 1 (see probeMapOverlay).
   private async probeMapKit(): Promise<void> {
     if (this.hmsMapUnavailable || this.hmsMapKit !== undefined) {
+      return;
+    }
+    if (!canIUse('SystemCapability.Map.Core')) {
+      this.hmsMapUnavailable = true;
+      this.logError('[maui] Map Kit unavailable: the device reports no SystemCapability.Map.Core');
       return;
     }
     const kitName: string = '@kit.MapKit';
@@ -765,25 +824,161 @@ struct Index {
         throw new Error('the resolved module has no MapComponent/map/mapCommon');
       }
       this.hmsMapKit = kit;
+      const overlayAvailable: boolean = await this.probeMapOverlay();
+      this.hmsMapFlags = overlayAvailable ? 3 : 1;
       this.hostCall('registerMapSink', typeof host !== 'undefined' && typeof host.registerMapSink === 'function', (): void => {
-        host.registerMapSink((requestId: number): void => {
-          this.runMapProbe(requestId);
+        host.registerMapSink((requestId: number, op: number, args: string): void => {
+          this.runMapCommand(requestId, op, args);
         });
       });
-      this.logInfo('[maui] Map Kit available: capability sink registered (MapComponent overlay is documented follow-up work)');
+      this.logInfo(`[maui] Map Kit available: sink registered (overlay ${overlayAvailable ? 'available' : 'unavailable in this shell build'})`);
     } catch (mapProbeError) {
       this.hmsMapUnavailable = true;
       this.logError(`[maui] Map Kit unavailable on this device: ${(mapProbeError as Error).message}`);
     }
   }
 
-  // Map Kit capability answer (reserved sink): bit 0 = @kit.MapKit resolved in this runtime;
-  // bit 1 = this shell can render a MapComponent overlay (always 0 here: the ArkUI component
-  // needs the HarmonyOS flavor build; see docs/openharmony-hap-packaging.md).
-  private runMapProbe(requestId: number): void {
-    const flags: number = this.hmsMapKit !== undefined ? 1 : 0;
+  // Map overlay module probe (R2-3): the overlay module is part of the HarmonyOS-flavor template
+  // set only (it names the MapComponent component), so the specifier stays in a variable and the
+  // resolved value is cast to HmsMapOverlayModule. The default OpenHarmony shell fails this probe
+  // once (logged as a warning: the kit itself is fine, only the overlay is missing) and keeps
+  // answering bit 1 = 0, which is what the managed side gates on.
+  private async probeMapOverlay(): Promise<boolean> {
+    if (this.hmsMapOverlayUnavailable || this.hmsMapOverlayModule !== undefined) {
+      return this.hmsMapOverlayModule !== undefined;
+    }
+    const overlayModule: string = './map/MapOverlay';
+    try {
+      const module = (await import(overlayModule)) as HmsMapOverlayModule;
+      if (module.MapOverlayProxy === undefined) {
+        throw new Error('the resolved overlay module has no MapOverlayProxy');
+      }
+      this.hmsMapOverlayModule = module;
+      return true;
+    } catch (overlayProbeError) {
+      this.hmsMapOverlayUnavailable = true;
+      this.logWarn(`[maui] Map overlay unavailable in this shell build: ${(overlayProbeError as Error).message}`);
+      return false;
+    }
+  }
+
+  // Map sink body (R2-3). op 0 answers the capability flags (bit 0 = @kit.MapKit resolved,
+  // bit 1 = the overlay module resolved); ops 1..6 drive the overlay: 1 create, 2 destroy,
+  // 3 show, 4 hide, 5 set region (JSON HmsMapOverlayRegion), 6 add marker (JSON
+  // HmsMapOverlayMarker). host.notifyMapResult(requestId, op, code, payload) carries the answer:
+  // code 0 = the op was applied, -1 = the kit/overlay is unavailable or the op is unknown, -2 =
+  // the overlay call itself failed. Overlay events go through the same export with requestId 0
+  // (see notifyMapEvent), so the managed side can tell answers and events apart.
+  private runMapCommand(requestId: number, op: number, args: string): void {
+    let code: number = -1;
+    let payload: string = '';
+    if (op === 0) {
+      code = 0;
+      payload = `${this.hmsMapFlags}`;
+    } else if (this.hmsMapKit === undefined || this.hmsMapOverlayModule === undefined) {
+      // No kit or no overlay in this shell build: answer unavailable instead of guessing.
+      code = -1;
+    } else {
+      try {
+        if (op === 1) {
+          code = this.createMapOverlay() ? 0 : -2;
+        } else if (op === 2) {
+          code = this.destroyMapOverlay() ? 0 : -2;
+        } else if (op === 3) {
+          code = this.setMapOverlayVisible(true) ? 0 : -2;
+        } else if (op === 4) {
+          code = this.setMapOverlayVisible(false) ? 0 : -2;
+        } else if (op === 5) {
+          const region = JSON.parse(args) as HmsMapOverlayRegion;
+          const overlay = this.hmsMapOverlay;
+          if (overlay !== undefined) {
+            overlay.setRegion(region);
+            code = 0;
+          } else {
+            code = -2;
+          }
+        } else if (op === 6) {
+          const marker = JSON.parse(args) as HmsMapOverlayMarker;
+          const overlay = this.hmsMapOverlay;
+          if (overlay !== undefined) {
+            overlay.addMarker(marker);
+            code = 0;
+          } else {
+            code = -2;
+          }
+        } else {
+          code = -1;
+        }
+      } catch (mapCommandError) {
+        code = -2;
+        this.logError(`[maui] map op ${op} failed: ${(mapCommandError as Error).message}`);
+      }
+    }
     this.hostCall('notifyMapResult', typeof host !== 'undefined' && typeof host.notifyMapResult === 'function', (): void => {
-      host.notifyMapResult(requestId, flags);
+      host.notifyMapResult(requestId, op, code, payload);
+    });
+  }
+
+  // Creates the overlay proxy (idempotent). The MapComponent only appears once the NodeContainer
+  // below mounts the proxy's NodeController, so this returns as soon as the proxy exists; the
+  // overlay reports the controller through the onReady event.
+  private createMapOverlay(): boolean {
+    if (this.hmsMapOverlay !== undefined) {
+      return true;
+    }
+    const module = this.hmsMapOverlayModule;
+    if (module === undefined) {
+      return false;
+    }
+    const proxyCtor: ESObject = module.MapOverlayProxy;
+    const events: HmsMapOverlayEvents = {
+      onReady: (): void => {
+        this.notifyMapEvent(1, '');
+      },
+      onMarkerClick: (id: string): void => {
+        this.notifyMapEvent(2, id);
+      },
+      onCameraIdle: (latitude: number, longitude: number, zoom: number): void => {
+        this.notifyMapEvent(3, `${latitude}\t${longitude}\t${zoom}`);
+      }
+    };
+    const proxy: HmsMapOverlayProxy = new proxyCtor(this.getUIContext(), events) as HmsMapOverlayProxy;
+    this.hmsMapOverlay = proxy;
+    this.mapOverlayVisible = true;
+    this.mapOverlayActive = true;
+    return true;
+  }
+
+  // Destroys the overlay (idempotent): the NodeContainer leaves the tree on the next build and
+  // the proxy releases the MapComponent/BuilderNode. A late overlay callback after this point
+  // must not reach the host; the proxy owns that guard (see MapOverlay.ets).
+  private destroyMapOverlay(): boolean {
+    const overlay = this.hmsMapOverlay;
+    this.mapOverlayActive = false;
+    this.mapOverlayVisible = false;
+    this.hmsMapOverlay = undefined;
+    if (overlay !== undefined) {
+      try {
+        overlay.dispose();
+      } catch (disposeError) {
+        this.logWarn(`[maui] map overlay dispose failed: ${(disposeError as Error).message}`);
+      }
+    }
+    return true;
+  }
+
+  private setMapOverlayVisible(visible: boolean): boolean {
+    if (this.hmsMapOverlay === undefined) {
+      return false;
+    }
+    this.mapOverlayVisible = visible;
+    return true;
+  }
+
+  // Overlay -> managed events (requestId 0): op 1 ready, 2 marker click, 3 camera idle.
+  private notifyMapEvent(op: number, payload: string): void {
+    this.hostCall('notifyMapResult', typeof host !== 'undefined' && typeof host.notifyMapResult === 'function', (): void => {
+      host.notifyMapResult(0, op, 0, payload);
     });
   }
 
@@ -3461,6 +3656,9 @@ struct Index {
   // extra) are closed for the same reason: their kit listeners are bound to this page instance.
   // The soft-input avoid-area listener is window-scoped and is unregistered the same way.
   aboutToDisappear(): void {
+    // Map overlay (R2-3): release the MapComponent/BuilderNode with the page so the kit's map
+    // view and its listeners do not outlive it (the proxy also drops late callbacks).
+    this.destroyMapOverlay();
     // Callback deregistration ledger first: the kit listeners (display, battery events,
     // connectivity, bluetooth discovery) must not outlive the page.
     this.runDisposers();
@@ -4151,6 +4349,19 @@ struct Index {
         .height('100%')
 
       ContentSlot(this.content)
+
+      // Map overlay (R2-3): only mounted while the managed side created the overlay through the
+      // Map sink (op 1) and the shell resolved the harmony-flavor overlay module. The
+      // NodeContainer mounts the proxy's NodeController, whose makeNode builds the MapComponent;
+      // show/hide is the visibility toggle (the component stays alive, so a later show does not
+      // pay a map re-create). Under the overlay sit the XComponent/ContentSlot (managed surface);
+      // above it stay the shell panel, menu handle and accessibility self-check.
+      if (this.mapOverlayActive && this.hmsMapOverlay !== undefined) {
+        NodeContainer(this.hmsMapOverlay.nodeController)
+          .visibility(this.mapOverlayVisible ? Visibility.Visible : Visibility.None)
+          .width('100%')
+          .height('100%')
+      }
 
       // Shell panel (Shell handler extras): the flyout header/footer text and the managed
       // search state. It only appears while one of them is present, so an app without shell

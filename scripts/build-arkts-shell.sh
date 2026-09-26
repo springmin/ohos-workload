@@ -47,12 +47,16 @@
 # the HMS-kit shell variant (Share/Scan/... need the hms/ets declarations the OpenHarmony SDK does
 # not ship). It is the only branch that can compile the HMS Kit code paths: a literal
 # import('@kit.ShareKit') is a hard ArkTS compile error on the OpenHarmony SDK (KIT-IMPL probe a,
-# 2026-09-25). The branch changes three things and nothing else: the SDK root comes from
-# ARKTS_HARMONY_SDK_ROOT (or DEVECO_SDK_HOME), runtimeOS is HarmonyOS and compatibleSdkVersion
+# 2026-09-25). The branch changes four things and nothing else: the SDK root comes from
+# ARKTS_HARMONY_SDK_ROOT (or DEVECO_SDK_HOME), runtimeOS is HarmonyOS, compatibleSdkVersion
 # defaults to 6.1.0(23) - the value the device-side DevEco build used to emit the accepted
-# 13.0.1.0 abc (MyApplication, 2026-09-21). The abc header gate (ARKTS_MAX_BC_VERSION 13.0.1.0)
-# is unchanged, so a HarmonyOS build that raises es2abc above the device limit still fails here.
-# The branch is scaffold-verified (--scaffold-only) but a full build needs the SDK present; see
+# 13.0.1.0 abc (MyApplication, 2026-09-21) - and the UI variant additionally copies the Map
+# overlay module (ets/map/MapOverlay.ets, R2-3 2026-09-26: the only file that names MapComponent,
+# whose ArkUI declaration also lives in hms/ets). The default flavor never compiles that module,
+# so the page's dynamic import of './map/MapOverlay' fails at runtime there and the Map sink
+# reports capability bit 1 = 0. The abc header gate (ARKTS_MAX_BC_VERSION 13.0.1.0) is unchanged,
+# so a HarmonyOS build that raises es2abc above the device limit still fails here. The branch is
+# scaffold-verified (--scaffold-only) but a full build needs the SDK present; see
 # docs/openharmony-hap-packaging.md "HarmonyOS SDK branch".
 # --diagnose-log <file>, --check-project-deps <dir> and --scaffold-only <dir> expose those pieces
 # to scripts/selftest-build-arkts-shell.sh without node, hvigor or an SDK.
@@ -592,7 +596,7 @@ import hashlib, json, os, sys
 root, dist = sys.argv[1], sys.argv[2]
 versions = ['1.0.0-preview.22', '1.0.0-preview.23', '1.0.0-preview.24']
 common = ['dotnet-payload', 'bundleCodeDir', 'payload-in-libs', 'dotnet.marker']
-ui_only = ['ohos_dotnet_surface', 'ohos_dotnet_input', '__hwvInvokeDotNet']
+ui_only = ['ohos_dotnet_surface', 'ohos_dotnet_input', '__hwvInvokeDotNet', './map/MapOverlay']
 errors = []
 provenance_ref = None
 abc_ref = {}
@@ -931,6 +935,15 @@ if [ "$VARIANT" = ui ]; then
     mkdir -p "$PROJ/entry/src/main/ets/pages"
     cp "$TPL/ets/entryability/EntryAbility.ui.ets" "$PROJ/entry/src/main/ets/entryability/EntryAbility.ets"
     cp "$TPL/ets/pages/Index.ets" "$PROJ/entry/src/main/ets/pages/Index.ets"
+    # Map overlay (R2-3): ets/map/MapOverlay.ets names the MapComponent ArkUI component, which
+    # only the HarmonyOS SDK declares (hms/ets), so only the harmony branch copies it into the
+    # project. The default OpenHarmony SDK build must not compile it: the page's dynamic import
+    # then fails at runtime (the module has no record in the abc), the Map sink reports
+    # capability bit 1 = 0 and the managed side keeps the documented degradation.
+    if [ "$SDK_FLAVOR" = harmony ]; then
+        mkdir -p "$PROJ/entry/src/main/ets/map"
+        cp "$TPL/ets/map/MapOverlay.ets" "$PROJ/entry/src/main/ets/map/MapOverlay.ets"
+    fi
     OUT_NAME=modules.abc
 else
     # Headless variant: the page-free ability only. No pages/Index is copied and main_pages
