@@ -625,6 +625,14 @@ per-project switches:
   resolves the runtime pack to the linux-musl-arm64 assets; managed assemblies are portable, and
   the ref pack is pinned with the runtime so compile and run come from one published build. The
   pin is scoped to net11.0; the net10.0 KFR already points at a published 10.0.x version.
+- `targets/OpenHarmony.PlatformItems.targets` also widens the SDK's AOT `KnownRuntimePack` for
+  `Microsoft.NETCore.App` with `openharmony-arm64`. The bundled AOT RID list carries `ohos-arm64`
+  and the linux-musl fallbacks but not the platform RID, so an AOT publish of an openharmony TFM
+  resolved no `Microsoft.NETCore.App.Runtime.NativeAOT.*` runtime pack and ilc failed with
+  `The PrivateSdkAssemblies ItemGroup is required for _ComputeAssembliesToCompileToNative`
+  (the `<ILCompiler pack>/runtimes/<rid>/` fallback has no `native/*.dll`). With the RID
+  widened, the exact openharmony pack wins over the linux-musl fallback; see "NativeAOT HAP
+  variant" below.
 
 Consumer effect: `dotnet restore` and `dotnet publish -r openharmony-arm64` work out of the box
 for projects that pull AspNetCore in transitively; `test/hello-maui-app` no longer carries the
@@ -646,6 +654,57 @@ Version coupling: the pin is one constant in the three pack copies (identical ap
 own preview.NN strings). When the SDK band moves, check which AspNetCore GA version that band
 publishes and update the pin; `scripts/selftest-packs.sh` T7 gates the evaluated pin, the RID
 default and the apphost download opt-out.
+
+## NativeAOT HAP variant
+
+The same `_OpenHarmonyStageHap` pipeline packages a NativeAOT publish. `test/hello-maui-app`
+carries the reference implementation: with `-p:PublishAot=true` (or `OpenHarmonyAotApp=true`)
+the project switches to `OutputType=Library` + `NativeLib=Shared` and exports its own launch
+entry (`[UnmanagedCallersOnly(EntryPoint = "openharmony_app_main")]` in `AotEntry.cs`), matching
+the host's AOT route (`docs/aot-single-entry.md`: the host probes `<app_dir>/lib<stem>.so` and
+calls the export before hostfxr).
+
+One publish produces both hap variants, like the JIT route:
+
+```sh
+dotnet publish test/hello-maui-app/hello-maui-app.csproj \
+    -f net11.0-openharmony26.0 -r openharmony-arm64 -c Release \
+    -p:PublishAot=true -p:PublishAotUsingRuntimePack=true \
+    -p:CopyOutputSymbolsToPublishDirectory=false \
+    -p:OpenHarmonyHapPackage=true -p:OpenHarmonySdkRoot=$OHOS_SDK
+```
+
+- `PublishAotUsingRuntimePack=true` is required: it is what makes the SDK's framework-reference
+  processing pick the AOT `KnownRuntimePack` (widened to openharmony-arm64 in the pack, see
+  "Framework pack resolution") instead of falling back to `<ILCompiler pack>/runtimes/<rid>/`.
+- Packs: `Microsoft.NETCore.App.Runtime.NativeAOT.openharmony-arm64` (runtime pack) +
+  `runtime.openharmony-arm64.Microsoft.DotNet.ILCompiler` (target ilc); the build host also
+  needs its own `runtime.<host>-Microsoft.DotNet.ILCompiler` (the AOT-ENABLE mirror,
+  `eng/ohos-install/fetch-nativeaot-packs.sh`).
+- The publish output is a single `lib<stem>.so` (no managed assemblies, no CoreCLR natives), so
+  the staging carries it in `libs/<abi>/`: app library + host + `libc++_shared.so` +
+  `.dotnet-payload.json`, all covered by the same `OpenHarmonyCodesign` pass and the HAP
+  signature block. `module.json` keeps the shared template (`libIsolation:true`), and
+  `resources/rawfile/app.json` keeps naming the entry assembly
+  (`hello-maui-app.dll`), which is how the host derives `lib<stem>.so`.
+- `-p:CopyOutputSymbolsToPublishDirectory=false` is recommended: the native `.dbg` otherwise
+  lands in `libs/` and in `dotnet.zip` and roughly triples the hap size. The symbol file stays
+  in `obj/**/native/`.
+- IL gate: the reference demo publishes with **0 IL2026/IL3050/IL3051** - the three template
+  self-bindings live behind one `[UnconditionalSuppressMessage]` helper (`App.cs`), because the
+  string-path `SetBinding` overload and the `Binding(string)` constructor are both annotated
+  `RequiresUnreferencedCode` in MAUI. Warnings outside the gate (`IL3000` from the ASP.NET
+  BlazorWebView asset loader, MAUI `NETSDK1188` locale warnings) are not trim defects.
+- Launch scope: the ArkTS shell starts the bridged route (`start_app`), which is JIT-only, so an
+  AOT hap is the one-shot `run_app` payload shape and the packaging deliverable; wiring
+  `start_app` to the AOT probe is follow-up work (host + shell). The host route is verified
+  locally without a device: `test/aot-smoke/run-local-smoke.sh` compiles the fake app and
+  `test_host`, self-signs both with `binary-sign-tool -selfSign 1` (an OpenHarmony kernel
+  refuses unsigned ELFs: execve and dlopen both return EACCES) and asserts the payload
+  (`<dir>/FakeApp.dll\nalpha\nbeta`) and the exit code. Against the real publish,
+  `test_host <publish-dir> hello-maui-app.dll` loads the AOT library, runs the app's module
+  initializers and bridge registration, then waits for the ArkUI surface (on a host without the
+  shared ICU data, set `DOTNET_SYSTEM_GLOBALIZATION_INVARIANT=1` for that run).
 
 ## Packaging task assembly
 

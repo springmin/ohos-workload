@@ -14,6 +14,15 @@
          workload owns the RID until it ships in Microsoft.NETCore.Platforms. -->
     <KnownFrameworkReference Update="Microsoft.NETCore.App"
                               RuntimePackRuntimeIdentifiers="%(RuntimePackRuntimeIdentifiers);openharmony-arm64" />
+    <!-- NativeAOT runtime pack: the SDK's AOT KnownRuntimePack (RuntimePackLabels="NativeAOT",
+         RuntimePackNamePatterns="Microsoft.NETCore.App.Runtime.NativeAOT.**RID**") lists
+         ohos-arm64 and linux-musl-arm64 but not openharmony-arm64, so an AOT publish of this
+         platform resolved no runtime pack and ilc failed with "The PrivateSdkAssemblies
+         ItemGroup is required". Widen the AOT RID list like the CoreCLR KnownFrameworkReference
+         above; with PublishAotUsingRuntimePack=true the exact openharmony pack then wins over
+         the linux-musl fallback. -->
+    <KnownRuntimePack Update="Microsoft.NETCore.App"
+                      RuntimePackRuntimeIdentifiers="%(RuntimePackRuntimeIdentifiers);openharmony-arm64" />
     <!-- Valid TargetPlatformVersions (OpenHarmony API levels): CI public SDK = 20, device SDK = 26. -->
     <SdkSupportedTargetPlatformVersion Include="20.0" MinimumNETVersion="10.0" />
     <SdkSupportedTargetPlatformVersion Include="26.0" MinimumNETVersion="10.0" />

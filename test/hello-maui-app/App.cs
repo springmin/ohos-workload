@@ -4,11 +4,22 @@ using Microsoft.Maui;
 using Microsoft.Maui.Controls;
 using Microsoft.Maui.Controls.Shapes;
 using Microsoft.Maui.Storage;
+using System.Diagnostics.CodeAnalysis;
 
 namespace HelloMauiApp;
 
 public sealed class App : Application
 {
+    // NativeAOT gate: the string-path SetBinding overload and the Binding(string) constructor
+    // are both annotated [RequiresUnreferencedCode], so a template self-binding ("." binds the
+    // item itself) cannot be expressed without IL2026 in this MAUI version. The runtime call is
+    // the same one the JIT build uses, behind one controlled suppression instead of three
+    // unannotated warning sites; the AOT publish log then carries zero IL2026/IL3050/IL3051.
+    [UnconditionalSuppressMessage("Trimming", "IL2026",
+        Justification = "Template self-path binding to the item value itself; no member lookup.")]
+    private static void BindSelfPath(BindableObject target, BindableProperty property)
+        => target.SetBinding(property, ".");
+
     protected override Window CreateWindow(IActivationState? activationState)
         // The window hosts a flyout page (drawer) whose detail is a tabbed page; the main page
         // itself lives in a navigation page so the slice exercises every page type.
@@ -60,7 +71,7 @@ public sealed class App : Application
             ItemTemplate = new DataTemplate(() =>
             {
                 var slide = new Label { FontSize = 34, HorizontalOptions = LayoutOptions.Center };
-                slide.SetBinding(Label.TextProperty, ".");
+                BindSelfPath(slide, Label.TextProperty);
                 return slide;
             }),
             HeightRequest = 160,
@@ -170,7 +181,7 @@ public sealed class App : Application
             ItemTemplate = new DataTemplate(() =>
             {
                 var itemLabel = new Label { FontSize = 26 };
-                itemLabel.SetBinding(Label.TextProperty, ".");
+                BindSelfPath(itemLabel, Label.TextProperty);
                 return itemLabel;
             }),
             HeightRequest = 260,
@@ -191,7 +202,7 @@ public sealed class App : Application
             ItemTemplate = new DataTemplate(() =>
             {
                 var cell = new TextCell();
-                cell.SetBinding(TextCell.TextProperty, ".");
+                BindSelfPath(cell, TextCell.TextProperty);
                 return cell;
             }),
             HeightRequest = 200,

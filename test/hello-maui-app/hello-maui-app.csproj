@@ -50,6 +50,16 @@
   </PropertyGroup>
   <PropertyGroup Condition=" '$(OpenHarmonyAotApp)' == 'true' ">
     <DefineConstants>$(DefineConstants);OPENHARMONY_AOT</DefineConstants>
+    <!-- NativeAOT's shared-library mode (NativeLib=Shared) is only reachable from a library
+         project: Microsoft.NETCore.Native.Publish.targets fails the publish with "NativeLib
+         requires OutputType=Library" otherwise. The AOT app has no managed entry point to
+         generate either - the native host dlopens lib$(TargetName).so and calls the
+         openharmony_app_main export from AotEntry.cs - so OutputType is switched per variant
+         instead of at the top of the file (the JIT route keeps OutputType=Exe and its
+         apphost/entry-point behaviour). A Library target still publishes TargetFileName
+         (hello-maui-app.dll), which the hap staging writes into resources/rawfile/app.json as
+         the assembly name the host derives lib<stem>.so from. -->
+    <OutputType>Library</OutputType>
   </PropertyGroup>
   <ItemGroup>
     <!-- The Razor SDK publishes every *.json in the project (static-web-assets content rules),
