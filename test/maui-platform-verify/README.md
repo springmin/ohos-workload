@@ -49,7 +49,7 @@ allocation and jitter) budgets are exceeded.
 # (or the MauiSliceDir / HostingDll / OpenHarmonyGraphicsDll MSBuild properties) before building
 # elsewhere; an explicit -p: value wins over the environment and the absolute fallbacks.
 dotnet build -v:q
-dotnet bin/Debug/net11.0/verify.dll | grep -c '\[verify\]'   # expect 326 (313 checks + 4 fuzz + 1 frame perf + 8 a11y perf)
+dotnet bin/Debug/net11.0/verify.dll | grep -c '\[verify\]'   # expect 329 (316 checks + 4 fuzz + 1 frame perf + 8 a11y perf)
 ```
 
 The `interaction-regression` workflow (`.github/workflows/interaction-regression.yml`) runs the
@@ -60,7 +60,7 @@ suite on a GitHub runner as a real gate (on push to `master`, on pull requests a
 points `MAUI_SLICE_DIR` / `HOSTING_DLL` / `OPENHARMONY_GRAPHICS_DLL` at those roots, and fails the
 job unless the run exits 0, the suite's own `[suite]` contract line reports `assert=True` with at
 least the floor declared in `Program.cs`, both perf lines report `within=True`, and no `Unhandled`
-line is logged. The floor (306 = 326 - 20, the documented convention) lives only in `Program.cs`;
+line is logged. The floor (309 = 329 - 20, the documented convention) lives only in `Program.cs`;
 the workflow and `scripts/preflight.sh` both read the printed `[suite] checks=... floor=...` line
 instead of repeating a literal, so the two local/CI thresholds cannot drift apart.
 
@@ -169,7 +169,7 @@ jitter ~1.08x and 72,056 B/frame, and the a11y block reported ~0.3/0.5 ms for th
 ~0.07/0.28 ms for the publish pass (skip/republish). The post-batch run (commit a10b73e) reported
 avg 0.488 ms, p95 0.698 ms, jitter 1.43x and 3,720 B/frame, i.e. the ceiling is 3.72x the CI
 baseline. Every run ends with the `[suite]` contract line
-(`checks=326 total=326 floor=306 assert=True`), which the workflow and `scripts/preflight.sh`
+(`checks=329 total=329 floor=309 assert=True`), which the workflow and `scripts/preflight.sh`
 parse.
 
 ## Notes
@@ -179,7 +179,7 @@ parse.
 - The suite fails loudly (unhandled exception) when a slice change breaks startup or when an
   assertion for the gesture flows (including the drag-and-drop checks) does not hold; keep it at
   313 checks plus the 4 fuzz lines plus the 1 frame-perf line plus the 8 a11y-perf lines
-  (326 `[verify]` lines) when touching the platform slice. The total and the floor (total - 20)
+  (329 `[verify]` lines) when touching the platform slice. The total and the floor (total - 20)
   are declared in `Program.cs`; the run ends with a `[suite] checks=... floor=... assert=...`
   line and fails itself when the printed count is below the floor, so the CI job and
   `scripts/preflight.sh` do not repeat the threshold.
@@ -598,3 +598,20 @@ parse.
   321 + 3 = 324 base lines, plus the two COMP-ARKTS conformance lines (sources + abc
   provenance) = 326 = 313 interaction checks + 4 fuzz + 1 frame perf + 8 a11y perf; the workflow
   floor moves with the total (326 - 20 = 306).
+- KIT-EXT2 HMS kit platform extensions (Push token + Account authorization + Map reserved
+  capability sink): three `[verify]` lines. `kit4 shell probe` pins the three probes and their
+  sinks/call sites in the preview.22/23/24 shells (the variable-specifier imports
+  `@kit.PushKit`/`@kit.AccountKit`/`@kit.MapKit` cast to local structural interfaces, the
+  `registerPushSink`/`registerAccountSink`/`registerMapSink` registrations, the `getToken`/
+  `deleteToken`, `createAuthorizationWithHuaweiIDRequest` + `quickLoginAnonymousPhone` +
+  `forceAuthorization=false` and capability-probe bodies, and the aboutToAppear call sites) and
+  requires all three packs to carry the block. `kit5 bridge pins` pins the C ABI declarations
+  (`ohos_host_push_*`/`ohos_host_account_*`/`ohos_host_map_*`), the NAPI sink/notify names plus
+  the module-table entries, the managed P/Invoke entry points with the kit error-code maps
+  (`1000900010`/`1000900012` push, `1001502014`/`1001500001` account) and the three public-API
+  baseline entries. `kit6 degradation` drives all four new managed bridges with no host library:
+  Push GetToken/DeleteToken answer `Unavailable` (no token) and `IsSupported` false, Account
+  answers `Unavailable` (no payload) and `IsSupported` false, Map answers null and `IsSupported`
+  false, all without throwing. That is 3 lines: 324 + 3 = 327 base lines, plus the two COMP-ARKTS
+  conformance lines = 329 = 316 interaction checks + 4 fuzz + 1 frame perf + 8 a11y perf; the
+  workflow floor moves with the total (329 - 20 = 309).

@@ -12,7 +12,7 @@ using Microsoft.Maui.Platform;
 // after the fuzz tail) instead of letting every caller repeat its own threshold constant.
 VerifyLineCountingWriter verifyStdout = new(Console.Out);
 Console.SetOut(verifyStdout);
-const int verifyCheckTotal = 326;                     // documented full [verify] line count
+const int verifyCheckTotal = 329;                     // documented full [verify] line count
 const int verifyCheckFloor = verifyCheckTotal - 20;   // documented floor convention (total - 20)
 
 // A small image file for the Image handler.
@@ -316,18 +316,21 @@ Console.WriteLine($"[verify] sensors extra magnetometer={magnetometerDefault.Get
 
 // Orientation is wired to SENSOR_TYPE_ROTATION_VECTOR (259): the host forwards four components
 // (x, y, z, w) and the managed plumbing maps them onto OrientationSensorData unchanged, with no
-// reconstructed scalar part. Off-device there is no host library, so invoke the managed callback
-// the native listener calls; going through the public delegate type also pins the six-parameter
-// native signature.
+// reconstructed scalar part. Off-device there is no host library, so drive the callback the
+// native listener calls through its registered pointer; the harness delegate pins the
+// six-parameter native signature.
 var orientationProbe = OpenHarmonyOrientationSensor.Instance;
 Microsoft.Maui.Devices.Sensors.OrientationSensorData? rotationVectorReading = null;
 void OnRotationVector(object? sender, Microsoft.Maui.Devices.Sensors.OrientationSensorChangedEventArgs e)
     => rotationVectorReading = e.Reading;
 orientationProbe.ReadingChanged += OnRotationVector;
-var onReadingMethod = typeof(OpenHarmonySensors).GetMethod("OnReading",
-    System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static)!;
-var sensorCallback = (OpenHarmonySensors.SensorCallback)Delegate.CreateDelegate(typeof(OpenHarmonySensors.SensorCallback), onReadingMethod);
+// FIX-R1-MARSHAL-OFF: OnReading is [UnmanagedCallersOnly], so the harness enters it through the
+// native function pointer the sensor bridge hands SensorSetListener - the same address the host
+// calls - instead of binding the managed method with Delegate.CreateDelegate.
+var sensorCallback = NativeThunks.Invoker<NativeThunks.SensorCallback>(
+    NativeThunks.Pointer(typeof(OpenHarmonySensors), "_callback"));
 sensorCallback(OpenHarmonySensors.OrientationType, 0.5f, -0.25f, 0.125f, 0.75f, 123456L);
+GC.KeepAlive(sensorCallback);
 orientationProbe.ReadingChanged -= OnRotationVector;
 bool rotationVectorOk = OpenHarmonySensors.OrientationType == 259 && rotationVectorReading is not null &&
     rotationVectorReading.Value.Orientation.X == 0.5f && rotationVectorReading.Value.Orientation.Y == -0.25f &&
@@ -2702,6 +2705,131 @@ if (!kitDegradeOk)
     throw new InvalidOperationException("the HMS kit bridges must degrade off-device instead of throwing");
 }
 
+// KIT4: the second-batch shell probes (Push/Account/Map) follow the KIT1 shape - the module
+// specifier stays in a variable and the resolved value is cast to a local structural interface,
+// the sinks register only when the runtime resolves the kit, and the probes run from
+// aboutToAppear; all three byte-identical packs carry the block.
+bool kitShellPush = kitShell.Contains("const kitName: string = '@kit.PushKit';") &&
+    kitShell.Contains("const kit = (await import(kitName)) as HmsPushKit;") &&
+    kitShell.Contains("host.registerPushSink((requestId: number, op: number): void => {") &&
+    kitShell.Contains("private async runPush(requestId: number, op: number): Promise<void> {") &&
+    kitShell.Contains("kit.pushService.getToken()") &&
+    kitShell.Contains("kit.pushService.deleteToken()") &&
+    kitShell.Contains("host.notifyPushResult(requestId, op, code, token);");
+bool kitShellAccount = kitShell.Contains("const kitName: string = '@kit.AccountKit';") &&
+    kitShell.Contains("const kit = (await import(kitName)) as HmsAccountKit;") &&
+    kitShell.Contains("host.registerAccountSink((requestId: number, op: number, scopes: string): void => {") &&
+    kitShell.Contains("private async runAccount(requestId: number, op: number, scopes: string): Promise<void> {") &&
+    kitShell.Contains("createAuthorizationWithHuaweiIDRequest()") &&
+    kitShell.Contains("request.scopes = ['quickLoginAnonymousPhone'];") &&
+    kitShell.Contains("request.forceAuthorization = false;") &&
+    kitShell.Contains("host.notifyAccountResult(requestId, op, code, payload);");
+bool kitShellMap = kitShell.Contains("const kitName: string = '@kit.MapKit';") &&
+    kitShell.Contains("const kit = (await import(kitName)) as HmsMapKit;") &&
+    kitShell.Contains("host.registerMapSink((requestId: number): void => {") &&
+    kitShell.Contains("private runMapProbe(requestId: number): void {") &&
+    kitShell.Contains("host.notifyMapResult(requestId, flags);");
+bool kitShellCallsites2 = kitShell.Contains("this.probePushKit();") && kitShell.Contains("this.probeAccountKit();") &&
+    kitShell.Contains("this.probeMapKit();") && kitShell.Contains("Push Kit unavailable on this device:");
+int kitShellPacks2 = 0;
+foreach (string kitPackVersion in kitShellPackVersions)
+{
+    string? kitPackPath2 = FindHostSource($"packs/Microsoft.OpenHarmony.Sdk/{kitPackVersion}/templates/ets/pages/Index.ets");
+    string kitPackShell2 = kitPackPath2 is null ? string.Empty : File.ReadAllText(kitPackPath2);
+    kitShellPacks2 += kitPackShell2.Contains("registerPushSink") && kitPackShell2.Contains("registerAccountSink") &&
+        kitPackShell2.Contains("registerMapSink") && kitPackShell2.Contains("this.probeMapKit();") ? 1 : 0;
+}
+bool kitShellOk2 = kitShellPush && kitShellAccount && kitShellMap && kitShellCallsites2 && kitShellPacks2 == kitShellPackVersions.Length;
+Console.WriteLine($"[verify] kit4 shell probe push={kitShellPush} account={kitShellAccount} map={kitShellMap} callsites={kitShellCallsites2} packs={kitShellPacks2}/{kitShellPackVersions.Length} assert={kitShellOk2}");
+if (!kitShellOk2)
+{
+    throw new InvalidOperationException("the Push/Account/Map kit shell probes/sinks are missing or drifted");
+}
+
+// KIT5: the host and managed halves of the second batch: the C ABI declarations, the NAPI
+// sink/notify names, the napi module table entries, the managed P/Invoke entry points with their
+// kit error-code maps, and the public API baseline entries.
+string? kitPushPath = FindHostSource("OpenHarmonyPush.cs");
+string kitPush = kitPushPath is null ? string.Empty : File.ReadAllText(kitPushPath);
+string? kitAccountPath = FindHostSource("OpenHarmonyAccount.cs");
+string kitAccount = kitAccountPath is null ? string.Empty : File.ReadAllText(kitAccountPath);
+string? kitMapPath = FindHostSource("OpenHarmonyMap.cs");
+string kitMap = kitMapPath is null ? string.Empty : File.ReadAllText(kitMapPath);
+bool kitHostHeader2 = kitHeader.Contains("int ohos_host_push_available(void);") &&
+    kitHeader.Contains("int ohos_host_push_request(int request_id, int op);") &&
+    kitHeader.Contains("void ohos_host_push_register_result(void* callback);") &&
+    kitHeader.Contains("void ohos_host_push_result(int request_id, int op, int code, const char* token);") &&
+    kitHeader.Contains("int ohos_host_account_available(void);") &&
+    kitHeader.Contains("int ohos_host_account_request(int request_id, int op, const char* scopes);") &&
+    kitHeader.Contains("void ohos_host_account_register_result(void* callback);") &&
+    kitHeader.Contains("void ohos_host_account_result(int request_id, int op, int code, const char* payload);") &&
+    kitHeader.Contains("int ohos_host_map_available(void);") &&
+    kitHeader.Contains("int ohos_host_map_probe(int request_id);") &&
+    kitHeader.Contains("void ohos_host_map_register_result(void* callback);") &&
+    kitHeader.Contains("void ohos_host_map_result(int request_id, int flags);");
+bool kitHostNapi2 = kitNapi.Contains("extern \"C\" int ohos_host_push_available(void)") &&
+    kitNapi.Contains("extern \"C\" int ohos_host_push_request(int request_id, int op)") &&
+    kitNapi.Contains("extern \"C\" int ohos_host_account_request(int request_id, int op, const char* scopes)") &&
+    kitNapi.Contains("extern \"C\" int ohos_host_map_probe(int request_id)") &&
+    kitNapi.Contains("HostSinkPost(g_push_sink, call)") &&
+    kitNapi.Contains("HostSinkPost(g_account_sink, call)") &&
+    kitNapi.Contains("HostSinkPost(g_map_sink, call)") &&
+    kitNapi.Contains("{\"registerPushSink\", nullptr, RegisterPushSink") &&
+    kitNapi.Contains("{\"notifyPushResult\", nullptr, NotifyPushResult") &&
+    kitNapi.Contains("{\"registerAccountSink\", nullptr, RegisterAccountSink") &&
+    kitNapi.Contains("{\"notifyAccountResult\", nullptr, NotifyAccountResult") &&
+    kitNapi.Contains("{\"registerMapSink\", nullptr, RegisterMapSink") &&
+    kitNapi.Contains("{\"notifyMapResult\", nullptr, NotifyMapResult");
+bool kitManagedOk2 = kitPush.Contains("EntryPoint = \"ohos_host_push_available\"") &&
+    kitPush.Contains("EntryPoint = \"ohos_host_push_request\"") &&
+    kitPush.Contains("EntryPoint = \"ohos_host_push_register_result\"") &&
+    kitPush.Contains("public static async Task<OpenHarmonyPushToken> GetTokenAsync") &&
+    kitPush.Contains("public static async Task<OpenHarmonyPushStatus> DeleteTokenAsync") &&
+    kitPush.Contains("AppAuthFailed = 1000900010") &&
+    kitPush.Contains("ServiceNotEnabled = 1000900012") &&
+    kitAccount.Contains("EntryPoint = \"ohos_host_account_available\"") &&
+    kitAccount.Contains("EntryPoint = \"ohos_host_account_request\"") &&
+    kitAccount.Contains("EntryPoint = \"ohos_host_account_register_result\"") &&
+    kitAccount.Contains("public static Task<OpenHarmonyAccountResult> GetQuickLoginAnonymousPhoneAsync") &&
+    kitAccount.Contains("public static Task<OpenHarmonyAccountResult> AuthorizeAsync") &&
+    kitAccount.Contains("ScopeNotApproved = 1001502014") &&
+    kitAccount.Contains("FingerprintMismatch = 1001500001") &&
+    kitMap.Contains("EntryPoint = \"ohos_host_map_available\"") &&
+    kitMap.Contains("EntryPoint = \"ohos_host_map_probe\"") &&
+    kitMap.Contains("EntryPoint = \"ohos_host_map_register_result\"") &&
+    kitMap.Contains("public static async Task<OpenHarmonyMapCapability?> QueryCapabilitiesAsync") &&
+    kitPublicApi.Contains("Microsoft.Maui.Platform.OpenHarmonyPush.GetTokenAsync(") &&
+    kitPublicApi.Contains("Microsoft.Maui.Platform.OpenHarmonyAccount.GetQuickLoginAnonymousPhoneAsync(") &&
+    kitPublicApi.Contains("Microsoft.Maui.Platform.OpenHarmonyMap.QueryCapabilitiesAsync(");
+bool kitPinsOk2 = kitHostHeader2 && kitHostNapi2 && kitManagedOk2;
+Console.WriteLine($"[verify] kit5 bridge pins header={kitHostHeader2} napi={kitHostNapi2} managed={kitManagedOk2} assert={kitPinsOk2}");
+if (!kitPinsOk2)
+{
+    throw new InvalidOperationException("the Push/Account/Map host/managed bridge contract drifted");
+}
+
+// KIT6: off-device degradation of the second batch (no host library): Push GetToken/DeleteToken
+// answer Unavailable (no token) and IsSupported false, Account answers Unavailable (no payload)
+// and IsSupported false, Map answers null and IsSupported false; all without throwing.
+OpenHarmonyPushToken kitPushToken = await OpenHarmonyPush.GetTokenAsync();
+OpenHarmonyPushStatus kitPushDelete = await OpenHarmonyPush.DeleteTokenAsync();
+bool kitPushSupported = OpenHarmonyPush.IsSupported;
+OpenHarmonyAccountResult kitAccountPhone = await OpenHarmonyAccount.GetQuickLoginAnonymousPhoneAsync();
+OpenHarmonyAccountResult kitAccountAuth = await OpenHarmonyAccount.AuthorizeAsync(new[] { "openid" });
+bool kitAccountSupported = OpenHarmonyAccount.IsSupported;
+OpenHarmonyMapCapability? kitMapCaps = await OpenHarmonyMap.QueryCapabilitiesAsync();
+bool kitMapSupported = OpenHarmonyMap.IsSupported;
+bool kitDegradeOk2 = kitPushToken.Status == OpenHarmonyPushStatus.Unavailable && kitPushToken.Token is null &&
+    kitPushDelete == OpenHarmonyPushStatus.Unavailable && !kitPushSupported &&
+    kitAccountPhone.Status == OpenHarmonyAccountStatus.Unavailable && kitAccountPhone.Payload is null &&
+    kitAccountAuth.Status == OpenHarmonyAccountStatus.Unavailable && !kitAccountSupported &&
+    kitMapCaps is null && !kitMapSupported;
+Console.WriteLine($"[verify] kit6 degradation pushToken={kitPushToken.Status} pushDelete={kitPushDelete} pushSupported={kitPushSupported} accountPhone={kitAccountPhone.Status} accountAuth={kitAccountAuth.Status} accountSupported={kitAccountSupported} mapCaps={(kitMapCaps is null ? "<null>" : kitMapCaps.ToString())} mapSupported={kitMapSupported} assert={kitDegradeOk2}");
+if (!kitDegradeOk2)
+{
+    throw new InvalidOperationException("the Push/Account/Map kit bridges must degrade off-device instead of throwing");
+}
+
 // ---- V8: on-demand app-context publish (native -> napi -> shell -> managed bridge) -------------
 // V8 lets the ArkTS page publish the real app-context snapshot after startApp:
 // ohos_host_set_app_context(json) copies the JSON, exports it through OHOS_HOST_APP_CONTEXT,
@@ -2920,17 +3048,18 @@ if (!v8BridgeContractOk)
 }
 
 // V8m: the native registration hands the host exactly the surface callback this drill drives:
-// Attach binds s_surfaceThunk to OnSurfaceNative and passes it to ohos_host_register_bridge, so
-// the host's bridge_surface(...) replay ends in the handler below.
+// the bridge binds s_surfaceThunk at type initialization to OnSurfaceNative's native entry
+// (FIX-R1-MARSHAL-OFF: [UnmanagedCallersOnly] + delegate* unmanaged[Cdecl]) and Attach passes it
+// to ohos_host_register_bridge, so the host's bridge_surface(...) replay ends in the handler
+// below. The source pin keeps the pointer-to-thunk binding, which the runtime value alone cannot
+// show now that the field no longer carries a delegate.
 FieldInfo v8SurfaceThunkField = typeof(Microsoft.OpenHarmony.Hosting.OpenHarmonyBridge)
     .GetField("s_surfaceThunk", BindingFlags.NonPublic | BindingFlags.Static)
     ?? throw new InvalidOperationException("OpenHarmonyBridge.s_surfaceThunk was not found; the V8 drill pins the native surface callback");
-MethodInfo v8OnSurfaceNativeMethod = typeof(Microsoft.OpenHarmony.Hosting.OpenHarmonyBridge)
-    .GetMethod("OnSurfaceNative", BindingFlags.NonPublic | BindingFlags.Static)
-    ?? throw new InvalidOperationException("OpenHarmonyBridge.OnSurfaceNative was not found; the V8 drill drives it directly");
-Delegate? v8SurfaceThunk = (Delegate?)v8SurfaceThunkField.GetValue(null);
-bool v8SurfaceThunkOk = v8SurfaceThunk?.Method.Name == "OnSurfaceNative";
-Console.WriteLine($"[verify] v8 bridge surface thunk bound={v8SurfaceThunk is not null} target='{v8SurfaceThunk?.Method.Name ?? "<null>"}' assert={v8SurfaceThunkOk}");
+IntPtr v8SurfaceThunk = (IntPtr)(v8SurfaceThunkField.GetValue(null) ?? IntPtr.Zero);
+bool v8SurfaceThunkSource = v8Hosting.Contains("s_surfaceThunk = (IntPtr)(delegate* unmanaged[Cdecl]<IntPtr, int, int, int, void>)&OnSurfaceNative;");
+bool v8SurfaceThunkOk = v8SurfaceThunk != IntPtr.Zero && v8SurfaceThunkSource;
+Console.WriteLine($"[verify] v8 bridge surface thunk bound={v8SurfaceThunk != IntPtr.Zero} pointer=0x{v8SurfaceThunk.ToInt64():x} source={v8SurfaceThunkSource} assert={v8SurfaceThunkOk}");
 if (!v8SurfaceThunkOk)
 {
     throw new InvalidOperationException("OpenHarmonyBridge.s_surfaceThunk is not bound to OnSurfaceNative; the native replay would not reach the context refresh");
@@ -2969,11 +3098,14 @@ bridgeContextField.SetValue(null, null);
 v8SurfaceStateField.SetValue(null, null);
 Microsoft.OpenHarmony.Hosting.OpenHarmonyBridge.Initialized += V8OnInitialized;
 Microsoft.OpenHarmony.Hosting.OpenHarmonyBridge.SurfaceChanged += V8OnSurface;
+// FIX-R1-MARSHAL-OFF: the surface thunk is [UnmanagedCallersOnly]; the drill enters it through
+// the same native pointer the bridge registered.
+var v8OnSurfaceNative = NativeThunks.Invoker<NativeThunks.SurfaceCallback>(v8SurfaceThunk);
 
 // (1) A snapshot exported after the surface is up is re-read: the Initialized event carries the
 // new appDir and the Context property serves the replaced snapshot.
 Environment.SetEnvironmentVariable("OHOS_HOST_APP_CONTEXT", V8ContextJson(v8ContextAAppDir));
-v8OnSurfaceNativeMethod.Invoke(null, new object[] { IntPtr.Zero, 1080, 1920, (int)Microsoft.OpenHarmony.Hosting.OpenHarmonySurfaceState.Changed });
+v8OnSurfaceNative(IntPtr.Zero, 1080, 1920, (int)Microsoft.OpenHarmony.Hosting.OpenHarmonySurfaceState.Changed);
 bool v8PublishAOk = v8InitializedSeen.Count == 1 && v8InitializedSeen[0].AppDir == v8ContextAAppDir &&
     Microsoft.OpenHarmony.Hosting.OpenHarmonyBridge.Context?.AppDir == v8ContextAAppDir;
 Console.WriteLine($"[verify] v8 bridge republish A contextEvents={v8InitializedSeen.Count} appDir='{Microsoft.OpenHarmony.Hosting.OpenHarmonyBridge.Context?.AppDir ?? "<null>"}' assert={v8PublishAOk}");
@@ -2997,7 +3129,7 @@ if (!v8SurfaceAOk)
 // (3) A second, changed snapshot replaces the first and is re-read again (the set_app_context
 // path can run repeatedly; an unchanged snapshot must not re-raise, a changed one must).
 Environment.SetEnvironmentVariable("OHOS_HOST_APP_CONTEXT", V8ContextJson(v8ContextBAppDir));
-v8OnSurfaceNativeMethod.Invoke(null, new object[] { IntPtr.Zero, 1080, 1920, (int)Microsoft.OpenHarmony.Hosting.OpenHarmonySurfaceState.Changed });
+v8OnSurfaceNative(IntPtr.Zero, 1080, 1920, (int)Microsoft.OpenHarmony.Hosting.OpenHarmonySurfaceState.Changed);
 bool v8PublishBOk = v8InitializedSeen.Count == 2 && v8InitializedSeen[0].AppDir == v8ContextAAppDir &&
     v8InitializedSeen[1].AppDir == v8ContextBAppDir &&
     Microsoft.OpenHarmony.Hosting.OpenHarmonyBridge.Context?.AppDir == v8ContextBAppDir;
@@ -3012,7 +3144,7 @@ if (!v8PublishBOk)
 // fires - that is the 0/1 return distinction the shell/NAPI surface sees.
 int v8NotifyEventsBefore = v8InitializedSeen.Count;
 int v8NotifySurfacesBefore = v8SurfacesSeen.Count;
-v8OnSurfaceNativeMethod.Invoke(null, new object[] { IntPtr.Zero, 1080, 1920, (int)Microsoft.OpenHarmony.Hosting.OpenHarmonySurfaceState.Changed });
+v8OnSurfaceNative(IntPtr.Zero, 1080, 1920, (int)Microsoft.OpenHarmony.Hosting.OpenHarmonySurfaceState.Changed);
 bool v8NotifyOk = v8InitializedSeen.Count == v8NotifyEventsBefore &&
     v8SurfacesSeen.Count == v8NotifySurfacesBefore + 1 &&
     Microsoft.OpenHarmony.Hosting.OpenHarmonyBridge.Context?.AppDir == v8ContextBAppDir;
@@ -3024,6 +3156,7 @@ if (!v8NotifyOk)
 
 // V8o: restore the captured state (environment copy, stored context, stored surface) so the
 // remaining sections and the fuzz tail see exactly what they would have seen without the drill.
+GC.KeepAlive(v8OnSurfaceNative);
 Microsoft.OpenHarmony.Hosting.OpenHarmonyBridge.Initialized -= V8OnInitialized;
 Microsoft.OpenHarmony.Hosting.OpenHarmonyBridge.SurfaceChanged -= V8OnSurface;
 Environment.SetEnvironmentVariable("OHOS_HOST_APP_CONTEXT", v8EnvBefore);
@@ -3508,17 +3641,21 @@ catch (Exception ex)
 }
 long b1ClipboardMs = b1ClipboardWatch.ElapsedMilliseconds;
 bool b1ClipboardFast = b1ClipboardMs < (long)OpenHarmonyClipboardBridge.RequestTimeout.TotalMilliseconds / 2;
-MethodInfo? b1ClipboardChangedNative = typeof(OpenHarmonyClipboardBridge).GetMethod("OnNativeClipboardChanged", BindingFlags.NonPublic | BindingFlags.Static);
+// FIX-R1-MARSHAL-OFF: the pasteboard push enters the [UnmanagedCallersOnly] thunk through the
+// registered native pointer, not by reflecting the managed method.
+var b1ClipboardChangedNative = NativeThunks.Invoker<NativeThunks.VoidCallback>(
+    NativeThunks.Pointer(typeof(OpenHarmonyClipboardBridge), "s_changedCallback"));
 bool b1ClipboardPush = false;
 try
 {
-    b1ClipboardChangedNative?.Invoke(null, null);
-    b1ClipboardPush = b1ClipboardChangedNative is not null && b1ClipboardEvents == 1;
+    b1ClipboardChangedNative();
+    b1ClipboardPush = b1ClipboardEvents == 1;
 }
 catch (Exception ex)
 {
     Console.WriteLine($"[verify] clipboard push threw {ex.GetType().Name}: {ex.Message}");
 }
+GC.KeepAlive(b1ClipboardChangedNative);
 b1Clipboard.ClipboardContentChanged -= b1ClipboardHandler;
 bool b1ClipboardOk = b1ClipboardInstalled && !b1ClipboardThrew && b1ClipboardText is null &&
     !b1Clipboard.HasText && !b1ClipboardPackage && b1ClipboardFast && b1ClipboardPush;
@@ -3593,18 +3730,22 @@ EventHandler<Microsoft.Maui.Networking.ConnectivityChangedEventArgs> b1Connectiv
     b1ConnectivityEvents++;
 };
 b1Connectivity.ConnectivityChanged += b1ConnectivityHandler;
-MethodInfo? b1NetworkNative = typeof(OpenHarmonyConnectivityBridge).GetMethod("OnNativeNetworkAccess", BindingFlags.NonPublic | BindingFlags.Static);
+// FIX-R1-MARSHAL-OFF: the NetworkKit push enters the [UnmanagedCallersOnly] thunk through the
+// registered native pointer, not by reflecting the managed method.
+var b1NetworkNative = NativeThunks.Invoker<NativeThunks.IntCallback>(
+    NativeThunks.Pointer(typeof(OpenHarmonyConnectivityBridge), "s_callback"));
 bool b1ConnectivityPush = false;
 try
 {
-    b1NetworkNative?.Invoke(null, new object[] { 2 });
-    b1ConnectivityPush = b1NetworkNative is not null && b1ConnectivityEvents == 1 &&
+    b1NetworkNative(2);
+    b1ConnectivityPush = b1ConnectivityEvents == 1 &&
         b1ConnectivitySeen == Microsoft.Maui.Networking.NetworkAccess.Local;
 }
 catch (Exception ex)
 {
     Console.WriteLine($"[verify] connectivity push threw {ex.GetType().Name}: {ex.Message}");
 }
+GC.KeepAlive(b1NetworkNative);
 b1Connectivity.ConnectivityChanged -= b1ConnectivityHandler;
 bool b1ConnectivityOk = b1ConnectivityInstalled && b1ConnectivityMap && b1ConnectivityRead &&
     b1Connectivity.NetworkAccess == Microsoft.Maui.Networking.NetworkAccess.Unknown && b1ConnectivityPush;
@@ -4197,7 +4338,8 @@ bool n4PublishOk = n4Extras.Contains("private static void PublishSearch(OpenHarm
     n4Extras.Contains("state.IsVisible ? 1 : 0,") &&
     n4Extras.Contains("state.IsEnabled ? 1 : 0);") &&
     n4Extras.Contains("EnsureSearchListener();") &&
-    n4Extras.Contains("ShellSearchSetListenerNative(Marshal.GetFunctionPointerForDelegate(s_searchInteractionThunk));") &&
+    n4Extras.Contains("s_searchInteractionThunk = (IntPtr)(delegate* unmanaged[Cdecl]<int, IntPtr, void>)&OnSearchInteraction;") &&
+    n4Extras.Contains("ShellSearchSetListenerNative(s_searchInteractionThunk);") &&
     n4Extras.Contains("handler.Query = text;") &&
     n4Extras.Contains("controller.QueryConfirmed();") &&
     n4Extras.Contains("handler.Query = string.Empty;");
