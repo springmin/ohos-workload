@@ -325,6 +325,113 @@ interface HmsMapOverlayModule {
   MapOverlayProxy: ESObject;
 }
 
+// Live View Kit probe (R2-SHELL-EXT 2026-09-26; liveViewManager): the third HMS kit probe, the
+// same compile-safe shape as Push/Account/Map (the module specifier stays in a variable and the
+// resolved value is cast to the local structural interfaces below; a literal
+// import('@kit.LiveViewKit') is a hard ArkTS compile error on the OpenHarmony SDK). The sink
+// registers only when the device reports the live view syscap and the runtime resolves the kit.
+// The scenes implemented here are the TIMER scene's create/update/stop on the progress template:
+// title/text/progress plus the timer value in milliseconds.
+interface HmsLiveViewContent {
+  text: string;
+  textColor?: string;
+}
+
+// The progress template layout (progress is 0-100; the enum fields carry the kit's constants).
+interface HmsLiveViewProgressLayout {
+  layoutType: number;
+  progress: number;
+  color: string;
+  backgroundColor: string;
+  indicatorType: number;
+  indicatorIcon: string;
+  lineType: number;
+  nodeIcons: string[];
+}
+
+interface HmsLiveViewPrimary {
+  title: string;
+  content: HmsLiveViewContent[];
+  keepTime: number;
+  layoutData: HmsLiveViewProgressLayout;
+}
+
+interface HmsLiveViewCapsule {
+  type: number;
+  status: number;
+  icon?: string;
+  backgroundColor?: string;
+  title?: string;
+  content?: string;
+  time?: number;
+  isCountdown?: boolean;
+  isPaused?: boolean;
+}
+
+interface HmsLiveViewTimer {
+  time: number;
+  isCountdown: boolean;
+  isPaused: boolean;
+}
+
+interface HmsLiveViewData {
+  primary: HmsLiveViewPrimary;
+  capsule: HmsLiveViewCapsule;
+}
+
+// One live view request body (liveViewManager.LiveView): the shell keeps it across update/stop so
+// the sequence is incremented and the same id is targeted.
+interface HmsLiveView {
+  id: number;
+  event: string;
+  sequence: number;
+  isMute: boolean;
+  timer: HmsLiveViewTimer;
+  liveViewData: HmsLiveViewData;
+}
+
+// The managed side's JSON argument (op 0/1): {"id","title","text","progress","time"}.
+interface HmsLiveViewSpec {
+  id?: number;
+  title?: string;
+  text?: string;
+  progress?: number;
+  time?: number;
+}
+
+// liveViewManager's constant tables (the values come from the resolved kit at runtime).
+interface HmsLiveViewLayoutTypes {
+  LAYOUT_TYPE_PROGRESS: number;
+}
+
+interface HmsLiveViewIndicatorTypes {
+  INDICATOR_TYPE_UP: number;
+}
+
+interface HmsLiveViewLineTypes {
+  LINE_TYPE_NORMAL_SOLID_LINE: number;
+}
+
+interface HmsLiveViewCapsuleTypes {
+  CAPSULE_TYPE_TIMER: number;
+  CAPSULE_TYPE_TEXT: number;
+}
+
+interface HmsLiveViewManager {
+  isLiveViewEnabled(): Promise<boolean>;
+  startLiveView(view: HmsLiveView): Promise<Object>;
+  updateLiveView(view: HmsLiveView): Promise<Object>;
+  stopLiveView(view: HmsLiveView): Promise<Object>;
+  LayoutType: HmsLiveViewLayoutTypes;
+  IndicatorType: HmsLiveViewIndicatorTypes;
+  LineType: HmsLiveViewLineTypes;
+  CapsuleType: HmsLiveViewCapsuleTypes;
+}
+
+interface HmsLiveViewKit {
+  liveViewManager: HmsLiveViewManager;
+}
+
 // Logging (audit ARKTS-S3): the shell logs through hilog with one domain/tag pair; the private
 // log helpers in the struct keep the %{public}s format so device logs stay readable.
 const DOMAIN = 0x0002;
@@ -484,6 +591,13 @@ struct Index {
   private hmsPushUnavailable: boolean = false;
   private hmsAccountUnavailable: boolean = false;
   private hmsMapUnavailable: boolean = false;
+  // Live View Kit probe (R2-SHELL-EXT): the resolved kit plus the live view the shell owns
+  // (null before create / after stop) and the cached probe failure. The view object is kept so
+  // update/stop increment its sequence and target the same id; the managed side only sends the
+  // content fields.
+  private hmsLiveViewKit: HmsLiveViewKit | undefined = undefined;
+  private hmsLiveViewUnavailable: boolean = false;
+  private hmsLiveViewView: HmsLiveView | undefined = undefined;
   // Camera Kit is preloaded asynchronously (dynamic import) because the flashlight sink is
   // synchronous: the API surface the sink needs is cached as soon as the module resolves,
   // and the sink answers false while the module is not there yet (or is unavailable).
@@ -980,6 +1094,181 @@ struct Index {
     this.hostCall('notifyMapResult', typeof host !== 'undefined' && typeof host.notifyMapResult === 'function', (): void => {
       host.notifyMapResult(0, op, 0, payload);
     });
+  }
+
+  // Live View Kit probe (R2-SHELL-EXT): the sink registers only when the device reports the
+  // live view syscap and the runtime resolves @kit.LiveViewKit with the full
+  // start/update/stop/isLiveViewEnabled surface. A missing kit caches the failure (one log) and
+  // leaves the sink unregistered: the host export then answers -1 and the managed
+  // OpenHarmonyLiveView records the degradation instead of guessing. The kit still gates each
+  // call on isLiveViewEnabled() (the user's live view switch) and on the AGC entitlement.
+  private async probeLiveViewKit(): Promise<void> {
+    if (this.hmsLiveViewUnavailable || this.hmsLiveViewKit !== undefined) {
+      return;
+    }
+    if (!canIUse('SystemCapability.LiveView.LiveViewService')) {
+      this.hmsLiveViewUnavailable = true;
+      this.logError('[maui] Live View Kit unavailable: the device reports no SystemCapability.LiveView.LiveViewService');
+      return;
+    }
+    const kitName: string = '@kit.LiveViewKit';
+    try {
+      const kit = (await import(kitName)) as HmsLiveViewKit;
+      if (kit.liveViewManager === undefined || kit.liveViewManager.isLiveViewEnabled === undefined ||
+        kit.liveViewManager.startLiveView === undefined || kit.liveViewManager.updateLiveView === undefined ||
+        kit.liveViewManager.stopLiveView === undefined) {
+        throw new Error('the resolved module has no liveViewManager start/update/stop/isLiveViewEnabled');
+      }
+      this.hmsLiveViewKit = kit;
+      this.hostCall('registerLiveViewSink', typeof host !== 'undefined' && typeof host.registerLiveViewSink === 'function', (): void => {
+        host.registerLiveViewSink((requestId: number, op: number, args: string): void => {
+          this.runLiveView(requestId, op, args);
+        });
+      });
+      this.logInfo('[maui] Live View Kit available: sink registered');
+    } catch (liveViewProbeError) {
+      this.hmsLiveViewUnavailable = true;
+      this.logError(`[maui] Live View Kit unavailable on this device: ${(liveViewProbeError as Error).message}`);
+    }
+  }
+
+  // Live View sink body: op 0 create, op 1 update, op 2 stop. Every op first checks
+  // isLiveViewEnabled() (the kit's own switch); update/stop target the view the last create
+  // built. host.notifyLiveViewResult(requestId, op, code, payload) carries the answer:
+  // code 0 = the op was applied, -1 = no kit/sink (or no view for stop), -2 = the kit call
+  // failed or the args were malformed, -3 = the live view switch is off, a positive code = the
+  // Live View Kit BusinessError (1003500004/1003500005/1003500006/...) which the managed side
+  // maps onto its own status.
+  private async runLiveView(requestId: number, op: number, args: string): Promise<void> {
+    const kit = this.hmsLiveViewKit;
+    let code: number = -1;
+    if (kit !== undefined) {
+      const spec: HmsLiveViewSpec | undefined = this.parseLiveViewSpec(args);
+      if (spec === undefined) {
+        code = -2;
+      } else {
+        try {
+          const enabled: boolean = await kit.liveViewManager.isLiveViewEnabled();
+          if (!enabled) {
+            code = -3;
+          } else if (op === 0) {
+            const view: HmsLiveView = this.buildLiveView(kit.liveViewManager, spec);
+            await kit.liveViewManager.startLiveView(view);
+            this.hmsLiveViewView = view;
+            code = 0;
+          } else {
+            const view: HmsLiveView | undefined = this.hmsLiveViewView;
+            if (view === undefined) {
+              code = -4;
+            } else {
+              this.applyLiveViewSpec(view, spec);
+              view.sequence += 1;
+              if (op === 2) {
+                view.liveViewData.primary.layoutData.progress = 100;
+                await kit.liveViewManager.stopLiveView(view);
+                this.hmsLiveViewView = undefined;
+              } else {
+                await kit.liveViewManager.updateLiveView(view);
+              }
+              code = 0;
+            }
+          }
+        } catch (liveViewError) {
+          const liveViewCode: number = (liveViewError as BusinessError).code;
+          code = liveViewCode > 0 ? liveViewCode : -2;
+          this.logError(`[maui] live view request failed: op=${op} code=${code} ${(liveViewError as Error).message}`);
+        }
+      }
+    }
+    this.hostCall('notifyLiveViewResult', typeof host !== 'undefined' && typeof host.notifyLiveViewResult === 'function', (): void => {
+      host.notifyLiveViewResult(requestId, op, code, '');
+    });
+  }
+
+  // Parses the managed JSON argument. An empty argument is an empty spec (the shell defaults
+  // apply); malformed JSON answers undefined so the op reports -2 without calling the kit.
+  private parseLiveViewSpec(args: string): HmsLiveViewSpec | undefined {
+    if (args.length === 0) {
+      return {};
+    }
+    try {
+      return JSON.parse(args) as HmsLiveViewSpec;
+    } catch (parseError) {
+      this.logError(`[maui] live view args parse failed: ${(parseError as Error).message}`);
+      return undefined;
+    }
+  }
+
+  // Builds the TIMER-scene view (progress template) from one spec. The id comes from the managed
+  // side (default 1); title/text defaults keep the kit's no-empty-content rule; the timer shows
+  // the elapsed value in milliseconds and the progress bar carries [0, 100].
+  private buildLiveView(manager: HmsLiveViewManager, spec: HmsLiveViewSpec): HmsLiveView {
+    const id: number = spec.id !== undefined ? spec.id : 1;
+    const title: string = spec.title !== undefined && spec.title.length > 0 ? spec.title : '计时中';
+    const text: string = spec.text !== undefined && spec.text.length > 0 ? spec.text : `实况窗 ${id}`;
+    const progress: number = spec.progress !== undefined && Number.isFinite(spec.progress)
+      ? Math.min(100, Math.max(0, spec.progress)) : 0;
+    const time: number = spec.time !== undefined && Number.isFinite(spec.time) && spec.time > 0 ? spec.time : 0;
+    return {
+      id: id,
+      event: 'TIMER',
+      sequence: 1,
+      isMute: false,
+      timer: {
+        time: time,
+        isCountdown: false,
+        isPaused: false
+      },
+      liveViewData: {
+        primary: {
+          title: title,
+          content: [{ text: text }],
+          keepTime: 15,
+          layoutData: {
+            layoutType: manager.LayoutType.LAYOUT_TYPE_PROGRESS,
+            progress: progress,
+            color: '',
+            backgroundColor: '',
+            indicatorType: manager.IndicatorType.INDICATOR_TYPE_UP,
+            indicatorIcon: '',
+            lineType: manager.LineType.LINE_TYPE_NORMAL_SOLID_LINE,
+            nodeIcons: []
+          }
+        },
+        capsule: {
+          type: manager.CapsuleType.CAPSULE_TYPE_TIMER,
+          status: 1,
+          icon: '',
+          backgroundColor: '#FF308977',
+          title: title,
+          content: text,
+          time: time,
+          isCountdown: false,
+          isPaused: false
+        }
+      }
+    };
+  }
+
+  // Applies the update spec to the live view the shell owns (empty fields keep the previous
+  // value). The sequence/stop mutation stays in runLiveView so the kit's ordering rule (sequence
+  // must grow) is visible next to the calls.
+  private applyLiveViewSpec(view: HmsLiveView, spec: HmsLiveViewSpec): void {
+    if (spec.title !== undefined && spec.title.length > 0) {
+      view.liveViewData.primary.title = spec.title;
+    }
+    if (spec.text !== undefined && spec.text.length > 0) {
+      view.liveViewData.primary.content = [{ text: spec.text }];
+    }
+    if (spec.progress !== undefined && Number.isFinite(spec.progress)) {
+      view.liveViewData.primary.layoutData.progress = Math.min(100, Math.max(0, spec.progress));
+    }
+    if (spec.time !== undefined && Number.isFinite(spec.time) && spec.time > 0) {
+      view.timer.time = spec.time;
+    }
+    view.liveViewData.capsule.title = view.liveViewData.primary.title;
+    view.liveViewData.capsule.content = view.liveViewData.primary.content[0].text;
+    view.liveViewData.capsule.time = view.timer.time;
   }
 
   // Host-export guard (device-compat): runs a host call behind an explicit existence check
@@ -3503,14 +3792,15 @@ struct Index {
     });
     this.pullMenu();
 
-    // HMS Kit feature probes (Share/Scan/Push/Account/Map): the sinks register only after the
-    // kit resolves, so a device without the kit keeps the managed side's documented degradation
-    // (see the probes).
+    // HMS Kit feature probes (Share/Scan/Push/Account/Map/LiveView): the sinks register only
+    // after the kit resolves, so a device without the kit keeps the managed side's documented
+    // degradation (see the probes).
     this.probeShareKit();
     this.probeScanKit();
     this.probePushKit();
     this.probeAccountKit();
     this.probeMapKit();
+    this.probeLiveViewKit();
   }
 
   // Picker result framing (managed OpenHarmonyPickerClient.Complete): a cancel/unavailable

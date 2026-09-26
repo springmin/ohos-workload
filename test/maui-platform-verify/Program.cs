@@ -12,7 +12,7 @@ using Microsoft.Maui.Platform;
 // after the fuzz tail) instead of letting every caller repeat its own threshold constant.
 VerifyLineCountingWriter verifyStdout = new(Console.Out);
 Console.SetOut(verifyStdout);
-const int verifyCheckTotal = 330;                     // documented full [verify] line count
+const int verifyCheckTotal = 334;                     // documented full [verify] line count
 const int verifyCheckFloor = verifyCheckTotal - 20;   // documented floor convention (total - 20)
 
 // A small image file for the Image handler.
@@ -2801,6 +2801,105 @@ Console.WriteLine($"[verify] kit7 map overlay module packs={kitOverlayPacks}/{ki
 if (!kitOverlayOk)
 {
     throw new InvalidOperationException("the MapComponent overlay module or its flavor gate drifted");
+}
+
+// KIT8 (R2-SHELL-EXT): the third-batch shell probe (Live View Kit). Same compile-safe shape as
+// KIT1/KIT4 (the specifier stays in a variable, the resolved value is cast to the local
+// structural interfaces, the sink registers only when the syscap check passes and the runtime
+// resolves the kit), and the minimal TIMER scene surface (isLiveViewEnabled + start/update/stop,
+// title/text/progress/time). All three byte-identical packs carry the block.
+bool kitShellLiveView = kitShell.Contains("canIUse('SystemCapability.LiveView.LiveViewService')") &&
+    kitShell.Contains("const kitName: string = '@kit.LiveViewKit';") &&
+    kitShell.Contains("const kit = (await import(kitName)) as HmsLiveViewKit;") &&
+    kitShell.Contains("host.registerLiveViewSink((requestId: number, op: number, args: string): void => {") &&
+    kitShell.Contains("private async runLiveView(requestId: number, op: number, args: string): Promise<void> {") &&
+    kitShell.Contains("await kit.liveViewManager.isLiveViewEnabled();") &&
+    kitShell.Contains("await kit.liveViewManager.startLiveView(view);") &&
+    kitShell.Contains("await kit.liveViewManager.updateLiveView(view);") &&
+    kitShell.Contains("await kit.liveViewManager.stopLiveView(view);") &&
+    kitShell.Contains("event: 'TIMER',") &&
+    kitShell.Contains("private buildLiveView(manager: HmsLiveViewManager, spec: HmsLiveViewSpec): HmsLiveView {") &&
+    kitShell.Contains("private applyLiveViewSpec(view: HmsLiveView, spec: HmsLiveViewSpec): void {") &&
+    kitShell.Contains("host.notifyLiveViewResult(requestId, op, code, '');");
+bool kitShellLiveViewCallsites = kitShell.Contains("this.probeLiveViewKit();") &&
+    kitShell.Contains("Live View Kit unavailable on this device:");
+int kitShellPacks3 = 0;
+foreach (string kitPackVersion in kitShellPackVersions)
+{
+    string? kitPackPath3 = FindHostSource($"packs/Microsoft.OpenHarmony.Sdk/{kitPackVersion}/templates/ets/pages/Index.ets");
+    string kitPackShell3 = kitPackPath3 is null ? string.Empty : File.ReadAllText(kitPackPath3);
+    kitShellPacks3 += kitPackShell3.Contains("registerLiveViewSink") && kitPackShell3.Contains("this.probeLiveViewKit();") &&
+        kitPackShell3.Contains("@kit.LiveViewKit") ? 1 : 0;
+}
+bool kitShellOk3 = kitShellLiveView && kitShellLiveViewCallsites && kitShellPacks3 == kitShellPackVersions.Length;
+Console.WriteLine($"[verify] kit8 shell probe liveview={kitShellLiveView} callsites={kitShellLiveViewCallsites} packs={kitShellPacks3}/{kitShellPackVersions.Length} assert={kitShellOk3}");
+if (!kitShellOk3)
+{
+    throw new InvalidOperationException("the Live View Kit shell probe/sink is missing or drifted");
+}
+
+// KIT9 (R2-SHELL-EXT): the host and managed halves of the Live View bridge: the C ABI
+// declarations, the NAPI sink/notify names plus the module-table entries, the export contract
+// entry, the managed P/Invoke entry points with the kit error-code map marks and the public API
+// baseline entries, and the build script's ui-abc provenance literals.
+string? kitLiveViewPath = FindHostSource("OpenHarmonyLiveView.cs");
+string kitLiveView = kitLiveViewPath is null ? string.Empty : File.ReadAllText(kitLiveViewPath);
+string? kitLiveViewExportsPath = FindHostSource("src/OpenHarmonyHost/host-exports.txt");
+string kitLiveViewExports = kitLiveViewExportsPath is null ? string.Empty : File.ReadAllText(kitLiveViewExportsPath);
+bool kitHostHeader3 = kitHeader.Contains("int ohos_host_liveview_available(void);") &&
+    kitHeader.Contains("int ohos_host_liveview_request(int request_id, int op, const char* args);") &&
+    kitHeader.Contains("void ohos_host_liveview_register_result(void* callback);") &&
+    kitHeader.Contains("void ohos_host_liveview_result(int request_id, int op, int code, const char* payload);");
+bool kitHostNapi3 = kitNapi.Contains("extern \"C\" int ohos_host_liveview_available(void)") &&
+    kitNapi.Contains("extern \"C\" int ohos_host_liveview_request(int request_id, int op, const char* args)") &&
+    kitNapi.Contains("extern \"C\" void ohos_host_liveview_result(int request_id, int op, int code, const char* payload)") &&
+    kitNapi.Contains("HostSinkPost(g_liveview_sink, call)") &&
+    kitNapi.Contains("HostSink liveview{\"live view\", false};") &&
+    kitNapi.Contains("{\"registerLiveViewSink\", nullptr, RegisterLiveViewSink") &&
+    kitNapi.Contains("{\"notifyLiveViewResult\", nullptr, NotifyLiveViewResult");
+bool kitExportsLiveView = kitLiveViewExports.Contains("ohos_host_liveview_available") &&
+    kitLiveViewExports.Contains("ohos_host_liveview_request") &&
+    kitLiveViewExports.Contains("ohos_host_liveview_register_result") &&
+    kitLiveViewExports.Contains("ohos_host_liveview_result");
+bool kitManagedOk3 = kitLiveView.Contains("EntryPoint = \"ohos_host_liveview_available\"") &&
+    kitLiveView.Contains("EntryPoint = \"ohos_host_liveview_request\"") &&
+    kitLiveView.Contains("EntryPoint = \"ohos_host_liveview_register_result\"") &&
+    kitLiveView.Contains("public static bool IsSupported") &&
+    kitLiveView.Contains("public static async Task<OpenHarmonyLiveViewStatus> StartAsync") &&
+    kitLiveView.Contains("public static async Task<OpenHarmonyLiveViewStatus> UpdateAsync") &&
+    kitLiveView.Contains("public static async Task<OpenHarmonyLiveViewStatus> StopAsync") &&
+    kitLiveView.Contains("SwitchOff = 1003500004") &&
+    kitLiveView.Contains("RightsNotEnabled = 1003500005") &&
+    kitLiveView.Contains("NoActiveView = -4") &&
+    kitPublicApi.Contains("Microsoft.Maui.Platform.OpenHarmonyLiveView.IsSupported.get -> bool") &&
+    kitPublicApi.Contains("Microsoft.Maui.Platform.OpenHarmonyLiveView.StartAsync(") &&
+    kitPublicApi.Contains("Microsoft.Maui.Platform.OpenHarmonyLiveView.UpdateAsync(") &&
+    kitPublicApi.Contains("Microsoft.Maui.Platform.OpenHarmonyLiveView.StopAsync(") &&
+    kitPublicApi.Contains("Microsoft.Maui.Platform.OpenHarmonyLiveViewStatus.SwitchOff = 1003500004") &&
+    kitPublicApi.Contains("Microsoft.Maui.Platform.OpenHarmonyLiveViewUpdate");
+bool kitProvenanceLiveView = kitBuildScript.Contains("'registerLiveViewSink', 'notifyLiveViewResult', '@kit.LiveViewKit'") &&
+    kitBuildScript.Contains("'SystemCapability.LiveView.LiveViewService']");
+bool kitPinsOk3 = kitHostHeader3 && kitHostNapi3 && kitExportsLiveView && kitManagedOk3 && kitProvenanceLiveView;
+Console.WriteLine($"[verify] kit9 bridge pins header={kitHostHeader3} napi={kitHostNapi3} exports={kitExportsLiveView} managed={kitManagedOk3} provenance={kitProvenanceLiveView} assert={kitPinsOk3}");
+if (!kitPinsOk3)
+{
+    throw new InvalidOperationException("the Live View host/managed bridge contract drifted");
+}
+
+// KIT10 (R2-SHELL-EXT): off-device degradation of the Live View bridge (no host library): every
+// call answers Unavailable and IsSupported is false, without throwing. A create/update/stop
+// sequence and a malformed progress value all take the same path.
+OpenHarmonyLiveViewStatus kitLiveViewStart = await OpenHarmonyLiveView.StartAsync(new OpenHarmonyLiveViewUpdate(7, "verify", "verify", 50, 1000));
+OpenHarmonyLiveViewStatus kitLiveViewUpdate = await OpenHarmonyLiveView.UpdateAsync(new OpenHarmonyLiveViewUpdate(7, "verify-2", "verify-2", double.NaN, -5));
+OpenHarmonyLiveViewStatus kitLiveViewStop = await OpenHarmonyLiveView.StopAsync(7);
+bool kitLiveViewSupported = OpenHarmonyLiveView.IsSupported;
+bool kitDegradeOk3 = kitLiveViewStart == OpenHarmonyLiveViewStatus.Unavailable &&
+    kitLiveViewUpdate == OpenHarmonyLiveViewStatus.Unavailable &&
+    kitLiveViewStop == OpenHarmonyLiveViewStatus.Unavailable && !kitLiveViewSupported;
+Console.WriteLine($"[verify] kit10 degradation start={kitLiveViewStart} update={kitLiveViewUpdate} stop={kitLiveViewStop} supported={kitLiveViewSupported} assert={kitDegradeOk3}");
+if (!kitDegradeOk3)
+{
+    throw new InvalidOperationException("the Live View kit bridge must degrade off-device instead of throwing");
 }
 
 // KIT5: the host and managed halves of the second batch: the C ABI declarations, the NAPI
@@ -5687,6 +5786,33 @@ if (!pg2ProbeOk)
     throw new InvalidOperationException(
         $"the PG2 exec-memory probe drifted: defined={pg2ProbeDefOk} once={pg2ProbeOnceOk} " +
         $"token={pg2ProbeTokenOk} status={pg2ProbeStatusOk} source={cSourcePath ?? "<missing>"}");
+}
+
+// PG2j (R2-SHELL-EXT companion): the interpreter switch. <files>/interp.txt with a leading
+// digit selects DOTNET_InterpMode for the runtime that starts next (3 = the pure interpreter of
+// the published ohos-interpreter-pack), so a device-side interpreter round needs no host or
+// launch-path change. The pin parses the helper (open <dir>/interp.txt, first byte must be a
+// digit, the leading digit run is the value), the guarded setenv inside
+// OhosHostApplyExecMemoryPolicy and the interp=0|N source=default|file log in both forms.
+bool pg2InterpDefOk = cSource?.Contains("static int OhosHostReadInterpFile(const char* dir, char* out, size_t out_size) {") == true;
+bool pg2InterpParseOk = cSource?.Contains("path_join(path, sizeof(path), dir, \"interp.txt\")") == true &&
+    cSource!.Contains("if (got <= 0 || buffer[0] < '0' || buffer[0] > '9') {\n        return 0;\n    }") &&
+    cSource.Contains("while (used < (size_t)got && buffer[used] >= '0' && buffer[used] <= '9' &&") &&
+    cSource.Contains("const char* interp_value = have_interp ? interp : \"0\";");
+int pg2InterpCallAt = pg2PolicyDefOk ? cSource!.IndexOf("int have_interp = have_dir && OhosHostReadInterpFile(dir, interp, sizeof(interp));", StringComparison.Ordinal) : -1;
+bool pg2InterpEnvOk = pg2InterpCallAt > 0 &&
+    cSource!.IndexOf("setenv(\"DOTNET_InterpMode\", interp, 1);", pg2InterpCallAt, StringComparison.Ordinal) > pg2InterpCallAt &&
+    cSource.IndexOf("if (have_interp) {", pg2InterpCallAt, StringComparison.Ordinal) > pg2InterpCallAt &&
+    CountOccurrences(cSource, "setenv(\"DOTNET_InterpMode\"") == 1;
+bool pg2InterpLogOk = cSource?.Contains("\"[openharmony-host] %{public}s: interp=%{public}s source=%{public}s\"") == true &&
+    cSource!.Contains("fprintf(stderr, \"[openharmony-host] %s: interp=%s source=%s\\n\", name, interp_value, interp_source);");
+bool pg2InterpOk = pg2InterpDefOk && pg2InterpParseOk && pg2InterpEnvOk && pg2InterpLogOk;
+Console.WriteLine($"[verify] pg2 host interp policy defined={pg2InterpDefOk} parse={pg2InterpParseOk} env={pg2InterpEnvOk} log={pg2InterpLogOk} source='{cSourcePath ?? "<missing>"}' assert={pg2InterpOk}");
+if (!pg2InterpOk)
+{
+    throw new InvalidOperationException(
+        $"the PG2 interpreter switch (interp.txt -> DOTNET_InterpMode) drifted: defined={pg2InterpDefOk} " +
+        $"parse={pg2InterpParseOk} env={pg2InterpEnvOk} log={pg2InterpLogOk} source={cSourcePath ?? "<missing>"}");
 }
 
 // ---- Audit batch-3 pins: the FIX-MAUI security residuals (MB-1/MB-2/MB-3/H-C2) ----------------

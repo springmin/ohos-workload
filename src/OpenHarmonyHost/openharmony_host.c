@@ -594,6 +594,39 @@ static int OhosHostReadXweFile(const char* dir) {
     return got == 1 && first == '1';
 }
 
+// Interpreter policy (R2-SHELL-EXT companion): <dir>/interp.txt selects DOTNET_InterpMode for
+// the runtime that starts next ("3" = the pure interpreter shipped by the published
+// ohos-interpreter-pack, a feature-enabled libcoreclr.so + libclrinterpreter.so). Mirrors the
+// xwe.txt A/B shape: the first byte must be a digit, the leading digit run is the value (capped
+// at OHOS_INTERP_VALUE_MAX), and every other outcome is a no-op so the runtime keeps its own
+// default. Returns 1 and fills `out` when the file carries a value.
+#define OHOS_INTERP_VALUE_MAX 7
+static int OhosHostReadInterpFile(const char* dir, char* out, size_t out_size) {
+    out[0] = '\0';
+    char path[4096];
+    if (dir == NULL || dir[0] == '\0' || out_size < 2 || path_join(path, sizeof(path), dir, "interp.txt") != 0) {
+        return 0;
+    }
+    int fd = open(path, O_RDONLY);
+    if (fd < 0) {
+        return 0;
+    }
+    char buffer[OHOS_INTERP_VALUE_MAX];
+    ssize_t got = read(fd, buffer, sizeof(buffer) - 1);
+    close(fd);
+    if (got <= 0 || buffer[0] < '0' || buffer[0] > '9') {
+        return 0;
+    }
+    size_t used = 0;
+    while (used < (size_t)got && buffer[used] >= '0' && buffer[used] <= '9' &&
+           used + 1 < out_size) {
+        used++;
+    }
+    memcpy(out, buffer, used);
+    out[used] = '\0';
+    return used > 0;
+}
+
 // One probe result token: "OK", or the errno of the failing call.
 static void OhosHostProbeToken(char* out, size_t out_size, int err) {
     if (err == 0) {
@@ -723,7 +756,11 @@ static void OhosHostProbeExecMemoryOnce(const char* status_dir) {
 
 // Applies the W^X decision and runs the probe. Called before hostfxr can start coreclr on both
 // launch paths; the probe itself is one-shot, so a second call only re-reads xwe.txt (the
-// pending context adopted during start_app can be the first source of filesDir).
+// pending context adopted during start_app can be the first source of filesDir). The same
+// directory's interp.txt (leading digit) selects DOTNET_InterpMode for the runtime that starts
+// next: 3 = the pure interpreter of the published ohos-interpreter-pack. No file leaves the
+// variable as-is (unset unless the environment already carried one), so the runtime's own
+// default (JIT) stays in effect.
 static void OhosHostApplyExecMemoryPolicy(const char* caller, const char* app_dir, const char* context_json) {
     char dir[4096];
     int have_dir = OhosHostWritableDir(app_dir, context_json, dir, sizeof(dir));
@@ -735,6 +772,18 @@ static void OhosHostApplyExecMemoryPolicy(const char* caller, const char* app_di
     OH_LOG_INFO(LOG_APP, "[openharmony-host] %{public}s: xwe=%{public}d source=%{public}s",
                 name, enabled, source);
     fprintf(stderr, "[openharmony-host] %s: xwe=%d source=%s\n", name, enabled, source);
+
+    char interp[8];
+    int have_interp = have_dir && OhosHostReadInterpFile(dir, interp, sizeof(interp));
+    if (have_interp) {
+        setenv("DOTNET_InterpMode", interp, 1);
+    }
+    const char* interp_value = have_interp ? interp : "0";
+    const char* interp_source = have_interp ? "file" : "default";
+    OH_LOG_INFO(LOG_APP, "[openharmony-host] %{public}s: interp=%{public}s source=%{public}s",
+                name, interp_value, interp_source);
+    fprintf(stderr, "[openharmony-host] %s: interp=%s source=%s\n", name, interp_value, interp_source);
+
     OhosHostProbeExecMemoryOnce(have_dir ? dir : NULL);
 }
 

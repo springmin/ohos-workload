@@ -152,6 +152,20 @@ payload layout): when its first byte is `1`, the host sets `DOTNET_EnableWriteXo
 for that launch (`source=file`) and reproduces the platform W^X failure for an evidence round.
 Any other content (or no file) keeps the default `0`.
 
+Interpreter switch (R2-SHELL-EXT companion) - `interp.txt` in the same directory selects
+`DOTNET_InterpMode` for the runtime that starts next (`3` = the pure interpreter of the
+published `ohos-interpreter-pack.tar.gz`): the first byte must be a digit, the leading digit
+run is the value, and no file leaves the variable as-is (the runtime's own JIT default). The
+host logs the decision on every launch path:
+
+```text
+[openharmony-host] start_app: interp=3 source=file
+```
+
+so a device-side interpreter round only needs the file in the app sandbox - no host or launch
+path change. The managed `dotnet-status.txt` line is not duplicated for this switch; the hilog
+and stderr forms above are the evidence.
+
 Probe - on the first launch path the host maps one page with each strategy the runtime could
 use and emits one line (hilog tag `OHOS_DOTNET`, also appended to `<filesDir>/dotnet-status.txt`
 in the managed `600`-character flattened style):
@@ -438,13 +452,17 @@ guess:
 | Push | `OpenHarmonyPush.GetTokenAsync` / `DeleteTokenAsync` / `IsSupported` | `pushService.getToken()` / `deleteToken()`; `host.notifyPushResult(id, op, rc, token)` | rc 0 = success (token for op 0), -1 = unavailable; positive rc is the Push Kit code, e.g. `1000900010` (AGC push service not enabled / signing profile mismatch), `1000900012` (entitlement not enabled), `1000900011` (no network), `1000900014` (device unsupported) |
 | Account | `OpenHarmonyAccount.GetQuickLoginAnonymousPhoneAsync` / `AuthorizeAsync(scopes)` / `IsSupported` | `createAuthorizationWithHuaweiIDRequest()` + `AuthenticationController.executeRequest()`; `host.notifyAccountResult(id, op, rc, payload)` | rc 0 = success (op 0 payload = anonymous phone, op 1 payload = `response.data.authorizationCode`), -1 = unavailable/state mismatch; positive rc is the Account Kit code, e.g. `1001502014` (scope not applied for/approved), `1001500001` (signing fingerprint mismatch), `1001502001` (no Huawei ID signed in), `1001502012` (user cancelled), `1001500003` (scope unsupported) |
 | Map | `OpenHarmonyMap.QueryCapabilitiesAsync` / `IsSupported` / `IsOverlayAvailable` / `ShowAsync` / `HideAsync` / `CloseAsync` / `SetRegionAsync` / `AddMarkerAsync` / `Ready`/`MarkerClick`/`CameraIdle` | `@kit.MapKit` + `SystemCapability.Map.Core` probe, then the `MapComponent` overlay driven through `host.registerMapSink` / `host.notifyMapResult(id, op, code, payload)`; bit 0 = kit resolved, bit 1 = overlay module resolved (the harmony build) | flags value (0/1/3), `null` when the sink is unregistered; ops 0 probe / 1 create / 2 destroy / 3 show / 4 hide / 5 set region / 6 add marker, code 0 applied, -1 unavailable, -2 overlay refused; events with id 0 (1 ready, 2 marker click, 3 camera idle) |
+| Live View (R2-SHELL-EXT) | `OpenHarmonyLiveView.StartAsync(update)` / `UpdateAsync(update)` / `StopAsync(id)` / `IsSupported` | `canIUse('SystemCapability.LiveView.LiveViewService')` + `@kit.LiveViewKit`; `liveViewManager.isLiveViewEnabled()` then `startLiveView`/`updateLiveView`/`stopLiveView` on the TIMER scene (progress template; `title`/`text`/`progress`/`time` in ms); `host.notifyLiveViewResult(id, op, rc, payload)` | rc 0 = applied, -1 = unavailable or no view the shell owns, -2 = the kit call failed or the args were malformed, -3 = the user's live view switch is off; positive rc is the Live View Kit code (`1003500004` switch off, `1003500005` entitlement not approved, `1003500006` id exists, `1003500011` stale sequence, ...) |
 
-Host exports (all in the `host-exports.txt` contract, 130 names): `ohos_host_push_{available,request,register_result,result}`,
+Host exports (all in the `host-exports.txt` contract, 134 names): `ohos_host_push_{available,request,register_result,result}`,
 `ohos_host_account_{available,request,register_result,result}`, `ohos_host_map_{available,command,register_result,result}`
 (the R2-3 overlay folded the reserved probe into `ohos_host_map_command(id, op, args)`; the export
-count is unchanged because the overlay reuses the same four Map exports and one answer callback).
+count was unchanged there because the overlay reuses the same four Map exports and one answer
+callback), and `ohos_host_liveview_{available,request,register_result,result}` (R2-SHELL-EXT).
 Push and Account are asynchronous (the AGC call and the system authorization UI); the Map overlay
-commands are asynchronous in the same way (the shell answers when the op was dispatched).
+commands are asynchronous in the same way (the shell answers when the op was dispatched). Live
+View is asynchronous too (the kit call may cross to the live view service): the shell checks
+`isLiveViewEnabled()` first, then answers through the same style of callback.
 
 Map's map view is the ArkUI `MapComponent`, not a plain module API: a literal
 `import('@kit.MapKit')` is a hard ArkTS compile error on the OpenHarmony SDK and the component
@@ -459,6 +477,15 @@ import, `MapComponent` builder mounted through a `NodeController`/`BuilderNode` 
 through `OpenHarmonyMap` (create/show/hide/destroy/region/marker plus the ready/marker-click/
 camera-idle events) and every call first checks the availability bits.
 
+Live View keeps the TIMER scene's minimal surface (create/update/stop): the shell builds one
+progress-template view per id (`title`/`text`/`progress` 0-100 plus the `timer.time` value in ms),
+keeps it between calls so updates increment the sequence and stop targets the same id, and maps
+every outcome onto the shared code map. The kit is a plain module API (unlike the MapComponent
+overlay), so no harmony-flavor-only module is needed: the probe and sink compile in the default
+OpenHarmony shell build and stay unregistered there. A device without the AGC entitlement throws
+`1003500005`, and a device with the switch off answers `-3`/`1003500004`; both are passed through
+to the managed status.
+
 Decision point: **the overlay needs the `ARKTS_SDK_FLAVOR=harmony` shell build plus the AGC map
 service AppKey** - the default OpenHarmony SDK build cannot compile the component declaration, and
 without the AppKey the map view fails to initialize (logged by `MapOverlay.ets`, no event fires).
@@ -468,7 +495,7 @@ So a device/HAP built with the default flavor answers `IsOverlayAvailable=false`
 AGC / device prerequisites (all external to this repository; the KIT-GAP report
 `runtime-ohos/docs/plans/2026-09-24-ohos-kit-gap-analysis.md` tracks them):
 
-- **All three**: HarmonyOS SDK build (`ARKTS_SDK_FLAVOR=harmony`), an HMS device, and an app
+- **All four**: HarmonyOS SDK build (`ARKTS_SDK_FLAVOR=harmony`), an HMS device, and an app
   registration in AppGallery Connect whose signing certificate fingerprint and bundle name match
   the build.
 - **Push**: enable Push in AGC (增长 > 推送服务) and re-generate the signing profile with the push
@@ -480,13 +507,22 @@ AGC / device prerequisites (all external to this repository; the KIT-GAP report
   matching bundle name/signing fingerprint); without it the `MapComponent` initialization fails
   and no `Ready` event fires, so `IsOverlayAvailable` stays true (the shell has the overlay) while
   no map is shown. Map data use is subject to the AGC map service terms.
+- **Live View (R2-SHELL-EXT)**: apply for the Live View entitlement (实况窗权益) for the scene
+  (`TIMER` here) in AGC and keep the user's live view switch on (设置 > 应用和元服务 > 应用名 >
+  实况窗); the device-side API also needs the app in the foreground. The scene whitelist and the
+  entitlement are the prerequisites for a real card.
 
 Verification without an HMS device: `test/maui-platform-verify` pins the shell probe/sink shape,
-the overlay module and its flavor gate, the host/managed contract and the off-device degradation
-(`[verify] kit4/kit5/kit6/kit7`), while `scripts/build-arkts-shell.sh` keeps the abc at
-`13.0.1.0`, carries the `./map/MapOverlay` literal in the UI abc (the provenance gate) and enforces
+the overlay module and its flavor gate, the host/managed contract, the off-device degradation
+(`[verify] kit4/kit5/kit6/kit7` for the second batch + overlay, `kit8/kit9/kit10` for Live View)
+and the interpreter switch (`pg2 host interp policy`: the `interp.txt` parser, the guarded
+`DOTNET_InterpMode` setenv and the log pair),
+while `scripts/build-arkts-shell.sh` keeps the abc at
+`13.0.1.0`, carries the `./map/MapOverlay`, `registerLiveViewSink`, `notifyLiveViewResult`,
+`@kit.LiveViewKit` and `SystemCapability.LiveView.LiveViewService` literals
+in the UI abc (the provenance gate) and enforces
 the source contract (no `@ohos.*` imports, variable kit specifiers). The host-side gate is
-`scripts/build-host.sh` (nm -D: all 130 `host-exports.txt` names present as plain symbols) plus
+`scripts/build-host.sh` (nm -D: all 134 `host-exports.txt` names present as plain symbols) plus
 `scripts/check-host-exports.py --cross-check`.
 
 ### Templates / abc sync strategy
@@ -515,14 +551,18 @@ explicit `-p:OpenHarmonyArktsModulesAbc=<file>` overrides both. The former
     packs' sources must be byte-identical (the fixture harness pins them too);
   - abc provenance: per variant the recorded size/sha256/abc version, the payload literals
     (`dotnet-payload`/`bundleCodeDir`/`payload-in-libs`/`dotnet.marker`) and the UI literals
-    (`ohos_dotnet_surface`/`ohos_dotnet_input`/`__hwvInvokeDotNet`/`./map/MapOverlay`, which the
+    (`ohos_dotnet_surface`/`ohos_dotnet_input`/`__hwvInvokeDotNet`/`./map/MapOverlay`/
+    `registerLiveViewSink`/`notifyLiveViewResult`/`@kit.LiveViewKit`/
+    `SystemCapability.LiveView.LiveViewService`, which the
     headless variant must not carry), the recorded source hashes (a source edit without a rebuild
     fails), the absence of `modules.shell.abc`, byte-identity across the three packs, and - when a
     dist dir is given - the freshly built artifacts against the installed packs.
     `scripts/build-arkts-shell.sh` runs the pack gate automatically after a build once both
     variants exist in `dist/ets`. The `./map/MapOverlay` literal is the page's dynamic overlay
     import: it must survive in the UI abc (R2-3), while the overlay module itself is never part of
-    the default-flavor abc (only the harmony branch compiles it).
+    the default-flavor abc (only the harmony branch compiles it). The Live View literals ride the
+    same gate (R2-SHELL-EXT): the sink names and the kit specifier must be in the UI abc even
+    though the default-flavor runtime never resolves the kit.
 - **HarmonyOS flavor**: the compiled abc is flavor-specific (the HarmonyOS es2abc/toolchain), so do
   not overwrite the checked-in OpenHarmony abc with it - the default packs must stay buildable
   without the HarmonyOS SDK. Build the flavor and pass the result to the packaging invocation, or
@@ -695,16 +735,20 @@ dotnet publish test/hello-maui-app/hello-maui-app.csproj \
   string-path `SetBinding` overload and the `Binding(string)` constructor are both annotated
   `RequiresUnreferencedCode` in MAUI. Warnings outside the gate (`IL3000` from the ASP.NET
   BlazorWebView asset loader, MAUI `NETSDK1188` locale warnings) are not trim defects.
-- Launch scope: the ArkTS shell starts the bridged route (`start_app`), which is JIT-only, so an
-  AOT hap is the one-shot `run_app` payload shape and the packaging deliverable; wiring
-  `start_app` to the AOT probe is follow-up work (host + shell). The host route is verified
-  locally without a device: `test/aot-smoke/run-local-smoke.sh` compiles the fake app and
-  `test_host`, self-signs both with `binary-sign-tool -selfSign 1` (an OpenHarmony kernel
-  refuses unsigned ELFs: execve and dlopen both return EACCES) and asserts the payload
-  (`<dir>/FakeApp.dll\nalpha\nbeta`) and the exit code. Against the real publish,
-  `test_host <publish-dir> hello-maui-app.dll` loads the AOT library, runs the app's module
-  initializers and bridge registration, then waits for the ArkUI surface (on a host without the
-  shared ICU data, set `DOTNET_SYSTEM_GLOBALIZATION_INVARIANT=1` for that run).
+- Launch scope: the ArkTS shell starts the bridged route (`start_app`), and the host now serves
+  the AOT payload there too (R2-SHELL-EXT): `start_app` probes `<app_dir>/lib<stem>.so` and calls
+  `openharmony_app_main` on the bridged app thread (log `aot=1`), so lifecycle/node events and
+  the managed `register_bridge` handshake work exactly as for a JIT payload; a missing
+  library/symbol/allocation logs `aot=0` and keeps the hostfxr route. `run_app` keeps its
+  one-shot probe. The host route is verified locally without a device:
+  `test/aot-smoke/run-local-smoke.sh` compiles the fake app and `test_host`, self-signs both with
+  `binary-sign-tool -selfSign 1` (an OpenHarmony kernel refuses unsigned ELFs: execve and dlopen
+  both return EACCES) and asserts the one-shot payload
+  (`<dir>/FakeApp.dll\nalpha\nbeta`, exit 7) plus the bridged payload (`<dir>/FakeApp.dll`, exit 7
+  through `test_host --bridge ...`, which is the `start_app` `aot=1` route). Against the real
+  publish, `test_host <publish-dir> hello-maui-app.dll` loads the AOT library, runs the app's
+  module initializers and bridge registration, then waits for the ArkUI surface (on a host
+  without the shared ICU data, set `DOTNET_SYSTEM_GLOBALIZATION_INVARIANT=1` for that run).
 
 ## Packaging task assembly
 

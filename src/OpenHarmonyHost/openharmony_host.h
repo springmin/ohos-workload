@@ -248,6 +248,31 @@ int ohos_host_map_command(int request_id, int op, const char* args);
 void ohos_host_map_register_result(void* callback);
 void ohos_host_map_result(int request_id, int op, int code, const char* payload);
 
+/// HMS Kits (Live View; R2-SHELL-EXT 2026-09-26): the third kit sink, registered by the ArkTS
+/// shell only when its runtime passes the SystemCapability.LiveView.LiveViewService check and
+/// resolves @kit.LiveViewKit (the variable-specifier probe in the shell templates). On the
+/// default OpenHarmony SDK shell the probe fails, the sink stays unregistered, every call
+/// answers "unavailable" and the managed OpenHarmonyLiveView keeps its documented degradation.
+///
+/// Live View: ohos_host_liveview_available() reports whether the sink is registered (the managed
+/// IsSupported probe). ohos_host_liveview_request(request_id, op, args) queues one operation:
+///   op 0 create - args = JSON {"id","title","text","progress","time"} (progress 0-100, time in
+///                 ms; the shell builds the TIMER scene's progress view and calls
+///                 liveViewManager.startLiveView)
+///   op 1 update - the same args; the shell increments the sequence and calls updateLiveView
+///   op 2 stop   - args = JSON {"id"}; the shell calls stopLiveView
+/// The shell answers through host.notifyLiveViewResult -> ohos_host_liveview_result with the
+/// code map: 0 applied, -1 unavailable (no kit/sink or no view the shell owns), -2 the kit call
+/// failed or the args were malformed, -3 the user's live view switch is off
+/// (isLiveViewEnabled() false), a positive value is the Live View Kit BusinessError code
+/// (1003500004 switch off, 1003500005 the entitlement is not approved, 1003500006 the id
+/// already exists, 1003500011 a stale sequence, ...). The managed callback is registered with
+/// ohos_host_liveview_register_result.
+int ohos_host_liveview_available(void);
+int ohos_host_liveview_request(int request_id, int op, const char* args);
+void ohos_host_liveview_register_result(void* callback);
+void ohos_host_liveview_result(int request_id, int op, int code, const char* payload);
+
 /// Raw HAP resources: the managed side (maui-ohos OpenHarmonyFileSystem) asks for one file
 /// shipped raw in the HAP (resources/rawfile/**) through ohos_host_raw_file_request; the
 /// ArkTS shell's registerRawFileSink handler reads it with resourceManager and answers through

@@ -49,7 +49,7 @@ allocation and jitter) budgets are exceeded.
 # (or the MauiSliceDir / HostingDll / OpenHarmonyGraphicsDll MSBuild properties) before building
 # elsewhere; an explicit -p: value wins over the environment and the absolute fallbacks.
 dotnet build -v:q
-dotnet bin/Debug/net11.0/verify.dll | grep -c '\[verify\]'   # expect 330 (317 checks + 4 fuzz + 1 frame perf + 8 a11y perf)
+dotnet bin/Debug/net11.0/verify.dll | grep -c '\[verify\]'   # expect 334 (321 checks + 4 fuzz + 1 frame perf + 8 a11y perf)
 ```
 
 The `interaction-regression` workflow (`.github/workflows/interaction-regression.yml`) runs the
@@ -60,7 +60,7 @@ suite on a GitHub runner as a real gate (on push to `master`, on pull requests a
 points `MAUI_SLICE_DIR` / `HOSTING_DLL` / `OPENHARMONY_GRAPHICS_DLL` at those roots, and fails the
 job unless the run exits 0, the suite's own `[suite]` contract line reports `assert=True` with at
 least the floor declared in `Program.cs`, both perf lines report `within=True`, and no `Unhandled`
-line is logged. The floor (310 = 330 - 20, the documented convention) lives only in `Program.cs`;
+line is logged. The floor (314 = 334 - 20, the documented convention) lives only in `Program.cs`;
 the workflow and `scripts/preflight.sh` both read the printed `[suite] checks=... floor=...` line
 instead of repeating a literal, so the two local/CI thresholds cannot drift apart.
 
@@ -169,7 +169,7 @@ jitter ~1.08x and 72,056 B/frame, and the a11y block reported ~0.3/0.5 ms for th
 ~0.07/0.28 ms for the publish pass (skip/republish). The post-batch run (commit a10b73e) reported
 avg 0.488 ms, p95 0.698 ms, jitter 1.43x and 3,720 B/frame, i.e. the ceiling is 3.72x the CI
 baseline. Every run ends with the `[suite]` contract line
-(`checks=330 total=330 floor=310 assert=True`), which the workflow and `scripts/preflight.sh`
+(`checks=334 total=334 floor=314 assert=True`), which the workflow and `scripts/preflight.sh`
 parse.
 
 ## Notes
@@ -178,8 +178,8 @@ parse.
   blocks codesigned ELF apphosts on some machines).
 - The suite fails loudly (unhandled exception) when a slice change breaks startup or when an
   assertion for the gesture flows (including the drag-and-drop checks) does not hold; keep it at
-  313 checks plus the 4 fuzz lines plus the 1 frame-perf line plus the 8 a11y-perf lines
-  (330 `[verify]` lines) when touching the platform slice. The total and the floor (total - 20)
+  321 checks plus the 4 fuzz lines plus the 1 frame-perf line plus the 8 a11y-perf lines
+  (334 `[verify]` lines) when touching the platform slice. The total and the floor (total - 20)
   are declared in `Program.cs`; the run ends with a `[suite] checks=... floor=... assert=...`
   line and fails itself when the printed count is below the floor, so the CI job and
   `scripts/preflight.sh` do not repeat the threshold.
@@ -624,3 +624,23 @@ parse.
   event, all without throwing. That is 4 lines: 324 + 4 = 328 base lines, plus the two COMP-ARKTS
   conformance lines = 330 = 317 interaction checks + 4 fuzz + 1 frame perf + 8 a11y perf; the
   workflow floor moves with the total (330 - 20 = 310).
+- R2-SHELL-EXT (bridged AOT start_app + Live View Kit probe, 2026-09-26): the bridged AOT route
+  is folded into the existing `a7 native launch guard` line (the pin now requires the
+  `OhosHostAotLaunchRun` trampoline, the `openharmony_app_main` dlopen/dlsym probe, the
+  `aot=0|1` log pair, the fall-through and the now-seven `OhosHostEndLaunch()` failure paths), so
+  it adds no line. The Live View batch adds three: `kit8 shell probe` pins the
+  `canIUse('SystemCapability.LiveView.LiveViewService')` + `@kit.LiveViewKit` variable-specifier
+  probe, the `registerLiveViewSink` sink and its `isLiveViewEnabled`/start/update/stop TIMER
+  scene body (`title`/`text`/`progress`/`time`) with the `this.probeLiveViewKit()` call site in
+  all three byte-identical packs; `kit9 bridge pins` pins the four `ohos_host_liveview_*` C ABI
+  declarations and definitions, the `HostSink liveview`/module-table names, the
+  `host-exports.txt` entries, the managed P/Invoke entry points with the
+  `1003500004`/`1003500005`/`NoActiveView` status marks, the public-API baseline entries and the
+  ui-abc provenance literals in `scripts/build-arkts-shell.sh`; `kit10 degradation` drives
+  Start/Update/Stop with no host library: all three answer `Unavailable` and `IsSupported` is
+  false, without throwing. The companion interpreter switch adds `pg2 host interp policy`: the
+  `<files>/interp.txt` helper (leading digit -> the value), the guarded
+  `setenv("DOTNET_InterpMode", ...)` inside `OhosHostApplyExecMemoryPolicy` and the
+  `interp=0|N source=default|file` log pair. That is 4 lines: 330 + 3 + 1 = 334 = 321 interaction
+  checks + 4 fuzz + 1 frame perf + 8 a11y perf; the workflow floor moves with the total
+  (334 - 20 = 314).

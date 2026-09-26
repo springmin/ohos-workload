@@ -596,7 +596,9 @@ import hashlib, json, os, sys
 root, dist = sys.argv[1], sys.argv[2]
 versions = ['1.0.0-preview.22', '1.0.0-preview.23', '1.0.0-preview.24']
 common = ['dotnet-payload', 'bundleCodeDir', 'payload-in-libs', 'dotnet.marker']
-ui_only = ['ohos_dotnet_surface', 'ohos_dotnet_input', '__hwvInvokeDotNet', './map/MapOverlay']
+ui_only = ['ohos_dotnet_surface', 'ohos_dotnet_input', '__hwvInvokeDotNet', './map/MapOverlay',
+           'registerLiveViewSink', 'notifyLiveViewResult', '@kit.LiveViewKit',
+           'SystemCapability.LiveView.LiveViewService']
 errors = []
 provenance_ref = None
 abc_ref = {}

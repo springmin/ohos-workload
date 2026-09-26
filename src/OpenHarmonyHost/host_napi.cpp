@@ -286,6 +286,8 @@ struct HostBinding {
     HostSink push{"push", false};
     HostSink account{"account", false};
     HostSink map{"map", false};
+    // HMS Kits (Live View; R2-SHELL-EXT 2026-09-26): same contract for the third probe.
+    HostSink liveview{"live view", false};
 };
 
 struct HostBindingSlot {
@@ -342,6 +344,7 @@ static HostBinding* g_host = &g_binding_slots[0].binding;
 #define g_push_sink (g_host->push)
 #define g_account_sink (g_host->account)
 #define g_map_sink (g_host->map)
+#define g_liveview_sink (g_host->liveview)
 
 // Table-driven sink registry: the single enumeration of every per-env sink, so HostSinkReset
 // cannot miss one on a page rebuild or env teardown. Keep this list aligned with the members.
@@ -381,6 +384,7 @@ static void HostForEachSink(HostBinding& binding, F&& visit) {
     visit(binding.push);
     visit(binding.account);
     visit(binding.map);
+    visit(binding.liveview);
 }
 
 std::string GetStringArg(napi_env env, napi_value value);
@@ -1508,6 +1512,86 @@ napi_value NotifyMapResult(napi_env env, napi_callback_info info) {
         payload = GetStringArg(env, argv[3]);
     }
     ohos_host_map_result(requestId, op, code, payload.c_str());
+    napi_value undefined = nullptr;
+    napi_get_undefined(env, &undefined);
+    return undefined;
+}
+
+// HMS Live View Kit (R2-SHELL-EXT 2026-09-26): the third kit probe batch, same shape as
+// Push/Account. The sink exists only when the ArkTS shell's runtime passes the
+// SystemCapability.LiveView.LiveViewService check and resolves @kit.LiveViewKit, so the default
+// OpenHarmony SDK build registers nothing, every export answers "unavailable" and the managed
+// OpenHarmonyLiveView keeps its documented degradation.
+//
+// op 0 create / op 1 update / op 2 stop, args is the JSON payload the shell parses
+// ({"id","title","text","progress","time"} for 0/1, {"id"} for 2). The answer arrives through
+// host.notifyLiveViewResult -> ohos_host_liveview_result: code 0 applied, -1 unavailable (no
+// kit/sink or no view the shell owns), -2 the kit call failed or the args were malformed, -3 the
+// user's live view switch is off (isLiveViewEnabled false), a positive value is the Live View
+// Kit BusinessError code (1003500004 switch, 1003500005 entitlement, ...).
+static std::atomic<void (*)(int, int, int, const char*)> g_liveview_result_listener{nullptr};
+
+// Called from managed code (P/Invoke): 1 when the shell registered the Live View sink. The
+// managed OpenHarmonyLiveView.IsSupported probe must not call the kit just to answer.
+extern "C" int ohos_host_liveview_available(void) {
+    return g_liveview_sink.tsfn != nullptr ? 1 : 0;
+}
+
+// Called from managed code (P/Invoke): queues one Live View operation. 0 queued, -1 when the
+// sink is unregistered or the args string exceeds the control-string cap.
+extern "C" int ohos_host_liveview_request(int request_id, int op, const char* args) {
+    return HostCxxBoundary("live view request", [&] {
+        if (args != nullptr && !ControlStringFits(args, "liveview_args")) {
+            return -1;
+        }
+        SinkCall* call = new SinkCall();
+        call->AddInt(request_id);
+        call->AddInt(op);
+        call->AddString(args != nullptr ? args : "", kMaxControlBytes);
+        return HostSinkPost(g_liveview_sink, call) ? 0 : -1;
+    });
+}
+
+// The managed side registers the callback that completes a pending live view request.
+extern "C" void ohos_host_liveview_register_result(void* callback) {
+    HostListenerStore(g_liveview_result_listener, callback);
+}
+
+// Called by the NAPI notify below: payload is "" for a non-zero code.
+extern "C" void ohos_host_liveview_result(int request_id, int op, int code, const char* payload) {
+    auto listener = HostListenerLoad(g_liveview_result_listener);
+    if (listener != nullptr) {
+        listener(request_id, op, code, payload != nullptr ? payload : "");
+    }
+}
+
+// ArkTS calls host.registerLiveViewSink(fn) when the Live View probe succeeded.
+napi_value RegisterLiveViewSink(napi_env env, napi_callback_info info) {
+    return HostSinkRegisterFromArgs(env, info, g_liveview_sink);
+}
+
+// ArkTS calls host.notifyLiveViewResult(requestId, op, code, payload) when an operation finished.
+napi_value NotifyLiveViewResult(napi_env env, napi_callback_info info) {
+    size_t argc = 4;
+    napi_value argv[4] = {nullptr, nullptr, nullptr, nullptr};
+    napi_get_cb_info(env, info, &argc, argv, nullptr, nullptr);
+    int requestId = 0;
+    int op = 0;
+    int code = -1;
+    std::string payload;
+    if (argc >= 1) {
+        napi_get_value_int32(env, argv[0], &requestId);
+    }
+    if (argc >= 2) {
+        napi_get_value_int32(env, argv[1], &op);
+    }
+    if (argc >= 3) {
+        napi_get_value_int32(env, argv[2], &code);
+    }
+    if (argc >= 4) {
+        payload = GetStringArg(env, argv[3]);
+    }
+    ohos_host_liveview_result(requestId, op, code, payload.c_str());
     napi_value undefined = nullptr;
     napi_get_undefined(env, &undefined);
     return undefined;
@@ -3591,6 +3675,8 @@ napi_value Init(napi_env env, napi_value exports) {
         {"notifyAccountResult", nullptr, NotifyAccountResult, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"registerMapSink", nullptr, RegisterMapSink, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"notifyMapResult", nullptr, NotifyMapResult, nullptr, nullptr, nullptr, napi_default, nullptr},
+        {"registerLiveViewSink", nullptr, RegisterLiveViewSink, nullptr, nullptr, nullptr, napi_default, nullptr},
+        {"notifyLiveViewResult", nullptr, NotifyLiveViewResult, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"registerContactsSink", nullptr, RegisterContactsSink, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"notifyContactsResult", nullptr, NotifyContactsResult, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"registerCalendarSink", nullptr, RegisterCalendarSink, nullptr, nullptr, nullptr, napi_default, nullptr},
