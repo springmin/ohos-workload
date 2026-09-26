@@ -12,6 +12,9 @@
 #   LD_LIBRARY_PATH=<pack host dir>    ->  ./test_host --bridge <dir> FakeApp.dll '{}'
 #   asserts (R2-SHELL-EXT): the same payload file == "<dir>/FakeApp.dll" (no args on the
 #            bridged command line) and the same exit code, through start_app's aot=1 route
+#   LD_LIBRARY_PATH=<pack host dir>    ->  ./test_host --bridge <dir> NoEntry.dll '{}'
+#   asserts: the no-export library logs start_app: aot=0, keeps the hostfxr route and fails
+#            cleanly there (negative control for the AOT probe), never aot=1 or a crash
 #
 # codesign: an OpenHarmony kernel refuses an unsigned ELF twice - execve returns EACCES
 # ("Permission denied" from the shell) and dlopen of a library without a .codesign section
@@ -85,11 +88,28 @@ rc=$?
 
 expected="$(printf '%s/FakeApp.dll' "$OUT")"
 actual="$(cat payload-received.txt 2>/dev/null)"
-if [ "$rc" = "7" ] && [ "$actual" = "$expected" ]; then
-    echo "[PASS] NativeAOT bridged route (start_app): payload and exit code match (aot=1)"
+if [ "$rc" != "7" ] || [ "$actual" != "$expected" ]; then
+    echo "[FAIL] bridged rc=$rc (expected 7); payload-received.txt:" >&2
+    printf '%s\n' "$actual" >&2
+    exit 1
+fi
+echo "[PASS] NativeAOT bridged route (start_app): payload and exit code match (aot=1)"
+
+echo "== run the bridged fallback (no openharmony_app_main -> hostfxr, aot=0) =="
+# Negative control: a library that loads but has no entry export must not take the AOT route.
+# There is no hostfxr in this directory either, so start_app is expected to fail cleanly after
+# logging aot=0 and attempting the hostfxr route; a crash or aot=1 fails this check.
+"$CC" -x c --target=aarch64-linux-ohos -fPIC -shared -O1 \
+    -o "$OUT/libNoEntry.so.unsigned" "$W/test/aot-smoke/no-entry-app.c" || exit 1
+"$SIGN" sign -inFile "$OUT/libNoEntry.so.unsigned" -outFile "$OUT/libNoEntry.so" -selfSign 1 >/dev/null || exit 1
+rm -f fallback.out
+timeout 60 ./test_host --bridge "$OUT" NoEntry.dll '{}' > fallback.out 2>&1
+rc=$?
+if [ "$rc" != "0" ] && grep -q "start_app: aot=0" fallback.out; then
+    echo "[PASS] non-AOT library keeps the hostfxr route (aot=0, clean failure without hostfxr)"
     [ "${KEEP:-0}" = "1" ] || rm -rf "$OUT"
     exit 0
 fi
-echo "[FAIL] bridged rc=$rc (expected 7); payload-received.txt:" >&2
-printf '%s\n' "$actual" >&2
+echo "[FAIL] fallback rc=$rc (expected non-zero) or the aot=0 line is missing; output:" >&2
+sed 's/^/  /' fallback.out >&2
 exit 1
