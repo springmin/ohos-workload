@@ -22,7 +22,7 @@ on:
         description: 'maui-ohos commit SHA to cross-check (defaults to the pinned slice tip)'
         required: false
         type: string
-        default: '1a754753d346b73402a114564da16da4da24d6e1'
+        default: 'a0a2c0872f21cea68e70dc2bead10a1fba1c716c'
   push:
     branches: [ master ]
   pull_request:
@@ -32,9 +32,11 @@ permissions:
 
 # Reproducible cross-repo check: the slice is checked out at an exact commit, not the mutable
 # feature/openharmony branch, so a push to the fork cannot change what this gate verifies.
-# Advance the pin deliberately, in lockstep with the interaction/pixel gates.
+# Current tip: a0a2c087 (KIT-EXT2: the Push/Account/Map bridges and the reverse entries driven
+# through their registered pointers). Advance the pin deliberately, in lockstep with the
+# interaction/pixel gates.
 env:
-  MAUI_OHOS_REF: ${{ github.event.inputs.maui_ohos_ref || '1a754753d346b73402a114564da16da4da24d6e1' }}
+  MAUI_OHOS_REF: ${{ github.event.inputs.maui_ohos_ref || 'a0a2c0872f21cea68e70dc2bead10a1fba1c716c' }}
 
 jobs:
   contract:
