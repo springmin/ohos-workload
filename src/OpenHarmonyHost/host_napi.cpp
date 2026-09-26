@@ -172,8 +172,8 @@ struct SinkCall {
 // Thread-safe listener slots. The managed side registers each result callback once (on the
 // managed thread), the shell answers on the JS/ArkUI thread; the atomic store/load pair below
 // is the publish/consume edge the raw function pointers lacked, so the read side can never
-// observe a torn or stale pointer (and the compile-time no-implicit-conversion rule forces
-// every call site through Load). Fn is a plain function pointer type.
+// observe a torn or stale pointer. Fn is a plain function pointer type; reads go through
+// HostListenerLoad so every call site uses the acquire load explicitly.
 template <typename Fn>
 static Fn HostListenerLoad(const std::atomic<Fn>& slot) {
     return slot.load(std::memory_order_acquire);
@@ -1093,12 +1093,14 @@ std::string GetStringArg(napi_env env, napi_value value);
 
 // Called by the host core (managed side) to run a HUKS operation in the ArkTS shell.
 void OnKeystoreRequest(int requestId, const char* op, const char* alias, const char* dataBase64) {
-    SinkCall* call = new SinkCall();
-    call->AddInt(requestId);
-    call->AddString(op);
-    call->AddString(alias);
-    call->AddString(dataBase64);
-    HostSinkPost(g_keystore_sink, call);
+    HostCxxBoundaryVoid("keystore request", [&] {
+        SinkCall* call = new SinkCall();
+        call->AddInt(requestId);
+        call->AddString(op);
+        call->AddString(alias);
+        call->AddString(dataBase64);
+        HostSinkPost(g_keystore_sink, call);
+    });
 }
 
 // ArkTS calls host.registerKeystoreSink(fn) to receive keystore requests.
@@ -1124,11 +1126,13 @@ napi_value NotifyPinch(napi_env env, napi_callback_info info) {
 
 // Called from the host C layer: forwards a notification publish request to ArkTS.
 extern "C" void OhosNotifyNotification(int id, const char* title, const char* text) {
-    SinkCall* call = new SinkCall();
-    call->AddInt(id);
-    call->AddString(title);
-    call->AddString(text);
-    HostSinkPost(g_notification_sink, call);
+    HostCxxBoundaryVoid("notification", [&] {
+        SinkCall* call = new SinkCall();
+        call->AddInt(id);
+        call->AddString(title);
+        call->AddString(text);
+        HostSinkPost(g_notification_sink, call);
+    });
 }
 
 // ArkTS calls host.registerNotificationSink(fn) to publish notifications.
@@ -1144,11 +1148,13 @@ static std::atomic<void (*)(int, int)> g_tts_result_listener{nullptr};
 
 // Called from the host C layer (managed P/Invoke): forwards a speak request to ArkTS.
 extern "C" int ohos_host_tts_speak(int request_id, const char* text, const char* locale) {
-    SinkCall* call = new SinkCall();
-    call->AddInt(request_id);
-    call->AddString(text);
-    call->AddString(locale);
-    return HostSinkPost(g_tts_sink, call) ? 0 : -1;
+    return HostCxxBoundary("tts speak", [&] {
+        SinkCall* call = new SinkCall();
+        call->AddInt(request_id);
+        call->AddString(text);
+        call->AddString(locale);
+        return HostSinkPost(g_tts_sink, call) ? 0 : -1;
+    });
 }
 
 // The managed side registers the callback that completes a pending speak request.
@@ -1233,9 +1239,11 @@ napi_value RegisterShareKitSink(napi_env env, napi_callback_info info) {
 // ohos_host_scan_register_result. rc: 0 success (value = result.originalValue), -1 unavailable
 // or failed, -2 the user cancelled (Scan Kit error 1000500002).
 extern "C" int ohos_host_scan_request(int request_id) {
-    SinkCall* call = new SinkCall();
-    call->AddInt(request_id);
-    return HostSinkPost(g_scan_sink, call) ? 0 : -1;
+    return HostCxxBoundary("scan request", [&] {
+        SinkCall* call = new SinkCall();
+        call->AddInt(request_id);
+        return HostSinkPost(g_scan_sink, call) ? 0 : -1;
+    });
 }
 
 // 1 when the ArkTS shell registered the scan sink (the managed OpenHarmonyScan.IsSupported
@@ -1312,10 +1320,12 @@ extern "C" int ohos_host_push_available(void) {
 // Called from managed code (P/Invoke): queues one Push operation. 0 queued, -1 when the sink is
 // unregistered (the answer then never arrives and the managed side reports unavailable).
 extern "C" int ohos_host_push_request(int request_id, int op) {
-    SinkCall* call = new SinkCall();
-    call->AddInt(request_id);
-    call->AddInt(op);
-    return HostSinkPost(g_push_sink, call) ? 0 : -1;
+    return HostCxxBoundary("push request", [&] {
+        SinkCall* call = new SinkCall();
+        call->AddInt(request_id);
+        call->AddInt(op);
+        return HostSinkPost(g_push_sink, call) ? 0 : -1;
+    });
 }
 
 // The managed side registers the callback that completes a pending push request.
@@ -1373,14 +1383,16 @@ extern "C" int ohos_host_account_available(void) {
 // scope list (empty for op 0, which fixes quickLoginAnonymousPhone in the shell). 0 queued, -1
 // when the sink is unregistered or the scope string exceeds the control-string cap.
 extern "C" int ohos_host_account_request(int request_id, int op, const char* scopes) {
-    if (scopes != nullptr && !ControlStringFits(scopes, "account_scopes")) {
-        return -1;
-    }
-    SinkCall* call = new SinkCall();
-    call->AddInt(request_id);
-    call->AddInt(op);
-    call->AddString(scopes != nullptr ? scopes : "", kMaxControlBytes);
-    return HostSinkPost(g_account_sink, call) ? 0 : -1;
+    return HostCxxBoundary("account request", [&] {
+        if (scopes != nullptr && !ControlStringFits(scopes, "account_scopes")) {
+            return -1;
+        }
+        SinkCall* call = new SinkCall();
+        call->AddInt(request_id);
+        call->AddInt(op);
+        call->AddString(scopes != nullptr ? scopes : "", kMaxControlBytes);
+        return HostSinkPost(g_account_sink, call) ? 0 : -1;
+    });
 }
 
 // The managed side registers the callback that completes a pending account request.
@@ -1436,9 +1448,11 @@ extern "C" int ohos_host_map_available(void) {
 // Called from managed code (P/Invoke): queues one capability probe. 0 queued, -1 when the sink
 // is unregistered.
 extern "C" int ohos_host_map_probe(int request_id) {
-    SinkCall* call = new SinkCall();
-    call->AddInt(request_id);
-    return HostSinkPost(g_map_sink, call) ? 0 : -1;
+    return HostCxxBoundary("map probe", [&] {
+        SinkCall* call = new SinkCall();
+        call->AddInt(request_id);
+        return HostSinkPost(g_map_sink, call) ? 0 : -1;
+    });
 }
 
 // The managed side registers the callback that completes a pending map probe.
@@ -1494,11 +1508,13 @@ static std::atomic<void (*)(int, int, const char*)> g_calendar_result_listener{n
 // Called from managed code (P/Invoke): forwards a name-prefix lookup (limit caps the number of
 // returned rows) to the ArkTS sink; returns 0 when it was dispatched.
 extern "C" int ohos_host_contacts_query(int request_id, const char* name_prefix, int limit) {
-    SinkCall* call = new SinkCall();
-    call->AddInt(request_id);
-    call->AddString(name_prefix);
-    call->AddInt(limit);
-    return HostSinkPost(g_contacts_sink, call) ? 0 : -1;
+    return HostCxxBoundary("contacts query", [&] {
+        SinkCall* call = new SinkCall();
+        call->AddInt(request_id);
+        call->AddString(name_prefix);
+        call->AddInt(limit);
+        return HostSinkPost(g_contacts_sink, call) ? 0 : -1;
+    });
 }
 
 // The managed side registers the callback that completes a pending contacts request.
@@ -1539,13 +1555,15 @@ napi_value NotifyContactsResult(napi_env env, napi_callback_info info) {
 // Calls the calendar sink: op 0 = list (arg1 = days), op 1 = add (arg1 = title,
 // arg2 = start ISO-8601, arg3 = end ISO-8601).
 static int CallCalendarSink(int request_id, int op, const char* arg1, const char* arg2, const char* arg3) {
-    SinkCall* call = new SinkCall();
-    call->AddInt(request_id);
-    call->AddInt(op);
-    call->AddString(arg1);
-    call->AddString(arg2);
-    call->AddString(arg3);
-    return HostSinkPost(g_calendar_sink, call) ? 0 : -1;
+    return HostCxxBoundary("calendar sink", [&] {
+        SinkCall* call = new SinkCall();
+        call->AddInt(request_id);
+        call->AddInt(op);
+        call->AddString(arg1);
+        call->AddString(arg2);
+        call->AddString(arg3);
+        return HostSinkPost(g_calendar_sink, call) ? 0 : -1;
+    });
 }
 
 // Called from managed code (P/Invoke): lists events in the next `days` days.
@@ -1611,10 +1629,12 @@ static std::atomic<void (*)(int, int, const char*)> g_bluetooth_result_listener{
 // Called from managed code (P/Invoke): forwards a Bluetooth operation to the ArkTS sink;
 // returns 0 when it was dispatched.
 extern "C" int ohos_host_bluetooth_query(int request_id, int op) {
-    SinkCall* call = new SinkCall();
-    call->AddInt(request_id);
-    call->AddInt(op);
-    return HostSinkPost(g_bluetooth_sink, call) ? 0 : -1;
+    return HostCxxBoundary("bluetooth query", [&] {
+        SinkCall* call = new SinkCall();
+        call->AddInt(request_id);
+        call->AddInt(op);
+        return HostSinkPost(g_bluetooth_sink, call) ? 0 : -1;
+    });
 }
 
 // The managed side registers the callback that completes a pending Bluetooth request.
@@ -1701,15 +1721,17 @@ static std::atomic<void (*)(const char*)> g_bluetooth_gatt_event_listener{nullpt
 // Called from managed code (P/Invoke): forwards a GATT operation to the ArkTS sink; returns 0
 // when it was dispatched, -1 when there is no sink (or the payload was dropped).
 extern "C" int ohos_host_bluetooth_gatt_request(int request_id, int op, const char* payload) {
-    SinkCall* call = new SinkCall();
-    call->AddInt(request_id);
-    call->AddInt(op);
-    call->AddString(payload);
-    if (!HostSinkPost(g_bluetooth_gatt_sink, call)) {
-        OH_LOG_WARN(LOG_APP, "[openharmony-host] bluetooth gatt: request dropped (no shell sink or over-long payload)");
-        return -1;
-    }
-    return 0;
+    return HostCxxBoundary("bluetooth gatt request", [&] {
+        SinkCall* call = new SinkCall();
+        call->AddInt(request_id);
+        call->AddInt(op);
+        call->AddString(payload);
+        if (!HostSinkPost(g_bluetooth_gatt_sink, call)) {
+            OH_LOG_WARN(LOG_APP, "[openharmony-host] bluetooth gatt: request dropped (no shell sink or over-long payload)");
+            return -1;
+        }
+        return 0;
+    });
 }
 
 // The managed side registers the callback that completes a pending GATT request.
@@ -1785,10 +1807,12 @@ static std::atomic<void (*)(int, int, const char*)> g_print_result_listener{null
 
 // Called from managed code (P/Invoke): forwards a print file path to the ArkTS sink.
 extern "C" int ohos_host_print_file(int request_id, const char* path) {
-    SinkCall* call = new SinkCall();
-    call->AddInt(request_id);
-    call->AddString(path);
-    return HostSinkPost(g_print_sink, call) ? 0 : -1;
+    return HostCxxBoundary("print file", [&] {
+        SinkCall* call = new SinkCall();
+        call->AddInt(request_id);
+        call->AddString(path);
+        return HostSinkPost(g_print_sink, call) ? 0 : -1;
+    });
 }
 
 // The managed side registers the callback that completes a pending print request.
@@ -2095,17 +2119,21 @@ napi_value NotifyMenuAction(napi_env env, napi_callback_info info) {
 // (sink moved into the current HostBinding; see the g_* accessors above)
 
 void OnPickerRequest(int requestId, int kind) {
-    SinkCall* call = new SinkCall();
-    call->AddInt(requestId);
-    call->AddInt(kind);
-    HostSinkPost(g_picker_sink, call);
+    HostCxxBoundaryVoid("picker request", [&] {
+        SinkCall* call = new SinkCall();
+        call->AddInt(requestId);
+        call->AddInt(kind);
+        HostSinkPost(g_picker_sink, call);
+    });
 }
 
 void OnWebCommand(const char* op, const char* arg) {
-    SinkCall* call = new SinkCall();
-    call->AddString(op);
-    call->AddString(arg);
-    HostSinkPost(g_web_sink, call);
+    HostCxxBoundaryVoid("web command", [&] {
+        SinkCall* call = new SinkCall();
+        call->AddString(op);
+        call->AddString(arg);
+        HostSinkPost(g_web_sink, call);
+    });
 }
 
 // ArkTS calls host.registerWebSink(fn) to receive web commands.
@@ -2243,9 +2271,11 @@ napi_value NotifyDisplay(napi_env env, napi_callback_info info) {
 
 // Called from managed code (P/Invoke): returns 0 when the request was queued for the shell.
 extern "C" int ohos_host_keep_screen_on(int on) {
-    SinkCall* call = new SinkCall();
-    call->AddInt(on);
-    return HostSinkPost(g_keep_screen_on_sink, call) ? 0 : -1;
+    return HostCxxBoundary("keep screen on", [&] {
+        SinkCall* call = new SinkCall();
+        call->AddInt(on);
+        return HostSinkPost(g_keep_screen_on_sink, call) ? 0 : -1;
+    });
 }
 
 // ArkTS calls host.registerKeepScreenOnSink(fn) to receive keep-screen-on changes.
@@ -2265,20 +2295,22 @@ napi_value RegisterKeepScreenOnSink(napi_env env, napi_callback_info info) {
 
 // Called from managed code (P/Invoke): returns 0 when the title was queued for the shell.
 extern "C" int ohos_host_set_window_title(const char* utf8) {
-    if (utf8 == nullptr || utf8[0] == '\0') {
-        OH_LOG_WARN(LOG_APP, "[openharmony-host] set_window_title: empty title");
-        return -1;
-    }
-    if (!ControlStringFits(utf8, "set_window_title")) {
-        return -1;
-    }
-    SinkCall* call = new SinkCall();
-    call->AddString(utf8, kMaxControlBytes);
-    if (!HostSinkPost(g_window_title_sink, call)) {
-        OH_LOG_WARN(LOG_APP, "[openharmony-host] set_window_title: no shell window title sink");
-        return -1;
-    }
-    return 0;
+    return HostCxxBoundary("set window title", [&] {
+        if (utf8 == nullptr || utf8[0] == '\0') {
+            OH_LOG_WARN(LOG_APP, "[openharmony-host] set_window_title: empty title");
+            return -1;
+        }
+        if (!ControlStringFits(utf8, "set_window_title")) {
+            return -1;
+        }
+        SinkCall* call = new SinkCall();
+        call->AddString(utf8, kMaxControlBytes);
+        if (!HostSinkPost(g_window_title_sink, call)) {
+            OH_LOG_WARN(LOG_APP, "[openharmony-host] set_window_title: no shell window title sink");
+            return -1;
+        }
+        return 0;
+    });
 }
 
 // Documented window-rect bounds: the shell applies the values to the main window with
@@ -2289,42 +2321,44 @@ constexpr int kMaxWindowOffset = 32768;
 
 // Called from managed code (P/Invoke): returns 0 when the rectangle was queued for the shell.
 extern "C" int ohos_host_set_window_rect(int x, int y, int w, int h) {
-    if (w <= 0 || h <= 0) {
-        OH_LOG_WARN(LOG_APP, "[openharmony-host] set_window_rect: invalid size %{public}dx%{public}d", w, h);
-        return -1;
-    }
-    if (w > kMaxWindowDimension) {
-        OH_LOG_WARN(LOG_APP, "[openharmony-host] set_window_rect: width clamped from %{public}d", w);
-        w = kMaxWindowDimension;
-    }
-    if (h > kMaxWindowDimension) {
-        OH_LOG_WARN(LOG_APP, "[openharmony-host] set_window_rect: height clamped from %{public}d", h);
-        h = kMaxWindowDimension;
-    }
-    if (x > kMaxWindowOffset) {
-        OH_LOG_WARN(LOG_APP, "[openharmony-host] set_window_rect: x clamped from %{public}d", x);
-        x = kMaxWindowOffset;
-    } else if (x < -kMaxWindowOffset) {
-        OH_LOG_WARN(LOG_APP, "[openharmony-host] set_window_rect: x clamped from %{public}d", x);
-        x = -kMaxWindowOffset;
-    }
-    if (y > kMaxWindowOffset) {
-        OH_LOG_WARN(LOG_APP, "[openharmony-host] set_window_rect: y clamped from %{public}d", y);
-        y = kMaxWindowOffset;
-    } else if (y < -kMaxWindowOffset) {
-        OH_LOG_WARN(LOG_APP, "[openharmony-host] set_window_rect: y clamped from %{public}d", y);
-        y = -kMaxWindowOffset;
-    }
-    SinkCall* call = new SinkCall();
-    call->AddInt(x);
-    call->AddInt(y);
-    call->AddInt(w);
-    call->AddInt(h);
-    if (!HostSinkPost(g_window_rect_sink, call)) {
-        OH_LOG_WARN(LOG_APP, "[openharmony-host] set_window_rect: no shell window rect sink");
-        return -1;
-    }
-    return 0;
+    return HostCxxBoundary("set window rect", [&] {
+        if (w <= 0 || h <= 0) {
+            OH_LOG_WARN(LOG_APP, "[openharmony-host] set_window_rect: invalid size %{public}dx%{public}d", w, h);
+            return -1;
+        }
+        if (w > kMaxWindowDimension) {
+            OH_LOG_WARN(LOG_APP, "[openharmony-host] set_window_rect: width clamped from %{public}d", w);
+            w = kMaxWindowDimension;
+        }
+        if (h > kMaxWindowDimension) {
+            OH_LOG_WARN(LOG_APP, "[openharmony-host] set_window_rect: height clamped from %{public}d", h);
+            h = kMaxWindowDimension;
+        }
+        if (x > kMaxWindowOffset) {
+            OH_LOG_WARN(LOG_APP, "[openharmony-host] set_window_rect: x clamped from %{public}d", x);
+            x = kMaxWindowOffset;
+        } else if (x < -kMaxWindowOffset) {
+            OH_LOG_WARN(LOG_APP, "[openharmony-host] set_window_rect: x clamped from %{public}d", x);
+            x = -kMaxWindowOffset;
+        }
+        if (y > kMaxWindowOffset) {
+            OH_LOG_WARN(LOG_APP, "[openharmony-host] set_window_rect: y clamped from %{public}d", y);
+            y = kMaxWindowOffset;
+        } else if (y < -kMaxWindowOffset) {
+            OH_LOG_WARN(LOG_APP, "[openharmony-host] set_window_rect: y clamped from %{public}d", y);
+            y = -kMaxWindowOffset;
+        }
+        SinkCall* call = new SinkCall();
+        call->AddInt(x);
+        call->AddInt(y);
+        call->AddInt(w);
+        call->AddInt(h);
+        if (!HostSinkPost(g_window_rect_sink, call)) {
+            OH_LOG_WARN(LOG_APP, "[openharmony-host] set_window_rect: no shell window rect sink");
+            return -1;
+        }
+        return 0;
+    });
 }
 
 // ArkTS calls host.registerWindowTitleSink(fn) to receive window title changes.
@@ -2346,24 +2380,26 @@ napi_value RegisterWindowRectSink(napi_env env, napi_callback_info info) {
 
 // Called from managed code (P/Invoke): returns 0 when the request was queued for the shell.
 extern "C" int ohos_host_screenshot(const char* out_path) {
-    if (out_path == nullptr || out_path[0] == '\0') {
-        OH_LOG_WARN(LOG_APP, "[openharmony-host] screenshot: empty output path");
-        return -1;
-    }
-    // Filesystem-path cap (well below PATH_MAX; the shell re-validates containment). A path
-    // longer than this is a malformed request, not a payload to carry.
-    if (strlen(out_path) > kMaxScreenshotPathBytes) {
-        OH_LOG_WARN(LOG_APP, "[openharmony-host] screenshot: output path dropped: %{public}d bytes over the %{public}d cap",
-                    (int)strlen(out_path), (int)kMaxScreenshotPathBytes);
-        return -1;
-    }
-    SinkCall* call = new SinkCall();
-    call->AddString(out_path, kMaxScreenshotPathBytes);
-    if (!HostSinkPost(g_screenshot_sink, call)) {
-        OH_LOG_WARN(LOG_APP, "[openharmony-host] screenshot: no shell screenshot sink");
-        return -1;
-    }
-    return 0;
+    return HostCxxBoundary("screenshot", [&] {
+        if (out_path == nullptr || out_path[0] == '\0') {
+            OH_LOG_WARN(LOG_APP, "[openharmony-host] screenshot: empty output path");
+            return -1;
+        }
+        // Filesystem-path cap (well below PATH_MAX; the shell re-validates containment). A path
+        // longer than this is a malformed request, not a payload to carry.
+        if (strlen(out_path) > kMaxScreenshotPathBytes) {
+            OH_LOG_WARN(LOG_APP, "[openharmony-host] screenshot: output path dropped: %{public}d bytes over the %{public}d cap",
+                        (int)strlen(out_path), (int)kMaxScreenshotPathBytes);
+            return -1;
+        }
+        SinkCall* call = new SinkCall();
+        call->AddString(out_path, kMaxScreenshotPathBytes);
+        if (!HostSinkPost(g_screenshot_sink, call)) {
+            OH_LOG_WARN(LOG_APP, "[openharmony-host] screenshot: no shell screenshot sink");
+            return -1;
+        }
+        return 0;
+    });
 }
 
 // ArkTS calls host.registerScreenshotSink(fn) to receive screenshot requests.
@@ -2389,26 +2425,28 @@ std::atomic<int> g_shell_search_enabled{0};
 // shell sink. The stored copy backs the host.shellSearch* getters the shell reads on startup.
 extern "C" int ohos_host_shell_search_set(const char* query, const char* placeholder,
                                           int visible, int enabled) {
-    if (!ControlStringFits(query, "shell_search_set") || !ControlStringFits(placeholder, "shell_search_set")) {
-        return -1;
-    }
-    SinkCall* call = new SinkCall();
-    {
-        std::lock_guard<std::mutex> guard(g_shell_search_lock);
-        g_shell_search_query = query != nullptr ? query : "";
-        g_shell_search_placeholder = placeholder != nullptr ? placeholder : "";
-        g_shell_search_visible.store(visible != 0 ? 1 : 0, std::memory_order_release);
-        g_shell_search_enabled.store(enabled != 0 ? 1 : 0, std::memory_order_release);
-        call->AddString(g_shell_search_query.c_str(), kMaxControlBytes);
-        call->AddString(g_shell_search_placeholder.c_str(), kMaxControlBytes);
-        call->AddInt(g_shell_search_visible.load(std::memory_order_acquire));
-        call->AddInt(g_shell_search_enabled.load(std::memory_order_acquire));
-    }
-    if (!HostSinkPost(g_shell_search_sink, call)) {
-        OH_LOG_WARN(LOG_APP, "[openharmony-host] shell_search_set: no shell search sink");
-        return -1;
-    }
-    return 0;
+    return HostCxxBoundary("shell search set", [&] {
+        if (!ControlStringFits(query, "shell_search_set") || !ControlStringFits(placeholder, "shell_search_set")) {
+            return -1;
+        }
+        SinkCall* call = new SinkCall();
+        {
+            std::lock_guard<std::mutex> guard(g_shell_search_lock);
+            g_shell_search_query = query != nullptr ? query : "";
+            g_shell_search_placeholder = placeholder != nullptr ? placeholder : "";
+            g_shell_search_visible.store(visible != 0 ? 1 : 0, std::memory_order_release);
+            g_shell_search_enabled.store(enabled != 0 ? 1 : 0, std::memory_order_release);
+            call->AddString(g_shell_search_query.c_str(), kMaxControlBytes);
+            call->AddString(g_shell_search_placeholder.c_str(), kMaxControlBytes);
+            call->AddInt(g_shell_search_visible.load(std::memory_order_acquire));
+            call->AddInt(g_shell_search_enabled.load(std::memory_order_acquire));
+        }
+        if (!HostSinkPost(g_shell_search_sink, call)) {
+            OH_LOG_WARN(LOG_APP, "[openharmony-host] shell_search_set: no shell search sink");
+            return -1;
+        }
+        return 0;
+    });
 }
 
 // ArkTS calls host.registerShellSearchChangedSink(fn) to receive the managed search state.
@@ -2497,23 +2535,25 @@ std::string g_shell_flyout_header;
 std::string g_shell_flyout_footer;
 
 static int ShellFlyoutPublish(int op, const char* text) {
-    if (!ControlStringFits(text, op == 0 ? "shell_flyout_header" : "shell_flyout_footer")) {
-        return -1;
-    }
-    SinkCall* call = new SinkCall();
-    call->AddInt(op);
-    {
-        std::lock_guard<std::mutex> guard(g_shell_flyout_lock);
-        std::string& slot = op == 0 ? g_shell_flyout_header : g_shell_flyout_footer;
-        slot = text != nullptr ? text : "";
-        call->AddString(slot.c_str(), kMaxControlBytes);
-    }
-    if (!HostSinkPost(g_shell_flyout_sink, call)) {
-        OH_LOG_WARN(LOG_APP, "[openharmony-host] shell_flyout_%{public}s: no shell flyout sink",
-                    op == 0 ? "header" : "footer");
-        return -1;
-    }
-    return 0;
+    return HostCxxBoundary("shell flyout", [&] {
+        if (!ControlStringFits(text, op == 0 ? "shell_flyout_header" : "shell_flyout_footer")) {
+            return -1;
+        }
+        SinkCall* call = new SinkCall();
+        call->AddInt(op);
+        {
+            std::lock_guard<std::mutex> guard(g_shell_flyout_lock);
+            std::string& slot = op == 0 ? g_shell_flyout_header : g_shell_flyout_footer;
+            slot = text != nullptr ? text : "";
+            call->AddString(slot.c_str(), kMaxControlBytes);
+        }
+        if (!HostSinkPost(g_shell_flyout_sink, call)) {
+            OH_LOG_WARN(LOG_APP, "[openharmony-host] shell_flyout_%{public}s: no shell flyout sink",
+                        op == 0 ? "header" : "footer");
+            return -1;
+        }
+        return 0;
+    });
 }
 
 // Called from managed code (P/Invoke): returns 0 when the text was queued for the shell.
@@ -2578,10 +2618,12 @@ static std::atomic<void (*)(const char*)> g_web_js_message_listener{nullptr};
 
 // Called from managed code (P/Invoke): forwards a script evaluation request to the ArkTS sink.
 extern "C" int ohos_host_web_eval(const char* script, int request_id) {
-    SinkCall* call = new SinkCall();
-    call->AddString(script);
-    call->AddInt(request_id);
-    return HostSinkPost(g_web_eval_sink, call) ? 0 : -1;
+    return HostCxxBoundary("web eval", [&] {
+        SinkCall* call = new SinkCall();
+        call->AddString(script);
+        call->AddInt(request_id);
+        return HostSinkPost(g_web_eval_sink, call) ? 0 : -1;
+    });
 }
 
 // The managed side registers the callback that completes a pending script evaluation.
@@ -2681,10 +2723,12 @@ napi_value RegisterHybridInvokeResultSink(napi_env env, napi_callback_info info)
 // Called from managed code (P/Invoke) with the invocation result. Returns 0 when the result
 // reached the ArkTS sink, -1 when there is no result sink registered.
 extern "C" int ohos_host_hwv_invoke_result(int request_id, const char* payload_json) {
-    SinkCall* call = new SinkCall();
-    call->AddInt(request_id);
-    call->AddString(payload_json);
-    return HostSinkPost(g_hybrid_invoke_result_sink, call) ? 0 : -1;
+    return HostCxxBoundary("hybrid invoke result", [&] {
+        SinkCall* call = new SinkCall();
+        call->AddInt(request_id);
+        call->AddString(payload_json);
+        return HostSinkPost(g_hybrid_invoke_result_sink, call) ? 0 : -1;
+    });
 }
 
 // ArkTS calls host.registerPickerSink(fn) to receive picker requests.
@@ -2730,25 +2774,27 @@ constexpr size_t kMaxRawFileBase64Bytes =
 
 // Called by the host core (managed side) to ask the shell for one raw resource.
 void OnRawFileRequest(int requestId, int op, const char* name) {
-    if (!ControlStringFits(name, "raw_file")) {
-        // The name was refused before it could reach the shell; answer the pending managed
-        // request right away (never leave it to its timeout).
-        ohos_host_raw_file_result(requestId, OHOS_RAW_FILE_UNAVAILABLE, "");
-        return;
-    }
-    SinkCall* call = new SinkCall();
-    call->AddInt(requestId);
-    call->AddInt(op);
-    call->AddString(name, kMaxControlBytes);
-    if (!HostSinkPost(g_raw_file_sink, call)) {
-        // No shell sink (older shell or no page yet): answer immediately and log once.
-        static bool unavailableLogged = false;
-        if (!unavailableLogged) {
-            unavailableLogged = true;
-            OH_LOG_WARN(LOG_APP, "[openharmony-host] raw file: no shell sink; requests answer unavailable");
+    HostCxxBoundaryVoid("raw file request", [&] {
+        if (!ControlStringFits(name, "raw_file")) {
+            // The name was refused before it could reach the shell; answer the pending managed
+            // request right away (never leave it to its timeout).
+            ohos_host_raw_file_result(requestId, OHOS_RAW_FILE_UNAVAILABLE, "");
+            return;
         }
-        ohos_host_raw_file_result(requestId, OHOS_RAW_FILE_UNAVAILABLE, "");
-    }
+        SinkCall* call = new SinkCall();
+        call->AddInt(requestId);
+        call->AddInt(op);
+        call->AddString(name, kMaxControlBytes);
+        if (!HostSinkPost(g_raw_file_sink, call)) {
+            // No shell sink (older shell or no page yet): answer immediately and log once.
+            static bool unavailableLogged = false;
+            if (!unavailableLogged) {
+                unavailableLogged = true;
+                OH_LOG_WARN(LOG_APP, "[openharmony-host] raw file: no shell sink; requests answer unavailable");
+            }
+            ohos_host_raw_file_result(requestId, OHOS_RAW_FILE_UNAVAILABLE, "");
+        }
+    });
 }
 
 // ArkTS calls host.registerRawFileSink(fn) to receive raw-resource requests.
@@ -2928,13 +2974,15 @@ napi_value NotifyRawFileFd(napi_env env, napi_callback_info info) {
 // (sink moved into the current HostBinding; see the g_* accessors above)
 
 void OnPermissionRequest(const char* permission, int requestId) {
-    if (!ControlStringFits(permission, "permission")) {
-        return;
-    }
-    SinkCall* call = new SinkCall();
-    call->AddString(permission, kMaxControlBytes);
-    call->AddInt(requestId);
-    HostSinkPost(g_permission_sink, call);
+    HostCxxBoundaryVoid("permission request", [&] {
+        if (!ControlStringFits(permission, "permission")) {
+            return;
+        }
+        SinkCall* call = new SinkCall();
+        call->AddString(permission, kMaxControlBytes);
+        call->AddInt(requestId);
+        HostSinkPost(g_permission_sink, call);
+    });
 }
 
 // ArkTS calls host.registerPermissionSink(fn) to receive permission requests.
@@ -2967,10 +3015,12 @@ napi_value NotifyPermissionResult(napi_env env, napi_callback_info info) {
 // (sink moved into the current HostBinding; see the g_* accessors above)
 
 void OnNotificationPermissionRequest(int op, int requestId) {
-    SinkCall* call = new SinkCall();
-    call->AddInt(op);
-    call->AddInt(requestId);
-    HostSinkPost(g_notification_permission_sink, call);
+    HostCxxBoundaryVoid("notification permission request", [&] {
+        SinkCall* call = new SinkCall();
+        call->AddInt(op);
+        call->AddInt(requestId);
+        HostSinkPost(g_notification_permission_sink, call);
+    });
 }
 
 // ArkTS calls host.registerNotificationPermissionSink(fn) to receive enablement requests.
@@ -3002,14 +3052,16 @@ napi_value NotifyNotificationPermissionResult(napi_env env, napi_callback_info i
 // (sink moved into the current HostBinding; see the g_* accessors above)
 
 void OnClipboardRequest(int requestId, int op, const char* text) {
-    if (!ControlStringFits(text, "clipboard")) {
-        return;
-    }
-    SinkCall* call = new SinkCall();
-    call->AddInt(requestId);
-    call->AddInt(op);
-    call->AddString(text, kMaxControlBytes);
-    HostSinkPost(g_clipboard_sink, call);
+    HostCxxBoundaryVoid("clipboard request", [&] {
+        if (!ControlStringFits(text, "clipboard")) {
+            return;
+        }
+        SinkCall* call = new SinkCall();
+        call->AddInt(requestId);
+        call->AddInt(op);
+        call->AddString(text, kMaxControlBytes);
+        HostSinkPost(g_clipboard_sink, call);
+    });
 }
 
 // ArkTS calls host.registerClipboardSink(fn) to receive clipboard operations.
@@ -3108,14 +3160,16 @@ napi_value KeyEvent(napi_env env, napi_callback_info info) {
 // (sink moved into the current HostBinding; see the g_* accessors above)
 
 void OnGeocodeRequest(int requestId, int op, const char* arg) {
-    if (!ControlStringFits(arg, "geocode")) {
-        return;
-    }
-    SinkCall* call = new SinkCall();
-    call->AddInt(requestId);
-    call->AddInt(op);
-    call->AddString(arg, kMaxControlBytes);
-    HostSinkPost(g_geocode_sink, call);
+    HostCxxBoundaryVoid("geocode request", [&] {
+        if (!ControlStringFits(arg, "geocode")) {
+            return;
+        }
+        SinkCall* call = new SinkCall();
+        call->AddInt(requestId);
+        call->AddInt(op);
+        call->AddString(arg, kMaxControlBytes);
+        HostSinkPost(g_geocode_sink, call);
+    });
 }
 
 // ArkTS calls host.registerGeocodeSink(fn) to receive geocoding requests.
@@ -3147,9 +3201,11 @@ napi_value NotifyGeocodeResult(napi_env env, napi_callback_info info) {
 // (sink moved into the current HostBinding; see the g_* accessors above)
 
 void OnVibrationRequest(int durationMs) {
-    SinkCall* call = new SinkCall();
-    call->AddInt(durationMs);
-    HostSinkPost(g_vibration_sink, call);
+    HostCxxBoundaryVoid("vibration request", [&] {
+        SinkCall* call = new SinkCall();
+        call->AddInt(durationMs);
+        HostSinkPost(g_vibration_sink, call);
+    });
 }
 
 napi_value RegisterVibrationSink(napi_env env, napi_callback_info info) {
@@ -3190,9 +3246,11 @@ napi_value NotifyKeystoreResult(napi_env env, napi_callback_info info) {
 
 // Called by the host core (managed side) to show/hide the ArkTS soft keyboard.
 void OnTextInputRequest(int show) {
-    SinkCall* call = new SinkCall();
-    call->AddInt(show);
-    HostSinkPost(g_text_input_sink, call);
+    HostCxxBoundaryVoid("text input request", [&] {
+        SinkCall* call = new SinkCall();
+        call->AddInt(show);
+        HostSinkPost(g_text_input_sink, call);
+    });
 }
 
 // ArkTS calls host.registerTextInputSink(fn) so the shell can show/hide its input.
@@ -3591,6 +3649,16 @@ napi_value Init(napi_env env, napi_value exports) {
         {"stopApp", nullptr, StopApp, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"runApp", nullptr, RunApp, nullptr, nullptr, nullptr, napi_default, nullptr},
     };
+    // The unified NAPI exception boundary: every exported method runs through HostNapiEntry,
+    // with the real handler in the descriptor's data field (this table is the only user of
+    // data). A handler that throws while allocating is reported as a JS exception instead of
+    // unwinding through the engine.
+    for (size_t i = 0; i < sizeof(properties) / sizeof(properties[0]); i++) {
+        if (properties[i].method != nullptr) {
+            properties[i].data = reinterpret_cast<void*>(properties[i].method);
+            properties[i].method = HostNapiEntry;
+        }
+    }
     napi_define_properties(env, exports, sizeof(properties) / sizeof(properties[0]), properties);
     return exports;
 }
@@ -4344,3 +4412,4 @@ extern "C" int ohos_host_accessibility_announce(const char* text) {
 extern "C" int ohos_host_accessibility_provider_status(void) {
     return g_a11y_status;
 }
+
