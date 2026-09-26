@@ -12,7 +12,7 @@ using Microsoft.Maui.Platform;
 // after the fuzz tail) instead of letting every caller repeat its own threshold constant.
 VerifyLineCountingWriter verifyStdout = new(Console.Out);
 Console.SetOut(verifyStdout);
-const int verifyCheckTotal = 329;                     // documented full [verify] line count
+const int verifyCheckTotal = 330;                     // documented full [verify] line count
 const int verifyCheckFloor = verifyCheckTotal - 20;   // documented floor convention (total - 20)
 
 // A small image file for the Image handler.
@@ -2708,7 +2708,9 @@ if (!kitDegradeOk)
 // KIT4: the second-batch shell probes (Push/Account/Map) follow the KIT1 shape - the module
 // specifier stays in a variable and the resolved value is cast to a local structural interface,
 // the sinks register only when the runtime resolves the kit, and the probes run from
-// aboutToAppear; all three byte-identical packs carry the block.
+// aboutToAppear; all three byte-identical packs carry the block. Map (R2-3) additionally carries
+// the overlay control path: the syscap check, the overlay-module probe (a second variable
+// specifier, './map/MapOverlay'), the command ops and the NodeContainer that mounts the proxy.
 bool kitShellPush = kitShell.Contains("const kitName: string = '@kit.PushKit';") &&
     kitShell.Contains("const kit = (await import(kitName)) as HmsPushKit;") &&
     kitShell.Contains("host.registerPushSink((requestId: number, op: number): void => {") &&
@@ -2724,11 +2726,21 @@ bool kitShellAccount = kitShell.Contains("const kitName: string = '@kit.AccountK
     kitShell.Contains("request.scopes = ['quickLoginAnonymousPhone'];") &&
     kitShell.Contains("request.forceAuthorization = false;") &&
     kitShell.Contains("host.notifyAccountResult(requestId, op, code, payload);");
-bool kitShellMap = kitShell.Contains("const kitName: string = '@kit.MapKit';") &&
+bool kitShellMap = kitShell.Contains("canIUse('SystemCapability.Map.Core')") &&
+    kitShell.Contains("const kitName: string = '@kit.MapKit';") &&
     kitShell.Contains("const kit = (await import(kitName)) as HmsMapKit;") &&
-    kitShell.Contains("host.registerMapSink((requestId: number): void => {") &&
-    kitShell.Contains("private runMapProbe(requestId: number): void {") &&
-    kitShell.Contains("host.notifyMapResult(requestId, flags);");
+    kitShell.Contains("const overlayModule: string = './map/MapOverlay';") &&
+    kitShell.Contains("const module = (await import(overlayModule)) as HmsMapOverlayModule;") &&
+    kitShell.Contains("host.registerMapSink((requestId: number, op: number, args: string): void => {") &&
+    kitShell.Contains("private runMapCommand(requestId: number, op: number, args: string): void {") &&
+    kitShell.Contains("private async probeMapOverlay(): Promise<boolean> {") &&
+    kitShell.Contains("private createMapOverlay(): boolean {") &&
+    kitShell.Contains("private destroyMapOverlay(): boolean {") &&
+    kitShell.Contains("private setMapOverlayVisible(visible: boolean): boolean {") &&
+    kitShell.Contains("private notifyMapEvent(op: number, payload: string): void {") &&
+    kitShell.Contains("NodeContainer(this.hmsMapOverlay.nodeController)") &&
+    kitShell.Contains("host.notifyMapResult(requestId, op, code, payload);") &&
+    kitShell.Contains("this.hmsMapFlags = overlayAvailable ? 3 : 1;");
 bool kitShellCallsites2 = kitShell.Contains("this.probePushKit();") && kitShell.Contains("this.probeAccountKit();") &&
     kitShell.Contains("this.probeMapKit();") && kitShell.Contains("Push Kit unavailable on this device:");
 int kitShellPacks2 = 0;
@@ -2737,7 +2749,8 @@ foreach (string kitPackVersion in kitShellPackVersions)
     string? kitPackPath2 = FindHostSource($"packs/Microsoft.OpenHarmony.Sdk/{kitPackVersion}/templates/ets/pages/Index.ets");
     string kitPackShell2 = kitPackPath2 is null ? string.Empty : File.ReadAllText(kitPackPath2);
     kitShellPacks2 += kitPackShell2.Contains("registerPushSink") && kitPackShell2.Contains("registerAccountSink") &&
-        kitPackShell2.Contains("registerMapSink") && kitPackShell2.Contains("this.probeMapKit();") ? 1 : 0;
+        kitPackShell2.Contains("registerMapSink") && kitPackShell2.Contains("this.probeMapKit();") &&
+        kitPackShell2.Contains("./map/MapOverlay") ? 1 : 0;
 }
 bool kitShellOk2 = kitShellPush && kitShellAccount && kitShellMap && kitShellCallsites2 && kitShellPacks2 == kitShellPackVersions.Length;
 Console.WriteLine($"[verify] kit4 shell probe push={kitShellPush} account={kitShellAccount} map={kitShellMap} callsites={kitShellCallsites2} packs={kitShellPacks2}/{kitShellPackVersions.Length} assert={kitShellOk2}");
@@ -2746,15 +2759,63 @@ if (!kitShellOk2)
     throw new InvalidOperationException("the Push/Account/Map kit shell probes/sinks are missing or drifted");
 }
 
+// KIT7 (R2-3): the MapComponent overlay module. The file names the ArkUI component, which only
+// the HarmonyOS SDK declares, so it must exist in all three packs (byte-identical via the source
+// gate), carry the overlay surface the shell casts to, and be copied into the hvigor project only
+// by the harmony branch of the shell build. The default OpenHarmony build must never see it.
+string kitOverlayModuleText = string.Empty;
+int kitOverlayPacks = 0;
+foreach (string kitPackVersion in kitShellPackVersions)
+{
+    string? kitOverlayPath = FindHostSource($"packs/Microsoft.OpenHarmony.Sdk/{kitPackVersion}/templates/ets/map/MapOverlay.ets");
+    if (kitOverlayPath is null)
+    {
+        continue;
+    }
+    string kitOverlayText = File.ReadAllText(kitOverlayPath);
+    kitOverlayPacks++;
+    if (kitPackVersion == "1.0.0-preview.24")
+    {
+        kitOverlayModuleText = kitOverlayText;
+    }
+}
+bool kitOverlaySurface = kitOverlayModuleText.Contains("import { MapComponent, map, mapCommon } from '@kit.MapKit';") &&
+    kitOverlayModuleText.Contains("MapComponent({ mapOptions: params.options, mapCallback: params.callback })") &&
+    kitOverlayModuleText.Contains("export class MapOverlayProxy") &&
+    kitOverlayModuleText.Contains("get nodeController(): NodeController") &&
+    kitOverlayModuleText.Contains("controller.on('markerClick'") &&
+    kitOverlayModuleText.Contains("controller.on('cameraIdle'") &&
+    kitOverlayModuleText.Contains("controller.addMarker(options)") &&
+    kitOverlayModuleText.Contains("controller.moveCamera(map.newLatLng(target, this.region.zoom))") &&
+    kitOverlayModuleText.Contains("node.build(wrapBuilder(mapOverlayView), params)") &&
+    kitOverlayModuleText.Contains("node.dispose()");
+string? kitBuildScriptPath = FindHostSource("scripts/build-arkts-shell.sh");
+string kitBuildScript = kitBuildScriptPath is null ? string.Empty : File.ReadAllText(kitBuildScriptPath);
+// The overlay copy sits inside the ui variant's harmony branch (SDK flavor check + cp of the
+// module), so the default flavor cannot compile the component declaration it needs.
+bool kitOverlayFlavorGate = kitBuildScript.Contains("if [ \"$SDK_FLAVOR\" = harmony ]; then") &&
+    kitBuildScript.Contains("cp \"$TPL/ets/map/MapOverlay.ets\" \"$PROJ/entry/src/main/ets/map/MapOverlay.ets\"") &&
+    kitBuildScript.Contains("'./map/MapOverlay'");
+bool kitOverlayOk = kitOverlayPacks == kitShellPackVersions.Length && kitOverlaySurface && kitOverlayFlavorGate;
+Console.WriteLine($"[verify] kit7 map overlay module packs={kitOverlayPacks}/{kitShellPackVersions.Length} surface={kitOverlaySurface} flavorGate={kitOverlayFlavorGate} assert={kitOverlayOk}");
+if (!kitOverlayOk)
+{
+    throw new InvalidOperationException("the MapComponent overlay module or its flavor gate drifted");
+}
+
 // KIT5: the host and managed halves of the second batch: the C ABI declarations, the NAPI
 // sink/notify names, the napi module table entries, the managed P/Invoke entry points with their
-// kit error-code maps, and the public API baseline entries.
+// kit error-code maps, and the public API baseline entries. Map (R2-3) carries the overlay
+// command surface: ohos_host_map_command(op + JSON args) replaces the reserved probe, the answer
+// carries (request_id, op, code, payload) and the managed side exposes the overlay methods.
 string? kitPushPath = FindHostSource("OpenHarmonyPush.cs");
 string kitPush = kitPushPath is null ? string.Empty : File.ReadAllText(kitPushPath);
 string? kitAccountPath = FindHostSource("OpenHarmonyAccount.cs");
 string kitAccount = kitAccountPath is null ? string.Empty : File.ReadAllText(kitAccountPath);
 string? kitMapPath = FindHostSource("OpenHarmonyMap.cs");
 string kitMap = kitMapPath is null ? string.Empty : File.ReadAllText(kitMapPath);
+string? kitExportsPath = FindHostSource("src/OpenHarmonyHost/host-exports.txt");
+string kitExports = kitExportsPath is null ? string.Empty : File.ReadAllText(kitExportsPath);
 bool kitHostHeader2 = kitHeader.Contains("int ohos_host_push_available(void);") &&
     kitHeader.Contains("int ohos_host_push_request(int request_id, int op);") &&
     kitHeader.Contains("void ohos_host_push_register_result(void* callback);") &&
@@ -2764,22 +2825,27 @@ bool kitHostHeader2 = kitHeader.Contains("int ohos_host_push_available(void);") 
     kitHeader.Contains("void ohos_host_account_register_result(void* callback);") &&
     kitHeader.Contains("void ohos_host_account_result(int request_id, int op, int code, const char* payload);") &&
     kitHeader.Contains("int ohos_host_map_available(void);") &&
-    kitHeader.Contains("int ohos_host_map_probe(int request_id);") &&
+    kitHeader.Contains("int ohos_host_map_command(int request_id, int op, const char* args);") &&
     kitHeader.Contains("void ohos_host_map_register_result(void* callback);") &&
-    kitHeader.Contains("void ohos_host_map_result(int request_id, int flags);");
+    kitHeader.Contains("void ohos_host_map_result(int request_id, int op, int code, const char* payload);") &&
+    !kitHeader.Contains("ohos_host_map_probe");
 bool kitHostNapi2 = kitNapi.Contains("extern \"C\" int ohos_host_push_available(void)") &&
     kitNapi.Contains("extern \"C\" int ohos_host_push_request(int request_id, int op)") &&
     kitNapi.Contains("extern \"C\" int ohos_host_account_request(int request_id, int op, const char* scopes)") &&
-    kitNapi.Contains("extern \"C\" int ohos_host_map_probe(int request_id)") &&
+    kitNapi.Contains("extern \"C\" int ohos_host_map_command(int request_id, int op, const char* args)") &&
+    kitNapi.Contains("extern \"C\" void ohos_host_map_result(int request_id, int op, int code, const char* payload)") &&
     kitNapi.Contains("HostSinkPost(g_push_sink, call)") &&
     kitNapi.Contains("HostSinkPost(g_account_sink, call)") &&
     kitNapi.Contains("HostSinkPost(g_map_sink, call)") &&
+    kitNapi.Contains("call->AddString(args != nullptr ? args : \"\", kMaxControlBytes);") &&
     kitNapi.Contains("{\"registerPushSink\", nullptr, RegisterPushSink") &&
     kitNapi.Contains("{\"notifyPushResult\", nullptr, NotifyPushResult") &&
     kitNapi.Contains("{\"registerAccountSink\", nullptr, RegisterAccountSink") &&
     kitNapi.Contains("{\"notifyAccountResult\", nullptr, NotifyAccountResult") &&
     kitNapi.Contains("{\"registerMapSink\", nullptr, RegisterMapSink") &&
     kitNapi.Contains("{\"notifyMapResult\", nullptr, NotifyMapResult");
+bool kitExportsRenamed = kitExports.Contains("ohos_host_map_command") && kitExports.Contains("ohos_host_map_result") &&
+    !kitExports.Contains("ohos_host_map_probe");
 bool kitManagedOk2 = kitPush.Contains("EntryPoint = \"ohos_host_push_available\"") &&
     kitPush.Contains("EntryPoint = \"ohos_host_push_request\"") &&
     kitPush.Contains("EntryPoint = \"ohos_host_push_register_result\"") &&
@@ -2795,14 +2861,32 @@ bool kitManagedOk2 = kitPush.Contains("EntryPoint = \"ohos_host_push_available\"
     kitAccount.Contains("ScopeNotApproved = 1001502014") &&
     kitAccount.Contains("FingerprintMismatch = 1001500001") &&
     kitMap.Contains("EntryPoint = \"ohos_host_map_available\"") &&
-    kitMap.Contains("EntryPoint = \"ohos_host_map_probe\"") &&
+    kitMap.Contains("EntryPoint = \"ohos_host_map_command\"") &&
     kitMap.Contains("EntryPoint = \"ohos_host_map_register_result\"") &&
     kitMap.Contains("public static async Task<OpenHarmonyMapCapability?> QueryCapabilitiesAsync") &&
+    kitMap.Contains("public static async Task<bool> ShowAsync") &&
+    kitMap.Contains("public static async Task<bool> HideAsync") &&
+    kitMap.Contains("public static async Task<bool> CloseAsync") &&
+    kitMap.Contains("public static async Task<bool> SetRegionAsync(OpenHarmonyMapRegion region") &&
+    kitMap.Contains("public static async Task<bool> AddMarkerAsync(OpenHarmonyMapMarker marker") &&
+    kitMap.Contains("public static bool IsOverlayAvailable") &&
+    kitMap.Contains("public static event EventHandler? Ready;") &&
+    kitMap.Contains("public static event EventHandler<OpenHarmonyMapMarkerClickEventArgs>? MarkerClick;") &&
+    kitMap.Contains("public static event EventHandler<OpenHarmonyMapRegionEventArgs>? CameraIdle;") &&
+    !kitMap.Contains("ohos_host_map_probe") &&
     kitPublicApi.Contains("Microsoft.Maui.Platform.OpenHarmonyPush.GetTokenAsync(") &&
     kitPublicApi.Contains("Microsoft.Maui.Platform.OpenHarmonyAccount.GetQuickLoginAnonymousPhoneAsync(") &&
-    kitPublicApi.Contains("Microsoft.Maui.Platform.OpenHarmonyMap.QueryCapabilitiesAsync(");
-bool kitPinsOk2 = kitHostHeader2 && kitHostNapi2 && kitManagedOk2;
-Console.WriteLine($"[verify] kit5 bridge pins header={kitHostHeader2} napi={kitHostNapi2} managed={kitManagedOk2} assert={kitPinsOk2}");
+    kitPublicApi.Contains("Microsoft.Maui.Platform.OpenHarmonyMap.QueryCapabilitiesAsync(") &&
+    kitPublicApi.Contains("Microsoft.Maui.Platform.OpenHarmonyMap.ShowAsync(") &&
+    kitPublicApi.Contains("Microsoft.Maui.Platform.OpenHarmonyMap.SetRegionAsync(") &&
+    kitPublicApi.Contains("Microsoft.Maui.Platform.OpenHarmonyMap.AddMarkerAsync(") &&
+    kitPublicApi.Contains("Microsoft.Maui.Platform.OpenHarmonyMap.IsOverlayAvailable.get -> bool") &&
+    kitPublicApi.Contains("Microsoft.Maui.Platform.OpenHarmonyMapRegion") &&
+    kitPublicApi.Contains("Microsoft.Maui.Platform.OpenHarmonyMapMarker") &&
+    kitPublicApi.Contains("Microsoft.Maui.Platform.OpenHarmonyMapMarkerClickEventArgs") &&
+    kitPublicApi.Contains("Microsoft.Maui.Platform.OpenHarmonyMapRegionEventArgs");
+bool kitPinsOk2 = kitHostHeader2 && kitHostNapi2 && kitExportsRenamed && kitManagedOk2;
+Console.WriteLine($"[verify] kit5 bridge pins header={kitHostHeader2} napi={kitHostNapi2} exports={kitExportsRenamed} managed={kitManagedOk2} assert={kitPinsOk2}");
 if (!kitPinsOk2)
 {
     throw new InvalidOperationException("the Push/Account/Map host/managed bridge contract drifted");
@@ -2810,7 +2894,9 @@ if (!kitPinsOk2)
 
 // KIT6: off-device degradation of the second batch (no host library): Push GetToken/DeleteToken
 // answer Unavailable (no token) and IsSupported false, Account answers Unavailable (no payload)
-// and IsSupported false, Map answers null and IsSupported false; all without throwing.
+// and IsSupported false, Map answers null and IsSupported false; the overlay (R2-3) is
+// unavailable, every overlay call answers false, the malformed-input guards short-circuit without
+// a probe and no overlay event fires; all without throwing.
 OpenHarmonyPushToken kitPushToken = await OpenHarmonyPush.GetTokenAsync();
 OpenHarmonyPushStatus kitPushDelete = await OpenHarmonyPush.DeleteTokenAsync();
 bool kitPushSupported = OpenHarmonyPush.IsSupported;
@@ -2819,12 +2905,34 @@ OpenHarmonyAccountResult kitAccountAuth = await OpenHarmonyAccount.AuthorizeAsyn
 bool kitAccountSupported = OpenHarmonyAccount.IsSupported;
 OpenHarmonyMapCapability? kitMapCaps = await OpenHarmonyMap.QueryCapabilitiesAsync();
 bool kitMapSupported = OpenHarmonyMap.IsSupported;
+bool kitMapOverlay = OpenHarmonyMap.IsOverlayAvailable;
+bool kitMapEventFired = false;
+EventHandler kitMapReadyHandler = (_, _) => kitMapEventFired = true;
+EventHandler<OpenHarmonyMapMarkerClickEventArgs> kitMapMarkerHandler = (_, _) => kitMapEventFired = true;
+EventHandler<OpenHarmonyMapRegionEventArgs> kitMapRegionHandler = (_, _) => kitMapEventFired = true;
+OpenHarmonyMap.Ready += kitMapReadyHandler;
+OpenHarmonyMap.MarkerClick += kitMapMarkerHandler;
+OpenHarmonyMap.CameraIdle += kitMapRegionHandler;
+bool kitMapShow = await OpenHarmonyMap.ShowAsync();
+bool kitMapHide = await OpenHarmonyMap.HideAsync();
+bool kitMapClose = await OpenHarmonyMap.CloseAsync();
+bool kitMapSetRegion = await OpenHarmonyMap.SetRegionAsync(new OpenHarmonyMapRegion(39.9, 116.4, 10));
+bool kitMapAddMarker = await OpenHarmonyMap.AddMarkerAsync(new OpenHarmonyMapMarker("verify-1", 39.9, 116.4, "verify"));
+OpenHarmonyMap.Ready -= kitMapReadyHandler;
+OpenHarmonyMap.MarkerClick -= kitMapMarkerHandler;
+OpenHarmonyMap.CameraIdle -= kitMapRegionHandler;
+// Malformed input is rejected before any platform call (the guards run first, so these answer
+// false even when an overlay is available): a non-finite region and a marker without an id.
+bool kitMapBadRegion = await OpenHarmonyMap.SetRegionAsync(new OpenHarmonyMapRegion(double.NaN, 0, 3));
+bool kitMapBadMarker = await OpenHarmonyMap.AddMarkerAsync(new OpenHarmonyMapMarker(string.Empty, 1, 2, "x"));
 bool kitDegradeOk2 = kitPushToken.Status == OpenHarmonyPushStatus.Unavailable && kitPushToken.Token is null &&
     kitPushDelete == OpenHarmonyPushStatus.Unavailable && !kitPushSupported &&
     kitAccountPhone.Status == OpenHarmonyAccountStatus.Unavailable && kitAccountPhone.Payload is null &&
     kitAccountAuth.Status == OpenHarmonyAccountStatus.Unavailable && !kitAccountSupported &&
-    kitMapCaps is null && !kitMapSupported;
-Console.WriteLine($"[verify] kit6 degradation pushToken={kitPushToken.Status} pushDelete={kitPushDelete} pushSupported={kitPushSupported} accountPhone={kitAccountPhone.Status} accountAuth={kitAccountAuth.Status} accountSupported={kitAccountSupported} mapCaps={(kitMapCaps is null ? "<null>" : kitMapCaps.ToString())} mapSupported={kitMapSupported} assert={kitDegradeOk2}");
+    kitMapCaps is null && !kitMapSupported && !kitMapOverlay &&
+    !kitMapShow && !kitMapHide && !kitMapClose && !kitMapSetRegion && !kitMapAddMarker &&
+    !kitMapBadRegion && !kitMapBadMarker && !kitMapEventFired;
+Console.WriteLine($"[verify] kit6 degradation pushToken={kitPushToken.Status} pushDelete={kitPushDelete} pushSupported={kitPushSupported} accountPhone={kitAccountPhone.Status} accountAuth={kitAccountAuth.Status} accountSupported={kitAccountSupported} mapCaps={(kitMapCaps is null ? "<null>" : kitMapCaps.ToString())} mapSupported={kitMapSupported} overlay={kitMapOverlay} show={kitMapShow} hide={kitMapHide} close={kitMapClose} setRegion={kitMapSetRegion} addMarker={kitMapAddMarker} badInput={(!kitMapBadRegion && !kitMapBadMarker)} events={kitMapEventFired} assert={kitDegradeOk2}");
 if (!kitDegradeOk2)
 {
     throw new InvalidOperationException("the Push/Account/Map kit bridges must degrade off-device instead of throwing");
