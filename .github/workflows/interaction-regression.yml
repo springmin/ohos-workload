@@ -21,7 +21,7 @@ name: interaction-regression
 #     tree (Refresh + Publish render step and Publish-alone pass), skip/republish average/max
 #     ceilings and documented republish/skip ratio floors (render >= 1.25x, publish >= 2x).
 #
-# The check-count floor (309 = 329 - 20, the documented convention) is declared once in
+# The check-count floor (314 = 334 - 20, the documented convention) is declared once in
 # test/maui-platform-verify/Program.cs, next to the constants that count the executed suite's own
 # [verify] lines; this job reads the `[suite]` line the run prints (and cross-checks it against
 # `grep -c`) instead of repeating a literal, exactly like scripts/preflight.sh, so the local gate
@@ -40,7 +40,7 @@ on:
         description: 'maui-ohos commit SHA to compile (defaults to the pinned feature/openharmony tip)'
         required: false
         type: string
-        default: 'a0a2c0872f21cea68e70dc2bead10a1fba1c716c'
+        default: '63d13d1542f979e29238b65f0c8fe8e3ec537d8d'
   push:
     branches: [ master ]
   pull_request:
@@ -52,15 +52,15 @@ permissions:
 
 # Reproducible cross-repo compile: the MAUI slice is checked out at an exact commit, not the
 # mutable feature/openharmony branch, so a push to the fork cannot change what this gate compiles.
-# The default is the feature/openharmony tip: a0a2c087, the KIT-EXT2 batch commit (the
-# Push/Account/Map platform bridges on top of the P2 LibraryImport migration, plus the
-# reverse-entry marshalling change; on top of the #4-#7 slice work and the 236d18a9 harness
-# baseline). The suite pins 329 checks / floor 309 and the full run is green at this compiled
-# tree (local preflight verification: 329/329, floor 309); advance the pin deliberately and
-# refresh this comment when the harness pins or the tip move (workflow_dispatch can compile
-# any commit).
+# The default is the feature/openharmony tip: 63d13d15, the R2-SHELL-EXT batch commit (the Map
+# Kit overlay bridge and the Live View Kit bridge on top of the KIT-EXT2 Push/Account/Map
+# bridges, the P2 LibraryImport migration and the reverse-entry marshalling change; on top of
+# the #4-#7 slice work and the 236d18a9 harness baseline). The suite pins 334 checks / floor 314
+# and the full run is green at this compiled tree (local preflight verification: 334/334,
+# floor 314); advance the pin deliberately and refresh this comment when the harness pins or
+# the tip move (workflow_dispatch can compile any commit).
 env:
-  MAUI_OHOS_REF: ${{ github.event.inputs.maui_ohos_ref || 'a0a2c0872f21cea68e70dc2bead10a1fba1c716c' }}
+  MAUI_OHOS_REF: ${{ github.event.inputs.maui_ohos_ref || '63d13d1542f979e29238b65f0c8fe8e3ec537d8d' }}
   # setup-dotnet installs the requested 11.0.x preview into DOTNET_INSTALL_DIR; on Linux that
   # defaults to /usr/share/dotnet, which a per-user cache cannot persist. Point it at ~/.dotnet
   # (the action resolves the ~ prefix against $HOME) so the cache step below actually avoids the

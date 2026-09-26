@@ -39,7 +39,7 @@ on:
         description: 'maui-ohos commit SHA to compile (defaults to the pinned feature/openharmony tip)'
         required: false
         type: string
-        default: 'a0a2c0872f21cea68e70dc2bead10a1fba1c716c'
+        default: '63d13d1542f979e29238b65f0c8fe8e3ec537d8d'
 
 # Least privilege: the job only reads this repository and the public springmin/maui-ohos fork;
 # no step pushes anywhere.
@@ -48,14 +48,13 @@ permissions:
 
 # Reproducible cross-repo compile: the MAUI slice is checked out at an exact commit, not the
 # mutable feature/openharmony branch, so a push to the fork cannot change what this gate compiles.
-# The default is the feature/openharmony tip: a0a2c087, the KIT-EXT2 batch commit (the
-# Push/Account/Map platform bridges on top of the P2 LibraryImport migration, plus the
-# reverse-entry marshalling change); the pixel expectations are unchanged by that work (no
-# drawing behavior changes). The interaction harness pins 329 checks / floor 309; advance the
-# pin in lockstep with the interaction gate and change it deliberately (workflow_dispatch can
-# compile any other commit SHA).
+# The default is the feature/openharmony tip: 63d13d15, the R2-SHELL-EXT batch commit (the Map
+# Kit overlay bridge and the Live View Kit bridge); the pixel expectations are unchanged by that
+# work (no drawing behavior changes). The interaction harness pins 334 checks / floor 314;
+# advance the pin in lockstep with the interaction gate and change it deliberately
+# (workflow_dispatch can compile any other commit SHA).
 env:
-  MAUI_OHOS_REF: ${{ github.event.inputs.maui_ohos_ref || 'a0a2c0872f21cea68e70dc2bead10a1fba1c716c' }}
+  MAUI_OHOS_REF: ${{ github.event.inputs.maui_ohos_ref || '63d13d1542f979e29238b65f0c8fe8e3ec537d8d' }}
   # Same as the interaction gate: keep the setup-dotnet preview SDK in a cacheable per-user path
   # instead of the runner's /usr/share/dotnet; a newer 11.0.x preview is still downloaded (the
   # action re-resolves the channel), the cache only skips the ~200 MB download when it moved.
