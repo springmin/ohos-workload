@@ -28,6 +28,9 @@
 #   S13 usage     --expected-abc with a non-numeric token -> exit 2; unknown option -> exit 2
 #   S14 payload   payload-in-libs marker mutants -> exit 1: marker missing, entry count drift,
 #                 zip-sha mismatch, entry assembly not staged
+#   S15 zipoptout the OpenHarmonyHapPayloadZip=false shape (no zip + cleared marker identity)
+#                 -> exit 0 with an INFO, no WARN; zip present without identity, and identity
+#                 present without zip -> exit 1
 #
 # The kit fixture mirrors the real one: five haps (module.json / ets/modules.abc /
 # resources.index / resources/rawfile/dotnet.zip / libs/arm64-v8a/*.so + the payload-in-libs
@@ -383,6 +386,19 @@ def patch(kit, op, arg=None):
                 data = dict(items)
                 data[PAYLOAD_MARKER] = json.dumps(marker).encode()
                 items = [(n, data[n]) for n, _ in items]
+        elif op in ("payload-zipoptout", "payload-zipreverse", "payload-zipdropped"):
+            # OpenHarmonyHapPayloadZip opt-out shapes: zipoptout = no zip + cleared identity (the
+            # legitimate pack), zipreverse = zip kept + identity cleared, zipdropped = zip dropped
+            # + identity kept (both drifts must FAIL against the marker contract).
+            if op in ("payload-zipoptout", "payload-zipdropped"):
+                items = [(n, d) for n, d in items if n != "resources/rawfile/dotnet.zip"]
+            data = dict(items)
+            marker = json.loads(data[PAYLOAD_MARKER])
+            if op != "payload-zipdropped":
+                marker["zipEntries"] = 0
+                marker["zipSha256"] = ""
+            data[PAYLOAD_MARKER] = json.dumps(marker).encode()
+            items = [(n, data[n]) for n, _ in items]
         else:
             raise SystemExit("unknown patch op: %s" % op)
         write_hap(path, items)
@@ -626,6 +642,30 @@ python3 "$WORK/fixture.py" patch "$K" payload-assembly missing.dll
 run_verify "$K"
 assert_rc 1 "$RC" "S14 marker naming an unstaged assembly fails"
 assert_contains "S14 names the missing assembly" "入口程序集 'missing.dll' 不在 libs/arm64-v8a/" "$LOG_FILE"
+
+# ---- S15: the payload-zip opt-out (OpenHarmonyHapPayloadZip=false) ---------------------
+section "S15 zip opt-out shape -> INFO/exit 0; marker/zip identity drift -> FAIL"
+K="$(new_kit kit-zipoptout)"
+python3 "$WORK/fixture.py" patch "$K" payload-zipoptout
+run_verify "$K"
+assert_rc 0 "$RC" "S15 no zip + cleared marker identity passes"
+assert_contains "S15 grades the missing zip as INFO" "免 zip 打包（OpenHarmonyHapPayloadZip=false）的预期形态" "$LOG_FILE"
+assert_not_contains "S15 does not WARN on the missing zip" "WARN: hello-maui-app.hap: 包内没有" "$LOG_FILE"
+assert_contains "S15 reports the self-consistent opt-out shape" "免 zip 形态自洽" "$LOG_FILE"
+assert_not_contains "S15 does not FAIL the payload/zip cross-check" "回退副本不一致" "$LOG_FILE"
+assert_not_contains "S15 does not FAIL on the missing zip identity binding" "没有 zipSha256" "$LOG_FILE"
+
+K="$(new_kit kit-zipreverse)"
+python3 "$WORK/fixture.py" patch "$K" payload-zipreverse
+run_verify "$K"
+assert_rc 1 "$RC" "S15 zip present + cleared marker identity fails"
+assert_contains "S15 names the marker/zip drift" "marker 无 zip 身份" "$LOG_FILE"
+
+K="$(new_kit kit-zipdropped)"
+python3 "$WORK/fixture.py" patch "$K" payload-zipdropped
+run_verify "$K"
+assert_rc 1 "$RC" "S15 marker identity present + zip missing fails"
+assert_contains "S15 names the missing fallback zip" "记录了 zip 身份" "$LOG_FILE"
 
 # ---- summary -------------------------------------------------------------------------
 section "summary"

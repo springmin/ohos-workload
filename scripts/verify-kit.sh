@@ -35,10 +35,17 @@
 #                    the device lets a dlopen come from), so a missing or inconsistent marker
 #                    means the app would fall back to the refused data-directory extraction
 #                    -> FAIL. A hap packed with -p:OpenHarmonyHapPayloadInLibs=false fails this
-#                    check by design.
+#                    check by design. The zip cross-checks run only when the marker carries a
+#                    zip identity (zipEntries != 0 or zipSha256 non-empty): with
+#                    -p:OpenHarmonyHapPayloadZip=false the packaging clears the identity and
+#                    ships no dotnet.zip (that combination is the legitimate INFO shape); a
+#                    marker without an identity while the hap still carries dotnet.zip, or an
+#                    identity without the zip, is marker/zip drift -> FAIL.
 #   dotnet.zip       readable -> must carry no .so (an unsigned duplicate would be dlopen'd from
 #                    the extracted app dir and rejected by an enforcing device -> FAIL) and its
-#                    entry count is expected to stay 254 (drift = WARN).
+#                    entry count is expected to stay 254 (drift = WARN). Absent -> INFO: the
+#                    expected shape of an OpenHarmonyHapPayloadZip=false pack, with the payload
+#                    marker (above) still having to agree with it.
 #   host ELF         libs/arm64-v8a/libopenharmonyhost.so: DT_NEEDED (readelf -d equivalent)
 #                    must be a subset of the host-deps.conf [needed] whitelist, must not name
 #                    libhostfxr.so (resolved through the dlopen handle, never at load time), and
@@ -52,10 +59,12 @@
 # repository is absent; --host-deps <file> / KIT_HOST_DEPS replaces it with the canonical
 # src/OpenHarmonyHost/host-deps.conf (scripts/selftest-verify-kit.sh fails when the two drift).
 # The 2b assertions are graded: only resources.index, the abc header version, a shrunken
-# libs/, a .so inside dotnet.zip, the payload-in-libs marker, and the host DT_NEEDED/denylist
-# failures are FAIL; an old abc size, a big index, extra libs and a zip entry-count drift are
-# WARN, so a historical kit still reports its real defects without being killed for
-# pre-contract values.
+# libs/, a .so inside dotnet.zip, the payload-in-libs marker (including marker/zip identity
+# drift), and the host DT_NEEDED/denylist failures are FAIL; an old abc size, a big index,
+# extra libs and a zip entry-count drift are WARN, so a historical kit still reports its real
+# defects without being killed for pre-contract values. A missing dotnet.zip is INFO (the
+# OpenHarmonyHapPayloadZip=false opt-out is legitimate); INFO lines are printed but never
+# counted as WARN.
 # SHA256SUMS lives inside the archive it covers, so it proves internal consistency only:
 #   1. check the transfer checksum of the .tar.gz: `sha256sum -c <kit>.tar.gz.sha256`, or let
 #      this script check the tarball (--anchor / --anchor-file / KIT_ANCHOR);
@@ -833,7 +842,9 @@ for name, purpose in haps:
         dotnet_sha = None
         if DOTNET_ZIP not in names:
             print("      zip    <缺 %s>" % DOTNET_ZIP)
-            grade("WARN", "%s: 包内没有 %s — 跳过 zip 组成检查（若 zip 可读才断言）" % (name, DOTNET_ZIP))
+            grade("INFO", "%s: 包内没有 %s — 免 zip 打包（OpenHarmonyHapPayloadZip=false）的预期形态；"
+                          "跳过 zip 组成检查，由 payload marker 的 zip 身份一致性兜底（缺 zip + 有身份，"
+                          "或有 zip + 无身份 = FAIL）" % (name, DOTNET_ZIP))
         else:
             try:
                 dotnet_raw = z.read(DOTNET_ZIP)
@@ -886,10 +897,15 @@ for name, purpose in haps:
                 assembly = str(payload_marker.get("assembly", "?"))
                 declared = payload_marker.get("entries")
                 payload_entries = payload_marker.get("payloadEntries")
-                zip_entries = payload_marker.get("zipEntries")
+                zip_entries = payload_marker.get("zipEntries") or 0
                 zip_sha = str(payload_marker.get("zipSha256", ""))
+                # zip identity: OpenHarmonyHapPayloadZip=false clears it (zipEntries=0, zipSha256="").
+                # Only a marker that names a zip may be cross-checked against dotnet.zip; the two
+                # shapes (identity yes/no) must match the presence of the zip in both directions.
+                has_zip_identity = bool(zip_entries) or bool(zip_sha)
                 print("      libs   payload-in-libs: assembly=%s，条目=%s（实测 %d），payload=%s，zip=%s/%s"
-                      % (assembly, declared, actual_entries, payload_entries, zip_entries,
+                      % (assembly, declared, actual_entries, payload_entries,
+                         zip_entries if has_zip_identity else "<无身份>",
                          (zip_sha[:12] + "...") if zip_sha else "<空>"))
                 if assembly == "?" or (LIBS_DIR + assembly) not in names:
                     grade("FAIL", "%s: payload marker 的入口程序集 '%s' 不在 %s（%s 缺失）— payload 不完整"
@@ -897,18 +913,30 @@ for name, purpose in haps:
                 if declared != actual_entries:
                     grade("FAIL", "%s: payload marker entries=%s 与实测 %s 目录文件数不符（实测 %d，不含 marker）—"
                                   " 标记与实际 payload 漂移" % (name, declared, LIBS_DIR, actual_entries))
-                if payload_entries != zip_entries:
-                    grade("FAIL", "%s: payload marker payloadEntries=%s != zipEntries=%s — libs payload 与 dotnet.zip"
-                                  " 回退副本不一致" % (name, payload_entries, zip_entries))
-                if dotnet_entries is not None and zip_entries != dotnet_entries:
-                    grade("FAIL", "%s: payload marker zipEntries=%s != dotnet.zip 实际条目 %d — 回退 zip 已被替换"
-                                  % (name, zip_entries, dotnet_entries))
-                if dotnet_sha is not None:
-                    if not zip_sha:
-                        grade("FAIL", "%s: payload marker 没有 zipSha256 — 无法绑定 %s 回退副本" % (name, DOTNET_ZIP))
-                    elif zip_sha != dotnet_sha:
-                        grade("FAIL", "%s: payload marker zipSha256=%s... != dotnet.zip sha256=%s... — libs payload 与回退"
-                                      " zip 不同源" % (name, zip_sha[:12], dotnet_sha[:12]))
+                if not has_zip_identity:
+                    if DOTNET_ZIP in names:
+                        grade("FAIL", "%s: payload marker 无 zip 身份（zipEntries=0/zipSha256 空）但包内有 %s —"
+                                      " zip 与 marker 不同步：按 OpenHarmonyHapPayloadZip=false 重打包去掉 zip，"
+                                      "或恢复 marker 的 zip 身份" % (name, DOTNET_ZIP))
+                    else:
+                        print("      zip    marker 无 zip 身份且包内无 %s — 免 zip 形态自洽" % DOTNET_ZIP)
+                else:
+                    if payload_entries != zip_entries:
+                        grade("FAIL", "%s: payload marker payloadEntries=%s != zipEntries=%s — libs payload 与 dotnet.zip"
+                                      " 回退副本不一致" % (name, payload_entries, zip_entries))
+                    if dotnet_entries is None:
+                        grade("FAIL", "%s: payload marker 记录了 zip 身份（zipEntries=%s，zipSha256=%s）但包内的 %s 缺失或不可读 —"
+                                      " 回退 zip 无法核对：重打包，或按 OpenHarmonyHapPayloadZip=false 清除 marker 的 zip 身份"
+                                      % (name, zip_entries, (zip_sha[:12] + "...") if zip_sha else "<空>", DOTNET_ZIP))
+                    else:
+                        if zip_entries != dotnet_entries:
+                            grade("FAIL", "%s: payload marker zipEntries=%s != dotnet.zip 实际条目 %d — 回退 zip 已被替换"
+                                          % (name, zip_entries, dotnet_entries))
+                        if not zip_sha:
+                            grade("FAIL", "%s: payload marker 没有 zipSha256 — 无法绑定 %s 回退副本" % (name, DOTNET_ZIP))
+                        elif zip_sha != dotnet_sha:
+                            grade("FAIL", "%s: payload marker zipSha256=%s... != dotnet.zip sha256=%s... — libs payload 与回退"
+                                          " zip 不同源" % (name, zip_sha[:12], dotnet_sha[:12]))
 
 with open(bundle_file, "w") as f:
     f.write(bundles[0] if bundles else "")
@@ -935,6 +963,7 @@ PY
             case "$_lvl" in
                 FAIL) DEEP_FAILS=$((DEEP_FAILS + 1)); FAIL=1; fail_msg "$_msg" ;;
                 WARN) DEEP_WARNS=$((DEEP_WARNS + 1)); warn "$_msg" ;;
+                INFO) log "    INFO: $_msg" ;;
             esac
         done < "$TMP/deep-status"
     fi
