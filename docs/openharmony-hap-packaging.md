@@ -588,7 +588,7 @@ layer for a device whose image lacks the NDK library:
 
 | Layer | Contract |
 |-------|----------|
-| Managed | `SetAsync` -> `ohos_host_keystore_request(id, "generate"/"encrypt", alias, base64)`; `GetAsync` -> `"decrypt"`; `RemoveAll` -> `"delete"`; a sealed value lands as `k1:<base64(nonce(12) || ciphertext || tag(16))>`; the alias is namespaced `maui.ohos.securestorage.v1.<FNV-1a(path)>` |
+| Managed | `SetAsync` -> `ohos_host_keystore_request(id, "generate"/"encrypt", alias, base64)`; `GetAsync` -> `"decrypt"`; `RemoveAll` -> `"delete"`; a sealed value lands as `k1:<base64(nonce(12) \|\| ciphertext \|\| tag(16))>`; the alias is namespaced `maui.ohos.securestorage.v1.<FNV-1a(path)>` |
 | Host | `OhosHostKeystoreAvailable` (libhuks_ndk.z.so through the optional-library dlopen shim) answers in-process with AES-256-GCM: `generateKeyItem` (AES-256, GCM, NoPadding, ENCRYPT+DECRYPT), `initSession`+`finishSession` with `HUKS_TAG_NONCE` / `HUKS_TAG_AE_TAG`, `deleteKeyItem`; `ohos_host_keystore_available()` exposes the probe for the managed status. Only a host without the library forwards the request to the ArkTS sink. |
 | Fallback | no HUKS (or a failed op): the per-install file key obfuscates the values (`secure.dat.key` next to the data file) and the one-time status note says so - not hardware-backed, never silent. |
 
@@ -650,13 +650,14 @@ the log pair),
 while `scripts/build-arkts-shell.sh` keeps the abc at
 `13.0.1.0`, carries the `./map/MapOverlay`, `registerLiveViewSink`, `notifyLiveViewResult`,
 `@kit.LiveViewKit`, `SystemCapability.LiveView.LiveViewService`, `registerTtsSink`,
-`notifyTtsResult`, `@kit.CoreSpeechKit` and `SystemCapability.AI.TextToSpeech` literals
-in the UI abc (the provenance gate; current default-flavor UI abc 274,284 B /
-`61c7aa78...`, headless 18,532 B) and enforces
+`notifyTtsResult`, `@kit.CoreSpeechKit`, `SystemCapability.AI.TextToSpeech` and
+`notifyTextComposition` literals
+in the UI abc (the provenance gate; current default-flavor UI abc 275,324 B /
+`5efa6b1a...`, headless 18,532 B) and enforces
 the source contract (no `@ohos.*` imports, variable kit specifiers). The host-side gate is
-`scripts/build-host.sh` (nm -D: all 136 `host-exports.txt` names present as plain symbols) plus
+`scripts/build-host.sh` (nm -D: all 139 `host-exports.txt` names present as plain symbols) plus
 `scripts/check-host-exports.py --cross-check`; the interaction suite's own contract line is
-`[suite] checks=340 total=340 floor=320 assert=True`.
+`[suite] checks=347 total=347 floor=327 assert=True`.
 
 ### Templates / abc sync strategy
 
@@ -703,13 +704,56 @@ explicit `-p:OpenHarmonyArktsModulesAbc=<file>` overrides both. The former
   ship it as a separate pack revision; keep the checked-in `modules*.abc` on the default flavor.
   The provenance record pins the default flavor and the script refuses to write it from a harmony
   build.
-- **Current state (A2-TTS, 2026-09-27)**: all three preview packs carry the same sources
-  (Share/Scan/Push/Account/Map/Live View/CoreSpeech probes, kit-import migration, feature
-  permission chain) and the abc rebuilt from them on the OpenHarmony SDK: UI 274,284 B / sha256
-  `61c7aa785ab5785ac39d3b554f2f6536a54bef9f0ab924a773c3f0ab852602e1`, headless 18,532 B / sha256
+- **Current state (P0c-TEXT-EDIT, 2026-09-27)**: all three preview packs carry the same sources
+  (Share/Scan/Push/Account/Map/Live View/CoreSpeech probes, HUKS-first SecureStorage,
+  kit-import migration, feature permission chain, IME composition) and the abc rebuilt from them
+  on the OpenHarmony SDK: UI 275,324 B / sha256
+  `5efa6b1aa4fbd4865a4c601f079ce1f4c96bd7aa9ad5dfe98b52e1f635df05a5`, headless 18,532 B / sha256
   `d7ec9ca7ee6169a883af490a006005fe73fa7d03c40e178db9f2594c83b8d785`, both abc version 13.0.1.0
   with `compatibleSdkVersion 18`. The harmony-flavor build of the same sources against the
   CoreSpeechKit-capable DevEco SDK is 273,932 B / `e7290ed1…` (see the SDK-branch section).
+
+### Text editing (P0c-TEXT-EDIT)
+
+The slice draws text itself (Skia through the compositor), so Entry/Editor editing is a managed
+feature with the ArkTS shell providing the input-method plumbing. The four decision points:
+
+- **Cursor**: a focused entry draws the caret at `CursorPosition` (or the text end when unset)
+  using the same cached per-character prefix sums as caret hit testing, so the drawn caret and
+  `CursorIndexFromX` cannot disagree. The caret blinks on the platform cadence (500 ms
+  visible/hidden) anchored at the last caret-affecting change; a focused entry registers for
+  continuous frames (`OpenHarmonyView.NeedsAnimation`), an unfocused one draws no caret and does
+  not animate. Entries inside a scrolled view draw correctly because the compositor translates
+  the content canvas; a selection drag converts the screen X to content space with the delta
+  captured at press.
+- **Selection**: the highlight spans `[CursorPosition - SelectionLength, CursorPosition]` (MAUI
+  semantics: the caret sits at the selection end) and uses the measured prefix widths, not a
+  proportional estimate.
+- **Handles**: the two round handles (9 px radius, 24 px touch slop) sit below the text line at
+  the measured selection ends. Grabbing one drags only that endpoint (the other stays the drag
+  anchor) and writes `CursorPosition`/`SelectionLength` back to the virtual `InputView`, so app
+  code sees the same values; a text gesture cancels in-flight inertia and suppresses the release
+  fling (`OpenHarmonyScrollPhysics.SuppressReleaseFling`), so adjusting a selection never flings
+  the enclosing scroll view.
+- **IME composition**: the shell's hidden input forwards the input method's preview text
+  (`onChange`'s optional `PreviewText` second argument -> `host.notifyTextComposition(value,
+  offset)`) while keeping the committed text on the existing `notifyTextInput` path. The managed
+  side draws the preedit at the offset (highlight + underline) with the caret after it and clears
+  it on commit (empty preview), advancing the caret to `offset + preedit length` on both the
+  platform and the virtual view. The managed caret is pushed back to the shell input
+  (`ohos_host_keyboard_set_caret`, delivered as the second argument of the text-input sink post)
+  so a composition that starts after a tap/selection uses the same offset. An older host library
+  without the composition export keeps working: the shell's `hostCall` guard skips the
+  notification and the editor simply shows no preedit.
+
+  Gates: `scripts/build-arkts-shell.sh --check-sources/--check-pack-abc` keep the
+  `notifyTextComposition` literal in the UI abc and out of the headless one;
+  `scripts/check-host-exports.py --cross-check` and the `build-host.sh` nm gate cover
+  `ohos_host_register_text_composition` + `ohos_host_keyboard_set_caret`; the interaction suite
+  pins the behavior (`text cursor api` / `text caret blink` / `selection handles` / `selection
+  drag inertia` / `text composition`) and the shell/host contract (`text composition shell` /
+  `text composition host`). Device-side IME behavior (the preview-text cadence of the system
+  input method and composition inside the hidden input) still needs on-device confirmation.
 
 ### ArkTS shell conformance (COMP-ARKTS)
 

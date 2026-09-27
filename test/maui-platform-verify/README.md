@@ -1,6 +1,6 @@
 # Interaction regression suite (headless)
 
-The MAUI-on-OpenHarmony interaction harness (327 interaction checks, a 4-line fuzz tail, a
+The MAUI-on-OpenHarmony interaction harness (334 interaction checks, a 4-line fuzz tail, a
 frame-path performance budget and an accessibility publish-path budget). It builds the platform
 slice sources from the
 `maui-ohos` working tree and drives the app host without a device: touch/drag/pinch/pointer input,
@@ -49,7 +49,7 @@ allocation and jitter) budgets are exceeded.
 # (or the MauiSliceDir / HostingDll / OpenHarmonyGraphicsDll MSBuild properties) before building
 # elsewhere; an explicit -p: value wins over the environment and the absolute fallbacks.
 dotnet build -v:q
-dotnet bin/Debug/net11.0/verify.dll | grep -c '\[verify\]'   # expect 340 (327 checks + 4 fuzz + 1 frame perf + 8 a11y perf)
+dotnet bin/Debug/net11.0/verify.dll | grep -c '\[verify\]'   # expect 347 (334 checks + 4 fuzz + 1 frame perf + 8 a11y perf)
 ```
 
 The `interaction-regression` workflow (`.github/workflows/interaction-regression.yml`) runs the
@@ -60,7 +60,7 @@ suite on a GitHub runner as a real gate (on push to `master`, on pull requests a
 points `MAUI_SLICE_DIR` / `HOSTING_DLL` / `OPENHARMONY_GRAPHICS_DLL` at those roots, and fails the
 job unless the run exits 0, the suite's own `[suite]` contract line reports `assert=True` with at
 least the floor declared in `Program.cs`, both perf lines report `within=True`, and no `Unhandled`
-line is logged. The floor (320 = 340 - 20, the documented convention) lives only in `Program.cs`;
+line is logged. The floor (327 = 347 - 20, the documented convention) lives only in `Program.cs`;
 the workflow and `scripts/preflight.sh` both read the printed `[suite] checks=... floor=...` line
 instead of repeating a literal, so the two local/CI thresholds cannot drift apart.
 
@@ -169,7 +169,7 @@ jitter ~1.08x and 72,056 B/frame, and the a11y block reported ~0.3/0.5 ms for th
 ~0.07/0.28 ms for the publish pass (skip/republish). The post-batch run (commit a10b73e) reported
 avg 0.488 ms, p95 0.698 ms, jitter 1.43x and 3,720 B/frame, i.e. the ceiling is 3.72x the CI
 baseline. Every run ends with the `[suite]` contract line
-(`checks=340 total=340 floor=320 assert=True`), which the workflow and `scripts/preflight.sh`
+(`checks=347 total=347 floor=327 assert=True`), which the workflow and `scripts/preflight.sh`
 parse.
 
 ## Notes
@@ -676,3 +676,22 @@ parse.
   absent and `RemoveAll` never throws. That is 3 lines: 337 + 3 = 340 = 327 interaction
   checks + 4 fuzz + 1 frame perf + 8 a11y perf; the workflow floor moves with the total
   (340 - 20 = 320).
+- P0c-TEXT-EDIT (self-drawn text editing, 2026-09-27): seven `[verify]` lines pin the
+  cursor/selection/handle/IME-composition semantics. `text cursor api` drives the Entry
+  `CursorPosition`/`SelectionLength` mapper; `text caret blink` pins the 500 ms visible/hidden
+  cadence (`OpenHarmonyView.CaretClock` test clock), the no-caret-while-unfocused rule and the
+  focused-entry frame registration (`NeedsAnimation`); `selection handles` checks the two round
+  handles are hit-testable at the measured selection ends and that dragging the end handle moves
+  only that endpoint (start stays the anchor) while the virtual Entry stays in sync; `selection
+  drag inertia` proves the release suppression gate at the physics level (same sample stream arms
+  a fling, the suppressed one does not); `text composition` drives the preedit
+  (`OpenHarmonyBridge.CompleteTextComposition("nihao", 1)`) and the commit (empty composition
+  clears the preedit and advances the caret to offset + preedit length on platform and virtual
+  view). `text composition shell` pins the shell's `PreviewText` bridge in all three packs
+  (`onChange` second argument -> `host.notifyTextComposition`, `previewTextValue/Offset` helpers)
+  and the caret-carrying text-input sink (`(show: number, caret: number)` ->
+  `controller.caretPosition(caret)`); `text composition host` pins the C ABI/NAPI/export-contract
+  and the managed bridge (`ohos_host_register_text_composition`,
+  `ohos_host_keyboard_set_caret`, `TextComposition` event, `SetKeyboardCaret`). That is 7 lines:
+  340 + 7 = 347 = 334 interaction checks + 4 fuzz + 1 frame perf + 8 a11y perf; the workflow
+  floor moves with the total (347 - 20 = 327).

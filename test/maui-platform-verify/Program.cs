@@ -12,7 +12,7 @@ using Microsoft.Maui.Platform;
 // after the fuzz tail) instead of letting every caller repeat its own threshold constant.
 VerifyLineCountingWriter verifyStdout = new(Console.Out);
 Console.SetOut(verifyStdout);
-const int verifyCheckTotal = 340;                     // documented full [verify] line count
+const int verifyCheckTotal = 347;                     // documented full [verify] line count (+7 P0c-TEXT-EDIT)
 const int verifyCheckFloor = verifyCheckTotal - 20;   // documented floor convention (total - 20)
 
 // A small image file for the Image handler.
@@ -1088,6 +1088,91 @@ if (entry is not null)
     host.HandleTouch(false, true, (float)(ef.X + 20), ey);
     entryView.TextAnchor = -1;
     Console.WriteLine($"[verify] selection drag cursor={entryView.CursorPosition} length={entryView.SelectionLength} virtual=({entry.CursorPosition},{entry.SelectionLength}) text='{entry.Text}'");
+
+    // P0c-TEXT-EDIT: cursor/selection APIs, caret blink, selection handles (with drag) and the
+    // IME composition (preedit) contract. These pin the self-drawn text-editing semantics; the
+    // shell/host plumbing is source-pinned further below.
+    entry.CursorPosition = 5;
+    entry.SelectionLength = 2;
+    entry.Handler!.UpdateValue(nameof(ITextInput.CursorPosition));
+    entry.Handler!.UpdateValue(nameof(ITextInput.SelectionLength));
+    bool cursorApiMapped = entryView.CursorPosition == 5 && entryView.SelectionLength == 2;
+    Console.WriteLine($"[verify] text cursor api cursor={entryView.CursorPosition} length={entryView.SelectionLength} assert={cursorApiMapped}");
+
+    // Caret blink: visible for the first half period after a caret-affecting change, hidden for
+    // the second, and never visible while unfocused. A focused entry keeps the frame loop alive.
+    ((IView)entry).Focus();
+    entryView.Text = "abcdefghij";
+    long fakeNow = 100_000;
+    OpenHarmonyView.CaretClock = () => fakeNow;
+    entryView.CursorPosition = 4;
+    entryView.SelectionLength = 0;
+    bool caretShown = entryView.CaretVisible;
+    bool focusedAnimates = entryView.NeedsAnimation;
+    fakeNow += OpenHarmonyView.CaretBlinkHalfPeriodMs;
+    bool caretHidden = !entryView.CaretVisible;
+    fakeNow += OpenHarmonyView.CaretBlinkHalfPeriodMs;
+    bool caretReshown = entryView.CaretVisible;
+    ((IView)entry).Unfocus();
+    bool unfocusedHidden = !entryView.CaretVisible;
+    bool unfocusedStatic = !entryView.NeedsAnimation;
+    OpenHarmonyView.CaretClock = null;
+    ((IView)entry).Focus();
+    bool blinkOk = caretShown && focusedAnimates && caretHidden && caretReshown && unfocusedHidden && unfocusedStatic;
+    Console.WriteLine($"[verify] text caret blink shown={caretShown} hidden={caretHidden} reshown={caretReshown} unfocusedHidden={unfocusedHidden} focusedAnimates={focusedAnimates} assert={blinkOk}");
+
+    // Selection handles: the two round handles sit at the measured selection ends; grabbing the
+    // end handle and dragging moves only that endpoint (the start stays the anchor) and keeps the
+    // virtual Entry's CursorPosition/SelectionLength in sync.
+    entryView.Text = "abcdefghij";
+    entryView.CursorPosition = 6;
+    entryView.SelectionLength = 4;
+    float handleY = entryView.Frame.Y + entryView.Frame.Height - OpenHarmonyView.SelectionHandleRadius - 2f;
+    float handleStartX = entryView.TextPositionX("abcdefghij", 2);
+    float handleEndX = entryView.TextPositionX("abcdefghij", 6);
+    bool handleStartHit = entryView.SelectionHandleHit(handleStartX, handleY) == 1;
+    bool handleEndHit = entryView.SelectionHandleHit(handleEndX, handleY) == 2;
+    float handleDragX = entryView.TextPositionX("abcdefghij", 8);
+    host.HandleTouch(true, false, handleEndX, handleY);
+    host.HandleMove(handleDragX, handleY);
+    host.HandleTouch(false, true, handleDragX, handleY);
+    bool handleDragOk = handleStartHit && handleEndHit &&
+        entryView.CursorPosition == 8 && entryView.SelectionLength == 6 &&
+        entry.CursorPosition == 8 && entry.SelectionLength == 6;
+    Console.WriteLine($"[verify] selection handles start={handleStartHit} end={handleEndHit} dragCursor={entryView.CursorPosition} dragLength={entryView.SelectionLength} virtual=({entry.CursorPosition},{entry.SelectionLength}) assert={handleDragOk}");
+
+    // A text gesture owns the pointer: the release must not fling the enclosing scroll view.
+    // Positive control first (the same sample stream does arm a fling), then the suppression.
+    var physicsProbe = new OpenHarmonyView { VirtualView = new ScrollView() };
+    physicsProbe.ScrollContentHeight = 2000;
+    for (int i = 1; i <= 4; i++)
+    {
+        physicsProbe.ScrollOffsetY = i * 30f;
+    }
+    bool flingArmed = OpenHarmonyScrollPhysics.TryStartFling(physicsProbe);
+    OpenHarmonyScrollPhysics.Cancel(physicsProbe);
+    for (int i = 5; i <= 8; i++)
+    {
+        physicsProbe.ScrollOffsetY = i * 30f;
+    }
+    OpenHarmonyScrollPhysics.SuppressReleaseFling();
+    bool flingSuppressed = !OpenHarmonyScrollPhysics.TryStartFling(physicsProbe);
+    OpenHarmonyScrollPhysics.ClearReleaseSuppression();
+    OpenHarmonyScrollPhysics.Cancel(physicsProbe);
+    Console.WriteLine($"[verify] selection drag inertia flingArmed={flingArmed} suppressed={flingSuppressed} assert={flingArmed && flingSuppressed}");
+
+    // IME composition: the shell pushes PreviewText.value/offset, the platform view exposes the
+    // in-flight preedit, and the commit (empty value) clears it and advances the caret past the
+    // committed text on both the platform and the virtual view.
+    entryView.Text = "ab";
+    entryView.CursorPosition = 1;
+    Microsoft.OpenHarmony.Hosting.OpenHarmonyBridge.CompleteTextComposition("nihao", 1);
+    bool previewSet = entryView.CompositionText == "nihao" && entryView.CompositionOffset == 1 && entryView.IsComposing;
+    Microsoft.OpenHarmony.Hosting.OpenHarmonyBridge.CompleteTextComposition(string.Empty, 1);
+    bool previewCleared = entryView.CompositionText is null && !entryView.IsComposing;
+    int commitCaret = entryView.CursorPosition;
+    bool compositionOk = previewSet && previewCleared && commitCaret == 6 && entry.CursorPosition == 6 && entry.SelectionLength == 0;
+    Console.WriteLine($"[verify] text composition preview={previewSet} cleared={previewCleared} commitCursor={commitCaret} virtual={entry.CursorPosition} assert={compositionOk}");
 }
 
 // Menus: the current page's MenuBarItems are published as a flat host table (begin/item/commit)
@@ -5004,6 +5089,55 @@ if (!arktsConformanceOk)
 {
     throw new InvalidOperationException(
         $"the COMP-ARKTS shell conformance drifted: migration={arktsMigrationOk} entry={arktsEntryOk} s3={arktsS3Ok}");
+}
+
+// P0c-TEXT-EDIT: the shell's IME-composition bridge - onChange's previewText second argument
+// rides host.notifyTextComposition, and the text-input sink adopts the managed caret (second
+// argument of the sink post) so composition/typing use the managed offset. All three packs.
+bool p0cShellOk = true;
+foreach (string p0cShellVersion in new[] { "1.0.0-preview.22", "1.0.0-preview.23", "1.0.0-preview.24" })
+{
+    string p0cShell = ShellSource(p0cShellVersion);
+    p0cShellOk &= p0cShell.Contains("host.registerTextInputSink((show: number, caret: number) => {") &&
+        p0cShell.Contains("this.controller.caretPosition(caret >= 0 ? caret : 0);") &&
+        p0cShell.Contains(".onChange((value: string, previewText?: PreviewText) => {") &&
+        p0cShell.Contains("private previewTextValue(previewText?: PreviewText): string {") &&
+        p0cShell.Contains("private previewTextOffset(previewText?: PreviewText): number {") &&
+        p0cShell.Contains("host.notifyTextComposition(this.previewTextValue(previewText), this.previewTextOffset(previewText));") &&
+        p0cShell.Contains("typeof host.notifyTextComposition === 'function'");
+}
+Console.WriteLine($"[verify] text composition shell sinkCaret=true previewExport=true assert={p0cShellOk}");
+
+// P0c-TEXT-EDIT: the composition contract on the native/managed bridge - the host C ABI, the
+// NAPI export, the export contract file and the hosting bridge (register + event + caret).
+static string ReadHostSource(string relativePath)
+    => FindHostSource(relativePath) is { } path ? File.ReadAllText(path) : string.Empty;
+string p0cHostC = ReadHostSource("src/OpenHarmonyHost/openharmony_host.c");
+string p0cHostH = ReadHostSource("src/OpenHarmonyHost/openharmony_host.h");
+string p0cHostNapi = ReadHostSource("src/OpenHarmonyHost/host_napi.cpp");
+string p0cHostExports = ReadHostSource("src/OpenHarmonyHost/host-exports.txt");
+string p0cHosting = ReadHostSource("src/Microsoft.OpenHarmony.Hosting/OpenHarmonyApp.cs");
+bool p0cHostOk = p0cHostC.Contains("void ohos_host_register_text_composition(void* callback)") &&
+    p0cHostC.Contains("void ohos_host_notify_text_composition(const char* utf8, int offset)") &&
+    p0cHostC.Contains("g_app->bridge_text_composition = (void (*)(const char*, int))callback;") &&
+    p0cHostC.Contains("g_text_input_listener(show, g_ime_caret);") &&
+    p0cHostC.Contains("void ohos_host_keyboard_set_caret(int32_t caret)") &&
+    p0cHostH.Contains("void ohos_host_register_text_composition(void* callback);") &&
+    p0cHostH.Contains("void ohos_host_notify_text_composition(const char* utf8, int offset);") &&
+    p0cHostH.Contains("void ohos_host_set_text_input_listener(void (*listener)(int show, int caret));") &&
+    p0cHostNapi.Contains("\"notifyTextComposition\", nullptr, NotifyTextComposition") &&
+    p0cHostNapi.Contains("void OnTextInputRequest(int show, int caret)") &&
+    p0cHostNapi.Contains("call->AddInt(caret);") &&
+    p0cHostExports.Contains("ohos_host_register_text_composition") &&
+    p0cHostExports.Contains("ohos_host_keyboard_set_caret") &&
+    p0cHosting.Contains("[LibraryImport(HostLibrary, EntryPoint = \"ohos_host_register_text_composition\")]") &&
+    p0cHosting.Contains("[LibraryImport(HostLibrary, EntryPoint = \"ohos_host_keyboard_set_caret\")]") &&
+    p0cHosting.Contains("public static event Action<string, int>? TextComposition") &&
+    p0cHosting.Contains("public static void SetKeyboardCaret(int caret)");
+Console.WriteLine($"[verify] text composition host c={p0cHostC.Length > 0} h={p0cHostH.Length > 0} napi={p0cHostNapi.Length > 0} exports={p0cHostExports.Contains("ohos_host_register_text_composition")} managed={p0cHosting.Length > 0} assert={p0cHostOk}");
+if (!p0cShellOk || !p0cHostOk)
+{
+    throw new InvalidOperationException($"the P0c text-editing composition contract drifted: shell={p0cShellOk} host={p0cHostOk}");
 }
 
 // COMP-ARKTS abc provenance: the three packs carry the rebuilt variants and the provenance
