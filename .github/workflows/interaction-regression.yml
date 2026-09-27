@@ -40,7 +40,7 @@ on:
         description: 'maui-ohos commit SHA to compile (defaults to the pinned feature/openharmony tip)'
         required: false
         type: string
-        default: 'e6b6ecbbd334f8384b6891b8cba52a1864c06163'
+        default: '150ac92f66b58c9d9e416b4df6dca8b19f467fab'
   push:
     branches: [ master ]
   pull_request:
@@ -52,15 +52,16 @@ permissions:
 
 # Reproducible cross-repo compile: the MAUI slice is checked out at an exact commit, not the
 # mutable feature/openharmony branch, so a push to the fork cannot change what this gate compiles.
-# The default is the feature/openharmony tip: f9b63ee2, the P1a-ANIM commit (frame-driven page
-# enter passes, control-state channels, the minimal shared morph, the ticker redraw driver and
-# the renderer transform/alpha scope fix; on top of the P0c-TEXT-EDIT, P2a-HUKS, A2-TTS,
-# R2-SHELL-EXT and KIT-EXT2 batches). The suite
-# pins 357 checks / floor 337 and the full run is green at this compiled tree (local verification:
-# 357/357, floor 337); advance the pin deliberately and refresh this comment when
+# The default is the feature/openharmony tip: 150ac92f, the P1b-LIST commit (list depth:
+# one-shot RemainingItemsThreshold, ItemsUpdatingScrollMode anchors, full ScrollTo with the
+# animated tween, group footer rows + collapse, bounded rubber-band/bounce scroll physics and
+# the scrollbar parameter/reduce-motion polish; on top of P1a-ANIM, P0c-TEXT-EDIT, P2a-HUKS,
+# A2-TTS, R2-SHELL-EXT and KIT-EXT2 batches). The suite
+# pins 373 checks / floor 353 and the full run is green at this compiled tree (local verification:
+# 373/373, floor 353); advance the pin deliberately and refresh this comment when
 # the harness pins or the tip move (workflow_dispatch can compile any commit).
 env:
-  MAUI_OHOS_REF: ${{ github.event.inputs.maui_ohos_ref || 'f9b63ee2b5f6883d0a0c79c1cbc1e5b0f3a19e46' }}
+  MAUI_OHOS_REF: ${{ github.event.inputs.maui_ohos_ref || '150ac92f66b58c9d9e416b4df6dca8b19f467fab' }}
   # setup-dotnet installs the requested 11.0.x preview into DOTNET_INSTALL_DIR; on Linux that
   # defaults to /usr/share/dotnet, which a per-user cache cannot persist. Point it at ~/.dotnet
   # (the action resolves the ~ prefix against $HOME) so the cache step below actually avoids the

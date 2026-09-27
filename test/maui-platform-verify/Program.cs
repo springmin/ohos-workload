@@ -12,7 +12,7 @@ using Microsoft.Maui.Platform;
 // after the fuzz tail) instead of letting every caller repeat its own threshold constant.
 VerifyLineCountingWriter verifyStdout = new(Console.Out);
 Console.SetOut(verifyStdout);
-const int verifyCheckTotal = 357;                     // documented full [verify] line count (+10 P1a-ANIM)
+const int verifyCheckTotal = 373;                     // documented full [verify] line count (+16 P1b-LIST, +10 P1a-ANIM)
 const int verifyCheckFloor = verifyCheckTotal - 20;   // documented floor convention (total - 20)
 
 // A small image file for the Image handler.
@@ -5299,14 +5299,14 @@ bool n12ExtrasOk = n12List.Contains("emptyViewFactory = CreateEmptyView,") &&
     n12List.Contains("collection.SendRemainingItemsThresholdReached();");
 bool n12ScrollOk = n12List.Contains("private void OnScrollToRequested(object? sender, ScrollToRequestEventArgs args)") &&
     n12List.Contains("materializer.RowForGroupItemIndex(args.GroupIndex, args.Index)") &&
-    n12List.Contains("materializer.ScrollTo(row, args.ScrollToPosition);") &&
+    n12List.Contains("materializer.ScrollTo(row, args.ScrollToPosition, args.IsAnimated);") &&
     n12Mat.Contains("internal sealed class OpenHarmonyItemListMaterializer") &&
     n12Mat.Contains("public Func<View?>? listHeaderFactory;") &&
     n12Mat.Contains("public Func<View?>? listFooterFactory;") &&
     n12Mat.Contains("public Func<View?>? emptyViewFactory;") &&
     n12Mat.Contains("public void ScrollTo(int row, ScrollToPosition position)") &&
     n12Mat.Contains("public int RowForGroupItemIndex(int groupIndex, int itemIndex)");
-bool n12WindowOk = n12Mat.Contains("public double TotalHeight => _headerHeight + RowCount * SlotHeight + _footerHeight;") &&
+bool n12WindowOk = n12Mat.Contains("public double TotalHeight => _headerHeight + GridRowCount * SlotHeight + _footerHeight;") &&
     n12Mat.Contains("public bool HasGroups => _groups.Count > 0;") &&
     n12Mat.Contains("public double EmptyHeight => _emptyHeight;") &&
     n12Mat.Contains("public int LastVisibleItemIndex");
@@ -7254,6 +7254,533 @@ OpenHarmonyAnimationLoop.Clock = previousAnimClock;
 if (animFailures > 0)
 {
     throw new InvalidOperationException($"the animation/transition checks failed ({animFailures})");
+}
+
+// ---- P1b-LIST: incremental loading, ScrollTo, group collapse, scroll physics -------------------
+// The self-drawn list pipeline is exercised live: the shared materializer (one-shot
+// RemainingItemsThreshold, ItemsUpdatingScrollMode anchors, full ScrollTo positions and their
+// animation, grouped header/footer rows and collapse) plus the scroll physics/scrollbar modules
+// (rubber-band drag, edge return spring, fling bounce, reduce-motion coordination, bar
+// parameters). The long-list check scrolls a 1,200-item list end to end and pins the bounded
+// materialization window and the per-step allocation budget.
+Func<long> p1bSavedClock = OpenHarmonyAnimationLoop.Clock;
+OpenHarmonyAnimationLoop.Stop();
+OpenHarmonyScrollAnimation.ResetForTests();
+OpenHarmonyScrollPhysics.ResetForTests();
+OpenHarmonyScrollbars.ResetForTests();
+long p1bNow = 900_000;
+OpenHarmonyAnimationLoop.Clock = () => p1bNow;
+int p1bFailures = 0;
+void P1bCheck(bool ok, string detail)
+{
+    if (!ok)
+    {
+        p1bFailures++;
+    }
+    Console.WriteLine($"[verify] p1b {detail} assert={ok}");
+}
+
+DataTemplate p1bTemplate = new(() =>
+{
+    var row = new Label { FontSize = 20, HeightRequest = 40 };
+    row.SetBinding(Label.TextProperty, ".");
+    return row;
+});
+
+CollectionView P1bList(System.Collections.IEnumerable items, bool grouped = false, double height = 200,
+    DataTemplate? header = null, DataTemplate? footer = null)
+{
+    var list = new CollectionView
+    {
+        ItemsSource = items,
+        ItemTemplate = p1bTemplate,
+        IsGrouped = grouped,
+        HeightRequest = height,
+    };
+    if (header is not null)
+    {
+        list.GroupHeaderTemplate = header;
+    }
+    if (footer is not null)
+    {
+        list.GroupFooterTemplate = footer;
+    }
+    var host = new ContentPage { Content = new VerticalStackLayout { Children = { list } } };
+    OpenHarmonyHandlerConnector.ConnectTree(host);
+    host.Measure(1080, height + 80);
+    host.Arrange(new Rect(0, 0, 1080, height + 80));
+    return list;
+}
+
+OpenHarmonyView P1bPlatform(CollectionView list) => (OpenHarmonyView)list.Handler!.PlatformView!;
+
+List<string> P1bTexts(OpenHarmonyView platform)
+{
+    var texts = new List<string>();
+    foreach (IView child in platform.ViewChildren)
+    {
+        if (child.Handler?.PlatformView is OpenHarmonyView row && row.Text is { } text)
+        {
+            texts.Add(text);
+        }
+    }
+    return texts;
+}
+
+string P1bVisibleText(OpenHarmonyView platform, bool last)
+{
+    string result = "<none>";
+    double best = last ? double.NegativeInfinity : double.PositiveInfinity;
+    double offset = platform.ScrollOffsetY;
+    double viewport = platform.Frame.Height;
+    foreach (IView child in platform.ViewChildren)
+    {
+        if (child.Handler?.PlatformView is not OpenHarmonyView row || row.Text is null)
+        {
+            continue;
+        }
+        double y = child.Frame.Y;
+        if (y + child.Frame.Height <= offset + 0.5 || y >= offset + viewport - 0.5)
+        {
+            continue;
+        }
+        if (last ? y > best : y < best)
+        {
+            best = y;
+            result = row.Text;
+        }
+    }
+    return result;
+}
+
+double P1bScreenY(OpenHarmonyView platform, string text)
+{
+    foreach (IView child in platform.ViewChildren)
+    {
+        if (child.Handler?.PlatformView is OpenHarmonyView row && row.Text == text)
+        {
+            return child.Frame.Y - platform.ScrollOffsetY;
+        }
+    }
+    return double.NaN;
+}
+
+double P1bRowY(OpenHarmonyView platform, string text)
+{
+    foreach (IView child in platform.ViewChildren)
+    {
+        if (child.Handler?.PlatformView is OpenHarmonyView row && row.Text == text)
+        {
+            return child.Frame.Y;
+        }
+    }
+    return double.NaN;
+}
+
+double P1bRowHeight(OpenHarmonyView platform, string text)
+{
+    foreach (IView child in platform.ViewChildren)
+    {
+        if (child.Handler?.PlatformView is OpenHarmonyView row && row.Text == text)
+        {
+            return child.Frame.Height;
+        }
+    }
+    return double.NaN;
+}
+
+// RemainingItemsThreshold: one shot per zone entry, stable while scrolling inside the zone and
+// re-armed after leaving it (or after the source grows).
+int p1bReached = 0;
+var p1bThresholdCv = P1bList(Enumerable.Range(0, 30).Select(i => $"row {i}").ToList());
+p1bThresholdCv.RemainingItemsThresholdReached += (_, _) => p1bReached++;
+p1bThresholdCv.RemainingItemsThreshold = 2;
+p1bThresholdCv.Handler!.UpdateValue(nameof(ItemsView.RemainingItemsThreshold));
+p1bThresholdCv.ScrollTo(29, position: ScrollToPosition.End, animate: false);
+bool p1bThresholdOne = p1bReached == 1;
+p1bThresholdCv.ScrollTo(28, position: ScrollToPosition.MakeVisible, animate: false);
+p1bThresholdCv.ScrollTo(29, position: ScrollToPosition.End, animate: false);
+bool p1bThresholdStay = p1bReached == 1;
+p1bThresholdCv.ScrollTo(0, position: ScrollToPosition.Start, animate: false);
+p1bThresholdCv.ScrollTo(29, position: ScrollToPosition.End, animate: false);
+bool p1bThresholdRearm = p1bReached == 2;
+P1bCheck(p1bThresholdOne && p1bThresholdStay && p1bThresholdRearm,
+    $"threshold one-shot={p1bThresholdOne} stay={p1bThresholdStay} rearm={p1bThresholdRearm} fired={p1bReached}");
+
+// ItemsUpdatingScrollMode: prepending five items anchors the requested edge (the same
+// prepend/mode combination is what incremental loading and chat-style sources hit). The
+// expectations are the item's own screen position, so the check does not depend on the
+// template's measured height.
+var p1bBase = Enumerable.Range(0, 30).Select(i => $"row {i}").ToList();
+var p1bPrepended = Enumerable.Range(100, 5).Select(i => $"new {i}").Concat(p1bBase).ToList();
+(string FirstBefore, string LastBefore, double OffsetBefore, double FirstScreenBefore,
+    string FirstAfter, string LastAfter, double OffsetAfter, double FirstScreenAfter,
+    double LastBottomAfter, double Viewport) P1bModeProbe(ItemsUpdatingScrollMode mode)
+{
+    var list = P1bList(new List<string>(p1bBase));
+    var platform = P1bPlatform(list);
+    list.ItemsUpdatingScrollMode = mode;
+    list.Handler!.UpdateValue(nameof(ItemsView.ItemsUpdatingScrollMode));
+    platform.ScrollOffsetY = 100;
+    platform.ScrollOffsetChanged?.Invoke();
+    string firstBefore = P1bVisibleText(platform, last: false);
+    string lastBefore = P1bVisibleText(platform, last: true);
+    double offsetBefore = platform.ScrollOffsetY;
+    double firstScreenBefore = P1bScreenY(platform, firstBefore);
+    list.ItemsSource = new List<string>(p1bPrepended);
+    list.Handler!.UpdateValue(nameof(ItemsView.ItemsSource));
+    string firstAfter = P1bVisibleText(platform, last: false);
+    string lastAfter = P1bVisibleText(platform, last: true);
+    double firstScreenAfter = P1bScreenY(platform, firstBefore);
+    double lastBottomAfter = P1bScreenY(platform, lastBefore) + P1bRowHeight(platform, lastBefore);
+    return (firstBefore, lastBefore, offsetBefore, firstScreenBefore,
+        firstAfter, lastAfter, platform.ScrollOffsetY, firstScreenAfter, lastBottomAfter,
+        platform.Frame.Height);
+}
+var p1bKeepItems = P1bModeProbe(ItemsUpdatingScrollMode.KeepItemsInView);
+bool p1bKeepItemsOk = p1bKeepItems.FirstAfter == p1bKeepItems.FirstBefore &&
+    Math.Abs(p1bKeepItems.FirstScreenAfter - p1bKeepItems.FirstScreenBefore) < 0.5 &&
+    p1bKeepItems.OffsetAfter > p1bKeepItems.OffsetBefore;
+var p1bKeepLast = P1bModeProbe(ItemsUpdatingScrollMode.KeepLastItemInView);
+// KeepLastItemInView slides the anchor to the viewport bottom (the item's bottom edge sits on
+// the viewport bottom), so the check pins that alignment and the item identity.
+bool p1bKeepLastOk = p1bKeepLast.LastAfter == p1bKeepLast.LastBefore &&
+    Math.Abs(p1bKeepLast.LastBottomAfter - p1bKeepLast.Viewport) < 1.0 &&
+    p1bKeepLast.OffsetAfter > p1bKeepLast.OffsetBefore;
+var p1bKeepOffset = P1bModeProbe(ItemsUpdatingScrollMode.KeepScrollOffset);
+bool p1bKeepOffsetOk = Math.Abs(p1bKeepOffset.OffsetAfter - p1bKeepOffset.OffsetBefore) < 0.01 &&
+    p1bKeepOffset.FirstAfter != p1bKeepOffset.FirstBefore;
+P1bCheck(p1bKeepItemsOk && p1bKeepLastOk && p1bKeepOffsetOk,
+    $"updating keepItems={p1bKeepItems.FirstAfter}@{p1bKeepItems.OffsetAfter:0.##} " +
+    $"keepLast={p1bKeepLast.LastAfter}@{p1bKeepLast.OffsetAfter:0.##} " +
+    $"keepOffset={p1bKeepOffset.OffsetAfter:0.##} first='{p1bKeepOffset.FirstAfter}'");
+
+// ScrollTo full parameters: Start/Center/End land the slot at the exact alignment and
+// MakeVisible leaves an already-visible row untouched. The expectations derive from the
+// template's measured slot (the harness measures Label templates at their text height).
+var p1bPosCv = P1bList(Enumerable.Range(0, 30).Select(i => $"row {i}").ToList());
+var p1bPosPlatform = P1bPlatform(p1bPosCv);
+double p1bSlot = P1bRowY(p1bPosPlatform, "row 1") - P1bRowY(p1bPosPlatform, "row 0");
+double p1bExtent = P1bRowHeight(p1bPosPlatform, "row 0");
+double p1bViewport = p1bPosPlatform.Frame.Height;
+double p1bExpectStart = 10 * p1bSlot;
+double p1bExpectCenter = 20 * p1bSlot + p1bExtent / 2 - p1bViewport / 2;
+double p1bExpectEnd = 25 * p1bSlot + p1bExtent - p1bViewport;
+p1bPosCv.ScrollTo(10, position: ScrollToPosition.Start, animate: false);
+double p1bStart = p1bPosPlatform.ScrollOffsetY;
+p1bPosCv.ScrollTo(20, position: ScrollToPosition.Center, animate: false);
+double p1bCenter = p1bPosPlatform.ScrollOffsetY;
+p1bPosCv.ScrollTo(25, position: ScrollToPosition.End, animate: false);
+double p1bEnd = p1bPosPlatform.ScrollOffsetY;
+p1bPosCv.ScrollTo(22, position: ScrollToPosition.MakeVisible, animate: false);
+double p1bVisible = p1bPosPlatform.ScrollOffsetY;
+bool p1bPositionsOk = Math.Abs(p1bStart - p1bExpectStart) < 1 && Math.Abs(p1bCenter - p1bExpectCenter) < 1 &&
+    Math.Abs(p1bEnd - p1bExpectEnd) < 1 && Math.Abs(p1bVisible - p1bEnd) < 0.01;
+P1bCheck(p1bPositionsOk,
+    $"scrollto start={p1bStart:0} center={p1bCenter:0} end={p1bEnd:0} makeVisible={p1bVisible:0} " +
+    $"(expected {p1bExpectStart:0}/{p1bExpectCenter:0}/{p1bExpectEnd:0})");
+
+// ScrollTo(animate: true) slides through the shared frame loop and commits exactly; reduced
+// motion snaps to the target without registering an animation.
+p1bPosCv.ScrollTo(0, position: ScrollToPosition.Start, animate: false);
+p1bPosCv.ScrollTo(25, position: ScrollToPosition.End, animate: true);
+bool p1bAnimActive = OpenHarmonyScrollAnimation.IsAnimating(p1bPosPlatform);
+float p1bAnimTarget = OpenHarmonyScrollAnimation.TargetFor(p1bPosPlatform);
+p1bNow += 16;
+OpenHarmonyAnimationLoop.Pump(p1bNow, 1f / 60f);
+double p1bAnimMid = p1bPosPlatform.ScrollOffsetY;
+for (int i = 0; i < 40; i++)
+{
+    p1bNow += 16;
+    OpenHarmonyAnimationLoop.Pump(p1bNow, 1f / 60f);
+}
+bool p1bAnimSettled = Math.Abs(p1bPosPlatform.ScrollOffsetY - p1bExpectEnd) < 0.5 &&
+    !OpenHarmonyScrollAnimation.IsAnimating(p1bPosPlatform) && OpenHarmonyScrollAnimation.ActiveCount == 0;
+bool p1bAnimOk = p1bAnimActive && Math.Abs(p1bAnimTarget - p1bExpectEnd) < 1 &&
+    p1bAnimMid > 0 && p1bAnimMid < p1bExpectEnd && p1bAnimSettled;
+P1bCheck(p1bAnimOk,
+    $"scrollto animated active={p1bAnimActive} target={p1bAnimTarget:0} mid={p1bAnimMid:0} settled={p1bAnimSettled}");
+
+OpenHarmonyMotion.OnPlatformReduceMotionChanged(true);
+p1bPosCv.ScrollTo(0, position: ScrollToPosition.Start, animate: false);
+p1bPosCv.ScrollTo(25, position: ScrollToPosition.End, animate: true);
+bool p1bAnimReduceOk = !OpenHarmonyScrollAnimation.IsAnimating(p1bPosPlatform) &&
+    Math.Abs(p1bPosPlatform.ScrollOffsetY - p1bExpectEnd) < 0.5;
+OpenHarmonyMotion.OnPlatformReduceMotionChanged(false);
+P1bCheck(p1bAnimReduceOk, $"scrollto animated reduce-motion snap offset={p1bPosPlatform.ScrollOffsetY:0}");
+
+// Grouped rows: header + items + footer per group (the footer template adds one row per group);
+// collapse hides a group's items and footer from the viewport without touching ItemsSource, and
+// header taps toggle the group when the opt-in is enabled.
+var p1bGroups = new List<List<string>>
+{
+    new() { "a1", "a2", "a3", "a4" },
+    new() { "b1", "b2", "b3", "b4" },
+    new() { "c1", "c2", "c3", "c4" },
+};
+DataTemplate p1bHeaderTemplate = new(() => new Label { Text = "header", FontSize = 20, HeightRequest = 40 });
+DataTemplate p1bFooterTemplate = new(() => new Label { Text = "footer", FontSize = 20, HeightRequest = 40 });
+var p1bGroupCv = P1bList(p1bGroups, grouped: true, height: 300, header: p1bHeaderTemplate, footer: p1bFooterTemplate);
+var p1bGroupPlatform = P1bPlatform(p1bGroupCv);
+double p1bGroupSlot = P1bRowY(p1bGroupPlatform, "a2") - P1bRowY(p1bGroupPlatform, "a1");
+double p1bGroupRows = p1bGroupPlatform.ScrollContentHeight / p1bGroupSlot;
+List<string> p1bGroupTexts = P1bTexts(p1bGroupPlatform);
+bool p1bFooterOk = Math.Abs(p1bGroupRows - 18) < 0.01 && p1bGroupTexts.Contains("header") &&
+    p1bGroupTexts.Contains("footer") && p1bGroupTexts.Contains("a1");
+P1bCheck(p1bFooterOk, $"group footer rows={p1bGroupRows:0} (18=3*(1+4+1)) slot={p1bGroupSlot:0} texts=[{string.Join(",", p1bGroupTexts.Take(8))}]");
+
+p1bGroupPlatform.ScrollOffsetY = 300;
+p1bGroupPlatform.ScrollOffsetChanged?.Invoke();
+double p1bBeforeScreen = P1bScreenY(p1bGroupPlatform, "b2");
+bool p1bCollapseCalled = p1bGroupCv.SetGroupCollapsed(p1bGroups[0], true);
+double p1bCollapsedRows = p1bGroupPlatform.ScrollContentHeight / p1bGroupSlot;
+double p1bAfterScreen = P1bScreenY(p1bGroupPlatform, "b2");
+double p1bExpectedCollapseOffset = 300 - Math.Min(5 * p1bGroupSlot, 300);
+bool p1bCollapseOk = p1bCollapseCalled && p1bGroupCv.IsGroupCollapsed(p1bGroups[0]) &&
+    Math.Abs(p1bCollapsedRows - 13) < 0.01 && Math.Abs(p1bGroupPlatform.ScrollOffsetY - p1bExpectedCollapseOffset) < 0.5 &&
+    Math.Abs(p1bBeforeScreen - p1bAfterScreen) < 0.5 && !P1bTexts(p1bGroupPlatform).Contains("a1");
+P1bCheck(p1bCollapseOk,
+    $"group collapse rows={p1bCollapsedRows:0} (13) offset={p1bGroupPlatform.ScrollOffsetY:0} ({p1bExpectedCollapseOffset:0}) " +
+    $"b2screen={p1bBeforeScreen:0}->{p1bAfterScreen:0}");
+
+bool p1bExpandCalled = p1bGroupCv.SetGroupCollapsed(p1bGroups[0], false);
+double p1bExpandedRows = p1bGroupPlatform.ScrollContentHeight / p1bGroupSlot;
+bool p1bExpandOk = p1bExpandCalled && !p1bGroupCv.IsGroupCollapsed(p1bGroups[0]) &&
+    Math.Abs(p1bExpandedRows - 18) < 0.01 && P1bTexts(p1bGroupPlatform).Contains("a1");
+P1bCheck(p1bExpandOk, $"group expand rows={p1bExpandedRows:0} (18) a1visible={P1bTexts(p1bGroupPlatform).Contains("a1")}");
+
+p1bGroupCv.SetGroupHeaderTogglesCollapse(true);
+foreach (IView child in p1bGroupPlatform.ViewChildren)
+{
+    if (child.Handler?.PlatformView is OpenHarmonyView headerRow && headerRow.Text == "header")
+    {
+        headerRow.Tap?.Invoke();
+        break;
+    }
+}
+bool p1bTapCollapsed = p1bGroupCv.IsGroupCollapsed(p1bGroups[0]);
+bool p1bTapOk = p1bTapCollapsed;
+P1bCheck(p1bTapOk, $"group header tap collapses={p1bTapCollapsed}");
+
+// Scroll physics: rubber-band drag past an edge, the release spring, and a fling that carries
+// the content past the edge before the spring returns it (reduced motion clamps instead).
+var p1bDragView = new OpenHarmonyView();
+var p1bDragScroll = new ScrollView();
+p1bDragView.VirtualView = p1bDragScroll;
+p1bDragScroll.Frame = new Rect(0, 0, 400, 600);
+p1bDragView.ScrollContentHeight = 2000;
+float p1bBandTop = OpenHarmonyScrollPhysics.DragOffset(p1bDragView, 10f, -40f, 1400f);
+float p1bBandBottom = OpenHarmonyScrollPhysics.DragOffset(p1bDragView, 1390f, 40f, 1400f);
+float p1bBandInside = OpenHarmonyScrollPhysics.DragOffset(p1bDragView, 500f, 40f, 1400f);
+float p1bBandTopExpected = -30f * OpenHarmonyScrollPhysics.RubberBandFactor;
+float p1bBandBottomExpected = 1400f + 30f * OpenHarmonyScrollPhysics.RubberBandFactor;
+OpenHarmonyMotion.OnPlatformReduceMotionChanged(true);
+float p1bBandReduced = OpenHarmonyScrollPhysics.DragOffset(p1bDragView, 10f, -40f, 1400f);
+OpenHarmonyMotion.OnPlatformReduceMotionChanged(false);
+bool p1bBandOk = Math.Abs(p1bBandTop - p1bBandTopExpected) < 0.01f &&
+    Math.Abs(p1bBandBottom - p1bBandBottomExpected) < 0.01f &&
+    Math.Abs(p1bBandInside - 540f) < 0.01f && p1bBandReduced == 0f;
+P1bCheck(p1bBandOk,
+    $"physics rubberband top={p1bBandTop:0.#} bottom={p1bBandBottom:0.#} inside={p1bBandInside:0.#} reduced={p1bBandReduced:0.#}");
+
+p1bDragView.ScrollOffsetY = -30f;
+bool p1bSpringStarted = OpenHarmonyScrollPhysics.TryReturnToEdge(p1bDragView);
+bool p1bSpringLeftEdge = false;
+for (int i = 0; i < 60; i++)
+{
+    p1bNow += 16;
+    OpenHarmonyAnimationLoop.Pump(p1bNow, 1f / 60f);
+    if (p1bDragView.ScrollOffsetY < -0.5f)
+    {
+        p1bSpringLeftEdge = true;
+    }
+}
+bool p1bSpringSettled = Math.Abs(p1bDragView.ScrollOffsetY) < 0.5f && !OpenHarmonyScrollPhysics.IsBouncing(p1bDragView);
+P1bCheck(p1bSpringStarted && p1bSpringLeftEdge && p1bSpringSettled,
+    $"physics edge-return started={p1bSpringStarted} offset={p1bDragView.ScrollOffsetY:0.##} settled={p1bSpringSettled}");
+
+OpenHarmonyScrollPhysics.ResetForTests();
+var p1bFlingView = new OpenHarmonyView();
+var p1bFlingScroll = new ScrollView();
+p1bFlingView.VirtualView = p1bFlingScroll;
+p1bFlingScroll.Frame = new Rect(0, 0, 400, 600);
+p1bFlingView.ScrollContentHeight = 2000;
+for (int i = 1; i <= 4; i++)
+{
+    p1bNow += 16;
+    p1bFlingView.ScrollOffsetY = 1200f + i * 40f;
+}
+bool p1bFlingStarted = OpenHarmonyScrollPhysics.TryStartFling(p1bFlingView);
+float p1bFlingMax = p1bFlingView.ScrollOffsetY;
+for (int i = 0; i < 120; i++)
+{
+    p1bNow += 16;
+    OpenHarmonyAnimationLoop.Pump(p1bNow, 1f / 60f);
+    p1bFlingMax = Math.Max(p1bFlingMax, p1bFlingView.ScrollOffsetY);
+}
+bool p1bFlingOk = p1bFlingStarted && p1bFlingMax > 1400.5f &&
+    p1bFlingMax <= 1400f + OpenHarmonyScrollPhysics.MaxOverscroll + 0.5f &&
+    Math.Abs(p1bFlingView.ScrollOffsetY - 1400f) < 0.5f && OpenHarmonyScrollPhysics.ActiveFlings == 0;
+P1bCheck(p1bFlingOk,
+    $"physics fling bounce started={p1bFlingStarted} max={p1bFlingMax:0.#} settle={p1bFlingView.ScrollOffsetY:0.##} flings={OpenHarmonyScrollPhysics.ActiveFlings}");
+
+OpenHarmonyScrollPhysics.ResetForTests();
+OpenHarmonyMotion.OnPlatformReduceMotionChanged(true);
+var p1bReducedFling = new OpenHarmonyView();
+var p1bReducedScroll = new ScrollView();
+p1bReducedFling.VirtualView = p1bReducedScroll;
+p1bReducedScroll.Frame = new Rect(0, 0, 400, 600);
+p1bReducedFling.ScrollContentHeight = 2000;
+for (int i = 1; i <= 4; i++)
+{
+    p1bNow += 16;
+    p1bReducedFling.ScrollOffsetY = 1200f + i * 40f;
+}
+bool p1bReducedStarted = OpenHarmonyScrollPhysics.TryStartFling(p1bReducedFling);
+float p1bReducedMax = p1bReducedFling.ScrollOffsetY;
+for (int i = 0; i < 60; i++)
+{
+    p1bNow += 16;
+    OpenHarmonyAnimationLoop.Pump(p1bNow, 1f / 60f);
+    p1bReducedMax = Math.Max(p1bReducedMax, p1bReducedFling.ScrollOffsetY);
+}
+OpenHarmonyMotion.OnPlatformReduceMotionChanged(false);
+bool p1bReducedFlingOk = p1bReducedStarted && p1bReducedMax <= 1400.5f &&
+    Math.Abs(p1bReducedFling.ScrollOffsetY - 1400f) < 0.5f;
+P1bCheck(p1bReducedFlingOk,
+    $"physics fling reduce-motion max={p1bReducedMax:0.#} settle={p1bReducedFling.ScrollOffsetY:0.##}");
+
+// Scrollbar parameters + reduce-motion coordination: the documented defaults, a settable
+// hold/fade, the fade itself, and the instant hide under reduced motion.
+bool p1bBarDefaults = OpenHarmonyScrollbars.DefaultHoldMs == 900 && OpenHarmonyScrollbars.DefaultFadeMs == 250 &&
+    OpenHarmonyScrollbars.Thickness == 4f && OpenHarmonyScrollbars.Margin == 3f;
+OpenHarmonyScrollbars.HoldMs = 40;
+OpenHarmonyScrollbars.FadeMs = 80;
+var p1bBarView = new OpenHarmonyView();
+var p1bBarScroll = new ScrollView();
+p1bBarView.VirtualView = p1bBarScroll;
+p1bBarScroll.Frame = new Rect(0, 0, 400, 600);
+p1bBarView.ScrollContentHeight = 2000;
+OpenHarmonyScrollbars.NotifyScrolled(p1bBarView);
+bool p1bBarFull = OpenHarmonyScrollbars.OpacityFor(p1bBarView) == 1f && OpenHarmonyScrollbars.ShouldDraw(p1bBarView);
+p1bNow += 20;
+OpenHarmonyAnimationLoop.Pump(p1bNow, 1f / 60f);
+bool p1bBarHeld = OpenHarmonyScrollbars.OpacityFor(p1bBarView) == 1f;
+p1bNow += 40;
+OpenHarmonyAnimationLoop.Pump(p1bNow, 1f / 60f);
+float p1bBarMid = OpenHarmonyScrollbars.OpacityFor(p1bBarView);
+for (int i = 0; i < 8; i++)
+{
+    p1bNow += 16;
+    OpenHarmonyAnimationLoop.Pump(p1bNow, 1f / 60f);
+}
+bool p1bBarFaded = p1bBarMid < 1f && p1bBarMid > 0f && OpenHarmonyScrollbars.OpacityFor(p1bBarView) == 0f &&
+    !OpenHarmonyScrollbars.ShouldDraw(p1bBarView);
+OpenHarmonyScrollbars.NotifyScrolled(p1bBarView);
+OpenHarmonyMotion.OnPlatformReduceMotionChanged(true);
+p1bNow += 20;
+OpenHarmonyAnimationLoop.Pump(p1bNow, 1f / 60f);
+bool p1bBarReduceHeld = OpenHarmonyScrollbars.OpacityFor(p1bBarView) == 1f;
+p1bNow += 40;
+OpenHarmonyAnimationLoop.Pump(p1bNow, 1f / 60f);
+bool p1bBarReduceHidden = OpenHarmonyScrollbars.OpacityFor(p1bBarView) == 0f;
+OpenHarmonyMotion.OnPlatformReduceMotionChanged(false);
+P1bCheck(p1bBarDefaults && p1bBarFull && p1bBarHeld && p1bBarFaded && p1bBarReduceHeld && p1bBarReduceHidden,
+    $"scrollbar defaults={p1bBarDefaults} full={p1bBarFull} hold={p1bBarHeld} fade={p1bBarMid:0.##} hidden={p1bBarFaded} " +
+    $"reduceHold={p1bBarReduceHeld} reduceHidden={p1bBarReduceHidden}");
+
+// Long list: 1,200 items materialize a bounded window. Scrolling inside the current window is
+// a pure frame-path update (no allocation), and scrolling the whole content materializes each
+// row at most once (pool reuse keeps the window bounded).
+var p1bLongCv = P1bList(Enumerable.Range(0, 1200).Select(i => $"long {i}").ToList(), height: 400);
+var p1bLongPlatform = P1bPlatform(p1bLongCv);
+double p1bLongSlot = P1bRowY(p1bLongPlatform, "long 1") - P1bRowY(p1bLongPlatform, "long 0");
+int p1bLongChildren = p1bLongPlatform.ViewChildren.Count;
+double p1bLongContent = p1bLongPlatform.ScrollContentHeight;
+p1bLongPlatform.ScrollOffsetY = 5000;
+p1bLongPlatform.ScrollOffsetChanged?.Invoke();
+for (int i = 0; i < 20; i++)
+{
+    p1bLongPlatform.ScrollOffsetY = 5000 + (i % 5);
+    p1bLongPlatform.ScrollOffsetChanged?.Invoke();
+}
+long p1bLongSteadyBefore = GC.GetAllocatedBytesForCurrentThread();
+int p1bLongMaxChildren = 0;
+for (int i = 0; i < 200; i++)
+{
+    // A few pixels inside one slot: the materialization window does not move, so this is the
+    // per-frame path a moving finger drives (offset sample + scrollbar notify + window check).
+    p1bLongPlatform.ScrollOffsetY = 5000 + (i % 9);
+    p1bLongPlatform.ScrollOffsetChanged?.Invoke();
+    p1bLongMaxChildren = Math.Max(p1bLongMaxChildren, p1bLongPlatform.ViewChildren.Count);
+}
+long p1bLongSteadyPerStep = (GC.GetAllocatedBytesForCurrentThread() - p1bLongSteadyBefore) / 200;
+long p1bLongFullBefore = GC.GetAllocatedBytesForCurrentThread();
+for (int i = 0; i < 200; i++)
+{
+    p1bLongPlatform.ScrollOffsetY = 5000 + i * 60;
+    p1bLongPlatform.ScrollOffsetChanged?.Invoke();
+    p1bLongMaxChildren = Math.Max(p1bLongMaxChildren, p1bLongPlatform.ViewChildren.Count);
+}
+long p1bLongFullAlloc = GC.GetAllocatedBytesForCurrentThread() - p1bLongFullBefore;
+const long p1bLongSteadyCeiling = 1024;   // measured 461 B/step; a per-frame list would add hundreds
+const long p1bLongFullCeiling = 6 * 1024 * 1024;
+bool p1bLongOk = Math.Abs(p1bLongContent - 1200 * p1bLongSlot) < 0.01 && p1bLongChildren is > 0 and < 40 &&
+    p1bLongMaxChildren < 40 && p1bLongSteadyPerStep <= p1bLongSteadyCeiling &&
+    p1bLongFullAlloc <= p1bLongFullCeiling;
+P1bCheck(p1bLongOk,
+    $"longlist items=1200 slot={p1bLongSlot:0} height={p1bLongContent:0} children={p1bLongChildren} " +
+    $"maxChildren={p1bLongMaxChildren} steadyAllocPerStep={p1bLongSteadyPerStep}B ceiling={p1bLongSteadyCeiling}B " +
+    $"fullAlloc={p1bLongFullAlloc / 1024}KiB ceiling={p1bLongFullCeiling / 1024}KiB");
+
+// Source pins: the new semantics live in the named members (and the public collapse surface is
+// declared in the net-openharmony API baseline).
+string? p1bHandlerPath = FindHostSource("OpenHarmonyCollectionViewHandler.cs");
+string p1bHandler = p1bHandlerPath is null ? string.Empty : File.ReadAllText(p1bHandlerPath);
+string? p1bMatPath = FindHostSource("OpenHarmonyItemListMaterializer.cs");
+string p1bMat = p1bMatPath is null ? string.Empty : File.ReadAllText(p1bMatPath);
+string? p1bPhysPath = FindHostSource("OpenHarmonyScrollPhysics.cs");
+string p1bPhys = p1bPhysPath is null ? string.Empty : File.ReadAllText(p1bPhysPath);
+string? p1bAnimPath = FindHostSource("OpenHarmonyScrollAnimation.cs");
+string p1bAnim = p1bAnimPath is null ? string.Empty : File.ReadAllText(p1bAnimPath);
+string? p1bExtPath = FindHostSource("OpenHarmonyCollectionViewExtensions.cs");
+string p1bExt = p1bExtPath is null ? string.Empty : File.ReadAllText(p1bExtPath);
+string? p1bApiPath = FindHostSource("src/Core/src/PublicAPI/net-openharmony/PublicAPI.Unshipped.txt");
+string p1bApi = p1bApiPath is null ? string.Empty : File.ReadAllText(p1bApiPath);
+bool p1bPinThreshold = p1bHandler.Contains("_thresholdArmed = false;") &&
+    p1bHandler.Contains("if (!_thresholdArmed || _thresholdFiring)");
+bool p1bPinUpdating = p1bHandler.Contains("[nameof(ItemsView.ItemsUpdatingScrollMode)] = MapItemsUpdatingScrollMode,") &&
+    p1bMat.Contains("public ItemsUpdatingScrollMode UpdateMode { get; set; } = ItemsUpdatingScrollMode.KeepItemsInView;") &&
+    p1bMat.Contains("ApplyAnchorOffset(mode, anchorItem, anchorOffset);");
+bool p1bPinScrollTo = p1bHandler.Contains("materializer.ScrollTo(row, args.ScrollToPosition, args.IsAnimated);") &&
+    p1bMat.Contains("public void ScrollTo(int row, ScrollToPosition position, bool animated)") &&
+    p1bMat.Contains("OpenHarmonyScrollAnimation.Start(_platformView, (float)target, ApplyScrollOffset);");
+bool p1bPinCollapse = p1bMat.Contains("public bool SetGroupCollapsed(object? group, bool collapsed)") &&
+    p1bMat.Contains("public bool IsGroupCollapsed(object? group)") &&
+    p1bMat.Contains("_footerRows") && p1bHandler.Contains("[nameof(GroupableItemsView.GroupFooterTemplate)] = MapGroupFooter,") &&
+    p1bHandler.Contains("SetGroupHeaderTogglesCollapse");
+bool p1bPinPhysics = p1bPhys.Contains("internal static float DragOffset(") &&
+    p1bPhys.Contains("internal static bool TryReturnToEdge(") &&
+    p1bPhys.Contains("internal const float MaxOverscroll = 64f;") &&
+    p1bPhys.Contains("internal static void BeginProgrammatic()") &&
+    p1bAnim.Contains("internal static class OpenHarmonyScrollAnimation") &&
+    p1bAnim.Contains("internal const long MaxDurationMs = 420;");
+bool p1bPinApi = p1bApi.Contains("Microsoft.Maui.Platform.OpenHarmonyCollectionViewExtensions") &&
+    p1bApi.Contains("OpenHarmonyCollectionViewExtensions.SetGroupCollapsed(") &&
+    p1bApi.Contains("OpenHarmonyCollectionViewExtensions.ToggleGroupCollapsed(") &&
+    p1bExt.Contains("public static bool ToggleGroupCollapsed(this CollectionView collectionView, object group)");
+bool p1bPinsOk = p1bPinThreshold && p1bPinUpdating && p1bPinScrollTo && p1bPinCollapse && p1bPinPhysics && p1bPinApi;
+P1bCheck(p1bPinsOk,
+    $"pins threshold={p1bPinThreshold} updating={p1bPinUpdating} scrollto={p1bPinScrollTo} collapse={p1bPinCollapse} " +
+    $"physics={p1bPinPhysics} api={p1bPinApi} source='{p1bHandlerPath ?? "<missing>"}'");
+
+OpenHarmonyScrollAnimation.ResetForTests();
+OpenHarmonyScrollPhysics.ResetForTests();
+OpenHarmonyScrollbars.ResetForTests();
+OpenHarmonyAnimationLoop.Clock = p1bSavedClock;
+if (p1bFailures > 0)
+{
+    throw new InvalidOperationException($"the P1b-LIST checks failed ({p1bFailures})");
 }
 
 // ---- Deterministic fuzz (bounded, seeded) -----------------------------------------------------

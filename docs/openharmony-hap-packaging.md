@@ -658,8 +658,8 @@ in the UI abc (the provenance gate; current default-flavor UI abc 278,760 B /
 the source contract (no `@ohos.*` imports, variable kit specifiers). The host-side gate is
 `scripts/build-host.sh` (nm -D: all 141 `host-exports.txt` names present as plain symbols) plus
 `scripts/check-host-exports.py --cross-check`; the interaction suite's own contract line is
-`[suite] checks=357 total=357 floor=337 assert=True` (the 10 P1a-ANIM animation checks on the
-347/327 base; the image batch in flight raises the same line to 361/341).
+`[suite] checks=373 total=373 floor=353 assert=True` (the 16 P1b-LIST list checks on the
+357/337 P1a-ANIM base).
 
 ### Templates / abc sync strategy
 
@@ -743,6 +743,40 @@ fed by the XComponent frame callback and by MAUI's ticker). The shell's only rol
 - The `--check-pack-abc` literal gate pins `notifyAnimationReduce`, `@kit.AccessibilityKit` and
   `SystemCapability.BarrierFree.Accessibility.Core` in the UI abc (headless must not carry
   them), so a shell rebuilt without the probe fails before packaging.
+
+### Lists (P1b-LIST)
+
+List virtualization stays fully managed (the shared materializer drives the same frame loop as the
+rest of the compositor), so P1b-LIST changes no shell or host source: the UI abc stays
+278,760 B / `c84fbf34…` and the export contract stays at 141 names. The four decision points:
+
+- **Incremental loading**: `RemainingItemsThreshold`/`RemainingItemsThresholdReached` fires once
+  when the visible window enters the threshold zone, and re-arms only after the window leaves the
+  zone or the item count changes; a reentrancy guard additionally keeps a handler that grows the
+  source from firing per frame.
+- **ItemsUpdatingScrollMode**: KeepItemsInView and KeepLastItemInView anchor the first/last
+  visible item *by identity* (an index would silently point at a different item when the update
+  inserts rows before the viewport) and preserve its screen position, respectively its bottom
+  alignment, across the source swap; KeepScrollOffset keeps the raw offset, now clamped to the
+  shrunk content end. The window is re-materialized on a source swap and re-arranged when the
+  slot projection moves (collapse/span), so stale frames/contexts cannot survive an update.
+- **ScrollTo**: `(index, group, position, animate)` honors Start/Center/End/MakeVisible, and
+  `animate: true` tweens the offset through the shared frame loop (160-420 ms, ease-out cubic);
+  reduced motion snaps to the target. The materializer's window follows every animation step, so
+  the virtualized rows track the animated offset.
+- **Grouping**: a grouped source can draw a footer row per group (`GroupFooterTemplate`), and
+  `OpenHarmonyCollectionViewExtensions.SetGroupCollapsed`/`ToggleGroupCollapsed` hide a group's
+  items and footer from the viewport without touching ItemsSource - the rows stay, only the slot
+  projection and the offset change (collapsing above the viewport pulls the offset up so the
+  content below does not jump). `SetGroupHeaderTogglesCollapse(true)` makes the header row toggle
+  its group. The public surface is declared in the net-openharmony API baseline.
+- **Physics**: a drag past an edge rubber-bands (bounded to 64 px), a release springs back, and a
+  fling that reaches an edge carries its remaining speed into a bounded overshoot before the
+  spring settles on the edge; reduced motion clamps instead. The scrollbar's hold/fade parameters
+  are settable, reduced motion hides the bar on the hold-expiry frame, and a completed fade now
+  re-arms the next one (previously the bar could fade only once per process). The 1,200-item
+  check pins the bounded materialization window (13-22 rows) and a ≤1 KiB/step steady-state
+  allocation on the scroll frame path.
 
 ### Text editing (P0c-TEXT-EDIT)
 

@@ -49,7 +49,7 @@ allocation and jitter) budgets are exceeded.
 # (or the MauiSliceDir / HostingDll / OpenHarmonyGraphicsDll MSBuild properties) before building
 # elsewhere; an explicit -p: value wins over the environment and the absolute fallbacks.
 dotnet build -v:q
-dotnet bin/Debug/net11.0/verify.dll | grep -c '\[verify\]'   # expect 357 (344 checks + 4 fuzz + 1 frame perf + 8 a11y perf)
+dotnet bin/Debug/net11.0/verify.dll | grep -c '\[verify\]'   # expect 373 (360 checks + 4 fuzz + 1 frame perf + 8 a11y perf)
 ```
 
 The `interaction-regression` workflow (`.github/workflows/interaction-regression.yml`) runs the
@@ -60,7 +60,7 @@ suite on a GitHub runner as a real gate (on push to `master`, on pull requests a
 points `MAUI_SLICE_DIR` / `HOSTING_DLL` / `OPENHARMONY_GRAPHICS_DLL` at those roots, and fails the
 job unless the run exits 0, the suite's own `[suite]` contract line reports `assert=True` with at
 least the floor declared in `Program.cs`, both perf lines report `within=True`, and no `Unhandled`
-line is logged. The floor (337 = 357 - 20, the documented convention) lives only in `Program.cs`;
+line is logged. The floor (353 = 373 - 20, the documented convention) lives only in `Program.cs`;
 the workflow and `scripts/preflight.sh` both read the printed `[suite] checks=... floor=...` line
 instead of repeating a literal, so the two local/CI thresholds cannot drift apart.
 
@@ -169,7 +169,7 @@ jitter ~1.08x and 72,056 B/frame, and the a11y block reported ~0.3/0.5 ms for th
 ~0.07/0.28 ms for the publish pass (skip/republish). The post-batch run (commit a10b73e) reported
 avg 0.488 ms, p95 0.698 ms, jitter 1.43x and 3,720 B/frame, i.e. the ceiling is 3.72x the CI
 baseline. Every run ends with the `[suite]` contract line
-(`checks=357 total=357 floor=337 assert=True`), which the workflow and `scripts/preflight.sh`
+(`checks=373 total=373 floor=353 assert=True`), which the workflow and `scripts/preflight.sh`
 parse.
 
 ## Notes
@@ -178,8 +178,8 @@ parse.
   blocks codesigned ELF apphosts on some machines).
 - The suite fails loudly (unhandled exception) when a slice change breaks startup or when an
   assertion for the gesture flows (including the drag-and-drop checks) does not hold; keep it at
-  344 checks plus the 4 fuzz lines plus the 1 frame-perf line plus the 8 a11y-perf lines
-  (357 `[verify]` lines) when touching the platform slice. The total and the floor (total - 20)
+  360 checks plus the 4 fuzz lines plus the 1 frame-perf line plus the 8 a11y-perf lines
+  (373 `[verify]` lines) when touching the platform slice. The total and the floor (total - 20)
   are declared in `Program.cs`; the run ends with a `[suite] checks=... floor=... assert=...`
   line and fails itself when the printed count is below the floor, so the CI job and
   `scripts/preflight.sh` do not repeat the threshold.
@@ -718,3 +718,26 @@ parse.
   floor moves with the total (357 - 20 = 337). The pixel suite (`test/headless-render`) settles
   the press/check channels before sampling, so its button-pressed and check-line assertions see
   the completed state instead of a mid-ease frame.
+- **P1b-LIST (16 lines)** - the list depth on the shared materializer and the scroll physics.
+  `p1b threshold` raises `RemainingItemsThresholdReached` once on entering the threshold zone,
+  stays silent while scrolling inside it and fires again after leaving/re-entering;
+  `p1b updating` prepends five items under each `ItemsUpdatingScrollMode`: KeepItemsInView keeps
+  the first visible item's screen position (by identity), KeepLastItemInView keeps the last item
+  bottom-aligned, KeepScrollOffset keeps the raw offset while the viewport shows the prepended
+  items; `p1b scrollto` pins Start/Center/End/MakeVisible against the template's measured slot
+  and `makeVisible` as a no-op for an already-visible row; `p1b scrollto animated` steps the tween
+  through the injected frame clock (active, mid-flight offset strictly inside the range, exact
+  settle, loop idle) and the reduce-motion snap; `p1b group footer`/`collapse`/`expand`/`header
+  tap` pin the group footer rows (18 = 3 x (1+4+1) rows), the collapse (13 rows, offset pulled up
+  by the hidden height, the row below keeps its screen position, `ItemsSource` untouched), the
+  expansion and the header-tap opt-in; `p1b physics rubberband`/`edge-return`/`fling bounce`/
+  `fling reduce-motion` pin the bounded drag overscroll, the release spring, the fling's bounded
+  excursion past the edge before settling exactly on it, and the reduced-motion clamps;
+  `p1b scrollbar` pins the documented defaults, a settable hold/fade, the fade itself and the
+  instant hide under reduced motion; `p1b longlist` scrolls a 1,200-item list, pins the
+  content height against the measured slot, a bounded materialized window (max 22 rows), a
+  steady-state scroll allocation ceiling (1024 B/step) and the one-off materialization envelope;
+  `p1b pins` re-reads the handler/materializer/physics/animation/extension sources and the
+  net-openharmony API baseline for the new surface. That is 16 lines: 357 + 16 = 373 = 360
+  interaction checks + 4 fuzz + 1 frame perf + 8 a11y perf; the workflow floor moves with the
+  total (373 - 20 = 353).
