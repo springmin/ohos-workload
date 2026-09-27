@@ -436,8 +436,63 @@ without the kit registers no sink and the managed side degrades (see the KIT-IMP
 rule: the default flavor never copies `MapOverlay.ets`, the page's dynamic `./map/MapOverlay`
 import fails at runtime there, and the Map sink reports capability bit 1 = 0.
 
-The branch is scaffold-verified (`--scaffold-only` plus the selftest T14); a full build needs the
-HarmonyOS SDK present, which the current build host does not have.
+The branch is scaffold-verified (`--scaffold-only` plus the selftest T14/T17) and was
+**build-verified on 2026-09-27** with the public DevEco command-line-tools bundle 6.0.1.251
+(HarmonyOS 6.0.1 Release, API 21): `Finished :entry:default@CompileArkTS`, ui abc
+`263,784 B / sha256 d3a7b7186cd8b1871555f226ab761dda4f726d2c5ea516889da5f762d3dd1c4c`, abc
+version `13.0.1.0`, 0 ArkTS errors (also with `TYPECHECK=1`), payload literals present. There
+are two supported routes.
+
+**Route A - real HarmonyOS SDK.** Obtain the toolchain bundle (hvigor + ohpm + node + the full
+`hms` SDK; linux-x64, ~2.0 GiB, public mirrors, sha256-pinned) with
+`scripts/setup-harmony-sdk.sh --download <dir>`, or point `ARKTS_HARMONY_SDK_ROOT` at DevEco
+Studio's own `<install>/sdk`; then
+
+```sh
+ARKTS_SDK_FLAVOR=harmony ARKTS_HARMONY_SDK_ROOT=<sdk> scripts/build-arkts-shell.sh
+```
+
+`--print-config` prints the resolved SDK roots, runtimeOS, compatible/target strings, the exact
+`externalApiPaths` (on harmony it ends in `<base>/hms/ets`) and the abc ceiling without node or
+hvigor. Three version constraints decide success:
+
+- **hvigor must match the SDK.** The mirror-pinned 6.26.4 (the default flavor's toolchain for
+  the OpenHarmony SDK 26) is a DevEco-26 toolchain: against a 6.0/6.1 HarmonyOS SDK it stops
+  with `00303313 ... DevEco Studio version: 26.0.0` and, once `compileSdkVersion` is removed,
+  with `00303312 Cannot find the corresponding SDK version under the specified SDK path`. The
+  bundle ships the matching hvigor (6.0.1.251 -> 6.21.1, 6.1.1.300 -> 6.24.4); point the script
+  at it with the `HVIGOR_JS` override and set `ARKTS_MODEL_VERSION` to what that hvigor supports
+  (6.0.1 for 6.21.1 - 6.0.2 fails with "The supported Hvigor modelVersion is 6.0.1").
+- **compatibleSdkVersion must exist in that SDK.** The default `6.1.0(23)` is the device-side
+  DevEco value; for the 6.0.1.251 bundle pass `ARKTS_COMPATIBLE_SDK_VERSION=6.0.1(21)` (the
+  combined `platform(api)` form is required under runtimeOS HarmonyOS).
+- **the abc ceiling is unchanged.** Target API 21 maps to `13.0.1.0` (`ts2abc.js
+  --target-api-version 21`), the version the device DevEco build emitted; SDK 26's default is
+  `24.0.0.0`, which the device rejects. A build whose es2abc emits a newer abc still fails at
+  the end of the script.
+
+Host notes: the bundle is linux-x64, so its native `es2abc`/`restool`/`ark_disasm` do not run
+on an aarch64 host - the 2026-09-27 verification stood the arm64 binaries of a local
+OpenHarmony SDK in for them (the declarations are architecture-neutral); an x64 Linux build
+machine needs none of that. On an OpenHarmony device node also reports `os.type() ===
+"HarmonyOS"` / `process.platform === "openharmony"`, so hvigor takes Darwin paths
+(`libimage_transcoder_shared.dylib`, which cannot exist there); a wrapper that presents Linux
+before loading hvigor fixes it. A complete SDK tree is required: one missing
+`native/`/`previewer/`/`toolchains/` fails with `00303168 SDK component missing`.
+
+**Route B - mock SDK (offline).** `scripts/setup-harmony-sdk.sh --mock <dir>` writes the
+DevEco layout with stub kit declarations, including the command-line-tools metadata shape (no
+`platformVersion` in `ets/oh-uni-package.json`; it lives in `default/sdk-pkg.json` - the script
+falls back to it). Use it with `--print-config`, `--scaffold-only`, `--check-bc-version` and the
+T14/T17 selftests to verify path resolution, `externalApiPaths` injection,
+runtimeOS/compatible-version generation and the abc gate without a compiler. The mock is not a
+compiler: its stubs declare no real kit API.
+
+For the tester machine (DevEco Studio + HarmonyOS SDK) the shortest path is Route A with the
+IDE's SDK and hvigor; the existing DevEco fallback still works (create an empty project, copy
+`entry/src/main/ets/{entryability,pages,map}` over its sources, `hvigorw assembleHap`, feed the
+abc back via `-p:OpenHarmonyArktsModulesAbc`). Expected evidence: the `CompileArkTS` finish
+line, abc version `13.0.1.0`, non-zero size, the payload literals (`--check-abc`).
 
 ### Kit feature probes and AGC prerequisites (Push / Account / Map)
 
@@ -492,25 +547,33 @@ without the AppKey the map view fails to initialize (logged by `MapOverlay.ets`,
 So a device/HAP built with the default flavor answers `IsOverlayAvailable=false` even when
 `IsSupported=true` (the kit itself resolved): the capability answer distinguishes the two.
 
-AGC / device prerequisites (all external to this repository; the KIT-GAP report
-`runtime-ohos/docs/plans/2026-09-24-ohos-kit-gap-analysis.md` tracks them):
+AGC / device checklist (all external to this repository; the KIT-GAP report
+`runtime-ohos/docs/plans/2026-09-24-ohos-kit-gap-analysis.md` tracks them; values verified
+against the official preparation guides and the KIT-* reports, 2026-09-27). Every HMS kit needs
+the common rows 1-3 plus its own row:
 
-- **All four**: HarmonyOS SDK build (`ARKTS_SDK_FLAVOR=harmony`), an HMS device, and an app
-  registration in AppGallery Connect whose signing certificate fingerprint and bundle name match
-  the build.
-- **Push**: enable Push in AGC (增长 > 推送服务) and re-generate the signing profile with the push
-  entitlement; no `module.json5` permission is needed for `getToken()`.
-- **Account**: apply for the Huawei ID one-tap login permission
-  (`quickLoginAnonymousPhone` scope) and reference the resulting scope in the authorization
-  request; the anonymous phone is exchanged for the real number on the app's server.
-- **Map**: enable the map service in AGC and configure the AppKey (the harmony shell build plus a
-  matching bundle name/signing fingerprint); without it the `MapComponent` initialization fails
-  and no `Ready` event fires, so `IsOverlayAvailable` stays true (the shell has the overlay) while
-  no map is shown. Map data use is subject to the AGC map service terms.
-- **Live View (R2-SHELL-EXT)**: apply for the Live View entitlement (实况窗权益) for the scene
-  (`TIMER` here) in AGC and keep the user's live view switch on (设置 > 应用和元服务 > 应用名 >
-  实况窗); the device-side API also needs the app in the foreground. The scene whitelist and the
-  entitlement are the prerequisites for a real card.
+| # | Item | AGC location | Enable / fill | Signing / profile | Review |
+|---|------|--------------|---------------|-------------------|--------|
+| 1 | App registration (all kits) | 我的项目 > project > 添加应用, platform HarmonyOS | `bundleName` exactly the build's (`ARKTS_SHELL_BUNDLE_NAME` / the HAP's `OpenHarmonyBundleName`), matching device types | - | none |
+| 2 | Signing fingerprint (all kits) | 项目设置 > 常规 > 应用 > SHA256证书/公钥指纹 > 添加公钥指纹（HarmonyOS API 9及以上） | SHA256 of the signing certificate (`.p12`, debug or release); a DevEco debug auto-cert only works when its fingerprint is added | must match the hap's signing material | none |
+| 3 | Debug/release Profile (all restricted kits) | 证书、App ID和Profile > Profile | after enabling a service/entitlement, re-apply the Profile (受限权限) and re-sign the hap | the profile carries the capabilities | none |
+| 4 | Push (Push Kit) | 我的项目 > 项目 > 增长 > 推送服务 (older UI: 项目设置 > API管理) | enable Push Kit | re-apply the Profile with the push entitlement; no `module.json5` permission is needed for `getToken()` | instant |
+| 5 | Map (Map Kit) | 我的项目 > 项目 > 开放能力管理 (older UI: API管理) > 地图服务 | enable 地图服务; HarmonyOS `MapComponent` authenticates through the AGC service + certificate fingerprint (older SDKs additionally use the `client_id` metadata / `agconnect-services.json`; from HarmonyOS 5.0.2(14) the public-key fingerprint + Client ID are documented as no longer required). Note: the Android Map Kit API-key/AppKey flow does **not** apply to the HarmonyOS `MapComponent` | fingerprint must match; debug builds must be manually signed and the Profile re-applied after enabling the service | none (toggle) |
+| 6 | Account one-tap login (Account Kit) | AGC unified entitlement entry (我的项目 > project > app > 华为账号服务 / API管理) | apply for the one-tap scope `quickLoginAnonymousPhone` (entitlement name quickLoginMobilePhone); the shell requests it (with `permissions=['serviceauthcode']`) and degrades when it is not approved | fingerprint match; approval can take up to ~24 h to take effect | eligible apps are approved instantly (old flow: days) |
+| 7 | Account Client ID | 项目设置 > 常规 > 应用 > Client ID | the shell's request does not reference one today; if the SDK in use asks for it, add `module.json5` metadata `client_id` (the current shell template does not carry it) | - | none |
+| 8 | Account server exchange | AGC 项目设置 > 常规 > 应用 > Client Secret | the app's server exchanges the `authorizationCode` for the real phone (`quickLoginAnonymousPhone` is only the anonymous number shown in the UI) | - | none |
+| 9 | Live View (实况窗权益) | 我的项目 > 项目 > 增长 > 推送服务 > 实况窗 | apply for the entitlement for the `TIMER` scene (tool apps; scene whitelist); Push service enabled first | entitlement carried by the Profile | manual review (~5 working days; formal approval expects an on-shelf app) |
+| 10 | Live View device switch | (device) 设置 > 应用和元服务 > 应用名 > 实况窗 / 通知和状态栏 | the user's live view switch must be on; local create/update needs the app in the foreground | - | none |
+| 11 | Share (Share Kit) | - | none: the system share panel (`systemShare`) has no AGC service and no `module.json5` permission | - | none |
+| 12 | Scan (Scan Kit, default UI) | - | none: `scanBarcode.startScanForResult` (the shell's path) needs no camera permission; a custom scan UI would add `ohos.permission.CAMERA` | - | none |
+| 13 | TTS (CoreSpeechKit, planned) | - | no AGC entitlement for the kit itself; device-side speech capability is the gate | - | none |
+
+The per-kit error-code map stays in the table above. A `1000900010`/`1000900012` after enabling
+usually means the Profile was not re-applied or the signing fingerprint does not match;
+`1001502014` and `1003500005` mean the scope/entitlement is not approved yet. When the Map
+overlay is built but the service/fingerprint is wrong, the shell still reports
+`IsOverlayAvailable=true` (the module compiled) while no `Ready` event fires and `MapOverlay.ets`
+logs the initialization failure.
 
 Verification without an HMS device: `test/maui-platform-verify` pins the shell probe/sink shape,
 the overlay module and its flavor gate, the host/managed contract, the off-device degradation
