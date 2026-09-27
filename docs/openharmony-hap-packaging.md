@@ -860,6 +860,61 @@ defined inline with `RoslynCodeTaskFactory` (task-assembly migration, audit V8):
   the six `UsingTask` entries and the absence of inline code, and its T2/T3/T5 fixtures run the
   compiled tasks through the real pack targets.
 
+## Development loop: devloop.sh
+
+Hot Reload over the IDE debug bridge is not available here: the hdc device policy restricts the
+debug channel (`hdc install` / `aa start` / `hilog` still work, the IDE's attach path does not).
+The working replacement is an incremental deploy loop - one command publishes the app, re-signs
+the hap when the device is not bound to the SDK's profile, installs it, starts `EntryAbility`
+and tails the filtered hilog. `scripts/devloop.sh` is that loop; `scripts/selftest-devloop.sh`
+drives it against stub `hdc`/`dotnet`/signer binaries with no device (86 checks).
+
+```sh
+# one round: publish -> install the newest signed hap -> start -> 5 s filtered hilog
+sh scripts/devloop.sh
+
+# incremental publish only, with extra MSBuild properties passed through verbatim
+sh scripts/devloop.sh build -p:OpenHarmonyBundleName=com.example.hellomauiapp
+
+# re-sign the -unsigned.hap with external material and deploy the signed hap
+sh scripts/devloop.sh all --sign --sign-profile dev.p7b --sign-key dev.p12 \
+    --sign-alias key0 --sign-cert chain.cer --sign-pwd-file ~/.ohos/pwd --expect-udid <UDID>
+
+# edit loop: republish + reinstall on every source change (no inotify; find -newer polling)
+sh scripts/devloop.sh --watch --interval 3
+
+# plan only (no dotnet/hdc/device needed)
+sh scripts/devloop.sh --dry-run --sign --sign-profile dev.p7b --sign-key dev.p12 --sign-alias key0
+```
+
+| command | what it runs |
+|---|---|
+| `build` | `dotnet publish <project> -f net11.0-openharmony26.0 -r openharmony-arm64 -c Release` (+ `-p:` pass-through) |
+| `sign` | `scripts/sign-for-device.sh --external ...` on the newest `*-unsigned.hap` (needs `--sign` + material) |
+| `install` | `hdc install -r <hap>` (newest signed hap in the publish output, or a `--hap` list) |
+| `start` | `hdc shell aa start -a EntryAbility -b <bundle>` after the bundleName whitelist check |
+| `logs` | `hdc shell hilog` filtered with tester-run's `FILTER_RE` (`--follow` stays attached) |
+| `all` | build -> (sign) -> install -> start -> logs (default) |
+
+Key flags: `--project`, `-f`/`-r`/`-c`, `-p:`/`--property`, `--hap`, `--bundle`, `--device`,
+`--out-dir`, `--watch`/`--interval`, `--follow`/`--log-seconds`/`--filter`, `--dry-run`.
+Exit codes match tester-run.sh: 0 = ok, 1 = a step failed, 2 = usage error, 3 = no hdc/device.
+
+Division of labour with `tester-run.sh`:
+
+- `devloop.sh` is the developer edit loop: incremental publish, install, start, filtered hilog.
+  It never uninstalls, never verifies a kit and produces no archive; `--watch` reruns the selected
+  command on source changes (bin/obj/.git pruned, so a rebuild cannot retrigger itself), and a
+  failed round keeps polling instead of killing the watcher.
+- `tester-run.sh` is the evidence round for a hand-off: kit verification, capture windows
+  (hilog + kmsg), probes, device/payload/ELF-signing evidence and the `tester-report-*.tar.gz`
+  archive. Use it when someone else has to read the result; use `devloop.sh` while editing.
+- Both share the same device-safety posture: the bundleName whitelist (dotted, letter-first
+  `[A-Za-z0-9_]`) gates every `aa start`, missing hdc/device refuses the device steps (without
+  `--dry-run`), and paths are treated as space-bearing. `--sign` reuses
+  `sign-for-device.sh --external`, so the p12 password goes through its file/interactive path and
+  never enters argv or logs.
+
 ## Known follow-ups (scheduled)
 
 - **Functional clean regression**: the FileWrites registration is gated statically (the interaction
