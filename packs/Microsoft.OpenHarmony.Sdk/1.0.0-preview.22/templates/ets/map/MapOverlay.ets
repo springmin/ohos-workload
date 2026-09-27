@@ -1,20 +1,27 @@
-// Map Kit overlay module (R2-3 option (a), 2026-09-26).
+// Map Kit overlay module (R2-3 option (a), 2026-09-26; static-registration fix, MAPFIX 2026-09-28).
 //
 // This file is the only place that names the MapComponent ArkUI component, whose declaration
 // exists in the HarmonyOS SDK (hms/ets) but not in the OpenHarmony SDK. The default shell build
 // therefore never copies or compiles it; scripts/build-arkts-shell.sh picks it up only in the
-// ARKTS_SDK_FLAVOR=harmony branch, next to pages/Index.ets. Index.ets pulls the compiled module
-// in through a dynamic import whose specifier stays in a variable ('./map/MapOverlay') and casts
-// the resolved value to its local HmsMapOverlayModule/HmsMapOverlayProxy interfaces, so:
-//   * the default OpenHarmony SDK build stays free of the component declaration and answers
-//     capability bit 1 = 0 (the overlay module does not resolve and the Map sink answers -1);
-//   * the harmony build compiles this file against the real kit types and the overlay lights up
-//     on a device whose runtime provides @kit.MapKit (plus the AGC map service AppKey).
+// ARKTS_SDK_FLAVOR=harmony branch, next to pages/Index.ets, and its patch_harmony_index_ets step
+// rewrites the project's Index.ets copy to import this module statically. The static import is
+// what puts the module into hvigor's compile graph: the variable-specifier dynamic import
+// ('./map/MapOverlay') never registers a modules.abc record - HCI-HARMONY-CI measured a
+// copied-but-uncompiled overlay on 2026-09-28 - and a missing record only yields the capability
+// bit 1 = 0 degradation. Index.ets keeps the dynamic import for the default flavor, so:
+//   * the default OpenHarmony SDK build stays free of the component declaration, its abc stays
+//     byte-identical, and it answers capability bit 1 = 0 (the module has no record and the Map
+//     sink answers -1);
+//   * the harmony build compiles this file against the real kit types (probeMapOverlay takes the
+//     statically imported MapOverlayProxy) and the overlay lights up on a device whose runtime
+//     provides @kit.MapKit (plus the AGC map service AppKey).
 //
 // The proxy owns the map view lifecycle: Index.ets creates one when the managed side asks for the
 // overlay (Map sink op 1), renders proxy.nodeController through NodeContainer, and calls
 // setRegion/addMarker/dispose for the remaining ops. The module never talks to the host directly:
 // its MapOverlayEvents callbacks are the shell's, which forwards them through the Map sink.
+// (The static import in the harmony build's Index.ets copy is injected by the build script; see
+// the note above.)
 import { MapComponent, map, mapCommon } from '@kit.MapKit';
 import { AsyncCallback, BusinessError } from '@kit.BasicServicesKit';
 import { BuilderNode, FrameNode, NodeController, UIContext } from '@kit.ArkUI';
@@ -45,6 +52,16 @@ export interface MapOverlayEvents {
   onCameraIdle: (latitude: number, longitude: number, zoom: number) => void;
 }
 
+// Fallback camera for the first MapComponent build when the shell created the proxy before a
+// managed set-region op arrived (the R2-3 Index.ets call site passes the UIContext and events
+// only, so the proxy's region argument is optional). Beijing; the next managed op 5 replaces it
+// without animation.
+const DEFAULT_MAP_REGION: MapOverlayRegion = {
+  latitude: 39.9,
+  longitude: 116.4,
+  zoom: 12
+};
+
 // Builder parameter object. An explicit interface (not an inline literal) is required by the
 // ArkTS linter for @Builder parameters, and keeping it opaque lets the builder body stay free of
 // proxy state.
@@ -54,8 +71,8 @@ interface MapOverlayViewParams {
 }
 
 // The managed surface sits above the XComponent/ContentSlot stack; the map view fills it. The
-// camera position is required by MapOptions, so the proxy always supplies one (the managed create
-// op carries the initial region; the fallback is the documented demo default).
+// camera position is required by MapOptions, so the proxy always supplies one (a managed op 5
+// region when one already arrived, else DEFAULT_MAP_REGION).
 @Builder
 function mapOverlayView(params: MapOverlayViewParams): void {
   MapComponent({ mapOptions: params.options, mapCallback: params.callback })
@@ -66,7 +83,9 @@ function mapOverlayView(params: MapOverlayViewParams): void {
 // NodeController for the NodeContainer Index.ets renders. makeNode builds the MapComponent
 // through a BuilderNode the first time the container mounts; the controller callback (see
 // MapOverlayProxy.attach) reports readiness, and aboutToDisappear releases the BuilderNode once
-// the container leaves the tree.
+// the container leaves the tree. The base NodeController constructor takes no arguments - the
+// 2026-09-28 static-link probe failed with 10505001 "Expected 0 arguments, but got 1" while the
+// proxy passed the UIContext here - the UIContext arrives in makeNode instead.
 class MapOverlayNode extends NodeController {
   private proxy: MapOverlayProxy | undefined = undefined;
   private built: BuilderNode<[MapOverlayViewParams]> | undefined = undefined;
@@ -129,10 +148,15 @@ export class MapOverlayProxy {
   // on a click, so the id the app passed in is recovered through this table.
   private markerIds: Map<string, string> = new Map();
 
-  constructor(uiContext: UIContext, events: MapOverlayEvents, region: MapOverlayRegion) {
+  // Index.ets constructs the proxy as new proxyCtor(uiContext, events) through the ESObject
+  // module boundary (HmsMapOverlayProxy in the page), so uiContext stays in the signature:
+  // argument positions are the contract, and the NodeController takes its UIContext in makeNode.
+  // region is optional because that call site predates a managed create-region payload: until
+  // op 5 (set region) arrives, the first MapComponent builds on DEFAULT_MAP_REGION.
+  constructor(uiContext: UIContext, events: MapOverlayEvents, region?: MapOverlayRegion) {
     this.events = events;
-    this.region = region;
-    const node = new MapOverlayNode(uiContext);
+    this.region = region !== undefined ? region : DEFAULT_MAP_REGION;
+    const node = new MapOverlayNode();
     node.setProxy(this);
     this.node = node;
   }

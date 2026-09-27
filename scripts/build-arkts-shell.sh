@@ -47,24 +47,32 @@
 # the HMS-kit shell variant (Share/Scan/... need the hms/ets declarations the OpenHarmony SDK does
 # not ship). It is the only branch that can compile the HMS Kit code paths: a literal
 # import('@kit.ShareKit') is a hard ArkTS compile error on the OpenHarmony SDK (KIT-IMPL probe a,
-# 2026-09-25). The branch changes four things and nothing else: the SDK root comes from
+# 2026-09-25). The branch changes five things and nothing else: the SDK root comes from
 # ARKTS_HARMONY_SDK_ROOT (or DEVECO_SDK_HOME), runtimeOS is HarmonyOS, compatibleSdkVersion
 # defaults to 6.1.0(23) - the value the device-side DevEco build used to emit the accepted
-# 13.0.1.0 abc (MyApplication, 2026-09-21) - and the UI variant additionally copies the Map
+# 13.0.1.0 abc (MyApplication, 2026-09-21) - the UI variant additionally copies the Map
 # overlay module (ets/map/MapOverlay.ets, R2-3 2026-09-26: the only file that names MapComponent,
-# whose ArkUI declaration also lives in hms/ets). The default flavor never compiles that module,
-# so the page's dynamic import of './map/MapOverlay' fails at runtime there and the Map sink
-# reports capability bit 1 = 0. The abc header gate (ARKTS_MAX_BC_VERSION 13.0.1.0) is unchanged,
-# so a HarmonyOS build that raises es2abc above the device limit still fails here. The branch is
-# build-verified 2026-09-27 with the DevEco command-line-tools bundle 6.0.1.251 (HarmonyOS 6.0.1
-# Release / API 21): ui abc 263,784 B / abc version 13.0.1.0 / 0 ArkTS errors. The hvigor and the
-# SDK must match: the pinned 6.26.4 is a DevEco-26 toolchain and rejects a 6.0/6.1 SDK
-# (00303313/00303312), so drive the SDK's own hvigor through the HVIGOR_JS override and set
+# whose ArkUI declaration also lives in hms/ets), and the UI variant's Index.ets copy is rewritten
+# by patch_harmony_index_ets() to import that module statically. The static import is what puts
+# the overlay into hvigor's compile graph and hence into modules.abc (MAPFIX 2026-09-28;
+# HCI-HARMONY-CI measured that the variable-specifier dynamic import the page keeps never
+# registered a record, so a copied-but-uncompiled overlay only ever answered capability bit 1 = 0).
+# The emitted abc is gated: the appended check requires the MapOverlay module record and its probe
+# symbols in every harmony ui build, and --check-overlay-abc exposes the same gate offline. The
+# default flavor never compiles that module and its abc stays byte-identical, so the page's
+# dynamic import of './map/MapOverlay' fails at runtime there and the Map sink reports capability
+# bit 1 = 0. The abc header gate (ARKTS_MAX_BC_VERSION 13.0.1.0) is unchanged, so a HarmonyOS
+# build that raises es2abc above the device limit still fails here. The branch is build-verified
+# 2026-09-27 with the DevEco command-line-tools bundle 6.0.1.251 (HarmonyOS 6.0.1 Release /
+# API 21) and re-verified 2026-09-28 with the overlay compiled in. The hvigor and the SDK must
+# match: the pinned 6.26.4 is a DevEco-26 toolchain and rejects a 6.0/6.1 SDK (00303313/00303312),
+# so drive the SDK's own hvigor through the HVIGOR_JS override and set
 # ARKTS_MODEL_VERSION/ARKTS_COMPATIBLE_SDK_VERSION to values it supports. scripts/
 # setup-harmony-sdk.sh obtains or mocks an SDK; docs/openharmony-hap-packaging.md "HarmonyOS SDK
 # branch" has the two routes, the tester recipe and the AGC checklist.
 # --check-sources, --check-pack-abc, --install-packs, --check-tgz, --check-abc,
-# --check-bc-version, --print-config, --diagnose-log <file>, --check-project-deps <dir> and
+# --check-bc-version, --check-overlay-abc, --patch-harmony-index, --print-config,
+# --diagnose-log <file>, --check-project-deps <dir> and
 # --scaffold-only <dir> expose the gates, the flavor resolution and the abc ceiling to
 # scripts/selftest-build-arkts-shell.sh without node, hvigor or an SDK.
 if [ -z "${BASH_VERSION:-}" ] && command -v bash >/dev/null 2>&1; then
@@ -508,6 +516,76 @@ print('    payload-in-libs probe (dotnet-payload/bundleCodeDir) and the dotnet.z
 PY
 }
 
+# ---- harmony overlay registration (MAPFIX 2026-09-28) ------------------------------------
+# The harmony UI build compiles ets/map/MapOverlay.ets against the HMS kit types, but copying the
+# file is not enough: hvigor only emits a modules.abc record for sources that static imports
+# reach from an entry module. Index.ets keeps its dynamic import (whose specifier stays in a
+# variable, so the default flavor's abc stays byte-identical and free of the MapComponent
+# declaration); the harmony branch instead rewrites its project copy to import the module
+# statically. patch_harmony_index_ets applies that rewrite and fails when either anchor is
+# missing, so a future Index.ets refactor cannot silently drop the overlay again.
+patch_harmony_index_ets() { # <Index.ets>
+    python3 - "$1" <<'PY'
+import sys
+path = sys.argv[1]
+import_anchor = "import { util } from '@kit.ArkTS';"
+static_import = "import { MapOverlayProxy as HmsMapOverlayProxyImpl } from '../map/MapOverlay';"
+probe_anchor = "    const overlayModule: string = './map/MapOverlay';\n    try {"
+probe_patch = """\
+    // Static registration injected by scripts/build-arkts-shell.sh for the harmony flavor: the
+    // import at the top of this file puts MapOverlay.ets into hvigor's compile graph, so
+    // modules.abc carries its <bundle>/entry/ets/map/MapOverlay record (the variable-specifier
+    // dynamic import below never did; HCI-HARMONY-CI, 2026-09-28).
+    const staticallyLinked: ESObject = HmsMapOverlayProxyImpl;
+    if (staticallyLinked !== undefined) {
+      this.hmsMapOverlayModule = { MapOverlayProxy: staticallyLinked };
+      return true;
+    }
+"""
+try:
+    text = open(path, encoding='utf-8').read()
+except OSError as exc:
+    sys.exit('cannot read %s (%s)' % (path, exc))
+for anchor, what in ((import_anchor, 'the @kit.ArkTS import line'),
+                     (probe_anchor, 'the probeMapOverlay dynamic-import block')):
+    count = text.count(anchor)
+    if count != 1:
+        sys.exit('ERROR: the harmony overlay patch anchor (%s) appears %d times in %s, expected 1; '
+                 'update patch_harmony_index_ets in scripts/build-arkts-shell.sh' % (what, count, path))
+text = text.replace(import_anchor, import_anchor + '\n' + static_import, 1)
+text = text.replace(probe_anchor, probe_patch + probe_anchor, 1)
+open(path, 'w', encoding='utf-8').write(text)
+print('    harmony overlay static registration injected: %s' % path)
+PY
+}
+
+# check_harmony_overlay_abc <abc>: the compiled harmony ui shell must carry the MapOverlay module
+# record and the symbols of its compiled code (string + module-table double evidence). When the
+# static registration regresses, the abc still compiles and passes every payload gate but silently
+# answers capability bit 1 = 0; this gate (and its --check-overlay-abc twin) fails instead.
+# rc=0 present, 1 missing (named on stdout), 2 unreadable.
+check_harmony_overlay_abc() { # <abc>
+    python3 - "$1" <<'PY'
+import sys
+abc = sys.argv[1]
+try:
+    data = open(abc, 'rb').read()
+except OSError as exc:
+    print('cannot read %s (%s)' % (abc, exc))
+    sys.exit(2)
+missing = []
+if b'entry/ets/map/MapOverlay' not in data:
+    missing.append('the MapOverlay module record (entry/ets/map/MapOverlay)')
+for symbol in (b'mapOverlayView', b'markerClick', b'cameraIdle'):
+    if symbol not in data:
+        missing.append('the overlay symbol %s' % symbol.decode())
+if missing:
+    print('%s lacks %s' % (abc, ', '.join(missing)))
+    sys.exit(1)
+print('    MapOverlay module record and probe symbols are present in %s' % abc)
+PY
+}
+
 if [ "${1:-}" = "--check-abc" ]; then
     [ -n "${2:-}" ] || die "usage: $0 --check-abc <modules.abc>"
     check_abc_contract "$2" && _abc_rc=0 || _abc_rc=$?
@@ -516,6 +594,26 @@ if [ "${1:-}" = "--check-abc" ]; then
         1) exit 1 ;;
         *) exit 2 ;;
     esac
+fi
+
+# --check-overlay-abc <abc>: run just the harmony overlay gate and exit. No node, hvigor or SDK
+# needed; scripts/selftest-build-arkts-shell.sh drives its positive and negative cases.
+if [ "${1:-}" = "--check-overlay-abc" ]; then
+    [ -n "${2:-}" ] || die "usage: $0 --check-overlay-abc <modules.abc>"
+    check_harmony_overlay_abc "$2" && _ov_rc=0 || _ov_rc=$?
+    case "$_ov_rc" in
+        0) exit 0 ;;
+        1) exit 1 ;;
+        *) exit 2 ;;
+    esac
+fi
+
+# --patch-harmony-index <Index.ets>: apply only the harmony static registration to a page source
+# (in place) and exit - the offline check for the rewrite the harmony UI build runs.
+if [ "${1:-}" = "--patch-harmony-index" ]; then
+    [ -n "${2:-}" ] || die "usage: $0 --patch-harmony-index <Index.ets>"
+    patch_harmony_index_ets "$2" || die "the harmony overlay static registration failed (see above)"
+    exit 0
 fi
 
 # check_bc_version <abc> [max-version]: read the abc version from the fixed header (8 B magic
@@ -1077,14 +1175,19 @@ if [ "$VARIANT" = ui ]; then
     mkdir -p "$PROJ/entry/src/main/ets/pages"
     cp "$TPL/ets/entryability/EntryAbility.ui.ets" "$PROJ/entry/src/main/ets/entryability/EntryAbility.ets"
     cp "$TPL/ets/pages/Index.ets" "$PROJ/entry/src/main/ets/pages/Index.ets"
-    # Map overlay (R2-3): ets/map/MapOverlay.ets names the MapComponent ArkUI component, which
-    # only the HarmonyOS SDK declares (hms/ets), so only the harmony branch copies it into the
-    # project. The default OpenHarmony SDK build must not compile it: the page's dynamic import
-    # then fails at runtime (the module has no record in the abc), the Map sink reports
-    # capability bit 1 = 0 and the managed side keeps the documented degradation.
+    # Map overlay (R2-3 + MAPFIX): ets/map/MapOverlay.ets names the MapComponent ArkUI component,
+    # which only the HarmonyOS SDK declares (hms/ets), so only the harmony branch copies it into
+    # the project. Copying alone never compiled it (no modules.abc record; HCI-HARMONY-CI
+    # 2026-09-28), so the same branch injects the static import into its Index.ets copy: the
+    # compile graph then registers <bundle>/entry/ets/map/MapOverlay and probeMapOverlay takes
+    # the statically imported proxy. The default OpenHarmony SDK build must not compile it: the
+    # page's dynamic import fails at runtime (no module record), the Map sink reports capability
+    # bit 1 = 0 and the managed side keeps the documented degradation.
     if [ "$SDK_FLAVOR" = harmony ]; then
         mkdir -p "$PROJ/entry/src/main/ets/map"
         cp "$TPL/ets/map/MapOverlay.ets" "$PROJ/entry/src/main/ets/map/MapOverlay.ets"
+        patch_harmony_index_ets "$PROJ/entry/src/main/ets/pages/Index.ets" \
+            || die "cannot register ets/map/MapOverlay.ets in the harmony compile graph (see the log above)"
     fi
     OUT_NAME=modules.abc
 else
@@ -1198,6 +1301,14 @@ info "ArkTS shell compiled ($VARIANT): $OUT_FILE ($(stat -c%s "$OUT_FILE") bytes
 # template) still compiles and passes the version check but would always take the extraction
 # path, so fail here; --check-abc exposes the same check to the selftest.
 check_abc_contract "$OUT_FILE" || die "the compiled shell lacks the payload-in-libs probe; rebuild from packs/.../templates/ets/entryability"
+# HarmonyOS-flavor overlay gate (MAPFIX 2026-09-28): the injected static import must have put
+# MapOverlay.ets into modules.abc. The same gate runs in CI
+# (.github/workflows/harmony-flavor.yml, HARMONY_REQUIRE_MAP_OVERLAY=1) and offline through
+# --check-overlay-abc; without it a regression compiles clean but silently answers bit 1 = 0.
+if [ "$SDK_FLAVOR" = harmony ] && [ "$VARIANT" = ui ]; then
+    check_harmony_overlay_abc "$OUT_FILE" \
+        || die "the harmony ui abc does not carry the MapOverlay module record/symbols (did patch_harmony_index_ets run? see the log above)"
+fi
 # Variant/provenance gate: when both variant artifacts are present, the freshly built abc must
 # match the installed packs byte-for-byte and carry the per-variant literals (run
 # ARKTS_SHELL_VARIANT=headless too to complete the pair).
