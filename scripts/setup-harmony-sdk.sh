@@ -155,7 +155,7 @@ PY
     fi
 }
 
-download_mock_sdk() {
+download_clt_sdk() {
     _dir="$1"; _url="$2"; _sha="$3"; _size="$4"
     mkdir -p "$_dir"
     _tgz="$_dir/commandline-tools-linux-x64.zip"
@@ -229,7 +229,7 @@ case "$MODE" in
     download)
         [ -n "$DIR" ] || DIR=.harmony-sdk
         [ "$SIZE" != "$CLT_SIZE_DEFAULT" ] || [ "$URL" = "$CLT_URL_DEFAULT" ] || SIZE=""
-        download_mock_sdk "$DIR" "$URL" "$SHA" "$SIZE"
+        download_clt_sdk "$DIR" "$URL" "$SHA" "$SIZE"
         ;;
     *)
         usage >&2
