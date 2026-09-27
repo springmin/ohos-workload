@@ -96,6 +96,40 @@ public sealed class OpenHarmonyAppContext
     public long NodeContent { get; init; }
 }
 
+/// <summary>
+/// A deep-link/activation request forwarded by the ArkTS shell: the ability's want uri and
+/// action (onCreate for the cold-start want, onNewWant for a warm activation), the want
+/// parameters serialized as a JSON object inside <see cref="Parameters"/>, the https app-link
+/// hosts the packaged app descriptor allows (empty = none), and a monotonically increasing
+/// sequence the shell assigns per want so consumers can drop duplicates and stale deliveries.
+/// </summary>
+public sealed class OpenHarmonyActivationEventArgs
+{
+    public OpenHarmonyActivationEventArgs(string uri, string action, string parameters, string[] linkHosts, long sequence)
+    {
+        Uri = uri ?? string.Empty;
+        Action = action ?? string.Empty;
+        Parameters = parameters ?? string.Empty;
+        LinkHosts = linkHosts ?? Array.Empty<string>();
+        Sequence = sequence;
+    }
+
+    /// <summary>The want uri (app://host/path?query or an https app link); empty for a plains action.</summary>
+    public string Uri { get; }
+
+    /// <summary>The want action (for example ohos.want.action.viewData); may be empty.</summary>
+    public string Action { get; }
+
+    /// <summary>The want parameters as a JSON object string ({} when absent or unserializable).</summary>
+    public string Parameters { get; }
+
+    /// <summary>https app-link hosts the host declared as allowed; empty means no https links.</summary>
+    public string[] LinkHosts { get; }
+
+    /// <summary>Shell-assigned want sequence (0 when the shell did not report one).</summary>
+    public long Sequence { get; }
+}
+
 /// <summary>Bridge between the native OpenHarmony shell and the managed application.</summary>
 public static partial class OpenHarmonyBridge
 {
@@ -128,6 +162,9 @@ public static partial class OpenHarmonyBridge
 
     [LibraryImport(HostLibrary, EntryPoint = "ohos_host_register_text_submitted")]
     private static partial void RegisterTextSubmittedNative(IntPtr callback);
+
+    [LibraryImport(HostLibrary, EntryPoint = "ohos_host_register_activation")]
+    private static partial void RegisterActivationNative(IntPtr callback);
 
     [LibraryImport(HostLibrary, EntryPoint = "ohos_host_keystore_register_result")]
     private static partial void RegisterKeystoreResultNative(IntPtr callback);
@@ -214,6 +251,8 @@ public static partial class OpenHarmonyBridge
     private delegate void NativePickerResultDelegate(int requestId, int rc, IntPtr nameUtf8, IntPtr dataUtf8);
     [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
     private delegate void NativeWebEventDelegate(IntPtr stateUtf8, IntPtr urlUtf8);
+    [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+    private delegate void NativeActivationDelegate(IntPtr payloadUtf8);
 
     private static readonly object s_sync = new();
     private static OpenHarmonyAppContext? s_context;
@@ -232,7 +271,14 @@ public static partial class OpenHarmonyBridge
     private static unsafe IntPtr s_keystoreResultThunk = (IntPtr)(delegate* unmanaged[Cdecl]<int, int, IntPtr, void>)&OnKeystoreResultNative;
     private static unsafe IntPtr s_pickerResultThunk = (IntPtr)(delegate* unmanaged[Cdecl]<int, int, IntPtr, IntPtr, void>)&OnPickerResultNative;
     private static unsafe IntPtr s_webEventThunk = (IntPtr)(delegate* unmanaged[Cdecl]<IntPtr, IntPtr, void>)&OnWebEventNative;
+    private static unsafe IntPtr s_activationThunk = (IntPtr)(delegate* unmanaged[Cdecl]<IntPtr, void>)&OnActivationNative;
     private static readonly List<OpenHarmonyLifecycleEvent> s_pending = new();
+    // Activations that arrived before any subscriber: replayed in order by the Activation
+    // add accessor. The host can deliver the cold-start want while the application assembly
+    // is still loading, so dropping them is not an option; the cap drops the oldest (the
+    // newest want supersedes) instead of growing without bound.
+    private static readonly List<OpenHarmonyActivationEventArgs> s_pendingActivations = new();
+    private const int PendingActivationLimit = 8;
     private static Action<OpenHarmonySurfaceInfo>? s_surfaceHandlers;
     private static Action<OpenHarmonyTouchEventArgs>? s_touchHandlers;
     private static Action<OpenHarmonyFrameEventArgs>? s_frameHandlers;
@@ -243,6 +289,7 @@ public static partial class OpenHarmonyBridge
     private static OpenHarmonySurfaceInfo? s_surface;
     private static Action<OpenHarmonyAppContext>? s_initializedHandlers;
     private static Action<OpenHarmonyLifecycleEvent>? s_lifecycleHandlers;
+    private static Action<OpenHarmonyActivationEventArgs>? s_activationHandlers;
 
     /// <summary>Raised when the shell reports a pinch (phase, scale, centre x, centre y).</summary>
     public static event Action<int, double, float, float>? Pinch;
@@ -697,6 +744,76 @@ public static partial class OpenHarmonyBridge
         }
     }
 
+    /// <summary>
+    /// Raised for every want the shell forwards: the cold-start want captured by the ability's
+    /// onCreate before startApp, and every later onNewWant of the running instance. Late
+    /// subscribers receive the activations that arrived before them, in order; the payload is
+    /// the shell's activation JSON (see <see cref="CompleteActivation"/>). A handler sees each
+    /// want once, but the shell, not this bridge, is responsible for want sequence numbers.
+    /// </summary>
+    public static event Action<OpenHarmonyActivationEventArgs>? Activation
+    {
+        add
+        {
+            List<OpenHarmonyActivationEventArgs> replay;
+            lock (s_sync)
+            {
+                s_activationHandlers += value;
+                replay = new List<OpenHarmonyActivationEventArgs>(s_pendingActivations);
+                s_pendingActivations.Clear();
+            }
+            foreach (OpenHarmonyActivationEventArgs activation in replay)
+            {
+                value(activation);
+            }
+        }
+        remove
+        {
+            lock (s_sync)
+            {
+                s_activationHandlers -= value;
+            }
+        }
+    }
+
+    /// <summary>
+    /// Parses one activation payload and raises <see cref="Activation"/> (buffering it for a
+    /// late subscriber when none is attached yet). The payload is the JSON the shell sends
+    /// through host.notifyActivation: uri, action, parameters (a JSON object string),
+    /// linkHosts and sequence. A malformed payload is dropped with a status line, never an
+    /// exception on the native callback path. Also the managed test seam for the transport.
+    /// </summary>
+    public static void CompleteActivation(string payloadJson)
+    {
+        OpenHarmonyActivationEventArgs? activation = ParseActivation(payloadJson);
+        if (activation is null)
+        {
+            WriteStatus("activation ignored: malformed payload");
+            return;
+        }
+        DispatchActivation(activation);
+    }
+
+    private static void DispatchActivation(OpenHarmonyActivationEventArgs activation)
+    {
+        Action<OpenHarmonyActivationEventArgs>? handlers;
+        lock (s_sync)
+        {
+            handlers = s_activationHandlers;
+            if (handlers is null)
+            {
+                if (s_pendingActivations.Count >= PendingActivationLimit)
+                {
+                    s_pendingActivations.RemoveAt(0);
+                }
+                s_pendingActivations.Add(activation);
+                return;
+            }
+        }
+        WriteStatus($"activation: seq={activation.Sequence} uri='{FlattenCallbackMessage(activation.Uri)}' action='{FlattenCallbackMessage(activation.Action)}'");
+        handlers(activation);
+    }
+
     public static OpenHarmonyAppContext? Context
     {
         get { lock (s_sync) { return s_context; } }
@@ -892,6 +1009,11 @@ public static partial class OpenHarmonyBridge
                 RegisterKeystoreResultNative(s_keystoreResultThunk);
                 RegisterPickerResultNative(s_pickerResultThunk);
                 RegisterWebEventNative(s_webEventThunk);
+                // Deep-link transport: the shell hands the cold-start want over before startApp
+                // and every onNewWant while the app runs; an older host library without the
+                // export keeps working (no activation delivery, one status line).
+                RegisterActivationNative(s_activationThunk);
+                RegisterActivationNative(s_activationThunk);
             }
             catch (Exception ex)
             {
@@ -1070,6 +1192,38 @@ public static partial class OpenHarmonyBridge
         string.Equals(a.AbilityName, b.AbilityName, StringComparison.Ordinal) &&
         a.NodeContent == b.NodeContent;
 
+    /// <summary>
+    /// Parses the shell's activation payload through the source-generated JSON context (the
+    /// reflection-based deserializer is disabled assembly-wide). Returns null for an empty or
+    /// malformed payload; a missing field stays empty rather than failing the whole delivery.
+    /// </summary>
+    private static OpenHarmonyActivationEventArgs? ParseActivation(string? payloadJson)
+    {
+        if (string.IsNullOrEmpty(payloadJson))
+        {
+            return null;
+        }
+        ActivationJson? parsed;
+        try
+        {
+            parsed = JsonSerializer.Deserialize(payloadJson, HostJsonContext.Default.ActivationJson);
+        }
+        catch (JsonException)
+        {
+            return null;
+        }
+        if (parsed is null)
+        {
+            return null;
+        }
+        return new OpenHarmonyActivationEventArgs(
+            parsed.Uri ?? string.Empty,
+            parsed.Action ?? string.Empty,
+            parsed.Parameters ?? string.Empty,
+            parsed.LinkHosts ?? Array.Empty<string>(),
+            parsed.Sequence);
+    }
+
     private static bool IsEmptyContext(OpenHarmonyAppContext context) =>
         string.IsNullOrEmpty(context.AppDir) &&
         string.IsNullOrEmpty(context.FilesDir) &&
@@ -1234,6 +1388,20 @@ public static partial class OpenHarmonyBridge
     }
 
     [UnmanagedCallersOnly(CallConvs = new[] { typeof(CallConvCdecl) })]
+    private static void OnActivationNative(IntPtr payloadUtf8)
+    {
+        try
+        {
+            string payload = payloadUtf8 == IntPtr.Zero ? string.Empty : Marshal.PtrToStringUTF8(payloadUtf8) ?? string.Empty;
+            CompleteActivation(payload);
+        }
+        catch (Exception ex)
+        {
+            ReportCallbackFailure("activation", ex);
+        }
+    }
+
+    [UnmanagedCallersOnly(CallConvs = new[] { typeof(CallConvCdecl) })]
     private static void OnWebEventNative(IntPtr stateUtf8, IntPtr urlUtf8)
     {
         try
@@ -1369,6 +1537,16 @@ public static partial class OpenHarmonyBridge
         [JsonPropertyName("nodeContent")] public long NodeContent { get; set; }
     }
 
+    /// <summary>Payload schema of host.notifyActivation (see <see cref="CompleteActivation"/>).</summary>
+    internal sealed class ActivationJson
+    {
+        [JsonPropertyName("uri")] public string? Uri { get; set; }
+        [JsonPropertyName("action")] public string? Action { get; set; }
+        [JsonPropertyName("parameters")] public string? Parameters { get; set; }
+        [JsonPropertyName("linkHosts")] public string[]? LinkHosts { get; set; }
+        [JsonPropertyName("sequence")] public long Sequence { get; set; }
+    }
+
     /// <summary>
     /// Source-generated serialization for the native context payload (FIX-INTEROP #3). The
     /// assembly sets JsonSerializerIsReflectionEnabledByDefault=false, so a reflection-based
@@ -1376,6 +1554,7 @@ public static partial class OpenHarmonyBridge
     /// time (IL2026/IL3050); every context read goes through this context instead.
     /// </summary>
     [JsonSerializable(typeof(ContextJson))]
+    [JsonSerializable(typeof(ActivationJson))]
     internal sealed partial class HostJsonContext : JsonSerializerContext
     {
     }

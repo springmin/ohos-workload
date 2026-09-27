@@ -21,6 +21,10 @@ const LIFECYCLE_BACKGROUND = 3;
 
 interface AppConfig {
   assembly: string;
+  // https app-link hosts the packaging declared (OpenHarmonyAppLinkHosts -> app.json
+  // linkHosts). The shell forwards the list with every activation; the managed side refuses an
+  // https link whose host is not on it. Absent (older packaging) means no https links.
+  linkHosts?: string[];
 }
 
 // App descriptor decoding (audit ARKTS-S2): the rawfile bytes are UTF-8 JSON. decodeToString is
@@ -215,6 +219,14 @@ async function unpackIfNeeded(zipFd: number, zipOffset: number, zipSize: number,
 
 export default class EntryAbility extends UIAbility {
   private started: boolean = false;
+  // Deep links / activation: the want of this launch captured in onCreate, the latest want that
+  // has not been handed to the host yet, and the activation bookkeeping. The host buffers an
+  // activation that arrives before the managed callback registers, so publishActivation() can
+  // run before startApp and the cold-start want still arrives exactly once.
+  private pendingWant: Want | null = null;
+  private activationReady: boolean = false;
+  private launchSequence: number = 0;
+  private linkHosts: string[] = [];
   // Host-availability guard (device-compat): a libopenharmonyhost.so that fails to load (for
   // example an unresolved DT_NEEDED the HAP loader cannot satisfy) leaves the static import
   // undefined, so every host call is routed through this guard and degrades to a logged
@@ -246,6 +258,9 @@ export default class EntryAbility extends UIAbility {
 
   onCreate(want: Want, launchParam: AbilityConstant.LaunchParam): void {
     hilog.info(DOMAIN, TAG, 'EntryAbility onCreate');
+    // Deep link: remember the launch want before anything asynchronous runs; bootstrap()
+    // hands it to the host before startApp, and onNewWant takes over once it is running.
+    this.pendingWant = want;
     // 0 = create: the ability now exists. The native host queues lifecycle events that arrive
     // before the managed app is up, so sending it here makes Created/Activated (and the later
     // Foreground) reach the managed window in order.
@@ -254,6 +269,53 @@ export default class EntryAbility extends UIAbility {
     });
     this.bootstrap().catch((error: Error) => {
       hilog.error(DOMAIN, TAG, 'bootstrap failed: %{public}s', error.message);
+    });
+  }
+
+  // Warm activation: the ability already runs and the system delivered a new want (app link,
+  // viewData, ...). The payload travels through host.notifyActivation like the cold-start one;
+  // the host delivers it to the managed side (or queues it while the bridge registers), and the
+  // managed layer guarantees order and drops duplicate sequences. A want that lands before
+  // bootstrap() published the cold one replaces the pending slot instead, so the app still sees
+  // exactly one activation.
+  onNewWant(want: Want, launchParam: AbilityConstant.LaunchParam): void {
+    if (!this.activationReady) {
+      this.pendingWant = want;
+      return;
+    }
+    this.publishActivation(want);
+  }
+
+  // Builds the activation JSON the host forwards to the managed side. The payload is opaque to
+  // the host: uri/action come straight from the want, parameters is the want's parameter record
+  // serialized as a JSON string (empty when absent or not serializable) and linkHosts is the
+  // packaging's https allow-list. sequence increases per handed-over want, so a re-delivered or
+  // out-of-order activation is recognizable on the managed side.
+  private buildActivation(want: Want): string {
+    const uri: string = typeof want.uri === 'string' ? want.uri : '';
+    const action: string = typeof want.action === 'string' ? want.action : '';
+    let parameters: string = '';
+    if (want.parameters !== undefined && want.parameters !== null) {
+      try {
+        parameters = JSON.stringify(want.parameters);
+      } catch (parameterError) {
+        hilog.warn(DOMAIN, TAG, 'want parameters are not serializable: %{public}s', (parameterError as Error).message);
+      }
+    }
+    this.launchSequence++;
+    return JSON.stringify({
+      uri: uri,
+      action: action,
+      parameters: parameters,
+      linkHosts: this.linkHosts,
+      sequence: this.launchSequence,
+    });
+  }
+
+  private publishActivation(want: Want): void {
+    const payload: string = this.buildActivation(want);
+    this.hostCall('notifyActivation', typeof host !== 'undefined' && typeof host.notifyActivation === 'function', (): void => {
+      host.notifyActivation(payload);
     });
   }
 
@@ -284,6 +346,7 @@ export default class EntryAbility extends UIAbility {
   private async bootstrap(): Promise<void> {
     const raw = await this.context.resourceManager.getRawFileContent('app.json');
     const config = JSON.parse(decodeUtf8(raw)) as AppConfig;
+    this.linkHosts = Array.isArray(config.linkHosts) ? config.linkHosts : [];
 
     const payloadDir = `${this.context.filesDir}/dotnet`;
     const markerPath = `${this.context.filesDir}/dotnet.marker`;
@@ -325,6 +388,15 @@ export default class EntryAbility extends UIAbility {
       abilityName: this.context.abilityInfo.name,
       nodeContent: 0,
     });
+    // Deep link: hand the cold-start want to the host before startApp. The host queues the
+    // payload when the managed activation callback is not registered yet (the runtime is only
+    // starting) and flushes it on registration, so onCreate's want cannot race the launch. Once
+    // this point is passed, onNewWant delivers directly.
+    if (this.pendingWant !== null) {
+      this.publishActivation(this.pendingWant);
+      this.pendingWant = null;
+    }
+    this.activationReady = true;
     const started: boolean = this.hostCall('startApp', typeof host !== 'undefined' && typeof host.startApp === 'function', (): void => {
       host.startApp(appDir, config.assembly, context);
     });

@@ -2369,6 +2369,76 @@ napi_value NotifyAnimationReduce(napi_env env, napi_callback_info info) {
     return undefined;
 }
 
+// Deep links / activation: the shell hands the cold-start want over through
+// host.notifyActivation(payloadJson) before startApp and forwards every onNewWant the same way
+// while the app runs. The payload stays opaque JSON to the host (uri, action, parameters,
+// linkHosts, sequence); it crosses to the managed side as one string through
+// ohos_host_register_activation. Notifications that arrive before the managed callback is
+// registered are queued in order and flushed on registration (the launch thread needs time to
+// load the runtime), capped at 8 with the oldest dropped, so a stuck consumer cannot grow the
+// host without bound.
+static std::atomic<void (*)(const char*)> g_activation_listener{nullptr};
+static std::mutex g_activation_mutex;
+static std::vector<std::string> g_activation_pending;
+static constexpr size_t kMaxPendingActivations = 8;
+
+extern "C" void ohos_host_register_activation(void* callback) {
+    std::vector<std::string> pending;
+    {
+        std::lock_guard<std::mutex> lock(g_activation_mutex);
+        HostListenerStore(g_activation_listener, callback);
+        pending.swap(g_activation_pending);
+    }
+    auto listener = HostListenerLoad(g_activation_listener);
+    if (listener == nullptr) {
+        return;
+    }
+    // Delivered outside the lock: the managed callback re-enters the host (status writes,
+    // navigation), so holding the queue lock across it could deadlock.
+    for (const std::string& payload : pending) {
+        listener(payload.c_str());
+    }
+}
+
+extern "C" int ohos_host_notify_activation(const char* payload_json) {
+    if (payload_json == nullptr || payload_json[0] == '\0') {
+        return -1;
+    }
+    if (!ControlStringFits(payload_json, "notifyActivation")) {
+        // An over-long activation is dropped (never delivered truncated), matching the control
+        // string contract every shell -> host string obeys.
+        return -1;
+    }
+    void (*listener)(const char*) = nullptr;
+    {
+        std::lock_guard<std::mutex> lock(g_activation_mutex);
+        listener = HostListenerLoad(g_activation_listener);
+        if (listener == nullptr) {
+            if (g_activation_pending.size() >= kMaxPendingActivations) {
+                g_activation_pending.erase(g_activation_pending.begin());
+                OH_LOG_WARN(LOG_APP, "[openharmony-host] notifyActivation: queue over %{public}d, dropped the oldest",
+                            (int)kMaxPendingActivations);
+            }
+            g_activation_pending.emplace_back(payload_json);
+            return 0;
+        }
+    }
+    listener(payload_json);
+    return 1;
+}
+
+napi_value NotifyActivation(napi_env env, napi_callback_info info) {
+    size_t argc = 1;
+    napi_value argv[1] = {nullptr};
+    napi_get_cb_info(env, info, &argc, argv, nullptr, nullptr);
+    std::string payload;
+    if (argc >= 1) payload = GetStringArg(env, argv[0]);
+    int rc = ohos_host_notify_activation(payload.c_str());
+    napi_value result = nullptr;
+    napi_create_int32(env, rc, &result);
+    return result;
+}
+
 // Battery (Basic Services Kit): the ArkTS shell reports the batteryInfo snapshot through
 // host.notifyBattery("soc\tchargeState\tpluggedType\tpresent\tpowerMode") at page start and on
 // the battery/charging/power-save common events. The last payload is remembered and replayed
@@ -3821,6 +3891,7 @@ napi_value Init(napi_env env, napi_value exports) {
         {"notifySoftInputArea", nullptr, NotifySoftInputArea, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"notifyTheme", nullptr, NotifyTheme, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"notifyAnimationReduce", nullptr, NotifyAnimationReduce, nullptr, nullptr, nullptr, napi_default, nullptr},
+        {"notifyActivation", nullptr, NotifyActivation, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"notifyBattery", nullptr, NotifyBattery, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"notifyDisplay", nullptr, NotifyDisplay, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"notifyPickerResult", nullptr, NotifyPickerResult, nullptr, nullptr, nullptr, napi_default, nullptr},

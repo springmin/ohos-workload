@@ -535,8 +535,16 @@
     </PropertyGroup>
     <WriteLinesToFile File="$(_OpenHarmonyHapStageDir)resources/base/profile/main_pages.json" Lines="$(_OpenHarmonyMainPages)" Overwrite="true" />
     <PropertyGroup>
-      <_OpenHarmonyAppJson>{&quot;assembly&quot;:&quot;$(TargetFileName)&quot;}</_OpenHarmonyAppJson>
-      <_OpenHarmonyAppJson Condition=" '$(OpenHarmonyAppArgs)' != '' ">{&quot;assembly&quot;:&quot;$(TargetFileName)&quot;,&quot;args&quot;:[&quot;$(OpenHarmonyAppArgs)&quot;]}</_OpenHarmonyAppJson>
+      <!-- Deep links: OpenHarmonyAppLinkHosts is the semicolon-separated https app-link host
+           allow-list (for example "example.com;www.example.com"). It is written into app.json,
+           which the ArkTS shell reads and forwards with every activation; the managed side only
+           accepts an https:// link whose host is on the list. Unset keeps the previous app.json
+           bytes exactly ({"assembly":"..."} plus args when given). -->
+      <_OpenHarmonyAppJson>{&quot;assembly&quot;:&quot;$(TargetFileName)&quot;</_OpenHarmonyAppJson>
+      <_OpenHarmonyAppJson Condition=" '$(OpenHarmonyAppArgs)' != '' ">$(_OpenHarmonyAppJson),&quot;args&quot;:[&quot;$(OpenHarmonyAppArgs)&quot;]</_OpenHarmonyAppJson>
+      <_OpenHarmonyAppLinkHostsJson Condition=" '$(OpenHarmonyAppLinkHosts)' != '' ">$(OpenHarmonyAppLinkHosts.Replace(';', '&quot;,&quot;'))</_OpenHarmonyAppLinkHostsJson>
+      <_OpenHarmonyAppJson Condition=" '$(OpenHarmonyAppLinkHosts)' != '' ">$(_OpenHarmonyAppJson),&quot;linkHosts&quot;:[&quot;$(_OpenHarmonyAppLinkHostsJson)&quot;]</_OpenHarmonyAppJson>
+      <_OpenHarmonyAppJson>$(_OpenHarmonyAppJson)}</_OpenHarmonyAppJson>
     </PropertyGroup>
     <WriteLinesToFile File="$(_OpenHarmonyHapStageDir)resources/rawfile/app.json" Lines="$(_OpenHarmonyAppJson)" Overwrite="true" />
 
