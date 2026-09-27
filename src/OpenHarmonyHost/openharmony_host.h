@@ -273,6 +273,38 @@ int ohos_host_liveview_request(int request_id, int op, const char* args);
 void ohos_host_liveview_register_result(void* callback);
 void ohos_host_liveview_result(int request_id, int op, int code, const char* payload);
 
+/// HMS TextToSpeech (CoreSpeechKit; A2-TTS 2026-09-27): the fourth kit sink, registered by the
+/// ArkTS shell only when its runtime passes the SystemCapability.AI.TextToSpeech check and
+/// resolves @kit.CoreSpeechKit (the variable-specifier probe in the shell templates). On the
+/// default OpenHarmony SDK shell the probe fails, the sink stays unregistered, every call
+/// answers "unavailable" and the managed OpenHarmonyTextToSpeech keeps its documented
+/// degradation (SpeakAsync completes without speaking, GetLocalesAsync answers the device
+/// locale, IsSupported is false, Stop is a no-op; nothing throws).
+///
+/// ohos_host_tts_available() reports whether the sink is registered (the managed IsSupported
+/// probe; it never creates an engine). ohos_host_tts_request(request_id, op, args) queues one
+/// operation:
+///   op 0 create  - args = JSON {"locale"} ("" = the shell's zh-CN default); creates and caches
+///                  the engine (createEngine params: person 0, offline mode 1)
+///   op 1 speak   - args = JSON {"text","locale"}; ensures the engine for the locale and calls
+///                  engine.speak with the managed request id as the kit request id
+///   op 2 stop    - no args; engine.stop() and every pending speak completes (code 0)
+///   op 3 locales - no args; listVoices -> payload = JSON [{language,person,style,gender,
+///                  description}] (module-level listVoices when the SDK has it, the engine
+///                  method otherwise)
+///   op 4 isBusy  - no args; payload = "0"/"1"
+/// The shell answers through host.notifyTtsResult -> ohos_host_tts_result: code 0 applied
+/// (for speak: the engine reported completion or stop), -1 unavailable (no kit/sink), -2 the
+/// kit call failed, the engine is missing or the args were malformed, a positive value is the
+/// CoreSpeechKit BusinessError (1002300001 the text is empty/out of range, 1002300002 the
+/// language is not supported, 1002300003 the person is not supported, 1002300005 engine
+/// creation failed, 401 argument error). The managed callback is registered with
+/// ohos_host_tts_register_result.
+int ohos_host_tts_available(void);
+int ohos_host_tts_request(int request_id, int op, const char* args);
+void ohos_host_tts_register_result(void* callback);
+void ohos_host_tts_result(int request_id, int op, int code, const char* payload);
+
 /// Raw HAP resources: the managed side (maui-ohos OpenHarmonyFileSystem) asks for one file
 /// shipped raw in the HAP (resources/rawfile/**) through ohos_host_raw_file_request; the
 /// ArkTS shell's registerRawFileSink handler reads it with resourceManager and answers through

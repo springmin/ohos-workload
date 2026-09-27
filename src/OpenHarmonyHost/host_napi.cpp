@@ -1144,55 +1144,85 @@ napi_value RegisterNotificationSink(napi_env env, napi_callback_info info) {
     return HostSinkRegisterFromArgs(env, info, g_notification_sink);
 }
 
-// TextToSpeech: the managed side forwards speak requests through ohos_host_tts_speak; the
-// ArkTS shell's sink (registerTtsSink) owns the Speech Kit call and answers with
-// host.notifyTtsResult(requestId, code).
-// (sink moved into the current HostBinding; see the g_* accessors above)
-static std::atomic<void (*)(int, int)> g_tts_result_listener{nullptr};
+// TextToSpeech (CoreSpeechKit; A2-TTS 2026-09-27): the fourth kit probe batch, same shape as
+// Push/Account/Live View. The sink exists only when the ArkTS shell's runtime passes the
+// SystemCapability.AI.TextToSpeech check and resolves @kit.CoreSpeechKit, so the default
+// OpenHarmony SDK build registers nothing, every export answers "unavailable" and the managed
+// OpenHarmonyTextToSpeech keeps its documented degradation.
+//
+// op 0 create / op 1 speak / op 2 stop / op 3 locales / op 4 isBusy, args is the JSON payload
+// the shell parses ({"text","locale"} for speak, {"locale"} for create, "" elsewhere). The
+// answer arrives through host.notifyTtsResult -> ohos_host_tts_result: code 0 applied (for a
+// speak: the engine reported completion or stop; for locales: payload = JSON voice list; for
+// isBusy: payload = "0"/"1"), -1 unavailable (no kit/sink, or an over-long args string), -2
+// the kit call failed, the engine is missing or the args were malformed, a positive value is
+// the CoreSpeechKit BusinessError code (1002300001 the text is empty, 1002300002 language,
+// 1002300003 person, 1002300005 engine creation, 401 arguments).
+static std::atomic<void (*)(int, int, int, const char*)> g_tts_result_listener{nullptr};
 
-// Called from the host C layer (managed P/Invoke): forwards a speak request to ArkTS.
-extern "C" int ohos_host_tts_speak(int request_id, const char* text, const char* locale) {
-    return HostCxxBoundary("tts speak", [&] {
+// Called from managed code (P/Invoke): 1 when the shell registered the TTS sink. The managed
+// OpenHarmonyTextToSpeech.IsSupported probe must not create an engine just to answer.
+extern "C" int ohos_host_tts_available(void) {
+    return g_tts_sink.tsfn != nullptr ? 1 : 0;
+}
+
+// Called from managed code (P/Invoke): queues one TTS operation. 0 queued, -1 when the sink is
+// unregistered or the args string exceeds the control-string cap.
+extern "C" int ohos_host_tts_request(int request_id, int op, const char* args) {
+    return HostCxxBoundary("tts request", [&] {
+        if (args != nullptr && !ControlStringFits(args, "tts_args")) {
+            return -1;
+        }
         SinkCall* call = new SinkCall();
         call->AddInt(request_id);
-        call->AddString(text);
-        call->AddString(locale);
+        call->AddInt(op);
+        call->AddString(args != nullptr ? args : "", kMaxControlBytes);
         return HostSinkPost(g_tts_sink, call) ? 0 : -1;
     });
 }
 
-// The managed side registers the callback that completes a pending speak request.
+// The managed side registers the callback that completes a pending TTS request.
 extern "C" void ohos_host_tts_register_result(void* callback) {
     HostListenerStore(g_tts_result_listener, callback);
 }
 
-// Called by the NAPI notify below: hands the shell's answer back to managed code.
-extern "C" void ohos_host_tts_result(int request_id, int code) {
+// Called by the NAPI notify below: hands the shell's answer back to managed code. payload is ""
+// for a non-zero code.
+extern "C" void ohos_host_tts_result(int request_id, int op, int code, const char* payload) {
     auto listener = HostListenerLoad(g_tts_result_listener);
     if (listener != nullptr) {
-        listener(request_id, code);
+        listener(request_id, op, code, payload != nullptr ? payload : "");
     }
 }
 
-// ArkTS calls host.registerTtsSink(fn) to receive speak requests.
+// ArkTS calls host.registerTtsSink(fn) when the CoreSpeechKit probe succeeded.
 napi_value RegisterTtsSink(napi_env env, napi_callback_info info) {
     return HostSinkRegisterFromArgs(env, info, g_tts_sink);
 }
 
-// ArkTS calls host.notifyTtsResult(requestId, code) when the engine finished.
+// ArkTS calls host.notifyTtsResult(requestId, op, code, payload) when the operation finished
+// (a speak answers when the engine completed/stopped/failed).
 napi_value NotifyTtsResult(napi_env env, napi_callback_info info) {
-    size_t argc = 2;
-    napi_value argv[2] = {nullptr, nullptr};
+    size_t argc = 4;
+    napi_value argv[4] = {nullptr, nullptr, nullptr, nullptr};
     napi_get_cb_info(env, info, &argc, argv, nullptr, nullptr);
     int requestId = 0;
+    int op = 0;
     int code = -1;
+    std::string payload;
     if (argc >= 1) {
         napi_get_value_int32(env, argv[0], &requestId);
     }
     if (argc >= 2) {
-        napi_get_value_int32(env, argv[1], &code);
+        napi_get_value_int32(env, argv[1], &op);
     }
-    ohos_host_tts_result(requestId, code);
+    if (argc >= 3) {
+        napi_get_value_int32(env, argv[2], &code);
+    }
+    if (argc >= 4) {
+        payload = GetStringArg(env, argv[3]);
+    }
+    ohos_host_tts_result(requestId, op, code, payload.c_str());
     napi_value undefined = nullptr;
     napi_get_undefined(env, &undefined);
     return undefined;

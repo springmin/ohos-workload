@@ -432,6 +432,87 @@ interface HmsLiveViewKit {
   liveViewManager: HmsLiveViewManager;
 }
 
+// CoreSpeechKit probe (A2-TTS 2026-09-27; textToSpeech): the same compile-safe shape as the
+// other kit probes - the module specifier stays in a variable and the resolved value is cast to
+// these local structural interfaces (a literal import('@kit.CoreSpeechKit') is a hard ArkTS
+// compile error on the OpenHarmony SDK, whose hms half is absent). The sink registers only when
+// the device reports SystemCapability.AI.TextToSpeech and the runtime resolves the kit. The
+// engine is created lazily for the first speak (offline mode 1, person 0) and kept so stop, the
+// voice list and isBusy share it.
+interface HmsTtsVoiceInfo {
+  language: string;
+  person: number;
+  style: string;
+  gender: string;
+  description: string;
+  status?: string;
+}
+
+// The managed side's speak/create argument JSON: {"text":"...","locale":"..."}; create only
+// reads locale (empty selects the shell's zh-CN default).
+interface HmsTtsSpeakArgs {
+  text?: string;
+  locale?: string;
+}
+
+interface HmsTtsCreateEngineParams {
+  language: string;
+  person: number;
+  online: number;
+}
+
+interface HmsTtsSpeakParams {
+  requestId: string;
+}
+
+interface HmsTtsVoiceQuery {
+  requestId: string;
+  online: number;
+}
+
+interface HmsTtsStartResponse {
+  audioType: string;
+  sampleRate: number;
+  sampleBit: number;
+  audioChannel: number;
+  compressRate: number;
+}
+
+interface HmsTtsCompleteResponse {
+  type: number;
+  message: string;
+}
+
+interface HmsTtsStopResponse {
+  type: number;
+  message: string;
+}
+
+interface HmsTtsSpeakListener {
+  onStart: (requestId: string, response: HmsTtsStartResponse) => void;
+  onComplete: (requestId: string, response: HmsTtsCompleteResponse) => void;
+  onStop: (requestId: string, response: HmsTtsStopResponse) => void;
+  onError: (requestId: string, errorCode: number, errorMessage: string) => void;
+}
+
+interface HmsTtsEngine {
+  setListener(listener: HmsTtsSpeakListener): void;
+  speak(text: string, speakParams: HmsTtsSpeakParams): void;
+  listVoices(params: HmsTtsVoiceQuery): Promise<Array<HmsTtsVoiceInfo>>;
+  stop(): void;
+  isBusy(): boolean;
+  shutdown(): void;
+}
+
+interface HmsTtsModule {
+  createEngine(params: HmsTtsCreateEngineParams): Promise<HmsTtsEngine>;
+  listVoices(queryParams: HmsTtsVoiceQuery): Promise<Array<HmsTtsVoiceInfo>>;
+}
+
+interface HmsCoreSpeechKit {
+  textToSpeech: HmsTtsModule;
+}
+
 // Logging (audit ARKTS-S3): the shell logs through hilog with one domain/tag pair; the private
 // log helpers in the struct keep the %{public}s format so device logs stay readable.
 const DOMAIN = 0x0002;
@@ -598,6 +679,15 @@ struct Index {
   private hmsLiveViewKit: HmsLiveViewKit | undefined = undefined;
   private hmsLiveViewUnavailable: boolean = false;
   private hmsLiveViewView: HmsLiveView | undefined = undefined;
+  // CoreSpeechKit probe (A2-TTS): the resolved kit, the cached probe failure, the engine created
+  // lazily for the first speak (kept so stop/locales/isBusy share it), the language it was
+  // created with, and the in-flight speak requests keyed by the kit request id (the managed
+  // request id as text) so onComplete/onStop/onError answer the right managed request.
+  private hmsTtsKit: HmsCoreSpeechKit | undefined = undefined;
+  private hmsTtsUnavailable: boolean = false;
+  private hmsTtsEngine: HmsTtsEngine | undefined = undefined;
+  private hmsTtsEngineLanguage: string = '';
+  private hmsTtsPending: Map<string, number> = new Map();
   // Camera Kit is preloaded asynchronously (dynamic import) because the flashlight sink is
   // synchronous: the API surface the sink needs is cached as soon as the module resolves,
   // and the sink answers false while the module is not there yet (or is unavailable).
@@ -1269,6 +1359,215 @@ struct Index {
     view.liveViewData.capsule.title = view.liveViewData.primary.title;
     view.liveViewData.capsule.content = view.liveViewData.primary.content[0].text;
     view.liveViewData.capsule.time = view.timer.time;
+  }
+
+  // CoreSpeechKit probe (A2-TTS): the sink registers only when the device reports the text-to-
+  // speech syscap and the runtime resolves @kit.CoreSpeechKit with a textToSpeech.createEngine
+  // surface. A missing kit caches the failure (one log) and leaves the sink unregistered: every
+  // export then answers -1 and the managed OpenHarmonyTextToSpeech records the degradation
+  // instead of guessing. The engine itself is created on the first speak; the probe never
+  // calls it.
+  private async probeTtsKit(): Promise<void> {
+    if (this.hmsTtsUnavailable || this.hmsTtsKit !== undefined) {
+      return;
+    }
+    if (!canIUse('SystemCapability.AI.TextToSpeech')) {
+      this.hmsTtsUnavailable = true;
+      this.logError('[maui] CoreSpeechKit unavailable: the device reports no SystemCapability.AI.TextToSpeech');
+      return;
+    }
+    const kitName: string = '@kit.CoreSpeechKit';
+    try {
+      const kit = (await import(kitName)) as HmsCoreSpeechKit;
+      if (kit.textToSpeech === undefined || kit.textToSpeech.createEngine === undefined) {
+        throw new Error('the resolved module has no textToSpeech.createEngine');
+      }
+      this.hmsTtsKit = kit;
+      this.hostCall('registerTtsSink', typeof host !== 'undefined' && typeof host.registerTtsSink === 'function', (): void => {
+        host.registerTtsSink((requestId: number, op: number, args: string): void => {
+          this.runTts(requestId, op, args);
+        });
+      });
+      this.logInfo('[maui] CoreSpeechKit available: textToSpeech sink registered');
+    } catch (ttsProbeError) {
+      this.hmsTtsUnavailable = true;
+      this.logError(`[maui] CoreSpeechKit unavailable on this device: ${(ttsProbeError as Error).message}`);
+    }
+  }
+
+  // CoreSpeechKit sink body (A2-TTS). op 0 create, op 1 speak, op 2 stop, op 3 locales,
+  // op 4 isBusy; args carry the op's JSON ("" is accepted where the op needs none). Answers
+  // travel through host.notifyTtsResult(requestId, op, code, payload): code 0 applied, -1 no
+  // kit/sink, -2 the kit call failed or the args were malformed, a positive value is the
+  // CoreSpeechKit BusinessError (1002300001 text, 1002300002 language, 1002300003 person,
+  // 1002300005 engine creation, 401 arguments). A speak answers when the engine reports
+  // onComplete/onStop/onError, so the managed SpeakAsync completes with the speech instead of
+  // with the dispatch.
+  private async runTts(requestId: number, op: number, args: string): Promise<void> {
+    const kit = this.hmsTtsKit;
+    let code: number = -1;
+    let payload: string = '';
+    if (kit !== undefined) {
+      try {
+        if (op === 0) {
+          const createSpec: HmsTtsSpeakArgs | undefined = this.parseTtsArgs(args);
+          if (createSpec === undefined) {
+            code = -2;
+          } else {
+            const createLanguage: string = createSpec.locale !== undefined ? createSpec.locale : '';
+            await this.ensureTtsEngine(kit, createLanguage);
+            code = this.hmsTtsEngine !== undefined ? 0 : -2;
+          }
+        } else if (op === 1) {
+          const speakSpec: HmsTtsSpeakArgs | undefined = this.parseTtsArgs(args);
+          if (speakSpec === undefined || speakSpec.text === undefined || speakSpec.text.length === 0) {
+            code = -2;
+          } else {
+            const speakLanguage: string = speakSpec.locale !== undefined ? speakSpec.locale : '';
+            const engine: HmsTtsEngine = await this.ensureTtsEngine(kit, speakLanguage);
+            const kitRequestId: string = `${requestId}`;
+            this.hmsTtsPending.set(kitRequestId, requestId);
+            try {
+              const speakParams: HmsTtsSpeakParams = { requestId: kitRequestId };
+              engine.speak(speakSpec.text, speakParams);
+            } catch (speakError) {
+              this.hmsTtsPending.delete(kitRequestId);
+              const speakCode: number = (speakError as BusinessError).code;
+              code = speakCode > 0 ? speakCode : -2;
+              this.logError(`[maui] text-to-speech speak failed: code=${code} ${(speakError as Error).message}`);
+              this.notifyTts(requestId, op, code, payload);
+              return;
+            }
+            // Answered by the listener when the engine completes, stops or fails.
+            return;
+          }
+        } else if (op === 2) {
+          const engine: HmsTtsEngine | undefined = this.hmsTtsEngine;
+          if (engine === undefined) {
+            code = -2;
+          } else {
+            engine.stop();
+            this.answerPendingTts(0, '');
+            code = 0;
+          }
+        } else if (op === 3) {
+          payload = await this.listTtsVoices(kit);
+          code = 0;
+        } else if (op === 4) {
+          const engine: HmsTtsEngine | undefined = this.hmsTtsEngine;
+          if (engine === undefined) {
+            code = -2;
+          } else {
+            payload = engine.isBusy() ? '1' : '0';
+            code = 0;
+          }
+        } else {
+          code = -2;
+        }
+      } catch (ttsError) {
+        const ttsCode: number = (ttsError as BusinessError).code;
+        code = ttsCode > 0 ? ttsCode : -2;
+        this.logError(`[maui] text-to-speech request failed: op=${op} code=${code} ${(ttsError as Error).message}`);
+      }
+    }
+    this.notifyTts(requestId, op, code, payload);
+  }
+
+  // Creates (or reuses) the engine for one language. createEngine validates the language/person
+  // pair and throws its BusinessError (1002300002/1002300003/1002300005) up to runTts's code
+  // map; a previously created engine is shut down before the switch. An empty language selects
+  // the kit's documented zh-CN example language. The listener resolves pending speak requests
+  // by the kit request id.
+  private async ensureTtsEngine(kit: HmsCoreSpeechKit, language: string): Promise<HmsTtsEngine> {
+    const lang: string = language.length > 0 ? language : 'zh-CN';
+    const current: HmsTtsEngine | undefined = this.hmsTtsEngine;
+    if (current !== undefined && this.hmsTtsEngineLanguage === lang) {
+      return current;
+    }
+    if (current !== undefined) {
+      try {
+        current.shutdown();
+      } catch (shutdownError) {
+        this.logWarn(`[maui] text-to-speech engine shutdown failed: ${(shutdownError as Error).message}`);
+      }
+      this.hmsTtsEngine = undefined;
+    }
+    const params: HmsTtsCreateEngineParams = { language: lang, person: 0, online: 1 };
+    const engine: HmsTtsEngine = await kit.textToSpeech.createEngine(params);
+    const listener: HmsTtsSpeakListener = {
+      onStart: (kitRequestId: string, response: HmsTtsStartResponse): void => {
+        // Informational: the managed side is answered on completion.
+      },
+      onComplete: (kitRequestId: string, response: HmsTtsCompleteResponse): void => {
+        this.answerTtsPending(kitRequestId, 0, '');
+      },
+      onStop: (kitRequestId: string, response: HmsTtsStopResponse): void => {
+        this.answerTtsPending(kitRequestId, 0, '');
+      },
+      onError: (kitRequestId: string, errorCode: number, errorMessage: string): void => {
+        this.answerTtsPending(kitRequestId, errorCode, errorMessage);
+      }
+    };
+    engine.setListener(listener);
+    this.hmsTtsEngine = engine;
+    this.hmsTtsEngineLanguage = lang;
+    return engine;
+  }
+
+  // op 3: asks the kit for the voices (module-level listVoices since 5.1.1(19), the engine
+  // method otherwise) and serializes them for the managed Locale list. An empty voice list is a
+  // valid [] answer; a kit error propagates to runTts's code map.
+  private async listTtsVoices(kit: HmsCoreSpeechKit): Promise<string> {
+    const query: HmsTtsVoiceQuery = { requestId: `voices-${Date.now()}`, online: 1 };
+    let voices: HmsTtsVoiceInfo[];
+    if (kit.textToSpeech.listVoices !== undefined) {
+      voices = await kit.textToSpeech.listVoices(query);
+    } else {
+      const engine: HmsTtsEngine = await this.ensureTtsEngine(kit, '');
+      voices = await engine.listVoices(query);
+    }
+    return JSON.stringify(voices);
+  }
+
+  // Listener callbacks look the kit request id up in hmsTtsPending (a pending speak is keyed by
+  // its managed request id as text, because a speak answers only when the engine completes).
+  private answerTtsPending(kitRequestId: string, code: number, payload: string): void {
+    const managedId: number | undefined = this.hmsTtsPending.get(kitRequestId);
+    if (managedId === undefined) {
+      return;
+    }
+    this.hmsTtsPending.delete(kitRequestId);
+    this.notifyTts(managedId, 1, code, payload);
+  }
+
+  // Answers every pending speak (used by the stop op: engine.stop() may not raise onStop for
+  // each one). Code 0 keeps the managed SpeakAsync contract - stopping completes the speech.
+  private answerPendingTts(code: number, payload: string): void {
+    const pending: Map<string, number> = this.hmsTtsPending;
+    this.hmsTtsPending = new Map();
+    pending.forEach((managedId: number, kitRequestId: string): void => {
+      this.notifyTts(managedId, 1, code, payload);
+    });
+  }
+
+  private notifyTts(requestId: number, op: number, code: number, payload: string): void {
+    this.hostCall('notifyTtsResult', typeof host !== 'undefined' && typeof host.notifyTtsResult === 'function', (): void => {
+      host.notifyTtsResult(requestId, op, code, payload);
+    });
+  }
+
+  // Parses the managed JSON argument. An empty argument is an empty spec; malformed JSON answers
+  // undefined so the op reports -2 without calling the kit.
+  private parseTtsArgs(args: string): HmsTtsSpeakArgs | undefined {
+    if (args.length === 0) {
+      return {};
+    }
+    try {
+      return JSON.parse(args) as HmsTtsSpeakArgs;
+    } catch (parseError) {
+      this.logError(`[maui] text-to-speech args parse failed: ${(parseError as Error).message}`);
+      return undefined;
+    }
   }
 
   // Host-export guard (device-compat): runs a host call behind an explicit existence check
@@ -3266,20 +3565,10 @@ struct Index {
       });
     });
 
-    // TextToSpeech: speak requests arrive from the managed side (ohos_host_tts_speak). The
-    // OpenHarmony SDK this shell compiles against has no speech synthesis module: both
-    // '@kit.CoreSpeechKit' and '@kit.CoreSpeechKit tts' fail with "Cannot find module ... or its
-    // corresponding type declarations", so - like the keystore sink above - the request is
-    // answered with "unavailable" (rc=-1) and the managed side degrades (it never throws).
-    // With a Speech Kit SDK: create the engine once (textToSpeech.createEngine), call
-    // engine.speak(text, ...) and answer host.notifyTtsResult(requestId, 0) when it finishes.
-    this.hostCall('registerTtsSink', typeof host !== 'undefined' && typeof host.registerTtsSink === 'function', (): void => {
-      host.registerTtsSink((requestId: number, text: string, locale: string): void => {
-        this.hostCall('notifyTtsResult', typeof host !== 'undefined' && typeof host.notifyTtsResult === 'function', (): void => {
-          host.notifyTtsResult(requestId, -1);
-        });
-      });
-    });
+    // TextToSpeech (CoreSpeechKit; A2-TTS): unlike the always-on sinks above, the TTS sink is
+    // registered only after probeTtsKit resolves @kit.CoreSpeechKit (see the probe); on the
+    // OpenHarmony SDK the sink stays unregistered and the managed side degrades (no throw,
+    // IsSupported=false) instead of being answered a fake result here.
 
     // Contacts (platform extra): the managed side asks through ohos_host_contacts_query. The
     // sink requires ohos.permission.READ_CONTACTS, queries the Contacts Kit
@@ -3792,15 +4081,16 @@ struct Index {
     });
     this.pullMenu();
 
-    // HMS Kit feature probes (Share/Scan/Push/Account/Map/LiveView): the sinks register only
-    // after the kit resolves, so a device without the kit keeps the managed side's documented
-    // degradation (see the probes).
+    // HMS Kit feature probes (Share/Scan/Push/Account/Map/LiveView/CoreSpeech): the sinks
+    // register only after the kit resolves, so a device without the kit keeps the managed
+    // side's documented degradation (see the probes).
     this.probeShareKit();
     this.probeScanKit();
     this.probePushKit();
     this.probeAccountKit();
     this.probeMapKit();
     this.probeLiveViewKit();
+    this.probeTtsKit();
   }
 
   // Picker result framing (managed OpenHarmonyPickerClient.Complete): a cancel/unavailable

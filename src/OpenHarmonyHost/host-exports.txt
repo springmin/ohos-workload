@@ -134,8 +134,10 @@ ohos_host_shell_flyout_header
 ohos_host_shell_search_set
 ohos_host_shell_search_set_listener
 ohos_host_theme_set_listener
+ohos_host_tts_available
 ohos_host_tts_register_result
-ohos_host_tts_speak
+ohos_host_tts_request
+ohos_host_tts_result
 ohos_host_vibrate
 ohos_host_web_command
 ohos_host_web_eval

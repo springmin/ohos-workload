@@ -703,7 +703,9 @@ versions = ['1.0.0-preview.22', '1.0.0-preview.23', '1.0.0-preview.24']
 common = ['dotnet-payload', 'bundleCodeDir', 'payload-in-libs', 'dotnet.marker']
 ui_only = ['ohos_dotnet_surface', 'ohos_dotnet_input', '__hwvInvokeDotNet', './map/MapOverlay',
            'registerLiveViewSink', 'notifyLiveViewResult', '@kit.LiveViewKit',
-           'SystemCapability.LiveView.LiveViewService']
+           'SystemCapability.LiveView.LiveViewService',
+           'registerTtsSink', 'notifyTtsResult', '@kit.CoreSpeechKit',
+           'SystemCapability.AI.TextToSpeech']
 errors = []
 provenance_ref = None
 abc_ref = {}
