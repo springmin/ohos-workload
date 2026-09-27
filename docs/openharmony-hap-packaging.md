@@ -494,6 +494,20 @@ IDE's SDK and hvigor; the existing DevEco fallback still works (create an empty 
 abc back via `-p:OpenHarmonyArktsModulesAbc`). Expected evidence: the `CompileArkTS` finish
 line, abc version `13.0.1.0`, non-zero size, the payload literals (`--check-abc`).
 
+The branch's abc is also shipped as a **packaged HAP variant**: `harmony-haps.tar.gz`
+(196,118,871 B / sha256 `f7a4faa2553d...`, published 2026-09-27 on the `device-test-kit` release
+beside the kit) carries the same five-hap matrix as `scripts/make-device-test-kit.sh` (26.0/20.0 x
+optional permission set + unsigned) rebuilt with
+`-p:OpenHarmonyArktsModulesAbc=dist/ets/modules.harmony.abc`; only that property differs from the
+kit build. Measured: all five haps carry the harmony abc (263,784 B / `d3a7b718...`, PANDA
+`13.0.1.0`), the payload shape is untouched (`module.json` byte-equal to the kit #28 haps,
+`libs/arm64-v8a` 269 = 14 `.so` + 254 payload + marker, in-hap host 269,216 B / `bb51826e...`,
+`.codesign` on all 14 `.so`), the scratch assertion script is 82/82 and the kit's `verify-kit.sh
+--expected-abc 263784` reports KIT OK. This is the only packaged shell with `MapOverlay.ets` /
+LiveView sinks, so its real-device prerequisites are the AGC rows below (map service + signing
+fingerprint; Live View TIMER entitlement + device switch); the default-flavor kit haps keep
+`264,136 B / 9020ec5e...` and `IsOverlayAvailable=false`.
+
 ### Kit feature probes and AGC prerequisites (Push / Account / Map)
 
 The second batch of HMS Kits (KIT-EXT2, 2026-09-25; Map overlay R2-3, 2026-09-26) rides the same
