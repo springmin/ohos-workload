@@ -275,6 +275,31 @@ static void OhosHostOptionalLoad(void) {
         }
     }
 
+    // Universal KeyStore (HUKS): the SecureStorage value key. Absent on a reduced image;
+    // host_keystore.c then leaves the request to the ArkTS shell sink / managed fallback.
+    {
+        static const char *const sonames[] = {"libhuks_ndk.z.so"};
+        OhosHostOptionalLibSet libs = {sonames, 1, {NULL, NULL}, 0};
+        OhosHostOptionalOpen(&libs);
+        missing = false;
+        OHOS_HOST_OPTIONAL_RESOLVE(huks, InitParamSet, "OH_Huks_InitParamSet");
+        OHOS_HOST_OPTIONAL_RESOLVE(huks, AddParams, "OH_Huks_AddParams");
+        OHOS_HOST_OPTIONAL_RESOLVE(huks, BuildParamSet, "OH_Huks_BuildParamSet");
+        OHOS_HOST_OPTIONAL_RESOLVE(huks, FreeParamSet, "OH_Huks_FreeParamSet");
+        OHOS_HOST_OPTIONAL_RESOLVE(huks, GenerateKeyItem, "OH_Huks_GenerateKeyItem");
+        OHOS_HOST_OPTIONAL_RESOLVE(huks, DeleteKeyItem, "OH_Huks_DeleteKeyItem");
+        OHOS_HOST_OPTIONAL_RESOLVE(huks, IsKeyItemExist, "OH_Huks_IsKeyItemExist");
+        OHOS_HOST_OPTIONAL_RESOLVE(huks, InitSession, "OH_Huks_InitSession");
+        OHOS_HOST_OPTIONAL_RESOLVE(huks, UpdateSession, "OH_Huks_UpdateSession");
+        OHOS_HOST_OPTIONAL_RESOLVE(huks, FinishSession, "OH_Huks_FinishSession");
+        OHOS_HOST_OPTIONAL_RESOLVE(huks, AbortSession, "OH_Huks_AbortSession");
+        g_ohos_host_optional.huks.available = !missing;
+        if (missing) {
+            OhosHostOptionalAppendMissing(missing_names, sizeof(missing_names), &missing_used,
+                                          "huks");
+        }
+    }
+
     // hilog: resolved last so the single diagnostic line below reports it as well.
     {
         static const char *const sonames[] = {"libhilog_ndk.z.so"};

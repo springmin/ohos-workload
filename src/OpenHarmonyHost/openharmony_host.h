@@ -516,8 +516,11 @@ int ohos_host_check_permission(const char* permission);
 void ohos_host_request_vibration(int duration_ms);
 void ohos_host_set_vibration_listener(void (*listener)(int duration_ms));
 
-/// Universal key store (HUKS) bridge: the managed side asks the ArkTS shell to run key
-/// operations; results come back through ohos_host_keystore_complete.
+/// Universal key store (HUKS) bridge: the host answers key operations with the in-process
+/// HUKS engine when the device ships libhuks_ndk.z.so, and otherwise asks the ArkTS shell to
+/// run them; results come back through ohos_host_keystore_complete either way.
+/// ohos_host_keystore_available() reports the native engine (0/1) for the managed status.
+int ohos_host_keystore_available(void);
 void ohos_host_keystore_set_listener(void (*listener)(int request_id, const char* op, const char* alias, const char* data_base64));
 void ohos_host_keystore_register_result(void* callback);
 void ohos_host_keystore_request(int request_id, const char* op, const char* alias, const char* data_base64);

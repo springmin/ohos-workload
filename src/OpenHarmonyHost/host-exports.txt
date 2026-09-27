@@ -69,6 +69,7 @@ ohos_host_keep_screen_on
 ohos_host_keyboard_hide
 ohos_host_keyboard_set_text
 ohos_host_keyboard_show
+ohos_host_keystore_available
 ohos_host_keystore_register_result
 ohos_host_keystore_request
 ohos_host_liveview_available

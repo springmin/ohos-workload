@@ -32,6 +32,8 @@
 #include <LocationKit/oh_location.h>
 #include <LocationKit/oh_location_type.h>
 #include <accesstoken/ability_access_control.h>
+#include <huks/native_huks_api.h>
+#include <huks/native_huks_param.h>
 #include <inputmethod/inputmethod_attach_options_capi.h>
 #include <inputmethod/inputmethod_controller_capi.h>
 #include <inputmethod/inputmethod_inputmethod_proxy_capi.h>
@@ -160,6 +162,38 @@ typedef struct {
     bool available;
 } OhosHostOptionalImageApi;
 
+// Universal KeyStore (HUKS): the SecureStorage bridge (host_keystore.c) keeps the value key
+// inside the device keystore and runs AES-256-GCM through these NDK entry points. The library
+// is optional: a reduced image without libhuks_ndk.z.so keeps the managed file-key fallback.
+typedef struct {
+    OH_Huks_Result (*InitParamSet)(struct OH_Huks_ParamSet **paramSet);
+    OH_Huks_Result (*AddParams)(struct OH_Huks_ParamSet *paramSet,
+                                const struct OH_Huks_Param *params, uint32_t paramCnt);
+    OH_Huks_Result (*BuildParamSet)(struct OH_Huks_ParamSet **paramSet);
+    void (*FreeParamSet)(struct OH_Huks_ParamSet **paramSet);
+    OH_Huks_Result (*GenerateKeyItem)(const struct OH_Huks_Blob *keyAlias,
+                                      const struct OH_Huks_ParamSet *paramSetIn,
+                                      struct OH_Huks_ParamSet *paramSetOut);
+    OH_Huks_Result (*DeleteKeyItem)(const struct OH_Huks_Blob *keyAlias,
+                                    const struct OH_Huks_ParamSet *paramSet);
+    OH_Huks_Result (*IsKeyItemExist)(const struct OH_Huks_Blob *keyAlias,
+                                     const struct OH_Huks_ParamSet *paramSet);
+    OH_Huks_Result (*InitSession)(const struct OH_Huks_Blob *keyAlias,
+                                  const struct OH_Huks_ParamSet *paramSet,
+                                  struct OH_Huks_Blob *handle, struct OH_Huks_Blob *token);
+    OH_Huks_Result (*UpdateSession)(const struct OH_Huks_Blob *handle,
+                                    const struct OH_Huks_ParamSet *paramSet,
+                                    const struct OH_Huks_Blob *inData,
+                                    struct OH_Huks_Blob *outData);
+    OH_Huks_Result (*FinishSession)(const struct OH_Huks_Blob *handle,
+                                    const struct OH_Huks_ParamSet *paramSet,
+                                    const struct OH_Huks_Blob *inData,
+                                    struct OH_Huks_Blob *outData);
+    OH_Huks_Result (*AbortSession)(const struct OH_Huks_Blob *handle,
+                                   const struct OH_Huks_ParamSet *paramSet);
+    bool available;
+} OhosHostOptionalHuksApi;
+
 typedef struct {
     OhosHostOptionalImeApi ime;
     OhosHostOptionalNativeWindowApi native_window;
@@ -169,6 +203,7 @@ typedef struct {
     OhosHostOptionalNetConnApi net_conn;
     OhosHostOptionalAbilityAccessApi ability_access;
     OhosHostOptionalImageApi image;
+    OhosHostOptionalHuksApi huks;
 } OhosHostOptionalApis;
 
 extern OhosHostOptionalApis g_ohos_host_optional;
@@ -208,6 +243,10 @@ static inline bool ohos_host_optional_ability_access_available(void) {
 static inline bool ohos_host_optional_image_available(void) {
     ohos_host_optional_ensure();
     return g_ohos_host_optional.image.available;
+}
+static inline bool ohos_host_optional_huks_available(void) {
+    ohos_host_optional_ensure();
+    return g_ohos_host_optional.huks.available;
 }
 
 // ---------------------------------------------------------------------------

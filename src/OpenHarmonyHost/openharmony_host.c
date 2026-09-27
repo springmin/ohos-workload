@@ -7,6 +7,10 @@
 
 #include "openharmony_host.h"
 
+// Native HUKS engine for the SecureStorage bridge (P2a-HUKS); answers keystore requests
+// in-process when the device ships libhuks_ndk.z.so (see openharmony_host.c below).
+#include "host_keystore.h"
+
 #include <sensors/vibrator.h>
 #include <network/netmanager/net_connection.h>
 #include <network/netmanager/net_connection_type.h>
@@ -2943,7 +2947,22 @@ void ohos_host_keystore_register_result(void* callback) {
     }
 }
 
+int ohos_host_keystore_available(void) {
+    return OhosHostKeystoreAvailable() ? 1 : 0;
+}
+
 void ohos_host_keystore_request(int request_id, const char* op, const char* alias, const char* data_base64) {
+    // HUKS-first (P2a-HUKS): the in-process NDK engine answers whenever the device ships
+    // libhuks_ndk.z.so, so the value key stays device-bound even in a headless shell. Only a
+    // device without the keystore library falls through to the ArkTS shell sink; when neither
+    // answers, the managed side keeps its documented per-install file-key fallback.
+    if (OhosHostKeystoreAvailable()) {
+        char* result = NULL;
+        int rc = OhosHostKeystoreExecute(op, alias, data_base64, &result);
+        ohos_host_keystore_complete(request_id, rc, result != NULL ? result : "");
+        free(result);
+        return;
+    }
     if (g_keystore_listener != NULL) {
         g_keystore_listener(request_id, op, alias, data_base64);
     }

@@ -150,6 +150,9 @@ OH_AT_
 # absent on the reduced test image.
 OH_ImageSource
 OH_Pixelmap
+# HUKS (huks/native_huks_api.h, host_keystore.c): libhuks_ndk.z.so is resolved on demand,
+# and the SecureStorage bridge falls back to the shell sink / file key when it is absent.
+OH_Huks_
 # hilog (hilog/log.h): libhilog_ndk.z.so absent on the reduced test image; OH_LOG_* falls
 # back to stderr via host_optional_log.h.
 OH_LOG_
