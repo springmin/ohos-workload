@@ -658,8 +658,8 @@ in the UI abc (the provenance gate; current default-flavor UI abc 278,760 B /
 the source contract (no `@ohos.*` imports, variable kit specifiers). The host-side gate is
 `scripts/build-host.sh` (nm -D: all 141 `host-exports.txt` names present as plain symbols) plus
 `scripts/check-host-exports.py --cross-check`; the interaction suite's own contract line is
-`[suite] checks=373 total=373 floor=353 assert=True` (the 16 P1b-LIST list checks on the
-357/337 P1a-ANIM base).
+`[suite] checks=377 total=377 floor=357 assert=True` (the 16 P1b-LIST list checks and the
+4 P2b-IMG image checks on the 357/337 P1a-ANIM base).
 
 ### Templates / abc sync strategy
 
@@ -777,6 +777,44 @@ rest of the compositor), so P1b-LIST changes no shell or host source: the UI abc
   re-arms the next one (previously the bar could fade only once per process). The 1,200-item
   check pins the bounded materialization window (13-22 rows) and a ≤1 KiB/step steady-state
   allocation on the scroll frame path.
+
+### Image decoding (P2b-IMG, 2026-09-27)
+
+The draw path no longer decodes an encoded image at full resolution: the managed view asks for a
+destination-sized decode and the host passes the request to the platform decoder, so a large
+source is never materialised whole. Four decision points (the managed contract and the test seams
+are documented in the slice's `docs/openharmony-slice-notes.md`):
+
+- **low-res first**: a destination with a long edge of at least 128 px decodes a coarse preview
+  (destination / 8) in the first frame (`OpenHarmonyView.DrawImage` ->
+  `OpenHarmonyCanvas.DrawImageBytesSized`) and then requests a redraw;
+- **high-res replace**: the next frame decodes at the display size and replaces the preview; the
+  host pixelmap cache keys on content hash + length + requested decode size, so the preview and
+  display entries coexist in the same LRU (8 entries / 32 MiB decoded-byte budget) and a window
+  resize misses once while the stale entry ages out;
+- **large images stay bounded**: `ohos_host_draw_image_bytes_sized` clamps each requested edge to
+  `OHOS_IMAGE_DECODE_MAX_EDGE` (4096) and asks the decoder for
+  `OH_DecodingOptions_SetDesiredSize` (API 12+). The entry points go through the optional-library
+  shim and fall back to the full-resolution decode when the image library predates them, so no
+  draw path throws;
+- **failure placeholder**: a failed decode draws a neutral placeholder for that generation (once,
+  no per-frame retry) and a failed display-size decode keeps the visible preview; an older host
+  without the sized export keeps the pre-P2b `DrawImageBytes` path.
+
+Local bench (HarmonyOS device, signed aarch64 bench over the same OH_ImageSource entry points;
+`LD_LIBRARY_PATH=/system/lib64/ndk:/system/lib64 ./bench_decode decode photo.jpg full 5` and
+`... decode photo.jpg 1032 200 5`): a 3.27 MB JPEG (3400x2550) decodes in 86.3 ms at full size vs
+63.4 ms at 1032x200, retaining 34.7 MB vs 0.8 MB of decoded bitmap; the 4.77 MB 4000x3000 source
+with a 1080x810 target is 117.3 ms vs 88.2 ms and 48.0 MB vs 3.5 MB. Process peak RSS is flat
+(~75 MB, the decoder runtime) because the pixelmap allocation is not charged to VmRSS; the
+retained decoded bitmap is the meaningful memory delta.
+
+Gates: the interaction suite's four image checks pin the managed preview/final path, the
+small-frame single pass, the placeholder rule and the host contract (`[verify] image progressive
+decode`, `image small-frame single pass`, `image decode failure`, `image decode host contract`);
+`host-deps.conf` learns `OH_DecodingOptions_` for the soft resolution and the nm export gate
+covers `ohos_host_draw_image_bytes_sized` in the 141-name contract;
+`scripts/check-host-exports.py --cross-check` verifies the managed `LibraryImport` against it.
 
 ### Text editing (P0c-TEXT-EDIT)
 

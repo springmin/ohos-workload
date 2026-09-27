@@ -52,16 +52,15 @@ permissions:
 
 # Reproducible cross-repo compile: the MAUI slice is checked out at an exact commit, not the
 # mutable feature/openharmony branch, so a push to the fork cannot change what this gate compiles.
-# The default is the feature/openharmony tip: 150ac92f, the P1b-LIST commit (list depth:
-# one-shot RemainingItemsThreshold, ItemsUpdatingScrollMode anchors, full ScrollTo with the
-# animated tween, group footer rows + collapse, bounded rubber-band/bounce scroll physics and
-# the scrollbar parameter/reduce-motion polish; on top of P1a-ANIM, P0c-TEXT-EDIT, P2a-HUKS,
-# A2-TTS, R2-SHELL-EXT and KIT-EXT2 batches). The suite
-# pins 373 checks / floor 353 and the full run is green at this compiled tree (local verification:
-# 373/373, floor 353); advance the pin deliberately and refresh this comment when
-# the harness pins or the tip move (workflow_dispatch can compile any commit).
+# The default is the feature/openharmony tip: d3122bb5, the P2b-IMG commit (display-size image
+# decode: preview -> display pass, bounded large-image decode and the placeholder fallback; on
+# top of the P1b-LIST list depth/scroll physics, P1a-ANIM, P0c-TEXT-EDIT, P2a-HUKS, A2-TTS,
+# R2-SHELL-EXT and KIT-EXT2 batches). The suite pins 377 checks / floor 357 and the full run is
+# green at this compiled tree (local verification: 377/377, floor 357, both perf lines within
+# budget); advance the pin deliberately and refresh this comment when the harness pins or the
+# tip move (workflow_dispatch can compile any commit).
 env:
-  MAUI_OHOS_REF: ${{ github.event.inputs.maui_ohos_ref || '150ac92f66b58c9d9e416b4df6dca8b19f467fab' }}
+  MAUI_OHOS_REF: ${{ github.event.inputs.maui_ohos_ref || 'd3122bb5338dd5823f148ea5d7dcb003ccc3f5f1' }}
   # setup-dotnet installs the requested 11.0.x preview into DOTNET_INSTALL_DIR; on Linux that
   # defaults to /usr/share/dotnet, which a per-user cache cannot persist. Point it at ~/.dotnet
   # (the action resolves the ~ prefix against $HOME) so the cache step below actually avoids the

@@ -169,7 +169,7 @@ jitter ~1.08x and 72,056 B/frame, and the a11y block reported ~0.3/0.5 ms for th
 ~0.07/0.28 ms for the publish pass (skip/republish). The post-batch run (commit a10b73e) reported
 avg 0.488 ms, p95 0.698 ms, jitter 1.43x and 3,720 B/frame, i.e. the ceiling is 3.72x the CI
 baseline. Every run ends with the `[suite]` contract line
-(`checks=373 total=373 floor=353 assert=True`), which the workflow and `scripts/preflight.sh`
+(`checks=377 total=377 floor=357 assert=True`), which the workflow and `scripts/preflight.sh`
 parse.
 
 ## Notes
@@ -178,11 +178,18 @@ parse.
   blocks codesigned ELF apphosts on some machines).
 - The suite fails loudly (unhandled exception) when a slice change breaks startup or when an
   assertion for the gesture flows (including the drag-and-drop checks) does not hold; keep it at
-  360 checks plus the 4 fuzz lines plus the 1 frame-perf line plus the 8 a11y-perf lines
-  (373 `[verify]` lines) when touching the platform slice. The total and the floor (total - 20)
+  364 checks plus the 4 fuzz lines plus the 1 frame-perf line plus the 8 a11y-perf lines
+  (377 `[verify]` lines) when touching the platform slice. The total and the floor (total - 20)
   are declared in `Program.cs`; the run ends with a `[suite] checks=... floor=... assert=...`
   line and fails itself when the printed count is below the floor, so the CI job and
   `scripts/preflight.sh` do not repeat the threshold.
+- Image decode coverage (P2b-IMG): the stream image is pinned through the view-scoped seam - a
+  large destination asks for the preview first (long edge / 8) and the display size on the
+  redraw that follows, a small (100x100) isolated tree decodes once at its own size with no
+  preview pass, a forced decode failure draws the placeholder once for the generation without
+  per-frame retries, and the host/managed contract check asserts the sized export, the
+  desired-size option, the decode-size cache key, the optional-library shim and the managed
+  `LibraryImport` fallback.
 - Contacts/calendar coverage: `OpenHarmonyContacts.FindAsync` and
   `OpenHarmonyCalendar.ListUpcomingAsync`/`AddEventAsync` return empty/false without throwing
   off-device and report `IsSupported == false` before and after the call (the permission probe

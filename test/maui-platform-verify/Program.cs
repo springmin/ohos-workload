@@ -12,7 +12,7 @@ using Microsoft.Maui.Platform;
 // after the fuzz tail) instead of letting every caller repeat its own threshold constant.
 VerifyLineCountingWriter verifyStdout = new(Console.Out);
 Console.SetOut(verifyStdout);
-const int verifyCheckTotal = 373;                     // documented full [verify] line count (+16 P1b-LIST, +10 P1a-ANIM)
+const int verifyCheckTotal = 377;                     // documented full [verify] line count (+4 P2b-IMG, +16 P1b-LIST, +10 P1a-ANIM)
 const int verifyCheckFloor = verifyCheckTotal - 20;   // documented floor convention (total - 20)
 
 // A small image file for the Image handler.
@@ -114,6 +114,227 @@ var streamCtl = root.Children.OfType<Image>().FirstOrDefault(i => i.Source is St
 if (streamCtl?.Handler?.PlatformView is OpenHarmonyView streamPlatform)
 {
     Console.WriteLine($"[verify] stream image bytes={streamPlatform.ImageBytes?.Length ?? 0}");
+}
+
+// P2b-IMG: progressive image decode. The harness has no device decoder, so the host blit is
+// replaced by the managed test seam and the checks pin the managed contract: a large
+// destination requests a coarse preview first (bounded by the destination, never the source)
+// and the display size on the redraw that follows; a small destination decodes once at its
+// own size; a failed decode degrades to the placeholder once and is not retried per frame.
+string progressiveImagePath = Path.Combine(Path.GetTempPath(), "verify-progressive.png");
+WriteProgressivePng(progressiveImagePath, 2048, 1536);
+
+static void WriteProgressivePng(string path, int width, int height)
+{
+    byte[] raw = new byte[height * (1 + width * 3)];
+    int offset = 0;
+    for (int y = 0; y < height; y++)
+    {
+        raw[offset++] = 0;  // PNG filter: none
+        for (int x = 0; x < width; x++)
+        {
+            raw[offset++] = (byte)(x * 255 / (width - 1));
+            raw[offset++] = (byte)(y * 255 / (height - 1));
+            raw[offset++] = (byte)(((x / 32) + (y / 32)) % 2 == 0 ? 220 : 40);
+        }
+    }
+    using var png = File.Create(path);
+    png.Write(new byte[] { 0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A });
+    Span<byte> ihdr = stackalloc byte[13];
+    System.Buffers.Binary.BinaryPrimitives.WriteUInt32BigEndian(ihdr, (uint)width);
+    System.Buffers.Binary.BinaryPrimitives.WriteUInt32BigEndian(ihdr[4..], (uint)height);
+    ihdr[8] = 8;   // bit depth
+    ihdr[9] = 2;   // colour type: truecolour
+    WritePngChunk(png, "IHDR", ihdr.ToArray());
+    using (var buffer = new MemoryStream())
+    {
+        using (var zlib = new System.IO.Compression.ZLibStream(buffer,
+                   System.IO.Compression.CompressionLevel.Fastest, leaveOpen: true))
+        {
+            zlib.Write(raw);
+        }
+        WritePngChunk(png, "IDAT", buffer.ToArray());
+    }
+    WritePngChunk(png, "IEND", System.Array.Empty<byte>());
+
+    static void WritePngChunk(Stream output, string type, byte[] payload)
+    {
+        byte[] typeBytes = System.Text.Encoding.ASCII.GetBytes(type);
+        Span<byte> length = stackalloc byte[4];
+        System.Buffers.Binary.BinaryPrimitives.WriteUInt32BigEndian(length, (uint)payload.Length);
+        output.Write(length);
+        output.Write(typeBytes);
+        output.Write(payload);
+        uint crc = 0xFFFFFFFFu;
+        crc = PngCrc32(crc, typeBytes);
+        crc = PngCrc32(crc, payload);
+        Span<byte> crcBytes = stackalloc byte[4];
+        System.Buffers.Binary.BinaryPrimitives.WriteUInt32BigEndian(crcBytes, ~crc);
+        output.Write(crcBytes);
+    }
+
+    static uint PngCrc32(uint crc, byte[] data)
+    {
+        foreach (byte value in data)
+        {
+            crc ^= value;
+            for (int bit = 0; bit < 8; bit++)
+            {
+                crc = (crc & 1) != 0 ? (crc >> 1) ^ 0xEDB88320u : crc >> 1;
+            }
+        }
+        return crc;
+    }
+}
+
+List<(int Width, int Height, int Stage)> progressiveCalls = new();
+int progressivePlaceholders = 0;
+OpenHarmonyView.ImageDrawOverride = (_, _, _, _, _, _, _) => true;
+if (streamCtl is not null && streamCtl.Handler?.PlatformView is OpenHarmonyView progressivePlatform)
+{
+    // The seams are static across every image view; record only the stream view so the other
+    // images in the tree (and their own preview/final passes) cannot move the counters.
+    OpenHarmonyView.ImageDrawRequested = (view, _, width, height, stage) =>
+    {
+        if (ReferenceEquals(view, progressivePlatform))
+        {
+            progressiveCalls.Add((width, height, stage));
+        }
+    };
+    OpenHarmonyView.ImagePlaceholderDrawn = (view, _) =>
+    {
+        if (ReferenceEquals(view, progressivePlatform))
+        {
+            progressivePlaceholders++;
+        }
+    };
+    streamCtl.Aspect = Aspect.AspectFill;
+    streamCtl.WidthRequest = 640;
+    streamCtl.HeightRequest = 480;
+    _ = host.Render();
+    Rect progressiveFrame = streamCtl.Frame;
+    int expectedFinalWidth = Math.Max(1, (int)MathF.Round((float)progressiveFrame.Width));
+    int expectedFinalHeight = Math.Max(1, (int)MathF.Round((float)progressiveFrame.Height));
+    int expectedPreviewWidth = Math.Max(1, expectedFinalWidth / 8);
+    int expectedPreviewHeight = Math.Max(1, expectedFinalHeight / 8);
+    int callsAfterPreview = progressiveCalls.Count;
+    _ = host.Render();
+    bool progressiveOk = Math.Max(expectedFinalWidth, expectedFinalHeight) >= 128
+        && callsAfterPreview == 1 && progressiveCalls.Count == 2
+        && progressiveCalls[0] == (expectedPreviewWidth, expectedPreviewHeight, 1)
+        && progressiveCalls[1] == (expectedFinalWidth, expectedFinalHeight, 2)
+        && progressivePlatform.ImageDecodePasses == 2
+        && progressivePlatform.LastImageDecodeWidth == expectedFinalWidth
+        && progressivePlatform.LastImageDecodeHeight == expectedFinalHeight;
+    long fullDecodeBytes = 2048L * 1536L * 4L;   // the source the display-size decode avoids
+    long finalDecodeBytes = (long)expectedFinalWidth * expectedFinalHeight * 4L;
+    Console.WriteLine($"[verify] image progressive decode frame={progressiveFrame.Width:0}x{progressiveFrame.Height:0} "
+        + $"preview={expectedPreviewWidth}x{expectedPreviewHeight} final={expectedFinalWidth}x{expectedFinalHeight} "
+        + $"source=2048x1536 fullDecode={fullDecodeBytes / 1024}KiB finalDecode={finalDecodeBytes / 1024}KiB "
+        + $"saved={(fullDecodeBytes - finalDecodeBytes) * 100 / fullDecodeBytes}% passes={progressivePlatform.ImageDecodePasses} previewCalls={callsAfterPreview} assert={progressiveOk}");
+    if (!progressiveOk)
+    {
+        throw new InvalidOperationException($"the progressive image decode contract drifted: {string.Join(", ", progressiveCalls)}");
+    }
+
+    // Small destination: a destination below the preview threshold decodes once at its own
+    // size, with no preview pass. The live tree fills the image's slot regardless of its size
+    // requests (the slice's layout measures the platform handler), so render an isolated tree
+    // constrained to 100x100 - under the 128 px preview threshold - with its own renderer and
+    // record only that image view.
+    var smallCtl = new Image { Source = ImageSource.FromFile(imagePath) };
+    var smallLayout = new VerticalStackLayout();
+    smallLayout.Add(smallCtl);
+    OpenHarmonyHandlerConnector.ConnectTree(smallLayout);
+    var smallView = smallCtl.Handler?.PlatformView as OpenHarmonyView;
+    List<(int Width, int Height, int Stage)> smallCalls = new();
+    bool smallLoaded = smallView?.ImageBytes is not null;
+    if (smallView is not null)
+    {
+        OpenHarmonyView.ImageDrawRequested = (view, _, width, height, stage) =>
+        {
+            if (ReferenceEquals(view, smallView))
+            {
+                smallCalls.Add((width, height, stage));
+            }
+        };
+        var smallRenderer = new OpenHarmonyWindowRenderer();
+        _ = smallRenderer.Render(smallLayout, 100, 100);
+    }
+    bool smallOk = smallLoaded && smallView is not null && smallCalls.Count == 1
+        && smallCalls[0].Stage == 2
+        && Math.Max(smallCalls[0].Width, smallCalls[0].Height) < 128
+        && smallView.ImageDecodePasses == 2;
+    Console.WriteLine($"[verify] image small-frame single pass frame={smallCtl.Frame.Width:0}x{smallCtl.Frame.Height:0} "
+        + $"decode={(smallCalls.Count > 0 ? smallCalls[0].Width : 0)}x{(smallCalls.Count > 0 ? smallCalls[0].Height : 0)} "
+        + $"calls={smallCalls.Count} assert={smallOk}");
+    if (!smallOk)
+    {
+        throw new InvalidOperationException($"the small-frame image decode contract drifted: {string.Join(", ", smallCalls)}");
+    }
+
+    // Failed decode: placeholder once for the generation, no per-frame retry. The recorder goes
+    // back to the stream view (the small-tree pass re-pointed it).
+    OpenHarmonyView.ImageDrawRequested = (view, _, width, height, stage) =>
+    {
+        if (ReferenceEquals(view, progressivePlatform))
+        {
+            progressiveCalls.Add((width, height, stage));
+        }
+    };
+    OpenHarmonyView.ImageDrawOverride = (_, _, _, _, _, _, _) => false;
+    streamCtl.WidthRequest = 320;
+    streamCtl.HeightRequest = 240;
+    streamCtl.Source = ImageSource.FromFile(progressiveImagePath);
+    await Task.Delay(20);
+    int callsBeforeFailure = progressiveCalls.Count;
+    _ = host.Render();
+    int placeholdersAfterFirst = progressivePlaceholders;
+    int callsAfterFailure = progressiveCalls.Count;
+    _ = host.Render();
+    bool failureOk = callsAfterFailure == callsBeforeFailure + 1
+        && placeholdersAfterFirst == 1 && progressivePlaceholders == 2
+        && progressiveCalls.Count == callsAfterFailure
+        && progressivePlatform.ImageDecodePasses == 0;
+    Console.WriteLine($"[verify] image decode failure placeholder={placeholdersAfterFirst} retries={progressiveCalls.Count - callsAfterFailure} "
+        + $"passes={progressivePlatform.ImageDecodePasses} assert={failureOk}");
+    if (!failureOk)
+    {
+        throw new InvalidOperationException($"the image decode failure contract drifted: placeholders={progressivePlaceholders}, calls={progressiveCalls.Count}");
+    }
+}
+OpenHarmonyView.ImageDrawRequested = null;
+OpenHarmonyView.ImagePlaceholderDrawn = null;
+OpenHarmonyView.ImageDrawOverride = null;
+
+// P2b-IMG: the host/managed decode contract behind the managed checks above - the sized export,
+// the desired-size option, the cache key that carries the requested decode size, and the
+// managed bridge that distinguishes "host failed" from "host unavailable".
+string p2bHostC = ReadHostSource("src/OpenHarmonyHost/openharmony_host.c");
+string p2bHostH = ReadHostSource("src/OpenHarmonyHost/openharmony_host.h");
+string p2bOptionalH = ReadHostSource("src/OpenHarmonyHost/host_optional.h");
+string p2bOptionalC = ReadHostSource("src/OpenHarmonyHost/host_optional.c");
+string p2bExports = ReadHostSource("src/OpenHarmonyHost/host-exports.txt");
+string p2bHosting = ReadHostSource("src/Microsoft.OpenHarmony.Hosting/OpenHarmonyApp.cs");
+bool p2bHostContract = p2bHostC.Contains("OhosDecodePixelmap(data, length, decode_width, decode_height)")
+    && p2bHostC.Contains("OH_DecodingOptions_SetDesiredSize(options, &desired)")
+    && p2bHostC.Contains("OhosImageCacheFind(hash, length, decode_width, decode_height)")
+    && p2bHostC.Contains("slot->decode_width = decode_width;")
+    && p2bHostC.Contains("int ohos_host_draw_image_bytes_sized(")
+    && p2bHostC.Contains("OHOS_IMAGE_DECODE_MAX_EDGE")
+    && p2bHostH.Contains("ohos_host_draw_image_bytes_sized")
+    && p2bOptionalH.Contains("ohos_host_optional_decoding_options_set_desired_size")
+    && p2bOptionalC.Contains("\"OH_DecodingOptions_SetDesiredSize\"")
+    && p2bExports.Contains("ohos_host_draw_image_bytes_sized")
+    && p2bHosting.Contains("[LibraryImport(HostLibrary, EntryPoint = \"ohos_host_draw_image_bytes_sized\")]")
+    && p2bHosting.Contains("public static bool? DrawImageBytesSized(")
+    && p2bHosting.Contains("catch (EntryPointNotFoundException)");
+Console.WriteLine($"[verify] image decode host contract sizedExport={p2bExports.Contains("ohos_host_draw_image_bytes_sized")} "
+    + $"desiredSize={p2bHostC.Contains("OH_DecodingOptions_SetDesiredSize")} cacheKey={p2bHostC.Contains("slot->decode_width = decode_width;")} "
+    + $"optionalShim={p2bOptionalC.Contains("\"OH_DecodingOptions_SetDesiredSize\"")} managed={p2bHosting.Contains("DrawImageBytesSized")} assert={p2bHostContract}");
+if (!p2bHostContract)
+{
+    throw new InvalidOperationException("the progressive image decode host contract drifted");
 }
 
 // W22-8: date/time picker dropdowns.
