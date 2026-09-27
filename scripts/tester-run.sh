@@ -19,16 +19,21 @@
 #       libs listing), bootstrap/rawfile failure signatures (hilog-bootstrap.txt + summary
 #       counts), device-side payload state (files dir listing + dotnet.marker first line),
 #       exec-memory/runtime-route evidence (hilog-execmem.txt: the xwe= decision line, the
-#       OHOS_DOTNET probe: result and the aot= / interp= route lines; summary aot_route /
-#       interp_mode), kit hap self-check (meta/kit-selfcheck.txt: resources.index size,
-#       libs/arm64-v8a file count, payload-in-libs marker, abc header version), kit hashes,
-#       machine-readable summary; tar -> tester-report-<stamp>.tar.gz
+#       OHOS_DOTNET probe: result and the aot= / interp= / runtime-mode= route lines; summary
+#       aot_route / interp_mode / runtime_mode), kit hap self-check (meta/kit-selfcheck.txt:
+#       resources.index size, libs/arm64-v8a file count, payload-in-libs marker, abc header
+#       version), kit hashes, machine-readable summary; tar -> tester-report-<stamp>.tar.gz.
+#       runtime_mode reads the MAIN hap's libs/<abi>/runtime-mode.txt (packaging marker,
+#       jit|aot|interp); device logs win (file > manifest > default), the marker fills a
+#       missing interp= line (3(manifest)) or a missing aot= line (1(manifest)).
 #   M mode-matrix --mode-matrix  one-command runtime-mode matrix: child rounds of this same
 #       script, one --out dir each. A JIT stock (install/start/capture); B xwe.txt=1 A/B
 #       (write/restart/capture/delete); optional C interpreter (--interp-pack/--interp-hap:
 #       overlay libcoreclr.so + libclrinterpreter.so into a kit hap, interp.txt=3, capture,
 #       delete, restore the stock hap) and D AOT (--aot-haps: install hello-maui-app-aot*.hap,
-#       capture, restore). A failing run never stops the remaining ones; summary ->
+#       capture, restore). A MAIN hap whose manifest marker is interp runs C without any
+#       asset: the stock hap is installed and captured as-is (no interp.txt, no repack).
+#       A failing run never stops the remaining ones; summary ->
 #       <out>/mode-matrix/summary.txt (+ one tester-report tar per run).
 # Safety: dry-run by default. Nothing is installed/started/removed/recorded unless the matching
 # flag is given (--install --uninstall --start --capture --probes --extra-probes --mode-matrix).
@@ -53,7 +58,7 @@ set -e
 
 # Bumped with every release repack (随发布重打包递增): the kit release notes' "Bundled
 # tester-run.sh" revision.
-SCRIPT_VERSION="11 (2026-09-27)"
+SCRIPT_VERSION="12 (2026-09-28)"
 
 log()  { printf '[%s] %s\n' "$(date '+%H:%M:%S')" "$*"; }
 warn() { printf '[%s] WARN: %s\n' "$(date '+%H:%M:%S')" "$*" >&2; }
@@ -90,11 +95,13 @@ usage() {
                              Run A JIT stock -> Run B xwe.txt=1 A/B ->（可选）Run C 解释器
                              ->（可选）Run D AOT；每个 Run 是独立子轮，失败不中断其余（!cancelled）。
                              需设备；汇总写 <out>/mode-matrix/summary.txt（每 Run 的安装/启动/
-                             aot_route/interp_mode/probe_1/xwe/首帧/崩溃/报告 tar + 结论建议行）。
+                             aot_route/interp_mode/runtime_mode/probe_1/xwe/首帧/崩溃/报告 tar + 结论建议行）。
   --aot-haps <tar.gz>        （矩阵可选）aot-haps.tar.gz：校验 sha 后安装包内
                              hello-maui-app-aot*.hap（Run D；期望 aot=1）
   --interp-pack <tar.gz>     （矩阵可选）ohos-interpreter-pack.tar.gz：校验 sha 后把
-                             libcoreclr.so + libclrinterpreter.so 换入 kit 的未签 hap（Run C）
+                             libcoreclr.so + libclrinterpreter.so 换入 kit 的未签 hap（Run C）；
+                             主 hap 的 libs/<abi>/runtime-mode.txt=jit|aot|interp 时，Run C 在
+                             清单声明 interp 时可不给资产（直接跑 stock hap 的清单路线）
   --interp-hap <hap>         （矩阵可选）已重签的解释器变体 hap：跳过本地 overlay 构建直接安装
   --interp-overlay <script>  （矩阵可选）用指定 overlay 脚本换入 libclrinterpreter.so（默认内置等价逻辑）
   --dry-run                  只打印计划（含矩阵资产清单），不执行任何设备命令（即使设备在线）
@@ -107,9 +114,13 @@ usage() {
   hilog/hilog-applib.txt（SetAppLibPath|appLibPathKey|NativeLibPath|lib path）与
   hilog/hilog-dlopen.txt（dlopen|cannot find library|openharmonyhost），并采集
   ls -l /data/storage/el1/bundle/libs/arm64/ -> device/app-libs-arm64.txt。
-  execmem/运行时路由证据（FIX-XWE / R2-SHELL-EXT；缺失容忍）：同一批 hilog 窗口过滤
-  OHOS_DOTNET probe:/xwe=/aot=/interp= -> hilog/hilog-execmem.txt；execmem_capture/execmem_lines
-  与 aot_route（0|1|0+1|<unavailable>）/interp_mode（<v>(file|default)|<unavailable>）写入 summary。
+  execmem/运行时路由证据（FIX-XWE / R2-SHELL-EXT / MS-MODE；缺失容忍）：同一批 hilog 窗口过滤
+  OHOS_DOTNET probe:/xwe=/aot=/interp=/runtime-mode= -> hilog/hilog-execmem.txt；
+  execmem_capture/execmem_lines 与 aot_route（0|1|0+1|1(manifest)|<unavailable>）/
+  interp_mode（<v>(file|manifest|default)|<unavailable>）/runtime_mode（<v>(hap)|invalid(<值>)|<absent>）
+  写入 summary（<v>=jit|aot|interp）：优先设备日志（interp.txt 文件 source=file > 清单 source=manifest
+  > 默认 source=default），日志缺行时按主 hap 的 libs/<abi>/runtime-mode.txt 补（清单 interp ->
+  3(manifest)、aot -> 1(manifest)），标记缺失记 <absent>、非法值如实记 invalid(...)（宿主保持 jit）。
   bootstrap/rawfile 失败特征（真机报告 §4/§7 的失败串，缺失容忍）：对所有已捕获 hilog 窗口再
   过滤 GetRawFileContent|bootstrap failed|bootstrap retry|BusinessError|900002|900003|
   ZIP entry|destination path|Load native module failed|symbol not found|cannot find library|
@@ -198,7 +209,7 @@ FILTER_DLOPEN_RE='dlopen|cannot find library|openharmonyhost'
 # Host executable-memory policy/probe + runtime-route switch (FIX-XWE / R2-SHELL-EXT): the W^X
 # decision line, the one-line probe result the host writes on the first launch path, and the
 # NativeAOT/interpreter decisions (tag OHOS_DOTNET).
-FILTER_EXECMEM_RE='OHOS_DOTNET probe:|xwe=|aot=|interp='
+FILTER_EXECMEM_RE='OHOS_DOTNET probe:|xwe=|aot=|interp=|runtime-mode='
 # Device findings (bootstrap/rawfile/hap-load failures) reproduce as these signatures; the
 # filter is deliberately wider than the summary error counters below.
 FILTER_BOOTSTRAP_RE='GetRawFileContent|bootstrap failed|bootstrap retry|BusinessError|900002|900003|ZIP entry|destination path|Load native module failed|symbol not found|cannot find library|Museum|MUSL-LDSO|check ns accessible'
@@ -228,6 +239,11 @@ EXECMEM_RESULT="not_captured"
 EXECMEM_LINES=0
 AOT_ROUTE="<unavailable>"
 INTERP_MODE="<unavailable>"
+# MS-MODE manifest marker of the MAIN hap: the summary value (jit|aot|interp)(hap) /
+# invalid(...) / <absent>, plus the bare value used as the derived_* fallback (empty when
+# absent or invalid).
+RUNTIME_MODE_DISPLAY="<absent>"
+RUNTIME_MODE_MANIFEST=""
 APPLIBS_DIR_RESULT="not_captured"
 APPLIBS_DIR_LINES=0
 ARCHIVE=""
@@ -495,22 +511,31 @@ match_count() {
 }
 
 # ---- runtime-route derivation from hilog-execmem.txt ----------------------------------
-# The host logs its launch decisions as `aot=0|1` and `interp=<v> source=<file|default>` on every
-# launch path (R2-SHELL-EXT); both are collected through FILTER_EXECMEM_RE. Values:
-#   aot_route   0 / 1 / 0+1 / <unavailable>  (0+1 = several launch windows, e.g. a JIT main hap
-#                                            plus an AOT extra probe; <unavailable> = no line)
-#   interp_mode <v>(file) when interp.txt selected a mode, else <v>(default), else <unavailable>
-# The file route wins over the default when both appear, so an interpreter round cannot be
-# masked by the earlier default lines of other windows.
+# The host logs its launch decisions as `aot=0|1`, `interp=<v> source=<file|manifest|default>`
+# and `runtime-mode=<jit|aot|interp> source=<...>` on every launch path (R2-SHELL-EXT / MS-MODE);
+# all are collected through FILTER_EXECMEM_RE. Values:
+#   aot_route   0 / 1 / 0+1 / 1(manifest) / <unavailable>
+#               (0+1 = several launch windows, e.g. a JIT main hap plus an AOT extra probe;
+#                1(manifest) = no aot= line in any window but the hap's runtime-mode.txt says
+#                aot, so the packed route is the only evidence; <unavailable> = neither)
+#   interp_mode <v>(file|manifest|default) / <unavailable>
+#               file = interp.txt selected it, manifest = the runtime-mode.txt marker selected
+#               it, default = neither; an absent window falls back to the marker (3(manifest))
+# The file route wins over the manifest and the default when several appear, so an interpreter
+# round cannot be masked by the earlier default lines of other windows; a missing window still
+# reports the packed interp marker as 3(manifest) instead of <unavailable>.
 derived_aot_route() {
     _ar_file="$1"
+    _ar_manifest="$2"
     _ar_0=0
     _ar_1=0
     if [ -s "$_ar_file" ]; then
         if [ "$(match_count 'aot=0([^0-9]|$)' "$_ar_file")" -gt 0 ]; then _ar_0=1; fi
         if [ "$(match_count 'aot=1([^0-9]|$)' "$_ar_file")" -gt 0 ]; then _ar_1=1; fi
     fi
-    if [ "$_ar_0" = 1 ] && [ "$_ar_1" = 1 ]; then printf '0+1'
+    if [ "$_ar_0" = 0 ] && [ "$_ar_1" = 0 ] && [ "$_ar_manifest" = aot ]; then
+        printf '1(manifest)'
+    elif [ "$_ar_0" = 1 ] && [ "$_ar_1" = 1 ]; then printf '0+1'
     elif [ "$_ar_1" = 1 ]; then printf '1'
     elif [ "$_ar_0" = 1 ]; then printf '0'
     else printf '<unavailable>'; fi
@@ -518,14 +543,19 @@ derived_aot_route() {
 
 derived_interp_mode() {
     _di_file="$1"
+    _di_manifest="$2"
     _di_line=""
-    _di_src="file"
+    _di_src=""
     if [ -s "$_di_file" ]; then
-        _di_line="$(grep -E -- 'interp=[0-9][0-9]* source=file' "$_di_file" 2>/dev/null | head -n1)"
-        if [ -z "$_di_line" ]; then
-            _di_src="default"
-            _di_line="$(grep -E -- 'interp=[0-9][0-9]* source=default' "$_di_file" 2>/dev/null | head -n1)"
-        fi
+        for _di_try in file manifest default; do
+            _di_line="$(grep -E -- "interp=[0-9][0-9]* source=$_di_try" "$_di_file" 2>/dev/null | head -n1)"
+            if [ -n "$_di_line" ]; then _di_src="$_di_try"; break; fi
+        done
+    fi
+    if [ -z "$_di_line" ]; then
+        if [ "$_di_manifest" = interp ]; then printf '3(manifest)'
+        else printf '<unavailable>'; fi
+        return 0
     fi
     _di_val="$(printf '%s\n' "$_di_line" | sed -n 's/.*interp=\([0-9][0-9]*\) source=.*/\1/p' | head -n1)"
     if [ -z "$_di_val" ]; then printf '<unavailable>'
@@ -789,6 +819,48 @@ kit_hash_of() {
     sha256sum "$1" | cut -d' ' -f1
 }
 
+# ---- runtime-mode manifest marker (MS-MODE) -------------------------------------------
+# libs/<abi>/runtime-mode.txt inside the MAIN hap: the packaging switch the device host reads
+# at launch (jit default / aot with the application library / interp with the packed
+# interpreter). tester-run reads the same marker locally so the summary reflects the packed
+# route before/without device logs; the device-side interp.txt still wins at the host and in
+# the derived_* helpers. Output: jit|aot|interp, <absent> (no marker / no reader), or
+# invalid(<value>) for anything else (the host warns and keeps jit; the summary stays honest).
+# The caller renders a valid mode as <v>(hap); the bare value feeds the derived_* fallback.
+hap_runtime_mode_of() {
+    _hrm_hap="$1"
+    _hrm_raw=""
+    if [ -f "$_hrm_hap" ]; then
+        if command -v python3 >/dev/null 2>&1; then
+            _hrm_raw="$(python3 - "$_hrm_hap" <<'PY'
+import sys, zipfile
+try:
+    with zipfile.ZipFile(sys.argv[1]) as z:
+        for name in z.namelist():
+            parts = name.split('/')
+            if len(parts) == 3 and parts[0] == 'libs' and parts[2] == 'runtime-mode.txt':
+                with z.open(name) as handle:
+                    data = handle.read(64).decode('utf-8', 'replace')
+                print(' '.join(data.split()))
+                break
+except Exception:
+    pass
+PY
+)"
+        elif command -v unzip >/dev/null 2>&1; then
+            _hrm_entry="$(unzip -l "$_hrm_hap" 2>/dev/null | awk '{ print $NF }' | grep -E '^libs/[^/]+/runtime-mode\.txt$' | head -n1)"
+            if [ -n "$_hrm_entry" ]; then
+                _hrm_raw="$(unzip -p "$_hrm_hap" "$_hrm_entry" 2>/dev/null | head -n1 | tr -d ' \t\r\n')"
+            fi
+        fi
+    fi
+    case "$_hrm_raw" in
+        '') printf '<absent>' ;;
+        jit|aot|interp) printf '%s' "$_hrm_raw" ;;
+        *) printf 'invalid(%s)' "$(printf '%s' "$_hrm_raw" | tr -c 'A-Za-z0-9._-' '_' | cut -c1-24)" ;;
+    esac
+}
+
 # ---- kit hap self-check (local; complements verify-kit.sh, no heavy re-implementation) ----
 # One line per kit hap: resources.index size, libs/arm64-v8a entry count, abc header version
 # ("PANDA" magic + version bytes at 0x0c, same shape build-arkts-shell.sh checks). The device
@@ -910,6 +982,23 @@ kit_hap_hashes > "$TMP/kit-hap-sha256.txt"
 MAIN_HAP_SHA="$(kit_hash_of "$MAIN_HAP")"
 log "   主 hap:  $MAIN_HAP"
 log "   bundle:  $BUNDLE"
+# MS-MODE manifest marker of the MAIN hap: the summary value plus the bare fallback mode.
+RUNTIME_MODE_DISPLAY="$(hap_runtime_mode_of "$MAIN_HAP")"
+case "$RUNTIME_MODE_DISPLAY" in
+    jit|aot|interp)
+        RUNTIME_MODE_MANIFEST="$RUNTIME_MODE_DISPLAY"
+        RUNTIME_MODE_DISPLAY="$RUNTIME_MODE_DISPLAY(hap)"
+        log "   运行时模式清单: runtime_mode=$RUNTIME_MODE_DISPLAY（主 hap libs/<abi>/runtime-mode.txt）"
+        ;;
+    '<absent>')
+        RUNTIME_MODE_MANIFEST=""
+        log "   运行时模式清单: runtime_mode=<absent>（主 hap 无 libs/<abi>/runtime-mode.txt；宿主按默认路线）"
+        ;;
+    *)
+        RUNTIME_MODE_MANIFEST=""
+        warn "   运行时模式清单值非法: $RUNTIME_MODE_DISPLAY（宿主将保持 jit；摘要如实记录）"
+        ;;
+esac
 
 # ---- mode matrix (--mode-matrix) -----------------------------------------------------
 # The runtime-mode determination card (JIT / AOT / interpreter) needs several device
@@ -1005,6 +1094,7 @@ matrix_collect() {
     M_ALIVE="$(matrix_mval "$_mx_out/summary.txt" process_alive)"
     M_AOT="$(matrix_mval "$_mx_out/summary.txt" aot_route)"
     M_INTERP="$(matrix_mval "$_mx_out/summary.txt" interp_mode)"
+    M_RUNTIME="$(matrix_mval "$_mx_out/summary.txt" runtime_mode)"
     M_PROBE="$(matrix_sed1 "$_mx_out/hilog/hilog-execmem.txt" 's/.*probe: 1=\([^ ]*\).*/\1/p')"
     M_XWE="$(matrix_sed1 "$_mx_out/hilog/hilog-execmem.txt" 's/.*\(xwe=[01]\) source=.*/\1/p')"
     _mx_full="$_mx_out/hilog/hilog-full.txt"
@@ -1033,6 +1123,7 @@ matrix_emit_run() {
     matrix_mrec "run_${_me_tag}_alive=$M_ALIVE"
     matrix_mrec "run_${_me_tag}_aot_route=$M_AOT"
     matrix_mrec "run_${_me_tag}_interp_mode=$M_INTERP"
+    matrix_mrec "run_${_me_tag}_runtime_mode=$M_RUNTIME"
     matrix_mrec "run_${_me_tag}_probe_1=$M_PROBE"
     matrix_mrec "run_${_me_tag}_xwe=$M_XWE"
     matrix_mrec "run_${_me_tag}_frame=$M_FRAME"
@@ -1268,8 +1359,11 @@ matrix_print_plan() {
     if [ -n "$INTERP_PACK_TAR" ] || [ -n "$INTERP_HAP" ]; then
         log "     Run C 解释器    : 校验 interp pack -> 换入 libcoreclr.so+libclrinterpreter.so -> --uninstall --install --hap <interp hap>"
         log "                       -> echo 3 > $DEV_FILES_DIR/interp.txt -> --start --capture $CAPTURE_SECS -> rm interp.txt -> 重装主 hap"
+    elif [ "$RUNTIME_MODE_MANIFEST" = interp ]; then
+        log "     Run C 解释器    : 主 hap 清单 runtime_mode=$RUNTIME_MODE_DISPLAY -> 不 overlay、不写 interp.txt"
+        log "                       -> --uninstall --install --hap <主 hap> -> --start --capture $CAPTURE_SECS（期望 3(manifest)）-> 重装主 hap"
     else
-        log "     Run C 解释器    : 跳过（未给 --interp-pack/--interp-hap）"
+        log "     Run C 解释器    : 跳过（未给 --interp-pack/--interp-hap 且主 hap 清单未声明 interp）"
     fi
     if [ -n "$AOT_HAPS_TAR" ]; then
         log "     Run D AOT       : 校验 aot-haps -> --uninstall --install --start --capture $CAPTURE_SECS --hap hello-maui-app-aot*.hap -> 重装主 hap"
@@ -1305,10 +1399,15 @@ mode_matrix_main() {
     matrix_mrec "bundle=$BUNDLE"
     matrix_mrec "main_hap=$MAIN_HAP"
     matrix_mrec "main_hap_sha256=$MAIN_HAP_SHA"
+    matrix_mrec "runtime_mode=$RUNTIME_MODE_DISPLAY"
     matrix_mrec "aot_haps_tar=$AOT_HAPS_TAR"
     matrix_mrec "interp_pack_tar=$INTERP_PACK_TAR"
     matrix_mrec "interp_hap=$INTERP_HAP"
     log "   资产: kit=$KIT_DIR; aot-haps=${AOT_HAPS_TAR:-<未提供>}; interp-pack=${INTERP_PACK_TAR:-<未提供>}; interp-hap=${INTERP_HAP:-<自动构建>}"
+    case "$RUNTIME_MODE_MANIFEST" in
+        ''|jit) ;;
+        *) warn "   主 hap 清单 runtime_mode=$RUNTIME_MODE_DISPLAY：Run A/B 也按该形态启动（摘要 runtime_mode 键如实记录），Run C 按清单路线跑" ;;
+    esac
 
     # A stale switch file from an interrupted earlier round would poison Run A: drop both
     # first (the same files the matrix itself writes; nothing else is touched).
@@ -1333,17 +1432,28 @@ mode_matrix_main() {
     B_PROBE="$M_PROBE"; B_CRASH="$M_CRASH"
     matrix_mrec "run_b_switch=xwe.txt=1"
 
-    # --- Run C: interpreter (optional) ------------------------------------------------
+    # --- Run C: interpreter (asset pack or manifest marker) ----------------------------
     RUN_C=0
     C_SKIP=""
+    C_VIA=""
     MI_HAP=""; MI_HAP_SHA=""; MI_CORECLR_SHA=""; MI_CLRINTERP_SHA=""; MI_OV_KIND=""; MI_CORECLR_CHECK=""; MI_SKIP=""
     MI_PACK_CORECLR=""; MI_PACK_CLRINTERP=""; MI_PACK_SHA=""; MI_PACK_CHECK=""
-    if [ -n "$INTERP_PACK_TAR" ] || [ -n "$INTERP_HAP" ]; then RUN_C=1; fi
+    if [ -n "$INTERP_PACK_TAR" ] || [ -n "$INTERP_HAP" ]; then
+        RUN_C=1
+        C_VIA="variant"
+    elif [ "$RUNTIME_MODE_MANIFEST" = interp ]; then
+        # MS-MODE: the stock hap's manifest marker already selects the packed interpreter, so the
+        # C round needs no asset - install/capture the hap as-is and let the host log source=manifest.
+        RUN_C=1
+        C_VIA="manifest"
+    fi
     if [ "$RUN_C" = 0 ]; then
         matrix_mrec "run_c_status=skipped(no --interp-pack/--interp-hap)"
     else
-        log "== 矩阵 Run C/4: 解释器（interp.txt=3） =="
-        if [ -n "$INTERP_PACK_TAR" ]; then
+        log "== 矩阵 Run C/4: 解释器（$C_VIA 路线） =="
+        if [ "$C_VIA" = manifest ]; then
+            log "   主 hap 清单声明 interp（$RUNTIME_MODE_DISPLAY）：不 overlay、不写 interp.txt（宿主按清单走 3(manifest)）"
+        elif [ -n "$INTERP_PACK_TAR" ]; then
             if matrix_fetch_pack "$INTERP_PACK_TAR" interp "$TMP/interp-pack"; then
                 MI_PACK_SHA="$MP_SHA"; MI_PACK_CHECK="$MP_CHECK"
                 matrix_mrec "interp_pack_sha256=$MI_PACK_SHA"
@@ -1370,7 +1480,19 @@ mode_matrix_main() {
                 C_SKIP="interp pack sha 校验/解压失败（check=$MP_CHECK）"
             fi
         fi
-        if [ -z "$C_SKIP" ] && matrix_build_interp_hap; then
+        if [ "$C_VIA" = manifest ]; then
+            matrix_mrec "run_c_via=manifest"
+            matrix_mrec "run_c_hap=$MAIN_HAP"
+            matrix_mrec "run_c_hap_sha256=$MAIN_HAP_SHA"
+            matrix_child c-install "$OUT/run-c-install" --uninstall --install --hap "$MAIN_HAP"
+            matrix_collect c-install "$OUT/run-c-install"
+            _c_install="$M_INSTALL"
+            matrix_child c "$OUT/run-c" --start --capture "$CAPTURE_SECS"
+            matrix_collect c "$OUT/run-c"
+            matrix_emit_run c "$_c_install"
+            C_INTERP="$M_INTERP"; C_CRASH="$M_CRASH"
+        elif [ -z "$C_SKIP" ] && matrix_build_interp_hap; then
+            matrix_mrec "run_c_via=variant"
             matrix_mrec "run_c_overlay=$MI_OV_KIND"
             matrix_mrec "run_c_hap=$MI_HAP"
             matrix_mrec "run_c_hap_sha256=$MI_HAP_SHA"
@@ -1486,11 +1608,13 @@ mode_matrix_main() {
             _concl="$_concl；解释器未测（$C_SKIP）"
         elif [ "$C_INTERP" = "3(file)" ]; then
             _concl="$_concl；解释器 3(file) 激活（run-c）"
+        elif [ "$C_INTERP" = "3(manifest)" ]; then
+            _concl="$_concl；解释器 3(manifest) 激活（清单，run-c）"
         else
             _concl="$_concl；解释器 interp_mode=$C_INTERP（run-c）"
         fi
     else
-        _concl="$_concl；解释器未测（未给 --interp-pack）"
+        _concl="$_concl；解释器未测（未给 --interp-pack，且主 hap 清单未声明 interp）"
     fi
     if [ "$RUN_D" = 1 ]; then
         if [ -n "$D_SKIP" ]; then
@@ -2172,7 +2296,7 @@ if [ "$DO_DEVICE" = 0 ]; then
     log "   [dry-run] 将采集: hilog+kmsg 捕获、module.json、param get + UDID、kit 哈希、summary.txt"
     log "   [dry-run] 将采集 ELF 签名证据: xpm_mode/require_signatures、SoInfoSegment magic 计数"
     log "   [dry-run] 将采集 app-lib 路径证据: hilog 过滤（appLibPathKey/dlopen）+ bundle libs 目录列表"
-    log "   [dry-run] 将采集 execmem/运行时路由证据（FIX-XWE/R2-SHELL-EXT）: hilog 过滤（OHOS_DOTNET probe:/xwe=/aot=/interp=）-> hilog/hilog-execmem.txt（summary: aot_route/interp_mode）"
+    log "   [dry-run] 将采集 execmem/运行时路由证据（FIX-XWE/R2-SHELL-EXT/MS-MODE）: hilog 过滤（OHOS_DOTNET probe:/xwe=/aot=/interp=/runtime-mode=）-> hilog/hilog-execmem.txt（summary: aot_route/interp_mode/runtime_mode）"
     log "   [dry-run] 将采集 bootstrap/rawfile 失败特征: hilog 再过滤 -> hilog/hilog-bootstrap.txt + summary 计数"
     log "   [dry-run] 将采集 payload 状态: ls -l $DEV_FILES_DIR/ + 读一行 dotnet.marker -> device/payload-*.txt"
     if [ "$A11Y_PROBE" = 1 ]; then
@@ -2270,8 +2394,8 @@ else
         APPLIB_LINES="$(line_count "$OUT/hilog/hilog-applib.txt")"
         DLOPEN_LINES="$(line_count "$OUT/hilog/hilog-dlopen.txt")"
         EXECMEM_LINES="$(line_count "$OUT/hilog/hilog-execmem.txt")"
-        AOT_ROUTE="$(derived_aot_route "$OUT/hilog/hilog-execmem.txt")"
-        INTERP_MODE="$(derived_interp_mode "$OUT/hilog/hilog-execmem.txt")"
+        AOT_ROUTE="$(derived_aot_route "$OUT/hilog/hilog-execmem.txt" "$RUNTIME_MODE_MANIFEST")"
+        INTERP_MODE="$(derived_interp_mode "$OUT/hilog/hilog-execmem.txt" "$RUNTIME_MODE_MANIFEST")"
         if [ "$APPLIB_LINES" -eq 0 ]; then
             warn "   未见 SetAppLibPath/appLibPathKey/NativeLibPath/lib path（日志级别或窗口原因，保留空证据）"
         fi
@@ -2279,9 +2403,9 @@ else
             warn "   未见 dlopen/cannot find library/openharmonyhost（同上，保留空证据）"
         fi
         if [ "$EXECMEM_LINES" -eq 0 ]; then
-            warn "   未见 OHOS_DOTNET probe/xwe=/aot=/interp= 行（宿主版本或日志窗口原因，保留空证据）"
+            warn "   未见 OHOS_DOTNET probe/xwe=/aot=/interp=/runtime-mode= 行（宿主版本或日志窗口原因，保留空证据）"
         fi
-        log "   app-lib 路径 -> $OUT/hilog/hilog-applib.txt（${APPLIB_LINES} 行）/ dlopen -> $OUT/hilog/hilog-dlopen.txt（${DLOPEN_LINES} 行）/ execmem 路由 -> $OUT/hilog/hilog-execmem.txt（${EXECMEM_LINES} 行；aot_route=$AOT_ROUTE interp_mode=$INTERP_MODE）"
+        log "   app-lib 路径 -> $OUT/hilog/hilog-applib.txt（${APPLIB_LINES} 行）/ dlopen -> $OUT/hilog/hilog-dlopen.txt（${DLOPEN_LINES} 行）/ execmem 路由 -> $OUT/hilog/hilog-execmem.txt（${EXECMEM_LINES} 行；aot_route=$AOT_ROUTE interp_mode=$INTERP_MODE runtime_mode=$RUNTIME_MODE_DISPLAY）"
     else
         warn "   app-lib 路径证据未采集（本轮没有 hilog 录制窗口）"
     fi
@@ -2455,6 +2579,7 @@ else
         printf 'execmem_lines=%s\n' "$EXECMEM_LINES"
         printf 'aot_route=%s\n' "$AOT_ROUTE"
         printf 'interp_mode=%s\n' "$INTERP_MODE"
+        printf 'runtime_mode=%s\n' "$RUNTIME_MODE_DISPLAY"
         printf 'app_libs_arm64=%s\n' "$APPLIBS_DIR_RESULT"
         printf 'app_libs_arm64_lines=%s\n' "$APPLIBS_DIR_LINES"
         printf 'bootstrap_capture=%s\n' "$BOOTSTRAP_RESULT"
