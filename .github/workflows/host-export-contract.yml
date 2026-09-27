@@ -22,7 +22,7 @@ on:
         description: 'maui-ohos commit SHA to cross-check (defaults to the pinned slice tip)'
         required: false
         type: string
-        default: '63d13d1542f979e29238b65f0c8fe8e3ec537d8d'
+        default: 'f9b63ee2b5f6883d0a0c79c1cbc1e5b0f3a19e46'
   push:
     branches: [ master ]
   pull_request:
@@ -32,11 +32,11 @@ permissions:
 
 # Reproducible cross-repo check: the slice is checked out at an exact commit, not the mutable
 # feature/openharmony branch, so a push to the fork cannot change what this gate verifies.
-# Current tip: 63d13d15 (R2-SHELL-EXT: the Map Kit overlay bridge and the Live View Kit bridge;
-# the host export contract is 134/134 with those sinks). Advance the pin deliberately, in
-# lockstep with the interaction/pixel gates.
+# Current tip: f9b63ee2 (P1a-ANIM: frame-driven transitions plus the animation-reduce listener
+# entry ohos_host_animation_reduce_set; the host export contract is 141/141 with that entry).
+# Advance the pin deliberately, in lockstep with the interaction/pixel gates.
 env:
-  MAUI_OHOS_REF: ${{ github.event.inputs.maui_ohos_ref || '63d13d1542f979e29238b65f0c8fe8e3ec537d8d' }}
+  MAUI_OHOS_REF: ${{ github.event.inputs.maui_ohos_ref || 'f9b63ee2b5f6883d0a0c79c1cbc1e5b0f3a19e46' }}
 
 jobs:
   contract:

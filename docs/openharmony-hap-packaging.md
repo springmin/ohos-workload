@@ -650,14 +650,16 @@ the log pair),
 while `scripts/build-arkts-shell.sh` keeps the abc at
 `13.0.1.0`, carries the `./map/MapOverlay`, `registerLiveViewSink`, `notifyLiveViewResult`,
 `@kit.LiveViewKit`, `SystemCapability.LiveView.LiveViewService`, `registerTtsSink`,
-`notifyTtsResult`, `@kit.CoreSpeechKit`, `SystemCapability.AI.TextToSpeech` and
-`notifyTextComposition` literals
-in the UI abc (the provenance gate; current default-flavor UI abc 275,324 B /
-`5efa6b1a...`, headless 18,532 B) and enforces
+`notifyTtsResult`, `@kit.CoreSpeechKit`, `SystemCapability.AI.TextToSpeech`,
+`notifyTextComposition`, `notifyAnimationReduce`, `@kit.AccessibilityKit` and
+`SystemCapability.BarrierFree.Accessibility.Core` literals
+in the UI abc (the provenance gate; current default-flavor UI abc 278,760 B /
+`c84fbf34...`, headless 18,532 B) and enforces
 the source contract (no `@ohos.*` imports, variable kit specifiers). The host-side gate is
-`scripts/build-host.sh` (nm -D: all 139 `host-exports.txt` names present as plain symbols) plus
+`scripts/build-host.sh` (nm -D: all 141 `host-exports.txt` names present as plain symbols) plus
 `scripts/check-host-exports.py --cross-check`; the interaction suite's own contract line is
-`[suite] checks=347 total=347 floor=327 assert=True`.
+`[suite] checks=357 total=357 floor=337 assert=True` (the 10 P1a-ANIM animation checks on the
+347/327 base; the image batch in flight raises the same line to 361/341).
 
 ### Templates / abc sync strategy
 
@@ -704,14 +706,43 @@ explicit `-p:OpenHarmonyArktsModulesAbc=<file>` overrides both. The former
   ship it as a separate pack revision; keep the checked-in `modules*.abc` on the default flavor.
   The provenance record pins the default flavor and the script refuses to write it from a harmony
   build.
-- **Current state (P0c-TEXT-EDIT, 2026-09-27)**: all three preview packs carry the same sources
+- **Current state (P1a-ANIM, 2026-09-27)**: all three preview packs carry the same sources
   (Share/Scan/Push/Account/Map/Live View/CoreSpeech probes, HUKS-first SecureStorage,
-  kit-import migration, feature permission chain, IME composition) and the abc rebuilt from them
-  on the OpenHarmony SDK: UI 275,324 B / sha256
-  `5efa6b1aa4fbd4865a4c601f079ce1f4c96bd7aa9ad5dfe98b52e1f635df05a5`, headless 18,532 B / sha256
+  kit-import migration, feature permission chain, IME composition, the animation-reduce
+  observation) and the abc rebuilt from them
+  on the OpenHarmony SDK: UI 278,760 B / sha256
+  `c84fbf3462def13c17899b69c45674500f5e117a8f39ba460305775e9d1beb35`, headless 18,532 B / sha256
   `d7ec9ca7ee6169a883af490a006005fe73fa7d03c40e178db9f2594c83b8d785`, both abc version 13.0.1.0
   with `compatibleSdkVersion 18`. The harmony-flavor build of the same sources against the
-  CoreSpeechKit-capable DevEco SDK is 273,932 B / `e7290ed1…` (see the SDK-branch section).
+  CoreSpeechKit-capable DevEco SDK is 273,932 B / `e7290ed1…` (see the SDK-branch section; its
+  page predates the animation-reduce probe and is rebuilt from the same sources when the flavor
+  build next runs).
+
+### Animations/transitions (P1a-ANIM)
+
+The self-drawn route has no per-view ArkUI animation: page transitions, control-state easing and
+the minimal shared-element morph run on the managed frame loop (`OpenHarmonyAnimationLoop`,
+fed by the XComponent frame callback and by MAUI's ticker). The shell's only role is the system
+"reduce animations" setting:
+
+- `pages/Index.ets` resolves `@kit.AccessibilityKit` lazily (variable specifier, typeof-guarded
+  - an API 23 surface, so a device whose framework predates it keeps the managed default), reads
+  `isAnimationReduceEnabledSync()` once and follows `onAnimationReduceStateChange`, forwarding
+  every value as `host.notifyAnimationReduce(0/1)`; the listener unregisters with the page
+  through the disposer ledger.
+- `src/OpenHarmonyHost/host_napi.cpp` exports `notifyAnimationReduce` and the managed listener
+  entry `ohos_host_animation_reduce_set` (export contract: 139 -> 141 names), remembering the
+  last value and replaying it to a late listener so the startup order cannot lose it.
+- Managed side (`maui-ohos`): `OpenHarmonyMotion.ReduceMotion` gates the page/shared enter
+  passes (instant commit) and the control-state channels (snap), and makes
+  `OpenHarmonyTicker.SystemEnabled` false, so MAUI's `AnimationManager` stops accepting new
+  animations and force-finishes the running ones on the next fire.
+- While MAUI animations run, the ticker also keeps a frame-loop registration alive that only
+  requests repaints (`OpenHarmonyBridge.RequestRedraw`), because the compositor paints a dirty
+  surface only: sampling stays on the ticker's timer, repainting becomes frame-aligned.
+- The `--check-pack-abc` literal gate pins `notifyAnimationReduce`, `@kit.AccessibilityKit` and
+  `SystemCapability.BarrierFree.Accessibility.Core` in the UI abc (headless must not carry
+  them), so a shell rebuilt without the probe fails before packaging.
 
 ### Text editing (P0c-TEXT-EDIT)
 

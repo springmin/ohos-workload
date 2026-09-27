@@ -52,14 +52,15 @@ permissions:
 
 # Reproducible cross-repo compile: the MAUI slice is checked out at an exact commit, not the
 # mutable feature/openharmony branch, so a push to the fork cannot change what this gate compiles.
-# The default is the feature/openharmony tip: e6b6ecbb, the P0c-TEXT-EDIT commit (self-drawn
-# text editing: caret blink, measured selection + handles, IME composition; on top of the
-# P2a-HUKS SecureStorage, A2-TTS CoreSpeechKit, R2-SHELL-EXT and KIT-EXT2 batches). The suite
-# pins 347 checks / floor 327 and the full run is green at this compiled tree (local preflight
-# verification: 347/347, floor 327); advance the pin deliberately and refresh this comment when
+# The default is the feature/openharmony tip: f9b63ee2, the P1a-ANIM commit (frame-driven page
+# enter passes, control-state channels, the minimal shared morph, the ticker redraw driver and
+# the renderer transform/alpha scope fix; on top of the P0c-TEXT-EDIT, P2a-HUKS, A2-TTS,
+# R2-SHELL-EXT and KIT-EXT2 batches). The suite
+# pins 357 checks / floor 337 and the full run is green at this compiled tree (local verification:
+# 357/357, floor 337); advance the pin deliberately and refresh this comment when
 # the harness pins or the tip move (workflow_dispatch can compile any commit).
 env:
-  MAUI_OHOS_REF: ${{ github.event.inputs.maui_ohos_ref || 'e6b6ecbbd334f8384b6891b8cba52a1864c06163' }}
+  MAUI_OHOS_REF: ${{ github.event.inputs.maui_ohos_ref || 'f9b63ee2b5f6883d0a0c79c1cbc1e5b0f3a19e46' }}
   # setup-dotnet installs the requested 11.0.x preview into DOTNET_INSTALL_DIR; on Linux that
   # defaults to /usr/share/dotnet, which a per-user cache cannot persist. Point it at ~/.dotnet
   # (the action resolves the ~ prefix against $HOME) so the cache step below actually avoids the

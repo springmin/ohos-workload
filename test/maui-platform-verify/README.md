@@ -49,7 +49,7 @@ allocation and jitter) budgets are exceeded.
 # (or the MauiSliceDir / HostingDll / OpenHarmonyGraphicsDll MSBuild properties) before building
 # elsewhere; an explicit -p: value wins over the environment and the absolute fallbacks.
 dotnet build -v:q
-dotnet bin/Debug/net11.0/verify.dll | grep -c '\[verify\]'   # expect 347 (334 checks + 4 fuzz + 1 frame perf + 8 a11y perf)
+dotnet bin/Debug/net11.0/verify.dll | grep -c '\[verify\]'   # expect 357 (344 checks + 4 fuzz + 1 frame perf + 8 a11y perf)
 ```
 
 The `interaction-regression` workflow (`.github/workflows/interaction-regression.yml`) runs the
@@ -60,7 +60,7 @@ suite on a GitHub runner as a real gate (on push to `master`, on pull requests a
 points `MAUI_SLICE_DIR` / `HOSTING_DLL` / `OPENHARMONY_GRAPHICS_DLL` at those roots, and fails the
 job unless the run exits 0, the suite's own `[suite]` contract line reports `assert=True` with at
 least the floor declared in `Program.cs`, both perf lines report `within=True`, and no `Unhandled`
-line is logged. The floor (327 = 347 - 20, the documented convention) lives only in `Program.cs`;
+line is logged. The floor (337 = 357 - 20, the documented convention) lives only in `Program.cs`;
 the workflow and `scripts/preflight.sh` both read the printed `[suite] checks=... floor=...` line
 instead of repeating a literal, so the two local/CI thresholds cannot drift apart.
 
@@ -169,7 +169,7 @@ jitter ~1.08x and 72,056 B/frame, and the a11y block reported ~0.3/0.5 ms for th
 ~0.07/0.28 ms for the publish pass (skip/republish). The post-batch run (commit a10b73e) reported
 avg 0.488 ms, p95 0.698 ms, jitter 1.43x and 3,720 B/frame, i.e. the ceiling is 3.72x the CI
 baseline. Every run ends with the `[suite]` contract line
-(`checks=347 total=347 floor=327 assert=True`), which the workflow and `scripts/preflight.sh`
+(`checks=357 total=357 floor=337 assert=True`), which the workflow and `scripts/preflight.sh`
 parse.
 
 ## Notes
@@ -178,8 +178,8 @@ parse.
   blocks codesigned ELF apphosts on some machines).
 - The suite fails loudly (unhandled exception) when a slice change breaks startup or when an
   assertion for the gesture flows (including the drag-and-drop checks) does not hold; keep it at
-  324 checks plus the 4 fuzz lines plus the 1 frame-perf line plus the 8 a11y-perf lines
-  (340 `[verify]` lines) when touching the platform slice. The total and the floor (total - 20)
+  344 checks plus the 4 fuzz lines plus the 1 frame-perf line plus the 8 a11y-perf lines
+  (357 `[verify]` lines) when touching the platform slice. The total and the floor (total - 20)
   are declared in `Program.cs`; the run ends with a `[suite] checks=... floor=... assert=...`
   line and fails itself when the printed count is below the floor, so the CI job and
   `scripts/preflight.sh` do not repeat the threshold.
@@ -695,3 +695,26 @@ parse.
   `ohos_host_keyboard_set_caret`, `TextComposition` event, `SetKeyboardCaret`). That is 7 lines:
   340 + 7 = 347 = 334 interaction checks + 4 fuzz + 1 frame perf + 8 a11y perf; the workflow
   floor moves with the total (347 - 20 = 327).
+- P1a-ANIM (animations and transitions, 2026-09-27): ten `[verify]` lines pin the frame-driven
+  effects with an injected `OpenHarmonyAnimationLoop.Clock` so every pass is deterministic.
+  `anim page enter push` / `anim page enter pop` push and pop a NavigationPage and check the
+  entering page starts at opacity 0, is mid-ease after 40 ms (fading and sliding in the right
+  direction) and commits back to its exact base opacity/translation with the loop unregistered;
+  `anim page enter reduce-motion skips` proves a navigation under
+  `OpenHarmonyMotion.ReduceMotion` commits instantly; `anim ticker driver` starts/stops the
+  OpenHarmony ticker directly and checks exactly one redraw-only frame-loop entry appears, a
+  pumped frame raises `RedrawRequests` and `SystemEnabled` follows the reduce-motion flag;
+  `anim maui fade/translate/scale` drives the public `FadeToAsync`/`TranslateToAsync`/
+  `ScaleToAsync` on an in-tree label, polls until the ticker's redraw driver is live mid-flight
+  and checks the final `Opacity`/`TranslationX/Y`/`Scale` values exactly; `anim controls` checks
+  the switch knob, check-mark draw-on and press channels interpolate and reach their targets
+  (including the release back to 0); `anim controls reduce-motion snap` proves the channels snap
+  under the setting; `anim shared morph` pushes a page whose `AutomationId="shared:hero"` element
+  matches the outgoing page's, checks the incoming element is mid-morph (translation from the
+  source frame, uniform scale from the width ratio) and restores exactly;
+  `anim shared morph reduce-motion skips` covers the gated path; `anim transitions config`
+  checks a zero duration disables the pass and the loop is idle afterwards. That is 10 lines:
+  347 + 10 = 357 = 344 interaction checks + 4 fuzz + 1 frame perf + 8 a11y perf; the workflow
+  floor moves with the total (357 - 20 = 337). The pixel suite (`test/headless-render`) settles
+  the press/check channels before sampling, so its button-pressed and check-line assertions see
+  the completed state instead of a mid-ease frame.

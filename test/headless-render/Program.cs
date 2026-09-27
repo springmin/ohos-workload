@@ -36,6 +36,19 @@ void RenderFresh()
     renderer.Render(page, 1080, 1920);
 }
 
+// Control-state transitions (press/check/switch) are frame-driven through the shared loop;
+// settle them before sampling so a pixel assertion sees the completed state, not a mid-ease
+// frame. Each channel finishes within a few hundred milliseconds of fake time.
+void Settle()
+{
+    long settleNow = OpenHarmonyAnimationLoop.NowMs;
+    for (int i = 0; i < 120 && OpenHarmonyAnimationLoop.IsRunning; i++)
+    {
+        settleNow += 16;
+        OpenHarmonyAnimationLoop.Pump(settleNow, 1f / 60f);
+    }
+}
+
 int failures = 0;
 void Check(string what, Color actual, Color expected, int tolerance = 24)
 {
@@ -81,15 +94,18 @@ Check("heading text marker", canvas.GetPixel((int)(headingFrame.X + 8), (int)(he
 Check("border stroke", canvas.GetPixel((int)borderFrame.X + 1, (int)(borderFrame.Y + borderFrame.Height / 2)), Colors.DodgerBlue);
 Check("rectangle fill", canvas.GetPixel((int)(rectFrame.X + rectFrame.Width / 2), (int)(rectFrame.Y + rectFrame.Height / 2)), Colors.OrangeRed);
 
-// Interaction state: pressing the button repaints it in the pressed colour.
+// Interaction state: pressing the button repaints it in the pressed colour. The press tint
+// eases in on the frame loop, so settle before sampling.
 Rect buttonFrame = button.Frame;
 host.HandleTouch(true, false, (float)(buttonFrame.X + buttonFrame.Width / 2), (float)(buttonFrame.Y + buttonFrame.Height / 2));
+Settle();
 renderer.Render(page, 1080, 1920);
 RenderFresh();
 Check("button pressed state",
     canvas.GetPixel((int)(buttonFrame.X + buttonFrame.Width / 2), (int)(buttonFrame.Y + buttonFrame.Height / 2)),
     Colors.OrangeRed);
 host.HandleTouch(false, true, (float)(buttonFrame.X + buttonFrame.Width / 2), (float)(buttonFrame.Y + buttonFrame.Height / 2));
+Settle();
 
 // Disabled state: the same colour, dimmed by the renderer's 50% alpha.
 RenderFresh();
@@ -102,7 +118,9 @@ Check("disabled button dimmed", dimmed, expectedDim, 24);
 // CheckBox: the box stroke is drawn at the view's edge.
 var check = (CheckBox)root.Children[5];
 Rect checkFrame = check.Frame;
-// The box is drawn inset (70% of the view, centred): sample its left edge.
+// The box is drawn inset (70% of the view, centred): sample its left edge. The check-mark
+// draw-on is frame-driven, so settle the channel before sampling the checked pose.
+Settle();
 RenderFresh();
 var checkPlatform = check.Handler?.PlatformView as OpenHarmonyView;
 RectF drawFrame = checkPlatform?.Frame ?? new RectF((float)checkFrame.X, (float)checkFrame.Y, (float)checkFrame.Width, (float)checkFrame.Height);
@@ -117,6 +135,7 @@ int checkX = (int)(boxX + side * 0.35f);
 int checkY = (int)(boxY + side * 0.65f);
 Color withCheck = canvas.GetPixel(checkX, checkY);
 check.IsChecked = false;
+Settle();
 RenderFresh();
 Color withoutCheck = canvas.GetPixel(checkX, checkY);
 bool checkLineDiffers = withCheck.Red > withoutCheck.Red + 0.2f || withCheck.Green > withoutCheck.Green + 0.2f;

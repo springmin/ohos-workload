@@ -12,7 +12,7 @@ using Microsoft.Maui.Platform;
 // after the fuzz tail) instead of letting every caller repeat its own threshold constant.
 VerifyLineCountingWriter verifyStdout = new(Console.Out);
 Console.SetOut(verifyStdout);
-const int verifyCheckTotal = 347;                     // documented full [verify] line count (+7 P0c-TEXT-EDIT)
+const int verifyCheckTotal = 357;                     // documented full [verify] line count (+10 P1a-ANIM)
 const int verifyCheckFloor = verifyCheckTotal - 20;   // documented floor convention (total - 20)
 
 // A small image file for the Image handler.
@@ -6993,6 +6993,267 @@ if (!a11yAllWithin)
         $"publish skip avg={a11ySkipPublish.Average:0.###}ms publish republish avg={a11yRepublishPublish.Average:0.###}ms " +
         $"ratio render={a11yRenderRatio:0.##} (floor {a11yRenderRatioFloor}) publish={a11yPublishRatio:0.##} (floor {a11yPublishRatioFloor}) " +
         $"integrity={a11yIntegrity} elapsed={(int)a11yWatch.ElapsedMilliseconds}ms (limit {(int)a11yElapsedCeilingMs}ms) nodes={a11yNodeCount}");
+}
+
+// ---- P1a-ANIM: frame-driven animations and transitions ----------------------------------------
+// The shared frame loop is stepped with an injected clock so every pass is deterministic; the
+// previous clock is restored at the end of the block. Checks: page enter (push/pop), the
+// reduce-motion gate, the ticker's frame-loop redraw driver, MAUI FadeTo/TranslateTo/ScaleTo
+// sampling + end callbacks on the compositor, the control-state channels (switch/check/press),
+// and the minimal AutomationId-keyed shared morph.
+Func<long> previousAnimClock = OpenHarmonyAnimationLoop.Clock;
+OpenHarmonyAnimationLoop.Stop();
+long animNow = 500_000;
+OpenHarmonyAnimationLoop.Clock = () => animNow;
+void PumpAnim(int milliseconds)
+{
+    animNow += milliseconds;
+    OpenHarmonyAnimationLoop.Pump(animNow, 1f / 60f);
+}
+int animFailures = 0;
+void AnimCheck(bool ok, string detail)
+{
+    if (!ok)
+    {
+        animFailures++;
+    }
+    Console.WriteLine($"[verify] anim {detail} assert={ok}");
+}
+
+// Page enter push: the incoming page fades in from 0 with a right-hand slide, then commits
+// exactly (opacity/translation restored, loop unregistered).
+var animRootPage = new ContentPage { Title = "anim root", Content = new Label { Text = "anim root" } };
+var animNav = new NavigationPage(animRootPage);
+OpenHarmonyHandlerConnector.ConnectTree(animNav);
+animNav.Measure(1080, 1920);
+animNav.Arrange(new Rect(0, 0, 1080, 1920));
+var animDetailPage = new ContentPage { Title = "anim detail", Content = new Label { Text = "anim detail" } };
+await animNav.PushAsync(animDetailPage, false);
+// The device renderer arranges the tree before the loop steps; mirror that here so the enter
+// pass sees the page's real width (the slide offset is prepared from it).
+animNav.Measure(1080, 1920);
+animNav.Arrange(new Rect(0, 0, 1080, 1920));
+bool pushActive = OpenHarmonyPageTransitions.IsActive &&
+    ReferenceEquals(OpenHarmonyPageTransitions.PendingPage, animDetailPage);
+double pushStartOpacity = animDetailPage.Opacity;
+PumpAnim(40);
+double pushMidOpacity = animDetailPage.Opacity;
+double pushMidTranslation = animDetailPage.TranslationX;
+PumpAnim(400);
+bool pushSettled = !OpenHarmonyPageTransitions.IsActive &&
+    Math.Abs(animDetailPage.Opacity - 1) < 0.0001 && Math.Abs(animDetailPage.TranslationX) < 0.0001;
+AnimCheck(pushActive && pushStartOpacity == 0 && pushMidOpacity > 0 && pushMidOpacity < 1 &&
+    pushMidTranslation > 0 && pushSettled,
+    $"page enter push active={pushActive} start={pushStartOpacity:0.###} mid={pushMidOpacity:0.###} " +
+    $"slide={pushMidTranslation:0.#} settled={pushSettled}");
+
+// Page enter pop: the revealed page enters from the left and settles the same way.
+await animNav.PopAsync(false);
+animNav.Measure(1080, 1920);
+animNav.Arrange(new Rect(0, 0, 1080, 1920));
+bool popActive = OpenHarmonyPageTransitions.IsActive &&
+    ReferenceEquals(OpenHarmonyPageTransitions.PendingPage, animRootPage);
+PumpAnim(40);
+double popMidTranslation = animRootPage.TranslationX;
+PumpAnim(400);
+bool popSettled = !OpenHarmonyPageTransitions.IsActive &&
+    Math.Abs(animRootPage.Opacity - 1) < 0.0001 && Math.Abs(animRootPage.TranslationX) < 0.0001;
+AnimCheck(popActive && popMidTranslation < 0 && popSettled,
+    $"page enter pop active={popActive} slide={popMidTranslation:0.#} settled={popSettled}");
+
+// Reduce motion: navigation commits instantly, and a running pass commits on its next frame.
+OpenHarmonyMotion.OnPlatformReduceMotionChanged(true);
+var animReducePage = new ContentPage { Title = "anim reduced", Content = new Label { Text = "reduced" } };
+await animNav.PushAsync(animReducePage, false);
+bool reduceSkips = !OpenHarmonyPageTransitions.IsActive && animReducePage.Opacity == 1 &&
+    animReducePage.TranslationX == 0;
+OpenHarmonyMotion.OnPlatformReduceMotionChanged(false);
+await animNav.PopAsync(false);
+PumpAnim(400);
+AnimCheck(reduceSkips, $"page enter reduce-motion skips active={!reduceSkips}");
+
+// The ticker's frame-loop driver: Start registers one redraw-only entry, a frame requests a
+// repaint, Stop retires it; SystemEnabled follows the reduce-motion flag.
+var animTicker = (OpenHarmonyTicker)app.Services.GetRequiredService<Microsoft.Maui.Animations.ITicker>();
+int animDriversBefore = OpenHarmonyAnimationLoop.ActiveCount;
+int animRedrawsBefore = OpenHarmonyAnimationLoop.RedrawRequests;
+animTicker.Start();
+int animDriversDuring = OpenHarmonyAnimationLoop.ActiveCount;
+PumpAnim(16);
+int animRedrawsAfter = OpenHarmonyAnimationLoop.RedrawRequests;
+animTicker.Stop();
+int animDriversAfter = OpenHarmonyAnimationLoop.ActiveCount;
+OpenHarmonyMotion.OnPlatformReduceMotionChanged(true);
+bool tickerGated = !animTicker.SystemEnabled;
+OpenHarmonyMotion.OnPlatformReduceMotionChanged(false);
+bool tickerReenabled = animTicker.SystemEnabled;
+AnimCheck(animTicker.IsRunning == false && animDriversDuring == animDriversBefore + 1 &&
+    animRedrawsAfter > animRedrawsBefore && animDriversAfter == animDriversBefore &&
+    tickerGated && tickerReenabled,
+    $"ticker driver active={animDriversDuring - animDriversBefore} redraw+={animRedrawsAfter - animRedrawsBefore} " +
+    $"retired={animDriversAfter == animDriversBefore} reduceGate={tickerGated} released={tickerReenabled}");
+
+// MAUI's public animations: sampling starts the driver (the surface stays dirty while the
+// manager ticks) and every end callback lands on the exact target value. The label lives in
+// the app's tree (a handler-backed element uses the app's animation manager/ticker, the same
+// one the W22-7 fade above exercised).
+var animPropsLabel = root.Children.OfType<Label>().FirstOrDefault(l => l.Text == "fade me");
+if (animPropsLabel is null)
+{
+    animPropsLabel = new Label { Text = "anim props" };
+    root.Add(animPropsLabel);
+    host.Arrange(1080, 1920);
+}
+animPropsLabel.Opacity = 1;
+animPropsLabel.TranslationX = 0;
+animPropsLabel.TranslationY = 0;
+animPropsLabel.Scale = 1;
+Task<bool> animFade = animPropsLabel.FadeToAsync(0.4, 600, Easing.Linear);
+// The manager adds the animation on a dispatcher hop (drained per frame, with a 50 ms safety
+// net), so poll briefly: by the time it runs, the ticker and its frame-loop redraw driver
+// must be live while the fade is still in flight.
+bool animDriverLive = false;
+for (int i = 0; i < 40 && !animDriverLive; i++)
+{
+    await Task.Delay(10);
+    animDriverLive = OpenHarmonyAnimationLoop.ActiveCount >= 1 && animTicker.IsRunning;
+}
+double animMidOpacity = animPropsLabel.Opacity;
+bool animFadeEnd = await animFade;
+bool animTranslateEnd = await animPropsLabel.TranslateToAsync(30, 12, 150, Easing.Linear);
+bool animScaleEnd = await animPropsLabel.ScaleToAsync(1.5, 150, Easing.Linear);
+bool animEndsOk =
+    Math.Abs(animPropsLabel.Opacity - 0.4) < 0.0001 &&
+    Math.Abs(animPropsLabel.TranslationX - 30) < 0.0001 &&
+    Math.Abs(animPropsLabel.TranslationY - 12) < 0.0001 &&
+    Math.Abs(animPropsLabel.Scale - 1.5) < 0.0001;
+AnimCheck(animDriverLive && animEndsOk,
+    $"maui fade/translate/scale driver={animDriverLive} mid={animMidOpacity:0.###} " +
+    $"ends={animFadeEnd},{animTranslateEnd},{animScaleEnd} " +
+    $"o={animPropsLabel.Opacity:0.##} tx={animPropsLabel.TranslationX:0.#} ty={animPropsLabel.TranslationY:0.#} " +
+    $"scale={animPropsLabel.Scale:0.##}");
+// Put the shared label back so the app tree is where the earlier tests left it.
+await animPropsLabel.FadeToAsync(1.0, 40, Easing.Linear);
+await animPropsLabel.TranslateToAsync(0, 0, 40, Easing.Linear);
+await animPropsLabel.ScaleToAsync(1.0, 40, Easing.Linear);
+
+// Control-state channels: switch knob, check-mark draw-on and press feedback interpolate on the
+// frame loop and reach their exact target; reduce-motion snaps instead of ticking.
+var animSwitchView = new OpenHarmonyView { IsSwitch = true };
+animSwitchView.IsOn = true;
+PumpAnim(40);
+float switchMid = animSwitchView.SwitchProgress;
+PumpAnim(400);
+float switchEnd = animSwitchView.SwitchProgress;
+var animCheckView = new OpenHarmonyView { IsCheckBox = true };
+animCheckView.IsChecked = true;
+PumpAnim(40);
+float checkMid = animCheckView.CheckProgress;
+PumpAnim(400);
+float checkEnd = animCheckView.CheckProgress;
+var animPressView = new OpenHarmonyView();
+animPressView.Pressed = true;
+PumpAnim(30);
+float pressMid = animPressView.PressProgress;
+PumpAnim(300);
+float pressEnd = animPressView.PressProgress;
+animPressView.Pressed = false;
+PumpAnim(300);
+float pressReleased = animPressView.PressProgress;
+AnimCheck(switchMid > 0 && switchMid < 1 && switchEnd == 1 &&
+    checkMid > 0 && checkMid < 1 && checkEnd == 1 &&
+    pressMid > 0 && pressMid < 1 && pressEnd == 1 && pressReleased == 0,
+    $"controls switch={switchMid:0.##}->{switchEnd:0.##} check={checkMid:0.##}->{checkEnd:0.##} " +
+    $"press={pressMid:0.##}->{pressEnd:0.##}->{pressReleased:0.##}");
+
+OpenHarmonyMotion.OnPlatformReduceMotionChanged(true);
+var animSnapView = new OpenHarmonyView();
+animSnapView.Pressed = true;
+bool pressSnapped = animSnapView.PressProgress == 1;
+var animSnapSwitch = new OpenHarmonyView { IsSwitch = true };
+animSnapSwitch.IsOn = true;
+bool switchSnapped = animSnapSwitch.SwitchProgress == 1;
+OpenHarmonyMotion.OnPlatformReduceMotionChanged(false);
+AnimCheck(pressSnapped && switchSnapped,
+    $"controls reduce-motion snap press={pressSnapped} switch={switchSnapped}");
+
+// Minimal shared element: an AutomationId-keyed element morphs from the outgoing page's
+// arranged frame to the incoming page's frame (position + uniform scale), then restores
+// exactly. The handler path is exercised (Capture on RequestNavigation, Run on Pushed); the
+// frames are set explicitly so the morph math is deterministic without a platform layout.
+var sharedSource = new Image
+{
+    AutomationId = OpenHarmonySharedTransition.KeyPrefix + "hero",
+    Opacity = 1,
+};
+sharedSource.Frame = new Rect(40, 40, 120, 120);
+var sharedSourceLayout = new VerticalStackLayout { Padding = new Thickness(40) };
+sharedSourceLayout.Add(sharedSource);
+var sharedSourcePage = new ContentPage { Content = sharedSourceLayout };
+var sharedNav = new NavigationPage(sharedSourcePage);
+OpenHarmonyHandlerConnector.ConnectTree(sharedNav);
+sharedNav.Measure(1080, 1920);
+sharedNav.Arrange(new Rect(0, 0, 1080, 1920));
+sharedSource.Frame = new Rect(40, 40, 120, 120);
+Rect sharedSourceFrame = sharedSource.Frame;
+var sharedTarget = new Image
+{
+    AutomationId = OpenHarmonySharedTransition.KeyPrefix + "hero",
+};
+var sharedTargetLayout = new VerticalStackLayout { Padding = new Thickness(40) };
+sharedTargetLayout.Add(new Label { Text = "shared header", HeightRequest = 200 });
+sharedTargetLayout.Add(sharedTarget);
+var sharedTargetPage = new ContentPage { Content = sharedTargetLayout };
+await sharedNav.PushAsync(sharedTargetPage, false);
+sharedNav.Measure(1080, 1920);
+sharedNav.Arrange(new Rect(0, 0, 1080, 1920));
+// The morph reads the frames on its first step; pin the hero target to a known pose.
+sharedTarget.Frame = new Rect(40, 240, 360, 360);
+Rect sharedTargetFrame = sharedTarget.Frame;
+bool sharedActive = OpenHarmonySharedTransition.IsActive;
+PumpAnim(16);
+double sharedTranslationX = sharedTarget.TranslationX;
+double sharedTranslationY = sharedTarget.TranslationY;
+double sharedScale = sharedTarget.Scale;
+PumpAnim(500);
+bool sharedSettled = !OpenHarmonySharedTransition.IsActive &&
+    Math.Abs(sharedTarget.TranslationX) < 0.0001 && Math.Abs(sharedTarget.TranslationY) < 0.0001 &&
+    Math.Abs(sharedTarget.Scale - 1) < 0.0001 && Math.Abs(sharedTarget.Opacity - 1) < 0.0001;
+bool sharedFramesDiffer = sharedSourceFrame.X != sharedTargetFrame.X || sharedSourceFrame.Y != sharedTargetFrame.Y;
+bool sharedMoved = Math.Abs(sharedTranslationX) > 0.5 || Math.Abs(sharedTranslationY) > 0.5;
+AnimCheck(sharedActive && sharedFramesDiffer && sharedMoved &&
+    sharedScale > 0 && sharedScale < 1 && sharedSettled,
+    $"shared morph active={sharedActive} source={sharedSourceFrame.X:0},{sharedSourceFrame.Y:0},{sharedSourceFrame.Width:0}x{sharedSourceFrame.Height:0} " +
+    $"target={sharedTargetFrame.X:0},{sharedTargetFrame.Y:0},{sharedTargetFrame.Width:0}x{sharedTargetFrame.Height:0} " +
+    $"tx={sharedTranslationX:0.#} ty={sharedTranslationY:0.#} scale={sharedScale:0.###} settled={sharedSettled}");
+
+// Shared morph under reduce motion: nothing starts, the target keeps its own pose.
+OpenHarmonyMotion.OnPlatformReduceMotionChanged(true);
+OpenHarmonySharedTransition.Capture(sharedSourcePage);
+OpenHarmonySharedTransition.Run(sharedTargetPage);
+bool sharedReduceSkips = !OpenHarmonySharedTransition.IsActive && sharedTarget.TranslationX == 0 &&
+    sharedTarget.Scale == 1;
+OpenHarmonyMotion.OnPlatformReduceMotionChanged(false);
+AnimCheck(sharedReduceSkips, $"shared morph reduce-motion skips active={!sharedReduceSkips}");
+
+// Config surface: a zero duration disables the page pass (instant commit), and everything is
+// idle once the pass is restored.
+double animSavedDuration = OpenHarmonyPageTransitions.DurationMs;
+OpenHarmonyPageTransitions.DurationMs = 0;
+var animInstantPage = new ContentPage { Title = "anim instant", Content = new Label { Text = "instant" } };
+await animNav.PushAsync(animInstantPage, false);
+bool zeroDurationSkips = !OpenHarmonyPageTransitions.IsActive && animInstantPage.Opacity == 1;
+await animNav.PopAsync(false);
+bool zeroDurationPopSkips = !OpenHarmonyPageTransitions.IsActive && animRootPage.Opacity == 1;
+OpenHarmonyPageTransitions.DurationMs = animSavedDuration;
+PumpAnim(400);
+AnimCheck(zeroDurationSkips && zeroDurationPopSkips && OpenHarmonyAnimationLoop.ActiveCount == 0,
+    $"transitions config zero-duration={zeroDurationSkips}/{zeroDurationPopSkips} loopIdle={OpenHarmonyAnimationLoop.ActiveCount == 0}");
+
+OpenHarmonyAnimationLoop.Clock = previousAnimClock;
+if (animFailures > 0)
+{
+    throw new InvalidOperationException($"the animation/transition checks failed ({animFailures})");
 }
 
 // ---- Deterministic fuzz (bounded, seeded) -----------------------------------------------------
