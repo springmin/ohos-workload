@@ -33,17 +33,32 @@
 #   S14 route      FAKE_HDC_RUNTIME_MODES=1: the hilog stream carries aot=1 and interp=3 source=file
 #                  next to the default aot=0/interp=0 lines -> hilog-execmem.txt keeps all of them,
 #                  summary aot_route=0+1 and interp_mode=3(file) (file route wins)
+#   S15 matrix dry --mode-matrix --dry-run: plan (runs, asset list) printed, exit 0, no report dir,
+#                  only `list targets` reached the stub
+#   S16 matrix AB  --mode-matrix without --interp-pack/--aot-haps: A (JIT stock) + B (xwe.txt=1,
+#                  write/force-stop/delete) run, C/D are recorded skipped; summary keys and the
+#                  run-b xwe=1 evidence in the per-run tar
+#   S17 matrix ABCD --mode-matrix with the synthetic interp pack (overlay script + built-in coreclr
+#                  replacement) and AOT pack: A/B/C/D + restore run, C builds the variant hap and
+#                  interp=3(file) lands in run-c, D reads aot=1, both switch files are deleted and
+#                  summary keys (status/overlay/hap sha/restore) are asserted
 # Stub hdc surface (every subcommand tester-run.sh invokes): list targets | install -r <hap> |
-#   uninstall <bundle> | shell aa start -a EntryAbility -b <b> | shell pidof <b> | shell ps -ef
+#   uninstall <bundle> | shell aa start -a EntryAbility -b <b> | shell aa force-stop <b> |
+#   shell pidof <b> | shell ps -ef
 #   | shell param get <key> | shell bm get -u | shell hilog -r | hilog | shell "hilog -t kmsg"
 #   | shell "cat /proc/sys/..." | shell "ls -l /data/storage/el1/bundle/libs/arm64/ 2>/dev/null"
 #   | shell "ls -l /data/storage/el2/base/haps/entry/files/ 2>/dev/null"
 #   | shell "cat /data/storage/el2/base/haps/entry/files/dotnet.marker 2>/dev/null"
+#   | shell "echo 1 > .../files/xwe.txt" | shell "echo 3 > .../files/interp.txt"
+#   | shell "rm -f .../files/xwe.txt" | shell "rm -f .../files/interp.txt"
 #   `hdc -t <id>` prefixes are accepted. Every `shell` invocation is appended, joined the way
 #   hdc joins its argv, to <state>/device-shell.log (never executed): the S9 tests fail if a
 #   payload ever reaches that line. A hap whose basename contains `fail` is rejected with
-#   `code:9568297` on stderr. pidof answers a pid for the first FAKE_HDC_PIDOF_ALIVE_CALLS calls
-#   per bundle (default 1), then nothing. FAKE_HDC_MISSING_PROC=1 fails both /proc/sys cats;
+#   `code:9568297` on stderr. An install of a *aot* / *interp* hap flips the stub's installed
+#   payload state (and the xwe/interp switch files drive the hilog route lines), so the matrix
+#   runs read back the same xwe=/aot=/interp= evidence as a real device. pidof answers a pid
+#   for the first FAKE_HDC_PIDOF_ALIVE_CALLS calls per bundle (default 1), then nothing.
+#   FAKE_HDC_MISSING_PROC=1 fails both /proc/sys cats;
 #   FAKE_HDC_MISSING_APPLIBS=1 fails the bundle libs ls; FAKE_HDC_MISSING_PAYLOAD=1 fails the
 #   files dir ls and the marker cat; FAKE_HDC_BOOTSTRAP_ERRORS=1 adds the device report §4/§7
 #   failure lines to the hilog stream; FAKE_HDC_RUNTIME_MODES=1 adds the non-default route lines
@@ -58,7 +73,7 @@
 # Exit: 0 = all checks passed; 1 = at least one check failed (work dir kept for triage).
 set -u
 
-SELFTEST_VERSION="7 (2026-09-27)"
+SELFTEST_VERSION="8 (2026-09-27)"
 
 log()  { printf '[%s] %s\n' "$(date '+%H:%M:%S')" "$*"; }
 section() { printf '\n=== %s ===\n' "$*"; }
@@ -241,6 +256,10 @@ EOF
         # the fixed 16-byte header (magic "PANDA", adler placeholder, version 13.0.1.0 at 0x0c).
         printf 'IDX:selftest' > "$_src/resources.index"
         printf 'PANDA\000\000\000\000\000\000\000\015\000\001\000' > "$_src/ets/modules.abc"
+        # Payload-in-libs shape: Run C (--interp-pack) overlays libcoreclr.so in the hap, so the
+        # synthetic kit needs one (the real kit ships it inside libs/arm64-v8a/).
+        mkdir -p "$_src/libs/arm64-v8a"
+        printf 'stub coreclr (selftest)\n' > "$_src/libs/arm64-v8a/libcoreclr.so"
     fi
     if command -v python3 >/dev/null 2>&1; then
         python3 - "$_src" "$_dst" <<'PY'
@@ -399,13 +418,30 @@ case "$cmd" in
                 printf '[Error]Install failed due to error: code:9568297 device apiCompatibleVersion less than minAPIVersion\n' >&2
                 exit 1
                 ;;
+            *aot*)
+                # Installed-payload state the hilog route lines read back (matrix Run D).
+                rm -f "$STATE/installed-interp"
+                : > "$STATE/installed-aot"
+                printf 'install bundle successfully.\n'
+                exit 0
+                ;;
+            *interp*)
+                # Matrix Run C: the overlaid interpreter variant hap.
+                rm -f "$STATE/installed-aot"
+                : > "$STATE/installed-interp"
+                printf 'install bundle successfully.\n'
+                exit 0
+                ;;
             *)
+                rm -f "$STATE/installed-aot" "$STATE/installed-interp"
                 printf 'install bundle successfully.\n'
                 exit 0
                 ;;
         esac
         ;;
     uninstall)
+        # Uninstall drops the app data: the switch files and the installed payload state go too.
+        rm -f "$STATE/installed-aot" "$STATE/installed-interp" "$STATE/switch-xwe" "$STATE/switch-interp"
         printf 'uninstall bundle successfully.\n'
         exit 0
         ;;
@@ -416,6 +452,28 @@ case "$cmd" in
         # tests can prove no bundle-name payload ever reaches it (stub-only, not executed).
         printf '%s\n' "$_cmd" >> "$STATE/device-shell.log"
         case "$_cmd" in
+            "echo 1 > /data/storage/el2/base/haps/entry/files/xwe.txt")
+                # Matrix Run B switch: the host would read this file at start_app.
+                : > "$STATE/switch-xwe"
+                printf 'written\n'
+                exit 0
+                ;;
+            "echo 3 > /data/storage/el2/base/haps/entry/files/interp.txt")
+                # Matrix Run C switch: DOTNET_InterpMode=3 for the next launch.
+                printf '3\n' > "$STATE/switch-interp"
+                printf 'written\n'
+                exit 0
+                ;;
+            "rm -f /data/storage/el2/base/haps/entry/files/xwe.txt")
+                rm -f "$STATE/switch-xwe"
+                printf 'removed\n'
+                exit 0
+                ;;
+            "rm -f /data/storage/el2/base/haps/entry/files/interp.txt")
+                rm -f "$STATE/switch-interp"
+                printf 'removed\n'
+                exit 0
+                ;;
             "hilog -t kmsg")
                 cat <<'KMSG_EOF'
 09-22 10:00:01.000 0 0 I [xpm]: /data/app/el1/bundle/public/com.example.hellomauiapp/libs/arm64-v8a/libopenharmonyhost.so is not protected by dmverity
@@ -544,11 +602,26 @@ KMSG_EOF
 09-22 10:00:00.700 12345 12345 I A00000/unrelated: must be filtered out
 09-22 10:00:00.800 12345 12345 I A00000/ets_runtime: SetAppLibPath appLibPathKey: com.example.hellomauiapp/entry, lib path: /data/storage/el1/bundle/libs/arm64
 09-22 10:00:00.810 12345 12345 I A00000/NAPI: dlopen libopenharmonyhost.so from /data/storage/el1/bundle/libs/arm64
-09-22 10:00:00.820 12345 12345 I A00000/OHOS_DOTNET: [openharmony-host] start_app: xwe=0 source=default
-09-22 10:00:00.822 12345 12345 I A00000/OHOS_DOTNET: [openharmony-host] start_app: interp=0 source=default
-09-22 10:00:00.824 12345 12345 I A00000/OHOS_DOTNET: [openharmony-host] start_app: aot=0 dir=/data/storage/el2/base/haps/entry/files/dotnet
-09-22 10:00:00.830 12345 12345 I A00000/OHOS_DOTNET: OHOS_DOTNET probe: 1=OK 2=OK 3=OK 4=38
 HILOG_EOF
+        # Runtime route lines mirror the stub's tracked device state: the xwe.txt/interp.txt
+        # switch files and the installed payload (aot/interp install markers). The matrix
+        # tars read these back exactly like a real device (xwe= / aot= / interp=).
+        if [ -f "$STATE/switch-xwe" ]; then
+            printf '%s\n' '09-22 10:00:00.820 12345 12345 I A00000/OHOS_DOTNET: [openharmony-host] start_app: xwe=1 source=file'
+        else
+            printf '%s\n' '09-22 10:00:00.820 12345 12345 I A00000/OHOS_DOTNET: [openharmony-host] start_app: xwe=0 source=default'
+        fi
+        if [ -f "$STATE/installed-interp" ] && [ -f "$STATE/switch-interp" ]; then
+            printf '%s\n' '09-22 10:00:00.822 12345 12345 I A00000/OHOS_DOTNET: [openharmony-host] start_app: interp=3 source=file'
+        else
+            printf '%s\n' '09-22 10:00:00.822 12345 12345 I A00000/OHOS_DOTNET: [openharmony-host] start_app: interp=0 source=default'
+        fi
+        if [ -f "$STATE/installed-aot" ]; then
+            printf '%s\n' '09-22 10:00:00.824 12345 12345 I A00000/OHOS_DOTNET: [openharmony-host] start_app: NativeAOT payload /data/storage/el2/base/haps/entry/libs/arm64/libhello-maui-app.so aot=1'
+        else
+            printf '%s\n' '09-22 10:00:00.824 12345 12345 I A00000/OHOS_DOTNET: [openharmony-host] start_app: aot=0 dir=/data/storage/el2/base/haps/entry/files/dotnet'
+        fi
+        printf '%s\n' '09-22 10:00:00.830 12345 12345 I A00000/OHOS_DOTNET: OHOS_DOTNET probe: 1=OK 2=OK 3=OK 4=38'
         # Non-default runtime routes (opt-in): the AOT bridge and an interp.txt-driven
         # interpreter launch, next to the default lines above.
         if [ "${FAKE_HDC_RUNTIME_MODES:-0}" = 1 ]; then
@@ -638,6 +711,80 @@ KIT_TREE="$(kit_tree_digest "$KIT")"
 MAIN_HAP_SHA="$(sha256sum "$MAIN_HAP" | cut -d' ' -f1)"
 FAIL_HAP_SHA="$(sha256sum "$FAIL_HAP" | cut -d' ' -f1)"
 ( cd "$KIT" && sha256sum ./*.hap ) > "$WORK/expected-kit-hap-sha.txt" 2>/dev/null || true
+
+# ---- synthetic runtime-mode matrix assets --------------------------------------------
+# Interp pack (native/libcoreclr.so + native/libclrinterpreter.so + SHA256SUMS + .sha256
+# sidecar). The coreclr stub carries the wide strings the overlay/support check probes for
+# (python3 hosts), so Run C's run_c_coreclr_check can assert yes. The overlay stub mirrors
+# scripts/ohos-runtime-clrinterpreter-overlay.sh's <so> --dir contract and logs its calls.
+INTERP_ASSETS="$WORK/interp-assets"
+AOT_ASSETS="$WORK/aot-assets"
+mkdir -p "$INTERP_ASSETS" "$AOT_ASSETS"
+INTERP_PACK_DIR="$INTERP_ASSETS/ohos-interpreter-pack"
+rm -rf "$INTERP_PACK_DIR"
+mkdir -p "$INTERP_PACK_DIR/native"
+if [ "$HAVE_PY3" = 1 ]; then
+    python3 - "$INTERP_PACK_DIR/native/libcoreclr.so" <<'PY'
+import sys
+tokens = ("clrinterpreter", "InterpMode", "InterpreterName")
+data = b"".join(w.encode("utf-32-le") for w in tokens) + b"\0" * 64 + b"stub coreclr (selftest)"
+open(sys.argv[1], "wb").write(data)
+PY
+else
+    printf 'stub coreclr (selftest)\n' > "$INTERP_PACK_DIR/native/libcoreclr.so"
+fi
+printf 'stub clrinterpreter (selftest)\n' > "$INTERP_PACK_DIR/native/libclrinterpreter.so"
+( cd "$INTERP_PACK_DIR" && sha256sum native/libcoreclr.so native/libclrinterpreter.so > SHA256SUMS )
+INTERP_PACK_TAR="$INTERP_ASSETS/ohos-interpreter-pack.tar.gz"
+rm -f "$INTERP_PACK_TAR" "$INTERP_PACK_TAR.sha256"
+tar -czf "$INTERP_PACK_TAR" -C "$INTERP_ASSETS" ohos-interpreter-pack
+( cd "$INTERP_ASSETS" && sha256sum ohos-interpreter-pack.tar.gz > ohos-interpreter-pack.tar.gz.sha256 )
+INTERP_PACK_SHA="$(sha256sum "$INTERP_PACK_TAR" | cut -d' ' -f1)"
+
+export SELFTEST_OVERLAY_LOG="$WORK/overlay-stub.log"
+OVL_STUB="$INTERP_ASSETS/ohos-runtime-clrinterpreter-overlay.sh"
+cat > "$OVL_STUB" <<'OVL_EOF'
+#!/bin/sh
+# Stub overlay for selftest-tester-run.sh: same <libclrinterpreter.so> --dir <layout>
+# contract as scripts/ohos-runtime-clrinterpreter-overlay.sh. Not a real tool.
+set -u
+so="${1:-}"
+shift 2>/dev/null || true
+dir=""
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --dir) dir="${2:-}"; shift 2 ;;
+        *) shift ;;
+    esac
+done
+printf 'overlay so=%s dir=%s\n' "$so" "$dir" >> "${SELFTEST_OVERLAY_LOG:-/dev/null}"
+[ -n "$so" ] && [ -f "$so" ] && [ -n "$dir" ] && [ -d "$dir" ] || { echo "usage: <so> --dir <dir>" >&2; exit 2; }
+n=0
+for c in $(find "$dir" -name libcoreclr.so -type f); do
+    cp -f "$so" "$(dirname "$c")/libclrinterpreter.so"
+    n=$((n + 1))
+done
+[ "$n" -gt 0 ] || { echo "no libcoreclr.so under $dir" >&2; exit 1; }
+echo "copied -> $(dirname "$c")/libclrinterpreter.so"
+echo "coreclr interpreter support: YES (stub)"
+OVL_EOF
+chmod 755 "$OVL_STUB"
+
+# AOT pack with the reference haps (a signed-looking and the -unsigned one), SHA256SUMS
+# and a .sha256 sidecar.
+AOT_PACK_DIR="$AOT_ASSETS/aot-haps"
+rm -rf "$AOT_PACK_DIR"
+mkdir -p "$AOT_PACK_DIR"
+make_hap "$AOT_PACK_DIR/hello-maui-app-aot.hap" "com.example.hellomauiapp" "entry"
+make_hap "$AOT_PACK_DIR/hello-maui-app-aot-unsigned.hap" "com.example.hellomauiapp" "entry"
+( cd "$AOT_PACK_DIR" && sha256sum ./*.hap > SHA256SUMS )
+AOT_PACK_TAR="$AOT_ASSETS/aot-haps.tar.gz"
+rm -f "$AOT_PACK_TAR" "$AOT_PACK_TAR.sha256"
+tar -czf "$AOT_PACK_TAR" -C "$AOT_ASSETS" aot-haps
+( cd "$AOT_ASSETS" && sha256sum aot-haps.tar.gz > aot-haps.tar.gz.sha256 )
+AOT_PACK_SHA="$(sha256sum "$AOT_PACK_TAR" | cut -d' ' -f1)"
+AOT_HAP_SIGNED="$AOT_PACK_DIR/hello-maui-app-aot.hap"
+AOT_HAP_SHA="$(sha256sum "$AOT_HAP_SIGNED" | cut -d' ' -f1)"
 
 # Sandbox: everything tester-run.sh writes must land in $WORK (+ its TMPDIR, which it cleans).
 RC=0
@@ -1363,6 +1510,168 @@ else
     bad "S14 report archive could not be extracted ($ARCHIVE_S14)"
 fi
 assert_scenario_sandbox "S14"
+
+# ---- S15: matrix dry-run plan --------------------------------------------------------
+section "S15 --mode-matrix dry-run plan (runs + asset list, no device commands)"
+run_tester S15 "" --kit-dir "$KIT" --mode-matrix --dry-run \
+    --aot-haps "$AOT_PACK_TAR" --interp-pack "$INTERP_PACK_TAR" --out "$WORK/out-matrix-dry"
+assert_eq "S15 exit code 0 (log: $LOGS/S15.log)" "0" "$RC"
+assert_contains "S15 plan has Run A" "Run A JIT stock" "$LOGS/S15.log"
+assert_contains "S15 plan has Run B" "Run B XWE A/B" "$LOGS/S15.log"
+assert_contains "S15 plan has Run C" "Run C 解释器" "$LOGS/S15.log"
+assert_contains "S15 plan has Run D" "Run D AOT" "$LOGS/S15.log"
+assert_contains "S15 plan lists the kit asset" "kit         : $KIT" "$LOGS/S15.log"
+assert_contains "S15 plan lists the aot asset" "$AOT_PACK_TAR" "$LOGS/S15.log"
+assert_contains "S15 plan lists the interp asset" "$INTERP_PACK_TAR" "$LOGS/S15.log"
+assert_contains "S15 dry-run marker" "[dry-run] 未执行任何设备命令" "$LOGS/S15.log"
+assert_not_exists "S15 dry-run creates no report dir" "$WORK/out-matrix-dry"
+CALLS_S15="$STATE_DIR/S15/calls.log"
+assert_eq "S15 stub saw only list targets" "1" "$(wc -l < "$CALLS_S15" | tr -d ' ')"
+assert_scenario_sandbox "S15"
+
+# ---- S16: matrix without the optional assets (A+B, C/D skipped) -----------------------
+section "S16 --mode-matrix A+B only (missing interp/aot assets -> C/D skipped)"
+run_tester S16 "FAKE_HDC_PIDOF_ALIVE_CALLS=99" --kit-dir "$KIT" --mode-matrix --capture 1 \
+    --out "$WORK/out-matrix-ab"
+assert_eq "S16 exit code 0 (log: $LOGS/S16.log)" "0" "$RC"
+MS16="$WORK/out-matrix-ab/mode-matrix/summary.txt"
+assert_file "S16 mode-matrix/summary.txt" "$MS16"
+if [ -f "$MS16" ]; then
+    assert_eq "S16 run_a_install=ok" "ok" "$(sum_val "$MS16" run_a_install)"
+    assert_eq "S16 run_a_start=ok" "ok" "$(sum_val "$MS16" run_a_start)"
+    assert_eq "S16 run_a_alive=yes" "yes" "$(sum_val "$MS16" run_a_alive)"
+    assert_eq "S16 run_a_aot_route=0" "0" "$(sum_val "$MS16" run_a_aot_route)"
+    assert_eq "S16 run_a_interp_mode=0(default)" "0(default)" "$(sum_val "$MS16" run_a_interp_mode)"
+    assert_eq "S16 run_a_probe_1=OK" "OK" "$(sum_val "$MS16" run_a_probe_1)"
+    assert_eq "S16 run_a_xwe=xwe=0" "xwe=0" "$(sum_val "$MS16" run_a_xwe)"
+    assert_eq "S16 run_a_frame=yes" "yes" "$(sum_val "$MS16" run_a_frame)"
+    assert_eq "S16 run_a_crash=none" "none" "$(sum_val "$MS16" run_a_crash)"
+    assert_eq "S16 run_a_status=ok" "ok" "$(sum_val "$MS16" run_a_status)"
+    assert_eq "S16 run_b_install=ok" "ok" "$(sum_val "$MS16" run_b_install)"
+    assert_eq "S16 run_b_start=ok" "ok" "$(sum_val "$MS16" run_b_start)"
+    assert_eq "S16 run_b_probe_1=OK" "OK" "$(sum_val "$MS16" run_b_probe_1)"
+    assert_eq "S16 run_b_xwe=xwe=1" "xwe=1" "$(sum_val "$MS16" run_b_xwe)"
+    assert_eq "S16 run_b_aot_route=0" "0" "$(sum_val "$MS16" run_b_aot_route)"
+    assert_eq "S16 run_b_interp_mode=0(default)" "0(default)" "$(sum_val "$MS16" run_b_interp_mode)"
+    assert_eq "S16 run_b_switch record" "xwe.txt=1" "$(sum_val "$MS16" run_b_switch)"
+    assert_eq "S16 run_b_status=ok" "ok" "$(sum_val "$MS16" run_b_status)"
+    assert_eq "S16 pre-clean xwe" "ok" "$(sum_val "$MS16" preclean_xwe_rm)"
+    assert_eq "S16 pre-clean interp" "ok" "$(sum_val "$MS16" preclean_interp_rm)"
+    assert_eq "S16 xwe cleanup after B" "ok" "$(sum_val "$MS16" switch_xwe_rm)"
+    assert_eq "S16 force-stop confirmed" "ok" "$(sum_val "$MS16" force_stop)"
+    assert_eq "S16 run_c skipped (no asset)" "skipped(no --interp-pack/--interp-hap)" "$(sum_val "$MS16" run_c_status)"
+    assert_eq "S16 run_d skipped (no asset)" "skipped(no --aot-haps)" "$(sum_val "$MS16" run_d_status)"
+    assert_eq "S16 matrix_failures=0" "0" "$(sum_val "$MS16" matrix_failures)"
+    assert_matches "S16 conclusion carries the JIT verdict" '^conclusion=.*JIT' "$MS16"
+    assert_contains "S16 conclusion names the xwe A/B" "run-b" "$MS16"
+else
+    bad "S16 mode-matrix summary missing"
+fi
+assert_file "S16 run-a report tar" "$(ls "$WORK"/out-matrix-ab/run-a-[0-9]*.tar.gz 2>/dev/null | head -n1)"
+assert_file "S16 run-b report tar" "$(ls "$WORK"/out-matrix-ab/run-b-[0-9]*.tar.gz 2>/dev/null | head -n1)"
+RUN_B_TAR="$(ls "$WORK"/out-matrix-ab/run-b-[0-9]*.tar.gz 2>/dev/null | head -n1)"
+if [ -n "$RUN_B_TAR" ] && prepare_report "$RUN_B_TAR" "$WORK/x-s16b" run-b; then
+    assert_file "S16 run-b execmem in tar" "$REPORT/hilog/hilog-execmem.txt"
+    assert_contains "S16 run-b execmem has xwe=1 source=file" "xwe=1 source=file" "$REPORT/hilog/hilog-execmem.txt"
+    assert_eq "S16 run-b tar summary aot_route=0" "0" "$(sum_val "$REPORT/summary.txt" aot_route)"
+else
+    bad "S16 run-b report archive could not be extracted ($RUN_B_TAR)"
+fi
+assert_contains "S16 stub saw the xwe write" "shell echo 1 > /data/storage/el2/base/haps/entry/files/xwe.txt" "$STATE_DIR/S16/calls.log"
+assert_contains "S16 stub saw the xwe cleanup" "shell rm -f /data/storage/el2/base/haps/entry/files/xwe.txt" "$STATE_DIR/S16/calls.log"
+assert_contains "S16 stub saw the force-stop" "shell aa force-stop com.example.hellomauiapp" "$STATE_DIR/S16/calls.log"
+assert_eq "S16 no switch file left on the device" "" "$(ls "$STATE_DIR/S16" 2>/dev/null | grep -E '^switch-(xwe|interp)$' || true)"
+assert_not_exists "S16 C never ran (no run-c dir)" "$WORK/out-matrix-ab/run-c"
+assert_not_exists "S16 D never ran (no run-d dir)" "$WORK/out-matrix-ab/run-d"
+assert_scenario_sandbox "S16"
+
+# ---- S17: matrix A/B/C/D with the synthetic packs + overlay ---------------------------
+section "S17 --mode-matrix A/B/C/D (interp overlay script + AOT haps + restore)"
+run_tester S17 "FAKE_HDC_PIDOF_ALIVE_CALLS=99" --kit-dir "$KIT" --mode-matrix --capture 1 \
+    --aot-haps "$AOT_PACK_TAR" --interp-pack "$INTERP_PACK_TAR" --interp-overlay "$OVL_STUB" \
+    --out "$WORK/out-matrix-full"
+assert_eq "S17 exit code 0 (log: $LOGS/S17.log)" "0" "$RC"
+MS17="$WORK/out-matrix-full/mode-matrix/summary.txt"
+assert_file "S17 mode-matrix/summary.txt" "$MS17"
+PACK_CORECLR_SHA="$(sha256sum "$INTERP_PACK_DIR/native/libcoreclr.so" | cut -d' ' -f1)"
+if [ -f "$MS17" ]; then
+    assert_eq "S17 interp_pack sha" "$INTERP_PACK_SHA" "$(sum_val "$MS17" interp_pack_sha256)"
+    assert_eq "S17 interp_pack_check=ok (sidecar)" "ok" "$(sum_val "$MS17" interp_pack_check)"
+    assert_eq "S17 interp_pack_members=ok" "ok" "$(sum_val "$MS17" interp_pack_members)"
+    assert_eq "S17 aot_pack sha" "$AOT_PACK_SHA" "$(sum_val "$MS17" aot_pack_sha256)"
+    assert_eq "S17 aot_pack_check=ok (sidecar)" "ok" "$(sum_val "$MS17" aot_pack_check)"
+    assert_eq "S17 aot_pack_members=ok" "ok" "$(sum_val "$MS17" aot_pack_members)"
+    assert_eq "S17 run_a_xwe=xwe=0" "xwe=0" "$(sum_val "$MS17" run_a_xwe)"
+    assert_eq "S17 run_b_xwe=xwe=1" "xwe=1" "$(sum_val "$MS17" run_b_xwe)"
+    assert_eq "S17 run_c_overlay = given script" "script:$OVL_STUB" "$(sum_val "$MS17" run_c_overlay)"
+    assert_eq "S17 run_c_signed=no (built locally)" "no" "$(sum_val "$MS17" run_c_signed)"
+    assert_eq "S17 run_c_install=ok" "ok" "$(sum_val "$MS17" run_c_install)"
+    assert_eq "S17 run_c_interp_mode=3(file)" "3(file)" "$(sum_val "$MS17" run_c_interp_mode)"
+    assert_eq "S17 run_c_aot_route=0" "0" "$(sum_val "$MS17" run_c_aot_route)"
+    assert_eq "S17 run_c_probe_1=OK" "OK" "$(sum_val "$MS17" run_c_probe_1)"
+    assert_eq "S17 run_c_status=ok" "ok" "$(sum_val "$MS17" run_c_status)"
+    assert_eq "S17 run_c_coreclr_sha256 = pack coreclr" "$PACK_CORECLR_SHA" "$(sum_val "$MS17" run_c_coreclr_sha256)"
+    C_HAP="$(sum_val "$MS17" run_c_hap)"
+    assert_file "S17 run_c_hap exists" "$C_HAP"
+    assert_eq "S17 run_c_hap_sha256 matches the file" "$(sha256sum "$C_HAP" 2>/dev/null | cut -d' ' -f1)" "$(sum_val "$MS17" run_c_hap_sha256)"
+    assert_eq "S17 run_d_hap is the signed aot hap (basename)" "hello-maui-app-aot.hap" "$(basename "$(sum_val "$MS17" run_d_hap)")"
+    assert_eq "S17 run_d_hap_sha256 matches" "$AOT_HAP_SHA" "$(sum_val "$MS17" run_d_hap_sha256)"
+    assert_eq "S17 run_d_signed=yes" "yes" "$(sum_val "$MS17" run_d_signed)"
+    assert_eq "S17 run_d_install=ok" "ok" "$(sum_val "$MS17" run_d_install)"
+    assert_eq "S17 run_d_aot_route=1" "1" "$(sum_val "$MS17" run_d_aot_route)"
+    assert_eq "S17 run_d_probe_1=OK" "OK" "$(sum_val "$MS17" run_d_probe_1)"
+    assert_eq "S17 run_d_status=ok" "ok" "$(sum_val "$MS17" run_d_status)"
+    assert_eq "S17 restore_install=ok" "ok" "$(sum_val "$MS17" restore_install)"
+    assert_eq "S17 run_d_restore=ok" "ok" "$(sum_val "$MS17" run_d_restore)"
+    assert_eq "S17 run_c_restore deferred to run-d" "deferred(run-d)" "$(sum_val "$MS17" run_c_restore)"
+    assert_eq "S17 matrix_failures=0" "0" "$(sum_val "$MS17" matrix_failures)"
+    assert_contains "S17 conclusion has the interpreter verdict" "解释器 3(file) 激活" "$MS17"
+    assert_contains "S17 conclusion has the AOT verdict" "AOT 直启 aot=1" "$MS17"
+    if [ "$HAVE_PY3" = 1 ]; then
+        assert_eq "S17 run_c_coreclr_check=yes" "yes" "$(sum_val "$MS17" run_c_coreclr_check)"
+        if [ -f "$C_HAP" ]; then
+            assert_eq "S17 variant carries libclrinterpreter.so" "True" "$(python3 -c 'import sys,zipfile; print("libs/arm64-v8a/libclrinterpreter.so" in zipfile.ZipFile(sys.argv[1]).namelist())' "$C_HAP" 2>/dev/null)"
+            assert_eq "S17 variant libcoreclr = pack bytes" "$PACK_CORECLR_SHA" "$(python3 -c 'import sys,hashlib,zipfile; print(hashlib.sha256(zipfile.ZipFile(sys.argv[1]).read("libs/arm64-v8a/libcoreclr.so")).hexdigest())' "$C_HAP" 2>/dev/null)"
+        fi
+    else
+        skip "S17 variant/coreclr checks (python3 not available)"
+    fi
+else
+    bad "S17 mode-matrix summary missing"
+fi
+_i=1
+for _t in a b c c-install d restore; do
+    assert_file "S17 run-$_t report tar" "$(ls "$WORK"/out-matrix-full/run-$_t-[0-9]*.tar.gz 2>/dev/null | head -n1)"
+    _i=$((_i + 1))
+done
+RUN_C_TAR="$(ls "$WORK"/out-matrix-full/run-c-[0-9]*.tar.gz 2>/dev/null | head -n1)"
+RUN_D_TAR="$(ls "$WORK"/out-matrix-full/run-d-[0-9]*.tar.gz 2>/dev/null | head -n1)"
+if [ -n "$RUN_C_TAR" ] && prepare_report "$RUN_C_TAR" "$WORK/x-s17c" run-c; then
+    assert_contains "S17 run-c execmem has interp=3 source=file" "interp=3 source=file" "$REPORT/hilog/hilog-execmem.txt"
+    assert_contains "S17 run-c execmem xwe=0 (switch already cleaned)" "xwe=0 source=default" "$REPORT/hilog/hilog-execmem.txt"
+    assert_eq "S17 run-c tar summary interp_mode=3(file)" "3(file)" "$(sum_val "$REPORT/summary.txt" interp_mode)"
+else
+    bad "S17 run-c report archive could not be extracted ($RUN_C_TAR)"
+fi
+if [ -n "$RUN_D_TAR" ] && prepare_report "$RUN_D_TAR" "$WORK/x-s17d" run-d; then
+    assert_contains "S17 run-d execmem has aot=1" "aot=1" "$REPORT/hilog/hilog-execmem.txt"
+    assert_eq "S17 run-d tar summary aot_route=1" "1" "$(sum_val "$REPORT/summary.txt" aot_route)"
+else
+    bad "S17 run-d report archive could not be extracted ($RUN_D_TAR)"
+fi
+assert_contains "S17 stub saw the interp.txt write" "shell echo 3 > /data/storage/el2/base/haps/entry/files/interp.txt" "$STATE_DIR/S17/calls.log"
+assert_contains "S17 stub saw the interp.txt cleanup" "shell rm -f /data/storage/el2/base/haps/entry/files/interp.txt" "$STATE_DIR/S17/calls.log"
+assert_matches "S17 stub installed the signed AOT hap" "install -r .*/aot-haps/hello-maui-app-aot\.hap \| rc=0" "$STATE_DIR/S17/calls.log"
+assert_eq "S17 main hap installed 3x (A, B, restore)" "3" "$(grep -c -F "install -r $MAIN_HAP" "$STATE_DIR/S17/calls.log" | tr -d ' ')"
+if [ -n "${C_HAP:-}" ]; then
+    assert_contains "S17 stub installed the interp variant" "install -r $C_HAP" "$STATE_DIR/S17/calls.log"
+fi
+assert_eq "S17 no switch file left on the device" "" "$(ls "$STATE_DIR/S17" 2>/dev/null | grep -E '^switch-(xwe|interp)$' || true)"
+assert_eq "S17 no payload marker left after restore" "" "$(ls "$STATE_DIR/S17" 2>/dev/null | grep -E '^installed-(aot|interp)$' || true)"
+assert_file "S17 overlay stub call log" "$SELFTEST_OVERLAY_LOG"
+assert_contains "S17 overlay stub called with the pack libclrinterpreter" "ohos-interpreter-pack/native/libclrinterpreter.so" "$SELFTEST_OVERLAY_LOG"
+assert_contains "S17 overlay stub called with the layout dir" "dir=" "$SELFTEST_OVERLAY_LOG"
+assert_scenario_sandbox "S17"
 
 # ---- global: nothing outside the temp dir --------------------------------------------
 section "global: no state outside the temp dir"
