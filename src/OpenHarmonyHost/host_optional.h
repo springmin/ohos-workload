@@ -152,6 +152,13 @@ typedef struct {
                                                  OH_DecodingOptions *options,
                                                  OH_PixelmapNative **pixelmap);
     Image_ErrorCode (*ImageSourceRelease)(OH_ImageSourceNative *source);
+    // Downsample decode (API 12+): decoding at the display size keeps a large source from ever
+    // being materialised in full. Resolved softly (see OhosHostOptionalLoad): an image library
+    // without them keeps the full-resolution decode instead of disabling image support.
+    Image_ErrorCode (*DecodingOptionsCreate)(OH_DecodingOptions **options);
+    Image_ErrorCode (*DecodingOptionsSetDesiredSize)(OH_DecodingOptions *options,
+                                                     Image_Size *desiredSize);
+    Image_ErrorCode (*DecodingOptionsRelease)(OH_DecodingOptions *options);
     Image_ErrorCode (*PixelmapNativeGetImageInfo)(OH_PixelmapNative *pixelmap,
                                                   OH_Pixelmap_ImageInfo *imageInfo);
     Image_ErrorCode (*PixelmapNativeRelease)(OH_PixelmapNative *pixelmap);
@@ -712,6 +719,40 @@ static inline bool ohos_host_optional_ability_access_check_self_permission(
 // images; decoding an image fails closed (NULL pixelmap) and the release calls no-op.
 // ---------------------------------------------------------------------------
 
+// Downsample decode: false when the image library is present but predates the API 12
+// OH_DecodingOptions entry points, in which case the caller decodes at full resolution.
+static inline bool ohos_host_optional_image_desired_size_available(void) {
+    ohos_host_optional_ensure();
+    return g_ohos_host_optional.image.DecodingOptionsCreate != NULL &&
+           g_ohos_host_optional.image.DecodingOptionsSetDesiredSize != NULL &&
+           g_ohos_host_optional.image.DecodingOptionsRelease != NULL;
+}
+
+static inline Image_ErrorCode ohos_host_optional_decoding_options_create(
+    OH_DecodingOptions **options) {
+    ohos_host_optional_ensure();
+    if (g_ohos_host_optional.image.DecodingOptionsCreate == NULL) {
+        return (Image_ErrorCode)-1;
+    }
+    return g_ohos_host_optional.image.DecodingOptionsCreate(options);
+}
+
+static inline Image_ErrorCode ohos_host_optional_decoding_options_set_desired_size(
+    OH_DecodingOptions *options, Image_Size *desiredSize) {
+    ohos_host_optional_ensure();
+    if (g_ohos_host_optional.image.DecodingOptionsSetDesiredSize == NULL) {
+        return (Image_ErrorCode)-1;
+    }
+    return g_ohos_host_optional.image.DecodingOptionsSetDesiredSize(options, desiredSize);
+}
+
+static inline void ohos_host_optional_decoding_options_release(OH_DecodingOptions *options) {
+    ohos_host_optional_ensure();
+    if (g_ohos_host_optional.image.DecodingOptionsRelease != NULL) {
+        g_ohos_host_optional.image.DecodingOptionsRelease(options);
+    }
+}
+
 static inline Image_ErrorCode ohos_host_optional_image_source_create_from_data(
     uint8_t *data, size_t dataSize, OH_ImageSourceNative **res) {
     ohos_host_optional_ensure();
@@ -860,6 +901,9 @@ static inline void ohos_host_optional_pixelmap_image_info_release(OH_Pixelmap_Im
 #define OH_ImageSourceNative_CreateFromData ohos_host_optional_image_source_create_from_data
 #define OH_ImageSourceNative_CreatePixelmap ohos_host_optional_image_source_create_pixelmap
 #define OH_ImageSourceNative_Release ohos_host_optional_image_source_release
+#define OH_DecodingOptions_Create ohos_host_optional_decoding_options_create
+#define OH_DecodingOptions_SetDesiredSize ohos_host_optional_decoding_options_set_desired_size
+#define OH_DecodingOptions_Release ohos_host_optional_decoding_options_release
 #define OH_PixelmapNative_GetImageInfo ohos_host_optional_pixelmap_native_get_image_info
 #define OH_PixelmapNative_Release ohos_host_optional_pixelmap_native_release
 #define OH_PixelmapImageInfo_Create ohos_host_optional_pixelmap_image_info_create

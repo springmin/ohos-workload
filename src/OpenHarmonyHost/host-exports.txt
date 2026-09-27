@@ -45,6 +45,7 @@ ohos_host_draw_clear_effects
 ohos_host_draw_clip_polyline
 ohos_host_draw_clip_rect
 ohos_host_draw_image_bytes
+ohos_host_draw_image_bytes_sized
 ohos_host_draw_polyline
 ohos_host_draw_present
 ohos_host_draw_rect

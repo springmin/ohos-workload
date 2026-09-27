@@ -65,6 +65,14 @@ static void *OhosHostOptionalResolve(const OhosHostOptionalLibSet *libs, const c
         }                                                                                       \
     } while (0)
 
+// Same resolution without the miss bookkeeping: the group stays available when the symbol
+// is absent and the call site falls back to its pre-feature behavior.
+#define OHOS_HOST_OPTIONAL_RESOLVE_SOFT(group, field, name)                                     \
+    do {                                                                                        \
+        g_ohos_host_optional.group.field =                                                      \
+            (__typeof__(g_ohos_host_optional.group.field))OhosHostOptionalResolve(&libs, name);  \
+    } while (0)
+
 static void OhosHostOptionalAppendMissing(char *buffer, size_t size, size_t *used,
                                           const char *name) {
     if (*used >= size) {
@@ -273,6 +281,13 @@ static void OhosHostOptionalLoad(void) {
             OhosHostOptionalAppendMissing(missing_names, sizeof(missing_names), &missing_used,
                                           "image");
         }
+        // Downsample decode (API 12+) is resolved softly: a library without these entry
+        // points keeps the full-resolution decode and the image group stays available.
+        OHOS_HOST_OPTIONAL_RESOLVE_SOFT(image, DecodingOptionsCreate, "OH_DecodingOptions_Create");
+        OHOS_HOST_OPTIONAL_RESOLVE_SOFT(image, DecodingOptionsSetDesiredSize,
+                                        "OH_DecodingOptions_SetDesiredSize");
+        OHOS_HOST_OPTIONAL_RESOLVE_SOFT(image, DecodingOptionsRelease,
+                                        "OH_DecodingOptions_Release");
     }
 
     // Universal KeyStore (HUKS): the SecureStorage value key. Absent on a reduced image;

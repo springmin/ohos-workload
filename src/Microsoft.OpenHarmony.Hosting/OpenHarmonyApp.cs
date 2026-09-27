@@ -1431,6 +1431,11 @@ public static partial class OpenHarmonyCanvas
     [LibraryImport(HostLibrary, EntryPoint = "ohos_host_draw_image_bytes")]
     private static partial int DrawImageBytesNative(byte[] data, int length, float x, float y, float width, float height);
 
+    [LibraryImport(HostLibrary, EntryPoint = "ohos_host_draw_image_bytes_sized")]
+    private static partial int DrawImageBytesSizedNative(byte[] data, int length, float x, float y,
+                                                         float width, float height, int decodeWidth,
+                                                         int decodeHeight);
+
     [LibraryImport(HostLibrary, EntryPoint = "ohos_host_draw_set_linear_gradient")]
     private static partial void LinearGradientNative(float x0, float y0, float x1, float y1, uint[] colors, float[] stops, int count);
 
@@ -1567,6 +1572,39 @@ public static partial class OpenHarmonyCanvas
         try
         {
             return DrawImageBytesNative(data, data.Length, x, y, width, height) == 0;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    /// <summary>
+    /// Decodes PNG/JPEG bytes and draws them into the destination rectangle, asking the
+    /// platform decoder to downsample to (<paramref name="decodeWidth"/>,
+    /// <paramref name="decodeHeight"/>) while decoding when both are positive. The decoded
+    /// bitmap is then bounded by the display size, so a source larger than the destination is
+    /// never materialised in full (the host clamps the target and falls back to the full
+    /// decode when the image library cannot downsample). Returns true when drawn, false when
+    /// the host ran but the decode or the blit failed, and null when the native host library
+    /// is unavailable (an older host without this entry point, or tests) so the caller can
+    /// fall back to <see cref="DrawImageBytes"/>.
+    /// </summary>
+    public static bool? DrawImageBytesSized(byte[] data, int x, int y, int width, int height,
+                                            int decodeWidth, int decodeHeight)
+    {
+        try
+        {
+            return DrawImageBytesSizedNative(data, data.Length, x, y, width, height, decodeWidth,
+                                             decodeHeight) == 0;
+        }
+        catch (EntryPointNotFoundException)
+        {
+            return null;  // older host library: the caller keeps the DrawImageBytes path
+        }
+        catch (DllNotFoundException)
+        {
+            return null;
         }
         catch
         {

@@ -4019,15 +4019,27 @@ void ohos_host_draw_clip_polyline(const float* xy, int count) {
 // cache across frames; a reloaded or edited resource changes the bytes, so it misses and
 // decodes once. Sources larger than OHOS_IMAGE_HASH_MAX_BYTES are decoded every time (the
 // hash cost is bounded) and the LRU cap bounds the retained decoded bitmaps.
+//
+// P2b-IMG: the key also carries the requested decode size. The managed side asks for a
+// small preview first and then for the display size, and both entries stay distinct in the
+// same LRU (the hash/length identity and the eviction policy are unchanged); a display-size
+// decode is bounded by the destination, so a large source never materialises in full. A
+// window resize changes the requested size with the same content, so the new size decodes
+// once and the stale entry ages out of the LRU under the same decoded-byte budget.
 #define OHOS_IMAGE_CACHE_MAX 8
 #define OHOS_IMAGE_HASH_MAX_BYTES (8u * 1024u * 1024u)
 // The decoded bitmaps are the real memory: 8 MiB of compressed data can decode to
 // hundreds of MiB, so the cache also holds a decoded-byte budget and evicts by LRU.
 #define OHOS_IMAGE_CACHE_MAX_BYTES (32u * 1024u * 1024u)
+// Upper bound for a requested decode edge: no window displays more, and the clamp keeps a
+// pathological destination (or a bad call) from asking the decoder for a huge bitmap.
+#define OHOS_IMAGE_DECODE_MAX_EDGE 4096u
 
 typedef struct {
     uint64_t hash;
     int length;
+    uint32_t decode_width;   // requested target (0 = full resolution)
+    uint32_t decode_height;
     OH_PixelmapNative* pixelmap;
     OH_Drawing_PixelMap* drawing;
     uint32_t width;
@@ -4093,10 +4105,12 @@ static void OhosImageCacheRelease(OhosImageCacheEntry* entry) {
     memset(entry, 0, sizeof(*entry));
 }
 
-static OhosImageCacheEntry* OhosImageCacheFind(uint64_t hash, int length) {
+static OhosImageCacheEntry* OhosImageCacheFind(uint64_t hash, int length,
+                                              uint32_t decode_width, uint32_t decode_height) {
     for (int i = 0; i < OHOS_IMAGE_CACHE_MAX; i++) {
         OhosImageCacheEntry* entry = &g_image_cache[i];
-        if (entry->pixelmap != NULL && entry->hash == hash && entry->length == length) {
+        if (entry->pixelmap != NULL && entry->hash == hash && entry->length == length &&
+            entry->decode_width == decode_width && entry->decode_height == decode_height) {
             entry->last_used = ++g_image_cache_clock;
             return entry;
         }
@@ -4147,7 +4161,12 @@ static OhosImageCacheEntry* OhosImageCacheReserve(size_t decoded_bytes) {
     return &g_image_cache[slot];
 }
 
-static OH_PixelmapNative* OhosDecodePixelmap(const void* data, int length) {
+// Decodes the encoded bytes, downsampling to (decode_width, decode_height) while decoding
+// when both are positive (OH_DecodingOptions_SetDesiredSize, API 12+). The size request is
+// best effort: an image library without the API, or a rejected option, falls back to the
+// full-resolution decode instead of failing the draw.
+static OH_PixelmapNative* OhosDecodePixelmap(const void* data, int length,
+                                             uint32_t decode_width, uint32_t decode_height) {
     if (!ohos_host_optional_image_available()) {
         return NULL;  // no ImageSource/Pixelmap library on this image: decoding stays off
     }
@@ -4155,9 +4174,23 @@ static OH_PixelmapNative* OhosDecodePixelmap(const void* data, int length) {
     if (OH_ImageSourceNative_CreateFromData((uint8_t*)data, (size_t)length, &source) != IMAGE_SUCCESS || source == NULL) {
         return NULL;
     }
+    OH_DecodingOptions* options = NULL;
+    if (decode_width > 0 && decode_height > 0 &&
+        ohos_host_optional_decoding_options_create(&options) == IMAGE_SUCCESS && options != NULL) {
+        Image_Size desired;
+        desired.width = decode_width;
+        desired.height = decode_height;
+        if (OH_DecodingOptions_SetDesiredSize(options, &desired) != IMAGE_SUCCESS) {
+            OH_DecodingOptions_Release(options);
+            options = NULL;  // decode at full resolution rather than drop the frame
+        }
+    }
     OH_PixelmapNative* pixelmap = NULL;
-    if (OH_ImageSourceNative_CreatePixelmap(source, NULL, &pixelmap) != IMAGE_SUCCESS) {
+    if (OH_ImageSourceNative_CreatePixelmap(source, options, &pixelmap) != IMAGE_SUCCESS) {
         pixelmap = NULL;
+    }
+    if (options != NULL) {
+        OH_DecodingOptions_Release(options);
     }
     OH_ImageSourceNative_Release(source);
     return pixelmap;
@@ -4177,16 +4210,26 @@ static void OhosPixelmapQuerySize(OH_PixelmapNative* pixelmap, uint32_t* width, 
     OH_PixelmapImageInfo_Release(info);
 }
 
-int ohos_host_draw_image_bytes(const void* data, int length, float x, float y, float width, float height) {
+// Shared blit: decode (or hit the cache) for the requested decode size, then scale the
+// pixelmap into the destination rectangle. decode_width/height == 0 means "full resolution"
+// (the historical behavior of ohos_host_draw_image_bytes).
+static int OhosDrawImageBytes(const void* data, int length, float x, float y, float width,
+                              float height, uint32_t decode_width, uint32_t decode_height) {
     if (g_canvas == NULL || data == NULL || length <= 0) {
         return -1;
+    }
+    if (decode_width > OHOS_IMAGE_DECODE_MAX_EDGE) {
+        decode_width = OHOS_IMAGE_DECODE_MAX_EDGE;
+    }
+    if (decode_height > OHOS_IMAGE_DECODE_MAX_EDGE) {
+        decode_height = OHOS_IMAGE_DECODE_MAX_EDGE;
     }
     const int cacheable = (size_t)length <= OHOS_IMAGE_HASH_MAX_BYTES;
     uint64_t hash = 0;
     OhosImageCacheEntry* entry = NULL;
     if (cacheable) {
         hash = OhosImageHash(data, (size_t)length);
-        entry = OhosImageCacheFind(hash, length);
+        entry = OhosImageCacheFind(hash, length, decode_width, decode_height);
     }
     OH_Drawing_PixelMap* drawing = NULL;
     OH_PixelmapNative* owned_pixelmap = NULL;  // temporary, released at the end when not cached
@@ -4197,7 +4240,7 @@ int ohos_host_draw_image_bytes(const void* data, int length, float x, float y, f
         pixel_width = entry->width;
         pixel_height = entry->height;
     } else {
-        owned_pixelmap = OhosDecodePixelmap(data, length);
+        owned_pixelmap = OhosDecodePixelmap(data, length, decode_width, decode_height);
         if (owned_pixelmap == NULL) {
             return -1;
         }
@@ -4211,6 +4254,8 @@ int ohos_host_draw_image_bytes(const void* data, int length, float x, float y, f
             if (slot != NULL) {
                 slot->hash = hash;
                 slot->length = length;
+                slot->decode_width = decode_width;
+                slot->decode_height = decode_height;
                 slot->pixelmap = owned_pixelmap;
                 slot->drawing = drawing;
                 slot->width = pixel_width;
@@ -4251,6 +4296,18 @@ int ohos_host_draw_image_bytes(const void* data, int length, float x, float y, f
         OH_PixelmapNative_Release(owned_pixelmap);
     }
     return rc;
+}
+
+int ohos_host_draw_image_bytes(const void* data, int length, float x, float y, float width,
+                               float height) {
+    return OhosDrawImageBytes(data, length, x, y, width, height, 0, 0);
+}
+
+int ohos_host_draw_image_bytes_sized(const void* data, int length, float x, float y, float width,
+                                     float height, int decode_width, int decode_height) {
+    return OhosDrawImageBytes(data, length, x, y, width, height,
+                              decode_width > 0 ? (uint32_t)decode_width : 0,
+                              decode_height > 0 ? (uint32_t)decode_height : 0);
 }
 
 int ohos_host_draw_present(void) {

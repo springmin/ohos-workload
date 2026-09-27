@@ -617,6 +617,15 @@ void ohos_host_draw_clear_effects(void);
 /// Decodes PNG/JPEG bytes and draws them into the destination rectangle.
 int  ohos_host_draw_image_bytes(const void* data, int length, float x, float y, float width, float height);
 
+/// Same as ohos_host_draw_image_bytes, but asks the platform decoder to downsample to
+/// (decode_width, decode_height) while decoding when both are positive: the decoded bitmap is
+/// bounded by that target, so a large source is never materialised in full. The target is
+/// clamped to 4096 px per edge. A size request the decoder cannot honor falls back to the
+/// full-resolution decode; a failed decode returns -1 (the caller draws its placeholder).
+int  ohos_host_draw_image_bytes_sized(const void* data, int length, float x, float y,
+                                      float width, float height, int decode_width,
+                                      int decode_height);
+
 /// Draws a polyline/polygon from packed coordinates [x0,y0,x1,y1,...]. Curves are
 /// flattened by the caller. filled = 1 fills (closed), otherwise strokes with stroke_width.
 void ohos_host_draw_polyline(const float* xy, int count, int closed, unsigned int argb, int filled, float stroke_width);
