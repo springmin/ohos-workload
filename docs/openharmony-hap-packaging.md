@@ -542,8 +542,10 @@ OpenHarmony shell build and stay unregistered there. A device without the AGC en
 to the managed status.
 
 Decision point: **the overlay needs the `ARKTS_SDK_FLAVOR=harmony` shell build plus the AGC map
-service AppKey** - the default OpenHarmony SDK build cannot compile the component declaration, and
-without the AppKey the map view fails to initialize (logged by `MapOverlay.ets`, no event fires).
+service enablement** (checklist row 5; the Android AppKey flow does not apply to the HarmonyOS
+`MapComponent`) - the default OpenHarmony SDK build cannot compile the component declaration, and
+without the service/bundle/fingerprint match the map view fails to initialize (logged by
+`MapOverlay.ets`, no event fires).
 So a device/HAP built with the default flavor answers `IsOverlayAvailable=false` even when
 `IsSupported=true` (the kit itself resolved): the capability answer distinguishes the two.
 
