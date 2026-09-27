@@ -4059,11 +4059,13 @@ struct Index {
       });
     });
 
-    // The managed Entry asks for the soft keyboard through this sink.
+    // The managed Entry asks for the soft keyboard through this sink. The caret from the
+    // managed editor (host.setKeyboardCaret -> the sink post's second argument) is applied to
+    // the input control so IME composition and typing use the managed cursor offset.
     this.hostCall('registerTextInputSink', typeof host !== 'undefined' && typeof host.registerTextInputSink === 'function', (): void => {
-      host.registerTextInputSink((show: number) => {
+      host.registerTextInputSink((show: number, caret: number) => {
         if (show === 1) {
-          this.controller.caretPosition(0);
+          this.controller.caretPosition(caret >= 0 ? caret : 0);
           this.getUIContext().getFocusController().requestFocus('ohos_dotnet_input');
         } else {
           this.getUIContext().getFocusController().requestFocus('ohos_dotnet_surface');
@@ -4798,6 +4800,16 @@ struct Index {
     return this.shellSearchVisible ? HitTestMode.Default : HitTestMode.None;
   }
 
+  // IME preview text normalization for onChange's optional second argument (P0c): the
+  // declarative tree stays ternary-free; an absent preview text means "no composition".
+  private previewTextValue(previewText?: PreviewText): string {
+    return previewText !== undefined ? previewText.value : '';
+  }
+
+  private previewTextOffset(previewText?: PreviewText): number {
+    return previewText !== undefined ? previewText.offset : 0;
+  }
+
   build() {
     Stack() {
       // ArkWeb: hidden until the managed WebView asks for it.
@@ -4879,16 +4891,23 @@ struct Index {
           this.injectBlazorBootstrap(pageUrl);
         })
 
-      // Text entry bridge: the managed Entry reads what is typed here.
+      // Text entry bridge: the managed Entry reads what is typed here. The input method's
+      // composing (preview) text rides onChange's second argument and its own export so the
+      // managed self-drawn editor can render the preedit at the caret (underline/highlight)
+      // and replace it when the commit arrives as the plain text change. An empty preview value
+      // means committed/cancelled.
       TextInput({ text: this.inputText, placeholder: 'type here', controller: this.controller })
         .id('ohos_dotnet_input')
         .height(56)
         .position({ x: 0, y: 0 })
-        .onChange((value: string) => {
+        .onChange((value: string, previewText?: PreviewText) => {
           this.inputText = value;
           // Per-keystroke path: a mismatched host logs once, not once per character.
           this.hostCall('notifyTextInput', typeof host !== 'undefined' && typeof host.notifyTextInput === 'function', (): void => {
             host.notifyTextInput(value);
+          });
+          this.hostCall('notifyTextComposition', typeof host !== 'undefined' && typeof host.notifyTextComposition === 'function', (): void => {
+            host.notifyTextComposition(this.previewTextValue(previewText), this.previewTextOffset(previewText));
           });
         })
         .onSubmit(() => {

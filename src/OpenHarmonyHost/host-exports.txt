@@ -67,6 +67,7 @@ ohos_host_hwv_invoke_result
 ohos_host_hwv_register_invoke
 ohos_host_keep_screen_on
 ohos_host_keyboard_hide
+ohos_host_keyboard_set_caret
 ohos_host_keyboard_set_text
 ohos_host_keyboard_show
 ohos_host_keystore_available
@@ -112,6 +113,7 @@ ohos_host_register_key_event
 ohos_host_register_permission_result
 ohos_host_register_pinch
 ohos_host_register_soft_input_change
+ohos_host_register_text_composition
 ohos_host_register_text_input
 ohos_host_register_text_submitted
 ohos_host_request_focus

@@ -116,6 +116,9 @@ public static partial class OpenHarmonyBridge
     [LibraryImport(HostLibrary, EntryPoint = "ohos_host_register_text_input")]
     private static partial void RegisterTextInputNative(IntPtr callback);
 
+    [LibraryImport(HostLibrary, EntryPoint = "ohos_host_register_text_composition")]
+    private static partial void RegisterTextCompositionNative(IntPtr callback);
+
     [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
     public delegate void PinchCallback(int phase, double scale, float x, float y);
 
@@ -155,6 +158,9 @@ public static partial class OpenHarmonyBridge
 
     [LibraryImport(HostLibrary, EntryPoint = "ohos_host_keyboard_set_text", StringMarshalling = StringMarshalling.Utf8)]
     private static partial void KeyboardSetTextNative(string text);
+
+    [LibraryImport(HostLibrary, EntryPoint = "ohos_host_keyboard_set_caret")]
+    private static partial void KeyboardSetCaretNative(int caret);
 
     [LibraryImport(HostLibrary, EntryPoint = "ohos_host_request_vibration")]
     private static partial void RequestVibrationNative(int durationMs);
@@ -199,6 +205,8 @@ public static partial class OpenHarmonyBridge
     [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
     private delegate void NativeTextInputDelegate(IntPtr utf8);
     [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+    private delegate void NativeTextCompositionDelegate(IntPtr utf8, int offset);
+    [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
     private delegate void NativeTextSubmittedDelegate();
     [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
     private delegate void NativeKeystoreResultDelegate(int requestId, int rc, IntPtr dataUtf8);
@@ -219,6 +227,7 @@ public static partial class OpenHarmonyBridge
     private static unsafe IntPtr s_touchThunk = (IntPtr)(delegate* unmanaged[Cdecl]<int, float, float, int, int, void>)&OnTouchNative;
     private static unsafe IntPtr s_frameThunk = (IntPtr)(delegate* unmanaged[Cdecl]<long, long, void>)&OnFrameNative;
     private static unsafe IntPtr s_textInputThunk = (IntPtr)(delegate* unmanaged[Cdecl]<IntPtr, void>)&OnTextInputNative;
+    private static unsafe IntPtr s_textCompositionThunk = (IntPtr)(delegate* unmanaged[Cdecl]<IntPtr, int, void>)&OnTextCompositionNative;
     private static unsafe IntPtr s_textSubmittedThunk = (IntPtr)(delegate* unmanaged[Cdecl]<void>)&OnTextSubmittedNative;
     private static unsafe IntPtr s_keystoreResultThunk = (IntPtr)(delegate* unmanaged[Cdecl]<int, int, IntPtr, void>)&OnKeystoreResultNative;
     private static unsafe IntPtr s_pickerResultThunk = (IntPtr)(delegate* unmanaged[Cdecl]<int, int, IntPtr, IntPtr, void>)&OnPickerResultNative;
@@ -228,6 +237,7 @@ public static partial class OpenHarmonyBridge
     private static Action<OpenHarmonyTouchEventArgs>? s_touchHandlers;
     private static Action<OpenHarmonyFrameEventArgs>? s_frameHandlers;
     private static Action<string>? s_textInputHandlers;
+    private static Action<string, int>? s_textCompositionHandlers;
     private static Action? s_redrawHandlers;
     private static Action? s_textSubmittedHandlers;
     private static OpenHarmonySurfaceInfo? s_surface;
@@ -342,6 +352,27 @@ public static partial class OpenHarmonyBridge
     {
         add { lock (s_sync) { s_textInputHandlers += value; } }
         remove { lock (s_sync) { s_textInputHandlers -= value; } }
+    }
+
+    /// <summary>
+    /// Raised with the input method's composing (preedit) text and its insertion offset while a
+    /// composition is in flight; an empty value means the composition was committed or cancelled.
+    /// </summary>
+    public static event Action<string, int>? TextComposition
+    {
+        add { lock (s_sync) { s_textCompositionHandlers += value; } }
+        remove { lock (s_sync) { s_textCompositionHandlers -= value; } }
+    }
+
+    /// <summary>Completes a composition update (called by the native callback; also a test seam).</summary>
+    public static void CompleteTextComposition(string value, int offset)
+    {
+        Action<string, int>? handlers;
+        lock (s_sync)
+        {
+            handlers = s_textCompositionHandlers;
+        }
+        handlers?.Invoke(value ?? string.Empty, offset);
     }
 
     /// <summary>Window avoid area (safe insets) as reported by the shell, in pixels.</summary>
@@ -463,6 +494,23 @@ public static partial class OpenHarmonyBridge
         catch
         {
             // Optional: only meaningful with the native input method.
+        }
+    }
+
+    /// <summary>
+    /// Pushes the managed caret to the shell's input control so the input method composes at the
+    /// same offset the self-drawn caret shows (and typing after a tap lands where the user tapped).
+    /// </summary>
+    public static void SetKeyboardCaret(int caret)
+    {
+        try
+        {
+            KeyboardSetCaretNative(Math.Max(0, caret));
+        }
+        catch
+        {
+            // Optional: without the native host (tests) or on an older library the shell keeps
+            // its own caret; composition still renders from the preview offset.
         }
     }
 
@@ -839,6 +887,7 @@ public static partial class OpenHarmonyBridge
             try
             {
                 RegisterTextInputNative(s_textInputThunk);
+                RegisterTextCompositionNative(s_textCompositionThunk);
                 RegisterTextSubmittedNative(s_textSubmittedThunk);
                 RegisterKeystoreResultNative(s_keystoreResultThunk);
                 RegisterPickerResultNative(s_pickerResultThunk);
@@ -1167,6 +1216,20 @@ public static partial class OpenHarmonyBridge
         catch (Exception ex)
         {
             ReportCallbackFailure("text input", ex);
+        }
+    }
+
+    [UnmanagedCallersOnly(CallConvs = new[] { typeof(CallConvCdecl) })]
+    private static void OnTextCompositionNative(IntPtr utf8, int offset)
+    {
+        try
+        {
+            string text = utf8 == IntPtr.Zero ? string.Empty : Marshal.PtrToStringUTF8(utf8) ?? string.Empty;
+            CompleteTextComposition(text, offset);
+        }
+        catch (Exception ex)
+        {
+            ReportCallbackFailure("text composition", ex);
         }
     }
 

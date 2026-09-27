@@ -1118,6 +1118,7 @@ struct OhosHostAppHandle {
     void (*bridge_touch)(int, float, float, int, int);
     void (*bridge_frame)(int64_t, int64_t);
     void (*bridge_text_input)(const char*);
+    void (*bridge_text_composition)(const char*, int);
     void (*bridge_text_submitted)(void);
     void (*bridge_keystore_result)(int request_id, int rc, const char* data_base64);
     void (*bridge_picker_result)(int request_id, int rc, const char* name, const char* data_base64);
@@ -2139,6 +2140,12 @@ void ohos_host_register_text_input(void* callback) {
     }
 }
 
+void ohos_host_register_text_composition(void* callback) {
+    if (g_app != NULL) {
+        g_app->bridge_text_composition = (void (*)(const char*, int))callback;
+    }
+}
+
 void ohos_host_register_input(void* touch, void* frame) {
     fprintf(stderr, "[openharmony-host] register_input touch=%p frame=%p g_app=%p\n", touch, frame, (void*)g_app);
     fflush(stderr);
@@ -2155,17 +2162,22 @@ void ohos_host_notify_touch(int type, float x, float y, int pointerCount, int po
     }
 }
 
-static void (*g_text_input_listener)(int show) = NULL;
+// IME caret mirror: the managed side writes it through ohos_host_keyboard_set_caret and the
+// text-input sink post forwards it to the shell's input control, so the input method composes
+// at the same offset the managed self-drawn caret shows.
+static int32_t g_ime_caret = 0;
 
-void ohos_host_set_text_input_listener(void (*listener)(int show)) {
+static void (*g_text_input_listener)(int show, int caret) = NULL;
+
+void ohos_host_set_text_input_listener(void (*listener)(int show, int caret)) {
     g_text_input_listener = listener;
 }
 
 void ohos_host_request_text_input(int show) {
-    fprintf(stderr, "[openharmony-host] text input request: %d\n", show);
+    fprintf(stderr, "[openharmony-host] text input request: %d caret=%d\n", show, (int)g_ime_caret);
     fflush(stderr);
     if (g_text_input_listener != NULL) {
-        g_text_input_listener(show);
+        g_text_input_listener(show, g_ime_caret);
     }
 }
 
@@ -2292,6 +2304,32 @@ static void ImeAppendUtf8(const char* utf8) {
     g_ime_text[used + take] = '\0';
 }
 
+// UTF-16 code units of the buffer: the managed caret (C# string indices) and the shell's
+// TextInput controller.caretPosition are UTF-16 offsets, while the IME buffer is UTF-8; a
+// supplementary-plane code point counts as two units.
+static int32_t ImeUtf16Length(const char* utf8) {
+    int32_t units = 0;
+    for (const unsigned char* p = (const unsigned char*)utf8; p != NULL && *p != '\0';) {
+        if (*p < 0x80) {
+            p += 1;
+            units += 1;
+        } else if ((*p & 0xE0) == 0xC0) {
+            p += 2;
+            units += 1;
+        } else if ((*p & 0xF0) == 0xE0) {
+            p += 3;
+            units += 1;
+        } else if ((*p & 0xF8) == 0xF0) {
+            p += 4;
+            units += 2;
+        } else {
+            p += 1;
+            units += 1;
+        }
+    }
+    return units;
+}
+
 static void ImeDeleteBackward(int32_t length) {
     for (int32_t i = 0; i < length; i++) {
         size_t used = strlen(g_ime_text);
@@ -2304,6 +2342,7 @@ static void ImeDeleteBackward(int32_t length) {
             g_ime_text[cut] = '\0';
         }
     }
+    g_ime_caret = ImeUtf16Length(g_ime_text);
 }
 
 static void OnImeInsertText(InputMethod_TextEditorProxy* proxy, const char16_t* text, size_t length) {
@@ -2353,6 +2392,7 @@ static void OnImeInsertText(InputMethod_TextEditorProxy* proxy, const char16_t* 
     }
     utf8[out] = '\0';
     ImeAppendUtf8(utf8);
+    g_ime_caret = ImeUtf16Length(g_ime_text);
     ImeForwardText();
 }
 
@@ -2382,6 +2422,18 @@ void ohos_host_keyboard_set_text(const char* utf8) {
         memcpy(g_ime_text, utf8, take);
         g_ime_text[take] = '\0';
     }
+    g_ime_caret = ImeUtf16Length(g_ime_text);
+}
+
+void ohos_host_keyboard_set_caret(int32_t caret) {
+    if (caret < 0) {
+        caret = 0;
+    }
+    int32_t length = ImeUtf16Length(g_ime_text);
+    if (caret > length) {
+        caret = length;
+    }
+    g_ime_caret = caret;
 }
 
 static int EnsureInputMethod(void) {
@@ -2989,6 +3041,12 @@ void ohos_host_register_text_submitted(void* callback) {
 void ohos_host_notify_text_input(const char* utf8) {
     if (g_app != NULL && g_app->bridge_text_input != NULL && utf8 != NULL) {
         g_app->bridge_text_input(utf8);
+    }
+}
+
+void ohos_host_notify_text_composition(const char* utf8, int offset) {
+    if (g_app != NULL && g_app->bridge_text_composition != NULL && utf8 != NULL) {
+        g_app->bridge_text_composition(utf8, offset);
     }
 }
 

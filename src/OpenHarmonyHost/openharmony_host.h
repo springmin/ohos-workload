@@ -87,6 +87,11 @@ void ohos_host_register_input(void* touch, void* frame);
 /// Registers the managed text-input callback (optional; apps without text input skip it).
 void ohos_host_register_text_input(void* callback);
 
+/// Registers the managed text-composition (IME preedit) callback (optional):
+/// void (*)(const char* utf8, int offset). An empty utf8 clears the composition; offset is the
+/// insertion index of the composing string in the text (UTF-16 units).
+void ohos_host_register_text_composition(void* callback);
+
 /// Registers the managed pinch callback (optional; declared here so the definition in
 /// openharmony_host.c gets C linkage even though the file is compiled as C++):
 /// void (*)(int phase, double scale, float x, float y). The managed side requests the
@@ -98,6 +103,11 @@ void ohos_host_notify_touch(int type, float x, float y, int pointerCount, int po
 
 /// Text input: forwards text typed in the ArkTS shell to the managed bridge.
 void ohos_host_notify_text_input(const char* utf8);
+
+/// Text composition (IME preedit): forwards the input method's preview text and its insertion
+/// offset from the ArkTS shell (an empty utf8 clears it). The committed text still arrives
+/// through ohos_host_notify_text_input; this only carries the in-flight preedit.
+void ohos_host_notify_text_composition(const char* utf8, int offset);
 
 /// Essentials over the NDK: vibration (OH_Vibrator_PlayVibration).
 int ohos_host_vibrate(int duration_ms);
@@ -497,6 +507,9 @@ void ohos_host_geocode_complete(int request_id, int rc, const char* json);
 int ohos_host_keyboard_show(void);
 /// Seeds the IME buffer with the focused editor's current text.
 void ohos_host_keyboard_set_text(const char* utf8);
+/// Moves the IME buffer's caret (the insertion point of the next IME edit / the caret the
+/// shell's input control is set to when the keyboard shows).
+void ohos_host_keyboard_set_caret(int32_t caret);
 int ohos_host_keyboard_hide(void);
 
 /// Custom fonts: loads a typeface from a font file used by all text drawing/measuring (an empty
@@ -543,8 +556,9 @@ void ohos_host_key_event(int key_code, int event_type);
 /// Asks the ArkTS shell to show/hide the soft keyboard (the NAPI layer owns the sink).
 void ohos_host_request_text_input(int show);
 
-/// The NAPI layer registers a listener that talks to the ArkTS shell.
-void ohos_host_set_text_input_listener(void (*listener)(int show));
+/// The NAPI layer registers a listener that talks to the ArkTS shell; it is called with the
+/// show flag (1 show, 0 hide) and the caret the input control should adopt.
+void ohos_host_set_text_input_listener(void (*listener)(int show, int caret));
 
 /// Forwards an XComponent frame callback to the managed bridge.
 void ohos_host_notify_frame(int64_t timestamp, int64_t targetTimestamp);

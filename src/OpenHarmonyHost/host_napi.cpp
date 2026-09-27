@@ -3379,11 +3379,14 @@ napi_value NotifyKeystoreResult(napi_env env, napi_callback_info info) {
     return undefined;
 }
 
-// Called by the host core (managed side) to show/hide the ArkTS soft keyboard.
-void OnTextInputRequest(int show) {
+// Called by the host core (managed side) to show/hide the ArkTS soft keyboard. The caret the
+// managed editor pushed (ohos_host_keyboard_set_caret) rides the same post so the shell's
+// input control adopts it while showing.
+void OnTextInputRequest(int show, int caret) {
     HostCxxBoundaryVoid("text input request", [&] {
         SinkCall* call = new SinkCall();
         call->AddInt(show);
+        call->AddInt(caret);
         HostSinkPost(g_text_input_sink, call);
     });
 }
@@ -3418,6 +3421,25 @@ napi_value NotifyTextInput(napi_env env, napi_callback_info info) {
     if (argc >= 1) {
         std::string text = GetStringArg(env, argv[0]);
         ohos_host_notify_text_input(text.c_str());
+    }
+    napi_value undefined = nullptr;
+    napi_get_undefined(env, &undefined);
+    return undefined;
+}
+
+// ArkTS calls host.notifyTextComposition(value, offset) for the input method's preview text
+// (TextInput onChange's second argument). An empty value clears the composition.
+napi_value NotifyTextComposition(napi_env env, napi_callback_info info) {
+    size_t argc = 2;
+    napi_value argv[2] = {nullptr, nullptr};
+    napi_get_cb_info(env, info, &argc, argv, nullptr, nullptr);
+    if (argc >= 1) {
+        std::string text = GetStringArg(env, argv[0]);
+        int32_t offset = 0;
+        if (argc >= 2) {
+            napi_get_value_int32(env, argv[1], &offset);
+        }
+        ohos_host_notify_text_composition(text.c_str(), (int)offset);
     }
     napi_value undefined = nullptr;
     napi_get_undefined(env, &undefined);
@@ -3685,6 +3707,7 @@ napi_value Init(napi_env env, napi_value exports) {
         {"registerXComponent", nullptr, RegisterXComponent, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"registerTextInputSink", nullptr, RegisterTextInputSink, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"notifyTextInput", nullptr, NotifyTextInput, nullptr, nullptr, nullptr, napi_default, nullptr},
+        {"notifyTextComposition", nullptr, NotifyTextComposition, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"notifyTextSubmitted", nullptr, NotifyTextSubmitted, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"registerKeystoreSink", nullptr, RegisterKeystoreSink, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"registerVibrationSink", nullptr, RegisterVibrationSink, nullptr, nullptr, nullptr, napi_default, nullptr},

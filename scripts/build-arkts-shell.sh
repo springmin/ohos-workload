@@ -705,7 +705,7 @@ ui_only = ['ohos_dotnet_surface', 'ohos_dotnet_input', '__hwvInvokeDotNet', './m
            'registerLiveViewSink', 'notifyLiveViewResult', '@kit.LiveViewKit',
            'SystemCapability.LiveView.LiveViewService',
            'registerTtsSink', 'notifyTtsResult', '@kit.CoreSpeechKit',
-           'SystemCapability.AI.TextToSpeech']
+           'SystemCapability.AI.TextToSpeech', 'notifyTextComposition']
 errors = []
 provenance_ref = None
 abc_ref = {}
