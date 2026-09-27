@@ -33,6 +33,15 @@
 #   S14 route      FAKE_HDC_RUNTIME_MODES=1: the hilog stream carries aot=1 and interp=3 source=file
 #                  next to the default aot=0/interp=0 lines -> hilog-execmem.txt keeps all of them,
 #                  summary aot_route=0+1 and interp_mode=3(file) (file route wins)
+#   S14b manifest   main hap with libs/arm64-v8a/runtime-mode.txt=interp + FAKE_HDC_MANIFEST_MODE=interp
+#                  (the host route line source=manifest): summary runtime_mode=interp(hap) and
+#                  interp_mode=3(manifest), execmem keeps runtime-mode=interp source=manifest; the
+#                  same kit with the file route (interp=3 source=file) -> interp_mode=3(file)
+#                  (file wins over the manifest), runtime_mode stays interp(hap)
+#   S14c aot/absent main hap marker=aot with FAKE_HDC_MANIFEST_MODE=aot and no aot= line ->
+#                  aot_route falls back to 1(manifest), runtime_mode=aot(hap); a kit without the
+#                  marker -> runtime_mode=<absent>; a marker that is not jit|aot|interp ->
+#                  runtime_mode=invalid(...) + warning, no fallback
 #   S15 matrix dry --mode-matrix --dry-run: plan (runs, asset list) printed, exit 0, no report dir,
 #                  only `list targets` reached the stub
 #   S16 matrix AB  --mode-matrix without --interp-pack/--aot-haps: A (JIT stock) + B (xwe.txt=1,
@@ -42,6 +51,9 @@
 #                  replacement) and AOT pack: A/B/C/D + restore run, C builds the variant hap and
 #                  interp=3(file) lands in run-c, D reads aot=1, both switch files are deleted and
 #                  summary keys (status/overlay/hap sha/restore) are asserted
+#   S17b matrix manifest --mode-matrix on the interp-marker kit without any asset: C runs the
+#                  stock hap via the marker (run_c_via=manifest, interp_mode=3(manifest), no
+#                  interp.txt written, no repack), A/B reflect runtime_mode=interp(hap)
 #   S18 a11y dry   --a11y-probe --dry-run: the 3b plan lists the uitest dump/click/read-back
 #                  commands, no report dir, only `list targets` reached the stub
 #   S19 a11y ok    --a11y-probe with uitest available: the probe dumps the layout, clicks the
@@ -71,7 +83,10 @@
 #   FAKE_HDC_MISSING_APPLIBS=1 fails the bundle libs ls; FAKE_HDC_MISSING_PAYLOAD=1 fails the
 #   files dir ls and the marker cat; FAKE_HDC_BOOTSTRAP_ERRORS=1 adds the device report §4/§7
 #   failure lines to the hilog stream; FAKE_HDC_RUNTIME_MODES=1 adds the non-default route lines
-#   (NativeAOT payload aot=1, interp=3 source=file); FAKE_HDC_NO_UITEST=1 makes `uitest` and the
+#   (NativeAOT payload aot=1, interp=3 source=file); FAKE_HDC_MANIFEST_MODE=jit|aot|interp adds
+#   the MS-MODE manifest lines (interp=3 source=manifest for interp, runtime-mode=<v>
+#   source=manifest); FAKE_HDC_NO_AOT_LINE=1 drops the aot=0|1 line (the manifest aot fallback);
+#   FAKE_HDC_NO_UITEST=1 makes `uitest` and the
 #   a11y `file recv` fail so the probe's missing-tool tolerance is asserted. A stub
 #   `binary-sign-tool` in $WORK/bin
 #   (prepended to PATH) answers `display-sign` with `code signature is not found`.
@@ -80,11 +95,13 @@
 #   verify-kit.sh) in the temp dir. SELFTEST_FORCE_SYNTHETIC=1 forces the synthetic kit.
 # Env: SELFTEST_TMPDIR=<dir> work dir base (default: the approved opencode tmp dir),
 #      SELFTEST_KEEP=1 keep the work dir even when all checks pass,
+#      SELFTEST_SKIP_A11Y=1 stop after S17b and run the final checks (the fast S1-S17 subset;
+#      drop it for the full suite incl. the S18-S20 a11y scenarios),
 #      SELFTEST_TESTER=<path> tester-run.sh under test (default: next to this script).
 # Exit: 0 = all checks passed; 1 = at least one check failed (work dir kept for triage).
 set -u
 
-SELFTEST_VERSION="9 (2026-09-27)"
+SELFTEST_VERSION="10 (2026-09-28)"
 
 log()  { printf '[%s] %s\n' "$(date '+%H:%M:%S')" "$*"; }
 section() { printf '\n=== %s ===\n' "$*"; }
@@ -254,8 +271,39 @@ kit_tree_digest() {
     ) | sha256sum | cut -d' ' -f1
 }
 
+# ---- finalize: global checks + summary + exit ----------------------------------------
+# Called once by the normal flow (after S20) and by the SELFTEST_SKIP_A11Y fast subset (after
+# S17b). Everything it reads (KIT_TREE, GIT_OK, GIT_BEFORE, KIT/KIT_ORIGIN/KEEP) is set before
+# the first scenario runs.
+finalize_selftest() {
+    section "global: no state outside the temp dir"
+    assert_eq "kit tree digest unchanged after all runs" "$KIT_TREE" "$(kit_tree_digest "$KIT")"
+    assert_not_exists "no default ./tester-report in sandbox cwd" "$CWD/tester-report"
+    STRAY="$(find "$WORK" -maxdepth 1 -name 'tester-report*' -print 2>/dev/null)"
+    assert_eq "no stray tester-report dir in work dir" "" "$STRAY"
+    if [ "$GIT_OK" = 1 ]; then
+        assert_eq "repo working tree unchanged by tester-run.sh" "$GIT_BEFORE" "$(git -C "$ROOT_DIR" status --porcelain 2>/dev/null || true)"
+    else
+        skip "repo working tree check (not a git work tree)"
+    fi
+
+    section "selftest summary"
+    printf 'kit:    %s (%s)\n' "$KIT" "$KIT_ORIGIN"
+    printf 'checks: %s, failed: %s\n' "$CHECKS" "$FAILED"
+    if [ "$FAILED" -gt 0 ]; then
+        printf 'RESULT: FAIL\n'
+        printf 'logs and reports kept at: %s\n' "$WORK"
+        exit 1
+    fi
+    printf 'RESULT: PASS\n'
+    if [ "$KEEP" = 1 ]; then
+        printf 'work dir kept (SELFTEST_KEEP=1): %s\n' "$WORK"
+    fi
+    exit 0
+}
+
 make_hap() {
-    _dst="$1"; _bundle="$2"; _name="${3:-entry}"; _with_index="${4:-1}"
+    _dst="$1"; _bundle="$2"; _name="${3:-entry}"; _with_index="${4:-1}"; _rtmode="${5:-}"
     _src="$WORK/hapsrc.$$"
     rm -rf "$_src"
     mkdir -p "$_src/ets"
@@ -271,6 +319,11 @@ EOF
         # synthetic kit needs one (the real kit ships it inside libs/arm64-v8a/).
         mkdir -p "$_src/libs/arm64-v8a"
         printf 'stub coreclr (selftest)\n' > "$_src/libs/arm64-v8a/libcoreclr.so"
+        # MS-MODE marker (optional 5th argument): libs/<abi>/runtime-mode.txt as staged by the
+        # packaging switch; absent unless the caller asks for it.
+        if [ -n "$_rtmode" ]; then
+            printf '%s\n' "$_rtmode" > "$_src/libs/arm64-v8a/runtime-mode.txt"
+        fi
     fi
     if command -v python3 >/dev/null 2>&1; then
         python3 - "$_src" "$_dst" <<'PY'
@@ -341,6 +394,17 @@ printf 'KIT OK (synthetic selftest kit)\n'
 VK_EOF
     chmod +x "$_k/verify-kit.sh"
     ( cd "$_k" && sha256sum hello-maui-app.hap hello-maui-app-api20.hap verify-kit.sh > SHA256SUMS )
+}
+
+# Synthetic kit whose MAIN hap carries libs/arm64-v8a/runtime-mode.txt (MS-MODE): the
+# packaging marker the device host reads at launch and tester-run reads locally. The second
+# argument is the raw marker value (jit|aot|interp, or a deliberately invalid one).
+make_runtime_mode_kit() {
+    _rmk="$1"
+    _rmk_mode="$2"
+    make_synthetic_kit "$_rmk"
+    make_hap "$_rmk/hello-maui-app.hap" "com.example.hellomauiapp" "entry" 1 "$_rmk_mode"
+    ( cd "$_rmk" && sha256sum hello-maui-app.hap hello-maui-app-api20.hap verify-kit.sh > SHA256SUMS )
 }
 
 # ---- kit selection -------------------------------------------------------------------
@@ -666,22 +730,34 @@ KMSG_EOF
 09-22 10:00:00.810 12345 12345 I A00000/NAPI: dlopen libopenharmonyhost.so from /data/storage/el1/bundle/libs/arm64
 HILOG_EOF
         # Runtime route lines mirror the stub's tracked device state: the xwe.txt/interp.txt
-        # switch files and the installed payload (aot/interp install markers). The matrix
-        # tars read these back exactly like a real device (xwe= / aot= / interp=).
+        # switch files, the installed payload (aot/interp install markers) and the opt-in
+        # MS-MODE manifest lines (FAKE_HDC_MANIFEST_MODE). The matrix tars and the marker
+        # tests read these back exactly like a real device (xwe= / aot= / interp= /
+        # runtime-mode=).
         if [ -f "$STATE/switch-xwe" ]; then
             printf '%s\n' '09-22 10:00:00.820 12345 12345 I A00000/OHOS_DOTNET: [openharmony-host] start_app: xwe=1 source=file'
         else
             printf '%s\n' '09-22 10:00:00.820 12345 12345 I A00000/OHOS_DOTNET: [openharmony-host] start_app: xwe=0 source=default'
         fi
+        MANIFEST_MODE="${FAKE_HDC_MANIFEST_MODE:-}"
         if [ -f "$STATE/installed-interp" ] && [ -f "$STATE/switch-interp" ]; then
             printf '%s\n' '09-22 10:00:00.822 12345 12345 I A00000/OHOS_DOTNET: [openharmony-host] start_app: interp=3 source=file'
+            printf '%s\n' '09-22 10:00:00.823 12345 12345 I A00000/OHOS_DOTNET: [openharmony-host] start_app: runtime-mode=interp source=file'
+        elif [ "$MANIFEST_MODE" = interp ]; then
+            printf '%s\n' '09-22 10:00:00.822 12345 12345 I A00000/OHOS_DOTNET: [openharmony-host] start_app: interp=3 source=manifest'
+            printf '%s\n' '09-22 10:00:00.823 12345 12345 I A00000/OHOS_DOTNET: [openharmony-host] start_app: runtime-mode=interp source=manifest'
         else
             printf '%s\n' '09-22 10:00:00.822 12345 12345 I A00000/OHOS_DOTNET: [openharmony-host] start_app: interp=0 source=default'
+            if [ -n "$MANIFEST_MODE" ]; then
+                printf '%s\n' "09-22 10:00:00.823 12345 12345 I A00000/OHOS_DOTNET: [openharmony-host] start_app: runtime-mode=$MANIFEST_MODE source=manifest"
+            fi
         fi
-        if [ -f "$STATE/installed-aot" ]; then
-            printf '%s\n' '09-22 10:00:00.824 12345 12345 I A00000/OHOS_DOTNET: [openharmony-host] start_app: NativeAOT payload /data/storage/el2/base/haps/entry/libs/arm64/libhello-maui-app.so aot=1'
-        else
-            printf '%s\n' '09-22 10:00:00.824 12345 12345 I A00000/OHOS_DOTNET: [openharmony-host] start_app: aot=0 dir=/data/storage/el2/base/haps/entry/files/dotnet'
+        if [ "${FAKE_HDC_NO_AOT_LINE:-0}" != 1 ]; then
+            if [ -f "$STATE/installed-aot" ]; then
+                printf '%s\n' '09-22 10:00:00.824 12345 12345 I A00000/OHOS_DOTNET: [openharmony-host] start_app: NativeAOT payload /data/storage/el2/base/haps/entry/libs/arm64/libhello-maui-app.so aot=1'
+            else
+                printf '%s\n' '09-22 10:00:00.824 12345 12345 I A00000/OHOS_DOTNET: [openharmony-host] start_app: aot=0 dir=/data/storage/el2/base/haps/entry/files/dotnet'
+            fi
         fi
         printf '%s\n' '09-22 10:00:00.830 12345 12345 I A00000/OHOS_DOTNET: OHOS_DOTNET probe: 1=OK 2=OK 3=OK 4=38'
         # Non-default runtime routes (opt-in): the AOT bridge and an interp.txt-driven
@@ -1573,6 +1649,98 @@ else
 fi
 assert_scenario_sandbox "S14"
 
+# ---- S14b: MS-MODE manifest marker: interp route + file precedence --------------------
+# The packaging marker (libs/<abi>/runtime-mode.txt) the host reads at launch: the summary
+# must report the packed route (runtime_mode=interp(hap)) even when the derived interp_mode
+# comes from the device line source=manifest; an interp.txt file line still wins (3(file)).
+section "S14b runtime-mode marker interp -> interp_mode=3(manifest); interp.txt file wins"
+make_runtime_mode_kit "$WORK/kit-mmode-interp" interp
+run_tester S14b "FAKE_HDC_PIDOF_ALIVE_CALLS=99 FAKE_HDC_MANIFEST_MODE=interp" \
+    --kit-dir "$WORK/kit-mmode-interp" --install --start --capture 1 --out "$WORK/out-mmode-interp"
+assert_eq "S14b exit code 0 (log: $LOGS/S14b.log)" "0" "$RC"
+
+ARCHIVE_S14B="$(report_archive out-mmode-interp)"
+assert_file "S14b report archive produced" "$ARCHIVE_S14B"
+if prepare_report "$ARCHIVE_S14B" "$WORK/x-mmode-interp" out-mmode-interp; then
+    S="$REPORT/summary.txt"
+    E="$REPORT/hilog/hilog-execmem.txt"
+    assert_file "S14b execmem in archive" "$E"
+    assert_eq "S14b summary runtime_mode=interp(hap)" "interp(hap)" "$(sum_val "$S" runtime_mode)"
+    assert_eq "S14b summary interp_mode=3(manifest)" "3(manifest)" "$(sum_val "$S" interp_mode)"
+    assert_contains "S14b execmem keeps the manifest interp line" "interp=3 source=manifest" "$E"
+    assert_contains "S14b execmem keeps the effective runtime-mode line" "runtime-mode=interp source=manifest" "$E"
+    assert_eq "S14b summary failures=0" "0" "$(sum_val "$S" failures)"
+else
+    bad "S14b report archive could not be extracted ($ARCHIVE_S14B)"
+fi
+assert_scenario_sandbox "S14b"
+
+run_tester S14b2 "FAKE_HDC_PIDOF_ALIVE_CALLS=99 FAKE_HDC_MANIFEST_MODE=interp FAKE_HDC_RUNTIME_MODES=1" \
+    --kit-dir "$WORK/kit-mmode-interp" --install --start --capture 1 --out "$WORK/out-mmode-file"
+assert_eq "S14b2 exit code 0 (log: $LOGS/S14b2.log)" "0" "$RC"
+ARCHIVE_S14B2="$(report_archive out-mmode-file)"
+assert_file "S14b2 report archive produced" "$ARCHIVE_S14B2"
+if prepare_report "$ARCHIVE_S14B2" "$WORK/x-mmode-file" out-mmode-file; then
+    S="$REPORT/summary.txt"
+    assert_eq "S14b2 summary runtime_mode=interp(hap) (marker kept)" "interp(hap)" "$(sum_val "$S" runtime_mode)"
+    assert_eq "S14b2 summary interp_mode=3(file) (file wins)" "3(file)" "$(sum_val "$S" interp_mode)"
+else
+    bad "S14b2 report archive could not be extracted ($ARCHIVE_S14B2)"
+fi
+assert_scenario_sandbox "S14b2"
+
+# ---- S14c: MS-MODE manifest marker: aot fallback / absent / invalid --------------------
+# aot marker + no aot= line -> the marker is the only route evidence (1(manifest)); a kit
+# without the marker -> <absent>; an invalid value is reported verbatim and does not fall
+# back (the host keeps jit).
+section "S14c runtime-mode marker aot/absent/invalid -> 1(manifest) / <absent> / invalid(...)"
+make_runtime_mode_kit "$WORK/kit-mmode-aot" aot
+run_tester S14c "FAKE_HDC_PIDOF_ALIVE_CALLS=99 FAKE_HDC_MANIFEST_MODE=aot FAKE_HDC_NO_AOT_LINE=1" \
+    --kit-dir "$WORK/kit-mmode-aot" --install --start --capture 1 --out "$WORK/out-mmode-aot"
+assert_eq "S14c exit code 0 (log: $LOGS/S14c.log)" "0" "$RC"
+ARCHIVE_S14C="$(report_archive out-mmode-aot)"
+assert_file "S14c report archive produced" "$ARCHIVE_S14C"
+if prepare_report "$ARCHIVE_S14C" "$WORK/x-mmode-aot" out-mmode-aot; then
+    S="$REPORT/summary.txt"
+    E="$REPORT/hilog/hilog-execmem.txt"
+    assert_eq "S14c summary runtime_mode=aot(hap)" "aot(hap)" "$(sum_val "$S" runtime_mode)"
+    assert_eq "S14c summary aot_route=1(manifest)" "1(manifest)" "$(sum_val "$S" aot_route)"
+    assert_contains "S14c execmem keeps the runtime-mode=aot line" "runtime-mode=aot source=manifest" "$E"
+    assert_not_contains "S14c execmem has no aot= line (marker fallback only)" "aot=0 dir=" "$E"
+else
+    bad "S14c report archive could not be extracted ($ARCHIVE_S14C)"
+fi
+assert_scenario_sandbox "S14c"
+
+make_synthetic_kit "$WORK/kit-mmode-none"
+run_tester S14c2 "" --kit-dir "$WORK/kit-mmode-none" --install --out "$WORK/out-mmode-none"
+assert_eq "S14c2 exit code 0 (log: $LOGS/S14c2.log)" "0" "$RC"
+ARCHIVE_S14C2="$(report_archive out-mmode-none)"
+assert_file "S14c2 report archive produced" "$ARCHIVE_S14C2"
+if prepare_report "$ARCHIVE_S14C2" "$WORK/x-mmode-none" out-mmode-none; then
+    S="$REPORT/summary.txt"
+    assert_eq "S14c2 summary runtime_mode=<absent>" "<absent>" "$(sum_val "$S" runtime_mode)"
+    assert_eq "S14c2 summary interp_mode=<unavailable> (no window, no marker)" "<unavailable>" "$(sum_val "$S" interp_mode)"
+else
+    bad "S14c2 report archive could not be extracted ($ARCHIVE_S14C2)"
+fi
+assert_scenario_sandbox "S14c2"
+
+make_runtime_mode_kit "$WORK/kit-mmode-bad" weird
+run_tester S14c3 "" --kit-dir "$WORK/kit-mmode-bad" --install --out "$WORK/out-mmode-bad"
+assert_eq "S14c3 exit code 0 (log: $LOGS/S14c3.log)" "0" "$RC"
+ARCHIVE_S14C3="$(report_archive out-mmode-bad)"
+assert_file "S14c3 report archive produced" "$ARCHIVE_S14C3"
+if prepare_report "$ARCHIVE_S14C3" "$WORK/x-mmode-bad" out-mmode-bad; then
+    S="$REPORT/summary.txt"
+    assert_eq "S14c3 summary runtime_mode=invalid(weird)" "invalid(weird)" "$(sum_val "$S" runtime_mode)"
+    assert_eq "S14c3 summary aot_route=<unavailable> (no fallback from an invalid marker)" "<unavailable>" "$(sum_val "$S" aot_route)"
+    assert_contains "S14c3 log warns about the invalid marker" "运行时模式清单值非法" "$LOGS/S14c3.log"
+else
+    bad "S14c3 report archive could not be extracted ($ARCHIVE_S14C3)"
+fi
+assert_scenario_sandbox "S14c3"
+
 # ---- S15: matrix dry-run plan --------------------------------------------------------
 section "S15 --mode-matrix dry-run plan (runs + asset list, no device commands)"
 run_tester S15 "" --kit-dir "$KIT" --mode-matrix --dry-run \
@@ -1735,6 +1903,47 @@ assert_contains "S17 overlay stub called with the pack libclrinterpreter" "ohos-
 assert_contains "S17 overlay stub called with the layout dir" "dir=" "$SELFTEST_OVERLAY_LOG"
 assert_scenario_sandbox "S17"
 
+# ---- S17b: mode-matrix with the manifest interp marker (no asset needed) --------------
+# MS-MODE: the stock hap carries libs/<abi>/runtime-mode.txt=interp, so Run C needs neither
+# --interp-pack nor --interp-hap - it installs/captures the hap as-is and the summary reads
+# 3(manifest). Nothing writes an interp.txt file, and no hap is repacked.
+section "S17b --mode-matrix manifest interp: C runs the stock hap via the marker (no asset)"
+run_tester S17b "FAKE_HDC_PIDOF_ALIVE_CALLS=99 FAKE_HDC_MANIFEST_MODE=interp" \
+    --kit-dir "$WORK/kit-mmode-interp" --mode-matrix --capture 1 --out "$WORK/out-matrix-mmode"
+assert_eq "S17b exit code 0 (log: $LOGS/S17b.log)" "0" "$RC"
+MS17B="$WORK/out-matrix-mmode/mode-matrix/summary.txt"
+assert_file "S17b mode-matrix/summary.txt" "$MS17B"
+if [ -f "$MS17B" ]; then
+    assert_eq "S17b matrix runtime_mode=interp(hap)" "interp(hap)" "$(sum_val "$MS17B" runtime_mode)"
+    assert_eq "S17b run_a_runtime_mode=interp(hap)" "interp(hap)" "$(sum_val "$MS17B" run_a_runtime_mode)"
+    assert_eq "S17b run_a_interp_mode=3(manifest)" "3(manifest)" "$(sum_val "$MS17B" run_a_interp_mode)"
+    assert_eq "S17b run_b_runtime_mode=interp(hap)" "interp(hap)" "$(sum_val "$MS17B" run_b_runtime_mode)"
+    assert_eq "S17b run_c_via=manifest" "manifest" "$(sum_val "$MS17B" run_c_via)"
+    assert_eq "S17b run_c_status=ok (manifest route)" "ok" "$(sum_val "$MS17B" run_c_status)"
+    assert_eq "S17b run_c_install=ok" "ok" "$(sum_val "$MS17B" run_c_install)"
+    assert_eq "S17b run_c_interp_mode=3(manifest)" "3(manifest)" "$(sum_val "$MS17B" run_c_interp_mode)"
+    assert_eq "S17b run_c_runtime_mode=interp(hap)" "interp(hap)" "$(sum_val "$MS17B" run_c_runtime_mode)"
+    assert_eq "S17b restore_install=ok" "ok" "$(sum_val "$MS17B" restore_install)"
+    assert_eq "S17b matrix_failures=0" "0" "$(sum_val "$MS17B" matrix_failures)"
+    assert_contains "S17b conclusion names the manifest verdict" "解释器 3(manifest) 激活（清单" "$MS17B"
+else
+    bad "S17b mode-matrix summary missing"
+fi
+assert_not_contains "S17b never writes interp.txt on the device" "echo 3 > /data/storage/el2/base/haps/entry/files/interp.txt" "$STATE_DIR/S17b/device-shell.log"
+assert_contains "S17b preclean removed a stale interp.txt" "rm -f /data/storage/el2/base/haps/entry/files/interp.txt" "$STATE_DIR/S17b/device-shell.log"
+assert_file "S17b run-a report tar" "$(ls "$WORK"/out-matrix-mmode/run-a-*.tar.gz 2>/dev/null | head -n1)"
+assert_scenario_sandbox "S17b"
+
+# ---- fast subset: stop after S17b (SELFTEST_SKIP_A11Y) --------------------------------
+# The a11y tail (S18-S20) needs the uitest fixtures and real capture windows; the S1-S17b
+# core is the mode-matrix evidence. SELFTEST_SKIP_A11Y=1 runs the same final checks+summary
+# right here so the fast subset exits cleanly inside a 900 s budget.
+if [ "${SELFTEST_SKIP_A11Y:-0}" = 1 ]; then
+    section "S18-S20 skipped (SELFTEST_SKIP_A11Y=1)"
+    skip "a11y tail S18-S20 (SELFTEST_SKIP_A11Y=1; drop it for the full suite)"
+    finalize_selftest
+fi
+
 # ---- S18: a11y dry-run plan ----------------------------------------------------------
 section "S18 --a11y-probe dry-run plan (uitest commands listed, no device commands)"
 run_tester S18 "" --kit-dir "$KIT" --a11y-probe --dry-run --out "$WORK/out-a11y-dry"
@@ -1795,29 +2004,6 @@ else
 fi
 assert_scenario_sandbox "S20"
 
-# ---- global: nothing outside the temp dir --------------------------------------------
-section "global: no state outside the temp dir"
-assert_eq "kit tree digest unchanged after all runs" "$KIT_TREE" "$(kit_tree_digest "$KIT")"
-assert_not_exists "no default ./tester-report in sandbox cwd" "$CWD/tester-report"
-STRAY="$(find "$WORK" -maxdepth 1 -name 'tester-report*' -print 2>/dev/null)"
-assert_eq "no stray tester-report dir in work dir" "" "$STRAY"
-if [ "$GIT_OK" = 1 ]; then
-    assert_eq "repo working tree unchanged by tester-run.sh" "$GIT_BEFORE" "$(git -C "$ROOT_DIR" status --porcelain 2>/dev/null || true)"
-else
-    skip "repo working tree check (not a git work tree)"
-fi
-
-# ---- summary -------------------------------------------------------------------------
-section "selftest summary"
-printf 'kit:    %s (%s)\n' "$KIT" "$KIT_ORIGIN"
-printf 'checks: %s, failed: %s\n' "$CHECKS" "$FAILED"
-if [ "$FAILED" -gt 0 ]; then
-    printf 'RESULT: FAIL\n'
-    printf 'logs and reports kept at: %s\n' "$WORK"
-    exit 1
-fi
-printf 'RESULT: PASS\n'
-if [ "$KEEP" = 1 ]; then
-    printf 'work dir kept (SELFTEST_KEEP=1): %s\n' "$WORK"
-fi
-exit 0
+# The normal flow reaches the final checks here; finalize_selftest prints the global checks and
+# the summary and exits. The SELFTEST_SKIP_A11Y fast subset calls the same function after S17b.
+finalize_selftest
