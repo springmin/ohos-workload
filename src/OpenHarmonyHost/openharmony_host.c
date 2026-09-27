@@ -631,6 +631,95 @@ static int OhosHostReadInterpFile(const char* dir, char* out, size_t out_size) {
     return used > 0;
 }
 
+// Runtime mode switch (MS-MODE; see "Runtime mode switch" in the packaging doc): the packaging
+// writes libs/<abi>/runtime-mode.txt with jit (default), aot or interp. The host reads it at the
+// same launch point as xwe.txt/interp.txt, before hostfxr can start coreclr: aot keeps the
+// existing <app_dir>/lib<stem>.so probe as the route and only sharpens the fallback log when the
+// promised library is missing; interp selects DOTNET_InterpMode=3 for the packed interpreter
+// unless the writable sandbox carries an interp.txt (the device-side override wins, source=file).
+// One effective-mode string is kept for the AOT fallback line below.
+#define OHOS_RUNTIME_MODE_MAX 8
+static char g_ohos_runtime_mode[OHOS_RUNTIME_MODE_MAX] = "jit";
+
+static int OhosHostRuntimeModeIsAot(void) {
+    return strcmp(g_ohos_runtime_mode, "aot") == 0;
+}
+
+// Reads <dir>/runtime-mode.txt. Returns 1 and fills the trimmed value when it is one of
+// jit|aot|interp, 0 when the file is absent/empty/unreadable, -1 when it carries anything else
+// (the caller reports it and keeps the default; the packaging rejects invalid values already, so
+// a stale or hand-edited marker never bricks a launch).
+static int OhosHostReadRuntimeModeAt(const char* dir, char* out, size_t out_size) {
+    out[0] = '\0';
+    char path[4096];
+    if (dir == NULL || dir[0] == '\0' || out_size < 2 || path_join(path, sizeof(path), dir, "runtime-mode.txt") != 0) {
+        return 0;
+    }
+    int fd = open(path, O_RDONLY);
+    if (fd < 0) {
+        return 0;
+    }
+    char buffer[OHOS_RUNTIME_MODE_MAX];
+    ssize_t got = read(fd, buffer, sizeof(buffer) - 1);
+    close(fd);
+    if (got <= 0) {
+        return 0;
+    }
+    buffer[got] = '\0';
+    char* start = buffer;
+    while (*start == ' ' || *start == '\t' || *start == '\r' || *start == '\n') {
+        start++;
+    }
+    char* end = start + strlen(start);
+    while (end > start && (end[-1] == ' ' || end[-1] == '\t' || end[-1] == '\r' || end[-1] == '\n')) {
+        end--;
+    }
+    *end = '\0';
+    size_t length = (size_t)(end - start);
+    if (length == 0) {
+        return 0;
+    }
+    if (strcmp(start, "jit") != 0 && strcmp(start, "aot") != 0 && strcmp(start, "interp") != 0) {
+        return -1;
+    }
+    if (length + 1 > out_size) {
+        return -1;
+    }
+    memcpy(out, start, length + 1);
+    return 1;
+}
+
+// Reads the marker from the launch directory first (payload-in-libs stages it into libs/<abi>/,
+// which is the effective app_dir there), then from this library's own directory (the extracted
+// fallback starts from <filesDir>/dotnet while the marker stays in the bundle's libs/<abi>/).
+static int OhosHostReadRuntimeModeFile(const char* app_dir, char* out, size_t out_size) {
+    out[0] = '\0';
+    int result = OhosHostReadRuntimeModeAt(app_dir, out, out_size);
+    if (result != 0) {
+        return result;
+    }
+    char own_dir[4096];
+    if (OhosHostOwnDirectory(own_dir, sizeof(own_dir)) == 0 &&
+        (app_dir == NULL || strcmp(own_dir, app_dir) != 0)) {
+        result = OhosHostReadRuntimeModeAt(own_dir, out, out_size);
+    }
+    return result;
+}
+
+// One explicit fallback line when the packaging promised aot but the launch cannot route there:
+// a plain JIT payload falls through silently, an aot-marked payload must say why.
+static void OhosHostLogAotFallback(const char* tag, const char* lib_path, const char* reason) {
+    if (!OhosHostRuntimeModeIsAot()) {
+        return;
+    }
+    OH_LOG_WARN(LOG_APP,
+                "[openharmony-host] %{public}s: runtime-mode=aot but %{public}s %{public}s; "
+                "falling back to the JIT route",
+                tag, lib_path, reason);
+    fprintf(stderr, "[openharmony-host] %s: runtime-mode=aot but %s %s; falling back to the JIT route\n",
+            tag, lib_path, reason);
+}
+
 // One probe result token: "OK", or the errno of the failing call.
 static void OhosHostProbeToken(char* out, size_t out_size, int err) {
     if (err == 0) {
@@ -764,7 +853,9 @@ static void OhosHostProbeExecMemoryOnce(const char* status_dir) {
 // directory's interp.txt (leading digit) selects DOTNET_InterpMode for the runtime that starts
 // next: 3 = the pure interpreter of the published ohos-interpreter-pack. No file leaves the
 // variable as-is (unset unless the environment already carried one), so the runtime's own
-// default (JIT) stays in effect.
+// default (JIT) stays in effect. The packaging's libs/<abi>/runtime-mode.txt (jit|aot|interp) is
+// read here too: interp selects the same DOTNET_InterpMode=3 by default, while a device-side
+// interp.txt overrides it (see the runtime mode switch comment above).
 static void OhosHostApplyExecMemoryPolicy(const char* caller, const char* app_dir, const char* context_json) {
     char dir[4096];
     int have_dir = OhosHostWritableDir(app_dir, context_json, dir, sizeof(dir));
@@ -777,16 +868,48 @@ static void OhosHostApplyExecMemoryPolicy(const char* caller, const char* app_di
                 name, enabled, source);
     fprintf(stderr, "[openharmony-host] %s: xwe=%d source=%s\n", name, enabled, source);
 
+    // Runtime mode switch (MS-MODE): the packaging marker, read from the effective app_dir (the
+    // staged libs/<abi>/ directory) or this library's own directory when the payload was
+    // extracted. An invalid marker logs one warning and keeps jit; the packaging already rejects
+    // invalid values at build time.
+    char runtime_mode[OHOS_RUNTIME_MODE_MAX];
+    int manifest_mode = OhosHostReadRuntimeModeFile(app_dir, runtime_mode, sizeof(runtime_mode));
+    if (manifest_mode < 0) {
+        OH_LOG_WARN(LOG_APP,
+                    "[openharmony-host] %{public}s: runtime-mode.txt carries an unknown value; keeping jit",
+                    name);
+        fprintf(stderr, "[openharmony-host] %s: runtime-mode.txt carries an unknown value; keeping jit\n", name);
+        manifest_mode = 0;
+    }
+
     char interp[8];
     int have_interp = have_dir && OhosHostReadInterpFile(dir, interp, sizeof(interp));
+    int interp_from_manifest = 0;
+    if (!have_interp && manifest_mode > 0 && strcmp(runtime_mode, "interp") == 0) {
+        // The marker's interp selects the packaged interpreter (the published pack's pure mode 3)
+        // unless an interp.txt file overrode it above: the device-side file stays priority.
+        memcpy(interp, "3", 2);
+        have_interp = 1;
+        interp_from_manifest = 1;
+    }
     if (have_interp) {
         setenv("DOTNET_InterpMode", interp, 1);
     }
     const char* interp_value = have_interp ? interp : "0";
-    const char* interp_source = have_interp ? "file" : "default";
+    const char* interp_source = interp_from_manifest ? "manifest" : (have_interp ? "file" : "default");
     OH_LOG_INFO(LOG_APP, "[openharmony-host] %{public}s: interp=%{public}s source=%{public}s",
                 name, interp_value, interp_source);
     fprintf(stderr, "[openharmony-host] %s: interp=%s source=%s\n", name, interp_value, interp_source);
+
+    // The effective runtime mode: an interp.txt file wins (source=file), else the manifest marker
+    // (source=manifest), else jit (source=default). The AOT fallback lines below read this value.
+    const char* effective_mode = have_interp ? "interp" : (manifest_mode > 0 ? runtime_mode : "jit");
+    const char* mode_source = interp_from_manifest ? "manifest"
+                                                   : (have_interp ? "file" : (manifest_mode > 0 ? "manifest" : "default"));
+    snprintf(g_ohos_runtime_mode, sizeof(g_ohos_runtime_mode), "%s", effective_mode);
+    OH_LOG_INFO(LOG_APP, "[openharmony-host] %{public}s: runtime-mode=%{public}s source=%{public}s",
+                name, effective_mode, mode_source);
+    fprintf(stderr, "[openharmony-host] %s: runtime-mode=%s source=%s\n", name, effective_mode, mode_source);
 
     OhosHostProbeExecMemoryOnce(have_dir ? dir : NULL);
 }
@@ -865,13 +988,17 @@ static int OhosHostTryRunAotApp(const char* tag, const char* app_dir, const char
     }
     void* app_lib = dlopen(lib_path, RTLD_NOW | RTLD_LOCAL);
     if (app_lib == NULL) {
-        return 0;  // the usual JIT payload: no app library next to the assembly
+        // The usual JIT payload has no app library next to the assembly; an aot marker promises
+        // one, so that case gets the explicit fallback line.
+        OhosHostLogAotFallback(tag, lib_path, "did not load");
+        return 0;
     }
     int (*entry)(const char*) = (int (*)(const char*))dlsym(app_lib, "openharmony_app_main");
     if (entry == NULL) {
         OH_LOG_WARN(LOG_APP,
                     "[openharmony-host] %{public}s: %{public}s has no openharmony_app_main export; "
                     "falling back to the hostfxr route", tag, lib_path);
+        OhosHostLogAotFallback(tag, lib_path, "has no openharmony_app_main export");
         dlclose(app_lib);
         return 0;
     }
@@ -1347,6 +1474,7 @@ int ohos_host_start_app(const char* app_dir, const char* app_assembly_file,
                 OH_LOG_WARN(LOG_APP,
                             "[openharmony-host] start_app: %{public}s has no openharmony_app_main export; "
                             "aot=0, falling back to the hostfxr route", aot_lib_path);
+                OhosHostLogAotFallback("start_app", aot_lib_path, "has no openharmony_app_main export");
                 dlclose(aot_lib);
                 aot_lib = NULL;
             } else {
@@ -1364,6 +1492,8 @@ int ohos_host_start_app(const char* app_dir, const char* app_assembly_file,
                                 aot_lib_path);
                 }
             }
+        } else {
+            OhosHostLogAotFallback("start_app", aot_lib_path, "did not load");
         }
     }
     OH_LOG_INFO(LOG_APP, "[openharmony-host] start_app: aot=%{public}d dir=%{public}s",

@@ -38,6 +38,14 @@ static void LoadHostLibrary(void) {
     }
 }
 
+// The runtime-mode switch policy runs before the runtime starts and may set
+// DOTNET_InterpMode in-process (interp marker / interp.txt); the local smoke reads this line to
+// assert the policy without a device-side runtime.
+static void PrintInterpEnv(void) {
+    const char* interp = getenv("DOTNET_InterpMode");
+    printf("[test_host] env DOTNET_InterpMode=%s\n", interp != NULL ? interp : "(unset)");
+}
+
 static void* SendEvents(void* arg) {
     (void)arg;
     while (g_event_handle == NULL) {
@@ -58,6 +66,7 @@ static void* SendEvents(void* arg) {
 static int RunOneShot(int argc, char** argv) {
     int code = p_run_app(argv[1], argv[2], argc - 3, (const char* const*)(argv + 3));
     printf("[test_host] managed exit code = %d\n", code);
+    PrintInterpEnv();
     return code;
 }
 
@@ -80,6 +89,7 @@ static int RunBridged(int argc, char** argv) {
 
     int exit_code = p_join_app(g_event_handle);
     printf("[test_host] managed exit code = %d\n", exit_code);
+    PrintInterpEnv();
     return exit_code;
 }
 

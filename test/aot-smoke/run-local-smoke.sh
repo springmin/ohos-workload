@@ -15,6 +15,15 @@
 #   LD_LIBRARY_PATH=<pack host dir>    ->  ./test_host --bridge <dir> NoEntry.dll '{}'
 #   asserts: the no-export library logs start_app: aot=0, keeps the hostfxr route and fails
 #            cleanly there (negative control for the AOT probe), never aot=1 or a crash
+#   runtime-mode rounds (MS-MODE; marker <dir>/runtime-mode.txt, override <dir>/interp.txt):
+#     default (no marker)      -> logs runtime-mode=jit source=default, DOTNET_InterpMode unset
+#     aot + libFakeApp.so      -> existing AOT route, logs source=manifest
+#     aot without the library  -> explicit "falling back to the JIT route" line for MissingApp.dll
+#     interp marker            -> logs interp=3 source=manifest and sets DOTNET_InterpMode=3
+#     interp.txt over the mark -> file wins: interp=<v> source=file, the value is honoured
+#     invalid marker           -> one warning, keeps jit
+#   The host's own effective DOTNET_InterpMode is read back by test_host's "[test_host] env"
+#   line, so the setenv contract is asserted without starting a runtime.
 #
 # codesign: an OpenHarmony kernel refuses an unsigned ELF twice - execve returns EACCES
 # ("Permission denied" from the shell) and dlopen of a library without a .codesign section
@@ -94,6 +103,91 @@ if [ "$rc" != "7" ] || [ "$actual" != "$expected" ]; then
     exit 1
 fi
 echo "[PASS] NativeAOT bridged route (start_app): payload and exit code match (aot=1)"
+
+echo "== runtime-mode switch: default jit (no marker) =="
+rm -f runtime-mode.txt interp.txt
+timeout 60 ./test_host "$OUT" FakeApp.dll alpha beta > mode-jit.out 2>&1
+rc=$?
+if [ "$rc" = "7" ] && grep -q 'runtime-mode=jit source=default' mode-jit.out &&
+   grep -q 'interp=0 source=default' mode-jit.out &&
+   grep -q 'env DOTNET_InterpMode=(unset)' mode-jit.out; then
+    echo "[PASS] no marker keeps jit and leaves DOTNET_InterpMode unset"
+else
+    echo "[FAIL] default runtime-mode round rc=$rc; output:" >&2
+    sed 's/^/  /' mode-jit.out >&2
+    exit 1
+fi
+
+echo "== runtime-mode switch: marker aot with the library present =="
+printf 'aot\n' > runtime-mode.txt
+rm -f payload-received.txt
+timeout 60 ./test_host "$OUT" FakeApp.dll > mode-aot.out 2>&1
+rc=$?
+expected="$(printf '%s/FakeApp.dll' "$OUT")"
+actual="$(cat payload-received.txt 2>/dev/null)"
+if [ "$rc" = "7" ] && [ "$actual" = "$expected" ] &&
+   grep -q 'runtime-mode=aot source=manifest' mode-aot.out &&
+   grep -q 'env DOTNET_InterpMode=(unset)' mode-aot.out; then
+    echo "[PASS] the aot marker keeps the existing AOT route (payload + exit code) and logs source=manifest"
+else
+    echo "[FAIL] aot-marker round rc=$rc payload='$actual'; output:" >&2
+    sed 's/^/  /' mode-aot.out >&2
+    exit 1
+fi
+
+echo "== runtime-mode switch: marker aot without the library -> explicit fallback =="
+timeout 60 ./test_host "$OUT" MissingApp.dll > mode-aot-missing.out 2>&1
+rc=$?
+if [ "$rc" != "0" ] && grep -q 'runtime-mode=aot but .*libMissingApp.so did not load; falling back to the JIT route' mode-aot-missing.out; then
+    echo "[PASS] a missing AOT library logs the explicit fallback and keeps the hostfxr route"
+else
+    echo "[FAIL] aot missing-library round rc=$rc; output:" >&2
+    sed 's/^/  /' mode-aot-missing.out >&2
+    exit 1
+fi
+
+echo "== runtime-mode switch: marker interp selects DOTNET_InterpMode=3 =="
+printf 'interp\n' > runtime-mode.txt
+timeout 60 ./test_host "$OUT" FakeApp.dll > mode-interp.out 2>&1
+rc=$?
+if [ "$rc" = "7" ] && grep -q 'runtime-mode=interp source=manifest' mode-interp.out &&
+   grep -q 'interp=3 source=manifest' mode-interp.out &&
+   grep -q 'env DOTNET_InterpMode=3' mode-interp.out; then
+    echo "[PASS] the interp marker sets DOTNET_InterpMode=3 (source=manifest)"
+else
+    echo "[FAIL] interp-marker round rc=$rc; output:" >&2
+    sed 's/^/  /' mode-interp.out >&2
+    exit 1
+fi
+
+echo "== runtime-mode switch: interp.txt overrides the marker (file is priority) =="
+printf '1' > interp.txt
+timeout 60 ./test_host "$OUT" FakeApp.dll > mode-interp-file.out 2>&1
+rc=$?
+if [ "$rc" = "7" ] && grep -q 'runtime-mode=interp source=file' mode-interp-file.out &&
+   grep -q 'interp=1 source=file' mode-interp-file.out &&
+   grep -q 'env DOTNET_InterpMode=1' mode-interp-file.out; then
+    echo "[PASS] interp.txt wins over the marker (source=file, value honoured)"
+else
+    echo "[FAIL] interp.txt override round rc=$rc; output:" >&2
+    sed 's/^/  /' mode-interp-file.out >&2
+    exit 1
+fi
+rm -f interp.txt
+
+echo "== runtime-mode switch: invalid marker warns and keeps jit =="
+printf 'bogus\n' > runtime-mode.txt
+timeout 60 ./test_host "$OUT" FakeApp.dll > mode-invalid.out 2>&1
+rc=$?
+if [ "$rc" = "7" ] && grep -q 'runtime-mode.txt carries an unknown value; keeping jit' mode-invalid.out &&
+   grep -q 'runtime-mode=jit source=default' mode-invalid.out; then
+    echo "[PASS] an invalid marker logs one warning and keeps the jit default"
+else
+    echo "[FAIL] invalid-marker round rc=$rc; output:" >&2
+    sed 's/^/  /' mode-invalid.out >&2
+    exit 1
+fi
+rm -f runtime-mode.txt
 
 echo "== run the bridged fallback (no openharmony_app_main -> hostfxr, aot=0) =="
 # Negative control: a library that loads but has no entry export must not take the AOT route.
