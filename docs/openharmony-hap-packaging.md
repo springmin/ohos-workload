@@ -425,8 +425,8 @@ build fails with the property to set), `runtimeOS` becomes `HarmonyOS`, `compati
 defaults to `6.1.0(23)` (override with `ARKTS_COMPATIBLE_SDK_VERSION`) - the value the device-side
 DevEco build used to emit the accepted abc - and the UI variant additionally copies the Map
 overlay module `templates/ets/map/MapOverlay.ets` into the project (R2-3 2026-09-26). `externalApiPaths`
-additionally exposes `hms/ets`, which is what lets the Share/Scan sinks and the Map overlay
-compile against the real kit types. The abc header gate is
+additionally exposes `hms/ets`, which is what lets the Share/Scan/Map/Live View/CoreSpeech
+probes and the Map overlay compile against the real kit types. The abc header gate is
 unchanged: `ARKTS_MAX_BC_VERSION` stays `13.0.1.0` (the device runtime ceiling; the DevEco build at
 `6.1.0(23)` produced exactly `13.0.1.0`), so a HarmonyOS SDK whose es2abc emits a newer abc still
 fails here. On the default flavor the shell compiles the Share/Scan *probe* only: the specifier
@@ -439,9 +439,11 @@ import fails at runtime there, and the Map sink reports capability bit 1 = 0.
 The branch is scaffold-verified (`--scaffold-only` plus the selftest T14/T17) and was
 **build-verified on 2026-09-27** with the public DevEco command-line-tools bundle 6.0.1.251
 (HarmonyOS 6.0.1 Release, API 21): `Finished :entry:default@CompileArkTS`, ui abc
-`263,784 B / sha256 d3a7b7186cd8b1871555f226ab761dda4f726d2c5ea516889da5f762d3dd1c4c`, abc
-version `13.0.1.0`, 0 ArkTS errors (also with `TYPECHECK=1`), payload literals present. There
-are two supported routes.
+`273,932 B / sha256 e7290ed11857472aa8f1b60ae984f7c13796a67cb1ec4be78cb873e5ef110b11`, abc
+version `13.0.1.0`, 0 ArkTS errors, payload literals present - including the A2-TTS
+`registerTtsSink`/`@kit.CoreSpeechKit`/`SystemCapability.AI.TextToSpeech` literals, so the
+CoreSpeechKit probe/sink compiles against the real `hms/ets` declarations (the earlier
+R2-3/Live View build reported `263,784 B / d3a7b718...`). There are two supported routes.
 
 **Route A - real HarmonyOS SDK.** Obtain the toolchain bundle (hvigor + ohpm + node + the full
 `hms` SDK; linux-x64, ~2.0 GiB, public mirrors, sha256-pinned) with
@@ -508,13 +510,13 @@ LiveView sinks, so its real-device prerequisites are the AGC rows below (map ser
 fingerprint; Live View TIMER entitlement + device switch); the default-flavor kit haps keep
 `264,136 B / 9020ec5e...` and `IsOverlayAvailable=false`.
 
-### Kit feature probes and AGC prerequisites (Push / Account / Map)
+### Kit feature probes and AGC prerequisites (Push / Account / Map / Live View / CoreSpeech)
 
-The second batch of HMS Kits (KIT-EXT2, 2026-09-25; Map overlay R2-3, 2026-09-26) rides the same
-split: each shell template carries a *probe* that compiles on the OpenHarmony SDK, and only a
-runtime that actually provides the kit registers the sink. A device without the kit (or the
-default OpenHarmony build) keeps the managed side's documented degradation - no throw, no silent
-guess:
+The second batch of HMS Kits (KIT-EXT2, 2026-09-25; Map overlay R2-3, 2026-09-26; Live View
+R2-SHELL-EXT and CoreSpeechKit A2-TTS, 2026-09-27) rides the same split: each shell template
+carries a *probe* that compiles on the OpenHarmony SDK, and only a runtime that actually
+provides the kit registers the sink. A device without the kit (or the default OpenHarmony
+build) keeps the managed side's documented degradation - no throw, no silent guess:
 
 | Kit | Managed API | Shell sink / answer | Status map |
 |-----|-------------|---------------------|------------|
@@ -522,12 +524,15 @@ guess:
 | Account | `OpenHarmonyAccount.GetQuickLoginAnonymousPhoneAsync` / `AuthorizeAsync(scopes)` / `IsSupported` | `createAuthorizationWithHuaweiIDRequest()` + `AuthenticationController.executeRequest()`; `host.notifyAccountResult(id, op, rc, payload)` | rc 0 = success (op 0 payload = anonymous phone, op 1 payload = `response.data.authorizationCode`), -1 = unavailable/state mismatch; positive rc is the Account Kit code, e.g. `1001502014` (scope not applied for/approved), `1001500001` (signing fingerprint mismatch), `1001502001` (no Huawei ID signed in), `1001502012` (user cancelled), `1001500003` (scope unsupported) |
 | Map | `OpenHarmonyMap.QueryCapabilitiesAsync` / `IsSupported` / `IsOverlayAvailable` / `ShowAsync` / `HideAsync` / `CloseAsync` / `SetRegionAsync` / `AddMarkerAsync` / `Ready`/`MarkerClick`/`CameraIdle` | `@kit.MapKit` + `SystemCapability.Map.Core` probe, then the `MapComponent` overlay driven through `host.registerMapSink` / `host.notifyMapResult(id, op, code, payload)`; bit 0 = kit resolved, bit 1 = overlay module resolved (the harmony build) | flags value (0/1/3), `null` when the sink is unregistered; ops 0 probe / 1 create / 2 destroy / 3 show / 4 hide / 5 set region / 6 add marker, code 0 applied, -1 unavailable, -2 overlay refused; events with id 0 (1 ready, 2 marker click, 3 camera idle) |
 | Live View (R2-SHELL-EXT) | `OpenHarmonyLiveView.StartAsync(update)` / `UpdateAsync(update)` / `StopAsync(id)` / `IsSupported` | `canIUse('SystemCapability.LiveView.LiveViewService')` + `@kit.LiveViewKit`; `liveViewManager.isLiveViewEnabled()` then `startLiveView`/`updateLiveView`/`stopLiveView` on the TIMER scene (progress template; `title`/`text`/`progress`/`time` in ms); `host.notifyLiveViewResult(id, op, rc, payload)` | rc 0 = applied, -1 = unavailable or no view the shell owns, -2 = the kit call failed or the args were malformed, -3 = the user's live view switch is off; positive rc is the Live View Kit code (`1003500004` switch off, `1003500005` entitlement not approved, `1003500006` id exists, `1003500011` stale sequence, ...) |
+| TextToSpeech (A2-TTS) | `OpenHarmonyTextToSpeech.SpeakAsync(text, options, ct)` / `GetLocalesAsync()` / `Stop()` / `IsSupported` | `canIUse('SystemCapability.AI.TextToSpeech')` + `@kit.CoreSpeechKit`; `textToSpeech.createEngine({language, person: 0, online: 1})` (offline mode, engine cached per language), then `engine.speak(text, {requestId})`; ops 0 create / 1 speak / 2 stop / 3 locales (`listVoices`) / 4 isBusy via `host.registerTtsSink` / `host.notifyTtsResult(id, op, rc, payload)` | rc 0 = applied (speak: the engine reported completion or stop; locales: JSON voice list; isBusy: `"0"`/`"1"`), -1 = unavailable, -2 = the kit call failed, the engine is missing or the args were malformed; positive rc is the CoreSpeechKit code (`1002300001` text empty/out of range, `1002300002` language not supported, `1002300003` person not supported, `1002300005` engine creation failed, `401` arguments) |
 
-Host exports (all in the `host-exports.txt` contract, 134 names): `ohos_host_push_{available,request,register_result,result}`,
+Host exports (all in the `host-exports.txt` contract, 136 names): `ohos_host_push_{available,request,register_result,result}`,
 `ohos_host_account_{available,request,register_result,result}`, `ohos_host_map_{available,command,register_result,result}`
 (the R2-3 overlay folded the reserved probe into `ohos_host_map_command(id, op, args)`; the export
 count was unchanged there because the overlay reuses the same four Map exports and one answer
-callback), and `ohos_host_liveview_{available,request,register_result,result}` (R2-SHELL-EXT).
+callback), `ohos_host_liveview_{available,request,register_result,result}` (R2-SHELL-EXT), and
+`ohos_host_tts_{available,request,register_result,result}` (A2-TTS; the old single-op
+`ohos_host_tts_speak` export was replaced by the generic request shape, 134 -> 136 names).
 Push and Account are asynchronous (the AGC call and the system authorization UI); the Map overlay
 commands are asynchronous in the same way (the shell answers when the op was dispatched). Live
 View is asynchronous too (the kit call may cross to the live view service): the shell checks
@@ -554,6 +559,22 @@ overlay), so no harmony-flavor-only module is needed: the probe and sink compile
 OpenHarmony shell build and stay unregistered there. A device without the AGC entitlement throws
 `1003500005`, and a device with the switch off answers `-3`/`1003500004`; both are passed through
 to the managed status.
+
+TextToSpeech keeps the CoreSpeechKit engine op surface (create/speak/stop/locales/isBusy): the
+shell creates one engine per language on the first speak (`person` 0, offline mode 1; an empty
+locale selects the documented `zh-CN` default), keeps it so stop, the voice list and isBusy share
+it, and answers a speak only when the engine reports completion/stop/error - so `SpeakAsync`
+completes with the utterance instead of with the dispatch. `Stop()` also resolves every pending
+speak (a cancellation or timeout sends the same op), and `GetLocalesAsync()` maps the
+`listVoices` payload to MAUI `Locale` values, keeping the device-locale fallback when the sink is
+absent. **Decision points for the device handoff: (a) speak - one utterance per
+language/voice completes and the locale list enumerates the voices the engine reports
+(`zh-CN`/`en-US`, ...); (b) stop - the engine goes silent and a pending `SpeakAsync` completes
+without hitting the bridge timeout; (c) locales - `GetLocalesAsync` reports the engine voices
+rather than the single fallback locale, and an unsupported language answers `1002300002`
+instead of guessing.** The kit needs no AGC entitlement and no `module.json5` permission - the
+device's speech capability (and its offline voice data) is the gate, and the default OpenHarmony
+build keeps the no-kit degradation documented above.
 
 Decision point: **the overlay needs the `ARKTS_SDK_FLAVOR=harmony` shell build plus the AGC map
 service enablement** (checklist row 5; the Android AppKey flow does not apply to the HarmonyOS
@@ -582,7 +603,7 @@ the common rows 1-3 plus its own row:
 | 10 | Live View device switch | (device) 设置 > 应用和元服务 > 应用名 > 实况窗 / 通知和状态栏 | the user's live view switch must be on; local create/update needs the app in the foreground | - | none |
 | 11 | Share (Share Kit) | - | none: the system share panel (`systemShare`) has no AGC service and no `module.json5` permission | - | none |
 | 12 | Scan (Scan Kit, default UI) | - | none: `scanBarcode.startScanForResult` (the shell's path) needs no camera permission; a custom scan UI would add `ohos.permission.CAMERA` | - | none |
-| 13 | TTS (CoreSpeechKit, planned) | - | no AGC entitlement for the kit itself; device-side speech capability is the gate | - | none |
+| 13 | TTS (CoreSpeechKit) | - | none: no AGC entitlement and no `module.json5` permission for the kit itself (implemented A2-TTS 2026-09-27; see the probe table above); the device-side speech capability and its offline voice data are the gate | - | none |
 
 The per-kit error-code map stays in the table above. A `1000900010`/`1000900012` after enabling
 usually means the Profile was not re-applied or the signing fingerprint does not match;
@@ -593,16 +614,20 @@ logs the initialization failure.
 
 Verification without an HMS device: `test/maui-platform-verify` pins the shell probe/sink shape,
 the overlay module and its flavor gate, the host/managed contract, the off-device degradation
-(`[verify] kit4/kit5/kit6/kit7` for the second batch + overlay, `kit8/kit9/kit10` for Live View)
-and the interpreter switch (`pg2 host interp policy`: the `interp.txt` parser, the guarded
-`DOTNET_InterpMode` setenv and the log pair),
+(`[verify] kit4/kit5/kit6/kit7` for the second batch + overlay, `kit8/kit9/kit10` for Live View,
+`kit11/kit12/kit13` for CoreSpeech text-to-speech) and the interpreter switch
+(`pg2 host interp policy`: the `interp.txt` parser, the guarded `DOTNET_InterpMode` setenv and
+the log pair),
 while `scripts/build-arkts-shell.sh` keeps the abc at
 `13.0.1.0`, carries the `./map/MapOverlay`, `registerLiveViewSink`, `notifyLiveViewResult`,
-`@kit.LiveViewKit` and `SystemCapability.LiveView.LiveViewService` literals
-in the UI abc (the provenance gate) and enforces
+`@kit.LiveViewKit`, `SystemCapability.LiveView.LiveViewService`, `registerTtsSink`,
+`notifyTtsResult`, `@kit.CoreSpeechKit` and `SystemCapability.AI.TextToSpeech` literals
+in the UI abc (the provenance gate; current default-flavor UI abc 274,284 B /
+`61c7aa78...`, headless 18,532 B) and enforces
 the source contract (no `@ohos.*` imports, variable kit specifiers). The host-side gate is
-`scripts/build-host.sh` (nm -D: all 134 `host-exports.txt` names present as plain symbols) plus
-`scripts/check-host-exports.py --cross-check`.
+`scripts/build-host.sh` (nm -D: all 136 `host-exports.txt` names present as plain symbols) plus
+`scripts/check-host-exports.py --cross-check`; the interaction suite's own contract line is
+`[suite] checks=337 total=337 floor=317 assert=True`.
 
 ### Templates / abc sync strategy
 
@@ -632,7 +657,8 @@ explicit `-p:OpenHarmonyArktsModulesAbc=<file>` overrides both. The former
     (`dotnet-payload`/`bundleCodeDir`/`payload-in-libs`/`dotnet.marker`) and the UI literals
     (`ohos_dotnet_surface`/`ohos_dotnet_input`/`__hwvInvokeDotNet`/`./map/MapOverlay`/
     `registerLiveViewSink`/`notifyLiveViewResult`/`@kit.LiveViewKit`/
-    `SystemCapability.LiveView.LiveViewService`, which the
+    `SystemCapability.LiveView.LiveViewService`/`registerTtsSink`/`notifyTtsResult`/
+    `@kit.CoreSpeechKit`/`SystemCapability.AI.TextToSpeech`, which the
     headless variant must not carry), the recorded source hashes (a source edit without a rebuild
     fails), the absence of `modules.shell.abc`, byte-identity across the three packs, and - when a
     dist dir is given - the freshly built artifacts against the installed packs.
@@ -648,10 +674,13 @@ explicit `-p:OpenHarmonyArktsModulesAbc=<file>` overrides both. The former
   ship it as a separate pack revision; keep the checked-in `modules*.abc` on the default flavor.
   The provenance record pins the default flavor and the script refuses to write it from a harmony
   build.
-- **Current state (COMP-ARKTS fix, 2026-09-25)**: all three preview packs carry the same sources
-  (Share/Scan probe, kit-import migration, feature permission chain) and the abc rebuilt from them
-  on the OpenHarmony SDK: UI 234,620 B / sha256 `343253329aab…6e1f2`, headless 18,532 B / sha256
-  `d7ec9ca7ee61…38d785`, both abc version 13.0.1.0 with `compatibleSdkVersion 18`.
+- **Current state (A2-TTS, 2026-09-27)**: all three preview packs carry the same sources
+  (Share/Scan/Push/Account/Map/Live View/CoreSpeech probes, kit-import migration, feature
+  permission chain) and the abc rebuilt from them on the OpenHarmony SDK: UI 274,284 B / sha256
+  `61c7aa785ab5785ac39d3b554f2f6536a54bef9f0ab924a773c3f0ab852602e1`, headless 18,532 B / sha256
+  `d7ec9ca7ee6169a883af490a006005fe73fa7d03c40e178db9f2594c83b8d785`, both abc version 13.0.1.0
+  with `compatibleSdkVersion 18`. The harmony-flavor build of the same sources against the
+  CoreSpeechKit-capable DevEco SDK is 273,932 B / `e7290ed1…` (see the SDK-branch section).
 
 ### ArkTS shell conformance (COMP-ARKTS)
 

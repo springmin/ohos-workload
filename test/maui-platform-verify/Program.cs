@@ -12,7 +12,7 @@ using Microsoft.Maui.Platform;
 // after the fuzz tail) instead of letting every caller repeat its own threshold constant.
 VerifyLineCountingWriter verifyStdout = new(Console.Out);
 Console.SetOut(verifyStdout);
-const int verifyCheckTotal = 334;                     // documented full [verify] line count
+const int verifyCheckTotal = 337;                     // documented full [verify] line count
 const int verifyCheckFloor = verifyCheckTotal - 20;   // documented floor convention (total - 20)
 
 // A small image file for the Image handler.
@@ -388,8 +388,11 @@ Console.WriteLine($"[verify] theme bridge dark={themeDark} light={themeLight} re
 // Gap 2: notification kit (the shell publishes on device; desktop degrades to false).
 Console.WriteLine($"[verify] notifications show(on desktop)={OpenHarmonyNotifications.Show("Title", "Text")}");
 
-// Gap 2: TextToSpeech over the Speech Kit bridge (the OpenHarmony SDK ships no speech module,
-// so the shell sink answers unavailable and the managed side must degrade without throwing).
+// Gap 2: TextToSpeech over the CoreSpeechKit bridge (A2-TTS). The OpenHarmony shell registers
+// the sink only when the device reports the text-to-speech syscap and @kit.CoreSpeechKit
+// resolves, so the desktop harness - where libopenharmonyhost.so is absent - must degrade
+// without throwing: SpeakAsync returns, Stop is a no-op, IsSupported is false and
+// GetLocalesAsync answers the current device locale (the pre-kit fallback).
 var ttsDefault = Microsoft.Maui.Media.TextToSpeech.Default;
 Console.WriteLine($"[verify] tts default is OpenHarmony={ttsDefault is OpenHarmonyTextToSpeech} ({ttsDefault.GetType().Name})");
 bool ttsSpeakReturned = false;
@@ -405,6 +408,25 @@ catch (Exception ex)
 Console.WriteLine($"[verify] tts speak degraded without throwing={ttsSpeakReturned}");
 var ttsLocales = (await ttsDefault.GetLocalesAsync()).ToList();
 Console.WriteLine($"[verify] tts locales={ttsLocales.Count} first='{ttsLocales.FirstOrDefault()?.Id}' language='{ttsLocales.FirstOrDefault()?.Language}'");
+// KIT13 (A2-TTS): the new surface (IsSupported, Stop) degrades on the same path; the speak and
+// locale answers above keep the stub semantics when no kit is present.
+bool ttsStopReturned = false;
+try
+{
+    ((OpenHarmonyTextToSpeech)ttsDefault).Stop();
+    ttsStopReturned = true;
+}
+catch (Exception ex)
+{
+    Console.WriteLine($"[verify] tts stop threw {ex.GetType().Name}: {ex.Message}");
+}
+bool ttsSupported = OpenHarmonyTextToSpeech.IsSupported;
+bool kitDegradeOk4 = ttsSpeakReturned && !ttsSupported && ttsStopReturned && ttsLocales.Count > 0;
+Console.WriteLine($"[verify] kit13 degradation speak={ttsSpeakReturned} supported={ttsSupported} stop={ttsStopReturned} locales={ttsLocales.Count} assert={kitDegradeOk4}");
+if (!kitDegradeOk4)
+{
+    throw new InvalidOperationException("the TextToSpeech bridge must degrade off-device instead of throwing");
+}
 
 // Gap 3: camera capture goes through the shell picker (device only).
 Console.WriteLine($"[verify] media captureSupported={MediaPicker.Default.IsCaptureSupported} capture={await MediaPicker.Default.CapturePhotoAsync() is null} (null off-device)");
@@ -2878,7 +2900,7 @@ bool kitManagedOk3 = kitLiveView.Contains("EntryPoint = \"ohos_host_liveview_ava
     kitPublicApi.Contains("Microsoft.Maui.Platform.OpenHarmonyLiveViewStatus.SwitchOff = 1003500004") &&
     kitPublicApi.Contains("Microsoft.Maui.Platform.OpenHarmonyLiveViewUpdate");
 bool kitProvenanceLiveView = kitBuildScript.Contains("'registerLiveViewSink', 'notifyLiveViewResult', '@kit.LiveViewKit'") &&
-    kitBuildScript.Contains("'SystemCapability.LiveView.LiveViewService']");
+    kitBuildScript.Contains("'SystemCapability.LiveView.LiveViewService'");
 bool kitPinsOk3 = kitHostHeader3 && kitHostNapi3 && kitExportsLiveView && kitManagedOk3 && kitProvenanceLiveView;
 Console.WriteLine($"[verify] kit9 bridge pins header={kitHostHeader3} napi={kitHostNapi3} exports={kitExportsLiveView} managed={kitManagedOk3} provenance={kitProvenanceLiveView} assert={kitPinsOk3}");
 if (!kitPinsOk3)
@@ -2900,6 +2922,93 @@ Console.WriteLine($"[verify] kit10 degradation start={kitLiveViewStart} update={
 if (!kitDegradeOk3)
 {
     throw new InvalidOperationException("the Live View kit bridge must degrade off-device instead of throwing");
+}
+
+// KIT11 (A2-TTS): the fourth kit shell probe (CoreSpeechKit/textToSpeech). Same compile-safe
+// shape as KIT1/KIT4/KIT8 (the specifier stays in a variable, the resolved value is cast to the
+// local structural interfaces, the sink registers only when the syscap check passes and the
+// runtime resolves the kit), plus the op surface the managed bridge drives: create/speak/stop/
+// locales/isBusy, the lazy engine (person 0, offline mode) and the listener that answers a
+// pending speak by the kit request id. All three byte-identical packs carry the block.
+bool kitShellTts = kitShell.Contains("canIUse('SystemCapability.AI.TextToSpeech')") &&
+    kitShell.Contains("const kitName: string = '@kit.CoreSpeechKit';") &&
+    kitShell.Contains("const kit = (await import(kitName)) as HmsCoreSpeechKit;") &&
+    kitShell.Contains("host.registerTtsSink((requestId: number, op: number, args: string): void => {") &&
+    kitShell.Contains("private async probeTtsKit(): Promise<void> {") &&
+    kitShell.Contains("private async runTts(requestId: number, op: number, args: string): Promise<void> {") &&
+    kitShell.Contains("private async ensureTtsEngine(kit: HmsCoreSpeechKit, language: string): Promise<HmsTtsEngine> {") &&
+    kitShell.Contains("const params: HmsTtsCreateEngineParams = { language: lang, person: 0, online: 1 };") &&
+    kitShell.Contains("await kit.textToSpeech.createEngine(params);") &&
+    kitShell.Contains("const speakParams: HmsTtsSpeakParams = { requestId: kitRequestId };") &&
+    kitShell.Contains("engine.speak(speakSpec.text, speakParams);") &&
+    kitShell.Contains("engine.stop();") &&
+    kitShell.Contains("engine.isBusy() ? '1' : '0'") &&
+    kitShell.Contains("await kit.textToSpeech.listVoices(query)") &&
+    kitShell.Contains("engine.setListener(listener);") &&
+    kitShell.Contains("onComplete: (kitRequestId: string, response: HmsTtsCompleteResponse): void => {") &&
+    kitShell.Contains("onError: (kitRequestId: string, errorCode: number, errorMessage: string): void => {") &&
+    kitShell.Contains("host.notifyTtsResult(requestId, op, code, payload);");
+bool kitShellTtsCallsites = kitShell.Contains("this.probeTtsKit();") &&
+    kitShell.Contains("CoreSpeechKit unavailable on this device:");
+int kitShellPacks4 = 0;
+foreach (string kitPackVersion in kitShellPackVersions)
+{
+    string? kitPackPath4 = FindHostSource($"packs/Microsoft.OpenHarmony.Sdk/{kitPackVersion}/templates/ets/pages/Index.ets");
+    string kitPackShell4 = kitPackPath4 is null ? string.Empty : File.ReadAllText(kitPackPath4);
+    kitShellPacks4 += kitPackShell4.Contains("registerTtsSink") && kitPackShell4.Contains("this.probeTtsKit();") &&
+        kitPackShell4.Contains("@kit.CoreSpeechKit") ? 1 : 0;
+}
+bool kitShellOk4 = kitShellTts && kitShellTtsCallsites && kitShellPacks4 == kitShellPackVersions.Length;
+Console.WriteLine($"[verify] kit11 shell probe tts={kitShellTts} callsites={kitShellTtsCallsites} packs={kitShellPacks4}/{kitShellPackVersions.Length} assert={kitShellOk4}");
+if (!kitShellOk4)
+{
+    throw new InvalidOperationException("the CoreSpeechKit shell probe/sink is missing or drifted");
+}
+
+// KIT12 (A2-TTS): the host and managed halves of the TextToSpeech bridge: the C ABI
+// declarations, the NAPI sink/notify names plus the module-table entries, the export contract
+// entries (the old ohos_host_tts_speak op export is gone), the managed P/Invoke entry points
+// with the op codes, the ITextToSpeech members plus the new Stop/IsSupported surface and the
+// public API baseline entries, and the build script's ui-abc provenance literals.
+string? kitTtsPath = FindHostSource("OpenHarmonyTextToSpeech.cs");
+string kitTts = kitTtsPath is null ? string.Empty : File.ReadAllText(kitTtsPath);
+bool kitHostHeader4 = kitHeader.Contains("int ohos_host_tts_available(void);") &&
+    kitHeader.Contains("int ohos_host_tts_request(int request_id, int op, const char* args);") &&
+    kitHeader.Contains("void ohos_host_tts_register_result(void* callback);") &&
+    kitHeader.Contains("void ohos_host_tts_result(int request_id, int op, int code, const char* payload);");
+bool kitHostNapi4 = kitNapi.Contains("extern \"C\" int ohos_host_tts_available(void)") &&
+    kitNapi.Contains("extern \"C\" int ohos_host_tts_request(int request_id, int op, const char* args)") &&
+    kitNapi.Contains("extern \"C\" void ohos_host_tts_result(int request_id, int op, int code, const char* payload)") &&
+    kitNapi.Contains("HostSinkPost(g_tts_sink, call)") &&
+    kitNapi.Contains("HostSink tts{\"tts\", false};") &&
+    kitNapi.Contains("{\"registerTtsSink\", nullptr, RegisterTtsSink") &&
+    kitNapi.Contains("{\"notifyTtsResult\", nullptr, NotifyTtsResult");
+bool kitExportsTts = kitLiveViewExports.Contains("ohos_host_tts_available") &&
+    kitLiveViewExports.Contains("ohos_host_tts_request") &&
+    kitLiveViewExports.Contains("ohos_host_tts_register_result") &&
+    kitLiveViewExports.Contains("ohos_host_tts_result") &&
+    !kitLiveViewExports.Contains("ohos_host_tts_speak");
+bool kitManagedOk4 = kitTts.Contains("EntryPoint = \"ohos_host_tts_available\"") &&
+    kitTts.Contains("EntryPoint = \"ohos_host_tts_request\"") &&
+    kitTts.Contains("EntryPoint = \"ohos_host_tts_register_result\"") &&
+    kitTts.Contains("public static bool IsSupported") &&
+    kitTts.Contains("public async Task SpeakAsync(string text, SpeechOptions? options = null, CancellationToken cancelToken = default)") &&
+    kitTts.Contains("public async Task<IEnumerable<Locale>> GetLocalesAsync()") &&
+    kitTts.Contains("public void Stop()") &&
+    kitTts.Contains("private const int OpSpeak = 1;") &&
+    kitTts.Contains("private const int OpStop = 2;") &&
+    kitTts.Contains("private const int OpLocales = 3;") &&
+    kitTts.Contains("private const int OpBusy = 4;") &&
+    kitTts.Contains("1002300005 engine creation failed") &&
+    kitPublicApi.Contains("Microsoft.Maui.Platform.OpenHarmonyTextToSpeech.IsSupported.get -> bool") &&
+    kitPublicApi.Contains("Microsoft.Maui.Platform.OpenHarmonyTextToSpeech.Stop() -> void");
+bool kitProvenanceTts = kitBuildScript.Contains("'registerTtsSink', 'notifyTtsResult', '@kit.CoreSpeechKit'") &&
+    kitBuildScript.Contains("'SystemCapability.AI.TextToSpeech'");
+bool kitPinsOk4 = kitHostHeader4 && kitHostNapi4 && kitExportsTts && kitManagedOk4 && kitProvenanceTts;
+Console.WriteLine($"[verify] kit12 bridge pins header={kitHostHeader4} napi={kitHostNapi4} exports={kitExportsTts} managed={kitManagedOk4} provenance={kitProvenanceTts} assert={kitPinsOk4}");
+if (!kitPinsOk4)
+{
+    throw new InvalidOperationException("the TextToSpeech host/managed bridge contract drifted");
 }
 
 // KIT5: the host and managed halves of the second batch: the C ABI declarations, the NAPI
