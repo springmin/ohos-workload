@@ -26,15 +26,18 @@ name: harmony-flavor
 #   * the flavor literals are in the bytecode: @kit.MapKit / MapComponent / ./map/MapOverlay,
 #     @kit.LiveViewKit / registerLiveViewSink, @kit.CoreSpeechKit / registerTtsSink /
 #     SystemCapability.AI.TextToSpeech, plus the payload-in-libs contract literals
+#   * the Map overlay module record (entry/ets/map/MapOverlay) and its compiled symbols are in
+#     the bytecode (MAPFIX; enforced via HARMONY_REQUIRE_MAP_OVERLAY=1)
 #   * dist/ets/harmony-abc-provenance.json is generated (size/sha256/abcVersion, CLT + hvigor
 #     versions, pinned sdk sha256, git commit, pack sources hash) and uploaded with the abc
 #
-# Known gap (2026-09-28): the map literals live in the pages/Index.ets probe - the default-flavor
-# abc carries them too - and the flavor-only MapOverlay.ets is copied by the build but never
-# reaches hvigor's compile graph (no entry/ets/map/MapOverlay record; forcing the static link
-# fails with 10505001 "Expected 0 arguments, but got 1" at MapOverlay.ets:135). The gate probes
-# the record and records it in the provenance but does not fail on it yet: set
-# HARMONY_REQUIRE_MAP_OVERLAY=1 below once the reachability/compile fix lands.
+# Map overlay (MAPFIX, 2026-09-28): the R2-3 MapOverlay.ets is copied for this branch AND reaches
+# hvigor's compile graph - the build rewrites its Index.ets copy to import the module statically
+# (patch_harmony_index_ets), and the NodeController is constructed with the no-argument base
+# constructor (forcing the static link before the fix failed with 10505001 "Expected 0 arguments,
+# but got 1" at MapOverlay.ets:135). The gate requires the record and the symbols; the map
+# *literals* alone (they live in the pages/Index.ets probe, which the default-flavor abc carries
+# too) are not proof that the module compiled.
 #
 # Host note: the bundle is linux-x64, which is what ubuntu-latest is; the 2026-09-27 aarch64
 # local rehearsal needed the arm64 es2abc of a local OpenHarmony SDK swapped in (see the
@@ -57,10 +60,11 @@ env:
   ARKTS_SHELL_VARIANT: ui
   ARKTS_MODEL_VERSION: '6.0.1'
   ARKTS_COMPATIBLE_SDK_VERSION: '6.0.1(21)'
-  # The R2-3 Map overlay module probe in the gate: 0 records the module-record absence (WARN),
-  # 1 turns it into a failure. Flip once MapOverlay.ets reaches the compile graph (see the
-  # known-gap note above).
-  HARMONY_REQUIRE_MAP_OVERLAY: '0'
+  # The R2-3 Map overlay module probe in the gate: 1 makes a missing
+  # entry/ets/map/MapOverlay record or a missing overlay symbol a failure. Enforced since MAPFIX
+  # (2026-09-28) put MapOverlay.ets into the compile graph via the injected static import; the
+  # build script runs the same gate itself.
+  HARMONY_REQUIRE_MAP_OVERLAY: '1'
   # Where the pinned command-line-tools bundle is cached and unpacked (workspace-local; the
   # archive is the cache path below, the unpacked tree is ~7 GB and is not cached).
   HARMONY_SDK_DIR: ${{ github.workspace }}/.harmony-sdk
@@ -176,13 +180,12 @@ jobs:
           # compile on this branch; liveview is the R2-SHELL-EXT sink. The payload group is the
           # OpenHarmony shell contract every variant must carry.
           #
-          # Known gap (HCI-HARMONY-CI, 2026-09-28): the map literals live in the pages/Index.ets *probe*
-          # (the default-flavor abc carries them too), and the flavor-only MapOverlay.ets module is copied
-          # by the build script but currently never reaches hvigor's compile graph - the abc has no
-          # entry/ets/map/MapOverlay record, and forcing it into the graph fails with 10505001 "Expected 0
-          # arguments, but got 1" at MapOverlay.ets:135 (implicit NodeController constructor). The probe
-          # below records the module's presence but only fails when HARMONY_REQUIRE_MAP_OVERLAY=1, so the
-          # gate can be flipped to enforcement once the reachability/compile fix lands.
+          # Map overlay (MAPFIX, 2026-09-28): the flavor-only MapOverlay.ets module is copied by the build
+          # script and reaches hvigor's compile graph through the static import it injects into its
+          # Index.ets copy (patch_harmony_index_ets), so the abc carries the entry/ets/map/MapOverlay
+          # record and the compiled symbols. The probe below fails on a missing record or symbol when
+          # HARMONY_REQUIRE_MAP_OVERLAY=1 (the enforced default in the workflow); the map *literals* alone
+          # (in the Index.ets probe, also in the default-flavor abc) are not proof that the module compiled.
           LITERALS = (
               ('map', ('@kit.MapKit', 'MapComponent', 'MapOverlay', './map/MapOverlay')),
               ('tts', ('@kit.CoreSpeechKit', 'CoreSpeechKit',
@@ -233,18 +236,23 @@ jobs:
               for lit in missing:
                   failures.append('%s abc lacks the %s literal: %s' % (ABC, group, lit))
 
-          # The flavor-only Map overlay module: copied by the build for this flavor, but reaching the abc
-          # requires the module record (see the known-gap note above). Recorded always; fatal only when
-          # HARMONY_REQUIRE_MAP_OVERLAY=1.
+          # The flavor-only Map overlay module: copied by the build for this flavor and compiled into the
+          # abc through the injected static import (see the note above). The record and every compiled
+          # symbol are fatal when HARMONY_REQUIRE_MAP_OVERLAY=1; recorded always.
           map_module = {
               'file': 'entry/src/main/ets/map/MapOverlay.ets',
               'recordProbe': MAP_MODULE_PROBE,
               'compiled': MAP_MODULE_PROBE.encode() in raw,
               'symbols': {sym: sym.encode() in raw for sym in ('mapOverlayView', 'markerClick', 'cameraIdle')},
           }
-          if REQUIRE_MAP_OVERLAY and not map_module['compiled']:
-              failures.append('%s has no %s record: the Map overlay module did not reach the compile graph'
-                              % (ABC, MAP_MODULE_PROBE))
+          if REQUIRE_MAP_OVERLAY:
+              if not map_module['compiled']:
+                  failures.append('%s has no %s record: the Map overlay module did not reach the compile graph'
+                                  % (ABC, MAP_MODULE_PROBE))
+              for overlay_sym, present in sorted(map_module['symbols'].items()):
+                  if not present:
+                      failures.append('%s has no Map overlay symbol %s: the module record exists but its compiled code is missing'
+                                      % (ABC, overlay_sym))
 
           # ---- the hvigor compile log -------------------------------------------------------------
           log_text = ''
@@ -371,11 +379,16 @@ jobs:
               checked = literal_report[group]
               print('  literals[%s]: %d checked, missing=%s'
                     % (group, len(checked['checked']), ','.join(checked['missing']) or 'none'))
-          if map_module['compiled']:
-              print('  map overlay module: %s record present (compiled into the abc)' % MAP_MODULE_PROBE)
+          if map_module['compiled'] and all(map_module['symbols'].values()):
+              print('  map overlay module: %s record and symbols present (compiled into the abc)' % MAP_MODULE_PROBE)
+          elif map_module['compiled']:
+              print('  map overlay module: %s record present but symbols miss %s (recorded%s)'
+                    % (MAP_MODULE_PROBE,
+                       ','.join(sym for sym, present in sorted(map_module['symbols'].items()) if not present),
+                       ' (required)' if REQUIRE_MAP_OVERLAY else ''))
           else:
-              print('  map overlay module: %s record ABSENT%s - the R2-3 module is copied but not in the '
-                    'compile graph (known gap; set HARMONY_REQUIRE_MAP_OVERLAY=1 to enforce)'
+              print('  map overlay module: %s record ABSENT%s - the R2-3 module did not reach the compile '
+                    'graph (set HARMONY_REQUIRE_MAP_OVERLAY=1 to enforce)'
                     % (MAP_MODULE_PROBE, ' (required)' if REQUIRE_MAP_OVERLAY else ' (recorded)'))
           print('  compile log: %s (finished=%s, arktsErrors=%d)'
                 % (LOG, provenance['compile']['finished'] or 'no', arkts_error_count))

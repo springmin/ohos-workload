@@ -61,6 +61,14 @@
 #                 (default/ vs the versioned dir itself) are accepted, and the abc ceiling gate
 #                 (`--check-bc-version`) passes 13.0.1.0, rejects 13.0.1.1/24.0.0.0 with the
 #                 version named, honours `any` and refuses a non-abc file
+#   T18 overlay   `--patch-harmony-index` rewrites the shipped Index.ets so MapOverlay.ets reaches
+#                 hvigor's compile graph (static import + probe-first static path; the dynamic
+#                 literal stays for the default flavor) and refuses a page missing either anchor
+#                 with the anchor named; `--check-overlay-abc` accepts an abc carrying the module
+#                 record + compiled symbols (mapOverlayView/markerClick/cameraIdle), rejects one
+#                 missing a symbol or the record (named) and an unreadable file (exit 2); source
+#                 pins assert the build and the CI workflow enforce the record
+#                 (HARMONY_REQUIRE_MAP_OVERLAY=1)
 #
 # No network, no node, no SDK, no real unpack: the malicious tarballs are created with python3's
 # tarfile into a temp dir and only ever listed (`tar tzf`), the scaffold is written by the script's
@@ -73,7 +81,7 @@
 # Exit: 0 = all checks passed; 1 = at least one check failed (work dir kept for triage).
 set -u
 
-SELFTEST_VERSION="4 (2026-09-27)"
+SELFTEST_VERSION="5 (2026-09-28)"
 log()     { printf '[%s] %s\n' "$(date '+%H:%M:%S')" "$*"; }
 section() { printf '\n=== %s ===\n' "$*"; }
 
@@ -640,6 +648,61 @@ assert_contains "T17 the build path uses resolve_external_api_paths" 'EXTERNAL_A
 assert_contains "T17 read_sdk_meta falls back to sdk-pkg.json" "sdk-pkg.json" "$BUILD_SCRIPT"
 assert_contains "T17 the build path runs check_bc_version" 'BC_VERSION="$(check_bc_version "$OUT_FILE" "$MAX_BC_VERSION")"' "$BUILD_SCRIPT"
 assert_contains "T17 setup pins the CLT 6.0.1.251 sha256" "e971348eabe959b41b1d07fae037b3cc53ab2c0a8306f0895357dd45f98ad421" "$SETUP_SCRIPT"
+
+# ---- T18: harmony Map overlay static registration and abc record gate (MAPFIX) -----------
+section "T18 harmony Map overlay static registration and record gate"
+# The harmony build rewrites its Index.ets copy so MapOverlay.ets reaches hvigor's compile graph
+# (the variable-specifier dynamic import never registered a modules.abc record). The rewrite is
+# driven offline through --patch-harmony-index; the fixture is the shipped page.
+T18_SRC="$SELFTEST_DIR/../packs/Microsoft.OpenHarmony.Sdk/1.0.0-preview.24/templates/ets/pages/Index.ets"
+cp "$T18_SRC" "$WORK/T18-Index.ets"
+sh "$BUILD_SCRIPT" --patch-harmony-index "$WORK/T18-Index.ets" > "$WORK/T18-patch.log" 2>&1
+assert_rc 0 $? "T18 --patch-harmony-index accepts the shipped Index.ets"
+assert_contains "T18 injects the static MapOverlay import" "import { MapOverlayProxy as HmsMapOverlayProxyImpl } from '../map/MapOverlay';" "$WORK/T18-Index.ets"
+assert_contains "T18 the probe takes the statically linked proxy" "const staticallyLinked: ESObject = HmsMapOverlayProxyImpl;" "$WORK/T18-Index.ets"
+assert_contains "T18 the dynamic-import degradation path stays (default flavor)" "const overlayModule: string = './map/MapOverlay';" "$WORK/T18-Index.ets"
+assert_contains "T18 reports the injected registration" "harmony overlay static registration injected" "$WORK/T18-patch.log"
+if [ "$(grep -cF 'HmsMapOverlayProxyImpl' "$WORK/T18-Index.ets")" = "2" ]; then
+    pass_ "T18 the rewrite stays a single registration (import + probe use)"
+else
+    fail_ "T18 unexpected HmsMapOverlayProxyImpl count: $(grep -cF 'HmsMapOverlayProxyImpl' "$WORK/T18-Index.ets")"
+fi
+# Negative: either anchor missing is refused with the anchor named.
+sed 's#const overlayModule: string#const overlayModuleRenamed: string#' "$T18_SRC" > "$WORK/T18-Index-noprobe.ets"
+sh "$BUILD_SCRIPT" --patch-harmony-index "$WORK/T18-Index-noprobe.ets" > "$WORK/T18-noprobe.log" 2>&1 && _rc=0 || _rc=$?
+assert_rc 1 "$_rc" "T18 a page without the probe anchor is refused"
+assert_contains "T18 the refusal names the missing probe anchor" "the probeMapOverlay dynamic-import block" "$WORK/T18-noprobe.log"
+sed "s#import { util } from '@kit.ArkTS';#import { util as util2 } from '@kit.ArkTS';#" "$T18_SRC" > "$WORK/T18-Index-noimport.ets"
+sh "$BUILD_SCRIPT" --patch-harmony-index "$WORK/T18-Index-noimport.ets" > "$WORK/T18-noimport.log" 2>&1 && _rc=0 || _rc=$?
+assert_rc 1 "$_rc" "T18 a page without the import anchor is refused"
+assert_contains "T18 the refusal names the missing import anchor" "the @kit.ArkTS import line" "$WORK/T18-noimport.log"
+# The abc record gate: the module record and the three compiled symbols must all be present.
+# --check-overlay-abc is the offline twin of the gate the build and the CI workflow run.
+python3 - "$WORK/T18-overlay-ok.abc" "$WORK/T18-overlay-nosym.abc" "$WORK/T18-overlay-norecord.abc" <<'PY'
+import sys
+header = b'PANDA' + b'\0' * 7 + b'\x0d\x00\x01\x00'
+record = b'com.example.hellomauiapp/entry/ets/map/MapOverlay'
+open(sys.argv[1], 'wb').write(header + record + b' mapOverlayView markerClick cameraIdle')
+open(sys.argv[2], 'wb').write(header + record + b' mapOverlayView')
+open(sys.argv[3], 'wb').write(header + b' nothing here')
+PY
+sh "$BUILD_SCRIPT" --check-overlay-abc "$WORK/T18-overlay-ok.abc" > "$WORK/T18-overlay-ok.log" 2>&1
+assert_rc 0 $? "T18 --check-overlay-abc accepts record + symbols"
+assert_contains "T18 reports the overlay record" "MapOverlay module record and probe symbols are present" "$WORK/T18-overlay-ok.log"
+sh "$BUILD_SCRIPT" --check-overlay-abc "$WORK/T18-overlay-nosym.abc" > "$WORK/T18-overlay-nosym.log" 2>&1 && _rc=0 || _rc=$?
+assert_rc 1 "$_rc" "T18 a missing overlay symbol is refused"
+assert_contains "T18 names both missing symbols" "the overlay symbol markerClick, the overlay symbol cameraIdle" "$WORK/T18-overlay-nosym.log"
+sh "$BUILD_SCRIPT" --check-overlay-abc "$WORK/T18-overlay-norecord.abc" > "$WORK/T18-overlay-norecord.log" 2>&1 && _rc=0 || _rc=$?
+assert_rc 1 "$_rc" "T18 a missing module record is refused"
+assert_contains "T18 names the missing record" "the MapOverlay module record (entry/ets/map/MapOverlay)" "$WORK/T18-overlay-norecord.log"
+sh "$BUILD_SCRIPT" --check-overlay-abc "$WORK/no-such.abc" > "$WORK/T18-overlay-bad.log" 2>&1 && _rc=0 || _rc=$?
+assert_rc 2 "$_rc" "T18 an unreadable abc is bad input (exit 2)"
+
+# Source pins: the registration runs on the harmony UI path, the emitted abc is gated in the
+# build, and the CI workflow enforces the record (WARN -> PASS, HARMONY_REQUIRE_MAP_OVERLAY=1).
+assert_contains "T18 the harmony branch patches its Index.ets copy" 'patch_harmony_index_ets "$PROJ/entry/src/main/ets/pages/Index.ets"' "$BUILD_SCRIPT"
+assert_contains "T18 the build gates the harmony ui abc record" 'check_harmony_overlay_abc "$OUT_FILE"' "$BUILD_SCRIPT"
+assert_contains "T18 the CI workflow requires the map overlay" "HARMONY_REQUIRE_MAP_OVERLAY: '1'" "$SELFTEST_DIR/../.github/workflows/harmony-flavor.yml"
 
 # ---- summary -------------------------------------------------------------------------
 section "summary"
