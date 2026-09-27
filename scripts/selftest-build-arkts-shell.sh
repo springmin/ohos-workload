@@ -53,6 +53,14 @@
 #                 6.1.0(23) and a clean `--check-project-deps`; a missing SDK root or a root
 #                 without hms/ets is refused with the documented message; the default flavor
 #                 stays OpenHarmony/18 and the abc ceiling stays 13.0.1.0 (source pins)
+#   T17 config    `--print-config` (both flavors) and the mock SDK generator
+#                 (`scripts/setup-harmony-sdk.sh --mock`): the DevEco command-line-tools
+#                 metadata shape (no platformVersion in ets/oh-uni-package.json, it lives in
+#                 default/sdk-pkg.json) resolves platform 6.1.0 / API 23, externalApiPaths
+#                 carries <base>/hms/ets on harmony and nothing HMS on openharmony, both roots
+#                 (default/ vs the versioned dir itself) are accepted, and the abc ceiling gate
+#                 (`--check-bc-version`) passes 13.0.1.0, rejects 13.0.1.1/24.0.0.0 with the
+#                 version named, honours `any` and refuses a non-abc file
 #
 # No network, no node, no SDK, no real unpack: the malicious tarballs are created with python3's
 # tarfile into a temp dir and only ever listed (`tar tzf`), the scaffold is written by the script's
@@ -65,18 +73,23 @@
 # Exit: 0 = all checks passed; 1 = at least one check failed (work dir kept for triage).
 set -u
 
-SELFTEST_VERSION="3 (2026-09-25)"
+SELFTEST_VERSION="4 (2026-09-27)"
 log()     { printf '[%s] %s\n' "$(date '+%H:%M:%S')" "$*"; }
 section() { printf '\n=== %s ===\n' "$*"; }
 
 # ---- paths ---------------------------------------------------------------------------
 SELFTEST_DIR="$(cd "$(dirname "$0")" && pwd)"
 BUILD_SCRIPT="${SELFTEST_BUILD_SCRIPT:-$SELFTEST_DIR/build-arkts-shell.sh}"
+SETUP_SCRIPT="${SELFTEST_SETUP_SCRIPT:-$SELFTEST_DIR/setup-harmony-sdk.sh}"
 WORK_BASE="${SELFTEST_TMPDIR:-/data/storage/el2/base/tmp/opencode}"
 KEEP="${SELFTEST_KEEP:-0}"
 
 if [ ! -f "$BUILD_SCRIPT" ]; then
     printf 'FATAL: build-arkts-shell.sh not found: %s\n' "$BUILD_SCRIPT" >&2
+    exit 1
+fi
+if [ ! -f "$SETUP_SCRIPT" ]; then
+    printf 'FATAL: setup-harmony-sdk.sh not found: %s\n' "$SETUP_SCRIPT" >&2
     exit 1
 fi
 for _t in python3 tar grep sed mktemp head cut; do
@@ -538,6 +551,95 @@ assert_contains "T14 default flavor is openharmony" 'SDK_FLAVOR="${ARKTS_SDK_FLA
 assert_contains "T14 the harmony branch pins runtimeOS HarmonyOS" "RUNTIME_OS=HarmonyOS" "$BUILD_SCRIPT"
 assert_contains "T14 the abc ceiling default stays 13.0.1.0" 'MAX_BC_VERSION="${ARKTS_MAX_BC_VERSION:-13.0.1.0}"' "$BUILD_SCRIPT"
 assert_contains "T14 the abc version check reads the header back" "abc version" "$BUILD_SCRIPT"
+
+# ---- T17: flavor config/ceiling gates and the mock SDK generator -------------------------
+section "T17 harmony flavor config, abc ceiling and mock SDK"
+# The default flavor without an SDK: --print-config still resolves (fallback platform/API), and
+# its externalApiPaths must not carry the HMS declarations.
+( cd "$SELFTEST_DIR/.." && OHOS_SDK_ROOT="$WORK/no-such-sdk" sh "$BUILD_SCRIPT" --print-config ) > "$WORK/T17-default.conf" 2>&1
+assert_rc 0 $? "T17 --print-config exits 0 on the default flavor without an SDK"
+assert_contains "T17 default runtimeOS is OpenHarmony" "runtime_os=OpenHarmony" "$WORK/T17-default.conf"
+assert_contains "T17 default compatibleSdkVersion is 18" "compatible_sdk_version=18" "$WORK/T17-default.conf"
+assert_not_contains "T17 default externalApiPaths has no hms/ets" "hms/ets" "$WORK/T17-default.conf"
+
+# The mock SDK mirrors the DevEco command-line-tools metadata shape: ets/oh-uni-package.json
+# has no platformVersion, it comes from default/sdk-pkg.json (verified against 6.0.1.251).
+MOCK_SDK="$WORK/harmony-mock-sdk"
+( cd "$SELFTEST_DIR/.." && sh "$SETUP_SCRIPT" --mock "$MOCK_SDK" ) > "$LOG_FILE" 2>&1
+assert_rc 0 $? "T17 setup-harmony-sdk.sh --mock exits 0"
+for _f in default/openharmony/ets/oh-uni-package.json default/sdk-pkg.json default/hms/ets/uni-package.json \
+          default/hms/ets/kits/@kit.MapKit.d.ts default/hms/ets/kits/@kit.LiveViewKit.d.ts \
+          default/hms/ets/kits/@kit.ShareKit.d.ts default/hms/ets/kits/@kit.ScanKit.d.ts \
+          default/hms/ets/kits/@kit.PushKit.d.ts default/hms/ets/kits/@kit.AccountKit.d.ts \
+          default/hms/ets/kits/@kit.CoreSpeechKit.d.ts; do
+    if [ -f "$MOCK_SDK/$_f" ]; then pass_ "T17 the mock SDK has $_f"; else fail_ "T17 the mock SDK is missing $_f"; fi
+done
+( cd "$SELFTEST_DIR/.." && ARKTS_SDK_FLAVOR=harmony ARKTS_HARMONY_SDK_ROOT="$MOCK_SDK" \
+    sh "$BUILD_SCRIPT" --print-config ) > "$WORK/T17-harmony.conf" 2>&1
+assert_rc 0 $? "T17 --print-config exits 0 on the mock SDK"
+assert_contains "T17 harmony runtimeOS is HarmonyOS" "runtime_os=HarmonyOS" "$WORK/T17-harmony.conf"
+assert_contains "T17 harmony compatibleSdkVersion defaults to 6.1.0(23)" "compatible_sdk_version=6.1.0(23)" "$WORK/T17-harmony.conf"
+assert_contains "T17 harmony target is the combined 6.1.0(23)" "target_version=6.1.0(23)" "$WORK/T17-harmony.conf"
+assert_contains "T17 platformVersion falls back to sdk-pkg.json (6.1.0)" "platform_version=6.1.0" "$WORK/T17-harmony.conf"
+assert_contains "T17 apiVersion falls back to sdk-pkg.json (23)" "api_version=23" "$WORK/T17-harmony.conf"
+T17_EXTERNAL_LINE="$(grep '^external_api_paths=' "$WORK/T17-harmony.conf")"
+case "$T17_EXTERNAL_LINE" in
+    *"$MOCK_SDK/default/hms/ets"*) pass_ "T17 externalApiPaths injects hms/ets on the harmony flavor" ;;
+    *) fail_ "T17 externalApiPaths does not inject hms/ets: $T17_EXTERNAL_LINE" ;;
+esac
+case "$T17_EXTERNAL_LINE" in
+    *"$MOCK_SDK/default/openharmony/ets/api"*) pass_ "T17 externalApiPaths keeps the OpenHarmony declarations" ;;
+    *) fail_ "T17 externalApiPaths lost the OpenHarmony declarations: $T17_EXTERNAL_LINE" ;;
+esac
+
+# The other accepted root layout: <root>/openharmony/ets (the versioned directory itself).
+MOCK_FLAT="$WORK/harmony-mock-flat"
+mkdir -p "$MOCK_FLAT"
+for _e in "$MOCK_SDK/default"/*; do cp -R "$_e" "$MOCK_FLAT/"; done
+( cd "$SELFTEST_DIR/.." && ARKTS_SDK_FLAVOR=harmony ARKTS_HARMONY_SDK_ROOT="$MOCK_FLAT" \
+    sh "$BUILD_SCRIPT" --print-config ) > "$WORK/T17-flat.conf" 2>&1
+assert_rc 0 $? "T17 the <root>/openharmony/ets layout is accepted"
+assert_contains "T17 the flat layout keeps runtimeOS HarmonyOS" "runtime_os=HarmonyOS" "$WORK/T17-flat.conf"
+
+# The scaffold against the CLT-style metadata (sdk-pkg.json fallback) still emits the flavor values.
+( cd "$SELFTEST_DIR/.." && ARKTS_SDK_FLAVOR=harmony ARKTS_HARMONY_SDK_ROOT="$MOCK_SDK" \
+    sh "$BUILD_SCRIPT" --scaffold-only "$WORK/scaffold-harmony-mock" ) > "$LOG_FILE" 2>&1
+assert_rc 0 $? "T17 --scaffold-only accepts the CLT-style mock SDK"
+assert_contains "T17 mock scaffold sets runtimeOS HarmonyOS" "runtimeOS: 'HarmonyOS'" "$WORK/scaffold-harmony-mock/build-profile.json5"
+assert_contains "T17 mock scaffold sets compatibleSdkVersion 6.1.0(23)" "compatibleSdkVersion: '6.1.0(23)'" "$WORK/scaffold-harmony-mock/build-profile.json5"
+
+# The abc ceiling gate the build runs at the end (default 13.0.1.0): exact boundary passes,
+# a newer version fails with the version named, 'any' disables the ceiling, a non-abc is bad
+# input. This is the "the gate must not misfire" check - it needs no real compiler.
+make_abc() { python3 - "$1" "$2" <<'PY'
+import sys
+open(sys.argv[1], 'wb').write(b'PANDA' + b'\0' * 7 + bytes(int(p) for p in sys.argv[2].split('.')))
+PY
+}
+make_abc "$WORK/T17-abc-13010.bin" "13.0.1.0"
+sh "$BUILD_SCRIPT" --check-bc-version "$WORK/T17-abc-13010.bin" > "$WORK/T17-bc-ok.log" 2>&1
+assert_rc 0 $? "T17 --check-bc-version accepts the 13.0.1.0 ceiling boundary"
+assert_contains "T17 reports the accepted version" "abc version 13.0.1.0 is within the ceiling 13.0.1.0" "$WORK/T17-bc-ok.log"
+make_abc "$WORK/T17-abc-13011.bin" "13.0.1.1"
+sh "$BUILD_SCRIPT" --check-bc-version "$WORK/T17-abc-13011.bin" > "$WORK/T17-bc-new.log" 2>&1 && _rc=0 || _rc=$?
+assert_rc 1 "$_rc" "T17 13.0.1.1 is refused"
+assert_contains "T17 names the newer version" "13.0.1.1 is newer than the ceiling 13.0.1.0" "$WORK/T17-bc-new.log"
+make_abc "$WORK/T17-abc-240000.bin" "24.0.0.0"
+sh "$BUILD_SCRIPT" --check-bc-version "$WORK/T17-abc-240000.bin" > "$WORK/T17-bc-24.log" 2>&1 && _rc=0 || _rc=$?
+assert_rc 1 "$_rc" "T17 the SDK-26 default 24.0.0.0 is refused"
+sh "$BUILD_SCRIPT" --check-bc-version "$WORK/T17-abc-240000.bin" any > "$WORK/T17-bc-any.log" 2>&1
+assert_rc 0 $? "T17 'any' disables the ceiling"
+printf 'not an abc\n' > "$WORK/T17-not-abc.bin"
+sh "$BUILD_SCRIPT" --check-bc-version "$WORK/T17-not-abc.bin" > "$WORK/T17-bc-bad.log" 2>&1 && _rc=0 || _rc=$?
+assert_rc 2 "$_rc" "T17 a non-abc file is bad input (exit 2)"
+sh "$BUILD_SCRIPT" --check-bc-version > "$WORK/T17-bc-usage.log" 2>&1 && _rc=0 || _rc=$?
+assert_rc 1 "$_rc" "T17 --check-bc-version without a file is refused"
+
+# Source pins: the gates stay wired into the build path and the download mirror stays pinned.
+assert_contains "T17 the build path uses resolve_external_api_paths" 'EXTERNAL_API_PATHS="$(resolve_external_api_paths)"' "$BUILD_SCRIPT"
+assert_contains "T17 read_sdk_meta falls back to sdk-pkg.json" "sdk-pkg.json" "$BUILD_SCRIPT"
+assert_contains "T17 the build path runs check_bc_version" 'BC_VERSION="$(check_bc_version "$OUT_FILE" "$MAX_BC_VERSION")"' "$BUILD_SCRIPT"
+assert_contains "T17 setup pins the CLT 6.0.1.251 sha256" "e971348eabe959b41b1d07fae037b3cc53ab2c0a8306f0895357dd45f98ad421" "$SETUP_SCRIPT"
 
 # ---- summary -------------------------------------------------------------------------
 section "summary"

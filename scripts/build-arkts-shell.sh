@@ -56,10 +56,17 @@
 # so the page's dynamic import of './map/MapOverlay' fails at runtime there and the Map sink
 # reports capability bit 1 = 0. The abc header gate (ARKTS_MAX_BC_VERSION 13.0.1.0) is unchanged,
 # so a HarmonyOS build that raises es2abc above the device limit still fails here. The branch is
-# scaffold-verified (--scaffold-only) but a full build needs the SDK present; see
-# docs/openharmony-hap-packaging.md "HarmonyOS SDK branch".
-# --diagnose-log <file>, --check-project-deps <dir> and --scaffold-only <dir> expose those pieces
-# to scripts/selftest-build-arkts-shell.sh without node, hvigor or an SDK.
+# build-verified 2026-09-27 with the DevEco command-line-tools bundle 6.0.1.251 (HarmonyOS 6.0.1
+# Release / API 21): ui abc 263,784 B / abc version 13.0.1.0 / 0 ArkTS errors. The hvigor and the
+# SDK must match: the pinned 6.26.4 is a DevEco-26 toolchain and rejects a 6.0/6.1 SDK
+# (00303313/00303312), so drive the SDK's own hvigor through the HVIGOR_JS override and set
+# ARKTS_MODEL_VERSION/ARKTS_COMPATIBLE_SDK_VERSION to values it supports. scripts/
+# setup-harmony-sdk.sh obtains or mocks an SDK; docs/openharmony-hap-packaging.md "HarmonyOS SDK
+# branch" has the two routes, the tester recipe and the AGC checklist.
+# --check-sources, --check-pack-abc, --install-packs, --check-tgz, --check-abc,
+# --check-bc-version, --print-config, --diagnose-log <file>, --check-project-deps <dir> and
+# --scaffold-only <dir> expose the gates, the flavor resolution and the abc ceiling to
+# scripts/selftest-build-arkts-shell.sh without node, hvigor or an SDK.
 if [ -z "${BASH_VERSION:-}" ] && command -v bash >/dev/null 2>&1; then
     exec bash "$0" "$@"
 fi
@@ -139,9 +146,63 @@ else
     COMPATIBLE_SDK_VERSION="${ARKTS_COMPATIBLE_SDK_VERSION:-18}"
 fi
 
-# SDK metadata (platformVersion/apiVersion); defined here so --scaffold-only can read it without
-# reaching the full SDK validation of the main path.
-read_sdk_meta() { python3 -c "import json;print(json.load(open('$SDK_ETS_ROOT/oh-uni-package.json'))['$1'])"; }
+# SDK metadata (platformVersion/apiVersion); defined here so --scaffold-only and --print-config
+# can read it without reaching the full SDK validation of the main path. Two layouts must work:
+# the OpenHarmony SDK (and DevEco-generated projects) carry platformVersion in
+# ets/oh-uni-package.json, while the DevEco command-line-tools SDK 6.0.1.251 carries only
+# apiVersion + version there and keeps platformVersion in <base>/sdk-pkg.json (verified against
+# commandline-tools-linux-x64-6.0.1.251, 2026-09-27). Fall back to sdk-pkg.json and then to the
+# version's first three components, and fail with the searched paths named when none carries it.
+read_sdk_meta() {
+    python3 - "$1" "$SDK_ETS_ROOT" "${HARMONY_SDK_BASE:-}" <<'PY'
+import json, os, sys
+key, ets_root, base = sys.argv[1], sys.argv[2], sys.argv[3]
+
+def load(path):
+    try:
+        with open(path) as f:
+            return json.load(f)
+    except (OSError, ValueError):
+        return {}
+
+pkg = load(os.path.join(ets_root, 'oh-uni-package.json'))
+if pkg.get(key):
+    print(pkg[key]); sys.exit(0)
+for candidate in (os.path.join(base, 'sdk-pkg.json') if base else '',
+                  os.path.join(ets_root, 'sdk-pkg.json')):
+    if candidate:
+        data = load(candidate).get('data') or {}
+        if data.get(key):
+            print(data[key]); sys.exit(0)
+version = str(pkg.get('version', ''))
+if key == 'platformVersion' and version.count('.') >= 2:
+    print('.'.join(version.split('.')[:3])); sys.exit(0)
+sys.stderr.write('cannot read %s: looked in %s/oh-uni-package.json and %s\n' % (
+    key, ets_root, os.path.join(base or ets_root, 'sdk-pkg.json')))
+sys.exit(1)
+PY
+}
+
+# TARGET_VERSION is the DevEco-style combined string platformVersion(apiVersion) on the harmony
+# flavor and the plain platformVersion on OpenHarmony. Shared by the build path, --scaffold-only
+# and --print-config so the generated build-profile.json5 cannot diverge between them.
+compute_target_version() {
+    if [ "$SDK_FLAVOR" = harmony ]; then
+        printf '%s(%s)' "$1" "$2"
+    else
+        printf '%s' "$1"
+    fi
+}
+
+# The externalApiPaths value hvigor receives: the OpenHarmony ets declarations plus, on the
+# harmony flavor, the HMS kit declarations under hms/ets. Split out of run_hvigor so --print-config
+# can show the exact value the build injects without node, hvigor or an SDK.
+resolve_external_api_paths() {
+    case "$SDK_FLAVOR" in
+        harmony) printf '%s' "$HARMONY_SDK_BASE/openharmony/ets/api:$HARMONY_SDK_BASE/openharmony/ets/kits:$HARMONY_SDK_BASE/openharmony/ets/arkts:$SDK_ETS_EXTRA" ;;
+        *)       printf '%s' "$SDK/ets/api:$SDK/ets/kits:$SDK/ets/arkts" ;;
+    esac
+}
 
 # Directories every generated configuration file lives in (the ets sources are copied separately).
 make_project_dirs() {
@@ -457,6 +518,50 @@ if [ "${1:-}" = "--check-abc" ]; then
     esac
 fi
 
+# check_bc_version <abc> [max-version]: read the abc version from the fixed header (8 B magic
+# "PANDA\0\0\0", 4 B adler32, one byte per version component at 0x0c) and enforce the device
+# ceiling. Prints the version and exits 0 when it is within the ceiling, 1 when it is newer
+# (the version is still printed so the caller can name it) and 2 when the file is unreadable or
+# not an abc; 'any' as the ceiling disables the check. Shared by the build path and
+# --check-bc-version so the offline selftest exercises the exact gate the build runs.
+check_bc_version() {
+    python3 - "$1" "${2:-$MAX_BC_VERSION}" <<'PY'
+import os, sys
+abc, maximum = sys.argv[1], sys.argv[2]
+if not os.path.isfile(abc):
+    sys.stderr.write('cannot read %s (no such file)\n' % abc)
+    sys.exit(2)
+with open(abc, 'rb') as f:
+    raw = f.read(0x10)
+if len(raw) < 0x10 or raw[:5] != b'PANDA':
+    sys.stderr.write('%s: not an abc file (missing the PANDA header)\n' % abc)
+    sys.exit(2)
+version = tuple(raw[0x0c:0x10])
+print('.'.join(str(b) for b in version))
+max_version = tuple(int(p) for p in maximum.split('.')) if maximum and maximum != 'any' else ()
+sys.exit(1 if max_version and version > max_version else 0)
+PY
+}
+
+# --check-bc-version <abc> [max-version]: run just the header/ceiling gate and exit. No node,
+# hvigor or SDK needed; defaults to the build's ARKTS_MAX_BC_VERSION ceiling.
+if [ "${1:-}" = "--check-bc-version" ]; then
+    [ -n "${2:-}" ] || die "usage: $0 --check-bc-version <modules.abc> [max-version]"
+    _bc_max="${3:-$MAX_BC_VERSION}"
+    if _bc_v="$(check_bc_version "$2" "$_bc_max")"; then
+        info "abc version $_bc_v is within the ceiling $_bc_max: $2"
+        exit 0
+    else
+        _bc_rc=$?
+        case "$_bc_rc" in
+            1) printf 'ERROR: abc version %s is newer than the ceiling %s: %s\n' "$_bc_v" "$_bc_max" "$2" >&2
+               exit 1 ;;
+            *) printf 'ERROR: not an abc file (or unreadable): %s\n' "$2" >&2
+               exit 2 ;;
+        esac
+    fi
+fi
+
 # ---- source contract (audit ARKTS-S2/S3) ------------------------------------------------
 # The shell sources must not carry the migrated patterns: '@ohos' module/dynamic imports
 # (the @kit.* migration), the global getContext(), the deprecated decodeWithStream() decoder or
@@ -741,6 +846,36 @@ if [ "${1:-}" = "--check-project-deps" ]; then
     esac
 fi
 
+# --print-config: print the resolved flavor configuration (SDK roots, runtimeOS, compatible and
+# target version strings, the exact externalApiPaths and the abc ceiling) and exit - no node,
+# hvigor or SDK needed. This is the offline check for the harmony branch's path resolution and
+# externalApiPaths injection; scripts/selftest-build-arkts-shell.sh drives both flavors through it.
+if [ "${1:-}" = "--print-config" ]; then
+    if [ -f "$SDK_ETS_ROOT/oh-uni-package.json" ]; then
+        PLATFORM_VERSION="$(read_sdk_meta platformVersion)"
+        API_VERSION="$(read_sdk_meta apiVersion)"
+    else
+        PLATFORM_VERSION="${ARKTS_PLATFORM_VERSION:-26.0.0}"
+        API_VERSION="${ARKTS_API_VERSION:-26}"
+    fi
+    TARGET_VERSION="$(compute_target_version "$PLATFORM_VERSION" "$API_VERSION")"
+    printf 'flavor=%s\n' "$SDK_FLAVOR"
+    printf 'sdk_root=%s\n' "$SDK"
+    printf 'sdk_ets_root=%s\n' "$SDK_ETS_ROOT"
+    printf 'sdk_ets_extra=%s\n' "$SDK_ETS_EXTRA"
+    printf 'runtime_os=%s\n' "$RUNTIME_OS"
+    printf 'platform_version=%s\n' "$PLATFORM_VERSION"
+    printf 'api_version=%s\n' "$API_VERSION"
+    printf 'compatible_sdk_version=%s\n' "$COMPATIBLE_SDK_VERSION"
+    printf 'target_version=%s\n' "$TARGET_VERSION"
+    printf 'external_api_paths=%s\n' "$(resolve_external_api_paths)"
+    printf 'max_bc_version=%s\n' "$MAX_BC_VERSION"
+    printf 'variant=%s\n' "$VARIANT"
+    printf 'project_dir=%s\n' "$PROJ"
+    printf 'dist_dir=%s\n' "$OUT_DIR"
+    exit 0
+fi
+
 # --scaffold-only <dir>: write only the generated project configuration - no node, no hvigor
 # download, no SDK symlink and no template copy - so the selftest can assert the exact texts
 # hvigor reads (empty dependencies, modelVersion agreement, strictMode). Platform values come
@@ -755,12 +890,7 @@ if [ "${1:-}" = "--scaffold-only" ]; then
         PLATFORM_VERSION="${ARKTS_PLATFORM_VERSION:-26.0.0}"
         API_VERSION="${ARKTS_API_VERSION:-26}"
     fi
-    if [ "$SDK_FLAVOR" = harmony ]; then
-        # DevEco-style combined version string (compatibleSdkVersion/targetSdkVersion alike).
-        TARGET_VERSION="$PLATFORM_VERSION($API_VERSION)"
-    else
-        TARGET_VERSION="$PLATFORM_VERSION"
-    fi
+    TARGET_VERSION="$(compute_target_version "$PLATFORM_VERSION" "$API_VERSION")"
     make_project_dirs
     write_project_configs
     check_hvigor_config_deps "$PROJ" && _crc=0 || _crc=$?
@@ -803,12 +933,7 @@ fi
 
 PLATFORM_VERSION="$(read_sdk_meta platformVersion)"
 API_VERSION="$(read_sdk_meta apiVersion)"
-if [ "$SDK_FLAVOR" = harmony ]; then
-    # DevEco-style combined version string (compatibleSdkVersion/targetSdkVersion alike).
-    TARGET_VERSION="$PLATFORM_VERSION($API_VERSION)"
-else
-    TARGET_VERSION="$PLATFORM_VERSION"
-fi
+TARGET_VERSION="$(compute_target_version "$PLATFORM_VERSION" "$API_VERSION")"
 info "SDK $SDK (flavor $SDK_FLAVOR, platform $PLATFORM_VERSION, API $API_VERSION)"
 
 # 1) hvigor ------------------------------------------------------------------
@@ -823,7 +948,14 @@ info "SDK $SDK (flavor $SDK_FLAVOR, platform $PLATFORM_VERSION, API $API_VERSION
 # when the pins are explicitly overridden.
 HVIGOR_SHA256="${HVIGOR_SHA256:-33b2741aca3ee00f6375d6a988b4951875a0c2369d0b0ce3568a6d69249ad82d}"
 HVIGOR_OHOS_PLUGIN_SHA256="${HVIGOR_OHOS_PLUGIN_SHA256:-2f97a309bad4297a478091278ed6372c18330f1159551427529436c3525779b6}"
-HVIGOR_JS="$HVIGOR_DIR/node_modules/@ohos/hvigor/bin/hvigor.js"
+# HVIGOR_JS overrides the hvigor entry point (a wrapper or the copy bundled with DevEco Studio /
+# the Command Line Tools). The pinned mirror version 6.26.4 belongs to a DevEco-26 toolchain:
+# against a 6.0/6.1 SDK it fails with 00303313/00303312, so an SDK-matched hvigor must be used
+# there (scripts/setup-harmony-sdk.sh --download ships one; see the packaging doc). The project's
+# node_modules symlink still comes from HVIGOR_DIR, so point HVIGOR_DIR at the directory whose
+# node_modules holds the matching @ohos/hvigor* packages when overriding.
+HVIGOR_JS_OVERRIDE="${HVIGOR_JS:-}"
+HVIGOR_JS="${HVIGOR_JS_OVERRIDE:-$HVIGOR_DIR/node_modules/@ohos/hvigor/bin/hvigor.js}"
 
 sha256_of() {
     if command -v sha256sum >/dev/null 2>&1; then
@@ -842,7 +974,10 @@ verify_hvigor_tgz() {
     return 0
 }
 
-if [ ! -f "$HVIGOR_JS" ]; then
+if [ -n "$HVIGOR_JS_OVERRIDE" ] && [ ! -f "$HVIGOR_JS" ]; then
+    die "HVIGOR_JS is set but not a file: $HVIGOR_JS"
+fi
+if [ -z "$HVIGOR_JS_OVERRIDE" ] && [ ! -f "$HVIGOR_JS" ]; then
     info "installing hvigor $HVIGOR_VERSION from $MIRROR"
     mkdir -p "$HVIGOR_DIR/node_modules/@ohos"
     for pkg in hvigor hvigor-ohos-plugin; do
@@ -974,21 +1109,22 @@ ln -sfn "$HVIGOR_DIR/node_modules" "$PROJ/node_modules"
 # 4) build -------------------------------------------------------------------
 # hvigor resolves the plugin by walking up from the project directory; the default project
 # location ($HVIGOR_DIR/project) therefore sits next to the installed packages.
-if [ ! -e "$HVIGOR_DIR/node_modules/@ohos/hvigor-ohos-plugin" ]; then
+if [ -z "$HVIGOR_JS_OVERRIDE" ] && [ ! -e "$HVIGOR_DIR/node_modules/@ohos/hvigor-ohos-plugin" ]; then
     die "hvigor packages missing under $HVIGOR_DIR/node_modules/@ohos"
 fi
 
 info "running hvigor assembleHap"
 # hvigor's own PackageHap step needs java (for the packing jar); the ArkTS compilation
 # (everything this script needs) runs before it, so a failed PackageHap is tolerated.
+# The log directory is created here because a reused HVIGOR_DIR may sit outside BUILD (the
+# default HVIGOR_DIR is created by the install step in section 1, but a cached one is not).
+mkdir -p "$BUILD"
 LOG="$BUILD/hvigor-build.log"
 # externalApiPaths: the OpenHarmony ets declarations always; the harmony flavor additionally
 # exposes the HMS kit declarations (hms/ets), which is what lets the Share/Scan/... sinks compile
 # against their real types there (the OpenHarmony SDK has no @kit.ShareKit declaration at all).
-case "$SDK_FLAVOR" in
-    harmony) EXTERNAL_API_PATHS="$HARMONY_SDK_BASE/openharmony/ets/api:$HARMONY_SDK_BASE/openharmony/ets/kits:$HARMONY_SDK_BASE/openharmony/ets/arkts:$SDK_ETS_EXTRA" ;;
-    *)       EXTERNAL_API_PATHS="$SDK/ets/api:$SDK/ets/kits:$SDK/ets/arkts" ;;
-esac
+# resolve_external_api_paths is the single source --print-config prints it too.
+EXTERNAL_API_PATHS="$(resolve_external_api_paths)"
 run_hvigor() {
     ( cd "$PROJ" && \
       env -i PATH="$(dirname "$NODE_BIN")${JAVA_HOME:+:$JAVA_HOME/bin}:/usr/bin:/bin" HOME="$HOME" \
@@ -1038,20 +1174,18 @@ ABC="$(find "$PROJ/entry/build" -name modules.abc | head -1)"
 mkdir -p "$OUT_DIR"
 OUT_FILE="$OUT_DIR/$OUT_NAME"
 cp "$ABC" "$OUT_FILE"
-# Read the abc version back from the fixed header: 8 B magic "PANDA\0\0\0", 4 B adler32,
-# then one byte per version component at offset 0x0c. Fail when it is newer than the
-# runtime limit, because the device then refuses to load the module (exit 254).
-BC_VERSION="$(python3 - "$OUT_FILE" "$MAX_BC_VERSION" <<'PY'
-import sys
-abc, maximum = sys.argv[1], sys.argv[2]
-raw = open(abc, 'rb').read(0x10)
-assert raw[:5] == b'PANDA', f'{abc}: not an abc file'
-version = tuple(raw[0x0c:0x10])
-print('.'.join(str(b) for b in version))
-max_version = tuple(int(p) for p in maximum.split('.')) if maximum and maximum != 'any' else ()
-sys.exit(3 if max_version and version > max_version else 0)
-PY
-)" || die "abc version $BC_VERSION is newer than $MAX_BC_VERSION (set ARKTS_MAX_BC_VERSION=any to allow, or ARKTS_COMPATIBLE_SDK_VERSION to a level whose es2abc output the device accepts)"
+# Read the abc version back from the fixed header and fail when it is newer than the runtime
+# limit, because the device then refuses to load the module (exit 254). check_bc_version is the
+# same gate --check-bc-version exposes (see its definition above).
+if BC_VERSION="$(check_bc_version "$OUT_FILE" "$MAX_BC_VERSION")"; then
+    :
+else
+    _bc_rc=$?
+    case "$_bc_rc" in
+        1) die "abc version $BC_VERSION is newer than $MAX_BC_VERSION (set ARKTS_MAX_BC_VERSION=any to allow, or ARKTS_COMPATIBLE_SDK_VERSION to a level whose es2abc output the device accepts)" ;;
+        *) die "cannot read the abc version from $OUT_FILE (not an abc file?)" ;;
+    esac
+fi
 info "ArkTS shell compiled ($VARIANT): $OUT_FILE ($(stat -c%s "$OUT_FILE") bytes, abc version $BC_VERSION, compatibleSdkVersion $COMPATIBLE_SDK_VERSION)"
 # Compiled-artifact gate: the abc must be the payload-in-libs shell - it probes the staged
 # bundle payload (libs/<abi>/.dotnet-payload.json under bundleCodeDir) and keeps the dotnet.zip
