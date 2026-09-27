@@ -1,6 +1,6 @@
 # Interaction regression suite (headless)
 
-The MAUI-on-OpenHarmony interaction harness (334 interaction checks, a 4-line fuzz tail, a
+The MAUI-on-OpenHarmony interaction harness (374 interaction checks, a 4-line fuzz tail, a
 frame-path performance budget and an accessibility publish-path budget). It builds the platform
 slice sources from the
 `maui-ohos` working tree and drives the app host without a device: touch/drag/pinch/pointer input,
@@ -49,7 +49,7 @@ allocation and jitter) budgets are exceeded.
 # (or the MauiSliceDir / HostingDll / OpenHarmonyGraphicsDll MSBuild properties) before building
 # elsewhere; an explicit -p: value wins over the environment and the absolute fallbacks.
 dotnet build -v:q
-dotnet bin/Debug/net11.0/verify.dll | grep -c '\[verify\]'   # expect 373 (360 checks + 4 fuzz + 1 frame perf + 8 a11y perf)
+dotnet bin/Debug/net11.0/verify.dll | grep -c '\[verify\]'   # expect 387 (374 checks + 4 fuzz + 1 frame perf + 8 a11y perf)
 ```
 
 The `interaction-regression` workflow (`.github/workflows/interaction-regression.yml`) runs the
@@ -60,7 +60,7 @@ suite on a GitHub runner as a real gate (on push to `master`, on pull requests a
 points `MAUI_SLICE_DIR` / `HOSTING_DLL` / `OPENHARMONY_GRAPHICS_DLL` at those roots, and fails the
 job unless the run exits 0, the suite's own `[suite]` contract line reports `assert=True` with at
 least the floor declared in `Program.cs`, both perf lines report `within=True`, and no `Unhandled`
-line is logged. The floor (353 = 373 - 20, the documented convention) lives only in `Program.cs`;
+line is logged. The floor (367 = 387 - 20, the documented convention) lives only in `Program.cs`;
 the workflow and `scripts/preflight.sh` both read the printed `[suite] checks=... floor=...` line
 instead of repeating a literal, so the two local/CI thresholds cannot drift apart.
 
@@ -169,7 +169,7 @@ jitter ~1.08x and 72,056 B/frame, and the a11y block reported ~0.3/0.5 ms for th
 ~0.07/0.28 ms for the publish pass (skip/republish). The post-batch run (commit a10b73e) reported
 avg 0.488 ms, p95 0.698 ms, jitter 1.43x and 3,720 B/frame, i.e. the ceiling is 3.72x the CI
 baseline. Every run ends with the `[suite]` contract line
-(`checks=377 total=377 floor=357 assert=True`), which the workflow and `scripts/preflight.sh`
+(`checks=387 total=387 floor=367 assert=True`), which the workflow and `scripts/preflight.sh`
 parse.
 
 ## Notes
@@ -178,10 +178,10 @@ parse.
   blocks codesigned ELF apphosts on some machines).
 - The suite fails loudly (unhandled exception) when a slice change breaks startup or when an
   assertion for the gesture flows (including the drag-and-drop checks) does not hold; keep it at
-  364 checks plus the 4 fuzz lines plus the 1 frame-perf line plus the 8 a11y-perf lines
-  (377 `[verify]` lines) when touching the platform slice. The total and the floor (total - 20)
-  are declared in `Program.cs`; the run ends with a `[suite] checks=... floor=... assert=...`
-  line and fails itself when the printed count is below the floor, so the CI job and
+  374 interaction checks plus the 4 fuzz lines plus the 1 frame-perf line plus the 8 a11y-perf
+  lines (387 `[verify]` lines) when touching the platform slice. The total and the floor
+  (total - 20) are declared in `Program.cs`; the run ends with a `[suite] checks=... floor=...
+  assert=...` line and fails itself when the printed count is below the floor, so the CI job and
   `scripts/preflight.sh` do not repeat the threshold.
 - Image decode coverage (P2b-IMG): the stream image is pinned through the view-scoped seam - a
   large destination asks for the preview first (long edge / 8) and the display size on the
@@ -748,3 +748,18 @@ parse.
   net-openharmony API baseline for the new surface. That is 16 lines: 357 + 16 = 373 = 360
   interaction checks + 4 fuzz + 1 frame perf + 8 a11y perf; the workflow floor moves with the
   total (373 - 20 = 353).
+- **P2c-DEEPLINK (10 lines)** - the want/activation routing. `p2c shell activation` re-reads
+  both ability templates and the three preview packs: onCreate stores the want, onNewWant
+  forwards it, the cold one is published through `host.notifyActivation` before startApp and the
+  payload carries uri/action/parameters/linkHosts/sequence; `p2c host transport` pins the NAPI
+  method, both C exports, the bounded pending queue and the export list; `p2c hosting api` pins
+  the managed event/registration/payload parse; `p2c activation parse` drives the real payload
+  through `CompleteActivation` (all fields parsed, malformed payload inert); `p2c activation
+  thunk` enters the registered native thunk through the exact function pointer; the dispatch
+  checks run against the harness's NavigationPage: `p2c link https` covers the malformed URI,
+  the refused https host, the app.json seed and the accepted allow-listed link, `p2c link
+  unknown route` the unresolved route, `p2c link dedup` the sequence de-duplication and
+  stale-drop, `p2c cold start pending` a request held until a navigation target exists, and
+  `p2c shell approval` the Shell.GoToAsync path with a canceled Navigating that is recorded and
+  then approved. That is 10 lines: 377 + 10 = 387 = 374 interaction checks + 4 fuzz + 1 frame
+  perf + 8 a11y perf; the workflow floor moves with the total (387 - 20 = 367).

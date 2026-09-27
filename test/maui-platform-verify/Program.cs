@@ -12,7 +12,7 @@ using Microsoft.Maui.Platform;
 // after the fuzz tail) instead of letting every caller repeat its own threshold constant.
 VerifyLineCountingWriter verifyStdout = new(Console.Out);
 Console.SetOut(verifyStdout);
-const int verifyCheckTotal = 377;                     // documented full [verify] line count (+4 P2b-IMG, +16 P1b-LIST, +10 P1a-ANIM)
+const int verifyCheckTotal = 387;                     // documented full [verify] line count (+10 P2c-DEEPLINK, +4 P2b-IMG, +16 P1b-LIST, +10 P1a-ANIM)
 const int verifyCheckFloor = verifyCheckTotal - 20;   // documented floor convention (total - 20)
 
 // A small image file for the Image handler.
@@ -8141,6 +8141,265 @@ Console.WriteLine($"[verify] fuzz bounded elapsed={fuzzMillis}ms limit=30000ms s
 if (fuzzWatch.Elapsed > TimeSpan.FromSeconds(30))
 {
     throw new InvalidOperationException($"the fuzz section took {fuzzMillis} ms");
+}
+
+// ---- P2c-DEEPLINK: want/activation routing ----------------------------------------------------
+// The shell captures the cold-start want in onCreate and forwards every onNewWant through
+// host.notifyActivation; the host queues the payload until the managed activation thunk
+// registers; OpenHarmonyAppLinks de-duplicates by want sequence, applies through
+// Shell.GoToAsync (which is the Navigating approval chain) or a registered NavigationPage
+// route, and keeps a request queued while no navigation target exists. These checks pin the
+// shell sources, the host transport and every managed decision point off-device.
+string? p2cHeadlessPath = FindHostSource("packs/Microsoft.OpenHarmony.Sdk/1.0.0-preview.24/templates/ets/entryability/EntryAbility.ets");
+string? p2cUiPath = FindHostSource("packs/Microsoft.OpenHarmony.Sdk/1.0.0-preview.24/templates/ets/entryability/EntryAbility.ui.ets");
+string p2cHeadless = p2cHeadlessPath is null ? string.Empty : File.ReadAllText(p2cHeadlessPath);
+string p2cUi = p2cUiPath is null ? string.Empty : File.ReadAllText(p2cUiPath);
+bool p2cShellOnCreate = p2cHeadless.Contains("this.pendingWant = want;") && p2cUi.Contains("this.pendingWant = want;");
+bool p2cShellOnNewWant = p2cHeadless.Contains("onNewWant(want: Want, launchParam: AbilityConstant.LaunchParam)") &&
+    p2cUi.Contains("onNewWant(want: Want, launchParam: AbilityConstant.LaunchParam)") &&
+    p2cHeadless.Contains("this.publishActivation(want);") && p2cUi.Contains("this.publishActivation(want);");
+bool p2cShellPreStart = p2cHeadless.Contains("this.publishActivation(this.pendingWant);") &&
+    p2cUi.Contains("this.publishActivation(this.pendingWant);") &&
+    p2cHeadless.Contains("this.activationReady = true;") && p2cUi.Contains("this.activationReady = true;");
+bool p2cShellPayload = p2cHeadless.Contains("host.notifyActivation(payload);") && p2cUi.Contains("host.notifyActivation(payload);") &&
+    p2cHeadless.Contains("linkHosts: this.linkHosts") && p2cUi.Contains("linkHosts: this.linkHosts");
+int p2cPackSources = 0;
+foreach (string p2cPackVersion in new[] { "1.0.0-preview.22", "1.0.0-preview.23", "1.0.0-preview.24" })
+{
+    string? head = FindHostSource($"packs/Microsoft.OpenHarmony.Sdk/{p2cPackVersion}/templates/ets/entryability/EntryAbility.ets");
+    string? ui = FindHostSource($"packs/Microsoft.OpenHarmony.Sdk/{p2cPackVersion}/templates/ets/entryability/EntryAbility.ui.ets");
+    if (head is not null && ui is not null && File.ReadAllText(head) == p2cHeadless && File.ReadAllText(ui) == p2cUi)
+    {
+        p2cPackSources++;
+    }
+}
+bool p2cShellOk = p2cShellOnCreate && p2cShellOnNewWant && p2cShellPreStart && p2cShellPayload && p2cPackSources == 3;
+Console.WriteLine($"[verify] p2c shell activation onCreate={p2cShellOnCreate} onNewWant={p2cShellOnNewWant} preStart={p2cShellPreStart} payload={p2cShellPayload} packs={p2cPackSources}/3 assert={p2cShellOk}");
+if (!p2cShellOk)
+{
+    throw new InvalidOperationException("the shell does not carry the P2c activation plumbing (onCreate/onNewWant/notifyActivation across all three packs)");
+}
+
+// Host transport: the NAPI method is exported as a plain C symbol, the source keeps the
+// bounded pending queue and the export contract lists it (the nm gate has the built half).
+string? p2cHostNapiPath = FindHostSource("src/OpenHarmonyHost/host_napi.cpp");
+string? p2cExportsPath = FindHostSource("src/OpenHarmonyHost/host-exports.txt");
+string p2cHostNapi = p2cHostNapiPath is null ? string.Empty : File.ReadAllText(p2cHostNapiPath);
+string p2cExports = p2cExportsPath is null ? string.Empty : File.ReadAllText(p2cExportsPath);
+bool p2cHostOk = p2cHostNapi.Contains("napi_value NotifyActivation(") &&
+    p2cHostNapi.Contains("extern \"C\" int ohos_host_notify_activation(const char* payload_json)") &&
+    p2cHostNapi.Contains("extern \"C\" void ohos_host_register_activation(void* callback)") &&
+    p2cHostNapi.Contains("{\"notifyActivation\", nullptr, NotifyActivation") &&
+    p2cHostNapi.Contains("kMaxPendingActivations") &&
+    p2cExports.Contains("ohos_host_notify_activation") && p2cExports.Contains("ohos_host_register_activation");
+Console.WriteLine($"[verify] p2c host transport napi={p2cHostNapi.Contains("notifyActivation")} queue={p2cHostNapi.Contains("kMaxPendingActivations")} exports={p2cExports.Contains("ohos_host_register_activation")} assert={p2cHostOk}");
+if (!p2cHostOk)
+{
+    throw new InvalidOperationException("the native host lacks the P2c activation transport (notifyActivation / register_activation / export list)");
+}
+
+// Managed hosting transport: the parsing payload type, the event and the registration path.
+string? p2cHostingPath = FindHostSource("src/Microsoft.OpenHarmony.Hosting/OpenHarmonyApp.cs");
+string p2cHosting = p2cHostingPath is null ? string.Empty : File.ReadAllText(p2cHostingPath);
+bool p2cHostingOk = p2cHosting.Contains("public sealed class OpenHarmonyActivationEventArgs") &&
+    p2cHosting.Contains("public static event Action<OpenHarmonyActivationEventArgs>? Activation") &&
+    p2cHosting.Contains("RegisterActivationNative(s_activationThunk)") &&
+    p2cHosting.Contains("HostJsonContext.Default.ActivationJson") &&
+    p2cHosting.Contains("private static void OnActivationNative(IntPtr payloadUtf8)");
+Console.WriteLine($"[verify] p2c hosting api args={p2cHosting.Contains("OpenHarmonyActivationEventArgs")} event={p2cHosting.Contains("? Activation")} register={p2cHosting.Contains("RegisterActivationNative(s_activationThunk)")} parse={p2cHosting.Contains("HostJsonContext.Default.ActivationJson")} assert={p2cHostingOk}");
+if (!p2cHostingOk)
+{
+    throw new InvalidOperationException("the hosting bridge lacks the P2c activation event/registration/payload parse");
+}
+
+// Managed behavior: parse one payload, drive the registered native entry and assert the event.
+var p2cActivations = new List<Microsoft.OpenHarmony.Hosting.OpenHarmonyActivationEventArgs>();
+void OnP2cActivation(Microsoft.OpenHarmony.Hosting.OpenHarmonyActivationEventArgs activation) => p2cActivations.Add(activation);
+string P2cPayload(long sequence, string uri, string linkHost = "") =>
+    System.Text.Json.JsonSerializer.Serialize(new
+    {
+        uri,
+        action = "ohos.want.action.viewData",
+        parameters = "{\"k\":\"v\"}",
+        linkHosts = linkHost is { Length: > 0 } ? new[] { linkHost } : Array.Empty<string>(),
+        sequence,
+    });
+
+Microsoft.OpenHarmony.Hosting.OpenHarmonyBridge.Activation += OnP2cActivation;
+int p2cEventsBeforeParse = p2cActivations.Count;
+Microsoft.OpenHarmony.Hosting.OpenHarmonyBridge.CompleteActivation(P2cPayload(900, "app://p2c/parse", "example.com"));
+int p2cMalformedEvents = p2cActivations.Count;
+Microsoft.OpenHarmony.Hosting.OpenHarmonyBridge.CompleteActivation("{not json");
+bool p2cParseOk = p2cMalformedEvents == p2cEventsBeforeParse + 1 && p2cActivations.Count == p2cMalformedEvents &&
+    p2cActivations[^1].Uri == "app://p2c/parse" && p2cActivations[^1].Action == "ohos.want.action.viewData" &&
+    p2cActivations[^1].Parameters == "{\"k\":\"v\"}" && p2cActivations[^1].LinkHosts.Contains("example.com") &&
+    p2cActivations[^1].Sequence == 900;
+Console.WriteLine($"[verify] p2c activation parse events={p2cActivations.Count} uri='{p2cActivations[^1].Uri}' seq={p2cActivations[^1].Sequence} hosts={p2cActivations[^1].LinkHosts.Length} malformedIgnored={p2cParseOk} assert={p2cParseOk}");
+if (!p2cParseOk)
+{
+    throw new InvalidOperationException("the activation payload parse or the malformed-payload guard is wrong");
+}
+
+IntPtr p2cActivationThunk = NativeThunks.Pointer(typeof(Microsoft.OpenHarmony.Hosting.OpenHarmonyBridge), "s_activationThunk");
+var p2cNativeActivation = NativeThunks.Invoker<NativeThunks.ActivationCallback>(p2cActivationThunk);
+IntPtr p2cThunkPayload = Marshal.StringToCoTaskMemUTF8(P2cPayload(901, "app://p2c/thunk"));
+try
+{
+    p2cNativeActivation(p2cThunkPayload);
+}
+finally
+{
+    Marshal.FreeCoTaskMem(p2cThunkPayload);
+}
+bool p2cThunkOk = p2cActivations.Count == p2cMalformedEvents + 1 && p2cActivations[^1].Uri == "app://p2c/thunk" && p2cActivations[^1].Sequence == 901;
+Console.WriteLine($"[verify] p2c activation thunk registered={p2cActivationThunk != IntPtr.Zero} events={p2cActivations.Count} last='{p2cActivations[^1].Uri}' assert={p2cThunkOk}");
+if (!p2cThunkOk)
+{
+    throw new InvalidOperationException("the registered native activation thunk did not reach the Activation event");
+}
+
+// Managed dispatch against the harness's NavigationPage: malformed uri, the https allow-list,
+// registered routes and the sequence de-duplication, with the status channel as evidence.
+Directory.CreateDirectory(Path.Combine(Path.GetTempPath(), "verify-p2c-status"));
+string p2cStatusDir = Path.Combine(Path.GetTempPath(), "verify-p2c-status");
+var p2cSavedBridgeContext = (Microsoft.OpenHarmony.Hosting.OpenHarmonyAppContext?)bridgeContextField.GetValue(null);
+SetBridgeContext(new Microsoft.OpenHarmony.Hosting.OpenHarmonyAppContext { FilesDir = p2cStatusDir });
+string p2cStatusPath = Path.Combine(p2cStatusDir, "dotnet-status.txt");
+File.Delete(p2cStatusPath);
+string P2cStatus() => File.Exists(p2cStatusPath) ? File.ReadAllText(p2cStatusPath) : string.Empty;
+async Task<bool> P2cWaitFor(Func<bool> condition, int timeoutMs = 4000)
+{
+    var p2cWatch = System.Diagnostics.Stopwatch.StartNew();
+    while (p2cWatch.ElapsedMilliseconds < timeoutMs)
+    {
+        if (condition())
+        {
+            return true;
+        }
+        await Task.Delay(25);
+    }
+    return condition();
+}
+
+Routing.RegisterRoute("p2c-detail", typeof(RoutedPage));
+Routing.RegisterRoute("p2c-other", typeof(RoutedPage));
+Routing.RegisterRoute("p2c-remote", typeof(RoutedPage));
+Routing.RegisterRoute("p2c-pending", typeof(RoutedPage));
+int P2cDepth() => navRoot.Navigation.NavigationStack.Count;
+int p2cDepthBefore = P2cDepth();
+
+Microsoft.Maui.Platform.OpenHarmonyAppLinks.Activate("nonsense");
+bool p2cMalformedLink = await P2cWaitFor(() => P2cStatus().Contains("deep link ignored")) &&
+    P2cDepth() == p2cDepthBefore;
+
+Microsoft.Maui.Platform.OpenHarmonyAppLinks.Activate("https://blocked.example.org/p2c-remote");
+bool p2cHttpsRefused = await P2cWaitFor(() => P2cStatus().Contains("not in the app-link allow-list")) &&
+    P2cDepth() == p2cDepthBefore;
+bool p2cHostsSeeded = Microsoft.Maui.Platform.OpenHarmonyAppLinks.AllowedHttpsHosts.Contains("example.com");
+Microsoft.Maui.Platform.OpenHarmonyAppLinks.Activate("https://example.com/p2c-remote");
+bool p2cHttpsApplied = await P2cWaitFor(() => P2cDepth() == p2cDepthBefore + 1);
+bool p2cLinksOk = p2cMalformedLink && p2cHttpsRefused && p2cHostsSeeded && p2cHttpsApplied;
+Console.WriteLine($"[verify] p2c link https malformed={p2cMalformedLink} refused={p2cHttpsRefused} seeded={p2cHostsSeeded} applied={p2cHttpsApplied} depth={P2cDepth()} assert={p2cLinksOk}");
+if (!p2cLinksOk)
+{
+    throw new InvalidOperationException("the P2c app-link scheme/allow-list handling is wrong");
+}
+
+Microsoft.Maui.Platform.OpenHarmonyAppLinks.Activate("app://p2c/never-registered");
+bool p2cUnknownRoute = await P2cWaitFor(() => P2cStatus().Contains("no registered NavigationPage page for route 'p2c/never-registered'")) &&
+    P2cDepth() == p2cDepthBefore + 1;
+Console.WriteLine($"[verify] p2c link unknown route logged={p2cUnknownRoute} depth={P2cDepth()} assert={p2cUnknownRoute}");
+if (!p2cUnknownRoute)
+{
+    throw new InvalidOperationException("an unregistered deep-link route was not ignored with a status line");
+}
+
+Microsoft.OpenHarmony.Hosting.OpenHarmonyBridge.CompleteActivation(P2cPayload(1001, "app://p2c-detail"));
+bool p2cFirstApplied = await P2cWaitFor(() => P2cDepth() == p2cDepthBefore + 2);
+Microsoft.OpenHarmony.Hosting.OpenHarmonyBridge.CompleteActivation(P2cPayload(1001, "app://p2c-detail"));
+Microsoft.OpenHarmony.Hosting.OpenHarmonyBridge.CompleteActivation(P2cPayload(1000, "app://p2c-other"));
+Microsoft.OpenHarmony.Hosting.OpenHarmonyBridge.CompleteActivation(P2cPayload(1002, "app://p2c-other"));
+bool p2cSecondApplied = await P2cWaitFor(() => P2cDepth() == p2cDepthBefore + 3);
+int p2cDepthAfterDedup = P2cDepth();
+bool p2cDedupOk = p2cFirstApplied && p2cSecondApplied && p2cDepthAfterDedup == p2cDepthBefore + 3 &&
+    P2cStatus().Contains("already seen");
+Console.WriteLine($"[verify] p2c link dedup first={p2cFirstApplied} second={p2cSecondApplied} depth={p2cDepthAfterDedup} (expected {p2cDepthBefore + 3}) duplicateLogged={P2cStatus().Contains("already seen")} assert={p2cDedupOk}");
+if (!p2cDedupOk)
+{
+    throw new InvalidOperationException("the deep-link sequence de-duplication/order handling is wrong");
+}
+
+// Cold start: a want that arrives while no navigation target exists stays queued and is
+// applied when the target comes back (the host-ready retry the app host drives).
+var p2cWindow = (Microsoft.Maui.Controls.Window)host.Window!;
+Microsoft.Maui.Controls.Page p2cRealPage = p2cWindow.Page;
+p2cWindow.Page = new ContentPage { Title = "p2c no target" };
+int p2cBeforePending = P2cDepth();
+Microsoft.OpenHarmony.Hosting.OpenHarmonyBridge.CompleteActivation(P2cPayload(2001, "app://p2c-pending"));
+bool p2cPendingHeld = await P2cWaitFor(() => P2cStatus().Contains("deep link pending")) && P2cDepth() == p2cBeforePending;
+p2cWindow.Page = p2cRealPage;
+Microsoft.Maui.Platform.OpenHarmonyAppLinks.OnHostReady();
+bool p2cPendingApplied = await P2cWaitFor(() => P2cDepth() == p2cBeforePending + 1);
+bool p2cPendingOk = p2cPendingHeld && p2cPendingApplied;
+Console.WriteLine($"[verify] p2c cold start pending held={p2cPendingHeld} appliedAfterReady={p2cPendingApplied} depth={P2cDepth()} assert={p2cPendingOk}");
+if (!p2cPendingOk)
+{
+    throw new InvalidOperationException("a cold-start deep link was not held until a navigation target existed");
+}
+
+// Shell: the deep link maps to GoToAsync, so the Navigating approval chain can cancel it and
+// the canceled request never half-applies; after approval the same route lands.
+var p2cShell = new Microsoft.Maui.Controls.Shell();
+var p2cShellItem = new Microsoft.Maui.Controls.ShellItem { Route = "p2c" };
+var p2cShellSection = new Microsoft.Maui.Controls.ShellSection { Route = "section" };
+p2cShellSection.Items.Add(new Microsoft.Maui.Controls.ShellContent
+{
+    Route = "home",
+    ContentTemplate = new DataTemplate(() => new ContentPage { Title = "p2c home", Content = new Label { Text = "p2c home" } }),
+});
+p2cShellItem.Items.Add(p2cShellSection);
+p2cShell.Items.Add(p2cShellItem);
+Routing.RegisterRoute("linked", typeof(RoutedPage));
+OpenHarmonyHandlerConnector.ConnectTree(p2cShell);
+p2cShell.Measure(1080, 1920);
+p2cShell.Arrange(new Rect(0, 0, 1080, 1920));
+Microsoft.Maui.Controls.Page p2cSavedPage = p2cWindow.Page;
+p2cWindow.Page = p2cShell;
+bool p2cDenyOnce = true;
+void OnP2cShellNavigating(object? sender, Microsoft.Maui.Controls.ShellNavigatingEventArgs args)
+{
+    if (p2cDenyOnce && args.Target.Location.OriginalString.Contains("linked"))
+    {
+        args.Cancel();
+    }
+}
+p2cShell.Navigating += OnP2cShellNavigating;
+Microsoft.OpenHarmony.Hosting.OpenHarmonyBridge.CompleteActivation(P2cPayload(3001, "app://p2c/linked?from=deeplink"));
+bool p2cCanceled = await P2cWaitFor(() => P2cStatus().Contains("not applied") || P2cStatus().Contains("canceled"));
+bool p2cCancelHeld = p2cShell.CurrentPage?.Title != "Routed";
+p2cDenyOnce = false;
+Microsoft.OpenHarmony.Hosting.OpenHarmonyBridge.CompleteActivation(P2cPayload(3002, "app://p2c/linked?from=deeplink"));
+bool p2cLinked = await P2cWaitFor(() => p2cShell.CurrentPage?.Title == "Routed");
+p2cShell.Navigating -= OnP2cShellNavigating;
+p2cWindow.Page = p2cSavedPage;
+bool p2cShellApprovalOk = p2cCanceled && p2cCancelHeld && p2cLinked;
+Console.WriteLine($"[verify] p2c shell approval canceled={p2cCanceled} held={p2cCancelHeld} linked={p2cLinked} current='{p2cShell.CurrentPage?.Title}' assert={p2cShellApprovalOk}");
+if (!p2cShellApprovalOk)
+{
+    throw new InvalidOperationException("the Shell deep-link path did not cooperate with the Navigating approval chain");
+}
+
+Microsoft.OpenHarmony.Hosting.OpenHarmonyBridge.Activation -= OnP2cActivation;
+SetBridgeContext(p2cSavedBridgeContext);
+// Remove the temporary status file so the check leaves no residue; the context restore above
+// already repoints the status channel.
+try
+{
+    Directory.Delete(p2cStatusDir, true);
+}
+catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+{
+    // Diagnostic leftovers must not fail the suite.
 }
 
 // The suite's own check-count contract: report what was actually emitted and fail when it is

@@ -22,7 +22,7 @@ on:
         description: 'maui-ohos commit SHA to cross-check (defaults to the pinned slice tip)'
         required: false
         type: string
-        default: 'd3122bb5338dd5823f148ea5d7dcb003ccc3f5f1'
+        default: '4b5756de44257914be6fd44c62b5c03cc09329bf'
   push:
     branches: [ master ]
   pull_request:
@@ -32,12 +32,12 @@ permissions:
 
 # Reproducible cross-repo check: the slice is checked out at an exact commit, not the mutable
 # feature/openharmony branch, so a push to the fork cannot change what this gate verifies.
-# Current tip: d3122bb5 (P2b-IMG display-size image decode plus the sized-blit entry
-# ohos_host_draw_image_bytes_sized, on top of the P1b-LIST batch; the host export contract is
-# 141/141).
+# Current tip: 4b5756de (P2c-DEEPLINK deep-link activation on top of the P2b-IMG display-size
+# image decode plus the sized-blit entry ohos_host_draw_image_bytes_sized and the P1b-LIST
+# batch; the host export contract is 143/143).
 # Advance the pin deliberately, in lockstep with the interaction/pixel gates.
 env:
-  MAUI_OHOS_REF: ${{ github.event.inputs.maui_ohos_ref || 'd3122bb5338dd5823f148ea5d7dcb003ccc3f5f1' }}
+  MAUI_OHOS_REF: ${{ github.event.inputs.maui_ohos_ref || '4b5756de44257914be6fd44c62b5c03cc09329bf' }}
 
 jobs:
   contract:

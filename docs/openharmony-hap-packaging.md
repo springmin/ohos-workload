@@ -653,13 +653,14 @@ while `scripts/build-arkts-shell.sh` keeps the abc at
 `notifyTtsResult`, `@kit.CoreSpeechKit`, `SystemCapability.AI.TextToSpeech`,
 `notifyTextComposition`, `notifyAnimationReduce`, `@kit.AccessibilityKit` and
 `SystemCapability.BarrierFree.Accessibility.Core` literals
-in the UI abc (the provenance gate; current default-flavor UI abc 278,760 B /
-`c84fbf34...`, headless 18,532 B) and enforces
+in the UI abc plus the common `notifyActivation`/`onNewWant` activation literals (both variants;
+the provenance gate; current default-flavor UI abc 281,052 B /
+`5c06143a...`, headless 20,916 B / `54a1a201...`) and enforces
 the source contract (no `@ohos.*` imports, variable kit specifiers). The host-side gate is
-`scripts/build-host.sh` (nm -D: all 141 `host-exports.txt` names present as plain symbols) plus
+`scripts/build-host.sh` (nm -D: all 143 `host-exports.txt` names present as plain symbols) plus
 `scripts/check-host-exports.py --cross-check`; the interaction suite's own contract line is
-`[suite] checks=377 total=377 floor=357 assert=True` (the 16 P1b-LIST list checks and the
-4 P2b-IMG image checks on the 357/337 P1a-ANIM base).
+`[suite] checks=387 total=387 floor=367 assert=True` (the 10 P2c-DEEPLINK activation checks, the
+4 P2b-IMG image checks and the 16 P1b-LIST list checks on the 357/337 P1a-ANIM base).
 
 ### Templates / abc sync strategy
 
@@ -706,13 +707,13 @@ explicit `-p:OpenHarmonyArktsModulesAbc=<file>` overrides both. The former
   ship it as a separate pack revision; keep the checked-in `modules*.abc` on the default flavor.
   The provenance record pins the default flavor and the script refuses to write it from a harmony
   build.
-- **Current state (P1a-ANIM, 2026-09-27)**: all three preview packs carry the same sources
+- **Current state (P2c-DEEPLINK, 2026-09-27)**: all three preview packs carry the same sources
   (Share/Scan/Push/Account/Map/Live View/CoreSpeech probes, HUKS-first SecureStorage,
   kit-import migration, feature permission chain, IME composition, the animation-reduce
-  observation) and the abc rebuilt from them
-  on the OpenHarmony SDK: UI 278,760 B / sha256
-  `c84fbf3462def13c17899b69c45674500f5e117a8f39ba460305775e9d1beb35`, headless 18,532 B / sha256
-  `d7ec9ca7ee6169a883af490a006005fe73fa7d03c40e178db9f2594c83b8d785`, both abc version 13.0.1.0
+  observation and the want/activation plumbing) and the abc rebuilt from them
+  on the OpenHarmony SDK: UI 281,052 B / sha256
+  `5c06143a727dff8e534e357299278f22e3e49ae97419615b113b8d7053a417c7`, headless 20,916 B / sha256
+  `54a1a2011cca4a96772b0ed9f99b36ddd7b655fde1e681676669f78ed8138bbb`, both abc version 13.0.1.0
   with `compatibleSdkVersion 18`. The harmony-flavor build of the same sources against the
   CoreSpeechKit-capable DevEco SDK is 273,932 B / `e7290ed1…` (see the SDK-branch section; its
   page predates the animation-reduce probe and is rebuilt from the same sources when the flavor
@@ -813,7 +814,7 @@ Gates: the interaction suite's four image checks pin the managed preview/final p
 small-frame single pass, the placeholder rule and the host contract (`[verify] image progressive
 decode`, `image small-frame single pass`, `image decode failure`, `image decode host contract`);
 `host-deps.conf` learns `OH_DecodingOptions_` for the soft resolution and the nm export gate
-covers `ohos_host_draw_image_bytes_sized` in the 141-name contract;
+covers `ohos_host_draw_image_bytes_sized` in the 143-name contract;
 `scripts/check-host-exports.py --cross-check` verifies the managed `LibraryImport` against it.
 
 ### Text editing (P0c-TEXT-EDIT)
@@ -857,6 +858,47 @@ feature with the ArkTS shell providing the input-method plumbing. The four decis
   drag inertia` / `text composition`) and the shell/host contract (`text composition shell` /
   `text composition host`). Device-side IME behavior (the preview-text cadence of the system
   input method and composition inside the hidden input) still needs on-device confirmation.
+
+### Deep links / activation (P2c-DEEPLINK)
+
+A want (a custom-scheme `app://host/path?query` deep link, an `https://` app link or an
+`ohos.want.action.viewData` uri) enters through the ability and reaches managed navigation. The
+four decision points:
+
+- **Cold start**: `onCreate` stores the launch want; `bootstrap()` publishes it through
+  `host.notifyActivation(payload)` *before* `startApp`. The host queues the payload until the
+  managed activation thunk registers (the runtime is still loading) and flushes it on
+  registration, so the want cannot race the launch. The payload carries `uri`, `action`,
+  `parameters` (the want's parameter record as a JSON string) and the packaging's `linkHosts`.
+- **Warm activation**: `onNewWant` forwards a later want through the same NAPI method while the
+  app runs; a want that lands before bootstrap published the cold one replaces the pending slot,
+  so the app always sees exactly one activation. The shell increments a per-want `sequence`; the
+  managed side drops re-delivered or stale sequences and preserves arrival order.
+- **Routing**: `OpenHarmonyAppLinks` (maui-ohos) maps `app://host/path?query` to
+  `//host/path?query`, and an `https://` link to `//path` only when the host is in the allow-list
+  (seeded from app.json `linkHosts`, extendable through `AllowedHttpsHosts`); everything else is
+  rejected with a status line. The route goes through `Shell.GoToAsync`, so the existing
+  `Navigating` approval chain governs it: a canceled navigation is detected (the current page did
+  not move) and recorded, never half-applied; a request that finds no Shell/NavigationPage yet
+  stays queued and is retried when the app host reports the window ready. Without a Shell, a
+  route registered with `Routing.RegisterRoute` is pushed onto the live `NavigationPage`; an
+  unresolved route is ignored with a status line. No path throws into the shell callback.
+- **Host manifest**: `OpenHarmonyAppLinkHosts` (`;`-separated, for example
+  `example.com;www.example.com`) is written into `resources/rawfile/app.json` as `linkHosts`;
+  unset keeps the previous app.json bytes. The managed side enforces the allow-list even though
+  the system delivers an https link only when `module.json` declares the matching skill uri - the
+  manifest-side app-linking declaration is a device-side step that is not part of this template
+  yet, so the off-device contract is the app.json list plus the managed check.
+
+Gates: the interaction suite's ten P2c checks pin the shell sources (all three packs
+byte-identical), the NAPI method and both C exports, the bounded host queue, the hosting
+event/parse and every managed decision point (malformed uri, https allow-list, unknown route,
+sequence de-duplication, cold-start pending, Shell approval);
+`scripts/build-arkts-shell.sh` keeps the `notifyActivation`/`onNewWant` literals in both variants
+and the provenance gate pins the current abc (UI 281,052 B / `5c06143a...`, headless 20,916 B /
+`54a1a201...`); the nm export gate covers
+`ohos_host_notify_activation`/`ohos_host_register_activation` in the 143-name contract. On-device
+`onNewWant`/app-link delivery and the manifest skills still need device verification.
 
 ### ArkTS shell conformance (COMP-ARKTS)
 

@@ -40,7 +40,7 @@ on:
         description: 'maui-ohos commit SHA to compile (defaults to the pinned feature/openharmony tip)'
         required: false
         type: string
-        default: '150ac92f66b58c9d9e416b4df6dca8b19f467fab'
+        default: '4b5756de44257914be6fd44c62b5c03cc09329bf'
   push:
     branches: [ master ]
   pull_request:
@@ -52,15 +52,16 @@ permissions:
 
 # Reproducible cross-repo compile: the MAUI slice is checked out at an exact commit, not the
 # mutable feature/openharmony branch, so a push to the fork cannot change what this gate compiles.
-# The default is the feature/openharmony tip: d3122bb5, the P2b-IMG commit (display-size image
-# decode: preview -> display pass, bounded large-image decode and the placeholder fallback; on
-# top of the P1b-LIST list depth/scroll physics, P1a-ANIM, P0c-TEXT-EDIT, P2a-HUKS, A2-TTS,
-# R2-SHELL-EXT and KIT-EXT2 batches). The suite pins 377 checks / floor 357 and the full run is
-# green at this compiled tree (local verification: 377/377, floor 357, both perf lines within
-# budget); advance the pin deliberately and refresh this comment when the harness pins or the
-# tip move (workflow_dispatch can compile any commit).
+# The default is the feature/openharmony tip: 4b5756de, the P2c-DEEPLINK commit (want/activation
+# routing: onCreate/onNewWant -> notifyActivation -> Shell.GoToAsync/NavigationPage with
+# sequence de-duplication and the Navigating approval chain, on top of the P2b-IMG
+# display-size image decode, P1b-LIST list depth/scroll physics, P1a-ANIM, P0c-TEXT-EDIT,
+# P2a-HUKS, A2-TTS, R2-SHELL-EXT and KIT-EXT2 batches). The suite pins 387 checks / floor 367
+# and the full run is green at this compiled tree (local verification: 387/387, floor 367, both
+# perf lines within budget); advance the pin deliberately and refresh this comment when the
+# harness pins or the tip move (workflow_dispatch can compile any commit).
 env:
-  MAUI_OHOS_REF: ${{ github.event.inputs.maui_ohos_ref || 'd3122bb5338dd5823f148ea5d7dcb003ccc3f5f1' }}
+  MAUI_OHOS_REF: ${{ github.event.inputs.maui_ohos_ref || '4b5756de44257914be6fd44c62b5c03cc09329bf' }}
   # setup-dotnet installs the requested 11.0.x preview into DOTNET_INSTALL_DIR; on Linux that
   # defaults to /usr/share/dotnet, which a per-user cache cannot persist. Point it at ~/.dotnet
   # (the action resolves the ~ prefix against $HOME) so the cache step below actually avoids the
