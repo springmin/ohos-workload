@@ -18,9 +18,10 @@
 #       count, optional --compare-lib display-sign), app-lib path evidence (hilog greps + bundle
 #       libs listing), bootstrap/rawfile failure signatures (hilog-bootstrap.txt + summary
 #       counts), device-side payload state (files dir listing + dotnet.marker first line),
-#       exec-memory policy/probe evidence (hilog-execmem.txt: the xwe= decision line and the
-#       OHOS_DOTNET probe: result), kit hap self-check (meta/kit-selfcheck.txt: resources.index
-#       size, libs/arm64-v8a file count, payload-in-libs marker, abc header version), kit hashes,
+#       exec-memory/runtime-route evidence (hilog-execmem.txt: the xwe= decision line, the
+#       OHOS_DOTNET probe: result and the aot= / interp= route lines; summary aot_route /
+#       interp_mode), kit hap self-check (meta/kit-selfcheck.txt: resources.index size,
+#       libs/arm64-v8a file count, payload-in-libs marker, abc header version), kit hashes,
 #       machine-readable summary; tar -> tester-report-<stamp>.tar.gz
 # Safety: dry-run by default. Nothing is installed/started/removed/recorded unless the matching
 # flag is given (--install --uninstall --start --capture --probes --extra-probes). Without a
@@ -42,7 +43,7 @@ set -e
 
 # Bumped with every release repack (随发布重打包递增): the kit release notes' "Bundled
 # tester-run.sh" revision.
-SCRIPT_VERSION="8 (2026-09-24)"
+SCRIPT_VERSION="9 (2026-09-27)"
 
 log()  { printf '[%s] %s\n' "$(date '+%H:%M:%S')" "$*"; }
 warn() { printf '[%s] WARN: %s\n' "$(date '+%H:%M:%S')" "$*" >&2; }
@@ -79,8 +80,9 @@ usage() {
   hilog/hilog-applib.txt（SetAppLibPath|appLibPathKey|NativeLibPath|lib path）与
   hilog/hilog-dlopen.txt（dlopen|cannot find library|openharmonyhost），并采集
   ls -l /data/storage/el1/bundle/libs/arm64/ -> device/app-libs-arm64.txt。
-  execmem 证据（FIX-XWE；缺失容忍）：同一批 hilog 窗口过滤 OHOS_DOTNET probe:/xwe= ->
-  hilog/hilog-execmem.txt；execmem_capture/execmem_lines 写入 summary。
+  execmem/运行时路由证据（FIX-XWE / R2-SHELL-EXT；缺失容忍）：同一批 hilog 窗口过滤
+  OHOS_DOTNET probe:/xwe=/aot=/interp= -> hilog/hilog-execmem.txt；execmem_capture/execmem_lines
+  与 aot_route（0|1|0+1|<unavailable>）/interp_mode（<v>(file|default)|<unavailable>）写入 summary。
   bootstrap/rawfile 失败特征（真机报告 §4/§7 的失败串，缺失容忍）：对所有已捕获 hilog 窗口再
   过滤 GetRawFileContent|bootstrap failed|bootstrap retry|BusinessError|900002|900003|
   ZIP entry|destination path|Load native module failed|symbol not found|cannot find library|
@@ -144,9 +146,10 @@ FILTER_RE='hellomaui|maui|dotnet|openharmonyhost|AppKilledReporter|JsError|appsp
 FILTER_KMSG_RE='xpm|unsigned file|fs_security_verity|libopenharmonyhost|hellomauiapp'
 FILTER_APPLIB_RE='SetAppLibPath|appLibPathKey|NativeLibPath|lib path'
 FILTER_DLOPEN_RE='dlopen|cannot find library|openharmonyhost'
-# Host executable-memory policy/probe (FIX-XWE): the W^X decision line and the one-line probe
-# result the host writes on the first launch path (tag OHOS_DOTNET).
-FILTER_EXECMEM_RE='OHOS_DOTNET probe:|xwe='
+# Host executable-memory policy/probe + runtime-route switch (FIX-XWE / R2-SHELL-EXT): the W^X
+# decision line, the one-line probe result the host writes on the first launch path, and the
+# NativeAOT/interpreter decisions (tag OHOS_DOTNET).
+FILTER_EXECMEM_RE='OHOS_DOTNET probe:|xwe=|aot=|interp='
 # Device findings (bootstrap/rawfile/hap-load failures) reproduce as these signatures; the
 # filter is deliberately wider than the summary error counters below.
 FILTER_BOOTSTRAP_RE='GetRawFileContent|bootstrap failed|bootstrap retry|BusinessError|900002|900003|ZIP entry|destination path|Load native module failed|symbol not found|cannot find library|Museum|MUSL-LDSO|check ns accessible'
@@ -171,6 +174,8 @@ DLOPEN_RESULT="not_captured"
 DLOPEN_LINES=0
 EXECMEM_RESULT="not_captured"
 EXECMEM_LINES=0
+AOT_ROUTE="<unavailable>"
+INTERP_MODE="<unavailable>"
 APPLIBS_DIR_RESULT="not_captured"
 APPLIBS_DIR_LINES=0
 ARCHIVE=""
@@ -389,6 +394,44 @@ match_count() {
         ''|*[!0-9]*) printf '0' ;;
         *) printf '%s' "$_mc" ;;
     esac
+}
+
+# ---- runtime-route derivation from hilog-execmem.txt ----------------------------------
+# The host logs its launch decisions as `aot=0|1` and `interp=<v> source=<file|default>` on every
+# launch path (R2-SHELL-EXT); both are collected through FILTER_EXECMEM_RE. Values:
+#   aot_route   0 / 1 / 0+1 / <unavailable>  (0+1 = several launch windows, e.g. a JIT main hap
+#                                            plus an AOT extra probe; <unavailable> = no line)
+#   interp_mode <v>(file) when interp.txt selected a mode, else <v>(default), else <unavailable>
+# The file route wins over the default when both appear, so an interpreter round cannot be
+# masked by the earlier default lines of other windows.
+derived_aot_route() {
+    _ar_file="$1"
+    _ar_0=0
+    _ar_1=0
+    if [ -s "$_ar_file" ]; then
+        if [ "$(match_count 'aot=0([^0-9]|$)' "$_ar_file")" -gt 0 ]; then _ar_0=1; fi
+        if [ "$(match_count 'aot=1([^0-9]|$)' "$_ar_file")" -gt 0 ]; then _ar_1=1; fi
+    fi
+    if [ "$_ar_0" = 1 ] && [ "$_ar_1" = 1 ]; then printf '0+1'
+    elif [ "$_ar_1" = 1 ]; then printf '1'
+    elif [ "$_ar_0" = 1 ]; then printf '0'
+    else printf '<unavailable>'; fi
+}
+
+derived_interp_mode() {
+    _di_file="$1"
+    _di_line=""
+    _di_src="file"
+    if [ -s "$_di_file" ]; then
+        _di_line="$(grep -E -- 'interp=[0-9][0-9]* source=file' "$_di_file" 2>/dev/null | head -n1)"
+        if [ -z "$_di_line" ]; then
+            _di_src="default"
+            _di_line="$(grep -E -- 'interp=[0-9][0-9]* source=default' "$_di_file" 2>/dev/null | head -n1)"
+        fi
+    fi
+    _di_val="$(printf '%s\n' "$_di_line" | sed -n 's/.*interp=\([0-9][0-9]*\) source=.*/\1/p' | head -n1)"
+    if [ -z "$_di_val" ]; then printf '<unavailable>'
+    else printf '%s(%s)' "$_di_val" "$_di_src"; fi
 }
 
 # ---- device gate ---------------------------------------------------------------------
@@ -1269,7 +1312,7 @@ if [ "$DO_DEVICE" = 0 ]; then
     log "   [dry-run] 将采集: hilog+kmsg 捕获、module.json、param get + UDID、kit 哈希、summary.txt"
     log "   [dry-run] 将采集 ELF 签名证据: xpm_mode/require_signatures、SoInfoSegment magic 计数"
     log "   [dry-run] 将采集 app-lib 路径证据: hilog 过滤（appLibPathKey/dlopen）+ bundle libs 目录列表"
-    log "   [dry-run] 将采集 execmem 证据（FIX-XWE）: hilog 过滤（OHOS_DOTNET probe:/xwe=）-> hilog/hilog-execmem.txt"
+    log "   [dry-run] 将采集 execmem/运行时路由证据（FIX-XWE/R2-SHELL-EXT）: hilog 过滤（OHOS_DOTNET probe:/xwe=/aot=/interp=）-> hilog/hilog-execmem.txt（summary: aot_route/interp_mode）"
     log "   [dry-run] 将采集 bootstrap/rawfile 失败特征: hilog 再过滤 -> hilog/hilog-bootstrap.txt + summary 计数"
     log "   [dry-run] 将采集 payload 状态: ls -l $DEV_FILES_DIR/ + 读一行 dotnet.marker -> device/payload-*.txt"
     log "   [dry-run] kit hap 自检已在上方打印；设备轮会写入 meta/kit-selfcheck.txt"
@@ -1357,6 +1400,8 @@ else
         APPLIB_LINES="$(line_count "$OUT/hilog/hilog-applib.txt")"
         DLOPEN_LINES="$(line_count "$OUT/hilog/hilog-dlopen.txt")"
         EXECMEM_LINES="$(line_count "$OUT/hilog/hilog-execmem.txt")"
+        AOT_ROUTE="$(derived_aot_route "$OUT/hilog/hilog-execmem.txt")"
+        INTERP_MODE="$(derived_interp_mode "$OUT/hilog/hilog-execmem.txt")"
         if [ "$APPLIB_LINES" -eq 0 ]; then
             warn "   未见 SetAppLibPath/appLibPathKey/NativeLibPath/lib path（日志级别或窗口原因，保留空证据）"
         fi
@@ -1364,9 +1409,9 @@ else
             warn "   未见 dlopen/cannot find library/openharmonyhost（同上，保留空证据）"
         fi
         if [ "$EXECMEM_LINES" -eq 0 ]; then
-            warn "   未见 OHOS_DOTNET probe/xwe= 行（宿主版本或日志窗口原因，保留空证据）"
+            warn "   未见 OHOS_DOTNET probe/xwe=/aot=/interp= 行（宿主版本或日志窗口原因，保留空证据）"
         fi
-        log "   app-lib 路径 -> $OUT/hilog/hilog-applib.txt（${APPLIB_LINES} 行）/ dlopen -> $OUT/hilog/hilog-dlopen.txt（${DLOPEN_LINES} 行）/ execmem -> $OUT/hilog/hilog-execmem.txt（${EXECMEM_LINES} 行）"
+        log "   app-lib 路径 -> $OUT/hilog/hilog-applib.txt（${APPLIB_LINES} 行）/ dlopen -> $OUT/hilog/hilog-dlopen.txt（${DLOPEN_LINES} 行）/ execmem 路由 -> $OUT/hilog/hilog-execmem.txt（${EXECMEM_LINES} 行；aot_route=$AOT_ROUTE interp_mode=$INTERP_MODE）"
     else
         warn "   app-lib 路径证据未采集（本轮没有 hilog 录制窗口）"
     fi
@@ -1521,6 +1566,8 @@ else
         printf 'dlopen_lines=%s\n' "$DLOPEN_LINES"
         printf 'execmem_capture=%s\n' "$EXECMEM_RESULT"
         printf 'execmem_lines=%s\n' "$EXECMEM_LINES"
+        printf 'aot_route=%s\n' "$AOT_ROUTE"
+        printf 'interp_mode=%s\n' "$INTERP_MODE"
         printf 'app_libs_arm64=%s\n' "$APPLIBS_DIR_RESULT"
         printf 'app_libs_arm64_lines=%s\n' "$APPLIBS_DIR_LINES"
         printf 'bootstrap_capture=%s\n' "$BOOTSTRAP_RESULT"
@@ -1572,7 +1619,7 @@ log "归档:   $ARCHIVE"
 log "sha256: $(cut -d' ' -f1 "$ARCHIVE.sha256")"
 log "回传:   把 $ARCHIVE（连同 .sha256）发给交付方 —— 与收到 device-test-kit 相同的渠道"
 log "        （邮件/IM/工单）；GitHub 用户可附到 springmin/sdk-ohos 的 issue。"
-log "        归档内已有：hilog/（含 applib/dlopen/bootstrap 过滤）、kmsg/、probes/、meta/module.json、"
+log "        归档内已有：hilog/（含 applib/dlopen/execmem 路由/bootstrap 过滤）、kmsg/、probes/、meta/module.json、"
 log "        meta/kit-selfcheck.txt、device/udid.txt、device/app-libs-arm64.txt、"
 log "        device/payload-files.txt、device/payload-marker.txt、summary.txt。"
 if [ "$FAILURES" -gt 0 ]; then

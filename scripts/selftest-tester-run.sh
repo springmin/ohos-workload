@@ -30,6 +30,9 @@
 #                  (payload_present=no, payload_marker=empty, failures=0)
 #   S13 no index   a kit hap without resources.index -> meta/kit-selfcheck.txt shows index=missing,
 #                  summary kit_index_ok=no; no capture window -> bootstrap_errors=<unavailable>
+#   S14 route      FAKE_HDC_RUNTIME_MODES=1: the hilog stream carries aot=1 and interp=3 source=file
+#                  next to the default aot=0/interp=0 lines -> hilog-execmem.txt keeps all of them,
+#                  summary aot_route=0+1 and interp_mode=3(file) (file route wins)
 # Stub hdc surface (every subcommand tester-run.sh invokes): list targets | install -r <hap> |
 #   uninstall <bundle> | shell aa start -a EntryAbility -b <b> | shell pidof <b> | shell ps -ef
 #   | shell param get <key> | shell bm get -u | shell hilog -r | hilog | shell "hilog -t kmsg"
@@ -43,8 +46,9 @@
 #   per bundle (default 1), then nothing. FAKE_HDC_MISSING_PROC=1 fails both /proc/sys cats;
 #   FAKE_HDC_MISSING_APPLIBS=1 fails the bundle libs ls; FAKE_HDC_MISSING_PAYLOAD=1 fails the
 #   files dir ls and the marker cat; FAKE_HDC_BOOTSTRAP_ERRORS=1 adds the device report §4/§7
-#   failure lines to the hilog stream. A stub `binary-sign-tool` in $WORK/bin (prepended to
-#   PATH) answers `display-sign` with `code signature is not found`.
+#   failure lines to the hilog stream; FAKE_HDC_RUNTIME_MODES=1 adds the non-default route lines
+#   (NativeAOT payload aot=1, interp=3 source=file). A stub `binary-sign-tool` in $WORK/bin
+#   (prepended to PATH) answers `display-sign` with `code signature is not found`.
 # Kit under test: SELFTEST_KIT_DIR if set; else the local approved device-test-kit dir when it
 #   looks complete; else a synthetic minimal kit (module.json + dummy haps + minimal
 #   verify-kit.sh) in the temp dir. SELFTEST_FORCE_SYNTHETIC=1 forces the synthetic kit.
@@ -54,7 +58,7 @@
 # Exit: 0 = all checks passed; 1 = at least one check failed (work dir kept for triage).
 set -u
 
-SELFTEST_VERSION="6 (2026-09-24)"
+SELFTEST_VERSION="7 (2026-09-27)"
 
 log()  { printf '[%s] %s\n' "$(date '+%H:%M:%S')" "$*"; }
 section() { printf '\n=== %s ===\n' "$*"; }
@@ -541,8 +545,18 @@ KMSG_EOF
 09-22 10:00:00.800 12345 12345 I A00000/ets_runtime: SetAppLibPath appLibPathKey: com.example.hellomauiapp/entry, lib path: /data/storage/el1/bundle/libs/arm64
 09-22 10:00:00.810 12345 12345 I A00000/NAPI: dlopen libopenharmonyhost.so from /data/storage/el1/bundle/libs/arm64
 09-22 10:00:00.820 12345 12345 I A00000/OHOS_DOTNET: [openharmony-host] start_app: xwe=0 source=default
+09-22 10:00:00.822 12345 12345 I A00000/OHOS_DOTNET: [openharmony-host] start_app: interp=0 source=default
+09-22 10:00:00.824 12345 12345 I A00000/OHOS_DOTNET: [openharmony-host] start_app: aot=0 dir=/data/storage/el2/base/haps/entry/files/dotnet
 09-22 10:00:00.830 12345 12345 I A00000/OHOS_DOTNET: OHOS_DOTNET probe: 1=OK 2=OK 3=OK 4=38
 HILOG_EOF
+        # Non-default runtime routes (opt-in): the AOT bridge and an interp.txt-driven
+        # interpreter launch, next to the default lines above.
+        if [ "${FAKE_HDC_RUNTIME_MODES:-0}" = 1 ]; then
+            cat <<'ROUTE_EOF'
+09-22 10:00:00.840 12345 12345 I A00000/OHOS_DOTNET: [openharmony-host] start_app: interp=3 source=file
+09-22 10:00:00.845 12345 12345 I A00000/OHOS_DOTNET: [openharmony-host] start_app: NativeAOT payload /data/storage/el2/base/haps/entry/libs/arm64/libhello-maui-app.so aot=1
+ROUTE_EOF
+        fi
         # Device report §4/§7 failure signatures (opt-in so the default stream stays clean:
         # the empty-result tolerance of hilog-bootstrap.txt is asserted on the default stream).
         if [ "${FAKE_HDC_BOOTSTRAP_ERRORS:-0}" = 1 ]; then
@@ -828,8 +842,12 @@ if prepare_report "$ARCHIVE_S2" "$WORK/x-success" out-success; then
     assert_file "S2 hilog execmem filtered in archive" "$REPORT/hilog/hilog-execmem.txt"
     assert_contains "S2 execmem filtered has the xwe decision" "xwe=0 source=default" "$REPORT/hilog/hilog-execmem.txt"
     assert_contains "S2 execmem filtered has the probe line" "OHOS_DOTNET probe: 1=OK 2=OK 3=OK 4=38" "$REPORT/hilog/hilog-execmem.txt"
+    assert_contains "S2 execmem filtered has the aot route" "aot=0 dir=" "$REPORT/hilog/hilog-execmem.txt"
+    assert_contains "S2 execmem filtered has the interp default" "interp=0 source=default" "$REPORT/hilog/hilog-execmem.txt"
     assert_eq "S2 summary execmem_capture=ok" "ok" "$(sum_val "$S" execmem_capture)"
     assert_gt "S2 summary execmem_lines > 0" 0 "$(sum_val "$S" execmem_lines)"
+    assert_eq "S2 summary aot_route=0" "0" "$(sum_val "$S" aot_route)"
+    assert_eq "S2 summary interp_mode=0(default)" "0(default)" "$(sum_val "$S" interp_mode)"
     assert_eq "S2 summary applib_path_capture=ok" "ok" "$(sum_val "$S" applib_path_capture)"
     assert_gt "S2 summary applib_path_lines > 0" 0 "$(sum_val "$S" applib_path_lines)"
     assert_eq "S2 summary dlopen_capture=ok" "ok" "$(sum_val "$S" dlopen_capture)"
@@ -1310,12 +1328,41 @@ if prepare_report "$ARCHIVE_S13" "$WORK/x-noindex" out-noindex; then
     assert_eq "S13 summary bootstrap_capture=not_captured" "not_captured" "$(sum_val "$S" bootstrap_capture)"
     assert_eq "S13 summary bootstrap_errors=<unavailable>" "<unavailable>" "$(sum_val "$S" bootstrap_errors)"
     assert_eq "S13 summary rawfile_errors=<unavailable>" "<unavailable>" "$(sum_val "$S" rawfile_errors)"
+    assert_eq "S13 summary aot_route=<unavailable> (no capture window)" "<unavailable>" "$(sum_val "$S" aot_route)"
+    assert_eq "S13 summary interp_mode=<unavailable> (no capture window)" "<unavailable>" "$(sum_val "$S" interp_mode)"
     assert_eq "S13 summary payload_present=yes (stub device has a payload)" "yes" "$(sum_val "$S" payload_present)"
     assert_eq "S13 summary failures=0" "0" "$(sum_val "$S" failures)"
 else
     bad "S13 report archive could not be extracted ($ARCHIVE_S13)"
 fi
 assert_scenario_sandbox "S13"
+
+# ---- S14: runtime-route evidence (aot= / interp=) -------------------------------------
+# FAKE_HDC_RUNTIME_MODES=1 adds the non-default route lines (NativeAOT aot=1, interp=3 file) next
+# to the default aot=0/interp=0 lines. The archiver must keep every route line in
+# hilog-execmem.txt and normalize the summary: aot_route=0+1 (both routes seen), interp_mode
+# 3(file) - the interp.txt file route wins over the default lines.
+section "S14 runtime-route evidence (aot=1 / interp=3 source=file)"
+run_tester S14 "FAKE_HDC_RUNTIME_MODES=1" --kit-dir "$KIT" --install --start --capture 1 --out "$WORK/out-route"
+assert_eq "S14 exit code 0 (log: $LOGS/S14.log)" "0" "$RC"
+
+ARCHIVE_S14="$(report_archive out-route)"
+assert_file "S14 report archive produced" "$ARCHIVE_S14"
+if prepare_report "$ARCHIVE_S14" "$WORK/x-route" out-route; then
+    S="$REPORT/summary.txt"
+    E="$REPORT/hilog/hilog-execmem.txt"
+    assert_file "S14 hilog-execmem.txt in archive" "$E"
+    assert_contains "S14 keeps the AOT route line" "aot=1" "$E"
+    assert_contains "S14 keeps the interp file line" "interp=3 source=file" "$E"
+    assert_contains "S14 keeps the default route lines" "aot=0 dir=" "$E"
+    assert_eq "S14 summary aot_route=0+1" "0+1" "$(sum_val "$S" aot_route)"
+    assert_eq "S14 summary interp_mode=3(file)" "3(file)" "$(sum_val "$S" interp_mode)"
+    assert_eq "S14 summary execmem_capture=ok" "ok" "$(sum_val "$S" execmem_capture)"
+    assert_eq "S14 summary failures=0" "0" "$(sum_val "$S" failures)"
+else
+    bad "S14 report archive could not be extracted ($ARCHIVE_S14)"
+fi
+assert_scenario_sandbox "S14"
 
 # ---- global: nothing outside the temp dir --------------------------------------------
 section "global: no state outside the temp dir"
