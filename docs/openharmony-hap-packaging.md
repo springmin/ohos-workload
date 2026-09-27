@@ -467,31 +467,43 @@ ARKTS_HARMONY_SDK_ROOT=<sdk root> \          # or DEVECO_SDK_HOME
 scripts/build-arkts-shell.sh
 ```
 
-The branch changes exactly four things: the SDK root comes from `ARKTS_HARMONY_SDK_ROOT` /
+The branch changes exactly five things: the SDK root comes from `ARKTS_HARMONY_SDK_ROOT` /
 `DEVECO_SDK_HOME` (must carry `<root>/default/openharmony/ets` and `<root>/default/hms/ets`, or the
 build fails with the property to set), `runtimeOS` becomes `HarmonyOS`, `compatibleSdkVersion`
 defaults to `6.1.0(23)` (override with `ARKTS_COMPATIBLE_SDK_VERSION`) - the value the device-side
-DevEco build used to emit the accepted abc - and the UI variant additionally copies the Map
-overlay module `templates/ets/map/MapOverlay.ets` into the project (R2-3 2026-09-26). `externalApiPaths`
-additionally exposes `hms/ets`, which is what lets the Share/Scan/Map/Live View/CoreSpeech
-probes and the Map overlay compile against the real kit types. The abc header gate is
-unchanged: `ARKTS_MAX_BC_VERSION` stays `13.0.1.0` (the device runtime ceiling; the DevEco build at
-`6.1.0(23)` produced exactly `13.0.1.0`), so a HarmonyOS SDK whose es2abc emits a newer abc still
-fails here. On the default flavor the shell compiles the Share/Scan *probe* only: the specifier
-stays in a variable and the resolved module is cast to a local structural interface, so a device
-without the kit registers no sink and the managed side degrades (see the KIT-IMPL report in
-`runtime-ohos/docs/plans/2026-09-24-ohos-kit-gap-analysis.md`). The Map overlay follows the same
-rule: the default flavor never copies `MapOverlay.ets`, the page's dynamic `./map/MapOverlay`
-import fails at runtime there, and the Map sink reports capability bit 1 = 0.
+DevEco build used to emit the accepted abc - the UI variant additionally copies the Map overlay
+module `templates/ets/map/MapOverlay.ets` into the project (R2-3 2026-09-26), and the UI variant
+rewrites its `Index.ets` copy through `patch_harmony_index_ets` to import that module statically
+(MAPFIX 2026-09-28). The static import is what puts the overlay into hvigor's compile graph:
+a copied-but-unregistered module resolves nowhere, and HCI-HARMONY-CI measured exactly that
+(the abc had no `entry/ets/map/MapOverlay` record and the overlay could only answer capability
+bit 1 = 0; forcing the module into the graph by hand first exposed
+`10505001 Expected 0 arguments, but got 1` at `MapOverlay.ets:135`, an implicit no-argument
+`NodeController` base constructor the proxy passed a `UIContext` to - fixed by taking the
+framework `UIContext` in `makeNode` instead). `externalApiPaths` additionally exposes `hms/ets`,
+which is what lets the Share/Scan/Map/Live View/CoreSpeech probes and the Map overlay compile
+against the real kit types. The abc header gate is unchanged: `ARKTS_MAX_BC_VERSION` stays
+`13.0.1.0` (the device runtime ceiling; the DevEco build at `6.1.0(23)` produced exactly
+`13.0.1.0`), so a HarmonyOS SDK whose es2abc emits a newer abc still fails here. The emitted
+harmony ui abc is gated too: `check_harmony_overlay_abc` (offline twin `--check-overlay-abc`)
+requires the `entry/ets/map/MapOverlay` module record plus the compiled
+`mapOverlayView`/`markerClick`/`cameraIdle` symbols, so the overlay cannot silently drop out of
+the graph again. On the default flavor the shell compiles the Share/Scan *probe* only: the
+specifier stays in a variable and the resolved module is cast to a local structural interface, so
+a device without the kit registers no sink and the managed side degrades (see the KIT-IMPL report
+in `runtime-ohos/docs/plans/2026-09-24-ohos-kit-gap-analysis.md`). The Map overlay follows the
+same rule: the default flavor never copies `MapOverlay.ets` and its `Index.ets` source stays
+byte-identical (only the harmony branch rewrites its project copy), so the page's dynamic
+`./map/MapOverlay` import fails at runtime there and the Map sink reports capability bit 1 = 0.
 
-The branch is scaffold-verified (`--scaffold-only` plus the selftest T14/T17) and was
-**build-verified on 2026-09-27** with the public DevEco command-line-tools bundle 6.0.1.251
-(HarmonyOS 6.0.1 Release, API 21): `Finished :entry:default@CompileArkTS`, ui abc
-`273,932 B / sha256 e7290ed11857472aa8f1b60ae984f7c13796a67cb1ec4be78cb873e5ef110b11`, abc
-version `13.0.1.0`, 0 ArkTS errors, payload literals present - including the A2-TTS
-`registerTtsSink`/`@kit.CoreSpeechKit`/`SystemCapability.AI.TextToSpeech` literals, so the
-CoreSpeechKit probe/sink compiles against the real `hms/ets` declarations (the earlier
-R2-3/Live View build reported `263,784 B / d3a7b718...`). There are two supported routes.
+The branch is scaffold-verified (`--scaffold-only` plus the selftest T14/T17/T18) and was
+**re-verified with the overlay compiled on 2026-09-28** with the public DevEco command-line-tools
+bundle 6.0.1.251 (HarmonyOS 6.0.1 Release, API 21): `Finished :entry:default@CompileArkTS`, ui
+abc `291,628 B / sha256 a637a5136681b803186969ca2753a439735e35bf41c752d1849cbec2a482487b`, abc
+version `13.0.1.0`, 0 ArkTS errors, every payload literal, and `ark_disasm` shows the module table
+record `.record com.example.hellomauiapp.entry.ets.map.MapOverlay` next to `entryability.EntryAbility`
+and `pages.Index` (the earlier R2-3/Live View build reported `263,784 B / d3a7b718...`, which had
+no overlay record). There are two supported routes.
 
 **Route A - real HarmonyOS SDK.** Obtain the toolchain bundle (hvigor + ohpm + node + the full
 `hms` SDK; linux-x64, ~2.0 GiB, public mirrors, sha256-pinned) with
@@ -543,13 +555,12 @@ dispatch and weekly (Monday 03:17 UTC), deliberately not on PR/push: the sha256-
 command-line-tools archive is ~2.0 GiB, so it is cached by that sha (`actions/cache`) and a cold
 run pays the download while repeat runs only unpack. The job fails red on a download/SDK
 verification failure, any ArkTS error, an abc header other than `13.0.1.0`, a missing
-Map/Live View/CoreSpeech or payload-in-libs literal, or a missing provenance record; the abc and
-`harmony-abc-provenance.json` are uploaded as `harmony-abc-<run id>`. The gate records - but does
-not yet fail on - the Map overlay module probe: the R2-3 `MapOverlay.ets` is copied for this
-branch but does not reach hvigor's compile graph today (no `entry/ets/map/MapOverlay` record; a
-forced static link fails with `10505001 Expected 0 arguments, but got 1` at `MapOverlay.ets:135`),
-so the map literals come from the `pages/Index.ets` probe; flip `HARMONY_REQUIRE_MAP_OVERLAY` in
-the workflow to `1` once that module compiles.
+Map/Live View/CoreSpeech or payload-in-libs literal, a missing Map overlay module record or
+compiled overlay symbol (`HARMONY_REQUIRE_MAP_OVERLAY=1`; MAPFIX 2026-09-28 turned the former
+WARN into an enforced gate), or a missing provenance record; the abc and
+`harmony-abc-provenance.json` are uploaded as `harmony-abc-<run id>`. The provenance records the
+overlay probe (record present, per-symbol presence) alongside the literals and the compile log, so
+a regression is visible even before the gate reads it.
 
 For the tester machine (DevEco Studio + HarmonyOS SDK) the shortest path is Route A with the
 IDE's SDK and hvigor; the existing DevEco fallback still works (create an empty project, copy
@@ -558,18 +569,24 @@ abc back via `-p:OpenHarmonyArktsModulesAbc`). Expected evidence: the `CompileAr
 line, abc version `13.0.1.0`, non-zero size, the payload literals (`--check-abc`).
 
 The branch's abc is also shipped as a **packaged HAP variant**: `harmony-haps.tar.gz`
-(196,118,871 B / sha256 `f7a4faa2553d...`, published 2026-09-27 on the `device-test-kit` release
-beside the kit) carries the same five-hap matrix as `scripts/make-device-test-kit.sh` (26.0/20.0 x
-optional permission set + unsigned) rebuilt with
+(196,898,796 B / sha256 `9b0506fa...`, re-cut 2026-09-28 on the `device-test-kit` release beside
+the kit; the replaced set was 196,118,871 B / `f7a4faa2...`) carries the same five-hap matrix as
+`scripts/make-device-test-kit.sh` (26.0/20.0 x optional permission set + unsigned) rebuilt with
 `-p:OpenHarmonyArktsModulesAbc=dist/ets/modules.harmony.abc`; only that property differs from the
-kit build. Measured: all five haps carry the harmony abc (263,784 B / `d3a7b718...`, PANDA
-`13.0.1.0`), the payload shape is untouched (`module.json` byte-equal to the kit #28 haps,
-`libs/arm64-v8a` 269 = 14 `.so` + 254 payload + marker, in-hap host 269,216 B / `bb51826e...`,
-`.codesign` on all 14 `.so`), the scratch assertion script is 82/82 and the kit's `verify-kit.sh
---expected-abc 263784` reports KIT OK. This is the only packaged shell with `MapOverlay.ets` /
-LiveView sinks, so its real-device prerequisites are the AGC rows below (map service + signing
-fingerprint; Live View TIMER entitlement + device switch); the default-flavor kit haps keep
-`264,136 B / 9020ec5e...` and `IsOverlayAvailable=false`.
+kit build. Measured with the overlay compiled (MAPFIX): all five haps carry the harmony abc
+(291,628 B / `a637a513...`, PANDA `13.0.1.0`) including the `entry/ets/map/MapOverlay` module
+record and the `mapOverlayView`/`markerClick`/`cameraIdle` symbols, and pairwise against a control
+set built from the same commit without the abc override the only differing file is
+`ets/modules.abc` (`module.json` byte-equal to the kit #29 haps, `libs/arm64-v8a` 269 = 14 `.so`
+plus 254 payload entries and the marker, in-hap host 285,600 B / `5248c6a9...`, `.codesign` on
+all 14 `.so`);
+`scripts/verify-harmony-haps.sh <harmony-haps> <control-haps>` reports 102/102 and the kit's
+`verify-kit.sh --expected-abc 291628` reports KIT OK. The previous cut (263,784 B / `d3a7b718...`)
+was copied but never compiled - its README's "MapOverlay.ets compiled" claim was wrong, and the
+overlay could only answer capability bit 1 = 0. This is the only packaged shell with a compiled
+`MapOverlay.ets` / LiveView sinks, so its real-device prerequisites are the AGC rows below (map
+service + signing fingerprint; Live View TIMER entitlement + device switch); the default-flavor
+kit haps keep `281,052 B / 5c06143a...` and `IsOverlayAvailable=false`.
 
 ### Kit feature probes and AGC prerequisites (Push / Account / Map / Live View / CoreSpeech)
 
@@ -607,11 +624,15 @@ discovery - `QueryCapabilitiesAsync`/`IsSupported` over the runtime probe - and 
 shell-side `MapComponent` overlay. The overlay lives in the harmony-flavor-only template module
 `packs/Microsoft.OpenHarmony.Sdk/<ver>/templates/ets/map/MapOverlay.ets` (literal `@kit.MapKit`
 import, `MapComponent` builder mounted through a `NodeController`/`BuilderNode` in the page
-`Stack`); `pages/Index.ets` imports it dynamically through the variable specifier
-`'./map/MapOverlay'`, casts the resolved module to local structural interfaces, and mounts a
-`NodeContainer` only while the managed side created the overlay. The managed side drives it
-through `OpenHarmonyMap` (create/show/hide/destroy/region/marker plus the ready/marker-click/
-camera-idle events) and every call first checks the availability bits.
+`Stack`). `pages/Index.ets` keeps its variable-specifier dynamic import of `'./map/MapOverlay'`
+for the default flavor (the module is never copied there, so it fails at runtime and bit 1 stays
+0); the harmony build's `patch_harmony_index_ets` step rewrites its project copy to import the
+module statically (`../map/MapOverlay`) and take the proxy constructor directly, so hvigor
+registers the module and the probe never depends on runtime module resolution. Either way the
+page casts the module to local structural interfaces and mounts a `NodeContainer` only while the
+managed side created the overlay. The managed side drives it through `OpenHarmonyMap` (create/
+show/hide/destroy/region/marker plus the ready/marker-click/camera-idle events) and every call
+first checks the availability bits.
 
 Live View keeps the TIMER scene's minimal surface (create/update/stop): the shell builds one
 progress-template view per id (`title`/`text`/`progress` 0-100 plus the `timer.time` value in ms),
