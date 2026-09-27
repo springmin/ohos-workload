@@ -72,6 +72,19 @@
          (findLibsPayloadDir reads only assembly/entries), but shells without the marker probe
          have no fallback left at all. -->
     <OpenHarmonyHapPayloadZip Condition=" '$(OpenHarmonyHapPayloadZip)' == '' ">true</OpenHarmonyHapPayloadZip>
+    <!-- Runtime mode switch (MS-MODE; see "Runtime mode switch" in the packaging doc): one
+         property selects the launch shape the hap is built for and writes
+         libs/<abi>/runtime-mode.txt, the marker the host reads before hostfxr starts coreclr.
+         jit (default) keeps the previous launch; aot requires the NativeAOT application library
+         in the publish payload (the aot-haps variant); interp writes the marker and, when
+         OpenHarmonyInterpreterPack points at an extracted ohos-interpreter-pack, stages its
+         feature-enabled libcoreclr.so + libclrinterpreter.so over the publish natives. -->
+    <OpenHarmonyRuntimeMode Condition=" '$(OpenHarmonyRuntimeMode)' == '' ">jit</OpenHarmonyRuntimeMode>
+    <!-- Interpreter pack directory for runtime mode interp: <dir>/libcoreclr.so +
+         <dir>/libclrinterpreter.so or the same two files under <dir>/native/ (the extracted
+         ohos-interpreter-pack layout). Empty keeps the stock runtime natives; the device-side
+         interp.txt + overlay route still works then. -->
+    <OpenHarmonyInterpreterPack Condition=" '$(OpenHarmonyInterpreterPack)' == '' "></OpenHarmonyInterpreterPack>
     <!-- UI builds: point OpenHarmonyArktsModulesAbc at a modules.abc produced by the ArkTS
          toolchain (ets-loader/hvigor or DevEco Studio, which compiles both the ability and
          the ArkUI pages), and set OpenHarmonyUIPage to the page record (e.g. pages/Index).
@@ -382,6 +395,48 @@
     <Message Importance="high" Text="OpenHarmony: permissions features='$(OpenHarmonyFeatures)' declared=@(_OpenHarmonyModuleJsonPermission->Count()) shellRequests='$(_OpenHarmonyRequestedPermissions)' undeclared='$(_OpenHarmonyUndeclaredPermissions)'" />
   </Target>
 
+  <!-- Runtime mode switch (MS-MODE; see "Runtime mode switch" in the packaging doc): validates
+       OpenHarmonyRuntimeMode, optionally stages the interpreter pack over the publish natives and
+       writes libs/<abi>/runtime-mode.txt. Called by _OpenHarmonyStageHap after the payload
+       staging and before the codesign pass, so replaced interpreter natives are signed with the
+       rest of libs/<abi>/ and the payload marker (written later) counts the marker file. Also
+       runnable stand-alone: the hap-targets selftest drives it with a fixture. -->
+  <Target Name="_OpenHarmonyStageRuntimeMode"
+          DependsOnTargets="_OpenHarmonyResolveHapStageDir"
+          Condition=" '$(OpenHarmonyHapPackage)' == 'true' and '$(TargetPlatformIdentifier)' == 'openharmony' ">
+    <PropertyGroup>
+      <_OpenHarmonyRuntimeModeDir>$(_OpenHarmonyHapStageDir)libs/$(OpenHarmonyAbi)</_OpenHarmonyRuntimeModeDir>
+      <_OpenHarmonyRuntimeModePublishDir>$([MSBuild]::NormalizeDirectory('$(MSBuildProjectDirectory)', '$(PublishDir)'))</_OpenHarmonyRuntimeModePublishDir>
+      <_OpenHarmonyRuntimeModeAotStem Condition=" '$(TargetFileName)' != '' ">$([System.IO.Path]::GetFileNameWithoutExtension('$(TargetFileName)'))</_OpenHarmonyRuntimeModeAotStem>
+      <_OpenHarmonyRuntimeModeAotStem Condition=" '$(_OpenHarmonyRuntimeModeAotStem)' == '' ">$(AssemblyName)</_OpenHarmonyRuntimeModeAotStem>
+      <_OpenHarmonyRuntimeModeAotLibName>lib$(_OpenHarmonyRuntimeModeAotStem).so</_OpenHarmonyRuntimeModeAotLibName>
+      <_OpenHarmonyInterpreterPackDir Condition=" '$(OpenHarmonyInterpreterPack)' != '' ">$([MSBuild]::NormalizeDirectory('$(MSBuildProjectDirectory)', '$(OpenHarmonyInterpreterPack)'))</_OpenHarmonyInterpreterPackDir>
+    </PropertyGroup>
+    <Error Condition=" '$(OpenHarmonyRuntimeMode)' != 'jit' and '$(OpenHarmonyRuntimeMode)' != 'aot' and '$(OpenHarmonyRuntimeMode)' != 'interp' "
+           Text="OpenHarmonyRuntimeMode '$(OpenHarmonyRuntimeMode)' is not a runtime mode: use jit (the default), aot or interp. See &quot;Runtime mode switch&quot; in docs/openharmony-hap-packaging.md." />
+    <Error Condition=" '$(OpenHarmonyRuntimeMode)' == 'aot' and !Exists('$(_OpenHarmonyRuntimeModePublishDir)$(_OpenHarmonyRuntimeModeAotLibName)') "
+           Text="OpenHarmonyRuntimeMode=aot requires the NativeAOT application library $(_OpenHarmonyRuntimeModeAotLibName) in the publish payload ('$(_OpenHarmonyRuntimeModePublishDir)'); publish the AOT variant (-p:PublishAot=true -p:PublishAotUsingRuntimePack=true -p:NativeLib=Shared, the aot-haps build) or set OpenHarmonyRuntimeMode=jit. See &quot;Runtime mode switch&quot; in docs/openharmony-hap-packaging.md." />
+    <Error Condition=" '$(OpenHarmonyInterpreterPack)' != '' and '$(OpenHarmonyRuntimeMode)' != 'interp' "
+           Text="OpenHarmonyInterpreterPack '$(OpenHarmonyInterpreterPack)' is only meaningful with OpenHarmonyRuntimeMode=interp (got '$(OpenHarmonyRuntimeMode)'): it replaces the runtime natives the jit/aot launch shapes resolve from the publish payload." />
+    <ItemGroup>
+      <_OpenHarmonyInterpreterCoreclr Condition=" '$(OpenHarmonyInterpreterPack)' != '' and Exists('$(_OpenHarmonyInterpreterPackDir)libcoreclr.so') " Include="$(_OpenHarmonyInterpreterPackDir)libcoreclr.so" />
+      <_OpenHarmonyInterpreterCoreclr Condition=" '$(OpenHarmonyInterpreterPack)' != '' and Exists('$(_OpenHarmonyInterpreterPackDir)native/libcoreclr.so') " Include="$(_OpenHarmonyInterpreterPackDir)native/libcoreclr.so" />
+      <_OpenHarmonyInterpreterClrinterp Condition=" '$(OpenHarmonyInterpreterPack)' != '' and Exists('$(_OpenHarmonyInterpreterPackDir)libclrinterpreter.so') " Include="$(_OpenHarmonyInterpreterPackDir)libclrinterpreter.so" />
+      <_OpenHarmonyInterpreterClrinterp Condition=" '$(OpenHarmonyInterpreterPack)' != '' and Exists('$(_OpenHarmonyInterpreterPackDir)native/libclrinterpreter.so') " Include="$(_OpenHarmonyInterpreterPackDir)native/libclrinterpreter.so" />
+    </ItemGroup>
+    <Error Condition=" '$(OpenHarmonyInterpreterPack)' != '' and '@(_OpenHarmonyInterpreterCoreclr)' == '' "
+           Text="OpenHarmonyInterpreterPack '$(OpenHarmonyInterpreterPack)' carries no libcoreclr.so (looked in the directory and its native/ subdirectory); extract ohos-interpreter-pack.tar.gz and point OpenHarmonyInterpreterPack at it." />
+    <Error Condition=" '$(OpenHarmonyInterpreterPack)' != '' and '@(_OpenHarmonyInterpreterClrinterp)' == '' "
+           Text="OpenHarmonyInterpreterPack '$(OpenHarmonyInterpreterPack)' carries no libclrinterpreter.so (looked in the directory and its native/ subdirectory); extract ohos-interpreter-pack.tar.gz and point OpenHarmonyInterpreterPack at it." />
+    <MakeDir Directories="$(_OpenHarmonyRuntimeModeDir)" />
+    <Copy Condition=" '@(_OpenHarmonyInterpreterCoreclr)' != '' " SourceFiles="@(_OpenHarmonyInterpreterCoreclr)" DestinationFolder="$(_OpenHarmonyRuntimeModeDir)/" />
+    <Copy Condition=" '@(_OpenHarmonyInterpreterClrinterp)' != '' " SourceFiles="@(_OpenHarmonyInterpreterClrinterp)" DestinationFolder="$(_OpenHarmonyRuntimeModeDir)/" />
+    <WriteLinesToFile File="$(_OpenHarmonyRuntimeModeDir)/runtime-mode.txt" Lines="$(OpenHarmonyRuntimeMode)" Overwrite="true" />
+    <Message Importance="high" Text="OpenHarmony: runtime mode '$(OpenHarmonyRuntimeMode)' written to libs/$(OpenHarmonyAbi)/runtime-mode.txt (the host reads it before hostfxr)" />
+    <Message Importance="high" Condition=" '$(OpenHarmonyRuntimeMode)' == 'interp' and '@(_OpenHarmonyInterpreterCoreclr)' != '' " Text="OpenHarmony: runtime-mode=interp staged the interpreter pack (libcoreclr.so + libclrinterpreter.so) over the publish natives; the host sets DOTNET_InterpMode=3 unless interp.txt overrides it" />
+    <Message Importance="high" Condition=" '$(OpenHarmonyRuntimeMode)' == 'interp' and '$(OpenHarmonyInterpreterPack)' == '' " Text="OpenHarmony: runtime-mode=interp without OpenHarmonyInterpreterPack - libs/$(OpenHarmonyAbi)/ keeps the stock runtime natives; the device-side interpreter overlay + interp.txt route is still required (see &quot;Runtime mode switch&quot; in the packaging doc)" />
+  </Target>
+
   <!-- AfterTargets=Publish order: consumers can inject targets that must run after the SDK's
        publish copy and before the hap staging by listing them in OpenHarmonyAfterPublishDependsOn
        (e.g. a custom asset staging target). The staged libs are re-signed below, after the payload
@@ -509,6 +564,13 @@
     </OpenHarmonyStagePayloadLibs>
     <Message Importance="high" Condition=" '$(OpenHarmonyHapPayloadInLibs)' == 'true' "
              Text="OpenHarmony: payload-in-libs staged $(_OpenHarmonyPayloadInLibsEntries) files ($([MSBuild]::Divide($(_OpenHarmonyPayloadInLibsBytes), 1048576)) MB) into libs/$(OpenHarmonyAbi)/ (the only namespace-allowed dlopen path); the same files stay in dotnet.zip as the fallback" />
+
+    <!-- Runtime mode switch (MS-MODE; see "Runtime mode switch" in the packaging doc): writes
+         libs/<abi>/runtime-mode.txt and, for interp, replaces the staged runtime natives with the
+         interpreter pack. Runs after the payload staging and before the codesign pass below, so
+         the replaced natives are re-signed and the payload marker written after the zip counts
+         the marker file. -->
+    <CallTarget Targets="_OpenHarmonyStageRuntimeMode" />
 
     <!-- The copied lib may carry a vendor .codesign that is not the ElfSigner format the device
          loader requires (the HarmonyOS SDK's libc++_shared.so ships a PKCS#7 Huawei DevID blob
