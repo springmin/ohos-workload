@@ -526,13 +526,14 @@ build) keeps the managed side's documented degradation - no throw, no silent gue
 | Live View (R2-SHELL-EXT) | `OpenHarmonyLiveView.StartAsync(update)` / `UpdateAsync(update)` / `StopAsync(id)` / `IsSupported` | `canIUse('SystemCapability.LiveView.LiveViewService')` + `@kit.LiveViewKit`; `liveViewManager.isLiveViewEnabled()` then `startLiveView`/`updateLiveView`/`stopLiveView` on the TIMER scene (progress template; `title`/`text`/`progress`/`time` in ms); `host.notifyLiveViewResult(id, op, rc, payload)` | rc 0 = applied, -1 = unavailable or no view the shell owns, -2 = the kit call failed or the args were malformed, -3 = the user's live view switch is off; positive rc is the Live View Kit code (`1003500004` switch off, `1003500005` entitlement not approved, `1003500006` id exists, `1003500011` stale sequence, ...) |
 | TextToSpeech (A2-TTS) | `OpenHarmonyTextToSpeech.SpeakAsync(text, options, ct)` / `GetLocalesAsync()` / `Stop()` / `IsSupported` | `canIUse('SystemCapability.AI.TextToSpeech')` + `@kit.CoreSpeechKit`; `textToSpeech.createEngine({language, person: 0, online: 1})` (offline mode, engine cached per language), then `engine.speak(text, {requestId})`; ops 0 create / 1 speak / 2 stop / 3 locales (`listVoices`) / 4 isBusy via `host.registerTtsSink` / `host.notifyTtsResult(id, op, rc, payload)` | rc 0 = applied (speak: the engine reported completion or stop; locales: JSON voice list; isBusy: `"0"`/`"1"`), -1 = unavailable, -2 = the kit call failed, the engine is missing or the args were malformed; positive rc is the CoreSpeechKit code (`1002300001` text empty/out of range, `1002300002` language not supported, `1002300003` person not supported, `1002300005` engine creation failed, `401` arguments) |
 
-Host exports (all in the `host-exports.txt` contract, 136 names): `ohos_host_push_{available,request,register_result,result}`,
+Host exports (all in the `host-exports.txt` contract, 137 names): `ohos_host_push_{available,request,register_result,result}`,
 `ohos_host_account_{available,request,register_result,result}`, `ohos_host_map_{available,command,register_result,result}`
 (the R2-3 overlay folded the reserved probe into `ohos_host_map_command(id, op, args)`; the export
 count was unchanged there because the overlay reuses the same four Map exports and one answer
 callback), `ohos_host_liveview_{available,request,register_result,result}` (R2-SHELL-EXT), and
 `ohos_host_tts_{available,request,register_result,result}` (A2-TTS; the old single-op
-`ohos_host_tts_speak` export was replaced by the generic request shape, 134 -> 136 names).
+`ohos_host_tts_speak` export was replaced by the generic request shape, 134 -> 136 names), and the
+standalone `ohos_host_keystore_available` probe (P2a-HUKS; 136 -> 137 names).
 Push and Account are asynchronous (the AGC call and the system authorization UI); the Map overlay
 commands are asynchronous in the same way (the shell answers when the op was dispatched). Live
 View is asynchronous too (the kit call may cross to the live view service): the shell checks
@@ -576,6 +577,33 @@ instead of guessing.** The kit needs no AGC entitlement and no `module.json5` pe
 device's speech capability (and its offline voice data) is the gate, and the default OpenHarmony
 build keeps the no-kit degradation documented above.
 
+### SecureStorage (P2a-HUKS, 2026-09-27)
+
+`OpenHarmonySecureStorage` prefers HUKS (Universal KeyStore) and keeps the documented file-key
+fallback only when the keystore path fails; `IsHardwareBacked` reports the probe honestly. Unlike
+the HMS kit batches above, the keystore engine runs in the host
+(`src/OpenHarmonyHost/host_keystore.c`), so the headless shell is covered too, and the ArkTS
+`registerKeystoreSink` (`Index.ets`, answers rc=-1 until the kit is wired) stays the fallback
+layer for a device whose image lacks the NDK library:
+
+| Layer | Contract |
+|-------|----------|
+| Managed | `SetAsync` -> `ohos_host_keystore_request(id, "generate"/"encrypt", alias, base64)`; `GetAsync` -> `"decrypt"`; `RemoveAll` -> `"delete"`; a sealed value lands as `k1:<base64(nonce(12) || ciphertext || tag(16))>`; the alias is namespaced `maui.ohos.securestorage.v1.<FNV-1a(path)>` |
+| Host | `OhosHostKeystoreAvailable` (libhuks_ndk.z.so through the optional-library dlopen shim) answers in-process with AES-256-GCM: `generateKeyItem` (AES-256, GCM, NoPadding, ENCRYPT+DECRYPT), `initSession`+`finishSession` with `HUKS_TAG_NONCE` / `HUKS_TAG_AE_TAG`, `deleteKeyItem`; `ohos_host_keystore_available()` exposes the probe for the managed status. Only a host without the library forwards the request to the ArkTS sink. |
+| Fallback | no HUKS (or a failed op): the per-install file key obfuscates the values (`secure.dat.key` next to the data file) and the one-time status note says so - not hardware-backed, never silent. |
+
+No AGC entitlement and no `module.json5` permission: HUKS is an OpenHarmony core service
+(`SystemCapability.Security.Huks.Core`; `@kit.UniversalKeystoreKit` / `@ohos.security.huks` ship
+in both the OpenHarmony SDK and the HarmonyOS SDK) and keys are app-scoped. **Device decision
+points: (a) restart read-back - the key is HUKS-resident, so a value written by one process
+decrypts in a later one; (b) cross-device undecryptable - the key never leaves the keystore and
+is alias-scoped, so the same ciphertext fails under another key/device; (c) delete clears key -
+`RemoveAll` drops the keystore key, after which the old ciphertext is unrecoverable.** All three
+were verified on the dev device (signed aarch64 probe over the host sources: seal in one process,
+decrypt in the next; the same blob rejected under a second alias; rejected again after
+`delete`). Off-device the interaction suite asserts the fallback: `IsHardwareBacked=false`, the
+read/write/remove semantics are unchanged and a malformed `k1:` payload reads as absent.
+
 Decision point: **the overlay needs the `ARKTS_SDK_FLAVOR=harmony` shell build plus the AGC map
 service enablement** (checklist row 5; the Android AppKey flow does not apply to the HarmonyOS
 `MapComponent`) - the default OpenHarmony SDK build cannot compile the component declaration, and
@@ -615,7 +643,8 @@ logs the initialization failure.
 Verification without an HMS device: `test/maui-platform-verify` pins the shell probe/sink shape,
 the overlay module and its flavor gate, the host/managed contract, the off-device degradation
 (`[verify] kit4/kit5/kit6/kit7` for the second batch + overlay, `kit8/kit9/kit10` for Live View,
-`kit11/kit12/kit13` for CoreSpeech text-to-speech) and the interpreter switch
+`kit11/kit12/kit13` for CoreSpeech text-to-speech, `kit14` for the HUKS-first SecureStorage) and
+the interpreter switch
 (`pg2 host interp policy`: the `interp.txt` parser, the guarded `DOTNET_InterpMode` setenv and
 the log pair),
 while `scripts/build-arkts-shell.sh` keeps the abc at
@@ -627,7 +656,7 @@ in the UI abc (the provenance gate; current default-flavor UI abc 274,284 B /
 the source contract (no `@ohos.*` imports, variable kit specifiers). The host-side gate is
 `scripts/build-host.sh` (nm -D: all 136 `host-exports.txt` names present as plain symbols) plus
 `scripts/check-host-exports.py --cross-check`; the interaction suite's own contract line is
-`[suite] checks=337 total=337 floor=317 assert=True`.
+`[suite] checks=340 total=340 floor=320 assert=True`.
 
 ### Templates / abc sync strategy
 

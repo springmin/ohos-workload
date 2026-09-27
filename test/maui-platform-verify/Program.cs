@@ -12,7 +12,7 @@ using Microsoft.Maui.Platform;
 // after the fuzz tail) instead of letting every caller repeat its own threshold constant.
 VerifyLineCountingWriter verifyStdout = new(Console.Out);
 Console.SetOut(verifyStdout);
-const int verifyCheckTotal = 337;                     // documented full [verify] line count
+const int verifyCheckTotal = 340;                     // documented full [verify] line count
 const int verifyCheckFloor = verifyCheckTotal - 20;   // documented floor convention (total - 20)
 
 // A small image file for the Image handler.
@@ -3011,6 +3011,124 @@ if (!kitPinsOk4)
     throw new InvalidOperationException("the TextToSpeech host/managed bridge contract drifted");
 }
 
+// KIT14 (P2a-HUKS): SecureStorage upgraded from the file-key fallback to a HUKS-first bridge.
+// The host runs the keystore ops in-process (host_keystore.c; libhuks_ndk.z.so resolved through
+// the optional-library shim) so a headless shell is covered too, and the ArkTS sink stays the
+// fallback layer. Pins: the AES-256-GCM session shape, the op protocol, the dlopen denylist
+// entry, the export contract, the managed alias/base64/delete/status surface and the off-device
+// degradation (IsHardwareBacked=false, fallback round trip, malformed k1: entry).
+string? kit14KeystorePath = FindHostSource("src/OpenHarmonyHost/host_keystore.c");
+string kit14Keystore = kit14KeystorePath is null ? string.Empty : File.ReadAllText(kit14KeystorePath);
+string? kit14OptionalPath = FindHostSource("src/OpenHarmonyHost/host_optional.c");
+string kit14Optional = kit14OptionalPath is null ? string.Empty : File.ReadAllText(kit14OptionalPath);
+string? kit14DepsPath = FindHostSource("src/OpenHarmonyHost/host-deps.conf");
+string kit14Deps = kit14DepsPath is null ? string.Empty : File.ReadAllText(kit14DepsPath);
+string? kit14CmakePath = FindHostSource("src/OpenHarmonyHost/CMakeLists.txt");
+string kit14Cmake = kit14CmakePath is null ? string.Empty : File.ReadAllText(kit14CmakePath);
+string? kit14BuildHostPath = FindHostSource("scripts/build-host.sh");
+string kit14BuildHost = kit14BuildHostPath is null ? string.Empty : File.ReadAllText(kit14BuildHostPath);
+string? kit14ExportsPath = FindHostSource("src/OpenHarmonyHost/host-exports.txt");
+string kit14Exports = kit14ExportsPath is null ? string.Empty : File.ReadAllText(kit14ExportsPath);
+bool kit14Engine = kit14Keystore.Contains("#define OHOS_KEYSTORE_NONCE_BYTES 12u") &&
+    kit14Keystore.Contains("#define OHOS_KEYSTORE_TAG_BYTES 16u") &&
+    kit14Keystore.Contains("OH_HUKS_ALG_AES") &&
+    kit14Keystore.Contains("OH_HUKS_AES_KEY_SIZE_256") &&
+    kit14Keystore.Contains("OH_HUKS_MODE_GCM") &&
+    kit14Keystore.Contains("OH_HUKS_PADDING_NONE") &&
+    kit14Keystore.Contains("OH_HUKS_KEY_PURPOSE_ENCRYPT") &&
+    kit14Keystore.Contains("OH_HUKS_KEY_PURPOSE_DECRYPT") &&
+    kit14Keystore.Contains("OH_HUKS_TAG_NONCE") &&
+    kit14Keystore.Contains("OH_HUKS_TAG_AE_TAG") &&
+    kit14Keystore.Contains("OH_HUKS_ERR_CODE_KEY_ALREADY_EXIST") &&
+    kit14Keystore.Contains("OH_HUKS_ERR_CODE_ITEM_NOT_EXIST") &&
+    kit14Keystore.Contains("\"/dev/urandom\"") &&
+    kit14Keystore.Contains("\"generate\"") &&
+    kit14Keystore.Contains("\"encrypt\"") &&
+    kit14Keystore.Contains("\"decrypt\"") &&
+    kit14Keystore.Contains("\"delete\"") &&
+    kit14Keystore.Contains("OhosHostKeystoreWipe");
+bool kit14Wiring = kit14Optional.Contains("libhuks_ndk.z.so") &&
+    kit14Optional.Contains("OH_Huks_InitSession") &&
+    kit14Optional.Contains("OH_Huks_GenerateKeyItem") &&
+    kit14Optional.Contains("OH_Huks_FinishSession") &&
+    kit14Optional.Contains("OH_Huks_DeleteKeyItem") &&
+    kit14Optional.Contains("OH_Huks_IsKeyItemExist") &&
+    kit14Deps.Contains("OH_Huks_") &&
+    kit14Cmake.Contains("host_keystore.c") &&
+    kit14BuildHost.Contains("$SRC/host_keystore.c") &&
+    kitHeader.Contains("int ohos_host_keystore_available(void);") &&
+    kit14Exports.Contains("ohos_host_keystore_available");
+int kit14RequestAt = (cSource ?? string.Empty).IndexOf("void ohos_host_keystore_request(", StringComparison.Ordinal);
+int kit14RequestEnd = kit14RequestAt < 0 ? -1 : (cSource ?? string.Empty).IndexOf("\n}", kit14RequestAt, StringComparison.Ordinal);
+string kit14Request = kit14RequestAt < 0 || kit14RequestEnd < 0
+    ? string.Empty
+    : (cSource ?? string.Empty).Substring(kit14RequestAt, kit14RequestEnd - kit14RequestAt);
+int kit14AvailableAt = kit14Request.IndexOf("OhosHostKeystoreAvailable()", StringComparison.Ordinal);
+int kit14ListenerAt = kit14Request.IndexOf("g_keystore_listener != NULL", StringComparison.Ordinal);
+bool kit14Order = kit14AvailableAt >= 0 && kit14ListenerAt > kit14AvailableAt &&
+    kit14Request.Contains("OhosHostKeystoreExecute(");
+bool kit14HostOk = kit14Engine && kit14Wiring && kit14Order;
+Console.WriteLine($"[verify] kit14 host huks engine={kit14Engine} wiring={kit14Wiring} order={kit14Order} source='{kit14KeystorePath ?? "<missing>"}' assert={kit14HostOk}");
+if (!kit14HostOk)
+{
+    throw new InvalidOperationException("the P2a-HUKS host keystore engine contract drifted");
+}
+
+string? kit14KeystoreCsPath = FindHostSource("OpenHarmonyKeystore.cs");
+string kit14KeystoreCs = kit14KeystoreCsPath is null ? string.Empty : File.ReadAllText(kit14KeystoreCsPath);
+string? kit14StoragePath = FindHostSource("OpenHarmonySecureStorage.cs");
+string kit14StorageCs = kit14StoragePath is null ? string.Empty : File.ReadAllText(kit14StoragePath);
+bool kit14Managed = kit14KeystoreCs.Contains("EntryPoint = \"ohos_host_keystore_available\"") &&
+    kit14KeystoreCs.Contains("EntryPoint = \"ohos_host_keystore_request\"") &&
+    kit14KeystoreCs.Contains("ExecuteAsync(\"delete\"") &&
+    kit14KeystoreCs.Contains("public static async Task<bool> DeleteKeyAsync") &&
+    kit14KeystoreCs.Contains("public static bool IsAvailable") &&
+    kit14StorageCs.Contains("\"maui.ohos.securestorage.v1.\"") &&
+    kit14StorageCs.Contains("PathHash") &&
+    kit14StorageCs.Contains("private const string KeystorePrefix = \"k1:\";") &&
+    kit14StorageCs.Contains("catch (FormatException)") &&
+    kit14StorageCs.Contains("public static bool IsHardwareBacked => OpenHarmonyKeystore.IsAvailable;") &&
+    kit14StorageCs.Contains("OpenHarmonyKeystore.DeleteKeyAsync(_alias)") &&
+    kit14StorageCs.Contains("the HUKS-backed key path failed") &&
+    kitPublicApi.Contains("Microsoft.Maui.Platform.OpenHarmonySecureStorage.IsHardwareBacked.get -> bool");
+Console.WriteLine($"[verify] kit14 managed bridge keystore={kit14KeystoreCsPath is not null} alias={kit14StorageCs.Contains("\"maui.ohos.securestorage.v1.\"")} isHardwareBacked={kit14StorageCs.Contains("IsHardwareBacked")} publicApi={kitPublicApi.Contains("OpenHarmonySecureStorage.IsHardwareBacked")} assert={kit14Managed}");
+if (!kit14Managed)
+{
+    throw new InvalidOperationException("the P2a-HUKS managed SecureStorage/keystore contract drifted");
+}
+
+// KIT14 degradation: off-device (no host library) the status is honest, the fallback keeps the
+// read/write/remove semantics, a malformed k1: payload reads as absent and RemoveAll never throws.
+string kit14StorePath = Path.Combine(Path.GetTempPath(), $"maui-kit14-{Guid.NewGuid():N}.dat");
+var kit14Store = new OpenHarmonySecureStorage(kit14StorePath);
+await kit14Store.SetAsync("kit14", "value");
+string? kit14Read = await kit14Store.GetAsync("kit14");
+bool kit14Removed = kit14Store.Remove("kit14");
+string? kit14AfterRemove = await kit14Store.GetAsync("kit14");
+// Seed a malformed k1: value with the store's own file key (the ciphertext path that would be
+// HUKS-sealed on a device): the base64 guard must read it as absent instead of throwing.
+byte[] kit14Key = File.ReadAllBytes(kit14StorePath + ".key");
+string kit14Encode(string text)
+{
+    byte[] bytes = System.Text.Encoding.UTF8.GetBytes(text);
+    for (int i = 0; i < bytes.Length; i++)
+    {
+        bytes[i] ^= kit14Key[i % kit14Key.Length];
+    }
+    return Convert.ToBase64String(bytes);
+}
+File.WriteAllText(kit14StorePath, kit14Encode("broken") + "|" + kit14Encode("k1:not-base64!") + "\n");
+string? kit14Malformed = await new OpenHarmonySecureStorage(kit14StorePath).GetAsync("broken");
+bool kit14OffDevice = !OpenHarmonySecureStorage.IsHardwareBacked;
+kit14Store.RemoveAll();
+bool kit14DegradeOk = kit14OffDevice && kit14Read == "value" && kit14Removed && kit14AfterRemove is null &&
+    kit14Malformed is null;
+Console.WriteLine($"[verify] kit14 degradation hardwareBacked={OpenHarmonySecureStorage.IsHardwareBacked} read='{kit14Read}' remove={kit14Removed} afterRemove={kit14AfterRemove ?? "<null>"} malformedK1={kit14Malformed ?? "<null>"} assert={kit14DegradeOk}");
+if (!kit14DegradeOk)
+{
+    throw new InvalidOperationException("the P2a-HUKS SecureStorage degradation contract drifted");
+}
+
 // KIT5: the host and managed halves of the second batch: the C ABI declarations, the NAPI
 // sink/notify names, the napi module table entries, the managed P/Invoke entry points with their
 // kit error-code maps, and the public API baseline entries. Map (R2-3) carries the overlay
@@ -5440,11 +5558,12 @@ if (!n22ShadowOk)
         $"the PI1 shadow contract drifted: draw={n22DrawShadowOk} mapper={n22MapperOk} renderer={n22RendererOk}");
 }
 
-// PI1-5: the SecureStorage file-key fallback note (reported once when HUKS is unavailable).
+// PI1-5: the SecureStorage file-key fallback note (reported once when the keystore path fails);
+// P2a-HUKS keeps the honest note wording while the HUKS-first engine owns the fast path.
 string? n23StoragePath = FindHostSource("OpenHarmonySecureStorage.cs");
 string n23Storage = n23StoragePath is null ? string.Empty : File.ReadAllText(n23StoragePath);
 bool n23StorageOk = n23Storage.Contains("OpenHarmonyStatus.Once(\"securestorage.filekey\",") &&
-    n23Storage.Contains("\"secure storage is using the per-install file key: HUKS is unavailable, values are obfuscated but not hardware-backed\");");
+    n23Storage.Contains("\"secure storage is using the per-install file key: the HUKS-backed key path failed, values are obfuscated but not hardware-backed\");");
 Console.WriteLine($"[verify] pi1 securestorage fallbackNote={n23StorageOk} source='{n23StoragePath ?? "<missing>"}' assert={n23StorageOk}");
 if (!n23StorageOk)
 {

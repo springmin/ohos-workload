@@ -1,6 +1,6 @@
 # Interaction regression suite (headless)
 
-The MAUI-on-OpenHarmony interaction harness (317 interaction checks, a 4-line fuzz tail, a
+The MAUI-on-OpenHarmony interaction harness (327 interaction checks, a 4-line fuzz tail, a
 frame-path performance budget and an accessibility publish-path budget). It builds the platform
 slice sources from the
 `maui-ohos` working tree and drives the app host without a device: touch/drag/pinch/pointer input,
@@ -49,7 +49,7 @@ allocation and jitter) budgets are exceeded.
 # (or the MauiSliceDir / HostingDll / OpenHarmonyGraphicsDll MSBuild properties) before building
 # elsewhere; an explicit -p: value wins over the environment and the absolute fallbacks.
 dotnet build -v:q
-dotnet bin/Debug/net11.0/verify.dll | grep -c '\[verify\]'   # expect 337 (324 checks + 4 fuzz + 1 frame perf + 8 a11y perf)
+dotnet bin/Debug/net11.0/verify.dll | grep -c '\[verify\]'   # expect 340 (327 checks + 4 fuzz + 1 frame perf + 8 a11y perf)
 ```
 
 The `interaction-regression` workflow (`.github/workflows/interaction-regression.yml`) runs the
@@ -60,7 +60,7 @@ suite on a GitHub runner as a real gate (on push to `master`, on pull requests a
 points `MAUI_SLICE_DIR` / `HOSTING_DLL` / `OPENHARMONY_GRAPHICS_DLL` at those roots, and fails the
 job unless the run exits 0, the suite's own `[suite]` contract line reports `assert=True` with at
 least the floor declared in `Program.cs`, both perf lines report `within=True`, and no `Unhandled`
-line is logged. The floor (317 = 337 - 20, the documented convention) lives only in `Program.cs`;
+line is logged. The floor (320 = 340 - 20, the documented convention) lives only in `Program.cs`;
 the workflow and `scripts/preflight.sh` both read the printed `[suite] checks=... floor=...` line
 instead of repeating a literal, so the two local/CI thresholds cannot drift apart.
 
@@ -169,7 +169,7 @@ jitter ~1.08x and 72,056 B/frame, and the a11y block reported ~0.3/0.5 ms for th
 ~0.07/0.28 ms for the publish pass (skip/republish). The post-batch run (commit a10b73e) reported
 avg 0.488 ms, p95 0.698 ms, jitter 1.43x and 3,720 B/frame, i.e. the ceiling is 3.72x the CI
 baseline. Every run ends with the `[suite]` contract line
-(`checks=337 total=337 floor=317 assert=True`), which the workflow and `scripts/preflight.sh`
+(`checks=340 total=340 floor=320 assert=True`), which the workflow and `scripts/preflight.sh`
 parse.
 
 ## Notes
@@ -179,7 +179,7 @@ parse.
 - The suite fails loudly (unhandled exception) when a slice change breaks startup or when an
   assertion for the gesture flows (including the drag-and-drop checks) does not hold; keep it at
   324 checks plus the 4 fuzz lines plus the 1 frame-perf line plus the 8 a11y-perf lines
-  (337 `[verify]` lines) when touching the platform slice. The total and the floor (total - 20)
+  (340 `[verify]` lines) when touching the platform slice. The total and the floor (total - 20)
   are declared in `Program.cs`; the run ends with a `[suite] checks=... floor=... assert=...`
   line and fails itself when the printed count is below the floor, so the CI job and
   `scripts/preflight.sh` do not repeat the threshold.
@@ -659,3 +659,20 @@ parse.
   device-locale fallback) without throwing. That is 3 lines: 334 + 3 = 337 = 324 interaction
   checks + 4 fuzz + 1 frame perf + 8 a11y perf; the workflow floor moves with the total
   (337 - 20 = 317).
+- P2a-HUKS (SecureStorage HUKS-first, 2026-09-27): three `[verify]` lines upgrade the
+  file-key fallback into a HUKS-first bridge. `kit14 host huks engine` pins
+  `host_keystore.c` (the AES-256-GCM session shape: nonce 12 / tag 16, HUKS_TAG_NONCE +
+  HUKS_TAG_AE_TAG, generate/encrypt/decrypt/delete ops, `/dev/urandom`, the
+  wipe-on-free path), the `libhuks_ndk.z.so` resolution and `OH_Huks_*` symbols in
+  `host_optional.c`, the `OH_Huks_` denylist entry (`host-deps.conf`), the new
+  `ohos_host_keystore_available` export contract entry, the CMake/build-host source list
+  and the HUKS-first order inside `ohos_host_keystore_request` (engine before the ArkTS
+  listener). `kit14 managed bridge` pins the managed side: the availability P/Invoke, the
+  delete op and `DeleteKeyAsync`/`IsAvailable`, the path-hashed
+  `maui.ohos.securestorage.v1.` alias, the `k1:` prefix, the base64 `FormatException`
+  guard, `IsHardwareBacked`, the `RemoveAll` key drop, the honest fallback note and the
+  `PublicAPI` baseline entry. `kit14 degradation` runs off-device: `IsHardwareBacked=false`,
+  the fallback read/write/remove keeps its semantics, a malformed `k1:` payload reads as
+  absent and `RemoveAll` never throws. That is 3 lines: 337 + 3 = 340 = 327 interaction
+  checks + 4 fuzz + 1 frame perf + 8 a11y perf; the workflow floor moves with the total
+  (340 - 20 = 320).
