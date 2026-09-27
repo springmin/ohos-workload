@@ -2334,6 +2334,41 @@ napi_value NotifyTheme(napi_env env, napi_callback_info info) {
     return undefined;
 }
 
+// ArkTS calls host.notifyAnimationReduce(isReduce) when the accessibility "reduce animations"
+// setting changes (1 = reduce, 0 = animations allowed). The managed side registers through
+// ohos_host_animation_reduce_set; MAUI's ticker and the slice's transitions gate on the flag.
+// The last value is remembered and replayed to a late listener, because the shell may report
+// the setting before the managed module finishes loading.
+static std::atomic<void (*)(int)> g_animation_reduce_listener{nullptr};
+static std::atomic<int> g_animation_reduce_value{-1};
+
+extern "C" void ohos_host_animation_reduce_set(void* callback) {
+    HostListenerStore(g_animation_reduce_listener, callback);
+    auto listener = HostListenerLoad(g_animation_reduce_listener);
+    int value = g_animation_reduce_value.load();
+    if (listener != nullptr && value >= 0) {
+        listener(value);
+    }
+}
+
+napi_value NotifyAnimationReduce(napi_env env, napi_callback_info info) {
+    size_t argc = 1;
+    napi_value argv[1] = {nullptr};
+    napi_get_cb_info(env, info, &argc, argv, nullptr, nullptr);
+    int32_t isReduce = 0;
+    if (argc >= 1) {
+        napi_get_value_int32(env, argv[0], &isReduce);
+    }
+    g_animation_reduce_value.store(isReduce != 0 ? 1 : 0);
+    auto listener = HostListenerLoad(g_animation_reduce_listener);
+    if (listener != nullptr) {
+        listener(isReduce != 0 ? 1 : 0);
+    }
+    napi_value undefined = nullptr;
+    napi_get_undefined(env, &undefined);
+    return undefined;
+}
+
 // Battery (Basic Services Kit): the ArkTS shell reports the batteryInfo snapshot through
 // host.notifyBattery("soc\tchargeState\tpluggedType\tpresent\tpowerMode") at page start and on
 // the battery/charging/power-save common events. The last payload is remembered and replayed
@@ -3785,6 +3820,7 @@ napi_value Init(napi_env env, napi_value exports) {
         {"notifyAvoidArea", nullptr, NotifyAvoidArea, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"notifySoftInputArea", nullptr, NotifySoftInputArea, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"notifyTheme", nullptr, NotifyTheme, nullptr, nullptr, nullptr, napi_default, nullptr},
+        {"notifyAnimationReduce", nullptr, NotifyAnimationReduce, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"notifyBattery", nullptr, NotifyBattery, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"notifyDisplay", nullptr, NotifyDisplay, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"notifyPickerResult", nullptr, NotifyPickerResult, nullptr, nullptr, nullptr, napi_default, nullptr},

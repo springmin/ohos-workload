@@ -513,6 +513,21 @@ interface HmsCoreSpeechKit {
   textToSpeech: HmsTtsModule;
 }
 
+// Reduce animations (accessibility, @since 23; P1a-ANIM). The kit is pulled in lazily and the
+// probe is defensive (typeof checks + try/catch), so a device whose framework predates the API
+// keeps the managed default and the compile stays compatible with the API-18 build config.
+// The shell reports the setting with host.notifyAnimationReduce(0/1); the managed side gates
+// MAUI's ticker and the slice's page/shared/control transitions on it.
+interface HmsAnimationReduceApi {
+  isAnimationReduceEnabledSync(): boolean;
+  onAnimationReduceStateChange(callback: (enabled: boolean) => void): void;
+  offAnimationReduceStateChange(callback?: (enabled: boolean) => void): void;
+}
+
+interface HmsAccessibilityKit {
+  accessibility: HmsAnimationReduceApi;
+}
+
 // Logging (audit ARKTS-S3): the shell logs through hilog with one domain/tag pair; the private
 // log helpers in the struct keep the %{public}s format so device logs stay readable.
 const DOMAIN = 0x0002;
@@ -688,6 +703,11 @@ struct Index {
   private hmsTtsEngine: HmsTtsEngine | undefined = undefined;
   private hmsTtsEngineLanguage: string = '';
   private hmsTtsPending: Map<string, number> = new Map();
+  // Reduce animations (accessibility; P1a-ANIM): the resolved API object and the cached probe
+  // failure. The native host replays the last reported value when the managed listener
+  // registers, so a registration race cannot lose the first notification.
+  private animationReduceApi: HmsAnimationReduceApi | undefined = undefined;
+  private animationReduceUnavailable: boolean = false;
   // Camera Kit is preloaded asynchronously (dynamic import) because the flashlight sink is
   // synchronous: the API surface the sink needs is cached as soon as the module resolves,
   // and the sink answers false while the module is not there yet (or is unavailable).
@@ -1393,6 +1413,71 @@ struct Index {
       this.hmsTtsUnavailable = true;
       this.logError(`[maui] CoreSpeechKit unavailable on this device: ${(ttsProbeError as Error).message}`);
     }
+  }
+
+  // Reduce animations (accessibility; P1a-ANIM): resolve @kit.AccessibilityKit lazily and use
+  // the animationReduce surface only when the runtime actually provides it (API 23+). The
+  // initial value is reported once, later changes follow through onAnimationReduceStateChange;
+  // the listener is unregistered with the page through the disposer ledger. A device/framework
+  // without the API (or without the BarrierFree.Core syscap) keeps the managed default and gets
+  // one warn log - the animation paths then behave exactly as before.
+  private async probeAnimationReduce(): Promise<void> {
+    if (this.animationReduceUnavailable || this.animationReduceApi !== undefined) {
+      return;
+    }
+    if (!canIUse('SystemCapability.BarrierFree.Accessibility.Core')) {
+      this.animationReduceUnavailable = true;
+      this.logWarn('[maui] animation reduce unavailable: the device reports no BarrierFree.Accessibility.Core syscap');
+      return;
+    }
+    const kitName: string = '@kit.AccessibilityKit';
+    try {
+      const kit = (await import(kitName)) as HmsAccessibilityKit;
+      const api = kit.accessibility;
+      if (api === undefined || typeof api.isAnimationReduceEnabledSync !== 'function' ||
+          typeof api.onAnimationReduceStateChange !== 'function') {
+        throw new Error('the resolved module has no animationReduce surface');
+      }
+      this.animationReduceApi = api;
+      this.reportAnimationReduce(undefined);
+      const listener = (enabled: boolean): void => {
+        this.reportAnimationReduce(enabled);
+      };
+      api.onAnimationReduceStateChange(listener);
+      this.trackDisposer((): void => {
+        try {
+          api.offAnimationReduceStateChange(listener);
+        } catch {
+          // The page is going away; a failed unregister is not actionable.
+        }
+      });
+      this.logInfo('[maui] animation reduce observation active');
+    } catch (reduceProbeError) {
+      this.animationReduceUnavailable = true;
+      this.logWarn(`[maui] animation reduce unavailable on this device: ${(reduceProbeError as Error).message}`);
+    }
+  }
+
+  // Reports the reduce-animations setting to the managed side. The value is read once at probe
+  // time when the caller has none; the native host remembers the last value and replays it when
+  // the managed listener registers, so a registration race cannot lose the first notification.
+  private reportAnimationReduce(enabled: boolean | undefined): void {
+    const api = this.animationReduceApi;
+    let reduce: boolean = enabled === true;
+    if (enabled === undefined) {
+      if (api === undefined) {
+        return;
+      }
+      try {
+        reduce = api.isAnimationReduceEnabledSync();
+      } catch (reduceReadError) {
+        this.logWarn(`[maui] animation reduce read failed: ${(reduceReadError as Error).message}`);
+        return;
+      }
+    }
+    this.hostCall('notifyAnimationReduce', typeof host !== 'undefined' && typeof host.notifyAnimationReduce === 'function', (): void => {
+      host.notifyAnimationReduce(reduce ? 1 : 0);
+    });
   }
 
   // CoreSpeechKit sink body (A2-TTS). op 0 create, op 1 speak, op 2 stop, op 3 locales,
@@ -4093,6 +4178,7 @@ struct Index {
     this.probeMapKit();
     this.probeLiveViewKit();
     this.probeTtsKit();
+    this.probeAnimationReduce();
   }
 
   // Picker result framing (managed OpenHarmonyPickerClient.Complete): a cancel/unavailable
