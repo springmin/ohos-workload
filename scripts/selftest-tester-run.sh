@@ -42,6 +42,13 @@
 #                  replacement) and AOT pack: A/B/C/D + restore run, C builds the variant hap and
 #                  interp=3(file) lands in run-c, D reads aot=1, both switch files are deleted and
 #                  summary keys (status/overlay/hap sha/restore) are asserted
+#   S18 a11y dry   --a11y-probe --dry-run: the 3b plan lists the uitest dump/click/read-back
+#                  commands, no report dir, only `list targets` reached the stub
+#   S19 a11y ok    --a11y-probe with uitest available: the probe dumps the layout, clicks the
+#                  text=A11Y button, pulls the dialog dump and archives a11y/selfcheck.txt
+#                  (status + node count), a11y/hilog-a11y.txt and summary a11y_* keys
+#   S20 a11y miss  FAKE_HDC_NO_UITEST=1: the missing tool is recorded as a11y_selfcheck=
+#                  failed(layout dump), failures=0 and the archive is still produced
 # Stub hdc surface (every subcommand tester-run.sh invokes): list targets | install -r <hap> |
 #   uninstall <bundle> | shell aa start -a EntryAbility -b <b> | shell aa force-stop <b> |
 #   shell pidof <b> | shell ps -ef
@@ -51,6 +58,8 @@
 #   | shell "cat /data/storage/el2/base/haps/entry/files/dotnet.marker 2>/dev/null"
 #   | shell "echo 1 > .../files/xwe.txt" | shell "echo 3 > .../files/interp.txt"
 #   | shell "rm -f .../files/xwe.txt" | shell "rm -f .../files/interp.txt"
+#   | shell "uitest dumpLayout -p <path>" | shell "uitest uiInput click <x> <y>"
+#   | file recv /data/local/tmp/tester-run-a11y*.json <local>
 #   `hdc -t <id>` prefixes are accepted. Every `shell` invocation is appended, joined the way
 #   hdc joins its argv, to <state>/device-shell.log (never executed): the S9 tests fail if a
 #   payload ever reaches that line. A hap whose basename contains `fail` is rejected with
@@ -62,7 +71,9 @@
 #   FAKE_HDC_MISSING_APPLIBS=1 fails the bundle libs ls; FAKE_HDC_MISSING_PAYLOAD=1 fails the
 #   files dir ls and the marker cat; FAKE_HDC_BOOTSTRAP_ERRORS=1 adds the device report §4/§7
 #   failure lines to the hilog stream; FAKE_HDC_RUNTIME_MODES=1 adds the non-default route lines
-#   (NativeAOT payload aot=1, interp=3 source=file). A stub `binary-sign-tool` in $WORK/bin
+#   (NativeAOT payload aot=1, interp=3 source=file); FAKE_HDC_NO_UITEST=1 makes `uitest` and the
+#   a11y `file recv` fail so the probe's missing-tool tolerance is asserted. A stub
+#   `binary-sign-tool` in $WORK/bin
 #   (prepended to PATH) answers `display-sign` with `code signature is not found`.
 # Kit under test: SELFTEST_KIT_DIR if set; else the local approved device-test-kit dir when it
 #   looks complete; else a synthetic minimal kit (module.json + dummy haps + minimal
@@ -73,7 +84,7 @@
 # Exit: 0 = all checks passed; 1 = at least one check failed (work dir kept for triage).
 set -u
 
-SELFTEST_VERSION="8 (2026-09-27)"
+SELFTEST_VERSION="9 (2026-09-27)"
 
 log()  { printf '[%s] %s\n' "$(date '+%H:%M:%S')" "$*"; }
 section() { printf '\n=== %s ===\n' "$*"; }
@@ -445,6 +456,33 @@ case "$cmd" in
         printf 'uninstall bundle successfully.\n'
         exit 0
         ;;
+    file)
+        # `file recv <remote> <local>`: the a11y probe pulls the uitest layout dumps this way.
+        if [ "${2:-}" = "recv" ]; then
+            _remote="${3:-}"; _local="${4:-}"
+            case "$_remote" in
+                */tester-run-a11y.json|*/tester-run-a11y-dialog.json)
+                    if [ "${FAKE_HDC_NO_UITEST:-0}" = 1 ]; then
+                        printf 'file recv: stat %s: No such file or directory\n' "$_remote" >&2
+                        exit 1
+                    fi
+                    # The dialog dump is produced once the probe clicked the A11Y button
+                    # (state/uitest-clicked); both paths then carry the self-check readings.
+                    if [ -f "$STATE/uitest-clicked" ] || [ "${_remote##*/}" = "tester-run-a11y-dialog.json" ]; then
+                        printf '%s\n' '{"attributes":{"bounds":"[200,900][880,1440]","text":"Accessibility self-check\naccessibilityStatus: 1 (attached - expected)\naccessibilityNodeCount: 402","type":"Text"},"children":[{"attributes":{"bounds":"[700,1440][880,1500]","text":"OK","type":"Button"}}]}' > "$_local"
+                    else
+                        printf '%s\n' '{"attributes":{"bounds":"[0,0][1080,2340]","text":"","type":"root"},"children":[{"attributes":{"bounds":"[4,2300][48,2324]","text":"A11Y","type":"Button"}},{"attributes":{"bounds":"[40,40][1040,200]","text":"Tap the counter","type":"Text"}}]}' > "$_local"
+                    fi
+                    printf 'FileTransfer finish, Size=%s\n' "$(wc -c < "$_local" | tr -d ' ')"
+                    exit 0
+                    ;;
+            esac
+            printf 'file recv failed: %s\n' "$_remote" >&2
+            exit 1
+        fi
+        printf 'stub hdc: UNHANDLED file %s\n' "$*" >&2
+        exit 1
+        ;;
     shell)
         shift
         _cmd="$*"
@@ -556,6 +594,30 @@ KMSG_EOF
                 printf 'UID        PID  PPID  C STIME TTY          TIME CMD\n'
                 printf 'root         1     0  0 00:00 ?        00:00:00 init\n'
                 exit 0
+                ;;
+            uitest)
+                # The a11y probe: dumpLayout writes a fixture pulled by `file recv`; uiInput
+                # click marks the state that flips the dump to the self-check dialog fixture.
+                if [ "${FAKE_HDC_NO_UITEST:-0}" = 1 ]; then
+                    printf 'uitest: command not found\n' >&2
+                    exit 1
+                fi
+                _u="${2:-}"
+                case "$_u" in
+                    dumpLayout)
+                        printf 'DumpLayout saved to: %s\n' "${4:-<path>}"
+                        exit 0
+                        ;;
+                    uiInput)
+                        case "${3:-}" in
+                            click) : > "$STATE/uitest-clicked" ;;
+                        esac
+                        printf 'uitest ok\n'
+                        exit 0
+                        ;;
+                esac
+                printf 'stub hdc: UNHANDLED uitest %s\n' "$*" >&2
+                exit 1
                 ;;
             param)
                 _k="${3:-}"
@@ -1672,6 +1734,66 @@ assert_file "S17 overlay stub call log" "$SELFTEST_OVERLAY_LOG"
 assert_contains "S17 overlay stub called with the pack libclrinterpreter" "ohos-interpreter-pack/native/libclrinterpreter.so" "$SELFTEST_OVERLAY_LOG"
 assert_contains "S17 overlay stub called with the layout dir" "dir=" "$SELFTEST_OVERLAY_LOG"
 assert_scenario_sandbox "S17"
+
+# ---- S18: a11y dry-run plan ----------------------------------------------------------
+section "S18 --a11y-probe dry-run plan (uitest commands listed, no device commands)"
+run_tester S18 "" --kit-dir "$KIT" --a11y-probe --dry-run --out "$WORK/out-a11y-dry"
+assert_eq "S18 exit code 0 (log: $LOGS/S18.log)" "0" "$RC"
+assert_contains "S18 plan has the a11y step" "== 3b/5 无障碍自检（--a11y-probe） ==" "$LOGS/S18.log"
+assert_contains "S18 plan shows the layout dump" "uitest dumpLayout -p /data/local/tmp/tester-run-a11y.json" "$LOGS/S18.log"
+assert_contains "S18 plan lists the hilog a11y filter" "a11y/hilog-a11y.txt" "$LOGS/S18.log"
+assert_not_exists "S18 dry-run creates no report dir" "$WORK/out-a11y-dry"
+assert_eq "S18 stub saw only list targets" "1" "$(wc -l < "$STATE_DIR/S18/calls.log" | tr -d ' ')"
+assert_scenario_sandbox "S18"
+
+# ---- S19: a11y self-check collected (uitest available) --------------------------------
+section "S19 --a11y-probe self-check collected (uitest dump + click + dialog read-back)"
+run_tester S19 "FAKE_HDC_PIDOF_ALIVE_CALLS=99" --kit-dir "$KIT" --install --start --capture 1 \
+    --a11y-probe --out "$WORK/out-a11y"
+assert_eq "S19 exit code 0 (log: $LOGS/S19.log)" "0" "$RC"
+ARCHIVE_S19="$(report_archive out-a11y)"
+assert_file "S19 report archive produced" "$ARCHIVE_S19"
+if prepare_report "$ARCHIVE_S19" "$WORK/x-a11y" out-a11y; then
+    S="$REPORT/summary.txt"
+    assert_eq "S19 summary a11y_selfcheck=ok" "ok" "$(sum_val "$S" a11y_selfcheck)"
+    assert_eq "S19 summary a11y_capture=ok" "ok" "$(sum_val "$S" a11y_capture)"
+    assert_eq "S19 summary a11y_provider_status=1" "1" "$(sum_val "$S" a11y_provider_status)"
+    assert_eq "S19 summary a11y_node_count=402" "402" "$(sum_val "$S" a11y_node_count)"
+    assert_matches "S19 summary a11y_lines is positive" '^a11y_lines=[1-9][0-9]*$' "$S"
+    assert_eq "S19 summary failures=0" "0" "$(sum_val "$S" failures)"
+    assert_file "S19 selfcheck report" "$REPORT/a11y/selfcheck.txt"
+    assert_contains "S19 selfcheck has the status" "accessibilityStatus: 1 (attached - expected)" "$REPORT/a11y/selfcheck.txt"
+    assert_contains "S19 selfcheck has the node count" "accessibilityNodeCount: 402" "$REPORT/a11y/selfcheck.txt"
+    assert_file "S19 layout-before json archived" "$REPORT/a11y/layout-before.json"
+    assert_file "S19 dialog layout json archived" "$REPORT/a11y/selfcheck-layout.json"
+    assert_file "S19 a11y hilog filter archived" "$REPORT/a11y/hilog-a11y.txt"
+    assert_contains "S19 hilog-a11y has the provider line" "accessibility provider status=1" "$REPORT/a11y/hilog-a11y.txt"
+else
+    bad "S19 report archive could not be extracted ($ARCHIVE_S19)"
+fi
+assert_contains "S19 stub saw the layout dump" "shell uitest dumpLayout -p /data/local/tmp/tester-run-a11y.json" "$STATE_DIR/S19/calls.log"
+assert_contains "S19 stub saw the A11Y click" "shell uitest uiInput click 26 2312" "$STATE_DIR/S19/calls.log"
+assert_contains "S19 stub saw the dialog OK click" "shell uitest uiInput click 790 1470" "$STATE_DIR/S19/calls.log"
+assert_scenario_sandbox "S19"
+
+# ---- S20: a11y self-check tolerated when uitest is missing ----------------------------
+section "S20 --a11y-probe without uitest (recorded, not a failure)"
+run_tester S20 "FAKE_HDC_PIDOF_ALIVE_CALLS=99 FAKE_HDC_NO_UITEST=1" --kit-dir "$KIT" --install --start \
+    --capture 1 --a11y-probe --out "$WORK/out-a11y-missing"
+assert_eq "S20 exit code 0 (log: $LOGS/S20.log)" "0" "$RC"
+ARCHIVE_S20="$(report_archive out-a11y-missing)"
+assert_file "S20 report archive produced" "$ARCHIVE_S20"
+if prepare_report "$ARCHIVE_S20" "$WORK/x-a11y-missing" out-a11y-missing; then
+    S="$REPORT/summary.txt"
+    assert_eq "S20 summary a11y_selfcheck=failed(layout dump)" "failed(layout dump)" "$(sum_val "$S" a11y_selfcheck)"
+    assert_eq "S20 summary a11y_capture=ok" "ok" "$(sum_val "$S" a11y_capture)"
+    assert_eq "S20 summary a11y_node_count=<unavailable>" "<unavailable>" "$(sum_val "$S" a11y_node_count)"
+    assert_eq "S20 summary a11y_provider_status=1" "1" "$(sum_val "$S" a11y_provider_status)"
+    assert_eq "S20 summary failures=0" "0" "$(sum_val "$S" failures)"
+else
+    bad "S20 report archive could not be extracted ($ARCHIVE_S20)"
+fi
+assert_scenario_sandbox "S20"
 
 # ---- global: nothing outside the temp dir --------------------------------------------
 section "global: no state outside the temp dir"

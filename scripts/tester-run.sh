@@ -53,7 +53,7 @@ set -e
 
 # Bumped with every release repack (随发布重打包递增): the kit release notes' "Bundled
 # tester-run.sh" revision.
-SCRIPT_VERSION="10 (2026-09-27)"
+SCRIPT_VERSION="11 (2026-09-27)"
 
 log()  { printf '[%s] %s\n' "$(date '+%H:%M:%S')" "$*"; }
 warn() { printf '[%s] WARN: %s\n' "$(date '+%H:%M:%S')" "$*" >&2; }
@@ -81,6 +81,11 @@ usage() {
                              与 P1-P4 相同：逐个 装 -> 启 -> 抓 hilog+kmsg；每个的原始窗口存为
                              probes/extra-<名>-hilog.txt，命中行并入 probes/probe-all-lines.txt；
                              可重复给出，或用逗号分隔多个目录（重复目录只处理一次）
+  --a11y-probe               可选采集：应用运行时用设备 uitest 点按壳左下角 A11Y 自检按钮，
+                             读回弹窗的 accessibilityStatus/accessibilityNodeCount，并把所有
+                             hilog 窗口里的无障碍行都归档到 a11y/（缺失容忍：无 uitest/无
+                             python3/应用未运行只记 a11y_selfcheck，不算失败；需应用在运行，
+                             建议与 --start --capture 同用）
   --mode-matrix              一键运行时模式矩阵（一条命令跑完 JIT/AOT/解释器取证）：
                              Run A JIT stock -> Run B xwe.txt=1 A/B ->（可选）Run C 解释器
                              ->（可选）Run D AOT；每个 Run 是独立子轮，失败不中断其余（!cancelled）。
@@ -116,6 +121,12 @@ usage() {
   kit 侧 hap 自检（本地，独立于 verify-kit）：每个 kit hap 的 resources.index 有无与大小、
   libs/arm64-v8a 计数、ets/modules.abc 头版本（PANDA 头部 0x0c 起 4 字节）-> meta/kit-selfcheck.txt
   （≤10 行）；kit_index_ok 写入 summary。dry-run 只打印不落盘。
+  无障碍自检（--a11y-probe；缺失容忍）：应用运行时 `uitest dumpLayout` -> 定位 text=A11Y 的
+  按钮（左下角 44x24）-> `uitest uiInput click` -> 再 dump 读回弹窗文本，归档
+  a11y/layout-before.json、a11y/selfcheck-layout.json、a11y/selfcheck.txt（accessibilityStatus /
+  accessibilityNodeCount）与 a11y/click.txt；所有已捕获 hilog 窗口再过滤
+  accessibility|a11y|announce 等 -> a11y/hilog-a11y.txt；a11y_capture/a11y_lines/
+  a11y_provider_status/a11y_node_count/a11y_selfcheck 写入 summary（失败只记录、不计入 failures）。
   --compare-lib <path>       本机对照一个能跑的第三方 app 的 lib：若 PATH 上有
                              binary-sign-tool，就执行 display-sign -inFile <path> 并收下输出
 
@@ -148,6 +159,8 @@ usage() {
   # 6) 一键运行时模式矩阵：JIT A/B + 解释器 + AOT（每个 Run 录 CAPTURE_SECS 秒，一轮四态取证）
   sh tester-run.sh --kit-tar ./device-test-kit.tar.gz --aot-haps ./aot-haps.tar.gz \
       --interp-pack ./ohos-interpreter-pack.tar.gz --capture 60
+  # 7) 无障碍自检采集：启动后录 30 秒，自动点 A11Y 自检并归档 a11y/
+  sh tester-run.sh --kit-dir ./device-test-kit --install --start --capture 30 --a11y-probe
 EOF
 }
 
@@ -166,6 +179,7 @@ KIT_TAR=""
 EXPECT_TREE=""
 HAPS=""
 COMPARE_LIB=""
+A11Y_PROBE=0
 # Runtime-mode matrix (--mode-matrix) + its optional assets.
 MODE_MATRIX=0
 AOT_HAPS_TAR=""
@@ -191,6 +205,9 @@ FILTER_BOOTSTRAP_RE='GetRawFileContent|bootstrap failed|bootstrap retry|Business
 FILTER_BOOTSTRAP_ERR_RE='bootstrap failed|bootstrap .*retry'
 FILTER_RAWFILE_ERR_RE='GetRawFileContent|BusinessError|900002|900003|ZIP entry|destination path'
 FILTER_LIBLOAD_ERR_RE='Load native module failed|symbol not found|cannot find library|MUSL-LDSO|check ns accessible'
+# Accessibility evidence (--a11y-probe): the provider status line, the host's attach/announce
+# warnings and any screen-reader plumbing that carries "accessib"/"a11y" in the tag or text.
+FILTER_A11Y_RE='accessibility|Accessibility|a11y|A11Y|screen reader|screenReader|announce'
 # App sandbox files dir: dotnet/ payload + dotnet.marker (read-only, absence tolerated).
 DEV_FILES_DIR='/data/storage/el2/base/haps/entry/files'
 DEV_KEYS="const.product.model const.product.brand const.product.name const.product.devicetype const.product.software.version const.ohos.apiversion const.ohos.fullname const.product.cpu.abilist const.build.characteristics"
@@ -240,6 +257,11 @@ PAYLOAD_PRESENT="<unavailable>"
 PAYLOAD_FILES_LINES=0
 PAYLOAD_MARKER="<unavailable>"
 KIT_INDEX_OK="<unavailable>"
+A11Y_CAPTURE="not_requested"
+A11Y_LINES=0
+A11Y_PROVIDER_STATUS="<unavailable>"
+A11Y_NODE_COUNT="<unavailable>"
+A11Y_SELFCHECK="not_requested"
 
 while [ $# -gt 0 ]; do
     case "$1" in
@@ -271,6 +293,7 @@ $1"; fi
             [ $# -gt 0 ] || { warn "--compare-lib 需要一个 .so 路径"; usage >&2; exit 2; }
             COMPARE_LIB="$1"
             ;;
+        --a11y-probe) A11Y_PROBE=1 ;;
         --install)   INSTALL=1 ;;
         --uninstall) UNINSTALL=1 ;;
         --start)     START=1 ;;
@@ -428,8 +451,8 @@ else
     # The matrix orchestrates its own install/uninstall/start/capture rounds; the plain
     # action flags would be ignored (--capture seconds still apply), so say so instead of
     # surprising the caller.
-    if [ "$INSTALL" = 1 ] || [ "$UNINSTALL" = 1 ] || [ "$START" = 1 ] || [ -n "$PROBES_DIR" ] || [ -n "$EXTRA_PROBES_DIRS" ]; then
-        warn "--mode-matrix 自带 安装/卸载/启动/采集 编排；--install/--uninstall/--start/--probes/--extra-probes 在矩阵下不额外生效（--capture 秒数仍生效）"
+    if [ "$INSTALL" = 1 ] || [ "$UNINSTALL" = 1 ] || [ "$START" = 1 ] || [ -n "$PROBES_DIR" ] || [ -n "$EXTRA_PROBES_DIRS" ] || [ "$A11Y_PROBE" = 1 ]; then
+        warn "--mode-matrix 自带 安装/卸载/启动/采集 编排；--install/--uninstall/--start/--probes/--extra-probes/--a11y-probe 在矩阵下不额外生效（--capture 秒数仍生效）"
     fi
 fi
 
@@ -437,7 +460,7 @@ fi
 KMSG_RAW="$OUT/kmsg/kmsg.log"
 
 ACTIONS=0
-if [ "$INSTALL" = 1 ] || [ "$UNINSTALL" = 1 ] || [ "$START" = 1 ] || [ "$CAPTURE" = 1 ] || [ -n "$PROBES_DIR" ] || [ -n "$EXTRA_PROBES_DIRS" ] || [ "$MODE_MATRIX" = 1 ]; then
+if [ "$INSTALL" = 1 ] || [ "$UNINSTALL" = 1 ] || [ "$START" = 1 ] || [ "$CAPTURE" = 1 ] || [ -n "$PROBES_DIR" ] || [ -n "$EXTRA_PROBES_DIRS" ] || [ "$A11Y_PROBE" = 1 ] || [ "$MODE_MATRIX" = 1 ]; then
     ACTIONS=1
 fi
 
@@ -539,7 +562,7 @@ if [ -n "$REASON" ]; then
         warn "无可用设备：$REASON"
         warn "  hdc list targets 输出：${TARGETS:-<空>}"
         warn "  请连接设备（已开 USB 调试）或用 hdc tconn <ip:port> 连接，再用 --device <id> 指定目标。"
-        warn "  已拒绝执行设备操作：--install / --uninstall / --start / --capture / --probes / --extra-probes / --mode-matrix 都不会执行。"
+        warn "  已拒绝执行设备操作：--install / --uninstall / --start / --capture / --probes / --extra-probes / --a11y-probe / --mode-matrix 都不会执行。"
         exit 3
     else
         warn "无可用设备：$REASON"
@@ -1755,6 +1778,128 @@ filter_append() {
     fi
 }
 
+# ---- accessibility self-check probe (--a11y-probe) -----------------------------------
+# Evidence-only, missing-tolerant: taps the shell's bottom-left A11Y button through the
+# device's `uitest` and reads the dialog's accessibilityStatus/accessibilityNodeCount out of
+# a second layout dump. The managed surface is a native canvas, but the button and the
+# dialog are ArkUI nodes, so uitest sees both. Any failure (no uitest, no python3, app not
+# running, dump refused) only lands in a11y_selfcheck - it never fails the round.
+A11Y_DEV_LAYOUT="/data/local/tmp/tester-run-a11y"
+A11Y_BUTTON_TEXT="A11Y"
+
+a11y_layout_dump() {
+    # $1 = local json path, $2 = device json path; non-zero when no usable dump landed
+    _ald_local="$1"; _ald_dev="$2"
+    rm -f "$_ald_local" "$_ald_local.stdout"
+    hdc_cmd shell uitest dumpLayout -p "$_ald_dev" > "$_ald_local.stdout" 2>&1 || true
+    rm -f "$_ald_local"
+    hdc_cmd file recv "$_ald_dev" "$_ald_local" >/dev/null 2>&1 || true
+    if [ ! -s "$_ald_local" ] && grep -q '"attributes"' "$_ald_local.stdout" 2>/dev/null; then
+        # Some builds print the JSON to stdout instead of writing the -p file.
+        sed -n '/^[[:space:]]*{/,$p' "$_ald_local.stdout" > "$_ald_local" 2>/dev/null || true
+    fi
+    [ -s "$_ald_local" ]
+}
+
+a11y_layout_find() {
+    # $1 = local json, $2 = exact node text; prints "x y" of the node bounds centre when found
+    command -v python3 >/dev/null 2>&1 || return 0
+    python3 - "$1" "$2" <<'PY' 2>/dev/null || true
+import json, re, sys
+try:
+    with open(sys.argv[1], encoding='utf-8') as fh:
+        tree = json.load(fh)
+except Exception:
+    sys.exit(0)
+stack = [tree]
+while stack:
+    node = stack.pop()
+    if isinstance(node, list):
+        stack.extend(node)
+        continue
+    if not isinstance(node, dict):
+        continue
+    attrs = node.get('attributes') if isinstance(node.get('attributes'), dict) else node
+    text = attrs.get('text')
+    bounds = attrs.get('bounds')
+    if text == sys.argv[2] and isinstance(bounds, str):
+        nums = re.findall(r'-?\d+\s*,\s*-?\d+', bounds)
+        if len(nums) >= 2:
+            x1, y1 = (int(v) for v in nums[0].split(','))
+            x2, y2 = (int(v) for v in nums[1].split(','))
+            print('%d %d' % ((x1 + x2) // 2, (y1 + y2) // 2))
+            break
+    children = node.get('children')
+    if isinstance(children, list):
+        stack.extend(children)
+PY
+}
+
+a11y_extract_dialog() {
+    # $1 = local json, $2 = report file; keeps only the self-check readings (JSON-escaped text)
+    _aed_json="$1"; _aed_dst="$2"
+    : > "$_aed_dst"
+    if [ -s "$_aed_json" ]; then
+        grep -o 'accessibilityStatus: [^"\\]*' "$_aed_json" >> "$_aed_dst" 2>/dev/null || true
+        grep -o 'accessibilityNodeCount: [0-9][0-9]*' "$_aed_json" >> "$_aed_dst" 2>/dev/null || true
+    fi
+    [ -s "$_aed_dst" ]
+}
+
+a11y_selfcheck_probe() {
+    mkdir -p "$OUT/a11y"
+    A11Y_SELFCHECK="attempted"
+    if ! proc_alive "$BUNDLE" >/dev/null 2>&1; then
+        A11Y_SELFCHECK="skipped(app not running)"
+        record "a11y_selfcheck=$A11Y_SELFCHECK"
+        warn "   --a11y-probe: 应用未在运行，跳过自检（与 --start/--capture 同用）"
+        return 0
+    fi
+    if ! command -v python3 >/dev/null 2>&1; then
+        A11Y_SELFCHECK="skipped(python3 missing)"
+        record "a11y_selfcheck=$A11Y_SELFCHECK"
+        warn "   --a11y-probe: 本机无 python3，无法定位 A11Y 按钮（可用 dump 原文人工读取）"
+        return 0
+    fi
+    _a11y_before="$OUT/a11y/layout-before.json"
+    _a11y_after="$OUT/a11y/selfcheck-layout.json"
+    if ! a11y_layout_dump "$_a11y_before" "$A11Y_DEV_LAYOUT.json"; then
+        A11Y_SELFCHECK="failed(layout dump)"
+        record "a11y_selfcheck=$A11Y_SELFCHECK"
+        warn "   --a11y-probe: uitest dumpLayout 未产出布局（设备可能无 uitest）"
+        return 0
+    fi
+    _a11y_xy="$(a11y_layout_find "$_a11y_before" "$A11Y_BUTTON_TEXT")"
+    if [ -z "$_a11y_xy" ]; then
+        A11Y_SELFCHECK="failed(button not found)"
+        record "a11y_selfcheck=$A11Y_SELFCHECK"
+        warn "   --a11y-probe: 布局里没有 text=$A11Y_BUTTON_TEXT 的按钮（可能不在前台）"
+        return 0
+    fi
+    # Two coordinates, intentionally word-split for the device command.
+    # shellcheck disable=SC2086
+    hdc_cmd shell uitest uiInput click $_a11y_xy > "$OUT/a11y/click.txt" 2>&1 || true
+    sleep 2
+    if a11y_layout_dump "$_a11y_after" "$A11Y_DEV_LAYOUT-dialog.json" \
+        && a11y_extract_dialog "$_a11y_after" "$OUT/a11y/selfcheck.txt"; then
+        A11Y_SELFCHECK="ok"
+        log "   --a11y-probe: 自检读数 -> $OUT/a11y/selfcheck.txt（$(head -n1 "$OUT/a11y/selfcheck.txt" 2>/dev/null)）"
+    else
+        A11Y_SELFCHECK="failed(dialog)"
+        warn "   --a11y-probe: 第二次布局里没有自检文本（弹窗可能未开）"
+    fi
+    # Dismiss the dialog so the round continues where it was: its OK button, else BACK.
+    _a11y_ok="$(a11y_layout_find "$_a11y_after" "OK" 2>/dev/null || true)"
+    if [ -n "$_a11y_ok" ]; then
+        # shellcheck disable=SC2086
+        hdc_cmd shell uitest uiInput click $_a11y_ok >/dev/null 2>&1 || true
+    else
+        hdc_cmd shell uitest uiInput keyEvent 2 >/dev/null 2>&1 || true
+    fi
+    record "a11y_selfcheck=$A11Y_SELFCHECK"
+    return 0
+}
+
 # ---- steps 2 + 3: start / capture ----------------------------------------------------
 if [ "$START" = 0 ] && [ "$CAPTURE" = 0 ]; then
     log "== 2/5 启动（--start） · 3/5 hilog 录制（--capture） =="
@@ -1824,6 +1969,22 @@ else
     record "capture_result=ok"
     record "hilog_full_lines=$(line_count "$OUT/hilog/hilog-full.txt")"
     record "hilog_filtered_lines=$CAPTURE_LINES"
+fi
+
+# ---- step 3b: accessibility self-check (--a11y-probe) --------------------------------
+# Runs right after start/capture (main app still foreground, before the probe haps) so one
+# tap opens the shell's self-check dialog. Per-step tolerances live in the helper above.
+if [ "$A11Y_PROBE" = 1 ]; then
+    log "== 3b/5 无障碍自检（--a11y-probe） =="
+    if [ "$DO_DEVICE" = 0 ]; then
+        log "   [dry-run] 将执行: $(hdc_show) shell uitest dumpLayout -p $A11Y_DEV_LAYOUT.json"
+        log "   [dry-run]          -> 定位 text=A11Y 按钮中心 -> $(hdc_show) shell uitest uiInput click <x y>"
+        log "   [dry-run]          -> 再 dump 并读回 accessibilityStatus/accessibilityNodeCount -> a11y/selfcheck.txt"
+        A11Y_SELFCHECK="skipped(dry-run)"
+        record "a11y_selfcheck=$A11Y_SELFCHECK"
+    else
+        a11y_selfcheck_probe
+    fi
 fi
 
 # ---- step 4: probes ------------------------------------------------------------------
@@ -2014,6 +2175,9 @@ if [ "$DO_DEVICE" = 0 ]; then
     log "   [dry-run] 将采集 execmem/运行时路由证据（FIX-XWE/R2-SHELL-EXT）: hilog 过滤（OHOS_DOTNET probe:/xwe=/aot=/interp=）-> hilog/hilog-execmem.txt（summary: aot_route/interp_mode）"
     log "   [dry-run] 将采集 bootstrap/rawfile 失败特征: hilog 再过滤 -> hilog/hilog-bootstrap.txt + summary 计数"
     log "   [dry-run] 将采集 payload 状态: ls -l $DEV_FILES_DIR/ + 读一行 dotnet.marker -> device/payload-*.txt"
+    if [ "$A11Y_PROBE" = 1 ]; then
+        log "   [dry-run] 将采集无障碍证据（--a11y-probe）: 自检读数 a11y/selfcheck.txt + hilog 过滤 a11y/hilog-a11y.txt（summary: a11y_*）"
+    fi
     log "   [dry-run] kit hap 自检已在上方打印；设备轮会写入 meta/kit-selfcheck.txt"
     if [ -n "$COMPARE_LIB" ]; then
         log "   [dry-run] 本地对照: binary-sign-tool display-sign -inFile $COMPARE_LIB（若工具在 PATH 上）"
@@ -2084,6 +2248,10 @@ else
     : > "$OUT/hilog/hilog-applib.txt"
     : > "$OUT/hilog/hilog-dlopen.txt"
     : > "$OUT/hilog/hilog-execmem.txt"
+    if [ "$A11Y_PROBE" = 1 ]; then
+        mkdir -p "$OUT/a11y"
+        : > "$OUT/a11y/hilog-a11y.txt"
+    fi
     _al_seen=0
     for _f in "$OUT/hilog/hilog-full.txt" "$OUT/probes"/*-hilog.txt; do
         [ -s "$_f" ] || continue
@@ -2091,6 +2259,9 @@ else
         filter_append "$FILTER_APPLIB_RE" "$_f" "$OUT/hilog/hilog-applib.txt"
         filter_append "$FILTER_DLOPEN_RE" "$_f" "$OUT/hilog/hilog-dlopen.txt"
         filter_append "$FILTER_EXECMEM_RE" "$_f" "$OUT/hilog/hilog-execmem.txt"
+        if [ "$A11Y_PROBE" = 1 ]; then
+            filter_append "$FILTER_A11Y_RE" "$_f" "$OUT/a11y/hilog-a11y.txt"
+        fi
     done
     if [ "$_al_seen" = 1 ]; then
         APPLIB_RESULT="ok"
@@ -2113,6 +2284,23 @@ else
         log "   app-lib 路径 -> $OUT/hilog/hilog-applib.txt（${APPLIB_LINES} 行）/ dlopen -> $OUT/hilog/hilog-dlopen.txt（${DLOPEN_LINES} 行）/ execmem 路由 -> $OUT/hilog/hilog-execmem.txt（${EXECMEM_LINES} 行；aot_route=$AOT_ROUTE interp_mode=$INTERP_MODE）"
     else
         warn "   app-lib 路径证据未采集（本轮没有 hilog 录制窗口）"
+    fi
+
+    # ---- accessibility evidence (--a11y-probe) ------------------------------------------
+    # Same window set as the app-lib greps. The provider status comes from the managed
+    # "[maui] accessibility provider status=N" line; the node count from the self-check dump
+    # the step-3b probe archived (both optional evidence, never scored as failures).
+    if [ "$A11Y_PROBE" = 1 ]; then
+        if [ "$_al_seen" = 1 ]; then A11Y_CAPTURE="ok"; else A11Y_CAPTURE="not_captured"; fi
+        A11Y_LINES="$(line_count "$OUT/a11y/hilog-a11y.txt")"
+        _a11y_ps="$(sed -n 's/.*accessibility provider status=\([0-9][0-9]*\).*/\1/p' "$OUT/a11y/hilog-a11y.txt" 2>/dev/null | tail -n1)"
+        if [ -n "$_a11y_ps" ]; then A11Y_PROVIDER_STATUS="$_a11y_ps"; else A11Y_PROVIDER_STATUS="<unavailable>"; fi
+        _a11y_nc="$(sed -n 's/.*accessibilityNodeCount: *\([0-9][0-9]*\).*/\1/p' "$OUT/a11y/selfcheck.txt" 2>/dev/null | tail -n1)"
+        if [ -n "$_a11y_nc" ]; then A11Y_NODE_COUNT="$_a11y_nc"; else A11Y_NODE_COUNT="<unavailable>"; fi
+        if [ "$A11Y_LINES" -eq 0 ]; then
+            warn "   未见无障碍相关 hilog 行（provider status/宿主告警；保留空证据）"
+        fi
+        log "   a11y -> $OUT/a11y/（lines=$A11Y_LINES provider_status=$A11Y_PROVIDER_STATUS node_count=$A11Y_NODE_COUNT selfcheck=$A11Y_SELFCHECK）"
     fi
 
     # ---- bootstrap/rawfile failure signatures (device report §4; an empty result is fine) ----
@@ -2278,6 +2466,12 @@ else
         printf 'payload_files=%s\n' "$PAYLOAD_FILES_LINES"
         printf 'payload_marker=%s\n' "$PAYLOAD_MARKER"
         printf 'kit_index_ok=%s\n' "$KIT_INDEX_OK"
+        if [ "$A11Y_PROBE" = 1 ]; then
+            printf 'a11y_capture=%s\n' "$A11Y_CAPTURE"
+            printf 'a11y_lines=%s\n' "$A11Y_LINES"
+            printf 'a11y_provider_status=%s\n' "$A11Y_PROVIDER_STATUS"
+            printf 'a11y_node_count=%s\n' "$A11Y_NODE_COUNT"
+        fi
         printf 'xpm_mode=%s\n' "$XPM_MODE"
         printf 'verity_require_signatures=%s\n' "$VERITY_REQ"
         printf 'soinfosegment_hap=%s\n' "$SOINFO_HAP"
@@ -2321,6 +2515,9 @@ log "        （邮件/IM/工单）；GitHub 用户可附到 springmin/sdk-ohos 
 log "        归档内已有：hilog/（含 applib/dlopen/execmem 路由/bootstrap 过滤）、kmsg/、probes/、meta/module.json、"
 log "        meta/kit-selfcheck.txt、device/udid.txt、device/app-libs-arm64.txt、"
 log "        device/payload-files.txt、device/payload-marker.txt、summary.txt。"
+if [ "$A11Y_PROBE" = 1 ]; then
+    log "        a11y/（--a11y-probe：selfcheck.txt、selfcheck-layout.json、hilog-a11y.txt）。"
+fi
 if [ "$FAILURES" -gt 0 ]; then
     warn "本轮有 $FAILURES 项未通过：详情见 $OUT/summary.txt"
     exit 1
