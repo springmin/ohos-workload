@@ -56,8 +56,8 @@ permissions:
 # routing: onCreate/onNewWant -> notifyActivation -> Shell.GoToAsync/NavigationPage with
 # sequence de-duplication and the Navigating approval chain, on top of the P2b-IMG
 # display-size image decode, P1b-LIST list depth/scroll physics, P1a-ANIM, P0c-TEXT-EDIT,
-# P2a-HUKS, A2-TTS, R2-SHELL-EXT and KIT-EXT2 batches). The suite pins 387 checks / floor 367
-# and the full run is green at this compiled tree (local verification: 387/387, floor 367, both
+# P2a-HUKS, A2-TTS, R2-SHELL-EXT and KIT-EXT2 batches). The suite pins 391 checks / floor 371
+# and the full run is green at this compiled tree (local verification: 391/391, floor 371, both
 # perf lines within budget); advance the pin deliberately and refresh this comment when the
 # harness pins or the tip move (workflow_dispatch can compile any commit).
 env:

@@ -12,7 +12,7 @@ using Microsoft.Maui.Platform;
 // after the fuzz tail) instead of letting every caller repeat its own threshold constant.
 VerifyLineCountingWriter verifyStdout = new(Console.Out);
 Console.SetOut(verifyStdout);
-const int verifyCheckTotal = 387;                     // documented full [verify] line count (+10 P2c-DEEPLINK, +4 P2b-IMG, +16 P1b-LIST, +10 P1a-ANIM)
+const int verifyCheckTotal = 391;                     // documented full [verify] line count (+4 MS-MODE runtime mode switch, +10 P2c-DEEPLINK, +4 P2b-IMG, +16 P1b-LIST, +10 P1a-ANIM)
 const int verifyCheckFloor = verifyCheckTotal - 20;   // documented floor convention (total - 20)
 
 // A small image file for the Image handler.
@@ -6396,6 +6396,117 @@ if (!pg2InterpOk)
     throw new InvalidOperationException(
         $"the PG2 interpreter switch (interp.txt -> DOTNET_InterpMode) drifted: defined={pg2InterpDefOk} " +
         $"parse={pg2InterpParseOk} env={pg2InterpEnvOk} log={pg2InterpLogOk} source={cSourcePath ?? "<missing>"}");
+}
+
+// ---- MS-MODE: the runtime mode switch (jit|aot|interp) ------------------------------------------
+// The packaging writes libs/<abi>/runtime-mode.txt (OpenHarmonyRuntimeMode, default jit) and the
+// host reads it at the same launch point as xwe.txt/interp.txt. These pins plus the hap-targets
+// fixture (scripts/selftest-hap-targets.sh T7) and the local AOT smoke
+// (test/aot-smoke/run-local-smoke.sh, runtime-mode rounds) keep the two halves of the contract
+// aligned: the host's marker parser/precedence (an interp.txt file wins over the marker) and the
+// pack's validation/staging (invalid value, aot without the app library, interp pack staging).
+
+// MS-MODE R1: the marker parser. OhosHostReadRuntimeModeAt trims the packaged line, accepts only
+// jit|aot|interp (anything else returns -1 so the policy warns and keeps jit) and
+// OhosHostReadRuntimeModeFile probes the launch directory first, then this library's own dladdr
+// directory (the extracted-payload layout starts in <filesDir>/dotnet while the marker stays in
+// the bundle's libs/<abi>/).
+bool msModeParseDefOk = cSource?.Contains("static int OhosHostReadRuntimeModeAt(const char* dir, char* out, size_t out_size) {") == true;
+bool msModeParseValuesOk = cSource?.Contains("path_join(path, sizeof(path), dir, \"runtime-mode.txt\")") == true &&
+    cSource!.Contains("if (strcmp(start, \"jit\") != 0 && strcmp(start, \"aot\") != 0 && strcmp(start, \"interp\") != 0) {\n        return -1;\n    }");
+bool msModeParseDirsOk = cSource?.Contains("static int OhosHostReadRuntimeModeFile(const char* app_dir, char* out, size_t out_size) {") == true &&
+    cSource!.Contains("int result = OhosHostReadRuntimeModeAt(app_dir, out, out_size);") &&
+    cSource.Contains("result = OhosHostReadRuntimeModeAt(own_dir, out, out_size);");
+bool msModeParseOk = msModeParseDefOk && msModeParseValuesOk && msModeParseDirsOk;
+Console.WriteLine($"[verify] ms-mode host marker parser defined={msModeParseDefOk} values={msModeParseValuesOk} dirs={msModeParseDirsOk} source='{cSourcePath ?? "<missing>"}' assert={msModeParseOk}");
+if (!msModeParseOk)
+{
+    throw new InvalidOperationException(
+        $"the MS-MODE runtime-mode.txt parser drifted: defined={msModeParseDefOk} values={msModeParseValuesOk} " +
+        $"dirs={msModeParseDirsOk} source={cSourcePath ?? "<missing>"}");
+}
+
+// MS-MODE R2: the policy integration. The manifest is read before the interp decision; the
+// marker's interp selects DOTNET_InterpMode=3 through the same single setenv site the file route
+// uses (`interp_from_manifest` records the source), so an interp.txt still wins (source=file),
+// and the effective mode is logged as runtime-mode=<v> source=file|manifest|default on both the
+// hilog and stderr forms.
+bool msModePolicyReadOk = cSource?.Contains("int manifest_mode = OhosHostReadRuntimeModeFile(app_dir, runtime_mode, sizeof(runtime_mode));") == true;
+bool msModePolicyInterpOk = cSource?.Contains("if (!have_interp && manifest_mode > 0 && strcmp(runtime_mode, \"interp\") == 0) {") == true &&
+    cSource!.Contains("memcpy(interp, \"3\", 2);") &&
+    cSource.Contains("int interp_from_manifest = 0;") &&
+    cSource.Contains("const char* interp_source = interp_from_manifest ? \"manifest\" : (have_interp ? \"file\" : \"default\");") &&
+    cSource.Contains("const char* effective_mode = have_interp ? \"interp\" : (manifest_mode > 0 ? runtime_mode : \"jit\");") &&
+    CountOccurrences(cSource, "setenv(\"DOTNET_InterpMode\"") == 1;
+bool msModePolicyLogOk = cSource?.Contains("\"[openharmony-host] %{public}s: runtime-mode=%{public}s source=%{public}s\"") == true &&
+    cSource!.Contains("fprintf(stderr, \"[openharmony-host] %s: runtime-mode=%s source=%s\\n\", name, effective_mode, mode_source);") &&
+    cSource.Contains("runtime-mode.txt carries an unknown value; keeping jit");
+bool msModePolicyOk = msModePolicyReadOk && msModePolicyInterpOk && msModePolicyLogOk;
+Console.WriteLine($"[verify] ms-mode host policy read={msModePolicyReadOk} interp={msModePolicyInterpOk} log={msModePolicyLogOk} source='{cSourcePath ?? "<missing>"}' assert={msModePolicyOk}");
+if (!msModePolicyOk)
+{
+    throw new InvalidOperationException(
+        $"the MS-MODE host policy drifted: read={msModePolicyReadOk} interp={msModePolicyInterpOk} " +
+        $"log={msModePolicyLogOk} source={cSourcePath ?? "<missing>"}");
+}
+
+// MS-MODE R3: the aot fallback. The effective mode is kept in g_ohos_runtime_mode and the aot
+// branch of both launch paths logs one explicit fallback line when the promised
+// <app_dir>/lib<stem>.so cannot be used (missing library / no export); a plain JIT payload keeps
+// its silent fall-through.
+bool msModeAotDefOk = cSource?.Contains("static int OhosHostRuntimeModeIsAot(void) {") == true &&
+    cSource!.Contains("static char g_ohos_runtime_mode[OHOS_RUNTIME_MODE_MAX] = \"jit\";") &&
+    cSource.Contains("static void OhosHostLogAotFallback(const char* tag, const char* lib_path, const char* reason) {") &&
+    cSource.Contains("if (!OhosHostRuntimeModeIsAot()) {\n        return;\n    }");
+int msModeRunFallbackAt = cSource?.IndexOf("OhosHostLogAotFallback(tag, lib_path, \"did not load\");", StringComparison.Ordinal) ?? -1;
+int msModeStartFallbackAt = cSource?.IndexOf("OhosHostLogAotFallback(\"start_app\", aot_lib_path, \"did not load\");", StringComparison.Ordinal) ?? -1;
+bool msModeAotCallsOk = msModeRunFallbackAt > 0 && msModeStartFallbackAt > 0 &&
+    cSource!.Contains("OhosHostLogAotFallback(tag, lib_path, \"has no openharmony_app_main export\");") &&
+    cSource.Contains("OhosHostLogAotFallback(\"start_app\", aot_lib_path, \"has no openharmony_app_main export\");") &&
+    cSource.Contains("falling back to the JIT route");
+bool msModeAotOk = msModeAotDefOk && msModeAotCallsOk;
+Console.WriteLine($"[verify] ms-mode host aot fallback defined={msModeAotDefOk} calls={msModeAotCallsOk} source='{cSourcePath ?? "<missing>"}' assert={msModeAotOk}");
+if (!msModeAotOk)
+{
+    throw new InvalidOperationException(
+        $"the MS-MODE aot fallback contract drifted: defined={msModeAotDefOk} calls={msModeAotCallsOk} " +
+        $"source={cSourcePath ?? "<missing>"}");
+}
+
+// MS-MODE R4: the packaging half (all three preview packs). OpenHarmonyRuntimeMode defaults to
+// jit and an invalid value is an error; aot requires the NativeAOT app library in the publish;
+// the marker is written to libs/<abi>/runtime-mode.txt by _OpenHarmonyStageRuntimeMode, which
+// _OpenHarmonyStageHap calls after the payload staging and before the codesign pass (so replaced
+// interpreter natives are re-signed and the later payload marker counts the file), and the
+// optional OpenHarmonyInterpreterPack stages libcoreclr.so + libclrinterpreter.so for interp.
+bool msModePackOk = true;
+bool msModePackOrderOk = true;
+string? msModePackPath = null;
+foreach (string msModeVersion in pg2PackVersions)
+{
+    string? msModePath = FindHostSource($"packs/Microsoft.OpenHarmony.Sdk/{msModeVersion}/targets/OpenHarmony.Hap.targets");
+    msModePackPath ??= msModePath;
+    string msModeText = msModePath is null ? string.Empty : File.ReadAllText(msModePath);
+    int msModePayloadAt = msModeText.IndexOf("into libs/$(OpenHarmonyAbi)/ (the only namespace-allowed dlopen path)", StringComparison.Ordinal);
+    int msModeCallAt = msModeText.IndexOf("<CallTarget Targets=\"_OpenHarmonyStageRuntimeMode\" />", StringComparison.Ordinal);
+    int msModeCodesignAt = msModeText.IndexOf("<OpenHarmonyCodesign Directories=\"$(_OpenHarmonyHapStageDir)libs\" />", StringComparison.Ordinal);
+    int msModeMarkerAt = msModeText.IndexOf("<OpenHarmonyWritePayloadMarker", StringComparison.Ordinal);
+    msModePackOk &= msModeText.Contains("<OpenHarmonyRuntimeMode Condition=\" '$(OpenHarmonyRuntimeMode)' == '' \">jit</OpenHarmonyRuntimeMode>") &&
+        msModeText.Contains("<Error Condition=\" '$(OpenHarmonyRuntimeMode)' != 'jit' and '$(OpenHarmonyRuntimeMode)' != 'aot' and '$(OpenHarmonyRuntimeMode)' != 'interp' \"") &&
+        msModeText.Contains("requires the NativeAOT application library $(_OpenHarmonyRuntimeModeAotLibName)") &&
+        msModeText.Contains("<Target Name=\"_OpenHarmonyStageRuntimeMode\"") &&
+        msModeText.Contains("<WriteLinesToFile File=\"$(_OpenHarmonyRuntimeModeDir)/runtime-mode.txt\" Lines=\"$(OpenHarmonyRuntimeMode)\" Overwrite=\"true\" />") &&
+        msModeText.Contains("OpenHarmonyInterpreterPack '$(OpenHarmonyInterpreterPack)' carries no libclrinterpreter.so") &&
+        msModeText.Contains("staged the interpreter pack (libcoreclr.so + libclrinterpreter.so) over the publish natives");
+    msModePackOrderOk &= msModePayloadAt > 0 && msModeCallAt > msModePayloadAt && msModeCodesignAt > msModeCallAt && msModeMarkerAt > msModeCallAt;
+}
+bool msModePackAllOk = msModePackOk && msModePackOrderOk;
+Console.WriteLine($"[verify] ms-mode pack switch contract={msModePackOk} order={msModePackOrderOk} packs=22,23,24 source='{msModePackPath ?? "<missing>"}' assert={msModePackAllOk}");
+if (!msModePackAllOk)
+{
+    throw new InvalidOperationException(
+        $"the MS-MODE packaging contract drifted: contract={msModePackOk} order={msModePackOrderOk} " +
+        $"source={msModePackPath ?? "<missing>"}");
 }
 
 // ---- Audit batch-3 pins: the FIX-MAUI security residuals (MB-1/MB-2/MB-3/H-C2) ----------------

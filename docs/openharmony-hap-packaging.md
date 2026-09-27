@@ -190,6 +190,54 @@ Failures never fail the launch; the tokens are collected by `scripts/tester-run.
 probe runs once per process, so a bridged launch that adopts a later context cannot append a
 second line.
 
+## Runtime mode switch
+
+`-p:OpenHarmonyRuntimeMode=jit|aot|interp` (default `jit`) is the single packaging switch that
+selects the launch shape a hap is built for. The value is written to
+`libs/<abi>/runtime-mode.txt` inside the hap by the `_OpenHarmonyStageRuntimeMode` target, which
+`_OpenHarmonyStageHap` calls after the payload-in-libs staging and before the `OpenHarmonyCodesign`
+pass, so the marker travels next to the signed payload and is counted by the
+`.dotnet-payload.json` marker written later:
+
+| value | packaging | launch |
+|---|---|---|
+| `jit` (default) | unchanged: hostfxr + the runtime natives staged from the publish | the host keeps its JIT route (`aot=0`) |
+| `aot` | requires `lib<stem>.so` (the NativeAOT application library; `<stem>` is the `app.json` assembly name without `.dll`) in the publish payload; a missing library is a build error naming the aot-haps publish flags (`-p:PublishAot=true -p:PublishAotUsingRuntimePack=true -p:NativeLib=Shared`, see "NativeAOT HAP variant") | the existing `<app_dir>/lib<stem>.so` probe routes to `openharmony_app_main`; when the marked library is missing or unloadable the host logs `runtime-mode=aot but <path> ...; falling back to the JIT route` instead of the silent JIT fall-through |
+| `interp` | optional `-p:OpenHarmonyInterpreterPack=<dir>` stages the extracted `ohos-interpreter-pack` (`<dir>/` or `<dir>/native/`: `libcoreclr.so` + `libclrinterpreter.so`) over the publish natives; both files are re-signed by the same codesign pass. Without a pack the stock natives stay and the device-side overlay route still applies | the host sets `DOTNET_InterpMode=3` before coreclr starts, unless `<filesDir>/interp.txt` carries a value |
+
+An invalid `OpenHarmonyRuntimeMode` fails the build (`jit`, `aot` and `interp` are the accepted
+values); `OpenHarmonyInterpreterPack` outside `interp` mode fails too.
+
+Host-side precedence (all applied before hostfxr can start coreclr, the same launch point as
+`xwe.txt`): a writable-sandbox `<filesDir>/interp.txt` wins (`source=file`, its value is applied
+to `DOTNET_InterpMode`), else the packaged marker (`source=manifest`; `interp` selects
+`DOTNET_InterpMode=3`), else the JIT default (`source=default`). The effective mode is logged on
+every launch path (hilog and stderr):
+
+```text
+[openharmony-host] start_app: runtime-mode=interp source=manifest
+[openharmony-host] start_app: interp=3 source=manifest
+```
+
+An absent or unreadable marker keeps the default; one that carries anything other than
+`jit|aot|interp` logs `runtime-mode.txt carries an unknown value; keeping jit` and keeps the
+default (the packaging already rejects it, so this covers a stale or hand-edited file). The marker
+is looked up in the effective `app_dir` first and then in the host library's own directory
+(`dladdr`), so the extracted-payload fallback (`<filesDir>/dotnet`) still sees the bundled marker.
+
+Device rounds keep their existing switching files - `xwe.txt` for the W^X A/B and `interp.txt`
+for the interpreter round - and `scripts/tester-run.sh --mode-matrix` records their evidence
+(`hilog/hilog-execmem.txt`, the `aot_route`/`interp_mode` summary keys). The build switch is what
+turns the AOT/interp *variants* into one publish property instead of a manual repack; the JIT /
+AOT / interpreter determination card is
+`runtime-ohos/docs/plans/2026-09-27-ohos-runtime-mode-determination.md`.
+
+Off-device gates: `scripts/selftest-hap-targets.sh` T7 drives the staging target with a fixture
+(default marker, invalid value, aot without/with the app library, interpreter pack in both
+layouts, pack errors); the interaction suite pins the host parser/precedence/fallback and the pack
+contract (`ms-mode` checks); `test/aot-smoke/run-local-smoke.sh` exercises the host branches on a
+device host (default/aot/interp markers, the aot fallback and the `interp.txt` override).
+
 ## Payload in libs
 
 The device's namespace policy allows a `dlopen` only from the app's signed bundle directory
@@ -646,7 +694,9 @@ the overlay module and its flavor gate, the host/managed contract, the off-devic
 `kit11/kit12/kit13` for CoreSpeech text-to-speech, `kit14` for the HUKS-first SecureStorage) and
 the interpreter switch
 (`pg2 host interp policy`: the `interp.txt` parser, the guarded `DOTNET_InterpMode` setenv and
-the log pair),
+the log pair) and the runtime mode switch
+(`ms-mode`: the `runtime-mode.txt` parser/precedence, the aot fallback and the pack staging
+contract),
 while `scripts/build-arkts-shell.sh` keeps the abc at
 `13.0.1.0`, carries the `./map/MapOverlay`, `registerLiveViewSink`, `notifyLiveViewResult`,
 `@kit.LiveViewKit`, `SystemCapability.LiveView.LiveViewService`, `registerTtsSink`,
@@ -659,7 +709,8 @@ the provenance gate; current default-flavor UI abc 281,052 B /
 the source contract (no `@ohos.*` imports, variable kit specifiers). The host-side gate is
 `scripts/build-host.sh` (nm -D: all 143 `host-exports.txt` names present as plain symbols) plus
 `scripts/check-host-exports.py --cross-check`; the interaction suite's own contract line is
-`[suite] checks=387 total=387 floor=367 assert=True` (the 10 P2c-DEEPLINK activation checks, the
+`[suite] checks=391 total=391 floor=371 assert=True` (the 4 MS-MODE runtime-mode checks, the
+10 P2c-DEEPLINK activation checks, the
 4 P2b-IMG image checks and the 16 P1b-LIST list checks on the 357/337 P1a-ANIM base).
 
 ### Templates / abc sync strategy

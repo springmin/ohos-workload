@@ -21,6 +21,12 @@
 #                  carries name/reason/usedScene; SKIPs without a device or the hap (no device
 #                  is attached to this build host, so the scaffold + the manual commands in the
 #                  packaging doc are the evidence there)
+#   T7 runtime mode switch: the _OpenHarmonyStageRuntimeMode fixture (MS-MODE) - jit writes the
+#                  default marker, an invalid value and an aot publish without lib<stem>.so fail
+#                  with the pointer at the aot-haps publish flags, an aot publish stages the
+#                  marker, an interp pack stages libcoreclr.so + libclrinterpreter.so (both the
+#                  <dir>/ and <dir>/native/ layouts) and a pack without the interpreter library
+#                  or outside interp mode fails
 #
 # The fixture imports the real pack targets (so the UsingTask under test is the shipped one) and
 # calls the task directly. Needs a dotnet SDK; when dotnet is unavailable the functional half is
@@ -32,7 +38,7 @@
 # Exit: 0 = all checks passed; 1 = at least one check failed (work dir kept for triage).
 set -u
 
-SELFTEST_VERSION="2 (2026-09-26)"
+SELFTEST_VERSION="3 (2026-09-28)"
 
 log()     { printf '[%s] %s\n' "$(date '+%H:%M:%S')" "$*"; }
 section() { printf '\n=== %s ===\n' "$*"; }
@@ -415,6 +421,108 @@ PY
         skip_ "T6 atm dump shape not recognized on this device; inspect $WORK/T6-atm.log"
     fi
     pass_ "T6 device evidence kept in $WORK (install/dump/atm logs)"
+fi
+
+# ---- T7: runtime mode switch (fixture) --------------------------------------------------
+section "T7 runtime mode switch"
+if ! command -v "$DOTNET" >/dev/null 2>&1; then
+    skip_ "T7 needs dotnet for the runtime-mode fixture"
+else
+    RF="$WORK/runtimefix"
+    mkdir -p "$RF/publish-empty" "$RF/publish" "$RF/pack/native"
+    : > "$RF/publish/libHelloApp.so"
+    printf 'pack-coreclr' > "$RF/pack/native/libcoreclr.so"
+    printf 'pack-interp' > "$RF/pack/libclrinterpreter.so"
+    python3 - "$RF" "$REF" <<'PY'
+import os, sys
+
+fix, targets = sys.argv[1:3]
+proj = f'''<Project>
+  <PropertyGroup>
+    <!-- Satisfies the Hap.targets UsingTask evaluation; the codesign task is never run here. -->
+    <MicrosoftNETBuildTasksAssembly>$(MSBuildToolsPath)/Microsoft.Build.Tasks.Core.dll</MicrosoftNETBuildTasksAssembly>
+  </PropertyGroup>
+  <Import Project="{targets}" />
+  <Target Name="StageMode">
+    <CallTarget Targets="_OpenHarmonyStageRuntimeMode" />
+  </Target>
+</Project>
+'''
+open(os.path.join(fix, 'mode.proj'), 'w').write(proj)
+print('runtime-mode fixture written')
+PY
+    run_mode() { # <log name> <args...>
+        _rm_log="$1"
+        shift
+        ( cd "$RF" && "$DOTNET" msbuild mode.proj -t:StageMode -nologo -v:m \
+            -p:OpenHarmonyHapPackage=true -p:TargetPlatformIdentifier=openharmony \
+            -p:OpenHarmonyHapStageDir="$RF/stage" -p:TargetFileName=HelloApp.dll "$@" ) \
+            > "$WORK/$_rm_log.log" 2>&1
+    }
+    mode_marker() { cat "$RF/stage/libs/arm64-v8a/runtime-mode.txt" 2>/dev/null; }
+
+    rm -rf "$RF/stage"
+    run_mode ModeInvalid -p:OpenHarmonyRuntimeMode=full
+    assert_rc 1 $? "T7 an invalid OpenHarmonyRuntimeMode fails the build"
+    grep -qF "OpenHarmonyRuntimeMode 'full' is not a runtime mode" "$WORK/ModeInvalid.log" \
+        && pass_ "T7 the invalid value names the accepted modes" \
+        || fail_ "T7 the invalid-mode error does not name jit/aot/interp"
+
+    rm -rf "$RF/stage"
+    run_mode ModeDefault
+    assert_rc 0 $? "T7 the default runtime mode stages"
+    if [ "$(mode_marker)" = "jit" ]; then
+        pass_ "T7 the default marker is libs/arm64-v8a/runtime-mode.txt=jit"
+    else
+        fail_ "T7 the default marker is '$(mode_marker)' (expected jit)"
+    fi
+    grep -qF "runtime mode 'jit' written to libs/arm64-v8a/runtime-mode.txt" "$WORK/ModeDefault.log" \
+        && pass_ "T7 the stage logs the marker path" \
+        || fail_ "T7 the marker log line is missing"
+
+    rm -rf "$RF/stage"
+    run_mode ModeAotMissing -p:OpenHarmonyRuntimeMode=aot -p:PublishDir="$RF/publish-empty"
+    assert_rc 1 $? "T7 aot without the NativeAOT app library fails"
+    grep -qF 'requires the NativeAOT application library libHelloApp.so' "$WORK/ModeAotMissing.log" \
+        && grep -qF 'the aot-haps build' "$WORK/ModeAotMissing.log" \
+        && pass_ "T7 the aot error names libHelloApp.so and the aot-haps publish flags" \
+        || fail_ "T7 the aot error does not point at the AOT publish flags"
+
+    rm -rf "$RF/stage"
+    run_mode ModeAot -p:OpenHarmonyRuntimeMode=aot -p:PublishDir="$RF/publish"
+    assert_rc 0 $? "T7 aot with the application library stages"
+    [ "$(mode_marker)" = "aot" ] && pass_ "T7 the aot marker is runtime-mode.txt=aot" \
+                                  || fail_ "T7 the aot marker is '$(mode_marker)'"
+
+    rm -rf "$RF/stage"
+    run_mode ModeInterp -p:OpenHarmonyRuntimeMode=interp -p:OpenHarmonyInterpreterPack="$RF/pack"
+    assert_rc 0 $? "T7 interp with the interpreter pack stages"
+    if [ "$(mode_marker)" = "interp" ] &&
+       cmp -s "$RF/pack/native/libcoreclr.so" "$RF/stage/libs/arm64-v8a/libcoreclr.so" &&
+       cmp -s "$RF/pack/libclrinterpreter.so" "$RF/stage/libs/arm64-v8a/libclrinterpreter.so"; then
+        pass_ "T7 the interp marker plus both pack libraries (<dir>/ + native/) are staged"
+    else
+        fail_ "T7 the interp marker or the staged pack libraries are wrong"
+    fi
+    grep -qF 'staged the interpreter pack (libcoreclr.so + libclrinterpreter.so)' "$WORK/ModeInterp.log" \
+        && pass_ "T7 the interp staging reports the replaced natives" \
+        || fail_ "T7 the interp staging message is missing"
+
+    rm -rf "$RF/stage"
+    mkdir -p "$RF/pack-broken"
+    printf 'pack-coreclr' > "$RF/pack-broken/libcoreclr.so"
+    run_mode ModeInterpBroken -p:OpenHarmonyRuntimeMode=interp -p:OpenHarmonyInterpreterPack="$RF/pack-broken"
+    assert_rc 1 $? "T7 an interpreter pack without libclrinterpreter.so fails"
+    grep -qF 'carries no libclrinterpreter.so' "$WORK/ModeInterpBroken.log" \
+        && pass_ "T7 the incomplete pack error names libclrinterpreter.so" \
+        || fail_ "T7 the incomplete-pack error does not name the missing library"
+
+    rm -rf "$RF/stage"
+    run_mode ModePackJit -p:OpenHarmonyRuntimeMode=jit -p:OpenHarmonyInterpreterPack="$RF/pack"
+    assert_rc 1 $? "T7 the interpreter pack outside interp mode fails"
+    grep -qF 'only meaningful with OpenHarmonyRuntimeMode=interp' "$WORK/ModePackJit.log" \
+        && pass_ "T7 the pack/mode mismatch error names the interp mode" \
+        || fail_ "T7 the pack/mode mismatch error is missing"
 fi
 
 # ---- summary ---------------------------------------------------------------------------
