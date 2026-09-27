@@ -23,27 +23,37 @@
 #       interp_mode), kit hap self-check (meta/kit-selfcheck.txt: resources.index size,
 #       libs/arm64-v8a file count, payload-in-libs marker, abc header version), kit hashes,
 #       machine-readable summary; tar -> tester-report-<stamp>.tar.gz
+#   M mode-matrix --mode-matrix  one-command runtime-mode matrix: child rounds of this same
+#       script, one --out dir each. A JIT stock (install/start/capture); B xwe.txt=1 A/B
+#       (write/restart/capture/delete); optional C interpreter (--interp-pack/--interp-hap:
+#       overlay libcoreclr.so + libclrinterpreter.so into a kit hap, interp.txt=3, capture,
+#       delete, restore the stock hap) and D AOT (--aot-haps: install hello-maui-app-aot*.hap,
+#       capture, restore). A failing run never stops the remaining ones; summary ->
+#       <out>/mode-matrix/summary.txt (+ one tester-report tar per run).
 # Safety: dry-run by default. Nothing is installed/started/removed/recorded unless the matching
-# flag is given (--install --uninstall --start --capture --probes --extra-probes). Without a
-# device (hdc list targets) device steps are refused: with an action flag it stops immediately,
+# flag is given (--install --uninstall --start --capture --probes --extra-probes --mode-matrix).
+# --dry-run forces the plan (with the matrix asset list) even when a device is online. Without
+# a device (hdc list targets) device steps are refused: with an action flag it stops immediately,
 # without one it only verifies the kit locally and prints the plan. --uninstall is explicit and
 # never implied. Every bundle name (module.json or KIT_BUNDLE_NAME) is validated as a dotted,
 # letter-first [A-Za-z0-9_] name before it can reach an hdc command, so a crafted hap cannot
 # smuggle shell metacharacters into `hdc shell aa start -b ...` (A1); uninstall log file names
 # are sanitized on top of that.
 # Exit codes: 0 = ok (or a dry-run plan printed with a device reachable), 1 = at least one step
-# failed (the archive is still produced), 2 = usage error, 3 = no device / refused.
+# failed (the archive is still produced; in --mode-matrix one failing Run does not stop the rest),
+# 2 = usage error, 3 = no device / refused.
 # Usage: sh tester-run.sh [--kit-dir <dir> | --kit-tar <tar.gz>] [--expect-tree-digest <hex>]
 #          [--hap <hap>]... [--install] [--uninstall] [--start] [--capture [<seconds>]]
 #          [--probes <dir>] [--extra-probes <dir>]... [--compare-lib <path>] [--out <dir>]
-#          [--device <id>] [-h|--help]
+#          [--device <id>] [--mode-matrix] [--aot-haps <tar.gz>] [--interp-pack <tar.gz>]
+#          [--interp-hap <hap>] [--interp-overlay <script>] [--dry-run] [-h|--help]
 # Env: HDC (default hdc; may be an absolute path), KIT_BUNDLE_NAME (fallback bundleName when
 #      module.json cannot be read), TMPDIR.
 set -e
 
 # Bumped with every release repack (随发布重打包递增): the kit release notes' "Bundled
 # tester-run.sh" revision.
-SCRIPT_VERSION="9 (2026-09-27)"
+SCRIPT_VERSION="10 (2026-09-27)"
 
 log()  { printf '[%s] %s\n' "$(date '+%H:%M:%S')" "$*"; }
 warn() { printf '[%s] WARN: %s\n' "$(date '+%H:%M:%S')" "$*" >&2; }
@@ -71,6 +81,18 @@ usage() {
                              与 P1-P4 相同：逐个 装 -> 启 -> 抓 hilog+kmsg；每个的原始窗口存为
                              probes/extra-<名>-hilog.txt，命中行并入 probes/probe-all-lines.txt；
                              可重复给出，或用逗号分隔多个目录（重复目录只处理一次）
+  --mode-matrix              一键运行时模式矩阵（一条命令跑完 JIT/AOT/解释器取证）：
+                             Run A JIT stock -> Run B xwe.txt=1 A/B ->（可选）Run C 解释器
+                             ->（可选）Run D AOT；每个 Run 是独立子轮，失败不中断其余（!cancelled）。
+                             需设备；汇总写 <out>/mode-matrix/summary.txt（每 Run 的安装/启动/
+                             aot_route/interp_mode/probe_1/xwe/首帧/崩溃/报告 tar + 结论建议行）。
+  --aot-haps <tar.gz>        （矩阵可选）aot-haps.tar.gz：校验 sha 后安装包内
+                             hello-maui-app-aot*.hap（Run D；期望 aot=1）
+  --interp-pack <tar.gz>     （矩阵可选）ohos-interpreter-pack.tar.gz：校验 sha 后把
+                             libcoreclr.so + libclrinterpreter.so 换入 kit 的未签 hap（Run C）
+  --interp-hap <hap>         （矩阵可选）已重签的解释器变体 hap：跳过本地 overlay 构建直接安装
+  --interp-overlay <script>  （矩阵可选）用指定 overlay 脚本换入 libclrinterpreter.so（默认内置等价逻辑）
+  --dry-run                  只打印计划（含矩阵资产清单），不执行任何设备命令（即使设备在线）
 
 证据（自动采集、缺失容忍；ELF 判定规则见研究文档 §6，真机失败串见验证报告 §4/§7）:
   每个录制窗口同时执行 hdc shell "hilog -t kmsg" -> kmsg/kmsg.log（并过滤出 kmsg-filtered.log）；
@@ -104,8 +126,10 @@ usage() {
 
 安全:
   * 默认 dry-run：不装、不卸、不启动、不录制，只做本地 kit 校验并打印计划；
+  * --dry-run 在设备在线时也强制只打印计划（含矩阵资产清单）；
   * 没有设备（hdc list targets 为空 / 指定的 --device 不在列表）时拒绝执行设备操作（退出码 3）；
-  * 只有 --uninstall 才卸载，且绝不隐式卸载；
+  * 只有 --uninstall 才卸载，且绝不隐式卸载；矩阵的卸载/切换文件清理只作用于自身流程；
+  * 每个 bundleName 都先过点分段白名单再进 hdc（含矩阵的 aa force-stop）；
   * 退出码：0 成功（或 dry-run 计划）；1 有步骤失败（仍会打包）；2 用法错误；3 无设备/拒绝执行。
 
 环境: HDC（默认 hdc）、KIT_BUNDLE_NAME（读不出 module.json 时的回退 bundle 名）
@@ -121,6 +145,9 @@ usage() {
   sh tester-run.sh --kit-dir ./device-test-kit --capture 30
   # 5) P1-P4 + 额外探针（importprobe-a/b/c、importb haps 等，每个探针各录 30 秒）
   sh tester-run.sh --kit-dir ./device-test-kit --probes ./probes --extra-probes ./importb-haps
+  # 6) 一键运行时模式矩阵：JIT A/B + 解释器 + AOT（每个 Run 录 CAPTURE_SECS 秒，一轮四态取证）
+  sh tester-run.sh --kit-tar ./device-test-kit.tar.gz --aot-haps ./aot-haps.tar.gz \
+      --interp-pack ./ohos-interpreter-pack.tar.gz --capture 60
 EOF
 }
 
@@ -139,6 +166,14 @@ KIT_TAR=""
 EXPECT_TREE=""
 HAPS=""
 COMPARE_LIB=""
+# Runtime-mode matrix (--mode-matrix) + its optional assets.
+MODE_MATRIX=0
+AOT_HAPS_TAR=""
+INTERP_PACK_TAR=""
+INTERP_HAP=""
+INTERP_OVERLAY=""
+DRY_RUN=0
+MATRIX_CURRENT_CHILD=""
 FALLBACK_BUNDLE="${KIT_BUNDLE_NAME:-com.example.hellomauiapp}"
 BUNDLE=""
 BUNDLE_UNSAFE=0
@@ -272,6 +307,32 @@ $_ep_one"
                 fi
             done
             ;;
+        --mode-matrix) MODE_MATRIX=1 ;;
+        --aot-haps)
+            shift
+            [ $# -gt 0 ] || { warn "--aot-haps 需要一个 .tar.gz"; usage >&2; exit 2; }
+            [ -f "$1" ] || { warn "--aot-haps 文件不存在: $1"; exit 2; }
+            AOT_HAPS_TAR="$1"
+            ;;
+        --interp-pack)
+            shift
+            [ $# -gt 0 ] || { warn "--interp-pack 需要一个 .tar.gz"; usage >&2; exit 2; }
+            [ -f "$1" ] || { warn "--interp-pack 文件不存在: $1"; exit 2; }
+            INTERP_PACK_TAR="$1"
+            ;;
+        --interp-hap)
+            shift
+            [ $# -gt 0 ] || { warn "--interp-hap 需要一个 hap 路径"; usage >&2; exit 2; }
+            [ -f "$1" ] || { warn "--interp-hap 文件不存在: $1"; exit 2; }
+            INTERP_HAP="$1"
+            ;;
+        --interp-overlay)
+            shift
+            [ $# -gt 0 ] || { warn "--interp-overlay 需要一个脚本路径"; usage >&2; exit 2; }
+            [ -f "$1" ] || { warn "--interp-overlay 文件不存在: $1"; exit 2; }
+            INTERP_OVERLAY="$1"
+            ;;
+        --dry-run) DRY_RUN=1 ;;
         --out)
             shift
             [ $# -gt 0 ] || { warn "--out 需要一个目录"; usage >&2; exit 2; }
@@ -357,12 +418,26 @@ if [ -n "$EXPECT_TREE" ]; then
     case "$EXPECT_TREE" in *[!0-9a-fA-F]*) die "--expect-tree-digest 不是十六进制 sha256: $EXPECT_TREE" ;; esac
     [ "${#EXPECT_TREE}" -eq 64 ] || die "--expect-tree-digest 需要 64 个十六进制字符"
 fi
+# The matrix assets only steer --mode-matrix; refusing them elsewhere keeps a typo from
+# silently doing nothing.
+if [ "$MODE_MATRIX" = 0 ]; then
+    if [ -n "$AOT_HAPS_TAR$INTERP_PACK_TAR$INTERP_HAP$INTERP_OVERLAY" ]; then
+        die "--aot-haps/--interp-pack/--interp-hap/--interp-overlay 只在 --mode-matrix 下使用"
+    fi
+else
+    # The matrix orchestrates its own install/uninstall/start/capture rounds; the plain
+    # action flags would be ignored (--capture seconds still apply), so say so instead of
+    # surprising the caller.
+    if [ "$INSTALL" = 1 ] || [ "$UNINSTALL" = 1 ] || [ "$START" = 1 ] || [ -n "$PROBES_DIR" ] || [ -n "$EXTRA_PROBES_DIRS" ]; then
+        warn "--mode-matrix 自带 安装/卸载/启动/采集 编排；--install/--uninstall/--start/--probes/--extra-probes 在矩阵下不额外生效（--capture 秒数仍生效）"
+    fi
+fi
 
 # kmsg capture target: filled in every recording window (append), scored in step 5
 KMSG_RAW="$OUT/kmsg/kmsg.log"
 
 ACTIONS=0
-if [ "$INSTALL" = 1 ] || [ "$UNINSTALL" = 1 ] || [ "$START" = 1 ] || [ "$CAPTURE" = 1 ] || [ -n "$PROBES_DIR" ] || [ -n "$EXTRA_PROBES_DIRS" ]; then
+if [ "$INSTALL" = 1 ] || [ "$UNINSTALL" = 1 ] || [ "$START" = 1 ] || [ "$CAPTURE" = 1 ] || [ -n "$PROBES_DIR" ] || [ -n "$EXTRA_PROBES_DIRS" ] || [ "$MODE_MATRIX" = 1 ]; then
     ACTIONS=1
 fi
 
@@ -452,20 +527,24 @@ else
 fi
 
 DO_DEVICE=0
-if [ "$ACTIONS" = 1 ] && [ -z "$REASON" ]; then
+if [ "$ACTIONS" = 1 ] && [ -z "$REASON" ] && [ "$DRY_RUN" = 0 ]; then
     DO_DEVICE=1
 fi
 
 if [ -n "$REASON" ]; then
-    if [ "$ACTIONS" = 1 ]; then
+    if [ "$DRY_RUN" = 1 ]; then
+        warn "无可用设备：$REASON（--dry-run：只打印计划，不执行设备命令）"
+        warn "  hdc list targets 输出：${TARGETS:-<空>}"
+    elif [ "$ACTIONS" = 1 ]; then
         warn "无可用设备：$REASON"
         warn "  hdc list targets 输出：${TARGETS:-<空>}"
         warn "  请连接设备（已开 USB 调试）或用 hdc tconn <ip:port> 连接，再用 --device <id> 指定目标。"
-        warn "  已拒绝执行设备操作：--install / --uninstall / --start / --capture / --probes / --extra-probes 都不会执行。"
+        warn "  已拒绝执行设备操作：--install / --uninstall / --start / --capture / --probes / --extra-probes / --mode-matrix 都不会执行。"
         exit 3
+    else
+        warn "无可用设备：$REASON"
+        warn "  当前是默认 dry-run：只做本地 kit 校验并打印计划，不执行任何设备命令。"
     fi
-    warn "无可用设备：$REASON"
-    warn "  当前是默认 dry-run：只做本地 kit 校验并打印计划，不执行任何设备命令。"
 fi
 
 # ---- temp dir + cleanup --------------------------------------------------------------
@@ -483,8 +562,10 @@ cleanup() {
 trap cleanup 0
 # A signal must end the round. With `trap cleanup 0 1 2 15` a TERM only ran cleanup and
 # the script continued issuing device commands against the removed $TMP (found via the
-# selftest: TERM during a capture window kept going into the remaining steps).
-trap 'exit 1' 1 2 15
+# selftest: TERM during a capture window kept going into the remaining steps). In
+# --mode-matrix the in-flight child round is killed first so no orphan keeps writing to
+# the device after the matrix gave up.
+trap 'if [ -n "$MATRIX_CURRENT_CHILD" ]; then kill "$MATRIX_CURRENT_CHILD" >/dev/null 2>&1 || true; fi; exit 1' 1 2 15
 RESULTS="$TMP/results.txt"
 : > "$RESULTS"
 record() { printf '%s\n' "$*" >> "$RESULTS"; }
@@ -806,6 +887,624 @@ kit_hap_hashes > "$TMP/kit-hap-sha256.txt"
 MAIN_HAP_SHA="$(kit_hash_of "$MAIN_HAP")"
 log "   主 hap:  $MAIN_HAP"
 log "   bundle:  $BUNDLE"
+
+# ---- mode matrix (--mode-matrix) -----------------------------------------------------
+# The runtime-mode determination card (JIT / AOT / interpreter) needs several device
+# rounds. --mode-matrix folds them into one command by re-invoking this same script as a
+# child per run, each with its own --out dir, so the kit verification and the bundleName
+# whitelist gate every run exactly as in a manual round and a failing run never stops the
+# remaining ones (!cancelled style). Runs:
+#   A JIT stock    --uninstall --install --start --capture
+#   B XWE A/B      write <files>/xwe.txt=1 -> aa force-stop -> --install --start --capture
+#                  -> always delete xwe.txt
+#   C interpreter  (--interp-pack and/or --interp-hap) --uninstall --install --hap <interp>
+#                  -> write <files>/interp.txt=3 -> --start --capture -> always delete
+#                  interp.txt; the stock hap is reinstalled at the end
+#   D AOT          (--aot-haps) --uninstall --install --start --capture --hap <aot hap>;
+#                  the stock hap is reinstalled at the end
+# Summary: <out>/mode-matrix/summary.txt; one tester-report tar per run next to it.
+MATRIX_DIR="$OUT/mode-matrix"
+MATRIX_SUMMARY="$MATRIX_DIR/summary.txt"
+
+# Absolute (or PATH-resolved) path of this script: the matrix re-invokes it as a child.
+matrix_self_path() {
+    _msp="$0"
+    case "$_msp" in
+        */*)
+            _mspd="$(cd "$(dirname "$_msp")" 2>/dev/null && pwd)" || _mspd=""
+            [ -n "$_mspd" ] && _msp="$_mspd/$(basename "$_msp")"
+            ;;
+        *)
+            _mspc="$(command -v "$_msp" 2>/dev/null || true)"
+            [ -n "$_mspc" ] && _msp="$_mspc"
+            ;;
+    esac
+    printf '%s' "$_msp"
+}
+
+matrix_mrec() { printf '%s\n' "$*" >> "$MATRIX_SUMMARY"; }
+
+# First value of KEY= in a child summary.txt; <unavailable> when the file/key is missing.
+matrix_mval() {
+    if [ -f "$1" ]; then
+        _mmv="$(sed -n "s/^$2=//p" "$1" 2>/dev/null | head -n1)"
+        if [ -n "$_mmv" ]; then printf '%s' "$_mmv"; return 0; fi
+    fi
+    printf '<unavailable>'
+}
+
+# First capture of a sed expression in a file; <unavailable> when the file/line is missing.
+matrix_sed1() {
+    if [ -s "$1" ]; then
+        _ms1="$(sed -n "$2" "$1" 2>/dev/null | head -n1)"
+        if [ -n "$_ms1" ]; then printf '%s' "$_ms1"; return 0; fi
+    fi
+    printf '<unavailable>'
+}
+
+# One child round of this same script. The child argv is built explicitly (no word
+# splitting of user paths). Sets MATRIX_CHILD_RC; never returns non-zero itself.
+matrix_child() {
+    _mc_tag="$1"; _mc_out="$2"; shift 2
+    _mc_log="$MATRIX_DIR/$_mc_tag.log"
+    _mc_rc=0
+    if [ -n "$DEVICE" ] && [ -n "$EXPECT_TREE" ]; then
+        HDC="$HDC" TMPDIR="${TMPDIR:-}" sh "$MATRIX_SELF" --kit-dir "$KIT_DIR" --out "$_mc_out" \
+            --device "$DEVICE" --expect-tree-digest "$EXPECT_TREE" "$@" > "$_mc_log" 2>&1 &
+    elif [ -n "$DEVICE" ]; then
+        HDC="$HDC" TMPDIR="${TMPDIR:-}" sh "$MATRIX_SELF" --kit-dir "$KIT_DIR" --out "$_mc_out" \
+            --device "$DEVICE" "$@" > "$_mc_log" 2>&1 &
+    elif [ -n "$EXPECT_TREE" ]; then
+        HDC="$HDC" TMPDIR="${TMPDIR:-}" sh "$MATRIX_SELF" --kit-dir "$KIT_DIR" --out "$_mc_out" \
+            --expect-tree-digest "$EXPECT_TREE" "$@" > "$_mc_log" 2>&1 &
+    else
+        HDC="$HDC" TMPDIR="${TMPDIR:-}" sh "$MATRIX_SELF" --kit-dir "$KIT_DIR" --out "$_mc_out" \
+            "$@" > "$_mc_log" 2>&1 &
+    fi
+    MATRIX_CURRENT_CHILD=$!
+    wait "$MATRIX_CURRENT_CHILD" || _mc_rc=$?
+    MATRIX_CURRENT_CHILD=""
+    MATRIX_CHILD_RC=$_mc_rc
+    log "   [$_mc_tag] 子轮结束 rc=$_mc_rc（日志: $_mc_log）"
+    if [ "$_mc_rc" -ne 0 ]; then
+        warn "   [$_mc_tag] 子轮非 0 退出，日志末尾："
+        tail -n 3 "$_mc_log" 2>/dev/null | while IFS= read -r _mc_line; do warn "     $_mc_line"; done
+    fi
+    return 0
+}
+
+# Read one child round into the M_* globals: install/start result, runtime routes, probe
+# 1 result, xwe decision, first-frame/crash keywords and the child's report tar.
+matrix_collect() {
+    _mx_tag="$1"; _mx_out="$2"
+    M_INSTALL="$(matrix_mval "$_mx_out/summary.txt" main_install_result)"
+    M_START="$(matrix_mval "$_mx_out/summary.txt" start_result)"
+    M_ALIVE="$(matrix_mval "$_mx_out/summary.txt" process_alive)"
+    M_AOT="$(matrix_mval "$_mx_out/summary.txt" aot_route)"
+    M_INTERP="$(matrix_mval "$_mx_out/summary.txt" interp_mode)"
+    M_PROBE="$(matrix_sed1 "$_mx_out/hilog/hilog-execmem.txt" 's/.*probe: 1=\([^ ]*\).*/\1/p')"
+    M_XWE="$(matrix_sed1 "$_mx_out/hilog/hilog-execmem.txt" 's/.*\(xwe=[01]\) source=.*/\1/p')"
+    _mx_full="$_mx_out/hilog/hilog-full.txt"
+    if [ -s "$_mx_full" ]; then
+        if grep -Eq '\[maui\] openharmony build|managed app .*started' "$_mx_full" 2>/dev/null; then
+            M_FRAME=yes
+        else
+            M_FRAME=no
+        fi
+        M_CRASH="$(grep -Eo 'SEGV_ACCERR|SIGSEGV|SIGABRT|Fatal signal|cppcrash|bootstrap failed|The application to execute does not exist' "$_mx_full" 2>/dev/null | head -n1)"
+        [ -n "$M_CRASH" ] || M_CRASH=none
+    else
+        M_FRAME="<unavailable>"
+        M_CRASH="<unavailable>"
+    fi
+    M_REPORT="$(ls -t "$OUT"/run-$_mx_tag-[0-9]*.tar.gz 2>/dev/null | head -n1)"
+    [ -n "$M_REPORT" ] || M_REPORT="<none>"
+}
+
+# Append one run's keys to the matrix summary. $2 overrides the install result (Run C
+# installs in its own child round before the start/capture child).
+matrix_emit_run() {
+    _me_tag="$1"; _me_install="${2:-$M_INSTALL}"
+    matrix_mrec "run_${_me_tag}_install=$_me_install"
+    matrix_mrec "run_${_me_tag}_start=$M_START"
+    matrix_mrec "run_${_me_tag}_alive=$M_ALIVE"
+    matrix_mrec "run_${_me_tag}_aot_route=$M_AOT"
+    matrix_mrec "run_${_me_tag}_interp_mode=$M_INTERP"
+    matrix_mrec "run_${_me_tag}_probe_1=$M_PROBE"
+    matrix_mrec "run_${_me_tag}_xwe=$M_XWE"
+    matrix_mrec "run_${_me_tag}_frame=$M_FRAME"
+    matrix_mrec "run_${_me_tag}_crash=$M_CRASH"
+    matrix_mrec "run_${_me_tag}_report=$M_REPORT"
+    _me_status=ok
+    case "$_me_install" in
+        ok) ;;
+        skipped*|'<unavailable>') _me_status="incomplete(install=$_me_install)" ;;
+        *) _me_status="failed(install=$_me_install)" ;;
+    esac
+    if [ "$_me_status" = ok ]; then
+        case "$M_START" in
+            ok) ;;
+            skipped*) _me_status="incomplete(start=$M_START)" ;;
+            *) _me_status="failed(start=$M_START)" ;;
+        esac
+    fi
+    if [ "$_me_status" = ok ] && [ "$M_ALIVE" = no ]; then _me_status="failed(alive=no)"; fi
+    matrix_mrec "run_${_me_tag}_status=$_me_status"
+    case "$_me_status" in
+        failed*) MATRIX_FAILURES=$((MATRIX_FAILURES + 1)) ;;
+    esac
+}
+
+# Device-side runtime switch files: written with `echo <v> > <files>/<name>.txt` and always
+# cleaned up after the run; a failure is recorded but never stops the remaining runs.
+matrix_switch_write() {
+    _msw_rc=0
+    hdc_cmd shell "echo $2 > $DEV_FILES_DIR/$1.txt" > "$MATRIX_DIR/switch-$1-write.log" 2>&1 || _msw_rc=$?
+    if [ "$_msw_rc" -eq 0 ]; then
+        log "   已写 $1.txt=$2（$DEV_FILES_DIR）"
+        matrix_mrec "switch_${1}_write=ok"
+    else
+        warn "   写 $1.txt 失败（rc=$_msw_rc；继续，缺失证据可辨）"
+        matrix_mrec "switch_${1}_write=fail(rc=$_msw_rc)"
+    fi
+}
+
+matrix_switch_rm() {
+    _msr_label="${2:-switch}"
+    _msr_rc=0
+    hdc_cmd shell "rm -f $DEV_FILES_DIR/$1.txt" > "$MATRIX_DIR/switch-$1-rm.log" 2>&1 || _msr_rc=$?
+    if [ "$_msr_rc" -eq 0 ]; then
+        log "   已清理 $1.txt"
+        matrix_mrec "${_msr_label}_${1}_rm=ok"
+    else
+        warn "   清理 $1.txt 失败（rc=$_msr_rc）：设备可能残留 $1.txt，请手动 rm -f $DEV_FILES_DIR/$1.txt"
+        matrix_mrec "${_msr_label}_${1}_rm=fail(rc=$_msr_rc)"
+    fi
+}
+
+matrix_force_stop() {
+    require_safe_bundle_name "$BUNDLE"
+    _mfs_rc=0
+    hdc_cmd shell aa force-stop "$BUNDLE" > "$MATRIX_DIR/force-stop.log" 2>&1 || _mfs_rc=$?
+    if grep -qi 'success' "$MATRIX_DIR/force-stop.log" 2>/dev/null; then
+        log "   aa force-stop OK: $BUNDLE"
+        matrix_mrec "force_stop=ok"
+    else
+        warn "   aa force-stop 未确认（rc=$_mfs_rc；继续，重启可能未生效）"
+        matrix_mrec "force_stop=unknown(rc=$_mfs_rc)"
+    fi
+}
+
+# Optional asset pack: strict sha256 check when <tar>.sha256 is present (the kit sidecar
+# contract), otherwise the computed hash is recorded. Extracts into $3.
+# Sets MP_SHA/MP_CHECK/MP_DIR; returns 1 when the check or extraction failed.
+matrix_fetch_pack() {
+    MP_SHA=""; MP_CHECK=""; MP_DIR=""
+    _fp_side="$1.sha256"
+    if [ -f "$_fp_side" ]; then
+        _fp_rc=0
+        ( cd "$(dirname "$1")" && sha256sum -c "$(basename "$1").sha256" ) > "$MATRIX_DIR/sha-$2.log" 2>&1 || _fp_rc=$?
+        MP_SHA="$(cut -d' ' -f1 "$_fp_side" | head -n1)"
+        case "$MP_SHA" in
+            *[!0-9a-fA-F]*|'') MP_SHA="$(sha256sum "$1" | cut -d' ' -f1)" ;;
+        esac
+        if [ "$_fp_rc" -ne 0 ]; then
+            MP_CHECK="fail(rc=$_fp_rc)"
+            return 1
+        fi
+        MP_CHECK=ok
+    else
+        MP_SHA="$(sha256sum "$1" | cut -d' ' -f1)"
+        MP_CHECK="computed(no sidecar)"
+        warn "   $2 无 $1.sha256 sidecar，跳过外层强校验（sha256=$MP_SHA 已记录）"
+    fi
+    rm -rf "$3"
+    mkdir -p "$3"
+    if ! tar xzf "$1" -C "$3"; then
+        MP_CHECK="extract-fail"
+        return 1
+    fi
+    MP_DIR="$3"
+    return 0
+}
+
+# Build the interpreter hap variant: kit base hap (or --interp-hap), overlay the verified
+# pack's libcoreclr.so + libclrinterpreter.so (mirrors
+# scripts/ohos-runtime-clrinterpreter-overlay.sh, which is not shipped inside the pack;
+# --interp-overlay <script> runs that script instead, after the coreclr replacement).
+# No re-signing: the variant is built unsigned; re-sign it (and pass --interp-hap) when
+# the device refuses an unsigned install. Sets MI_HAP, MI_HAP_SHA, MI_CORECLR_SHA,
+# MI_CLRINTERP_SHA, MI_OV_KIND, MI_CORECLR_CHECK, MI_SIGNED and MI_SKIP.
+matrix_build_interp_hap() {
+    MI_HAP=""; MI_HAP_SHA=""; MI_CORECLR_SHA=""; MI_CLRINTERP_SHA=""
+    MI_OV_KIND=""; MI_CORECLR_CHECK=""; MI_SIGNED=no; MI_SKIP=""
+    if [ -n "$INTERP_HAP" ]; then
+        MI_HAP="$INTERP_HAP"
+        MI_HAP_SHA="$(sha256sum "$INTERP_HAP" | cut -d' ' -f1)"
+        MI_OV_KIND=given
+        MI_SIGNED=unknown
+        log "   Run C: 使用 --interp-hap $INTERP_HAP（跳过本地 overlay 构建）"
+        return 0
+    fi
+    _mib_base="$KIT_DIR/hello-maui-app-unsigned.hap"
+    if [ ! -f "$_mib_base" ]; then _mib_base="$MAIN_HAP"; fi
+    if command -v python3 >/dev/null 2>&1; then
+        _mib_zip=python3
+    elif command -v unzip >/dev/null 2>&1 && command -v zip >/dev/null 2>&1; then
+        _mib_zip=zip
+    else
+        MI_SKIP="缺 python3 或 unzip+zip（无法改包）"
+        return 1
+    fi
+    _mib_root="$TMP/interp-build"
+    rm -rf "$_mib_root"
+    mkdir -p "$_mib_root/layout"
+    if [ "$_mib_zip" = python3 ]; then
+        if ! python3 - "$_mib_base" "$_mib_root/layout" <<'PY'
+import sys, zipfile
+with zipfile.ZipFile(sys.argv[1]) as z:
+    z.extractall(sys.argv[2])
+PY
+        then
+            MI_SKIP="解包失败: $(basename "$_mib_base")"
+            return 1
+        fi
+    else
+        if ! unzip -q "$_mib_base" -d "$_mib_root/layout"; then
+            MI_SKIP="unzip 解包失败"
+            return 1
+        fi
+    fi
+    _mib_coreclr="$(find "$_mib_root/layout" -name libcoreclr.so -type f 2>/dev/null | head -n1)"
+    if [ -z "$_mib_coreclr" ]; then
+        MI_SKIP="kit hap 内无 libcoreclr.so（不是 JIT payload？）"
+        return 1
+    fi
+    # Interpreter-aware coreclr first, then libclrinterpreter.so next to it.
+    if ! cp -f "$MI_PACK_CORECLR" "$_mib_coreclr"; then
+        MI_SKIP="替换 libcoreclr.so 失败"
+        return 1
+    fi
+    _mib_kind=builtin
+    if [ -n "$INTERP_OVERLAY" ]; then
+        if command -v bash >/dev/null 2>&1; then
+            _mib_ovrc=0
+            bash "$INTERP_OVERLAY" "$MI_PACK_CLRINTERP" --dir "$_mib_root/layout" > "$MATRIX_DIR/interp-overlay.log" 2>&1 || _mib_ovrc=$?
+            if [ "$_mib_ovrc" -eq 0 ]; then
+                _mib_kind="script:$INTERP_OVERLAY"
+            else
+                warn "   overlay 脚本退出码 $_mib_ovrc，改用内置逻辑（见 $MATRIX_DIR/interp-overlay.log）"
+            fi
+        else
+            warn "   指定了 --interp-overlay 但没有 bash，改用内置逻辑"
+        fi
+    fi
+    if [ "$_mib_kind" = builtin ]; then
+        if ! cp -f "$MI_PACK_CLRINTERP" "$(dirname "$_mib_coreclr")/libclrinterpreter.so"; then
+            MI_SKIP="加入 libclrinterpreter.so 失败"
+            return 1
+        fi
+        {
+            printf '== builtin overlay（等价 scripts/ohos-runtime-clrinterpreter-overlay.sh） ==\n'
+            printf 'replaced %s\n' "${_mib_coreclr#"$_mib_root/layout/"}"
+            printf 'staged   %s\n' "$(dirname "${_mib_coreclr#"$_mib_root/layout/"}")/libclrinterpreter.so"
+        } > "$MATRIX_DIR/interp-overlay.log"
+    fi
+    if command -v python3 >/dev/null 2>&1; then
+        if python3 - "$_mib_coreclr" <<'PY'
+import sys
+data = open(sys.argv[1], "rb").read()
+hits = [w for w in ("clrinterpreter", "InterpMode", "InterpreterName")
+        if w.encode("utf-32-le") in data or w.encode("utf-16-le") in data]
+sys.exit(0 if hits else 1)
+PY
+        then
+            MI_CORECLR_CHECK=yes
+        else
+            MI_CORECLR_CHECK=no
+        fi
+    else
+        MI_CORECLR_CHECK="<unavailable:python3>"
+    fi
+    _mib_outdir="$MATRIX_DIR/build"
+    mkdir -p "$_mib_outdir"
+    MI_HAP="$_mib_outdir/hello-maui-app-interp.hap"
+    rm -f "$MI_HAP"
+    if [ "$_mib_zip" = python3 ]; then
+        if ! python3 - "$_mib_root/layout" "$MI_HAP" <<'PY'
+import os, sys, zipfile
+src, dst = sys.argv[1], sys.argv[2]
+with zipfile.ZipFile(dst, "w", zipfile.ZIP_DEFLATED) as z:
+    for root, _dirs, files in os.walk(src):
+        for fname in sorted(files):
+            path = os.path.join(root, fname)
+            z.write(path, os.path.relpath(path, src))
+PY
+        then
+            MI_SKIP="重打包失败"
+            return 1
+        fi
+    else
+        if ! ( cd "$_mib_root/layout" && zip -q -r "$MI_HAP" . ); then
+            MI_SKIP="zip 重打包失败"
+            return 1
+        fi
+    fi
+    MI_HAP_SHA="$(sha256sum "$MI_HAP" | cut -d' ' -f1)"
+    MI_CORECLR_SHA="$(sha256sum "$MI_PACK_CORECLR" | cut -d' ' -f1)"
+    MI_CLRINTERP_SHA="$(sha256sum "$MI_PACK_CLRINTERP" | cut -d' ' -f1)"
+    MI_OV_KIND="$_mib_kind"
+    return 0
+}
+
+# Dry-run plan: every run and the asset list, no device commands (safe to read).
+matrix_print_plan() {
+    log "   [dry-run] --mode-matrix 计划（4 个 Run，每个都是本脚本的子轮，失败不中断其余）:"
+    log "     Run A JIT stock : --uninstall --install --start --capture $CAPTURE_SECS"
+    log "     Run B XWE A/B   : echo 1 > $DEV_FILES_DIR/xwe.txt -> aa force-stop -> --install --start --capture $CAPTURE_SECS -> rm -f xwe.txt"
+    if [ -n "$INTERP_PACK_TAR" ] || [ -n "$INTERP_HAP" ]; then
+        log "     Run C 解释器    : 校验 interp pack -> 换入 libcoreclr.so+libclrinterpreter.so -> --uninstall --install --hap <interp hap>"
+        log "                       -> echo 3 > $DEV_FILES_DIR/interp.txt -> --start --capture $CAPTURE_SECS -> rm interp.txt -> 重装主 hap"
+    else
+        log "     Run C 解释器    : 跳过（未给 --interp-pack/--interp-hap）"
+    fi
+    if [ -n "$AOT_HAPS_TAR" ]; then
+        log "     Run D AOT       : 校验 aot-haps -> --uninstall --install --start --capture $CAPTURE_SECS --hap hello-maui-app-aot*.hap -> 重装主 hap"
+    else
+        log "     Run D AOT       : 跳过（未给 --aot-haps）"
+    fi
+    log "   资产清单:"
+    log "     kit         : $KIT_DIR（必需；tree=${TREE_DIGEST:-<未打印>}）"
+    log "     aot-haps    : ${AOT_HAPS_TAR:-<未提供>}（Run D；有 .sha256 sidecar 时强校验）"
+    log "     interp-pack : ${INTERP_PACK_TAR:-<未提供>}（Run C；有 .sha256 sidecar 时强校验）"
+    log "     interp-hap  : ${INTERP_HAP:-<未提供：由 kit 未签 hap + 内置 overlay 构建>}（Run C）"
+    log "   汇总/回传: $MATRIX_SUMMARY + 每 Run 的 tester-report tar（$OUT/run-<x>-<时间戳>.tar.gz）"
+    log "   [dry-run] 未执行任何设备命令；设备在线且去掉 --dry-run 时执行矩阵"
+}
+
+mode_matrix_main() {
+    MATRIX_SELF="$(matrix_self_path)"
+    if [ ! -f "$MATRIX_SELF" ]; then
+        warn "无法定位 tester-run.sh 自身（\$0=$0）；--mode-matrix 需要可寻址的脚本路径（sh <abs>/tester-run.sh ...）"
+        exit 1
+    fi
+    mkdir -p "$MATRIX_DIR"
+    : > "$MATRIX_SUMMARY"
+    matrix_mrec "# tester-run.sh 运行时模式矩阵摘要（每行 KEY=value；值取第一个 = 之后的内容）"
+    matrix_mrec "script_version=$SCRIPT_VERSION"
+    matrix_mrec "generated_at=$(date '+%Y-%m-%d %H:%M:%S %z')"
+    matrix_mrec "kit_dir=$KIT_DIR"
+    matrix_mrec "kit_tar=$KIT_TAR"
+    matrix_mrec "kit_tar_sha256=$KIT_TAR_SHA"
+    matrix_mrec "tree_digest=$TREE_DIGEST"
+    matrix_mrec "capture_seconds=$CAPTURE_SECS"
+    matrix_mrec "device=${DEVICE:-<default>}"
+    matrix_mrec "bundle=$BUNDLE"
+    matrix_mrec "main_hap=$MAIN_HAP"
+    matrix_mrec "main_hap_sha256=$MAIN_HAP_SHA"
+    matrix_mrec "aot_haps_tar=$AOT_HAPS_TAR"
+    matrix_mrec "interp_pack_tar=$INTERP_PACK_TAR"
+    matrix_mrec "interp_hap=$INTERP_HAP"
+    log "   资产: kit=$KIT_DIR; aot-haps=${AOT_HAPS_TAR:-<未提供>}; interp-pack=${INTERP_PACK_TAR:-<未提供>}; interp-hap=${INTERP_HAP:-<自动构建>}"
+
+    # A stale switch file from an interrupted earlier round would poison Run A: drop both
+    # first (the same files the matrix itself writes; nothing else is touched).
+    matrix_switch_rm xwe preclean
+    matrix_switch_rm interp preclean
+
+    # --- Run A: JIT stock -------------------------------------------------------------
+    log "== 矩阵 Run A/4: JIT stock =="
+    matrix_child a "$OUT/run-a" --uninstall --install --start --capture "$CAPTURE_SECS" --hap "$MAIN_HAP"
+    matrix_collect a "$OUT/run-a"
+    matrix_emit_run a
+    A_PROBE="$M_PROBE"; A_CRASH="$M_CRASH"
+
+    # --- Run B: xwe.txt=1 A/B ---------------------------------------------------------
+    log "== 矩阵 Run B/4: xwe.txt=1（W^X A/B） =="
+    matrix_switch_write xwe 1
+    matrix_force_stop
+    matrix_child b "$OUT/run-b" --install --start --capture "$CAPTURE_SECS" --hap "$MAIN_HAP"
+    matrix_switch_rm xwe
+    matrix_collect b "$OUT/run-b"
+    matrix_emit_run b
+    B_PROBE="$M_PROBE"; B_CRASH="$M_CRASH"
+    matrix_mrec "run_b_switch=xwe.txt=1"
+
+    # --- Run C: interpreter (optional) ------------------------------------------------
+    RUN_C=0
+    C_SKIP=""
+    MI_HAP=""; MI_HAP_SHA=""; MI_CORECLR_SHA=""; MI_CLRINTERP_SHA=""; MI_OV_KIND=""; MI_CORECLR_CHECK=""; MI_SKIP=""
+    MI_PACK_CORECLR=""; MI_PACK_CLRINTERP=""; MI_PACK_SHA=""; MI_PACK_CHECK=""
+    if [ -n "$INTERP_PACK_TAR" ] || [ -n "$INTERP_HAP" ]; then RUN_C=1; fi
+    if [ "$RUN_C" = 0 ]; then
+        matrix_mrec "run_c_status=skipped(no --interp-pack/--interp-hap)"
+    else
+        log "== 矩阵 Run C/4: 解释器（interp.txt=3） =="
+        if [ -n "$INTERP_PACK_TAR" ]; then
+            if matrix_fetch_pack "$INTERP_PACK_TAR" interp "$TMP/interp-pack"; then
+                MI_PACK_SHA="$MP_SHA"; MI_PACK_CHECK="$MP_CHECK"
+                matrix_mrec "interp_pack_sha256=$MI_PACK_SHA"
+                matrix_mrec "interp_pack_check=$MI_PACK_CHECK"
+                MI_PACK_CORECLR="$(find "$MP_DIR" -name libcoreclr.so -type f 2>/dev/null | head -n1)"
+                MI_PACK_CLRINTERP="$(find "$MP_DIR" -name libclrinterpreter.so -type f 2>/dev/null | head -n1)"
+                _mi_sums="$(find "$MP_DIR" -name SHA256SUMS -type f 2>/dev/null | head -n1)"
+                if [ -n "$_mi_sums" ]; then
+                    _mi_rc=0
+                    ( cd "$(dirname "$_mi_sums")" && sha256sum -c "$(basename "$_mi_sums")" ) > "$MATRIX_DIR/interp-pack-sums.log" 2>&1 || _mi_rc=$?
+                    if [ "$_mi_rc" -eq 0 ]; then
+                        matrix_mrec "interp_pack_members=ok"
+                    else
+                        matrix_mrec "interp_pack_members=fail(rc=$_mi_rc)"
+                        MI_PACK_CORECLR=""
+                    fi
+                else
+                    matrix_mrec "interp_pack_members=<no SHA256SUMS>"
+                fi
+                if [ -z "$MI_PACK_CORECLR" ] || [ -z "$MI_PACK_CLRINTERP" ]; then
+                    C_SKIP="interp pack 缺 libcoreclr.so/libclrinterpreter.so 或成员校验失败"
+                fi
+            else
+                C_SKIP="interp pack sha 校验/解压失败（check=$MP_CHECK）"
+            fi
+        fi
+        if [ -z "$C_SKIP" ] && matrix_build_interp_hap; then
+            matrix_mrec "run_c_overlay=$MI_OV_KIND"
+            matrix_mrec "run_c_hap=$MI_HAP"
+            matrix_mrec "run_c_hap_sha256=$MI_HAP_SHA"
+            matrix_mrec "run_c_signed=$MI_SIGNED"
+            if [ -n "$MI_CORECLR_SHA" ]; then matrix_mrec "run_c_coreclr_sha256=$MI_CORECLR_SHA"; fi
+            if [ -n "$MI_CLRINTERP_SHA" ]; then matrix_mrec "run_c_clrinterpreter_sha256=$MI_CLRINTERP_SHA"; fi
+            matrix_mrec "run_c_coreclr_check=$MI_CORECLR_CHECK"
+            if [ "$MI_SIGNED" = no ]; then
+                warn "   Run C 变体未重签：设备若拒绝安装，请按自签流程重签后以 --interp-hap <重签 hap> 重跑（变体: $MI_HAP）"
+            fi
+            matrix_child c-install "$OUT/run-c-install" --uninstall --install --hap "$MI_HAP"
+            matrix_collect c-install "$OUT/run-c-install"
+            _c_install="$M_INSTALL"
+            matrix_switch_write interp 3
+            matrix_child c "$OUT/run-c" --start --capture "$CAPTURE_SECS"
+            matrix_switch_rm interp
+            matrix_collect c "$OUT/run-c"
+            matrix_emit_run c "$_c_install"
+            C_INTERP="$M_INTERP"; C_CRASH="$M_CRASH"
+        else
+            if [ -z "$C_SKIP" ]; then C_SKIP="$MI_SKIP"; fi
+            matrix_mrec "run_c_status=skipped($C_SKIP)"
+            if [ -n "$INTERP_PACK_TAR" ]; then MATRIX_FAILURES=$((MATRIX_FAILURES + 1)); fi
+        fi
+    fi
+
+    # --- Run D: AOT (optional) --------------------------------------------------------
+    RUN_D=0
+    D_SKIP=""
+    D_HAP=""; D_SIGNED=""
+    if [ -n "$AOT_HAPS_TAR" ]; then RUN_D=1; fi
+    if [ "$RUN_D" = 0 ]; then
+        matrix_mrec "run_d_status=skipped(no --aot-haps)"
+    else
+        log "== 矩阵 Run D/4: AOT =="
+        if matrix_fetch_pack "$AOT_HAPS_TAR" aot "$TMP/aot-haps"; then
+            matrix_mrec "aot_pack_sha256=$MP_SHA"
+            matrix_mrec "aot_pack_check=$MP_CHECK"
+            _md_sums="$(find "$MP_DIR" -name SHA256SUMS -type f 2>/dev/null | head -n1)"
+            if [ -n "$_md_sums" ]; then
+                _md_rc=0
+                ( cd "$(dirname "$_md_sums")" && sha256sum -c "$(basename "$_md_sums")" ) > "$MATRIX_DIR/aot-pack-sums.log" 2>&1 || _md_rc=$?
+                if [ "$_md_rc" -eq 0 ]; then
+                    matrix_mrec "aot_pack_members=ok"
+                else
+                    matrix_mrec "aot_pack_members=fail(rc=$_md_rc)"
+                fi
+            else
+                matrix_mrec "aot_pack_members=<no SHA256SUMS>"
+            fi
+            D_HAP="$(find "$MP_DIR" -name 'hello-maui-app-aot*.hap' -type f 2>/dev/null | LC_ALL=C sort | grep -v -- '-unsigned\.hap$' | head -n1)"
+            D_SIGNED=yes
+            if [ -z "$D_HAP" ]; then
+                D_HAP="$(find "$MP_DIR" -name 'hello-maui-app-aot*.hap' -type f 2>/dev/null | LC_ALL=C sort | head -n1)"
+                D_SIGNED=no
+            fi
+            if [ -z "$D_HAP" ]; then
+                D_SKIP="aot-haps 内没有 hello-maui-app-aot*.hap"
+            fi
+        else
+            D_SKIP="aot-haps sha 校验/解压失败（check=$MP_CHECK）"
+        fi
+        if [ -z "$D_SKIP" ]; then
+            matrix_mrec "run_d_hap=$D_HAP"
+            matrix_mrec "run_d_hap_sha256=$(sha256sum "$D_HAP" | cut -d' ' -f1)"
+            matrix_mrec "run_d_signed=$D_SIGNED"
+            if [ "$D_SIGNED" = no ]; then
+                warn "   Run D 只用未签 AOT hap（asset 内无已签版本）；设备拒绝时按 自签说明.md 重签后再装"
+            fi
+            matrix_child d "$OUT/run-d" --uninstall --install --start --capture "$CAPTURE_SECS" --hap "$D_HAP"
+            matrix_collect d "$OUT/run-d"
+            matrix_emit_run d
+            D_AOT="$M_AOT"; D_CRASH="$M_CRASH"
+        else
+            matrix_mrec "run_d_status=skipped($D_SKIP)"
+            MATRIX_FAILURES=$((MATRIX_FAILURES + 1))
+        fi
+    fi
+
+    # --- restore the stock JIT hap after C/D ------------------------------------------
+    _has_c=0; if [ "$RUN_C" = 1 ] && [ -z "$C_SKIP" ]; then _has_c=1; fi
+    _has_d=0; if [ "$RUN_D" = 1 ] && [ -z "$D_SKIP" ]; then _has_d=1; fi
+    if [ "$_has_c" = 1 ] || [ "$_has_d" = 1 ]; then
+        log "== 矩阵还原: 重装 kit 主 hap（stock JIT） =="
+        matrix_child restore "$OUT/run-restore" --uninstall --install --hap "$MAIN_HAP"
+        matrix_collect restore "$OUT/run-restore"
+        matrix_mrec "restore_install=$M_INSTALL"
+        matrix_mrec "restore_report=$M_REPORT"
+        if [ "$M_INSTALL" != ok ]; then MATRIX_FAILURES=$((MATRIX_FAILURES + 1)); fi
+        if [ "$_has_d" = 1 ]; then
+            matrix_mrec "run_d_restore=$M_INSTALL"
+            if [ "$_has_c" = 1 ]; then matrix_mrec "run_c_restore=deferred(run-d)"; fi
+        else
+            matrix_mrec "run_c_restore=$M_INSTALL"
+        fi
+    fi
+
+    # --- conclusion / recommendation line ----------------------------------------------
+    _concl=""
+    if [ "$A_PROBE" = OK ] && [ "$A_CRASH" = none ]; then
+        _concl="JIT 直起可用（run-a probe 1=OK）"
+    elif [ "$B_PROBE" = OK ] && [ "$B_CRASH" = none ]; then
+        if [ "$A_CRASH" = none ]; then
+            _concl="JIT 直起未达 probe 1=OK（run-a probe=$A_PROBE），xwe=1 下通过（run-b）"
+        else
+            _concl="JIT 直起见 $A_CRASH（run-a），xwe=1 下通过（run-b）→ 建议 xwe.txt A/B 取舍"
+        fi
+    else
+        _concl="JIT 未直起（run-a probe=$A_PROBE crash=$A_CRASH）→ 转 AOT/解释器路线"
+    fi
+    if [ "$RUN_C" = 1 ]; then
+        if [ -n "$C_SKIP" ]; then
+            _concl="$_concl；解释器未测（$C_SKIP）"
+        elif [ "$C_INTERP" = "3(file)" ]; then
+            _concl="$_concl；解释器 3(file) 激活（run-c）"
+        else
+            _concl="$_concl；解释器 interp_mode=$C_INTERP（run-c）"
+        fi
+    else
+        _concl="$_concl；解释器未测（未给 --interp-pack）"
+    fi
+    if [ "$RUN_D" = 1 ]; then
+        if [ -n "$D_SKIP" ]; then
+            _concl="$_concl；AOT 未测（$D_SKIP）"
+        elif [ "$D_AOT" = 1 ]; then
+            _concl="$_concl；AOT 直启 aot=1（run-d）"
+        else
+            _concl="$_concl；AOT aot_route=$D_AOT（run-d）"
+        fi
+    else
+        _concl="$_concl；AOT 未测（未给 --aot-haps）"
+    fi
+    _concl="$_concl。建议：回传 run-a..d 的 tester-report tar + mode-matrix/summary.txt"
+    matrix_mrec "matrix_failures=$MATRIX_FAILURES"
+    matrix_mrec "conclusion=$_concl"
+    log "   结论: $_concl"
+}
+
+if [ "$MODE_MATRIX" = 1 ]; then
+    MATRIX_FAILURES=0
+    if [ "$DO_DEVICE" = 0 ]; then
+        matrix_print_plan
+        if [ -n "$REASON" ]; then
+            log "== dry-run 完成：未执行任何设备操作；无设备（$REASON）=="
+            exit 3
+        fi
+        log "== dry-run 完成：未执行任何设备操作 =="
+        exit 0
+    fi
+    mode_matrix_main
+    log "== 矩阵完成（failures=$MATRIX_FAILURES）: $MATRIX_SUMMARY =="
+    if [ "$MATRIX_FAILURES" -gt 0 ]; then
+        warn "矩阵有 $MATRIX_FAILURES 项未通过（每 Run 的证据 tar 与 summary 仍完整，可直接回传）"
+        exit 1
+    fi
+    exit 0
+fi
 
 # ---- step 0b: uninstall (explicit) ---------------------------------------------------
 # Uninstall log file name for a bundle name. The validator above already guarantees the
