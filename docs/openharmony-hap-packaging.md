@@ -538,6 +538,19 @@ T14/T17 selftests to verify path resolution, `externalApiPaths` injection,
 runtimeOS/compatible-version generation and the abc gate without a compiler. The mock is not a
 compiler: its stubs declare no real kit API.
 
+**CI gate.** `.github/workflows/harmony-flavor.yml` compiles this branch (ui variant) on manual
+dispatch and weekly (Monday 03:17 UTC), deliberately not on PR/push: the sha256-pinned
+command-line-tools archive is ~2.0 GiB, so it is cached by that sha (`actions/cache`) and a cold
+run pays the download while repeat runs only unpack. The job fails red on a download/SDK
+verification failure, any ArkTS error, an abc header other than `13.0.1.0`, a missing
+Map/Live View/CoreSpeech or payload-in-libs literal, or a missing provenance record; the abc and
+`harmony-abc-provenance.json` are uploaded as `harmony-abc-<run id>`. The gate records - but does
+not yet fail on - the Map overlay module probe: the R2-3 `MapOverlay.ets` is copied for this
+branch but does not reach hvigor's compile graph today (no `entry/ets/map/MapOverlay` record; a
+forced static link fails with `10505001 Expected 0 arguments, but got 1` at `MapOverlay.ets:135`),
+so the map literals come from the `pages/Index.ets` probe; flip `HARMONY_REQUIRE_MAP_OVERLAY` in
+the workflow to `1` once that module compiles.
+
 For the tester machine (DevEco Studio + HarmonyOS SDK) the shortest path is Route A with the
 IDE's SDK and hvigor; the existing DevEco fallback still works (create an empty project, copy
 `entry/src/main/ets/{entryability,pages,map}` over its sources, `hvigorw assembleHap`, feed the

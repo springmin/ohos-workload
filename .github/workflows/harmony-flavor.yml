@@ -1,0 +1,402 @@
+name: harmony-flavor
+
+# CI gate for the opt-in HarmonyOS shell branch (ARKTS_SDK_FLAVOR=harmony, see the packaging doc
+# "HarmonyOS SDK branch"). The default OpenHarmony flavor never compiles the kit-only sources -
+# the Map overlay module (MapOverlay.ets: @kit.MapKit + MapComponent), the Live View sink and
+# the CoreSpeechKit TTS probe - because the OpenHarmony SDK does not declare those kits (a
+# literal import would be a hard ArkTS error there). A regression in the harmony-only sources is
+# therefore invisible to every other gate; this workflow compiles the branch against a real
+# DevEco command-line-tools SDK and fails on the first breakage. The default-flavor kit haps are
+# not touched: the job only builds the ui abc under .arkts-build/ + dist/ (both gitignored) and
+# uploads it as evidence.
+#
+# Triggers: workflow_dispatch (manual) and a weekly schedule, deliberately NOT pull_request or
+# push - the gate downloads/unpacks a ~2.0 GiB SDK and a flavor-only regression can wait for the
+# scheduled run rather than spend that cost on every PR. The cache makes a repeat run cheap.
+#
+# SDK acquisition: actions/cache holds the sha256-pinned command-line-tools archive (2.1 GB,
+# cache key = its sha256). scripts/setup-harmony-sdk.sh --download verifies the cached archive
+# and reuses it without network; only a cache miss downloads (~7 GB unpacked, one-time per cache
+# generation). The download step is capped at 60 minutes and the job at 120; a failed download
+# fails the run loudly instead of falling back to an unverified SDK.
+#
+# Assertions (all red on failure):
+#   * hvigor reports "Finished :entry:default@CompileArkTS" and no ArkTS:ERROR line - 0 ArkTS errors
+#   * the abc is a PANDA file whose header version is exactly 13.0.1.0 (the device ceiling)
+#   * the flavor literals are in the bytecode: @kit.MapKit / MapComponent / ./map/MapOverlay,
+#     @kit.LiveViewKit / registerLiveViewSink, @kit.CoreSpeechKit / registerTtsSink /
+#     SystemCapability.AI.TextToSpeech, plus the payload-in-libs contract literals
+#   * dist/ets/harmony-abc-provenance.json is generated (size/sha256/abcVersion, CLT + hvigor
+#     versions, pinned sdk sha256, git commit, pack sources hash) and uploaded with the abc
+#
+# Known gap (2026-09-28): the map literals live in the pages/Index.ets probe - the default-flavor
+# abc carries them too - and the flavor-only MapOverlay.ets is copied by the build but never
+# reaches hvigor's compile graph (no entry/ets/map/MapOverlay record; forcing the static link
+# fails with 10505001 "Expected 0 arguments, but got 1" at MapOverlay.ets:135). The gate probes
+# the record and records it in the provenance but does not fail on it yet: set
+# HARMONY_REQUIRE_MAP_OVERLAY=1 below once the reachability/compile fix lands.
+#
+# Host note: the bundle is linux-x64, which is what ubuntu-latest is; the 2026-09-27 aarch64
+# local rehearsal needed the arm64 es2abc of a local OpenHarmony SDK swapped in (see the
+# packaging doc "Host notes"). This workflow needs none of that.
+#
+# Least privilege: read-only checkout, no secrets, nothing pushed or published.
+on:
+  workflow_dispatch:
+  schedule:
+    # Weekly, Monday 03:17 UTC - the regression net for the flavor sources between manual runs.
+    - cron: '17 3 * * 1'
+
+permissions:
+  contents: read
+
+env:
+  # The branch under test plus the two knobs the 6.0.1.251 bundle's hvigor 6.21.1 requires (the
+  # mirror-pinned 6.26.4 is a DevEco-26 toolchain and rejects this SDK with 00303313).
+  ARKTS_SDK_FLAVOR: harmony
+  ARKTS_SHELL_VARIANT: ui
+  ARKTS_MODEL_VERSION: '6.0.1'
+  ARKTS_COMPATIBLE_SDK_VERSION: '6.0.1(21)'
+  # The R2-3 Map overlay module probe in the gate: 0 records the module-record absence (WARN),
+  # 1 turns it into a failure. Flip once MapOverlay.ets reaches the compile graph (see the
+  # known-gap note above).
+  HARMONY_REQUIRE_MAP_OVERLAY: '0'
+  # Where the pinned command-line-tools bundle is cached and unpacked (workspace-local; the
+  # archive is the cache path below, the unpacked tree is ~7 GB and is not cached).
+  HARMONY_SDK_DIR: ${{ github.workspace }}/.harmony-sdk
+  # Pins kept in sync with scripts/setup-harmony-sdk.sh (CLT_URL_DEFAULT / CLT_SHA_DEFAULT);
+  # bump all three together (script, HARMONY_CLT_*, cache key) and re-verify the abc gate.
+  HARMONY_CLT_URL: 'https://hf-mirror.com/csukuangfj/harmonyos-commandline-tools/resolve/main/commandline-tools-linux-x64-6.0.1.251.zip'
+  HARMONY_CLT_SHA256: 'e971348eabe959b41b1d07fae037b3cc53ab2c0a8306f0895357dd45f98ad421'
+
+jobs:
+  harmony-shell:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - name: Check out the workload
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: '22'
+
+      - name: Cache the pinned DevEco command-line-tools archive
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          # Only the 2.1 GB archive is cached, not the unpacked SDK: the archive is immutable and
+          # its sha256 is the cache key, so a hit can be verified byte-for-byte before use.
+          path: ${{ env.HARMONY_SDK_DIR }}/commandline-tools-linux-x64.zip
+          key: harmony-clt-${{ runner.os }}-${{ env.HARMONY_CLT_SHA256 }}
+          restore-keys: |
+            harmony-clt-${{ runner.os }}-
+
+      - name: Obtain the HarmonyOS SDK (sha256-verified cache hit, else pinned download)
+        timeout-minutes: 60
+        run: |
+          set -euo pipefail
+          sh scripts/setup-harmony-sdk.sh --download "$HARMONY_SDK_DIR" \
+            --url "$HARMONY_CLT_URL" --sha256 "$HARMONY_CLT_SHA256" \
+            | tee "$RUNNER_TEMP/harmony-sdk-setup.txt"
+          grep -E '^(DEVECO_SDK_HOME|ARKTS_HARMONY_SDK_ROOT)=' "$RUNNER_TEMP/harmony-sdk-setup.txt" >> "$GITHUB_ENV"
+
+      - name: Point the build at the SDK's bundled hvigor
+        run: |
+          set -euo pipefail
+          # The build script reads HVIGOR_DIR/node_modules (the project's node_modules link) and
+          # executes HVIGOR_JS. The bundle ships hvigor 6.21.1, the toolchain matching 6.0.1.251;
+          # expose it without a mirror download. The two @ohos links complete the bundle layout:
+          # its hvigorw wrapper normally materialises them in its user-home store (the packages
+          # require each other as siblings), while the raw packages need the parent-level link
+          # for @ohos/hvigor to resolve from hvigor-ohos-plugin's real path.
+          clt="$HARMONY_SDK_DIR/command-line-tools/hvigor"
+          mkdir -p "$clt/node_modules/@ohos"
+          ln -sfn "$clt/hvigor" "$clt/node_modules/@ohos/hvigor"
+          ln -sfn "$clt/hvigor-ohos-plugin" "$clt/node_modules/@ohos/hvigor-ohos-plugin"
+          {
+            echo "HVIGOR_DIR=$clt"
+            echo "HVIGOR_JS=$clt/node_modules/@ohos/hvigor/bin/hvigor.js"
+            echo "NODE_HOME=$(dirname "$(dirname "$(command -v node)")")"
+          } >> "$GITHUB_ENV"
+
+      - name: Show the resolved flavor configuration
+        run: |
+          set -euo pipefail
+          sh scripts/build-arkts-shell.sh --print-config
+
+      - name: Compile the harmony UI shell
+        timeout-minutes: 30
+        run: |
+          set -euo pipefail
+          sh scripts/build-arkts-shell.sh
+
+      - name: Assert the harmony abc gates and write the provenance
+        run: |
+          set -euo pipefail
+          python3 - dist/ets/modules.abc .arkts-build/hvigor-build.log dist/ets/harmony-abc-provenance.json <<'PY'
+          #!/usr/bin/env python3
+          """Harmony-flavor abc gate + provenance (HCI-HARMONY-CI).
+
+          Checks the ui shell compiled by scripts/build-arkts-shell.sh with
+          ARKTS_SDK_FLAVOR=harmony and writes the provenance record the CI job uploads:
+
+            * the artifact is a PANDA abc whose header version equals 13.0.1.0 exactly
+              (the device runtime ceiling; the build script itself only enforces <=)
+            * the flavor literals are in the bytecode: the Map kit probe literals
+              (@kit.MapKit / MapComponent / ./map/MapOverlay), the Live View sink, the
+              CoreSpeechKit TTS probe (@kit.CoreSpeechKit / textToSpeech syscap / sink)
+              and the payload-in-libs literals the OpenHarmony shell contract requires
+            * the hvigor log reports a finished CompileArkTS, no failed CompileArkTS and
+              no ArkTS:ERROR line
+            * provenance: size/sha256/abcVersion, the command-line-tools + hvigor
+              versions, the pinned SDK bundle sha256, the git commit and a sources hash
+              over the shell pack templates (the same walk scripts/build-arkts-shell.sh
+              uses for its cross-pack identity gate)
+
+          Exit 0 only when every gate passed. The provenance JSON is written either way
+          (a failed run still yields the evidence record).
+
+          Usage (the workflow embeds this script on stdin):
+            python3 - <abc> <hvigor-log> <provenance.json> [expected-version]
+          """
+          import hashlib
+          import json
+          import os
+          import subprocess
+          import sys
+
+          ABC = sys.argv[1] if len(sys.argv) > 1 else 'dist/ets/modules.abc'
+          LOG = sys.argv[2] if len(sys.argv) > 2 else '.arkts-build/hvigor-build.log'
+          PROV = sys.argv[3] if len(sys.argv) > 3 else 'dist/ets/harmony-abc-provenance.json'
+          EXPECTED_BC = sys.argv[4] if len(sys.argv) > 4 else '13.0.1.0'
+
+          # Flavor-specific literals. map/tts are the R2-3 + A2-TTS paths whose sources only
+          # compile on this branch; liveview is the R2-SHELL-EXT sink. The payload group is the
+          # OpenHarmony shell contract every variant must carry.
+          #
+          # Known gap (HCI-HARMONY-CI, 2026-09-28): the map literals live in the pages/Index.ets *probe*
+          # (the default-flavor abc carries them too), and the flavor-only MapOverlay.ets module is copied
+          # by the build script but currently never reaches hvigor's compile graph - the abc has no
+          # entry/ets/map/MapOverlay record, and forcing it into the graph fails with 10505001 "Expected 0
+          # arguments, but got 1" at MapOverlay.ets:135 (implicit NodeController constructor). The probe
+          # below records the module's presence but only fails when HARMONY_REQUIRE_MAP_OVERLAY=1, so the
+          # gate can be flipped to enforcement once the reachability/compile fix lands.
+          LITERALS = (
+              ('map', ('@kit.MapKit', 'MapComponent', 'MapOverlay', './map/MapOverlay')),
+              ('tts', ('@kit.CoreSpeechKit', 'CoreSpeechKit',
+                       'SystemCapability.AI.TextToSpeech', 'registerTtsSink')),
+              ('liveview', ('@kit.LiveViewKit', 'registerLiveViewSink')),
+              ('payload', ('dotnet-payload', 'bundleCodeDir', 'payload-in-libs', 'dotnet.marker')),
+          )
+          MAP_MODULE_PROBE = 'entry/ets/map/MapOverlay'  # non-normalized OHM record suffix
+          REQUIRE_MAP_OVERLAY = os.environ.get('HARMONY_REQUIRE_MAP_OVERLAY') == '1'
+
+          # The repository root (for the pack sources hash and the git record); CI runs from it and the
+          # local rehearsal does too.
+          ROOT = os.environ.get('GITHUB_WORKSPACE') or os.getcwd()
+          if not (os.path.isdir(os.path.join(ROOT, '.git')) and os.path.isdir(os.path.join(ROOT, 'packs'))):
+              sys.exit('ERROR: run from the ohos-workload repository root (or set GITHUB_WORKSPACE)')
+
+          failures = []
+
+
+          def sha256_file(path):
+              h = hashlib.sha256()
+              with open(path, 'rb') as f:
+                  for chunk in iter(lambda: f.read(1 << 20), b''):
+                      h.update(chunk)
+              return h.hexdigest()
+
+
+          # ---- the compiled artifact --------------------------------------------------------------
+          raw = b''
+          bc_version = '<unreadable>'
+          if not os.path.isfile(ABC):
+              failures.append('missing artifact: %s' % ABC)
+          else:
+              with open(ABC, 'rb') as f:
+                  raw = f.read()
+              if raw[:5] != b'PANDA':
+                  failures.append('%s is not an abc file (missing the PANDA header)' % ABC)
+              else:
+                  bc_version = '.'.join(str(b) for b in raw[0x0c:0x10])
+                  if bc_version != EXPECTED_BC:
+                      failures.append('%s abc version is %s, expected exactly %s'
+                                      % (ABC, bc_version, EXPECTED_BC))
+
+          literal_report = {}
+          for group, lits in LITERALS:
+              missing = [lit for lit in lits if lit.encode() not in raw]
+              literal_report[group] = {'checked': list(lits), 'missing': missing}
+              for lit in missing:
+                  failures.append('%s abc lacks the %s literal: %s' % (ABC, group, lit))
+
+          # The flavor-only Map overlay module: copied by the build for this flavor, but reaching the abc
+          # requires the module record (see the known-gap note above). Recorded always; fatal only when
+          # HARMONY_REQUIRE_MAP_OVERLAY=1.
+          map_module = {
+              'file': 'entry/src/main/ets/map/MapOverlay.ets',
+              'recordProbe': MAP_MODULE_PROBE,
+              'compiled': MAP_MODULE_PROBE.encode() in raw,
+              'symbols': {sym: sym.encode() in raw for sym in ('mapOverlayView', 'markerClick', 'cameraIdle')},
+          }
+          if REQUIRE_MAP_OVERLAY and not map_module['compiled']:
+              failures.append('%s has no %s record: the Map overlay module did not reach the compile graph'
+                              % (ABC, MAP_MODULE_PROBE))
+
+          # ---- the hvigor compile log -------------------------------------------------------------
+          log_text = ''
+          if not os.path.isfile(LOG):
+              failures.append('missing hvigor log: %s' % LOG)
+          else:
+              with open(LOG, encoding='utf-8', errors='replace') as f:
+                  log_text = f.read()
+              if 'Finished :entry:default@CompileArkTS' not in log_text:
+                  failures.append('%s has no "Finished :entry:default@CompileArkTS" line' % LOG)
+              if 'Failed :entry:default@CompileArkTS' in log_text:
+                  failures.append('%s reports a failed CompileArkTS' % LOG)
+              arkts_errors = [ln.strip() for ln in log_text.splitlines() if 'ArkTS:ERROR' in ln]
+              if arkts_errors:
+                  failures.append('%s reports %d ArkTS error line(s), first: %s'
+                                  % (LOG, len(arkts_errors), arkts_errors[0][:200]))
+          arkts_error_count = sum(1 for ln in log_text.splitlines() if 'ArkTS:ERROR' in ln)
+
+          # ---- provenance helpers -----------------------------------------------------------------
+          def first_line(path, needle):
+              try:
+                  with open(path, encoding='utf-8', errors='replace') as f:
+                      for line in f:
+                          if needle in line:
+                              return line.split(':', 1)[1].strip() if ':' in line else line.strip()
+              except OSError:
+                  pass
+              return ''
+
+
+          sdk_dir = os.environ.get('HARMONY_SDK_DIR', '')
+          clt_dir = os.path.join(sdk_dir, 'command-line-tools') if sdk_dir else ''
+          clt_version = first_line(os.path.join(clt_dir, 'version.txt'), 'Version:')
+          clt_hvigor = first_line(os.path.join(clt_dir, 'version.txt'), 'hvigor')
+          if not clt_hvigor:
+              for candidate in (os.path.join(clt_dir, 'hvigor', 'hvigor', 'package.json'),
+                                os.path.join(clt_dir, 'hvigor', 'node_modules', '@ohos', 'hvigor', 'package.json')):
+                  try:
+                      clt_hvigor = json.load(open(candidate)).get('version', '')
+                      break
+                  except (OSError, ValueError):
+                      continue
+
+
+          def sources_hash(pack):
+              """The walk scripts/build-arkts-shell.sh's pack_sources_hash uses: rel path + content."""
+              ets = os.path.join(ROOT, 'packs/Microsoft.OpenHarmony.Sdk', pack, 'templates/ets')
+              h = hashlib.sha256()
+              for dirpath, dirnames, filenames in os.walk(ets):
+                  dirnames.sort()
+                  for name in sorted(filenames):
+                      if not name.endswith('.ets'):
+                          continue
+                      path = os.path.join(dirpath, name)
+                      rel = os.path.relpath(path, os.path.join(ROOT, 'packs/Microsoft.OpenHarmony.Sdk', pack,
+                                                               'templates')).replace(os.sep, '/')
+                      h.update(rel.encode())
+                      h.update(b'\0')
+                      h.update(hashlib.sha256(open(path, 'rb').read()).digest())
+              return h.hexdigest()
+
+
+          def git(*args):
+              try:
+                  out = subprocess.run(('git',) + args, cwd=ROOT, capture_output=True, text=True, timeout=30)
+                  return out.stdout.strip() if out.returncode == 0 else ''
+              except (OSError, subprocess.SubprocessError):
+                  return ''
+
+
+          provenance = {
+              'schema': 1,
+              'artifact': os.path.basename(ABC),
+              'flavor': 'harmony',
+              'variant': os.environ.get('ARKTS_SHELL_VARIANT', 'ui'),
+              'bytes': len(raw),
+              'sha256': hashlib.sha256(raw).hexdigest() if raw else '',
+              'abcVersion': bc_version,
+              'compiler': {
+                  'script': 'scripts/build-arkts-shell.sh',
+                  'compatibleSdkVersion': os.environ.get('ARKTS_COMPATIBLE_SDK_VERSION', ''),
+                  'modelVersion': os.environ.get('ARKTS_MODEL_VERSION', ''),
+                  'clt': clt_version,
+                  'hvigor': clt_hvigor,
+              },
+              'sdkBundle': {
+                  'sha256': os.environ.get('HARMONY_CLT_SHA256', ''),
+                  'url': os.environ.get('HARMONY_CLT_URL', ''),
+              },
+              'pack': '1.0.0-preview.24',
+              'sourcesHash': sources_hash('1.0.0-preview.24'),
+              'git': {
+                  'commit': os.environ.get('GITHUB_SHA') or git('rev-parse', 'HEAD'),
+                  'ref': os.environ.get('GITHUB_REF_NAME') or git('rev-parse', '--abbrev-ref', 'HEAD'),
+                  'dirty': bool(git('status', '--porcelain')),
+              },
+              'compile': {
+                  'finished': 'entry:default@CompileArkTS' if 'Finished :entry:default@CompileArkTS' in log_text else '',
+                  'arktsErrors': arkts_error_count,
+                  'log': LOG,
+              },
+              'literals': literal_report,
+              'mapOverlayModule': dict(map_module, required=REQUIRE_MAP_OVERLAY),
+              'run': {
+                  'workflow': os.environ.get('GITHUB_WORKFLOW', '(local rehearsal)'),
+                  'runId': os.environ.get('GITHUB_RUN_ID', ''),
+              },
+              'gate': 'pass' if not failures else 'fail',
+              'errors': failures,
+          }
+
+          prov_dir = os.path.dirname(PROV)
+          if prov_dir:
+              os.makedirs(prov_dir, exist_ok=True)
+          with open(PROV, 'w') as f:
+              json.dump(provenance, f, indent=2, sort_keys=True)
+              f.write('\n')
+
+          # ---- report -----------------------------------------------------------------------------
+          print('harmony abc gate: %s' % ABC)
+          print('  bytes=%d sha256=%s abcVersion=%s (expected exactly %s)'
+                % (len(raw), provenance['sha256'], bc_version, EXPECTED_BC))
+          for group, _ in LITERALS:
+              checked = literal_report[group]
+              print('  literals[%s]: %d checked, missing=%s'
+                    % (group, len(checked['checked']), ','.join(checked['missing']) or 'none'))
+          if map_module['compiled']:
+              print('  map overlay module: %s record present (compiled into the abc)' % MAP_MODULE_PROBE)
+          else:
+              print('  map overlay module: %s record ABSENT%s - the R2-3 module is copied but not in the '
+                    'compile graph (known gap; set HARMONY_REQUIRE_MAP_OVERLAY=1 to enforce)'
+                    % (MAP_MODULE_PROBE, ' (required)' if REQUIRE_MAP_OVERLAY else ' (recorded)'))
+          print('  compile log: %s (finished=%s, arktsErrors=%d)'
+                % (LOG, provenance['compile']['finished'] or 'no', arkts_error_count))
+          print('  provenance written: %s (gate=%s)' % (PROV, provenance['gate']))
+          if failures:
+              for err in failures:
+                  print('ERROR: %s' % err, file=sys.stderr)
+              print('ERROR: harmony abc gate failed (%d failure(s))' % len(failures), file=sys.stderr)
+              sys.exit(1)
+          print('OK: harmony flavor abc gate passed and provenance written')
+          PY
+          cat dist/ets/harmony-abc-provenance.json
+
+      - name: Upload the harmony abc and its provenance
+        # Evidence even for a failed gate (the provenance records the failure).
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: harmony-abc-${{ github.run_id }}
+          path: |
+            dist/ets/modules.abc
+            dist/ets/harmony-abc-provenance.json
+          if-no-files-found: warn
+          retention-days: 14
