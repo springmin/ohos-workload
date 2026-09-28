@@ -1,9 +1,9 @@
 # arkts-host — ArkWeb host for a published Blazor site
 
 A minimal ArkTS application (module `entry`, API 26, `compatibleSdkVersion 18`) that serves an
-embedded Blazor WebAssembly site from `resources/rawfile` — no local HTTP server, no network
-access (the `ohos.permission.INTERNET` request in `module.json5` is only for development
-against a real origin).
+embedded Blazor WebAssembly site from `resources/rawfile` — no local HTTP server and no
+network access (the module requests no permissions at all; a development variant that points
+ArkWeb at a real origin would add `ohos.permission.INTERNET`).
 
 ```
 project/            ArkTS sources: EntryAbility + pages/Index.ets (the serving page)
