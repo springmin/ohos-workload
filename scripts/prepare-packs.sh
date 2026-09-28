@@ -22,6 +22,10 @@ set -e
 W="$(cd "$(dirname "$0")/.." && pwd)"
 VER=1.0.0-preview.24
 DOTNET="${DOTNET:-$HOME/.dotnet/dotnet}"
+# Shared, overridable dotnet environment (MSBuild server/node reuse off, a TMPDIR that can host
+# the server socket) for the builds below; see "Known environment quirks" in
+# docs/openharmony-hap-packaging.md.
+. "$W/scripts/lib-dotnet-env.sh" "$W"
 RTV=11.0.0-rc.1.26451.109
 # sha256 (64 hex chars) of Microsoft.NETCore.App.Runtime.openharmony-arm64.11.0.0-rc.1.26451.109.nupkg
 # on the v11.0.0-rc.1.26451.109-openharmony release; cross-check with

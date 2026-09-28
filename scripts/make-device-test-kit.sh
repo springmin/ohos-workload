@@ -50,6 +50,10 @@ warn() { printf '[%s] WARN: %s\n' "$(date '+%H:%M:%S')" "$*" >&2; }
 W="$(cd "$(dirname "$0")/.." && pwd)"
 PROJ="$W/test/hello-maui-app"
 DOTNET="${DOTNET:-dotnet}"
+# Shared, overridable dotnet environment (MSBuild server/node reuse off, a TMPDIR that can host
+# the server socket) for the publishes below; see "Known environment quirks" in
+# docs/openharmony-hap-packaging.md.
+. "$W/scripts/lib-dotnet-env.sh" "$W"
 DEFAULT_KIT_DIR=/data/storage/el2/base/tmp/opencode/device-test-kit
 KIT_DIR="${DEVICE_TEST_KIT_DIR:-$DEFAULT_KIT_DIR}"
 DIST_DIR="$W/dist"

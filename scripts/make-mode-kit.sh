@@ -37,6 +37,10 @@ die()  { printf '[%s] ERROR: %s\n' "$(date '+%H:%M:%S')" "$*" >&2; exit 1; }
 
 W="$(cd "$(dirname "$0")/.." && pwd)"
 DOTNET="${DOTNET:-dotnet}"
+# Shared, overridable dotnet environment (MSBuild server/node reuse off, a TMPDIR that can host
+# the server socket) for the publishes below; see "Known environment quirks" in
+# docs/openharmony-hap-packaging.md.
+. "$W/scripts/lib-dotnet-env.sh" "$W"
 SIGN_SCRIPT="${SIGN_FOR_DEVICE:-$W/scripts/sign-for-device.sh}"
 
 PROJ=""
