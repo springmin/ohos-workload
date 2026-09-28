@@ -11,6 +11,13 @@
 // .br/.gz file (a full publish does), the compressed variant is served with the matching
 // Content-Encoding, exactly like a static web server would.
 //
+// Security: every request path is validated before it reaches the resource manager
+// (resolveRawfilePath below: decoded-encoding, '..'/backslash/NUL/absolute rejection, and a
+// final resources/rawfile/blazor/ prefix check; violations are a bare 404). Served assets
+// carry X-Content-Type-Options: nosniff, Vary: Accept-Encoding and Cache-Control: no-cache,
+// and the HTML shell carries a minimal CSP (SEC-SCAN-3 S3-AW1/S3-AW2). The validator is
+// extracted and unit-tested by test/rawfile-path.test.mjs.
+//
 // Diagnostic markers: the page reports BLZ_* console messages (BLZ_BOOT after window load,
 // BLZ_RENDERED after the first Blazor render, BLZ_ERROR on failures) and they are forwarded
 // to hilog under TAG, so a tester can check `hilog | grep BlazorWebHost` for a machine
@@ -18,12 +25,106 @@
 import { webview as web_webview } from '@kit.ArkWeb';
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import { common } from '@kit.AbilityKit';
+import { util } from '@kit.ArkTS';
 import type { resourceManager } from '@kit.LocalizationKit';
 
 const DOMAIN = 0x0002;
 const TAG = 'BlazorWebHost';
 const ORIGIN = 'https://blazor.local/';
-const ROOT = 'blazor/';
+// Per-launch marker token (SEC-SCAN-3 S3-PRB2): the initial page URL carries it and every
+// forwarded BLZ_* marker is stamped with it, so the tester-run probe can require a value that
+// another process writing BLZ_BOOT into hilog cannot know. The probe's host-pid binding is the
+// primary anti-forgery check; this token adds a second, independent one.
+const BLZ_NONCE_QUERY = 'blz_nonce';
+// Minimal CSP for the served Blazor WASM shell. script-src keeps 'unsafe-inline' because the
+// published index.html registers the BLZ_* window listeners inline and 'wasm-unsafe-eval'
+// because the .NET WASM runtime starts from blazor.webassembly*.js (no 'unsafe-eval'). The
+// other directives stay at 'self' (plus data: for inline images); object-src/frame-ancestors
+// are off, and base-uri keeps the site's <base href="/"> same-origin.
+const CONTENT_SECURITY_POLICY = "default-src 'self'; script-src 'self' 'wasm-unsafe-eval' 'unsafe-inline'; " +
+  "style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src 'self'; " +
+  "object-src 'none'; frame-ancestors 'none'; base-uri 'self'";
+
+// >>> rawfile-path (node-testable block; test/rawfile-path.test.mjs extracts it verbatim)
+// Rawfile path validation for the onInterceptRequest server (SEC-SCAN-3 S3-AW1). The request
+// path (origin, query and fragment already removed) is percent-decoded in bounded rounds, so
+// every encoding variant of '..' ('%2e%2e' and its double-encoded form), a backslash ('%5c'),
+// NUL ('%00') and an absolute path is judged on decoded text. '.' and empty segments are
+// normalized away, '..' is rejected outright, and the result must still sit under
+// resources/rawfile/blazor/ (the prefix check is the final belt-and-braces).
+const RAWFILE_PREFIX = 'resources/rawfile/blazor/';
+const INDEX_FILE = RAWFILE_PREFIX + 'index.html';
+
+function hasEscapeSequence(text: string): boolean {
+  for (let i: number = 0; i + 2 < text.length; i++) {
+    if (text.charAt(i) === '%') {
+      const a: string = text.charAt(i + 1).toLowerCase();
+      const b: string = text.charAt(i + 2).toLowerCase();
+      const aHex: boolean = (a >= '0' && a <= '9') || (a >= 'a' && a <= 'f');
+      const bHex: boolean = (b >= '0' && b <= '9') || (b >= 'a' && b <= 'f');
+      if (aHex && bHex) {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
+// Decodes while complete %XX escapes remain (at most three rounds: every realistic double
+// encoding collapses by then). undefined = malformed escape somewhere along the way (fail
+// closed); a trailing bare '%' or '%2' is not an escape and stays literal.
+function decodePathFully(path: string): string | undefined {
+  let current: string = path;
+  for (let round: number = 0; round < 3; round++) {
+    if (!hasEscapeSequence(current)) {
+      return current;
+    }
+    let next: string;
+    try {
+      next = decodeURIComponent(current);
+    } catch (error) {
+      return undefined;
+    }
+    if (next === current) {
+      return current;
+    }
+    current = next;
+  }
+  return hasEscapeSequence(current) ? undefined : current;
+}
+
+// Maps a request path to the rawfile-relative asset path, or undefined when the request must
+// be rejected. An empty path (the origin root) becomes the app shell.
+function resolveRawfilePath(path: string): string | undefined {
+  const decoded: string | undefined = decodePathFully(path);
+  if (decoded === undefined) {
+    return undefined;
+  }
+  if (decoded.indexOf('\0') >= 0 || decoded.indexOf('\\') >= 0 || decoded.charAt(0) === '/') {
+    return undefined;
+  }
+  const segments: string[] = decoded.split('/');
+  const kept: string[] = [];
+  for (let i: number = 0; i < segments.length; i++) {
+    const segment: string = segments[i];
+    if (segment.length === 0 || segment === '.') {
+      continue;
+    }
+    if (segment === '..') {
+      return undefined;
+    }
+    kept.push(segment);
+  }
+  if (kept.length === 0) {
+    return INDEX_FILE;
+  }
+  const candidate: string = RAWFILE_PREFIX + kept.join('/');
+  if (candidate.indexOf(RAWFILE_PREFIX) !== 0 || candidate.indexOf('/../') >= 0) {
+    return undefined;
+  }
+  return candidate;
+}
+// <<< rawfile-path
 
 function mimeTypeOf(path: string): string {
   const lower: string = path.toLowerCase();
@@ -86,6 +187,17 @@ class ServedFile {
 struct Index {
   private controller: web_webview.WebviewController = new web_webview.WebviewController();
   private rawFiles: resourceManager.ResourceManager | undefined = undefined;
+  private sessionNonce: string = '';
+
+  // The token is created once per host page instance: a reload of the same page keeps it, a
+  // fresh instance (relaunch) gets a new one. The probe binds the markers it reads in one
+  // launch window to the token that launch announced.
+  private nonceOrCreate(): string {
+    if (this.sessionNonce.length === 0) {
+      this.sessionNonce = util.generateRandomUUID(true);
+    }
+    return this.sessionNonce;
+  }
 
   private resourceManagerOrUndefined(): resourceManager.ResourceManager | undefined {
     if (this.rawFiles === undefined) {
@@ -95,9 +207,11 @@ struct Index {
     return this.rawFiles;
   }
 
+  // path is already an absolute rawfile path (resources/rawfile/...), produced only by
+  // resolveRawfilePath.
   private readRawFile(manager: resourceManager.ResourceManager, path: string): Uint8Array | undefined {
     try {
-      return manager.getRawFileContentSync(ROOT + path);
+      return manager.getRawFileContentSync(path);
     } catch {
       return undefined;
     }
@@ -150,7 +264,38 @@ struct Index {
     return new ServedFile(this.readRawFile(manager, path), '');
   }
 
-  // https://blazor.local/<path>[?query][#fragment] -> rawfile blazor/<path>
+  // Security headers for every served asset (SEC-SCAN-3 S3-AW2): nosniff keeps the declared
+  // MIME type authoritative, Vary keeps caches from mixing the br/gzip and identity variants
+  // of one URL, and the HTML shell additionally carries the minimal CSP above.
+  private successHeaders(path: string, coding: string): Header[] {
+    const headers: Header[] = [{
+      headerKey: 'X-Content-Type-Options',
+      headerValue: 'nosniff',
+    }, {
+      headerKey: 'Cache-Control',
+      headerValue: 'no-cache',
+    }, {
+      headerKey: 'Vary',
+      headerValue: 'Accept-Encoding',
+    }];
+    if (coding.length > 0) {
+      headers.push({
+        headerKey: 'Content-Encoding',
+        headerValue: coding,
+      });
+    }
+    if (path.toLowerCase().endsWith('.html')) {
+      headers.push({
+        headerKey: 'Content-Security-Policy',
+        headerValue: CONTENT_SECURITY_POLICY,
+      });
+    }
+    return headers;
+  }
+
+  // https://blazor.local/<path>[?query][#fragment] -> rawfile blazor/<path>. A path the
+  // validator rejects (.., backslash, NUL, absolute, undecodable) is answered with a bare 404,
+  // so the response never reveals which rule it hit.
   private serveFile(request: WebResourceRequest, url: string): WebResourceResponse {
     let path: string = url.startsWith(ORIGIN) ? url.substring(ORIGIN.length) : '';
     const query: number = path.indexOf('?');
@@ -165,8 +310,10 @@ struct Index {
     if (cut >= 0) {
       path = path.substring(0, cut);
     }
-    if (path.length === 0) {
-      path = 'index.html';
+
+    let resolved: string | undefined = resolveRawfilePath(path);
+    if (resolved === undefined) {
+      return this.errorResponse(404);
     }
 
     const manager: resourceManager.ResourceManager | undefined = this.resourceManagerOrUndefined();
@@ -177,11 +324,11 @@ struct Index {
     const acceptBr: boolean = this.acceptsEncoding(request, 'br');
     const acceptGzip: boolean = this.acceptsEncoding(request, 'gzip');
 
-    let served: ServedFile = this.readNegotiated(manager, path, acceptBr, acceptGzip);
+    let served: ServedFile = this.readNegotiated(manager, resolved, acceptBr, acceptGzip);
     if (served.bytes === undefined) {
       // SPA fallback: a route without a matching rawfile renders the app shell.
-      path = 'index.html';
-      served = this.readNegotiated(manager, path, acceptBr, acceptGzip);
+      resolved = INDEX_FILE;
+      served = this.readNegotiated(manager, resolved, acceptBr, acceptGzip);
     }
     if (served.bytes === undefined) {
       return this.errorResponse(404);
@@ -189,29 +336,25 @@ struct Index {
 
     const response: WebResourceResponse = new WebResourceResponse();
     response.setResponseCode(200);
-    response.setResponseMimeType(mimeTypeOf(path));
+    response.setResponseMimeType(mimeTypeOf(resolved));
     response.setResponseEncoding('utf-8');
-    if (served.coding.length > 0) {
-      const headers: Header[] = [{
-        headerKey: 'Content-Encoding',
-        headerValue: served.coding,
-      }, {
-        headerKey: 'Cache-Control',
-        headerValue: 'no-cache',
-      }];
-      response.setResponseHeader(headers);
-    }
+    response.setResponseHeader(this.successHeaders(resolved, served.coding));
     response.setResponseData(served.bytes.buffer as ArrayBuffer);
     return response;
   }
 
   build() {
     Column() {
-      Web({ src: ORIGIN, controller: this.controller })
+      Web({ src: ORIGIN + '?' + BLZ_NONCE_QUERY + '=' + this.nonceOrCreate(), controller: this.controller })
         .width('100%')
         .height('100%')
         .javaScriptAccess(true)
         .domStorageAccess(true)
+        .onPageBegin(() => {
+          // Announced before the page scripts run, so the tester-run probe can bind the
+          // markers it reads later in the same dump to this launch's token.
+          hilog.info(DOMAIN, TAG, 'session nonce: %{public}s', this.nonceOrCreate());
+        })
         .onInterceptRequest((event) => {
           try {
             const url: string = event.request.getRequestUrl();
@@ -230,7 +373,9 @@ struct Index {
           // browser console output as well.
           const message: string = event.message.getMessage();
           if (message.startsWith('BLZ_')) {
-            hilog.info(DOMAIN, TAG, 'marker: %{public}s', message);
+            // The marker keeps its BLZ_* prefix and gains the session token; the probe
+            // requires both the prefix and the token it read from the announcement.
+            hilog.info(DOMAIN, TAG, 'marker: %{public}s [blz:%{public}s]', message, this.sessionNonce);
           }
           return false;
         })

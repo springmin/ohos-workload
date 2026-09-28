@@ -20,7 +20,16 @@ pack-host.sh        stage project/, embed a site, build with hvigor, pack + sign
 https://blazor.local/<path>   ->  resources/rawfile/blazor/<path>
 ```
 
-- Unknown paths fall back to `blazor/index.html` (client-side routing keeps working).
+- Unknown paths fall back to `blazor/index.html` (client-side routing keeps working), but a
+  path that fails validation is a bare 404: `.` (dot) and empty segments are normalized away,
+  `..` segments, backslashes, NUL bytes, absolute paths and undecodable `%XX` escapes are
+  rejected on the percent-decoded text (so `%2e%2e` and `%252e%252e` are covered), and the
+  result must still sit under `resources/rawfile/blazor/` (SEC-SCAN-3 S3-AW1). The validator
+  is the `rawfile-path` block in `pages/Index.ets`; `test/run-tests.sh` extracts and unit-tests
+  it offline (`node >= 23.6`, 12 malicious + 9 legal cases + header source pins).
+- Served assets carry `X-Content-Type-Options: nosniff`, `Vary: Accept-Encoding` and
+  `Cache-Control: no-cache`; the HTML shell additionally carries a minimal CSP (SEC-SCAN-3
+  S3-AW2).
 - MIME types: `text/html`, `text/javascript`, `application/json`, `application/wasm`,
   `application/octet-stream` (wasm .dat / fingerprinted payloads), images and fonts.
 - When the request's `Accept-Encoding` carries `br`/`gzip` and the site ships the sibling
