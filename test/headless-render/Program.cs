@@ -223,6 +223,48 @@ if (!formattedOk)
     failures++;
 }
 
+// T5: the compositor's own layout semantics. Z-order stacks siblings by ZIndex (the highest is
+// painted last) rather than by insertion order; a view's Clip excludes the clipped-away pixels.
+// The probes append below the audit controls, so every earlier frame and sample is unchanged;
+// the page grows past the viewport and the managed rasterizer grows with it.
+var zOrderGrid = new Grid { HeightRequest = 90 };
+var zFirst = new BoxView { Color = Colors.OrangeRed };
+var zSecond = new BoxView { Color = Colors.MediumSeaGreen, ZIndex = 1 };
+zOrderGrid.Add(zFirst);
+zOrderGrid.Add(zSecond);
+root.Add(zOrderGrid);
+var zOrderReversed = new Grid { HeightRequest = 90 };
+var zReversedFirst = new BoxView { Color = Colors.OrangeRed, ZIndex = 1 };
+var zReversedSecond = new BoxView { Color = Colors.MediumSeaGreen };
+zOrderReversed.Add(zReversedFirst);
+zOrderReversed.Add(zReversedSecond);
+root.Add(zOrderReversed);
+var clippedProbe = new BoxView
+{
+    Color = Colors.Gold,
+    HeightRequest = 80,
+    WidthRequest = 300,
+    HorizontalOptions = LayoutOptions.Start,
+};
+clippedProbe.Clip = new Microsoft.Maui.Controls.Shapes.RectangleGeometry { Rect = new Rect(0, 0, 300, 40) };
+root.Add(clippedProbe);
+host.Arrange(1080, 1920);
+RenderFresh();
+Rect zOrderFrame = zOrderGrid.Frame;
+Check("z-order paints the higher ZIndex last",
+    canvas.GetPixel((int)(zOrderFrame.X + zOrderFrame.Width / 2), (int)(zOrderFrame.Y + zOrderFrame.Height / 2)),
+    Colors.MediumSeaGreen);
+Rect zOrderReversedFrame = zOrderReversed.Frame;
+Check("z-order overrides insertion order",
+    canvas.GetPixel((int)(zOrderReversedFrame.X + zOrderReversedFrame.Width / 2), (int)(zOrderReversedFrame.Y + zOrderReversedFrame.Height / 2)),
+    Colors.OrangeRed);
+Rect clippedFrame = clippedProbe.Frame;
+Check("clip paints the covered half",
+    canvas.GetPixel((int)(clippedFrame.X + clippedFrame.Width / 2), (int)(clippedFrame.Y + 10)), Colors.Gold);
+Check("clip skips the uncovered half",
+    canvas.GetPixel((int)(clippedFrame.X + clippedFrame.Width / 2), (int)(clippedFrame.Y + clippedFrame.Height - 10)),
+    Colors.DarkSlateBlue);
+
 Console.WriteLine($"  drawn pixel writes: {canvas.DrawnPixels}");
 Color Blend(Color background, Color foreground, float alpha) => new(
     (float)(foreground.Red * alpha + background.Red * (1 - alpha)),

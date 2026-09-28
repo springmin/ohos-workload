@@ -154,7 +154,9 @@ public class OpenHarmonyCanvas : ICanvas
         HostCanvas.ClipRect(topLeft.X, topLeft.Y, bottomRight.X - topLeft.X, bottomRight.Y - topLeft.Y, subtract: true);
     }
 
-    public void ClipPath(PathF path, WindingMode windingMode = WindingMode.NonZero)
+    // Virtual: the headless pixel suite substitutes a managed rasterizer that models the clip
+    // (the device path keeps the native ClipPolyline implementation).
+    public virtual void ClipPath(PathF path, WindingMode windingMode = WindingMode.NonZero)
         => HostCanvas.ClipPolyline(Flatten(path));
 
     public virtual void ClipRectangle(float x, float y, float width, float height)

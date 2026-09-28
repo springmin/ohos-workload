@@ -16,6 +16,12 @@ public sealed class HeadlessCanvas : MauiCanvas
 
     public int DrawnPixels { get; private set; }
 
+    // Active clip in device space (rectangular approximation: the suite's clips are rectangles
+    // and the bounding box of a rectangular ClipPath is exactly the clip). The compositor's
+    // clips are push/pop through SaveState/RestoreState, so the clip travels with the state.
+    private bool _hasClip;
+    private float _clipLeft, _clipTop, _clipRight, _clipBottom;
+
     /// <summary>
     /// Clears the raster and the drawing state so the next render starts like a device frame
     /// (the native canvas resets in Begin()).
@@ -28,6 +34,7 @@ public sealed class HeadlessCanvas : MauiCanvas
         _offsetX = 0;
         _offsetY = 0;
         Alpha = 1f;
+        _hasClip = false;
     }
 
     public Color GetPixel(int x, int y)
@@ -63,6 +70,11 @@ public sealed class HeadlessCanvas : MauiCanvas
     {
         if (x < 0 || y < 0)
         {
+            return;
+        }
+        if (_hasClip && (x < _clipLeft || x >= _clipRight || y < _clipTop || y >= _clipBottom))
+        {
+            // Outside the active clip: the compositor's shape clip mirrors the device rasterizer.
             return;
         }
         EnsureSize(x, y);
@@ -217,10 +229,11 @@ public sealed class HeadlessCanvas : MauiCanvas
     }
 
 
-    private readonly Stack<(float OffsetX, float OffsetY, Color Fill, Color Stroke, Color Font, float Alpha)> _states = new();
+    private readonly Stack<(float OffsetX, float OffsetY, Color Fill, Color Stroke, Color Font, float Alpha, bool HasClip, float ClipL, float ClipT, float ClipR, float ClipB)> _states = new();
 
     public override void SaveState()
-        => _states.Push((_offsetX, _offsetY, FillColor, StrokeColor, FontColor, Alpha));
+        => _states.Push((_offsetX, _offsetY, FillColor, StrokeColor, FontColor, Alpha,
+            _hasClip, _clipLeft, _clipTop, _clipRight, _clipBottom));
 
     public override bool RestoreState()
     {
@@ -228,13 +241,19 @@ public sealed class HeadlessCanvas : MauiCanvas
         {
             return false;
         }
-        (float ox, float oy, Color fill, Color stroke, Color font, float alpha) = _states.Pop();
+        (float ox, float oy, Color fill, Color stroke, Color font, float alpha,
+            bool hasClip, float clipL, float clipT, float clipR, float clipB) = _states.Pop();
         _offsetX = ox;
         _offsetY = oy;
         FillColor = fill;
         StrokeColor = stroke;
         FontColor = font;
         Alpha = alpha;
+        _hasClip = hasClip;
+        _clipLeft = clipL;
+        _clipTop = clipT;
+        _clipRight = clipR;
+        _clipBottom = clipB;
         return true;
     }
 
@@ -246,6 +265,38 @@ public sealed class HeadlessCanvas : MauiCanvas
 
     public override void ClipRectangle(float x, float y, float width, float height)
     {
-        // Clipping is not modelled: headless assertions look inside the drawn regions only.
+        // Rectangular clip in device space: intersect with the active clip.
+        float left = x + _offsetX;
+        float top = y + _offsetY;
+        float right = left + width;
+        float bottom = top + height;
+        if (_hasClip)
+        {
+            left = Math.Max(left, _clipLeft);
+            top = Math.Max(top, _clipTop);
+            right = Math.Min(right, _clipRight);
+            bottom = Math.Min(bottom, _clipBottom);
+        }
+        _hasClip = true;
+        _clipLeft = left;
+        _clipTop = top;
+        _clipRight = right;
+        _clipBottom = bottom;
+    }
+
+    public override void ClipPath(PathF path, WindingMode windingMode)
+    {
+        // Bounding-box approximation: the managed rasterizer models rectangular clips exactly and
+        // treats any other path as its bounds (the pixel suite's clips are rectangles).
+        if (path.Points is null || !path.Points.Any())
+        {
+            _hasClip = true;
+            _clipLeft = _clipTop = 1f;
+            _clipRight = _clipBottom = 0f;
+            return;
+        }
+        float minX = path.Points.Min(p => p.X), minY = path.Points.Min(p => p.Y);
+        float maxX = path.Points.Max(p => p.X), maxY = path.Points.Max(p => p.Y);
+        ClipRectangle(minX, minY, maxX - minX, maxY - minY);
     }
 }

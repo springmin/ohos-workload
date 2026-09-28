@@ -12,7 +12,7 @@ using Microsoft.Maui.Platform;
 // after the fuzz tail) instead of letting every caller repeat its own threshold constant.
 VerifyLineCountingWriter verifyStdout = new(Console.Out);
 Console.SetOut(verifyStdout);
-const int verifyCheckTotal = 420;                     // documented full [verify] line count (+4 MS-MODE runtime mode switch, +10 P2c-DEEPLINK, +4 P2b-IMG, +16 P1b-LIST, +10 P1a-ANIM, +2 SEC3 storage/deep-link pins, +5 W-series WebView wiring, +3 T1 InputView mapping, +4 T2 WebView gaps, +4 T3 GraphicsView interaction, +7 T10 modal accessibility, +4 T4 Label formatted text)
+const int verifyCheckTotal = 424;                     // documented full [verify] line count (+4 MS-MODE runtime mode switch, +10 P2c-DEEPLINK, +4 P2b-IMG, +16 P1b-LIST, +10 P1a-ANIM, +2 SEC3 storage/deep-link pins, +5 W-series WebView wiring, +3 T1 InputView mapping, +4 T2 WebView gaps, +4 T3 GraphicsView interaction, +7 T10 modal accessibility, +4 T4 Label formatted text, +4 T5 layout semantics)
 const int verifyCheckFloor = verifyCheckTotal - 20;   // documented floor convention (total - 20)
 
 // A small image file for the Image handler.
@@ -940,6 +940,118 @@ if (graphicsCtl?.Handler?.PlatformView is OpenHarmonyView graphicsPlatform)
     {
         throw new InvalidOperationException("the GraphicsView interaction contract (press/drag/multi-touch/cancel/hover/invalidate) is missing or drifted");
     }
+}
+
+// T5: the layout semantics the compositor keeps in its own walk. Z-order: siblings stack by
+// ZIndex (the highest is drawn last and the hit-test walks resolve it as the topmost) and a
+// ZIndex change requests a repaint; clip: a view's Clip excludes the clipped-away regions from
+// hit-testing; input transparency: a transparent view never receives input, a cascading layout
+// also excludes its subtree and a non-cascading layout keeps its children interactive.
+// AnchorX/AnchorY is pinned through the renderer's pivot seam (rotation/scale must pivot at the
+// anchor point, not the frame centre). The probes are handler-connected standalone trees; the
+// audit page itself is never touched.
+var t5Renderer = app.Services.GetRequiredService<OpenHarmonyWindowRenderer>();
+var t5ZGrid = new Grid();
+var t5ZBottom = new BoxView { Color = Colors.Gray };
+var t5ZTop = new BoxView { Color = Colors.OrangeRed, ZIndex = 1 };
+int t5ZTopEntered = 0, t5ZBottomEntered = 0;
+var t5ZTopPointer = new PointerGestureRecognizer();
+t5ZTopPointer.PointerEntered += (_, _) => t5ZTopEntered++;
+t5ZTop.GestureRecognizers.Add(t5ZTopPointer);
+var t5ZBottomPointer = new PointerGestureRecognizer();
+t5ZBottomPointer.PointerEntered += (_, _) => t5ZBottomEntered++;
+t5ZBottom.GestureRecognizers.Add(t5ZBottomPointer);
+t5ZGrid.Add(t5ZBottom);
+t5ZGrid.Add(t5ZTop);
+OpenHarmonyHandlerConnector.ConnectTree(t5ZGrid);
+t5ZGrid.Measure(300, 200);
+t5ZGrid.Arrange(new Rect(0, 0, 300, 200));
+t5Renderer.HandlePointerMove(t5ZGrid, 150, 100);
+bool t5ZTopFirst = t5ZTopEntered == 1 && t5ZBottomEntered == 0;
+int t5ZIndexRedraws = 0;
+Action t5ZIndexRedraw = () => t5ZIndexRedraws++;
+Microsoft.OpenHarmony.Hosting.OpenHarmonyBridge.RedrawRequested += t5ZIndexRedraw;
+t5ZTop.ZIndex = -1;
+Microsoft.OpenHarmony.Hosting.OpenHarmonyBridge.RedrawRequested -= t5ZIndexRedraw;
+t5Renderer.HandlePointerMove(t5ZGrid, 150, 100);
+bool t5ZSwapped = t5ZTopEntered == 1 && t5ZBottomEntered == 1;
+Console.WriteLine($"[verify] t5 z-order hover top={t5ZTopEntered} bottom={t5ZBottomEntered} topFirst={t5ZTopFirst} bottomAfterSwap={t5ZSwapped} zindexRedraws={t5ZIndexRedraws}");
+
+var t5InputRoot = new VerticalStackLayout();
+int t5NormalClicks = 0, t5TransparentClicks = 0, t5CascadeClicks = 0, t5NonCascadeClicks = 0;
+var t5Normal = new Button { Text = "normal", HeightRequest = 60 };
+t5Normal.Clicked += (_, _) => t5NormalClicks++;
+var t5Transparent = new Button { Text = "transparent", HeightRequest = 60, InputTransparent = true };
+t5Transparent.Clicked += (_, _) => t5TransparentClicks++;
+var t5Cascade = new VerticalStackLayout { InputTransparent = true };
+var t5CascadeButton = new Button { Text = "cascade child", HeightRequest = 60 };
+t5CascadeButton.Clicked += (_, _) => t5CascadeClicks++;
+t5Cascade.Add(t5CascadeButton);
+var t5NonCascade = new VerticalStackLayout { InputTransparent = true, CascadeInputTransparent = false };
+var t5NonCascadeButton = new Button { Text = "non-cascade child", HeightRequest = 60 };
+t5NonCascadeButton.Clicked += (_, _) => t5NonCascadeClicks++;
+t5NonCascade.Add(t5NonCascadeButton);
+t5InputRoot.Add(t5Normal);
+t5InputRoot.Add(t5Transparent);
+t5InputRoot.Add(t5Cascade);
+t5InputRoot.Add(t5NonCascade);
+OpenHarmonyHandlerConnector.ConnectTree(t5InputRoot);
+t5InputRoot.Measure(300, 240);
+t5InputRoot.Arrange(new Rect(0, 0, 300, 240));
+void TapT5(IView target)
+{
+    Rect frame = target.Frame;
+    float cx = (float)(frame.X + frame.Width / 2), cy = (float)(frame.Y + frame.Height / 2);
+    t5Renderer.HandleTouch(t5InputRoot, true, false, cx, cy);
+    t5Renderer.HandleTouch(t5InputRoot, false, true, cx, cy);
+}
+TapT5(t5Normal);
+TapT5(t5Transparent);
+TapT5(t5CascadeButton);
+TapT5(t5NonCascadeButton);
+bool t5InputOk = t5NormalClicks == 1 && t5TransparentClicks == 0 && t5CascadeClicks == 0 && t5NonCascadeClicks == 1;
+Console.WriteLine($"[verify] t5 input transparency normal={t5NormalClicks} transparent={t5TransparentClicks} cascade={t5CascadeClicks} nonCascade={t5NonCascadeClicks}");
+
+var t5ClipRoot = new Grid();
+var t5Clipped = new Button { Text = "clipped" };
+t5Clipped.Clip = new Microsoft.Maui.Controls.Shapes.RectangleGeometry { Rect = new Rect(0, 0, 300, 50) };
+int t5ClipClicks = 0;
+t5Clipped.Clicked += (_, _) => t5ClipClicks++;
+t5ClipRoot.Add(t5Clipped);
+OpenHarmonyHandlerConnector.ConnectTree(t5ClipRoot);
+t5ClipRoot.Measure(300, 100);
+t5ClipRoot.Arrange(new Rect(0, 0, 300, 100));
+t5Renderer.HandleTouch(t5ClipRoot, true, false, 150, 25);
+t5Renderer.HandleTouch(t5ClipRoot, false, true, 150, 25);
+t5Renderer.HandleTouch(t5ClipRoot, true, false, 150, 75);
+t5Renderer.HandleTouch(t5ClipRoot, false, true, 150, 75);
+bool t5ClipOk = t5ClipClicks == 1;
+Console.WriteLine($"[verify] t5 clip hit inside=1 outside=0 clicks={t5ClipClicks}");
+
+var t5AnchorRoot = new Grid();
+var t5Anchored = new BoxView { Color = Colors.Gold, Rotation = 10, AnchorX = 0, AnchorY = 0 };
+t5AnchorRoot.Add(t5Anchored);
+OpenHarmonyHandlerConnector.ConnectTree(t5AnchorRoot);
+float t5PivotX = float.NaN, t5PivotY = float.NaN;
+OpenHarmonyWindowRenderer.TransformPivotObserved = (x, y) => { t5PivotX = x; t5PivotY = y; };
+t5Renderer.Render(t5AnchorRoot, 200, 120);
+Rect t5AnchorFrame = t5Anchored.Frame;
+bool t5AnchorTopLeftOk = Math.Abs(t5PivotX - t5AnchorFrame.X) < 0.01f && Math.Abs(t5PivotY - t5AnchorFrame.Y) < 0.01f;
+t5Anchored.AnchorX = 1;
+t5Anchored.AnchorY = 1;
+t5Renderer.Render(t5AnchorRoot, 200, 120);
+bool t5AnchorBottomRightOk = Math.Abs(t5PivotX - t5AnchorFrame.Right) < 0.01f && Math.Abs(t5PivotY - t5AnchorFrame.Bottom) < 0.01f;
+t5Anchored.AnchorX = 0.5;
+t5Anchored.AnchorY = 0.5;
+t5Renderer.Render(t5AnchorRoot, 200, 120);
+bool t5AnchorCenterOk = Math.Abs(t5PivotX - t5AnchorFrame.Center.X) < 0.01f && Math.Abs(t5PivotY - t5AnchorFrame.Center.Y) < 0.01f;
+OpenHarmonyWindowRenderer.TransformPivotObserved = null;
+Console.WriteLine($"[verify] t5 anchor pivots frame={t5AnchorFrame} topLeft={t5AnchorTopLeftOk} bottomRight={t5AnchorBottomRightOk} center={t5AnchorCenterOk}");
+
+if (!(t5ZTopFirst && t5ZSwapped && t5ZIndexRedraws >= 1 && t5InputOk && t5ClipOk
+    && t5AnchorTopLeftOk && t5AnchorBottomRightOk && t5AnchorCenterOk))
+{
+    throw new InvalidOperationException("the T5 layout semantics (z-order, clip, input transparency, anchors) are missing or drifted");
 }
 var contentViewCtl = root.Children.OfType<ContentView>().FirstOrDefault();
 if (contentViewCtl is not null)
