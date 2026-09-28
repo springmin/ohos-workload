@@ -551,7 +551,9 @@ runtimeOS/compatible-version generation and the abc gate without a compiler. The
 compiler: its stubs declare no real kit API.
 
 **CI gate.** `.github/workflows/harmony-flavor.yml` compiles this branch (ui variant) on manual
-dispatch and weekly (Monday 03:17 UTC), deliberately not on PR/push: the sha256-pinned
+dispatch, weekly (Monday 03:17 UTC) and pushes to master that touch the flavor surface
+(`packs/**/templates/ets/map/**`, `scripts/build-arkts-shell.sh`, `scripts/setup-harmony-sdk.sh`,
+or the workflow itself); PRs and other pushes stay excluded because the sha256-pinned
 command-line-tools archive is ~2.0 GiB, so it is cached by that sha (`actions/cache`) and a cold
 run pays the download while repeat runs only unpack. The job fails red on a download/SDK
 verification failure, any ArkTS error, an abc header other than `13.0.1.0`, a missing
@@ -561,6 +563,17 @@ WARN into an enforced gate), or a missing provenance record; the abc and
 `harmony-abc-provenance.json` are uploaded as `harmony-abc-<run id>`. The provenance records the
 overlay probe (record present, per-symbol presence) alongside the literals and the compile log, so
 a regression is visible even before the gate reads it.
+
+**First runner results (2026-09-28, commit `6ce1ec1`).** The push that added the paths trigger ran
+`36369308089` (success, 2m55s; cold: cache miss, 2010 MiB hf-mirror download in ~95 s at ~21 MB/s,
+unpack ~46 s, `Finished :entry:default@CompileArkTS` in 6 s 74 ms, all 14 literals and the Map
+overlay record + 3 symbols present, abc 331,336 B / `34b0a046...` @13.0.1.0, arktsErrors 0,
+provenance gate=pass; the cache was saved after the job, 2,048,389,122 B). A manual dispatch on
+the same commit (`36369863335`, success, 1m43s) restored that cache (no download, unpack ~50 s)
+and reproduced the abc byte-for-byte (`34b0a046...`). The abc is larger than the aarch64
+rehearsal's 291,628 B / `a637a513...` pin for the same templates because that host swaps in the
+OpenHarmony SDK's arm64 `es2abc` (see Host notes); the gates assert version, literals and the
+module record, not byte size.
 
 For the tester machine (DevEco Studio + HarmonyOS SDK) the shortest path is Route A with the
 IDE's SDK and hvigor; the existing DevEco fallback still works (create an empty project, copy
