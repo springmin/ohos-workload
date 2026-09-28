@@ -3435,6 +3435,95 @@ if (!kit14DegradeOk)
     throw new InvalidOperationException("the P2a-HUKS SecureStorage degradation contract drifted");
 }
 
+// SEC3 (2026-09-28): SecureStorage/activation hardening regression pins.
+// (a) A zero-length per-install key file must be recovered, not divided by: the XOR encoder
+// used to throw DivideByZeroException on the first save of a store whose key file a crash had
+// truncated. (b) The truncated key is replaced (a wrong-length key silently garbles values).
+string sec3StorePath = Path.Combine(Path.GetTempPath(), $"maui-sec3-{Guid.NewGuid():N}.dat");
+File.WriteAllBytes(sec3StorePath + ".key", Array.Empty<byte>());
+bool sec3EmptyKeyOk;
+string sec3EmptyKeyRead;
+OpenHarmonySecureStorage? sec3Store = null;
+try
+{
+    sec3Store = new OpenHarmonySecureStorage(sec3StorePath);
+    await sec3Store.SetAsync("sec3", "value");
+    sec3EmptyKeyRead = await sec3Store.GetAsync("sec3") ?? "<null>";
+    sec3EmptyKeyOk = sec3EmptyKeyRead == "value" && new FileInfo(sec3StorePath + ".key").Length == 32;
+}
+catch (Exception ex)
+{
+    sec3EmptyKeyOk = false;
+    sec3EmptyKeyRead = $"{ex.GetType().Name}: {ex.Message}";
+}
+File.WriteAllBytes(sec3StorePath + ".key", new byte[] { 1, 2, 3 });
+bool sec3ShortKeyOk;
+try
+{
+    _ = new OpenHarmonySecureStorage(sec3StorePath);
+    sec3ShortKeyOk = new FileInfo(sec3StorePath + ".key").Length == 32;
+}
+catch
+{
+    sec3ShortKeyOk = false;
+}
+// (c) Concurrent Set calls must not lose values: the load-modify-save window is serialized, so
+// four interleaved writers still leave all 100 keys readable (the pre-fix store loaded one
+// snapshot per writer and the later save dropped the earlier values).
+bool sec3ConcurrentOk;
+try
+{
+    if (sec3Store is null)
+    {
+        throw new InvalidOperationException("no store to exercise");
+    }
+    var sec3Writers = new List<Task>();
+    for (int t = 0; t < 4; t++)
+    {
+        int tt = t;
+        sec3Writers.Add(Task.Run(async () =>
+        {
+            for (int k = 0; k < 25; k++)
+            {
+                await sec3Store.SetAsync($"sec3-{tt}-{k}", $"v{tt}-{k}");
+            }
+        }));
+    }
+    await Task.WhenAll(sec3Writers);
+    int sec3Seen = 0;
+    for (int t = 0; t < 4; t++)
+    {
+        for (int k = 0; k < 25; k++)
+        {
+            if (await sec3Store.GetAsync($"sec3-{t}-{k}") == $"v{t}-{k}")
+            {
+                sec3Seen++;
+            }
+        }
+    }
+    sec3ConcurrentOk = sec3Seen == 100;
+    Console.WriteLine($"[verify] sec3 concurrent writers kept={sec3Seen}/100");
+}
+catch
+{
+    sec3ConcurrentOk = false;
+}
+// (d) The app-extendable https allow-list is a lock-synchronized collection and want-derived
+// status text is flattened; both are source-pinned because the race/log races are timing
+// dependent (the behavioral half is the empty-key recovery above).
+string? sec3LinksPath = FindHostSource("OpenHarmonyAppLinks.cs");
+string sec3Links = sec3LinksPath is null ? string.Empty : File.ReadAllText(sec3LinksPath);
+bool sec3LinksOk = sec3Links.Contains("class SynchronizedHostList : Collection<string>") &&
+    sec3Links.Contains("char.IsControl(") &&
+    sec3Links.Contains("MaxStatusTextChars") &&
+    kit14KeystoreCs.Contains("private static byte[]? DecodeBase64(");
+bool sec3Ok = sec3EmptyKeyOk && sec3ShortKeyOk && sec3ConcurrentOk && sec3LinksOk;
+Console.WriteLine($"[verify] sec3 fileKeyRecovery emptyKey={sec3EmptyKeyRead} shortKey32={sec3ShortKeyOk} linksGuarded={sec3LinksOk} assert={sec3Ok}");
+if (!sec3Ok)
+{
+    throw new InvalidOperationException("the SEC3 SecureStorage/deep-link hardening contract drifted");
+}
+
 // KIT5: the host and managed halves of the second batch: the C ABI declarations, the NAPI
 // sink/notify names, the napi module table entries, the managed P/Invoke entry points with their
 // kit error-code maps, and the public API baseline entries. Map (R2-3) carries the overlay
