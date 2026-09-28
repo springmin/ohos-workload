@@ -238,6 +238,49 @@ layouts, pack errors); the interaction suite pins the host parser/precedence/fal
 contract (`ms-mode` checks); `test/aot-smoke/run-local-smoke.sh` exercises the host branches on a
 device host (default/aot/interp markers, the aot fallback and the `interp.txt` override).
 
+## Runtime mode kits
+
+`scripts/make-mode-kit.sh` builds the three switch shapes of one project into per-mode
+deliverable directories and verifies each shape before keeping it:
+
+```sh
+sh scripts/make-mode-kit.sh --project test/hello-maui-app/hello-maui-app.csproj \
+    --tfm net11.0-openharmony26.0 --out-dir /data/storage/el2/base/tmp/opencode/modekit \
+    --interp-pack /data/storage/el2/base/tmp/opencode/interp-pack --sign <UDID>
+```
+
+`--mode jit|aot|interp` (comma list or repeated; default all three) selects the shapes; `--rid`
+defaults to `openharmony-arm64`, `--property <name=value>` forwards extra MSBuild properties (the
+switch is appended last, so the kit wins) and `--dry-run` prints the exact commands without
+running them.
+
+| mode | publish | assertion before the hap is kept |
+|---|---|---|
+| `jit` | the default publish | `libs/<abi>/runtime-mode.txt` reads `jit` |
+| `aot` | `-p:PublishAot=true -p:PublishAotUsingRuntimePack=true -p:NativeLib=Shared` (the aot-haps recipe) | marker `aot` and `libs/<abi>/lib<stem>.so` present (`<stem>` = the `app.json` assembly without `.dll`) |
+| `interp` | `-p:OpenHarmonyInterpreterPack=<dir>` (an extracted `ohos-interpreter-pack`) | marker `interp` and both swapped `libcoreclr.so` + `libclrinterpreter.so` present |
+
+A missing or mismatching marker, a missing AOT application library, a missing interpreter library
+and an incomplete pack all fail the run non-zero, naming the entry and the fix (the pack targets
+reject the same inputs at build time; the kit gate also covers a publish whose payload was staged
+out of band). The output is `out/<mode>/<stem>-<mode>.hap` (the publish's signed hap, or the
+unsigned one when signing is off), `out/<mode>/<stem>-<mode>-unsigned.hap`,
+`out/<mode>/publish.log` and an `out/SHA256SUMS` over every hap; a stale hap left from an earlier
+publish cannot pass as the new output.
+
+`--sign <args...>` is a `scripts/sign-for-device.sh` passthrough: every argument after `--sign`
+goes to the signer and each mode hap is replaced in place only after the signer succeeds (the
+`<stem>-<mode>.hap` name is what `tester-run.sh --aot-haps`/`--interp-hap` consume). Keep secrets
+off argv - `--pwd-input-mode`, `--key-pwd-file` or `OHOS_ENC_PWD`; the kit itself never adds one.
+The local SDK root resolution mirrors `scripts/make-device-test-kit.sh`, and
+`OpenHarmonySdkRoot`/`OHOS_SDK_ROOT`/`OHOS_NDK` from the environment always win.
+
+Off-device gate: `scripts/selftest-make-mode-kit.sh` drives the whole surface against a fake
+dotnet (no SDK, no real publish): dry-run command shapes for all three modes, the fixture shapes
+with their marker/library assertions, the negative gates (aot/interp missing libraries,
+mismatching marker, failed and empty publish, incomplete pack, stale hap) and the signing
+passthrough (no password on the generated argv, the original hap survives a failed sign).
+
 ## Payload in libs
 
 The device's namespace policy allows a `dlopen` only from the app's signed bundle directory
@@ -1259,6 +1302,75 @@ Division of labour with `tester-run.sh`:
   `--dry-run`), and paths are treated as space-bearing. `--sign` reuses
   `sign-for-device.sh --external`, so the p12 password goes through its file/interactive path and
   never enters argv or logs.
+
+## Known environment quirks
+
+Two host quirks of this OpenHarmony sandbox surface as dotnet "environment failures". Both are
+absorbed by `scripts/lib-dotnet-env.sh`, which `scripts/preflight.sh` and `scripts/devloop.sh`
+source before their first `dotnet` call. The lib defaults (only while a variable is unset or
+empty, so an operator can override any of them) `DOTNET_CLI_USE_MSBUILD_SERVER=0` (the switch
+this SDK reads), `DOTNET_CLI_DO_NOT_USE_MSBUILD_SERVER=1` (the documented name; harmless where
+the SDK ignores it), `MSBUILDDISABLENODEREUSE=1`, `DOTNET_CLI_TELEMETRY_OPTOUT=1`,
+`DOTNET_NOLOGO=1`, and points `TMPDIR`/`TMP`/`TEMP` at a usable scratch dir (the caller's
+`TMPDIR`, else `$DOTNET_ENV_TMPDIR`, else `/data/storage/el2/base/tmp/opencode/tmp`, else
+`<repo>/.tmp`). The "env hardening" section of `scripts/selftest-devloop.sh` asserts the
+defaults, the fallbacks and the environment a real devloop run hands to the dotnet child.
+
+### `/tmp` refuses AF_UNIX sockets, so the MSBuild server cannot start
+
+`/tmp` is its own `hmfs` mount here; ordinary files can be created by this user, but `bind(2)`
+on an `AF_UNIX` socket is rejected:
+
+```text
+$ mount | grep ' /tmp '
+/dev/block/platform/b0000000.hi_pcie/by-name/userdata on /tmp type hmfs (rw,nosuid,nodev,...)
+$ stat -c '%U:%G %a' /tmp
+1076:expert 2770
+$ python3 -c 'import socket; socket.socket(socket.AF_UNIX).bind("/tmp/probe.sock")'
+OSError: [Errno 13] Permission denied        # the same bind succeeds under /data/storage/...
+```
+
+dotnet's MSBuild server and its reusable nodes talk over named pipes, which on Unix are
+`AF_UNIX` sockets at `$TMPDIR/MSBuildServer-<hash>`. With `TMPDIR=/tmp` the CLI cannot reach the
+server and falls back:
+
+```text
+MSBuild server unavailable: the current server state could not be determined. Falling back to an in-process build.
+```
+
+A writable but long `TMPDIR` is a second form of the same failure: the server process dies on
+the 108-character domain-socket path limit (the client then waits out its connection timeout),
+leaving `$TMPDIR/MSBuildTemp*/MSBuild_pid-*.failure.txt`:
+
+```text
+System.ArgumentOutOfRangeException: The path '.../MSBuildServer-...' is of an invalid length for use with
+domain sockets on this platform. The length must be between 1 and 108 characters, inclusive.
+```
+
+`/data/storage/el2/base/tmp` (84 characters for the socket path) and the default
+`/data/storage/el2/base/tmp/opencode/tmp` (97) stay under the limit and accept sockets; `/tmp`
+does not. A `TMPDIR` that does not exist fails the build outright (`MSB1025`,
+`CreateTempSubdirectory`), which is why the lib creates the directory it selects.
+
+This is the failure behind kit #30 preflight run 2: the pixel step's `dotnet run -c Release`
+internal build printed the server line, waited ~5 minutes and then reported `The build failed`
+with `0 Error(s)` - no compiler error, a host wedge (the same tree passed the step in 87 s on
+the next run). `scripts/preflight.sh` now retries once automatically with the workaround that
+used to be applied by hand (`dotnet build -c Release --no-restore -m:1`, then executing
+`bin/Release/net11.0/headless-render.dll`), keeping both attempts as `pixel.log` and
+`pixel-fallback*.log`; with the hardened environment the retry should not trigger.
+
+### `dotnet restore` wedging in an idle FUTEX wait
+
+An earlier session recorded `dotnet restore` hanging for more than 5 minutes in an idle FUTEX
+wait (with nuget.org and with a local-only source, clean `obj/`), while `dotnet build
+--no-restore` plus executing the built dll worked - that workaround is the fallback above. It is
+the same server handshake wait: the CLI waits for a server that cannot come up. With
+`DOTNET_CLI_USE_MSBUILD_SERVER=0` / `MSBUILDDISABLENODEREUSE=1` and a usable `TMPDIR` the CLI
+stays in-process, so restore does not enter the wait (an offline `dotnet restore` under
+`TMPDIR=/tmp` with the opt-outs completes in ~3 s and prints no server line; the MSBuild server
+defaults on and off, `DOTNET_CLI_DO_NOT_USE_MSBUILD_SERVER=1` alone does not stop this SDK's
+11.0.100-rc.1 from attempting it).
 
 ## Known follow-ups (scheduled)
 
