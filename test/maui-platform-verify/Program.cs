@@ -12,7 +12,7 @@ using Microsoft.Maui.Platform;
 // after the fuzz tail) instead of letting every caller repeat its own threshold constant.
 VerifyLineCountingWriter verifyStdout = new(Console.Out);
 Console.SetOut(verifyStdout);
-const int verifyCheckTotal = 438;                     // documented full [verify] line count (+4 MS-MODE runtime mode switch, +10 P2c-DEEPLINK, +4 P2b-IMG, +16 P1b-LIST, +10 P1a-ANIM, +2 SEC3 storage/deep-link pins, +5 W-series WebView wiring, +3 T1 InputView mapping, +4 T2 WebView gaps, +4 T3 GraphicsView interaction, +7 T10 modal accessibility, +4 T4 Label formatted text, +4 T5 layout semantics, +6 T7 DatePicker calendar/min-max, +4 T9 window title bar, +4 T11 diagnostics overlay)
+const int verifyCheckTotal = 439;                     // documented full [verify] line count (+4 MS-MODE runtime mode switch, +10 P2c-DEEPLINK, +4 P2b-IMG, +16 P1b-LIST, +10 P1a-ANIM, +2 SEC3 storage/deep-link pins, +5 W-series WebView wiring, +3 T1 InputView mapping, +4 T2 WebView gaps, +4 T3 GraphicsView interaction, +7 T10 modal accessibility, +4 T4 Label formatted text, +4 T5 layout semantics, +6 T7 DatePicker calendar/min-max, +4 T9 window title bar, +4 T11 diagnostics overlay, +1 N2 empty ContentPage arrangement)
 const int verifyCheckFloor = verifyCheckTotal - 20;   // documented floor convention (total - 20)
 
 // A small image file for the Image handler.
@@ -1293,6 +1293,34 @@ Console.WriteLine($"[verify] t9 back showsBack={t9ShowsBack} stack={t9StackBefor
 if (!t9BackOk)
 {
     throw new InvalidOperationException("the Window.TitleBar back affordance (leading slot + IWindow.BackButtonClicked) is missing or drifted");
+}
+
+// N2: an empty ContentPage (no Content) has nothing to descend into, so the page-aware walk
+// must place the page itself. The compositor render and a direct IView.Arrange both used to end
+// in OpenHarmonyPageHandler.PlatformArrange re-running the walk for the same page, which
+// recursed until the stack overflowed (the frame repeated 921 times in the W3B audit); the
+// safe-area walk with a reported avoid area had the same cycle. The frames pin exactly one walk
+// per entry (a ContentPage's default SafeAreaEdges is None, so the avoid area keeps the frame).
+var n2Page = new ContentPage { Title = "n2 empty", BackgroundColor = Colors.Black };
+OpenHarmonyHandlerConnector.ConnectTree(n2Page);
+t9Renderer.Render(n2Page, 320, 200);
+Rect n2RenderFrame = n2Page.Frame;
+bool n2RenderOk = Math.Abs(n2RenderFrame.X) < 0.01 && Math.Abs(n2RenderFrame.Y) < 0.01 &&
+    Math.Abs(n2RenderFrame.Width - 320) < 0.01 && Math.Abs(n2RenderFrame.Height - 200) < 0.01;
+n2Page.Arrange(new Rect(5, 7, 300, 180));
+Rect n2ArrangeFrame = n2Page.Frame;
+bool n2ArrangeOk = Math.Abs(n2ArrangeFrame.X - 5) < 0.01 && Math.Abs(n2ArrangeFrame.Y - 7) < 0.01 &&
+    Math.Abs(n2ArrangeFrame.Width - 300) < 0.01 && Math.Abs(n2ArrangeFrame.Height - 180) < 0.01;
+OpenHarmonySafeAreaArrange.Arrange(n2Page, new Rect(0, 0, 300, 180), new Rect(0, 0, 300, 180),
+    new Thickness(0, 24, 0, 16));
+Rect n2SafeAreaFrame = n2Page.Frame;
+bool n2SafeAreaOk = Math.Abs(n2SafeAreaFrame.X) < 0.01 && Math.Abs(n2SafeAreaFrame.Y) < 0.01 &&
+    Math.Abs(n2SafeAreaFrame.Width - 300) < 0.01 && Math.Abs(n2SafeAreaFrame.Height - 180) < 0.01;
+bool n2Ok = n2RenderOk && n2ArrangeOk && n2SafeAreaOk;
+Console.WriteLine($"[verify] n2 empty page render={n2RenderFrame} arrange={n2ArrangeFrame} safeArea={n2SafeAreaFrame} assert={n2Ok}");
+if (!n2Ok)
+{
+    throw new InvalidOperationException("an empty ContentPage is not placed by a single page walk (re-entrant PlatformArrange)");
 }
 
 var contentViewCtl = root.Children.OfType<ContentView>().FirstOrDefault();
