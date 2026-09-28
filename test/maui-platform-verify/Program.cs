@@ -12,7 +12,7 @@ using Microsoft.Maui.Platform;
 // after the fuzz tail) instead of letting every caller repeat its own threshold constant.
 VerifyLineCountingWriter verifyStdout = new(Console.Out);
 Console.SetOut(verifyStdout);
-const int verifyCheckTotal = 391;                     // documented full [verify] line count (+4 MS-MODE runtime mode switch, +10 P2c-DEEPLINK, +4 P2b-IMG, +16 P1b-LIST, +10 P1a-ANIM)
+const int verifyCheckTotal = 398;                     // documented full [verify] line count (+4 MS-MODE runtime mode switch, +10 P2c-DEEPLINK, +4 P2b-IMG, +16 P1b-LIST, +10 P1a-ANIM, +2 SEC3 storage/deep-link pins, +5 W-series WebView wiring)
 const int verifyCheckFloor = verifyCheckTotal - 20;   // documented floor convention (total - 20)
 
 // A small image file for the Image handler.
@@ -1497,6 +1497,187 @@ Console.WriteLine($"[verify] webview JsMessage raised={jsMessageOk} payload='{js
 if (!jsMessageOk)
 {
     throw new InvalidOperationException("the WebView JsMessage event did not carry the payload");
+}
+
+// ---- W-series: WebView wiring (history, cookie/storage, frame, load events, B1 sample) --------
+// The six small ArkWeb gaps are wired through the shell: GoBack/GoForward/Reload commands and
+// the history state that mirrors IWebView.CanGoBack/CanGoForward, the WebCookieManager
+// set/read pair over the eval-result channel, DOM storage, the non-full-window frame and the
+// page-end/page-error events that raise IWebView.Navigated. All three preview packs stay
+// byte-identical (the build gate pins that), so these structural pins run on every pack.
+
+// W1: the shell half in every pack: the forward/refresh ops, the history report, the frame
+// command with its position/size state, the cookie set/get pair and the error event.
+string[] wShellVersions = { "1.0.0-preview.22", "1.0.0-preview.23", "1.0.0-preview.24" };
+bool wShellHistory = true;
+bool wShellFrame = true;
+bool wShellCookie = true;
+bool wShellStorage = true;
+bool wShellError = true;
+foreach (string wVersion in wShellVersions)
+{
+    string? wShellPath = FindHostSource($"packs/Microsoft.OpenHarmony.Sdk/{wVersion}/templates/ets/pages/Index.ets");
+    string wShell = wShellPath is null ? string.Empty : File.ReadAllText(wShellPath);
+    wShellHistory &= wShell.Contains("op === 'forward'") && wShell.Contains("op === 'refresh'") &&
+        wShell.Contains("private reportWebHistory(): void {") &&
+        wShell.Contains("this.webController.accessForward()") &&
+        wShell.Contains("host.notifyWebEvent(`history|${canBack ? 1 : 0}|${canForward ? 1 : 0}`, '');") &&
+        wShell.Contains("this.reportWebHistory();");
+    wShellFrame &= wShell.Contains("private applyWebFrame(arg: string): void {") &&
+        wShell.Contains("op === 'frame'") &&
+        wShell.Contains(".position({ x: this.webFrameX, y: this.webFrameY })") &&
+        wShell.Contains(".width(this.webFrameW > 0 ? `${this.webFrameW}vp` : '100%')") &&
+        wShell.Contains(".height(this.webFrameH > 0 ? `${this.webFrameH}vp` : '100%')");
+    wShellCookie &= wShell.Contains("web_webview.WebCookieManager.configCookieSync(cookieUrl, cookieValue);") &&
+        wShell.Contains("web_webview.WebCookieManager.fetchCookieSync(cookieUrl);") &&
+        wShell.Contains("host.notifyWebEvalResult(requestId, cookieValue, cookieFailed);");
+    wShellStorage &= wShell.Contains(".domStorageAccess(true)");
+    wShellError &= wShell.Contains(".onErrorReceive((event) => {") &&
+        wShell.Contains("host.notifyWebEvent('error', errorUrl);");
+}
+bool wShellOk = wShellHistory && wShellFrame && wShellCookie && wShellStorage && wShellError;
+Console.WriteLine($"[verify] w1 shell web wiring packs=22,23,24 history={wShellHistory} frame={wShellFrame} cookie={wShellCookie} storage={wShellStorage} error={wShellError} assert={wShellOk}");
+if (!wShellOk)
+{
+    throw new InvalidOperationException(
+        $"the WebView shell wiring is missing or drifted: history={wShellHistory} frame={wShellFrame} " +
+        $"cookie={wShellCookie} storage={wShellStorage} error={wShellError}");
+}
+
+// W2: the managed half: the command mapping, the history/Navigated bookkeeping and the frame
+// handoff shared by the three web handlers.
+string? wHandlerPath = FindHostSource("OpenHarmonyWebViewHandler.cs");
+string wHandler = wHandlerPath is null ? string.Empty : File.ReadAllText(wHandlerPath);
+string? wHybridHandlerPath = FindHostSource("OpenHarmonyHybridWebViewHandler.cs");
+string wHybridHandler = wHybridHandlerPath is null ? string.Empty : File.ReadAllText(wHybridHandlerPath);
+string? wBlazorHandlerPath = FindHostSource("OpenHarmonyBlazorWebViewHandler.cs");
+string wBlazorHandler = wBlazorHandlerPath is null ? string.Empty : File.ReadAllText(wBlazorHandlerPath);
+bool wHandlerCommands = wHandler.Contains("case nameof(IWebView.GoBack):") &&
+    wHandler.Contains("case nameof(IWebView.GoForward):") &&
+    wHandler.Contains("case nameof(IWebView.Reload):") &&
+    wHandler.Contains("SendHistoryCommand(\"forward\", WebNavigationEvent.Forward);") &&
+    wHandler.Contains("SendHistoryCommand(\"refresh\", WebNavigationEvent.Refresh);");
+bool wHandlerEvents = wHandler.Contains("ApplyHistoryState(state);") &&
+    wHandler.Contains("webView.CanGoBack = canGoBack;") &&
+    wHandler.Contains("webView.CanGoForward = canGoForward;") &&
+    wHandler.Contains("RaiseNavigated(url, WebNavigationResult.Success);") &&
+    wHandler.Contains("RaiseNavigated(url, WebNavigationResult.Failure);") &&
+    wHandler.Contains("OpenHarmonyBridge.WebCommand(\"hide\");") &&
+    wHandler.Contains("public static void OnPageEvent(string state, string url)") &&
+    wHandler.Contains("state.StartsWith(HistoryStatePrefix, StringComparison.Ordinal)");
+bool wHandlerFrame = wHandler.Contains("internal static void SendPlatformFrame(Rect frame)") &&
+    wHandler.Contains("WebCommand(\"frame\", FormattableString.Invariant(");
+bool wHandlerCookie = wHandler.Contains("public static void SetCookie(string url, string cookie)") &&
+    wHandler.Contains("public static async Task<string?> GetCookieAsync(string url)") &&
+    wHandler.Contains("OpenHarmonyBridge.WebCommand(\"cookieGet\", requestId + \"\\n\" + url);") &&
+    wHandler.Contains("internal static bool IsCookieUrl(string url)");
+bool wHandlerFrameShared = wHybridHandler.Contains("OpenHarmonyWebViewHandler.SendPlatformFrame(frame);") &&
+    wBlazorHandler.Contains("OpenHarmonyWebViewHandler.SendPlatformFrame(frame);") &&
+    wBlazorHandler.Contains("public override void PlatformArrange(Rect frame)");
+bool wHandlersOk = wHandlerCommands && wHandlerEvents && wHandlerFrame && wHandlerCookie && wHandlerFrameShared;
+Console.WriteLine($"[verify] w2 handler web wiring commands={wHandlerCommands} events={wHandlerEvents} frame={wHandlerFrame} cookie={wHandlerCookie} frameShared={wHandlerFrameShared} assert={wHandlersOk}");
+if (!wHandlersOk)
+{
+    throw new InvalidOperationException(
+        $"the WebView handler wiring is missing or drifted: commands={wHandlerCommands} events={wHandlerEvents} " +
+        $"frame={wHandlerFrame} cookie={wHandlerCookie} frameShared={wHandlerFrameShared}");
+}
+
+// W3: off-device behavior drill on the live probe: the history state mirrors into
+// CanGoBack/CanGoForward, GoBack/Reload set the pending kind, and the shell page events raise
+// IWebView.Navigated with Back+Success and Refresh+Failure respectively (no host involved).
+var wNavigated = new List<(WebNavigationEvent Evt, string Url, WebNavigationResult Result)>();
+void WOnNavigated(object? sender, WebNavigatedEventArgs e) => wNavigated.Add((e.NavigationEvent, e.Url, e.Result));
+webProbe.Navigated += WOnNavigated;
+bool wDrillThrew = false;
+try
+{
+    OpenHarmonyWebViewHandler.OnPageEvent("history|1|0", "");
+    webProbe.GoBack();
+    OpenHarmonyWebViewHandler.OnPageEvent("started", "https://verify.test/back");
+    OpenHarmonyWebViewHandler.OnPageEvent("finished", "https://verify.test/back");
+    webProbe.Reload();
+    OpenHarmonyWebViewHandler.OnPageEvent("started", "https://verify.test/reload");
+    OpenHarmonyWebViewHandler.OnPageEvent("error", "https://verify.test/reload");
+}
+catch (Exception ex)
+{
+    wDrillThrew = true;
+    Console.WriteLine($"[verify] w3 drill threw {ex.GetType().Name}: {ex.Message}");
+}
+finally
+{
+    webProbe.Navigated -= WOnNavigated;
+}
+bool wHistoryMirrored = webProbe.CanGoBack && !webProbe.CanGoForward;
+bool wNavigateOk = !wDrillThrew && wHistoryMirrored && wNavigated.Count == 2 &&
+    wNavigated[0] == (WebNavigationEvent.Back, "https://verify.test/back", WebNavigationResult.Success) &&
+    wNavigated[1] == (WebNavigationEvent.Refresh, "https://verify.test/reload", WebNavigationResult.Failure);
+Console.WriteLine($"[verify] w3 navigate drill canGoBack={webProbe.CanGoBack} canGoForward={webProbe.CanGoForward} navigated={wNavigated.Count} backSuccess={wNavigated.Count > 0 && wNavigated[0] == (WebNavigationEvent.Back, "https://verify.test/back", WebNavigationResult.Success)} refreshFailure={wNavigated.Count > 1 && wNavigated[1] == (WebNavigationEvent.Refresh, "https://verify.test/reload", WebNavigationResult.Failure)} assert={wNavigateOk}");
+if (!wNavigateOk)
+{
+    throw new InvalidOperationException("the WebView Navigated/history drill did not raise the expected events off-device");
+}
+
+// W4: the cookie surface degrades deterministically without a host library: unsafe URLs are
+// rejected, a set is a no-op, and a read completes with null instead of hanging or throwing.
+bool wCookieUrls = OpenHarmonyWebViewHandler.IsCookieUrl("https://verify.test/") &&
+    OpenHarmonyWebViewHandler.IsCookieUrl("http://verify.test/x") &&
+    !OpenHarmonyWebViewHandler.IsCookieUrl("file:///x") &&
+    !OpenHarmonyWebViewHandler.IsCookieUrl("javascript:1") &&
+    !OpenHarmonyWebViewHandler.IsCookieUrl("//verify.test/x") &&
+    !OpenHarmonyWebViewHandler.IsCookieUrl("https:///nohost");
+bool wCookieDrillThrew = false;
+string? wCookieValue = null;
+try
+{
+    OpenHarmonyWebViewHandler.SetCookie("https://verify.test/", "session=1; path=/");
+    OpenHarmonyWebViewHandler.SetCookie("file:///x", "session=1");
+    wCookieValue = await OpenHarmonyWebViewHandler.GetCookieAsync("https://verify.test/");
+}
+catch (Exception ex)
+{
+    wCookieDrillThrew = true;
+    Console.WriteLine($"[verify] w4 cookie drill threw {ex.GetType().Name}: {ex.Message}");
+}
+bool wCookieOk = wCookieUrls && !wCookieDrillThrew && wCookieValue is null;
+Console.WriteLine($"[verify] w4 cookie surface urlRules={wCookieUrls} degraded={wCookieValue is null} threw={wCookieDrillThrew} assert={wCookieOk}");
+if (!wCookieOk)
+{
+    throw new InvalidOperationException("the WebView cookie surface did not validate URLs and degrade to null off-device");
+}
+
+// W5: the B1 milestone's local contract: the opt-in hello-maui-razor sample is a Razor SDK
+// project wiring the BlazorWebView to wwwroot/index.html, and every preview pack's Blazor
+// staging target copies the app wwwroot plus _framework/blazor.webview.js (sourced from the
+// publish pipeline's StaticWebAsset, never a NuGet-cache guess) into the payload. The device
+// render stays a separate (external-dependency) check.
+string? wRazorProjectPath = FindHostSource("test/hello-maui-razor/hello-maui-razor.csproj");
+string wRazorProject = wRazorProjectPath is null ? string.Empty : File.ReadAllText(wRazorProjectPath);
+string? wRazorAppPath = FindHostSource("test/hello-maui-razor/App.cs");
+string wRazorApp = wRazorAppPath is null ? string.Empty : File.ReadAllText(wRazorAppPath);
+string? wRazorHtmlPath = FindHostSource("test/hello-maui-razor/wwwroot/index.html");
+bool wRazorSample = wRazorProject.Contains("Microsoft.NET.Sdk.Razor") &&
+    wRazorProject.Contains("OPENHARMONY_BLAZOR_WEBVIEW") &&
+    wRazorApp.Contains("HostPage = \"wwwroot/index.html\"") &&
+    wRazorApp.Contains("Selector = \"#app\"") &&
+    wRazorApp.Contains("typeof(BlazorCounter)") &&
+    wRazorHtmlPath is not null;
+bool wRazorStaging = true;
+foreach (string wVersion in wShellVersions)
+{
+    string? wTargetPath = FindHostSource($"packs/Microsoft.OpenHarmony.Sdk/{wVersion}/targets/OpenHarmony.Hap.targets");
+    string wTarget = wTargetPath is null ? string.Empty : File.ReadAllText(wTargetPath);
+    wRazorStaging &= wTarget.Contains("<Target Name=\"_OpenHarmonyStageBlazorAssets\"") &&
+        wTarget.Contains("'%(StaticWebAsset.Filename)%(StaticWebAsset.Extension)' == 'blazor.webview.js'") &&
+        wTarget.Contains("wwwroot/_framework/blazor.webview.js") &&
+        wTarget.Contains("the project carries wwwroot content but @(StaticWebAsset) has no blazor.webview.js");
+}
+bool wRazorOk = wRazorSample && wRazorStaging;
+Console.WriteLine($"[verify] w5 blazor sample razor={wRazorSample} staging={wRazorStaging} packs=22,23,24 project='{wRazorProjectPath ?? "<missing>"}' assert={wRazorOk}");
+if (!wRazorOk)
+{
+    throw new InvalidOperationException("the hello-maui-razor B1 sample or the Blazor asset staging target is missing/drifted");
 }
 
 // HybridWebView: the MAUI contracts (EvaluateJavaScriptAsync/SendRawMessage/RawMessageReceived,
