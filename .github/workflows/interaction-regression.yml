@@ -61,7 +61,7 @@ permissions:
 # perf lines within budget); advance the pin deliberately and refresh this comment when the
 # harness pins or the tip move (workflow_dispatch can compile any commit).
 env:
-  MAUI_OHOS_REF: ${{ github.event.inputs.maui_ohos_ref || '7c75b88fd4a8df17979b07baaa6f0bba734bf4f4' }}
+  MAUI_OHOS_REF: ${{ github.event.inputs.maui_ohos_ref || '33b0af795f81d3b86c22b7c1012960a8aec7b3e8' }}
   # setup-dotnet installs the requested 11.0.x preview into DOTNET_INSTALL_DIR; on Linux that
   # defaults to /usr/share/dotnet, which a per-user cache cannot persist. Point it at ~/.dotnet
   # (the action resolves the ~ prefix against $HOME) so the cache step below actually avoids the
