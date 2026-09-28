@@ -35,11 +35,13 @@ auto-sign 工程需把 `AppScope/app.json5` 的 bundleName 设为同名，流程
 
 1. **`scripts/make-device-test-kit.sh`**
    - 构建（在已跑过 `scripts/build-arkts-shell.sh` 的机器上，`pack-host.sh` 会用它装的 `.arkts-build`）：
+
      ```sh
      sh test/hello-blazorwasm/run-smoke.sh --slim --out "$WORK/blazor"
      sh test/hello-blazorwasm/arkts-host/pack-host.sh "$WORK/blazor/publish/wwwroot" \
         --slim --unsigned-only --out "$KIT_DIR/hello-blazorwasm-host-unsigned.hap"
      ```
+
    - **只发 unsigned 变体**：我们的调试 profile 绑定我们的 UDID，tester 必须重签（与 `hello-maui-app-unsigned` 同逻辑）
    - `pack-host.sh` 自行解析 node（避开设备环境的 `NODE=/data/service/hnp/bin/node` v24，该 node 跑 hvigor 会崩）；ubuntu 构建机用 PATH node 即可
 2. **`scripts/verify-kit.sh`**（建议断言，可用 `unzip -l` / Python zipfile）
