@@ -6,6 +6,9 @@
 # Scenarios:
 #   stub contract  the three stubs themselves (list targets, install ok/fail, aa start, bm get -u,
 #                  hilog stream, dotnet arg log, sign copy)
+#   env hardening  lib-dotnet-env.sh: the MSBuild server/node-reuse opt-outs, TMPDIR defaulting
+#                  with the preferred/.tmp fallback, caller overrides kept, and the exact
+#                  environment the stub dotnet receives from a real devloop run
 #   S1 usage       --help -> exit 0, usage text
 #   S2 build       publish command, TFM/RID/config, -p: pass-through (values with spaces stay one
 #                  argument)
@@ -29,7 +32,7 @@
 # Exit: 0 = all checks passed; 1 = at least one check failed (work dir kept for triage).
 set -u
 
-SELFTEST_VERSION="1 (2026-09-27)"
+SELFTEST_VERSION="2 (2026-09-28)"
 
 log()     { printf '[%s] %s\n' "$(date '+%H:%M:%S')" "$*"; }
 section() { printf '\n=== %s ===\n' "$*"; }
@@ -252,6 +255,16 @@ set -u
 STATE="${FAKE_DOTNET_STATE:?FAKE_DOTNET_STATE not set}"
 mkdir -p "$STATE"
 printf 'CALL|%s\n' "$*" >> "$STATE/dotnet.log"
+# ENV| lines pin the environment a real dotnet would inherit from the hardened launcher;
+# <unset> is recorded verbatim when a variable is missing (see the "env hardening" section).
+printf 'ENV|TMPDIR|%s\n' "${TMPDIR:-<unset>}" >> "$STATE/dotnet.log"
+printf 'ENV|TMP|%s\n' "${TMP:-<unset>}" >> "$STATE/dotnet.log"
+printf 'ENV|TEMP|%s\n' "${TEMP:-<unset>}" >> "$STATE/dotnet.log"
+printf 'ENV|DOTNET_CLI_USE_MSBUILD_SERVER|%s\n' "${DOTNET_CLI_USE_MSBUILD_SERVER:-<unset>}" >> "$STATE/dotnet.log"
+printf 'ENV|DOTNET_CLI_DO_NOT_USE_MSBUILD_SERVER|%s\n' "${DOTNET_CLI_DO_NOT_USE_MSBUILD_SERVER:-<unset>}" >> "$STATE/dotnet.log"
+printf 'ENV|MSBUILDDISABLENODEREUSE|%s\n' "${MSBUILDDISABLENODEREUSE:-<unset>}" >> "$STATE/dotnet.log"
+printf 'ENV|DOTNET_CLI_TELEMETRY_OPTOUT|%s\n' "${DOTNET_CLI_TELEMETRY_OPTOUT:-<unset>}" >> "$STATE/dotnet.log"
+printf 'ENV|DOTNET_NOLOGO|%s\n' "${DOTNET_NOLOGO:-<unset>}" >> "$STATE/dotnet.log"
 for _a in "$@"; do
     printf 'ARG|%s\n' "$_a" >> "$STATE/dotnet.log"
     [ "$_a" = "FAILBUILD" ] && exit 1
@@ -309,7 +322,9 @@ run_devloop() {
     _log="$LOGS/$_tag.log"
     RC=0
     # $_extra is intentionally unquoted: it carries zero or more `VAR=value` assignments.
-    ( cd "$CWD" && exec env TMPDIR="$TMPD" PATH="$WORK/bin:$PATH" \
+    # TMP/TEMP are passed empty so the lib has to default them to the caller's TMPDIR (the
+    # assertion that it does is part of S2), independent of the developer's own environment.
+    ( cd "$CWD" && exec env TMP= TEMP= TMPDIR="$TMPD" PATH="$WORK/bin:$PATH" \
         HDC="$STUB" DOTNET="$STUB_DOTNET" DEVLOOP_SIGN_TOOL="$SIGN_STUB" \
         FAKE_HDC_STATE="$STATE_DIR/$_tag" FAKE_DOTNET_STATE="$STATE_DIR/$_tag" \
         FAKE_HDC_UDID="$FAKE_UDID" $_extra sh "$DEVLOOP" "$@" ) > "$_log" 2>&1
@@ -361,7 +376,7 @@ if command -v git >/dev/null 2>&1 && git -C "$REPO_DIR" rev-parse --is-inside-wo
     GIT_OK=1
     # Only this feature's files: the repository may carry other work-in-progress branches from
     # concurrent work, which must not fail the selftest.
-    GIT_BEFORE="$(git -C "$REPO_DIR" status --porcelain 2>/dev/null | grep -E -e 'scripts/devloop\.sh' -e 'scripts/selftest-devloop\.sh' || true)"
+    GIT_BEFORE="$(git -C "$REPO_DIR" status --porcelain 2>/dev/null | grep -E -e 'scripts/devloop\.sh' -e 'scripts/selftest-devloop\.sh' -e 'scripts/lib-dotnet-env\.sh' || true)"
 fi
 
 # ---- stub contract -------------------------------------------------------------------
@@ -374,6 +389,61 @@ assert_contains "stub: bm get -u answers a UDID" "$FAKE_UDID" "$LOGS/stub-udid.o
     --key "$WORK/dev.p12" --key-alias k0 --expect-udid "$FAKE_UDID" \
     --unsigned "$OUT/hello-maui-app-unsigned.hap" --out "$WORK/sign-contract.hap" ) > "$LOGS/stub-sign.log" 2>&1 || true
 assert_eq "stub: sign stub copies the input to --out" "equal" "$(cmp -s "$OUT/hello-maui-app-unsigned.hap" "$WORK/sign-contract.hap" && printf 'equal' || printf 'differ')"
+
+# ---- env hardening: lib-dotnet-env.sh -------------------------------------------------
+section "env hardening (lib-dotnet-env.sh)"
+LIB_DOTNET_ENV="$SELF_DIR/lib-dotnet-env.sh"
+ENV_WORK="$WORK/env"
+FAKE_ENV_REPO="$WORK/fake-repo"
+mkdir -p "$ENV_WORK" "$FAKE_ENV_REPO" 2>/dev/null || true
+if [ ! -f "$LIB_DOTNET_ENV" ]; then
+    bad "lib-dotnet-env.sh exists next to devloop.sh"
+else
+    ok "lib-dotnet-env.sh exists next to devloop.sh"
+    cat > "$WORK/lib-probe.sh" <<'LIB_PROBE_EOF'
+#!/bin/sh
+# Probe for the env hardening checks: source the lib exactly like the scripts do and print the
+# environment a dotnet child would inherit; DIRY reports whether DOTNET_ENV_TMPDIR exists.
+. "$2" "$1"
+printf 'TMPDIR=%s TMP=%s TEMP=%s SERVER=%s NOSERVER=%s NODEREUSE=%s TELE=%s LOGO=%s DIRY=%s\n' \
+    "$TMPDIR" "$TMP" "$TEMP" \
+    "$DOTNET_CLI_USE_MSBUILD_SERVER" "$DOTNET_CLI_DO_NOT_USE_MSBUILD_SERVER" \
+    "$MSBUILDDISABLENODEREUSE" "$DOTNET_CLI_TELEMETRY_OPTOUT" "$DOTNET_NOLOGO" \
+    "$([ -d "${DOTNET_ENV_TMPDIR:-.}" ] && printf yes || printf no)"
+LIB_PROBE_EOF
+    # run_lib_probe <tag> <repo-root> [VAR=value ...]: a clean env (only PATH) so the lib's
+    # defaults are visible, plus the requested overrides.
+    run_lib_probe() {
+        _lb_tag="$1"; _lb_repo="$2"; shift 2
+        ( cd "$CWD" && exec env -i PATH="$PATH" "$@" sh "$WORK/lib-probe.sh" "$_lb_repo" "$LIB_DOTNET_ENV" ) \
+            > "$LOGS/lib-$_lb_tag.env" 2>&1
+    }
+    run_lib_probe defaults "$FAKE_ENV_REPO" DOTNET_ENV_TMPDIR="$ENV_WORK/default" TMPDIR="" TMP="" TEMP=""
+    assert_eq "hardening defaults: server/node reuse/telemetry/logo off, TMPDIR defaulted" \
+        "TMPDIR=$ENV_WORK/default TMP=$ENV_WORK/default TEMP=$ENV_WORK/default SERVER=0 NOSERVER=1 NODEREUSE=1 TELE=1 LOGO=1 DIRY=yes" \
+        "$(cat "$LOGS/lib-defaults.env")"
+    assert_eq "hardening defaults: the preferred TMPDIR is created" "yes" \
+        "$([ -d "$ENV_WORK/default" ] && printf yes || printf no)"
+    mkdir -p "$ENV_WORK/override"
+    run_lib_probe override "$FAKE_ENV_REPO" DOTNET_ENV_TMPDIR="$ENV_WORK/other" TMPDIR="$ENV_WORK/override" \
+        TMP="" TEMP="" DOTNET_NOLOGO=0 DOTNET_CLI_USE_MSBUILD_SERVER=1
+    assert_eq "hardening overrides: caller TMPDIR and switches win" \
+        "TMPDIR=$ENV_WORK/override TMP=$ENV_WORK/override TEMP=$ENV_WORK/override SERVER=1 NOSERVER=1 NODEREUSE=1 TELE=1 LOGO=0 DIRY=no" \
+        "$(cat "$LOGS/lib-override.env")"
+    : > "$ENV_WORK/not-a-dir"
+    run_lib_probe fallback "$FAKE_ENV_REPO" DOTNET_ENV_TMPDIR="$ENV_WORK/fallback" TMPDIR="$ENV_WORK/not-a-dir" TMP="" TEMP=""
+    assert_eq "hardening fallback: an unusable TMPDIR falls back to the preferred dir" \
+        "TMPDIR=$ENV_WORK/fallback TMP=$ENV_WORK/fallback TEMP=$ENV_WORK/fallback SERVER=0 NOSERVER=1 NODEREUSE=1 TELE=1 LOGO=1 DIRY=yes" \
+        "$(cat "$LOGS/lib-fallback.env")"
+    REPO_TMP_PROBE="$WORK/repo-tmp-probe"
+    mkdir -p "$REPO_TMP_PROBE"
+    run_lib_probe repo-tmp "$REPO_TMP_PROBE" DOTNET_ENV_TMPDIR="$ENV_WORK/not-a-dir" TMPDIR="" TMP="" TEMP=""
+    assert_eq "hardening fallback: the last resort is <repo>/.tmp" \
+        "TMPDIR=$REPO_TMP_PROBE/.tmp TMP=$REPO_TMP_PROBE/.tmp TEMP=$REPO_TMP_PROBE/.tmp SERVER=0 NOSERVER=1 NODEREUSE=1 TELE=1 LOGO=1 DIRY=no" \
+        "$(cat "$LOGS/lib-repo-tmp.env")"
+    assert_eq "hardening fallback: <repo>/.tmp carries its own .gitignore" "*" \
+        "$(cat "$REPO_TMP_PROBE/.tmp/.gitignore" 2>/dev/null || true)"
+fi
 
 # ---- S1 usage ------------------------------------------------------------------------
 section "S1 --help"
@@ -397,6 +467,14 @@ assert_contains "S2 uses -c Release" "ARG|-c" "$D2"
 assert_contains "S2 passes -p:Foo=bar verbatim" "ARG|-p:Foo=bar" "$D2"
 assert_contains "S2 passes --property as -p: with the space kept" "ARG|-p:MyProp=a b" "$D2"
 assert_eq "S2 build does not touch hdc" "no-call" "$([ ! -f "$(state_file S2 calls.log)" ] && printf 'no-call' || printf 'called')"
+assert_contains "S2 disables the MSBuild server (the switch this SDK reads)" "ENV|DOTNET_CLI_USE_MSBUILD_SERVER|0" "$D2"
+assert_contains "S2 sets the documented MSBuild server opt-out" "ENV|DOTNET_CLI_DO_NOT_USE_MSBUILD_SERVER|1" "$D2"
+assert_contains "S2 disables MSBuild node reuse" "ENV|MSBUILDDISABLENODEREUSE|1" "$D2"
+assert_contains "S2 opts out of telemetry" "ENV|DOTNET_CLI_TELEMETRY_OPTOUT|1" "$D2"
+assert_contains "S2 sets DOTNET_NOLOGO" "ENV|DOTNET_NOLOGO|1" "$D2"
+assert_contains "S2 keeps the caller TMPDIR override" "ENV|TMPDIR|$TMPD" "$D2"
+assert_contains "S2 defaults TMP to the same dir" "ENV|TMP|$TMPD" "$D2"
+assert_contains "S2 defaults TEMP to the same dir" "ENV|TEMP|$TMPD" "$D2"
 
 # ---- S3 dry-run ----------------------------------------------------------------------
 section "S3 --dry-run (plan only, no execution, no password leak)"
@@ -543,7 +621,7 @@ assert_contains "S11b plan still shows the command" "install -r" "$LOGS/S11b.log
 section "global: no state outside the work dir"
 if [ "$GIT_OK" = 1 ]; then
     assert_eq "devloop scripts unchanged by the selftest" "$GIT_BEFORE" \
-        "$(git -C "$REPO_DIR" status --porcelain 2>/dev/null | grep -E -e 'scripts/devloop\.sh' -e 'scripts/selftest-devloop\.sh' || true)"
+        "$(git -C "$REPO_DIR" status --porcelain 2>/dev/null | grep -E -e 'scripts/devloop\.sh' -e 'scripts/selftest-devloop\.sh' -e 'scripts/lib-dotnet-env\.sh' || true)"
 else
     skip "devloop scripts unchanged (not a git work tree)"
 fi
