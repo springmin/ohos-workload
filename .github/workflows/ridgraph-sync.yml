@@ -15,7 +15,7 @@ on:
         description: 'sdk-ohos commit SHA carrying the canonical eng graph (defaults to the pinned tip)'
         required: false
         type: string
-        default: '82dc57c64c67ba0ff8b9dc7997a5e4a861920467'
+        default: '6c86e2d13bce17e03caf2f92f64a722fd537f14a'
   push:
     branches: [ master ]
   pull_request:
@@ -26,10 +26,11 @@ permissions:
 env:
   # The commit that introduced/kept the AOT-enabled openharmony RID imports plus the pack
   # mirroring (aot: map openharmony RIDs to the linux-musl AOT packs and mirror the packs).
-  # Refreshed to the current sdk-ohos feature/openharmony tip (82dc57c64c, the kit #29 bundle
-  # anchor, 2026-09-28) - the canonical graph bytes are unchanged.
+  # Refreshed to the current sdk-ohos feature/openharmony tip (6c86e2d13b, the stage-cache docs
+  # commit on top of the kit #29 bundle anchor, 2026-09-28) - the canonical graph bytes are
+  # unchanged (eng/PortableRuntimeIdentifierGraph.openharmony.json still 6e4137cc...).
   # Advance it together with scripts/sync-ridgraph.sh when the canonical graph changes.
-  SDK_OHOS_REF: ${{ github.event.inputs.sdk_ohos_ref || '82dc57c64c67ba0ff8b9dc7997a5e4a861920467' }}
+  SDK_OHOS_REF: ${{ github.event.inputs.sdk_ohos_ref || '6c86e2d13bce17e03caf2f92f64a722fd537f14a' }}
 
 jobs:
   ridgraph:
