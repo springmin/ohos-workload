@@ -22,7 +22,7 @@ on:
         description: 'maui-ohos commit SHA to cross-check (defaults to the pinned slice tip)'
         required: false
         type: string
-        default: '8241f1b30cd9669cb79df8567755047cbd7f4707'
+        default: 'b6a5864511f0e00e94a7cf126e1eb7801e03f9a5'
   push:
     branches: [ master ]
   pull_request:
@@ -32,13 +32,15 @@ permissions:
 
 # Reproducible cross-repo check: the slice is checked out at an exact commit, not the mutable
 # feature/openharmony branch, so a push to the fork cannot change what this gate verifies.
-# Current tip: 8241f1b3 (T1 InputView mapping dcc7eaac + T2 WebView CookieContainer sync, after
-# the SEC-SCAN-3 webview + deep-link batch: the ArkWeb history/frame/cookie handlers, the
-# S3-DL3 dot-dot route rejection and the HUKS/keystore hardening; the T1/T2 batch adds no host
-# exports, so the host export contract is still 143/143).
+# Current tip: b6a58645 (the T3 GraphicsView merge on top of the T5 layout semantics c1c05f3d,
+# the T4 Label spans, the T10 modal accessibility overlay, the T1 InputView mapping dcc7eaac and
+# T2 WebView CookieContainer sync 8241f1b3, after the SEC-SCAN-3 webview + deep-link batch: the
+# ArkWeb history/frame/cookie handlers, the S3-DL3 dot-dot route rejection and the HUKS/keystore
+# hardening; the T3/T4/T5/T10 batch adds no host exports, so the host export contract is still
+# 143/143).
 # Advance the pin deliberately, in lockstep with the interaction/pixel gates.
 env:
-  MAUI_OHOS_REF: ${{ github.event.inputs.maui_ohos_ref || '8241f1b30cd9669cb79df8567755047cbd7f4707' }}
+  MAUI_OHOS_REF: ${{ github.event.inputs.maui_ohos_ref || 'b6a5864511f0e00e94a7cf126e1eb7801e03f9a5' }}
 
 jobs:
   contract:
