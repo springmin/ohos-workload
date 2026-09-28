@@ -569,7 +569,7 @@ a regression is visible even before the gate reads it.
 unpack ~46 s, `Finished :entry:default@CompileArkTS` in 6 s 74 ms, all 14 literals and the Map
 overlay record + 3 symbols present, abc 331,336 B / `34b0a046...` @13.0.1.0, arktsErrors 0,
 provenance gate=pass; the cache was saved after the job, 2,048,389,122 B). A manual dispatch on
-the same commit (`36369863335`, success, 1m43s) restored that cache (no download, unpack ~50 s)
+the same commit (`36369863335`, success, 1m48s) restored that cache (no download, unpack ~50 s)
 and reproduced the abc byte-for-byte (`34b0a046...`). The abc is larger than the aarch64
 rehearsal's 291,628 B / `a637a513...` pin for the same templates because that host swaps in the
 OpenHarmony SDK's arm64 `es2abc` (see Host notes); the gates assert version, literals and the
