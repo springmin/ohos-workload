@@ -12,7 +12,7 @@ using Microsoft.Maui.Platform;
 // after the fuzz tail) instead of letting every caller repeat its own threshold constant.
 VerifyLineCountingWriter verifyStdout = new(Console.Out);
 Console.SetOut(verifyStdout);
-const int verifyCheckTotal = 405;                     // documented full [verify] line count (+4 MS-MODE runtime mode switch, +10 P2c-DEEPLINK, +4 P2b-IMG, +16 P1b-LIST, +10 P1a-ANIM, +2 SEC3 storage/deep-link pins, +5 W-series WebView wiring, +3 T1 InputView mapping, +4 T2 WebView gaps, +4 T3 GraphicsView interaction)
+const int verifyCheckTotal = 409;                     // documented full [verify] line count (+4 MS-MODE runtime mode switch, +10 P2c-DEEPLINK, +4 P2b-IMG, +16 P1b-LIST, +10 P1a-ANIM, +2 SEC3 storage/deep-link pins, +5 W-series WebView wiring, +3 T1 InputView mapping, +4 T2 WebView gaps, +4 T3 GraphicsView interaction)
 const int verifyCheckFloor = verifyCheckTotal - 20;   // documented floor convention (total - 20)
 
 // A small image file for the Image handler.
@@ -762,8 +762,100 @@ if (graphicsCtl?.Handler?.PlatformView is OpenHarmonyView graphicsPlatform)
     rendererForGraphics.Render(navRoot, 1080, 1920);
     Console.WriteLine($"[verify] graphicsview drawCalled={gestures.Drawable?.DrawCalls} frame={graphicsCtl.Frame}");
     Rect gf = graphicsCtl.Frame;
+    // The audit layout is taller than the surface, so the GraphicsView is arranged below the
+    // viewport and the compositor's frame-based hit test correctly ignores taps there. Probe it
+    // at a known on-screen rect (same size) and restore the layout after the interaction.
+    graphicsCtl.Arrange(new Rect(24, 120, gf.Width, gf.Height));
+    Rect gp = graphicsCtl.Frame;
 
+    // T3: the IGraphicsView interaction contract. The compositor routes presses, moves and the
+    // release/cancel of the whole gesture stream (multi-touch) plus mouse hover; Controls'
+    // GraphicsView raises its events from those calls. Count every callback and pin the point
+    // payload (window coordinates: the same space as the drawable's dirty rect).
+    int gvStart = 0, gvDrag = 0, gvEnd = 0, gvCancel = 0;
+    int gvHoverStart = 0, gvHoverMove = 0, gvHoverEnd = 0;
+    int gvStartPoints = 0, gvDragPoints = 0, gvEndPoints = 0;
+    bool gvFirstInside = false, gvSecondInside = true;
+    float gvFirstX = float.NaN, gvFirstY = float.NaN;
+    graphicsCtl.StartInteraction += (_, e) =>
+    {
+        gvStart++;
+        gvStartPoints = Math.Max(gvStartPoints, e.Touches.Length);
+        if (gvStart == 1)
+        {
+            gvFirstX = e.Touches[0].X;
+            gvFirstY = e.Touches[0].Y;
+        }
+    };
+    graphicsCtl.DragInteraction += (_, e) =>
+    {
+        gvDrag++;
+        gvDragPoints = Math.Max(gvDragPoints, e.Touches.Length);
+    };
+    graphicsCtl.EndInteraction += (_, e) =>
+    {
+        gvEnd++;
+        gvEndPoints = Math.Max(gvEndPoints, e.Touches.Length);
+        if (gvEnd == 1)
+        {
+            gvFirstInside = e.IsInsideBounds;
+        }
+        else if (gvEnd == 2)
+        {
+            gvSecondInside = e.IsInsideBounds;
+        }
+    };
+    graphicsCtl.CancelInteraction += (_, _) => gvCancel++;
+    graphicsCtl.StartHoverInteraction += (_, _) => gvHoverStart++;
+    graphicsCtl.MoveHoverInteraction += (_, _) => gvHoverMove++;
+    graphicsCtl.EndHoverInteraction += (_, _) => gvHoverEnd++;
+
+    float gx = (float)(gp.X + 10), gy = (float)(gp.Y + 10);
+    host.HandleTouch(true, false, gx, gy);
+    host.HandleTouch(false, true, gx, gy);
     Console.WriteLine($"[verify] graphicsview touchCalls={gestures.Drawable?.TouchCalls}");
+    // Drag out of the frame and release outside: EndInteraction reports the outside release.
+    host.HandleTouch(true, false, gx, gy);
+    host.HandleMove(gx + 40, gy + 20);
+    host.HandleMove((float)(gp.X + gp.Width + 40), (float)(gp.Y + 40));
+    host.HandleTouch(false, true, (float)(gp.X + gp.Width + 40), (float)(gp.Y + 40));
+    // A second pointer joins the captured gesture: drag and release carry both points.
+    host.HandleTouch(true, false, gx, gy, 7);
+    host.HandleMove(gx + 12, gy, 7);
+    host.HandleTouch(true, false, gx + 30, gy + 10, 9);
+    host.HandleMove(gx + 40, gy + 10, 9);
+    host.HandleTouch(false, true, gx + 40, gy + 10, 9);
+    host.HandleMove(gx + 20, gy, 7);
+    host.HandleTouch(false, true, gx + 20, gy, 7);
+    // Cancel drops the captured gesture without a release event.
+    host.HandleTouch(true, false, gx, gy, 3);
+    host.HandleCancel(gx, gy);
+    // Hover: pointer moves with no press behind them.
+    host.HandleMove(gx + 5, gy + 5);
+    host.HandleMove(gx + 6, gy + 6);
+    host.HandleMove((float)(gp.X + gp.Width + 200), gy);
+    // Invalidate: the drawable's repaint request reaches the platform bridge.
+    int gvRedraws = 0;
+    Action gvRedraw = () => gvRedraws++;
+
+    bool gvPointerOk = gvStart == 5 && gvDrag == 5 && gvEnd == 4 && gvCancel == 1;
+    bool gvPointPinned = Math.Abs(gvFirstX - gx) < 0.01f && Math.Abs(gvFirstY - gy) < 0.01f;
+    Console.WriteLine($"[verify] graphicsview interaction start={gvStart} drag={gvDrag} end={gvEnd} cancel={gvCancel} startPoints={gvStartPoints} dragPoints={gvDragPoints} endPoints={gvEndPoints}");
+    Console.WriteLine($"[verify] graphicsview interaction bounds tapInside={gvFirstInside} dragOutside={!gvSecondInside} pointPinned={gvPointPinned} pointerOk={gvPointerOk}");
+    Console.WriteLine($"[verify] graphicsview interaction hover start={gvHoverStart} move={gvHoverMove} end={gvHoverEnd}");
+    Microsoft.OpenHarmony.Hosting.OpenHarmonyBridge.RedrawRequested += gvRedraw;
+    graphicsCtl.Invalidate();
+    Microsoft.OpenHarmony.Hosting.OpenHarmonyBridge.RedrawRequested -= gvRedraw;
+    Console.WriteLine($"[verify] graphicsview invalidate redraws={gvRedraws}");
+    // Restore the audit layout: the following assertions read the normal frames again.
+    host.Arrange(1080, 1920);
+    bool gvOk = gvPointerOk && gvStartPoints == 2 && gvDragPoints == 2 && gvEndPoints == 2 &&
+        gvFirstInside && !gvSecondInside && gvPointPinned &&
+        gvHoverStart == 1 && gvHoverMove == 1 && gvHoverEnd == 1 && gvRedraws == 1;
+    if (!gvOk)
+    {
+        throw new InvalidOperationException("the GraphicsView interaction contract (press/drag/multi-touch/cancel/hover/invalidate) is missing or drifted");
+    }
 }
 var contentViewCtl = root.Children.OfType<ContentView>().FirstOrDefault();
 if (contentViewCtl is not null)
