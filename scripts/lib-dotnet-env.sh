@@ -26,8 +26,15 @@
 #   DOTNET_NOLOGO=1                         stable output (the scripts grep the build logs)
 #   TMPDIR/TMP/TEMP                         a writable, socket-capable scratch dir: the caller's
 #                                           TMPDIR when usable, else $DOTNET_ENV_TMPDIR, else
-#                                           <repo>/.tmp. Keep it short enough that
-#                                           $TMPDIR/MSBuildServer-* stays under 108 characters.
+#                                           /data/storage/el2/base/tmp/opencode/t, else
+#                                           <repo>/.tmp. A candidate whose estimated server
+#                                           socket path ($TMPDIR/MSBuildServer-<hash>, measured
+#                                           58 characters more) exceeds 100 is refused with a
+#                                           warning when a shorter candidate is usable, so a long
+#                                           scratch TMPDIR cannot wedge the CLI at the
+#                                           108-character AF_UNIX limit. The first usable
+#                                           candidate is kept when none fits (a long TMPDIR is
+#                                           still better than none).
 #
 # Args: $1 = repository root (used for the .tmp fallback only). Always returns 0.
 
@@ -50,18 +57,52 @@ _ode_usable() {
     return 0
 }
 
+# The MSBuild server pipe is $TMPDIR/MSBuildServer-<43-char hash>; the measured suffix is 58
+# characters and the AF_UNIX path limit is 108 (the server dies at the limit while the client
+# waits out its timeout). The soft limit below leaves 8 characters of headroom: a candidate over
+# it loses to a shorter usable candidate, with a warning naming the refused path.
+_ODE_SERVER_SUFFIX_LEN=58
+_ODE_SOCKET_SOFT_LIMIT=100
+_ODE_DEFAULT_TMP=/data/storage/el2/base/tmp/opencode/t
+
+_ode_warn() { printf 'lib-dotnet-env: WARN: %s\n' "$*" >&2; }
+
+# Two passes: a short-and-usable candidate wins (the first pass never touches an over-limit
+# candidate, so an unused TMPDIR is not created just because it is long); only when none fits
+# does the second pass keep the highest-priority usable candidate, over-limit or not.
 _ode_tmp=""
-_ode_repo_tmp=""
-if [ -n "${TMPDIR:-}" ] && _ode_usable "$TMPDIR"; then
-    _ode_tmp="$TMPDIR"
-else
-    _ode_repo_tmp="${1:-$PWD}/.tmp"
-    for _ode_dir in "${DOTNET_ENV_TMPDIR:-/data/storage/el2/base/tmp/opencode/tmp}" "$_ode_repo_tmp"; do
+_ode_repo_tmp="${1:-$PWD}/.tmp"
+for _ode_dir in "${TMPDIR:-}" "${DOTNET_ENV_TMPDIR:-$_ODE_DEFAULT_TMP}" "$_ode_repo_tmp"; do
+    [ -n "$_ode_dir" ] || continue
+    [ "$(( ${#_ode_dir} + _ODE_SERVER_SUFFIX_LEN ))" -le "$_ODE_SOCKET_SOFT_LIMIT" ] || continue
+    if _ode_usable "$_ode_dir"; then
+        _ode_tmp="$_ode_dir"
+        break
+    fi
+done
+if [ -z "$_ode_tmp" ]; then
+    for _ode_dir in "${TMPDIR:-}" "${DOTNET_ENV_TMPDIR:-$_ODE_DEFAULT_TMP}" "$_ode_repo_tmp"; do
+        [ -n "$_ode_dir" ] || continue
         if _ode_usable "$_ode_dir"; then
             _ode_tmp="$_ode_dir"
             break
         fi
     done
+fi
+if [ -n "$_ode_tmp" ]; then
+    if [ "$(( ${#_ode_tmp} + _ODE_SERVER_SUFFIX_LEN ))" -gt "$_ODE_SOCKET_SOFT_LIMIT" ]; then
+        # No short candidate was usable (e.g. no /data mount and a deep checkout): say so once -
+        # a too-long TMPDIR is still better than none.
+        _ode_warn "no usable scratch dir stays under the $_ODE_SOCKET_SOFT_LIMIT-character MSBuild server socket estimate; using '$_ode_tmp' (estimated $(( ${#_ode_tmp} + _ODE_SERVER_SUFFIX_LEN )) chars, hard AF_UNIX limit 108)"
+    fi
+    for _ode_dir in "${TMPDIR:-}" "${DOTNET_ENV_TMPDIR:-}"; do
+        [ -n "$_ode_dir" ] || continue
+        [ "$_ode_tmp" != "$_ode_dir" ] || continue
+        [ "$(( ${#_ode_dir} + _ODE_SERVER_SUFFIX_LEN ))" -gt "$_ODE_SOCKET_SOFT_LIMIT" ] || continue
+        _ode_warn "'$_ode_dir' is too long for the MSBuild server socket (estimated $(( ${#_ode_dir} + _ODE_SERVER_SUFFIX_LEN )) chars > $_ODE_SOCKET_SOFT_LIMIT); using '$_ode_tmp' instead"
+    done
+else
+    _ode_warn "no usable scratch dir found (the caller's TMPDIR, DOTNET_ENV_TMPDIR and <repo>/.tmp all failed the write probe)"
 fi
 if [ -n "$_ode_tmp" ]; then
     TMPDIR="$(cd "$_ode_tmp" && pwd -P)" || TMPDIR="$_ode_tmp"

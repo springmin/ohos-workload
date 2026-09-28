@@ -1306,15 +1306,19 @@ Division of labour with `tester-run.sh`:
 ## Known environment quirks
 
 Two host quirks of this OpenHarmony sandbox surface as dotnet "environment failures". Both are
-absorbed by `scripts/lib-dotnet-env.sh`, which `scripts/preflight.sh` and `scripts/devloop.sh`
-source before their first `dotnet` call. The lib defaults (only while a variable is unset or
-empty, so an operator can override any of them) `DOTNET_CLI_USE_MSBUILD_SERVER=0` (the switch
+absorbed by `scripts/lib-dotnet-env.sh`, which every script that invokes dotnet sources before
+its first call (`preflight.sh`, `devloop.sh`, `prepare-packs.sh`, `make-device-test-kit.sh`,
+`make-mode-kit.sh`). The lib defaults (only while a variable is unset or empty, so an operator
+can override any of them) `DOTNET_CLI_USE_MSBUILD_SERVER=0` (the switch
 this SDK reads), `DOTNET_CLI_DO_NOT_USE_MSBUILD_SERVER=1` (the documented name; harmless where
 the SDK ignores it), `MSBUILDDISABLENODEREUSE=1`, `DOTNET_CLI_TELEMETRY_OPTOUT=1`,
 `DOTNET_NOLOGO=1`, and points `TMPDIR`/`TMP`/`TEMP` at a usable scratch dir (the caller's
-`TMPDIR`, else `$DOTNET_ENV_TMPDIR`, else `/data/storage/el2/base/tmp/opencode/tmp`, else
-`<repo>/.tmp`). The "env hardening" section of `scripts/selftest-devloop.sh` asserts the
-defaults, the fallbacks and the environment a real devloop run hands to the dotnet child.
+`TMPDIR`, else `$DOTNET_ENV_TMPDIR`, else `/data/storage/el2/base/tmp/opencode/t`, else
+`<repo>/.tmp`). A candidate whose estimated server socket path (`$TMPDIR/MSBuildServer-<hash>`,
+58 characters more) would exceed 100 characters is refused with a warning when a shorter
+candidate is usable; the first usable candidate is kept when none fits. The "env hardening"
+section of `scripts/selftest-devloop.sh` asserts the defaults, the fallbacks, the length guard
+and the environment a real devloop run hands to the dotnet child.
 
 ### `/tmp` refuses AF_UNIX sockets, so the MSBuild server cannot start
 
@@ -1348,9 +1352,11 @@ domain sockets on this platform. The length must be between 1 and 108 characters
 ```
 
 `/data/storage/el2/base/tmp` (84 characters for the socket path) and the default
-`/data/storage/el2/base/tmp/opencode/tmp` (97) stay under the limit and accept sockets; `/tmp`
-does not. A `TMPDIR` that does not exist fails the build outright (`MSB1025`,
-`CreateTempSubdirectory`), which is why the lib creates the directory it selects.
+`/data/storage/el2/base/tmp/opencode/t` (95) stay under the limit and accept sockets; `/tmp`
+does not. The guard refuses a writable but over-limit candidate (the measured 108-character
+`.../opencode/env-harden/tmp` scratch) and falls back to the short default with a warning. A
+`TMPDIR` that does not exist fails the build outright (`MSB1025`, `CreateTempSubdirectory`),
+which is why the lib creates the directory it selects.
 
 This is the failure behind kit #30 preflight run 2: the pixel step's `dotnet run -c Release`
 internal build printed the server line, waited ~5 minutes and then reported `The build failed`

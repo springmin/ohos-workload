@@ -7,8 +7,9 @@
 #   stub contract  the three stubs themselves (list targets, install ok/fail, aa start, bm get -u,
 #                  hilog stream, dotnet arg log, sign copy)
 #   env hardening  lib-dotnet-env.sh: the MSBuild server/node-reuse opt-outs, TMPDIR defaulting
-#                  with the preferred/.tmp fallback, caller overrides kept, and the exact
-#                  environment the stub dotnet receives from a real devloop run
+#                  with the preferred/.tmp fallback, the >100-char server-socket guard, caller
+#                  overrides kept (a short caller TMPDIR wins; an over-limit one falls back to a
+#                  shorter candidate), and the exact environment the stub dotnet receives
 #   S1 usage       --help -> exit 0, usage text
 #   S2 build       publish command, TFM/RID/config, -p: pass-through (values with spaces stay one
 #                  argument)
@@ -32,7 +33,7 @@
 # Exit: 0 = all checks passed; 1 = at least one check failed (work dir kept for triage).
 set -u
 
-SELFTEST_VERSION="2 (2026-09-28)"
+SELFTEST_VERSION="3 (2026-09-28)"
 
 log()     { printf '[%s] %s\n' "$(date '+%H:%M:%S')" "$*"; }
 section() { printf '\n=== %s ===\n' "$*"; }
@@ -83,6 +84,28 @@ WORK="$(cd "$WORK" && pwd -P)" || exit 1
 WORK_OWNER="$WORK/.selftest-owner"
 printf '%s\n' "$$" > "$WORK_OWNER" 2>/dev/null || true
 
+# A genuinely short scratch dir for the TMPDIR length-guard checks: the guard refuses a TMPDIR
+# whose estimated MSBuild-server socket path ($TMPDIR + 58 chars) exceeds 100, and the work dir
+# under the approved tmp root is already longer than that. Try a sibling of the work base
+# (/data/storage/el2/base/tmp/sdt.$$ is 36 chars -> 94 estimated), then the base itself. A path
+# with whitespace cannot pass through the run helper's word-split env assignment, so drop it
+# there; removed in cleanup() via its owner marker (it lives outside $WORK).
+SHORT_TMP=""
+_short_parent="$(dirname "$WORK_BASE")"
+for _short_cand in "$_short_parent/sdt.$$" "$WORK_BASE/sdt.$$"; do
+    [ -d "$(dirname "$_short_cand")" ] || continue
+    [ $(( ${#_short_cand} + 58 )) -le 100 ] || continue
+    mkdir -p "$_short_cand" 2>/dev/null || continue
+    SHORT_TMP="$(cd "$_short_cand" && pwd -P)" || continue
+    break
+done
+case "$SHORT_TMP" in
+    *[[:space:]]*) SHORT_TMP="" ;;
+esac
+if [ -n "$SHORT_TMP" ]; then
+    printf '%s\n' "$$" > "$SHORT_TMP/.selftest-owner" 2>/dev/null || SHORT_TMP=""
+fi
+
 CHECKS=0
 FAILED=0
 KEEP="${SELFTEST_KEEP:-0}"
@@ -106,6 +129,10 @@ cleanup() {
     esac
     if [ -f "$WORK_OWNER" ] && [ "$(cat "$WORK_OWNER" 2>/dev/null)" = "$$" ]; then
         rm -rf "$WORK" 2>/dev/null || true
+    fi
+    if [ -n "$SHORT_TMP" ] && [ -f "$SHORT_TMP/.selftest-owner" ] \
+        && [ "$(cat "$SHORT_TMP/.selftest-owner" 2>/dev/null)" = "$$" ]; then
+        rm -rf "$SHORT_TMP" 2>/dev/null || true
     fi
 }
 trap cleanup 0
@@ -356,6 +383,7 @@ wait_lines() {
 section "environment (selftest $SELFTEST_VERSION)"
 log "devloop: $DEVLOOP"
 log "work   : $WORK"
+[ -z "$SHORT_TMP" ] || log "short  : $SHORT_TMP (TMPDIR length-guard scratch)"
 log "stub   : $STUB / $STUB_DOTNET / $SIGN_STUB"
 log "ziptool: $HAVE_ZIPTOOL (1=python3 2=zip 0=none)"
 
@@ -412,11 +440,13 @@ printf 'TMPDIR=%s TMP=%s TEMP=%s SERVER=%s NOSERVER=%s NODEREUSE=%s TELE=%s LOGO
     "$([ -d "${DOTNET_ENV_TMPDIR:-.}" ] && printf yes || printf no)"
 LIB_PROBE_EOF
     # run_lib_probe <tag> <repo-root> [VAR=value ...]: a clean env (only PATH) so the lib's
-    # defaults are visible, plus the requested overrides.
+    # defaults are visible, plus the requested overrides. The environment line goes to .env
+    # (exact-match assertions); lib warnings (stderr) to .err, so a warned run still yields the
+    # same single-line .env.
     run_lib_probe() {
         _lb_tag="$1"; _lb_repo="$2"; shift 2
         ( cd "$CWD" && exec env -i PATH="$PATH" "$@" sh "$WORK/lib-probe.sh" "$_lb_repo" "$LIB_DOTNET_ENV" ) \
-            > "$LOGS/lib-$_lb_tag.env" 2>&1
+            > "$LOGS/lib-$_lb_tag.env" 2> "$LOGS/lib-$_lb_tag.err"
     }
     run_lib_probe defaults "$FAKE_ENV_REPO" DOTNET_ENV_TMPDIR="$ENV_WORK/default" TMPDIR="" TMP="" TEMP=""
     assert_eq "hardening defaults: server/node reuse/telemetry/logo off, TMPDIR defaulted" \
@@ -443,6 +473,35 @@ LIB_PROBE_EOF
         "$(cat "$LOGS/lib-repo-tmp.env")"
     assert_eq "hardening fallback: <repo>/.tmp carries its own .gitignore" "*" \
         "$(cat "$REPO_TMP_PROBE/.tmp/.gitignore" 2>/dev/null || true)"
+    assert_contains "lib: the built-in TMPDIR default is the short path" \
+        '_ODE_DEFAULT_TMP=/data/storage/el2/base/tmp/opencode/t' "$LIB_DOTNET_ENV"
+
+    if [ -n "$SHORT_TMP" ]; then
+        # G1: an over-limit caller TMPDIR loses to a usable short DOTNET_ENV_TMPDIR, and the
+        # warning names both the refused path and its estimated socket length.
+        run_lib_probe guard-fallback "$FAKE_ENV_REPO" DOTNET_ENV_TMPDIR="$SHORT_TMP" \
+            TMPDIR="$ENV_WORK/guard-long" TMP="" TEMP=""
+        assert_eq "guard: an over-limit caller TMPDIR falls back to the short DOTNET_ENV_TMPDIR" \
+            "TMPDIR=$SHORT_TMP TMP=$SHORT_TMP TEMP=$SHORT_TMP SERVER=0 NOSERVER=1 NODEREUSE=1 TELE=1 LOGO=1 DIRY=yes" \
+            "$(cat "$LOGS/lib-guard-fallback.env")"
+        assert_contains "guard: the warning names the refused TMPDIR and its estimate" \
+            "too long for the MSBuild server socket" "$LOGS/lib-guard-fallback.err"
+        assert_contains "guard: the warning names the chosen short dir" \
+            "using '$SHORT_TMP' instead" "$LOGS/lib-guard-fallback.err"
+
+        # G2: with no usable short candidate the highest-priority one is kept (warned, not
+        # dropped: a too-long TMPDIR still beats none).
+        : > "$ENV_WORK/not-a-dir-2"
+        run_lib_probe guard-keep "$FAKE_ENV_REPO" DOTNET_ENV_TMPDIR="$ENV_WORK/not-a-dir-2" \
+            TMPDIR="$ENV_WORK/guard-keep" TMP="" TEMP=""
+        assert_eq "guard: with no short candidate the caller TMPDIR is kept" \
+            "TMPDIR=$ENV_WORK/guard-keep TMP=$ENV_WORK/guard-keep TEMP=$ENV_WORK/guard-keep SERVER=0 NOSERVER=1 NODEREUSE=1 TELE=1 LOGO=1 DIRY=no" \
+            "$(cat "$LOGS/lib-guard-keep.env")"
+        assert_contains "guard: the kept over-limit dir is reported" \
+            "no usable scratch dir stays under" "$LOGS/lib-guard-keep.err"
+    else
+        skip "lib TMPDIR length-guard checks (no short scratch base on this host)"
+    fi
 fi
 
 # ---- S1 usage ------------------------------------------------------------------------
@@ -454,7 +513,12 @@ assert_contains "S1 documents the sign material" "--sign-profile" "$LOGS/S1.log"
 
 # ---- S2 build ------------------------------------------------------------------------
 section "S2 build (publish + -p: pass-through)"
-run_devloop S2 "" build --project "$PROJ" -p:Foo=bar --property "MyProp=a b"
+# The work tmp dir is over the guard's soft limit. With a short DOTNET_ENV_TMPDIR the caller
+# TMPDIR is refused and the short dir is what dotnet sees; without a short scratch base the
+# last-resort rule keeps the caller TMPDIR (host-dependent), so those checks are skipped.
+S2_TMP_ENV=""
+if [ -n "$SHORT_TMP" ]; then S2_TMP_ENV="DOTNET_ENV_TMPDIR=$SHORT_TMP"; fi
+run_devloop S2 "$S2_TMP_ENV" build --project "$PROJ" -p:Foo=bar --property "MyProp=a b"
 assert_eq "S2 exit code 0 (log: $LOGS/S2.log)" "0" "$RC"
 D2="$(state_file S2 dotnet.log)"
 assert_file "S2 dotnet stub called" "$D2"
@@ -472,9 +536,16 @@ assert_contains "S2 sets the documented MSBuild server opt-out" "ENV|DOTNET_CLI_
 assert_contains "S2 disables MSBuild node reuse" "ENV|MSBUILDDISABLENODEREUSE|1" "$D2"
 assert_contains "S2 opts out of telemetry" "ENV|DOTNET_CLI_TELEMETRY_OPTOUT|1" "$D2"
 assert_contains "S2 sets DOTNET_NOLOGO" "ENV|DOTNET_NOLOGO|1" "$D2"
-assert_contains "S2 keeps the caller TMPDIR override" "ENV|TMPDIR|$TMPD" "$D2"
-assert_contains "S2 defaults TMP to the same dir" "ENV|TMP|$TMPD" "$D2"
-assert_contains "S2 defaults TEMP to the same dir" "ENV|TEMP|$TMPD" "$D2"
+if [ -n "$SHORT_TMP" ]; then
+    assert_contains "S2 refuses the over-limit caller TMPDIR" \
+        "too long for the MSBuild server socket" "$LOGS/S2.log"
+    assert_contains "S2 falls back to the short TMPDIR" "ENV|TMPDIR|$SHORT_TMP" "$D2"
+    assert_contains "S2 defaults TMP to the short dir" "ENV|TMP|$SHORT_TMP" "$D2"
+    assert_contains "S2 defaults TEMP to the short dir" "ENV|TEMP|$SHORT_TMP" "$D2"
+    assert_not_contains "S2 does not hand the over-limit TMPDIR to dotnet" "ENV|TMPDIR|$TMPD" "$D2"
+else
+    skip "S2 TMPDIR guard checks (no short scratch base on this host)"
+fi
 
 # ---- S3 dry-run ----------------------------------------------------------------------
 section "S3 --dry-run (plan only, no execution, no password leak)"
