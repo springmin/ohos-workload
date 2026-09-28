@@ -534,6 +534,10 @@ needs `blazor.webview.js` and the message transport, and no
 `dotnet.js`/`dotnet.native.wasm`/`_*.dll` browser assets are staged. A project without `wwwroot`
 is untouched, so its payload stays byte-identical.
 
+MAUI WebView 接线（ArkWeb 六小缺口：history/frame/cookie/DOM storage/导航事件/失败清屏）与 B1 复跑
+记录（含本机 rc.2 SDK 双偏差 hook、离线门禁数字）见 runtime-ohos
+`docs/plans/2026-09-28-ohos-maui-webview-wiring.md`。
+
 ## Toolchain resolution
 
 `_OpenHarmonyDetectToolchain` resolves the packing tool from `OpenHarmonyToolchainDir` or
