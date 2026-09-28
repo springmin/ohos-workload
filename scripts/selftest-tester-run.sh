@@ -61,11 +61,18 @@
 #                  (status + node count), a11y/hilog-a11y.txt and summary a11y_* keys
 #   S20 a11y miss  FAKE_HDC_NO_UITEST=1: the missing tool is recorded as a11y_selfcheck=
 #                  failed(layout dump), failures=0 and the archive is still produced
+#   S21 blazor ok  --blazor-probe auto-detects a re-signed Blazor host hap in the kit, installs
+#                  it, launches bundle com.example.opendotnet and asserts the BLZ_BOOT /
+#                  BLZ_RENDERED hilog markers; summary blazor_* keys, blazor/blazor-hilog.txt
+#                  and blazor-markers.txt land in the archive, failures=0
+#   S21b blazor miss FAKE_HDC_BLAZOR_MISSING=1: the hilog dump carries no markers -> exit 1,
+#                  blazor_boot/rendered=no, failures counted, the dump is archived and the
+#                  re-sign hint is printed
 # Stub hdc surface (every subcommand tester-run.sh invokes): list targets | install -r <hap> |
 #   uninstall <bundle> | shell aa start -a EntryAbility -b <b> | shell aa force-stop <b> |
 #   shell pidof <b> | shell ps -ef
-#   | shell param get <key> | shell bm get -u | shell hilog -r | hilog | shell "hilog -t kmsg"
-#   | shell "cat /proc/sys/..." | shell "ls -l /data/storage/el1/bundle/libs/arm64/ 2>/dev/null"
+#   | shell param get <key> | shell bm get -u | shell hilog -r | hilog | shell "hilog -t kmsg" |
+#   shell "hilog -x" | shell "cat /proc/sys/..." | shell "ls -l /data/storage/el1/bundle/libs/arm64/ 2>/dev/null"
 #   | shell "ls -l /data/storage/el2/base/haps/entry/files/ 2>/dev/null"
 #   | shell "cat /data/storage/el2/base/haps/entry/files/dotnet.marker 2>/dev/null"
 #   | shell "echo 1 > .../files/xwe.txt" | shell "echo 3 > .../files/interp.txt"
@@ -87,7 +94,9 @@
 #   the MS-MODE manifest lines (interp=3 source=manifest for interp, runtime-mode=<v>
 #   source=manifest); FAKE_HDC_NO_AOT_LINE=1 drops the aot=0|1 line (the manifest aot fallback);
 #   FAKE_HDC_NO_UITEST=1 makes `uitest` and the
-#   a11y `file recv` fail so the probe's missing-tool tolerance is asserted. A stub
+#   a11y `file recv` fail so the probe's missing-tool tolerance is asserted;
+#   FAKE_HDC_BLAZOR_MISSING=1 makes the `hilog -x` dump carry no BlazorWebHost/BLZ_ markers,
+#   so the --blazor-probe failure path (archive + re-sign hint) is asserted. A stub
 #   `binary-sign-tool` in $WORK/bin
 #   (prepended to PATH) answers `display-sign` with `code signature is not found`.
 # Kit under test: SELFTEST_KIT_DIR if set; else the local approved device-test-kit dir when it
@@ -101,7 +110,7 @@
 # Exit: 0 = all checks passed; 1 = at least one check failed (work dir kept for triage).
 set -u
 
-SELFTEST_VERSION="10 (2026-09-28)"
+SELFTEST_VERSION="11 (2026-09-28)"
 
 log()  { printf '[%s] %s\n' "$(date '+%H:%M:%S')" "$*"; }
 section() { printf '\n=== %s ===\n' "$*"; }
@@ -362,6 +371,26 @@ with tempfile.TemporaryDirectory() as d:
 PY
 }
 
+# Synthetic Blazor WASM ArkWeb host hap for the --blazor-probe scenarios: module.json with the
+# bundle under test, a PANDA abc and the minimal rawfile site. The tester only reads the
+# module.json bundleName and installs the file, so the site content is a placeholder.
+make_blazor_hap() {
+    _dst="$1"; _bundle="$2"
+    python3 - "$_dst" "$_bundle" <<'PY'
+import json, sys, zipfile
+dst, bundle = sys.argv[1], sys.argv[2]
+mod = {"app": {"bundleName": bundle, "versionName": "1.0.0-selftest",
+               "minAPIVersion": 60000020, "targetAPIVersion": 60000020, "apiReleaseType": "Release"},
+       "module": {"name": "entry", "type": "entry", "mainElement": "EntryAbility"}}
+with zipfile.ZipFile(dst, "w", zipfile.ZIP_DEFLATED) as z:
+    z.writestr("module.json", json.dumps(mod))
+    z.writestr("ets/modules.abc", b"PANDA\0\0\0\0\0\0\0\015\0\001\0")
+    z.writestr("resources/rawfile/blazor/index.html", b"<!DOCTYPE html><div id=app></div>")
+    z.writestr("resources/rawfile/blazor/_framework/blazor.webassembly.js", b"// selftest boot\n")
+    z.writestr("resources/rawfile/blazor/_framework/dotnet.native.wasm", b"\0asm selftest")
+PY
+}
+
 make_synthetic_kit() {
     _k="${1:-$WORK/kit-synth}"
     rm -rf "$_k"
@@ -588,6 +617,21 @@ KMSG_EOF
                 ;;
             "hilog -r")
                 printf 'hilog clear done\n'
+                exit 0
+                ;;
+            "hilog -x")
+                # --blazor-probe reads the dump with `hilog -x` (print and exit). The default
+                # stream carries the two host boot markers; FAKE_HDC_BLAZOR_MISSING=1 drops
+                # them so the failure path (archive + re-sign hint) is asserted.
+                if [ "${FAKE_HDC_BLAZOR_MISSING:-0}" = 1 ]; then
+                    printf '%s\n' '09-22 10:00:05.000 12345 12345 I A00000/unrelated: no Blazor markers in this window'
+                    exit 0
+                fi
+                cat <<'BLAZOR_EOF'
+09-22 10:00:04.000 12345 12345 I A00000/BlazorWebHost: [host] window load marker: BLZ_BOOT
+09-22 10:00:04.300 12345 12345 I A00000/BlazorWebHost: [host] blazor first frame marker: BLZ_RENDERED
+09-22 10:00:04.100 12345 12345 I A00000/dotnet: unrelated line
+BLAZOR_EOF
                 exit 0
                 ;;
             "ls -l /data/storage/el1/bundle/libs/arm64/ 2>/dev/null")
@@ -1937,6 +1981,58 @@ assert_scenario_sandbox "S17b"
 # ---- fast subset: stop after S17b (SELFTEST_SKIP_A11Y) --------------------------------
 # The a11y tail (S18-S20) needs the uitest fixtures and real capture windows; the S1-S17b
 # core is the mode-matrix evidence. SELFTEST_SKIP_A11Y=1 runs the same final checks+summary
+# ---- S21: Blazor WASM ArkWeb host probe ----------------------------------------------
+section "S21 --blazor-probe: install the re-signed host, assert BLZ_BOOT/BLZ_RENDERED"
+BLAZOR_KIT="$WORK/kit-blazor"
+make_synthetic_kit "$BLAZOR_KIT"
+make_blazor_hap "$BLAZOR_KIT/hello-blazorwasm-host-signed.hap" "com.example.opendotnet"
+( cd "$BLAZOR_KIT" && sha256sum *.hap verify-kit.sh > SHA256SUMS )
+run_tester S21 "FAKE_HDC_PIDOF_ALIVE_CALLS=99" --kit-dir "$BLAZOR_KIT" --blazor-probe --out "$WORK/out-blazor"
+assert_eq "S21 exit code 0 (log: $LOGS/S21.log)" "0" "$RC"
+assert_contains "S21 runs the 3c probe step" "== 3c/5 Blazor WASM ArkWeb 承载探针（--blazor-probe） ==" "$LOGS/S21.log"
+assert_contains "S21 auto-detects the signed hap" "Blazor 探针 hap: $BLAZOR_KIT/hello-blazorwasm-host-signed.hap" "$LOGS/S21.log"
+assert_contains "S21 reports both markers" "Blazor 标记 OK：marker: BLZ_BOOT + marker: BLZ_RENDERED" "$LOGS/S21.log"
+ARCHIVE_S21="$(report_archive out-blazor)"
+assert_file "S21 report archive produced" "$ARCHIVE_S21"
+if prepare_report "$ARCHIVE_S21" "$WORK/x-blazor" out-blazor; then
+    S="$REPORT/summary.txt"
+    assert_eq "S21 summary blazor_install=ok" "ok" "$(sum_val "$S" blazor_install)"
+    assert_eq "S21 summary blazor_boot=yes" "yes" "$(sum_val "$S" blazor_boot)"
+    assert_eq "S21 summary blazor_rendered=yes" "yes" "$(sum_val "$S" blazor_rendered)"
+    assert_eq "S21 summary blazor_bundle" "com.example.opendotnet" "$(sum_val "$S" blazor_bundle)"
+    assert_eq "S21 no main capture requested" "skipped(dry-run)" "$(sum_val "$S" capture_result)"
+    assert_eq "S21 summary failures=0" "0" "$(sum_val "$S" failures)"
+    assert_file "S21 hilog dump archived" "$REPORT/blazor/blazor-hilog.txt"
+    assert_contains "S21 dump carries BLZ_BOOT" "marker: BLZ_BOOT" "$REPORT/blazor/blazor-hilog.txt"
+    assert_contains "S21 marker filter carries BLZ_RENDERED" "marker: BLZ_RENDERED" "$REPORT/blazor/blazor-markers.txt"
+    assert_not_contains "S21 marker filter drops unrelated lines" "unrelated line" "$REPORT/blazor/blazor-markers.txt"
+else
+    bad "S21 report archive could not be extracted ($ARCHIVE_S21)"
+fi
+assert_contains "S21 stub saw the host install" "install -r $BLAZOR_KIT/hello-blazorwasm-host-signed.hap" "$STATE_DIR/S21/calls.log"
+assert_contains "S21 stub saw the blazor launch" "shell aa start -a EntryAbility -b com.example.opendotnet" "$STATE_DIR/S21/calls.log"
+assert_contains "S21 stub saw the hilog dump" "shell hilog -x" "$STATE_DIR/S21/calls.log"
+assert_scenario_sandbox "S21"
+
+section "S21b --blazor-probe without markers: exit 1 + archive + re-sign hint"
+run_tester S21b "FAKE_HDC_PIDOF_ALIVE_CALLS=99 FAKE_HDC_BLAZOR_MISSING=1" \
+    --kit-dir "$BLAZOR_KIT" --blazor-probe --out "$WORK/out-blazor-missing"
+assert_eq "S21b exit code 1 (log: $LOGS/S21b.log)" "1" "$RC"
+assert_contains "S21b names the missing markers" "Blazor 标记缺失：BLZ_BOOT=no BLZ_RENDERED=no" "$LOGS/S21b.log"
+assert_contains "S21b prints the re-sign hint" "重签提示：hello-blazorwasm-host-unsigned.hap 必须用你自己的证书/UDID 重签" "$LOGS/S21b.log"
+ARCHIVE_S21B="$(report_archive out-blazor-missing)"
+assert_file "S21b report archive produced" "$ARCHIVE_S21B"
+if prepare_report "$ARCHIVE_S21B" "$WORK/x-blazor-missing" out-blazor-missing; then
+    S="$REPORT/summary.txt"
+    assert_eq "S21b summary blazor_boot=no" "no" "$(sum_val "$S" blazor_boot)"
+    assert_eq "S21b summary blazor_rendered=no" "no" "$(sum_val "$S" blazor_rendered)"
+    assert_gt "S21b failures counted" 0 "$(sum_val "$S" failures)"
+    assert_file "S21b failure dump archived" "$REPORT/blazor/blazor-hilog.txt"
+else
+    bad "S21b report archive could not be extracted ($ARCHIVE_S21B)"
+fi
+assert_scenario_sandbox "S21b"
+
 # right here so the fast subset exits cleanly inside a 900 s budget.
 if [ "${SELFTEST_SKIP_A11Y:-0}" = 1 ]; then
     section "S18-S20 skipped (SELFTEST_SKIP_A11Y=1)"

@@ -281,6 +281,56 @@ with their marker/library assertions, the negative gates (aot/interp missing lib
 mismatching marker, failed and empty publish, incomplete pack, stale hap) and the signing
 passthrough (no password on the generated argv, the original hap survives a failed sign).
 
+## Blazor WASM ArkWeb kit component (`--with-blazor`)
+
+`scripts/make-device-test-kit.sh --with-blazor` adds a sixth hap to the delivery kit:
+`hello-blazorwasm-host-unsigned.hap`, a self-contained ArkTS-only host (the ArkWeb `Web`
+component; the site under `resources/rawfile/blazor` is served through `onInterceptRequest`)
+around the `dotnet publish` output of `test/hello-blazorwasm`. The publish doubles as the
+offline recipe gate (`--require` turns a restore-level SKIP into a failure; x64 only, no
+device/OHOS SDK needed):
+
+```sh
+sh test/hello-blazorwasm/run-smoke.sh --require --slim --out "$WORK/blazor"
+sh test/hello-blazorwasm/arkts-host/pack-host.sh "$WORK/blazor/publish/wwwroot" \
+    --slim --unsigned-only --out "$WORK/hello-blazorwasm-host-unsigned.hap"
+```
+
+Only the unsigned hap ships (bundle `com.example.opendotnet`; `--blazor-bundle <name>`
+overrides it): our debug profile is bound to the example UDID, so a tester re-signs it exactly
+like `hello-maui-app-unsigned.hap`. `--slim` drops the `.br/.gz/.map` siblings at embed time
+and the slim publish sets `InvariantGlobalization=true` (no `icudt*.dat`); the measured cut is
+~26 MB with ~210 embedded site files. The pack consumes the hvigor toolchain that
+`scripts/build-arkts-shell.sh` installs once per build host (`<repo>/.arkts-build`, or
+`HVIGOR_JS`); without it the kit builder aborts before publishing.
+
+`scripts/verify-kit.sh` asserts the component whenever the hap is present (kit #31+; a kit
+without it only logs that fact): `resources/rawfile/blazor/index.html`, at least one
+`_framework/*.wasm` and a `blazor.webassembly*.js` boot script, a PANDA 13.0.1.0
+`ets/modules.abc`, the `com.example.opendotnet` bundle, and no site-level `.br/.gz/.map` or
+`icudt*.dat` leftovers (the host's own `ets/sourceMaps.map` compile output is not a web asset).
+Every deviation FAILs; `KIT_BLAZOR_HAP`/`KIT_BLAZOR_BUNDLE` override the
+name/bundle for a kit packed differently.
+
+`scripts/tester-run.sh` v13 adds the matching device probe:
+
+```sh
+sh tester-run.sh --kit-dir ./device-test-kit --blazor-probe \
+    --blazor-hap ./hello-blazorwasm-host-signed.hap      # your re-signed copy
+```
+
+The probe installs the signed hap, launches `com.example.opendotnet`/`EntryAbility`, waits 4 s
+and asserts `marker: BLZ_BOOT` (window load) + `marker: BLZ_RENDERED` (Blazor first frame) from
+a `hilog -x` dump; the host forwards JS errors as `marker: BLZ_ERROR <msg>`. A failure archives
+`blazor/blazor-hilog.txt` + `blazor/blazor-markers.txt` in the tester report and prints the
+re-sign hint. Without `--blazor-hap` the probe auto-detects a re-signed `*blazorwasm*.hap` next
+to the kit (the shipped unsigned hap is the last resort, warned about up front).
+
+The selftest surface mirrors the contract: `scripts/selftest-verify-kit.sh` S15 drives the 2c
+mutants (missing index.html/wasm/boot script, slim leftovers, ICU data, wrong bundle, abc
+drift, absent component) and `scripts/selftest-tester-run.sh` S21/S21b drive the probe success
+and the missing-marker failure against the stub device.
+
 ## Payload in libs
 
 The device's namespace policy allows a `dlopen` only from the app's signed bundle directory

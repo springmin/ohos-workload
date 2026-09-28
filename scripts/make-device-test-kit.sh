@@ -6,6 +6,9 @@
 #     example UDID): a real device rejects them (9568257/9568344), and the kit-root 签名说明.txt
 #     states this. tester-run.sh and the shipped docs address these names - keep them.
 #   1 unsigned hap      hello-maui-app-unsigned.hap (26.0, re-sign-then-install variant)
+#   0/1 blazor hap      hello-blazorwasm-host-unsigned.hap only with --with-blazor (Blazor
+#                       WASM site embedded into the ArkTS ArkWeb host; bundle
+#                       com.example.opendotnet; unsigned like the variant above)
 #   9 docs             验收说明.md 快速开始.md 真机操作手册.md 文档索引.md 签名与UDID指南.md
 #                       自签说明.md 最终状态.md README-交付说明.md + 签名说明.txt (generated here
 #                       from the heredoc, so it always matches the kit's actual hap names)
@@ -18,9 +21,15 @@
 # the kit right away. Signing embeds a timestamp, so SHA256SUMS is always regenerated, never
 # carried over.
 # Usage: scripts/make-device-test-kit.sh [--kit-dir <dir>] [--dist-dir <dir>] [--out <tar.gz>]
-#          [--skip-tar] [--publish] [--sign-external <profile> <key> <alias> <expect-udid>]
+#          [--skip-tar] [--publish] [--with-blazor] [--blazor-bundle <name>]
+#          [--sign-external <profile> <key> <alias> <expect-udid>]
 #   see usage() for defaults (kit dir $DEVICE_TEST_KIT_DIR or the approved opencode tmp dir,
 #   dist dir <repo>/dist, out <kit-dir>.tar.gz) and the full option text.
+#   --with-blazor adds the optional Blazor WASM ArkWeb host hap: the recipe gate is a
+#   `run-smoke.sh --require --slim` publish (x64 only, no device/SDK needed) whose output the
+#   host packer embeds; it needs the hvigor toolchain from scripts/build-arkts-shell.sh
+#   (<repo>/.arkts-build) and ships the UNSIGNED hap only (tester re-signs, like the unsigned
+#   MAUI variant). --blazor-bundle overrides the default bundle com.example.opendotnet.
 #   --sign-external pre-signs every hap (unsigned variant included) with an external debug
 #   profile/key for one UDID via sign-for-device.sh --external: the p7b must list the UDID
 #   (fail closed), the app cert chain (*.cer next to the p7b, or OHOS_EXT_CERT) is required,
@@ -62,6 +71,8 @@ VERIFY_KIT_SRC="$W/scripts/verify-kit.sh"
 OUT=""
 SKIP_TAR=0
 PUBLISH=0
+WITH_BLAZOR=0
+BLAZOR_BUNDLE=""
 SIGN_EXTERNAL=0
 EXT_PROFILE=""
 EXT_KEY=""
@@ -74,6 +85,7 @@ PERMS="ohos.permission.ACCESS_BLUETOOTH;ohos.permission.PRINT;ohos.permission.RE
 usage() {
     cat <<EOF
 usage: $0 [--kit-dir <dir>] [--dist-dir <dir>] [--out <tar.gz>] [--skip-tar] [--publish]
+          [--with-blazor] [--blazor-bundle <name>]
           [--sign-external <profile> <key> <alias> <expect-udid>]
 
 Builds the 4 self-signed + 1 unsigned demo haps, copies the acceptance/signing/operator docs,
@@ -84,8 +96,14 @@ The 4 default haps are self-signed with our own debug material, so a real device
 (9568257 / 9568344): only the re-signed hello-maui-app-unsigned.hap (or a --sign-external kit)
 is installable. 签名说明.txt states this in the kit root.
 
---sign-external pre-signs every hap (including the unsigned variant) for one device UDID
-with the tester's own debug profile/key; the kit then also carries 目标设备.txt.
+--with-blazor additionally publishes the Blazor WASM smoke site (recipe gate:
+run-smoke.sh --require --slim) and packs it into the ArkTS ArkWeb host as the extra UNSIGNED
+hap hello-blazorwasm-host-unsigned.hap (bundle com.example.opendotnet; re-sign before
+install). Needs the hvigor toolchain from scripts/build-arkts-shell.sh (<repo>/.arkts-build).
+
+--sign-external pre-signs every hap (including the unsigned variant and the --with-blazor
+hap) for one device UDID with the tester's own debug profile/key; the kit then also carries
+目标设备.txt.
 EOF
 }
 
@@ -101,6 +119,11 @@ while [ $# -gt 0 ]; do
             shift 4 ;;
         --skip-tar) SKIP_TAR=1 ;;
         --publish)  PUBLISH=1 ;;
+        --with-blazor) WITH_BLAZOR=1 ;;
+        --blazor-bundle)
+            shift
+            [ $# -ge 1 ] || { warn "--blazor-bundle needs <name>"; usage >&2; exit 2; }
+            BLAZOR_BUNDLE="$1" ;;
         -h|--help)  usage; exit 0 ;;
         *) warn "unknown argument: $1"; usage >&2; exit 2 ;;
     esac
@@ -134,6 +157,31 @@ if [ "$SIGN_EXTERNAL" = 1 ]; then
     [ -n "$EXT_UDID" ] || { warn "--sign-external expect-udid is empty"; exit 1; }
     [ -z "${OHOS_EXT_CERT:-}" ] || [ -f "$OHOS_EXT_CERT" ] || { warn "OHOS_EXT_CERT not found: $OHOS_EXT_CERT"; exit 1; }
     [ -z "${OHOS_KEY_PWD_FILE:-}" ] || [ -f "$OHOS_KEY_PWD_FILE" ] || { warn "OHOS_KEY_PWD_FILE not found: $OHOS_KEY_PWD_FILE"; exit 1; }
+fi
+
+# --with-blazor wiring: the recipe gate is the publish itself (run-smoke.sh --require --slim),
+# x64-only, so a broken Blazor/WebAssembly restore aborts before any hap work. pack-host.sh
+# consumes the hvigor toolchain that build-arkts-shell.sh installs once per build machine.
+BLAZOR_SMOKE="$W/test/hello-blazorwasm/run-smoke.sh"
+BLAZOR_PACK="$W/test/hello-blazorwasm/arkts-host/pack-host.sh"
+BLAZOR_HVIGOR="$W/.arkts-build/hvigor/node_modules/@ohos/hvigor/bin/hvigor.js"
+if [ "$WITH_BLAZOR" != 1 ] && [ -n "$BLAZOR_BUNDLE" ]; then
+    warn "--blazor-bundle 只在 --with-blazor 下生效（未加 --with-blazor）"; exit 2
+fi
+if [ -n "$BLAZOR_BUNDLE" ]; then
+    case "$BLAZOR_BUNDLE" in
+        ''|*[!A-Za-z0-9._]*) warn "--blazor-bundle 只允许字母/数字/点/下划线，得到: '$BLAZOR_BUNDLE'"; exit 2 ;;
+    esac
+fi
+if [ "$WITH_BLAZOR" = 1 ]; then
+    [ -f "$BLAZOR_SMOKE" ] || { warn "Blazor smoke not found: $BLAZOR_SMOKE"; exit 1; }
+    [ -f "$BLAZOR_PACK" ] || { warn "Blazor host packer not found: $BLAZOR_PACK"; exit 1; }
+    if [ ! -f "$BLAZOR_HVIGOR" ]; then
+        warn "hvigor toolchain not found: $BLAZOR_HVIGOR"
+        warn "  run scripts/build-arkts-shell.sh once on this build host (installs .arkts-build),"
+        warn "  or point HVIGOR_JS at an existing hvigor.js entry point"
+        exit 1
+    fi
 fi
 
 # Kit-only docs: the repo source (docs/plans mirrors) wins so doc fixes always ship;
@@ -263,11 +311,50 @@ publish_variant net11.0-openharmony20.0 "$PERMS"
 check_permissions "$BIN20/hello-maui-app.hap"
 copy_hap "$BIN20/hello-maui-app.hap" "hello-maui-app-api20-permissions.hap"
 
+# Optional Blazor WASM ArkWeb host (--with-blazor): the smoke publish doubles as the offline
+# recipe gate (--require: a restore-level SKIP becomes a failure) and its wwwroot is what the
+# ArkTS host embeds. The UNSIGNED hap is what ships: our debug profile is bound to the example
+# UDID, so a tester re-signs it exactly like hello-maui-app-unsigned.hap. Only the packed hap
+# enters the kit stage; the site/hvigor scratch stays next to the stage (outside the kit root,
+# so it can never leak into SHA256SUMS/tree digest).
+if [ "$WITH_BLAZOR" = 1 ]; then
+    BLAZOR_WORK="$STAGE.blazor"
+    rm -rf "$BLAZOR_WORK"
+    mkdir -p "$BLAZOR_WORK"
+    log "== Blazor WASM publish + recipe gate (run-smoke.sh --require --slim) =="
+    _blazor_rc=0
+    DOTNET="$DOTNET" sh "$BLAZOR_SMOKE" --require --slim --out "$BLAZOR_WORK/site" \
+        > "$BLAZOR_WORK/run-smoke.log" 2>&1 || _blazor_rc=$?
+    if [ "$_blazor_rc" -ne 0 ]; then
+        warn "Blazor publish/gate failed (rc=$_blazor_rc, log: $BLAZOR_WORK/run-smoke.log)"
+        tail -20 "$BLAZOR_WORK/run-smoke.log" >&2
+        exit 1
+    fi
+    tail -3 "$BLAZOR_WORK/run-smoke.log" | sed 's/^/   /'
+
+    log "== packing the Blazor site into the ArkTS ArkWeb host (pack-host.sh --slim --unsigned-only) =="
+    set -- "$BLAZOR_WORK/site/publish/wwwroot" --slim --unsigned-only \
+        --out "$BLAZOR_WORK/hello-blazorwasm-host-unsigned.hap" \
+        --work "$BLAZOR_WORK/host-work"
+    [ -z "$BLAZOR_BUNDLE" ] || set -- "$@" --bundle "$BLAZOR_BUNDLE"
+    _blazor_rc=0
+    HVIGOR_JS="$BLAZOR_HVIGOR" sh "$BLAZOR_PACK" "$@" > "$BLAZOR_WORK/pack-host.log" 2>&1 || _blazor_rc=$?
+    if [ "$_blazor_rc" -ne 0 ]; then
+        warn "Blazor host pack failed (rc=$_blazor_rc, log: $BLAZOR_WORK/pack-host.log)"
+        tail -25 "$BLAZOR_WORK/pack-host.log" >&2
+        exit 1
+    fi
+    tail -5 "$BLAZOR_WORK/pack-host.log" | sed 's/^/   /'
+    copy_hap "$BLAZOR_WORK/hello-blazorwasm-host-unsigned.hap" "hello-blazorwasm-host-unsigned.hap"
+    log "   Blazor scratch (logs/site/hvigor): $BLAZOR_WORK"
+fi
+
 # Optional: pre-sign every assembled hap (including the unsigned variant) for one tester
 # device, so the kit is installable on their UDID without them self-signing. The external
 # profile must list that UDID (sign-for-device.sh fails closed otherwise) and the app cert
 # chain must sit next to the p7b or come from OHOS_EXT_CERT; the password comes from the
-# terminal, a piped stdin (two lines) or OHOS_KEY_PWD_FILE.
+# terminal, a piped stdin (two lines) or OHOS_KEY_PWD_FILE. With --with-blazor the Blazor hap
+# is in the stage too and is pre-signed the same way.
 if [ "$SIGN_EXTERNAL" = 1 ]; then
     log "== external pre-signing for UDID $(printf '%s' "$EXT_UDID" | cut -c1-8)... =="
     set -- --external --pwd-input-mode \

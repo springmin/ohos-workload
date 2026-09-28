@@ -6,7 +6,10 @@
 # Steps: (1) verify every file against SHA256SUMS (sha256sum -c); (2) summarize the five haps
 # from their module.json (bundleName, min/target API, requestPermissions) and fail unless all
 # carry the expected bundle name (KIT_BUNDLE_NAME, default com.example.hellomauiapp); (2b) assert
-# the payload facts that failed on a real device before (each one per hap, see below); (3) warn
+# the payload facts that failed on a real device before (each one per hap, see below); (2c) when
+# the optional Blazor WASM component hap is present (hello-blazorwasm-host-unsigned.hap, built
+# with --with-blazor), assert its embedded ArkWeb site (index.html, _framework wasm + boot
+# script, PANDA abc, bundle name, no site-level .br/.gz/.map or icudt*.dat); (3) warn
 # (one line) that the four default haps are self-signed and rejected by a real device
 # (9568257/9568344 -> re-sign hello-maui-app-unsigned.hap or use a pre-signed kit), plus the
 # install options and the self-sign pointer; (4) list the log lines to send back.
@@ -56,6 +59,11 @@
 # failures are FAIL; an old abc size, a big index, extra libs and a zip entry-count drift are
 # WARN, so a historical kit still reports its real defects without being killed for
 # pre-contract values.
+# The 2c Blazor assertions only run when the optional hello-blazorwasm-host-unsigned.hap is in
+# the kit root (a kit without it logs one line and moves on). Every 2c deviation is FAIL: the
+# component is self-contained, so a missing site file/abc/bundle or a slim leftover means the
+# hap cannot serve the verified Blazor site. Override the name/bundle with KIT_BLAZOR_HAP /
+# KIT_BLAZOR_BUNDLE for a kit packed with a different name/bundle.
 # SHA256SUMS lives inside the archive it covers, so it proves internal consistency only:
 #   1. check the transfer checksum of the .tar.gz: `sha256sum -c <kit>.tar.gz.sha256`, or let
 #      this script check the tarball (--anchor / --anchor-file / KIT_ANCHOR);
@@ -81,7 +89,7 @@
 # checks fail closed: missing/mismatching tarball, non-hex anchor, absent .tar.gz.sha256
 # sidecar, non-hex or mismatching tree digest all fail.
 # Exit: 0 = kit OK; 1 = checksum/anchor/tree-digest failure, missing/unreadable hap, unexpected
-# bundleName, or a failed 2b assertion, or absent 自签说明.md/签名说明.txt; 2 = SHA256SUMS not
+# bundleName, or a failed 2b/2c assertion, or absent 自签说明.md/签名说明.txt; 2 = SHA256SUMS not
 # found (wrong directory) or bad usage. The kit's SHA256SUMS is not in its own list - the outer
 # <kit>.tar.gz.sha256 covers it, and the tree digest covers SHA256SUMS itself.
 set -e
@@ -270,7 +278,12 @@ Without an argument the current directory is used (it must contain SHA256SUMS).
                         src/OpenHarmonyHost/host-deps.conf); fail closed when it cannot be
                         read or has no [needed]/[undefined] entries
   env: KIT_ANCHOR, KIT_ANCHOR_FILE, KIT_TREE_DIGEST, KIT_BUNDLE_NAME,
-       KIT_EXPECTED_ABC, KIT_HOST_DEPS
+       KIT_EXPECTED_ABC, KIT_HOST_DEPS, KIT_BLAZOR_HAP, KIT_BLAZOR_BUNDLE
+
+The optional Blazor WASM component hap (hello-blazorwasm-host-unsigned.hap, built with
+make-device-test-kit.sh --with-blazor) is asserted when present: embedded site index.html,
+_framework *.wasm + blazor.webassembly*.js, PANDA 13.0.1.0 abc, bundle com.example.opendotnet,
+and no .br/.gz/.map or icudt*.dat leftovers; a kit without the hap only logs that fact.
 EOF
 }
 
@@ -283,6 +296,12 @@ TREE_EXPECT="${KIT_TREE_DIGEST:-}"
 # hyphens are illegal in app.bundleName; kits built before it carry the hyphenated demo name
 # and must be repacked). Override for a kit built with -p:OpenHarmonyBundleName=<other>.
 BUNDLE_EXPECT="${KIT_BUNDLE_NAME:-com.example.hellomauiapp}"
+# Optional Blazor WASM component hap (make-device-test-kit.sh --with-blazor). Asserted only
+# when the hap is present in the kit root; KIT_BLAZOR_HAP / KIT_BLAZOR_BUNDLE override the
+# packed name/bundle. Its abc version expectation mirrors the 2b ABC_VERSION below.
+BLAZOR_HAP_NAME="${KIT_BLAZOR_HAP:-hello-blazorwasm-host-unsigned.hap}"
+BLAZOR_BUNDLE_EXPECT="${KIT_BLAZOR_BUNDLE:-com.example.opendotnet}"
+BLAZOR_ABC_VERSION="13.0.1.0"
 while [ $# -gt 0 ]; do
     case "$1" in
         -h|--help) usage; exit 0 ;;
@@ -953,6 +972,150 @@ PY
 else
     warn "python3 不可用，跳过 hap 摘要、bundleName 及深度断言（resources.index/abc/libs/宿主依赖）；文件完整性已由 SHA256SUMS 覆盖"
     KIT_BUNDLE="$BUNDLE_EXPECT"
+fi
+
+# ---- 2c: optional Blazor WASM ArkWeb component --------------------------------------------
+# Only kits built with make-device-test-kit.sh --with-blazor carry the extra unsigned
+# hello-blazorwasm-host-unsigned.hap; without it the section prints one line and moves on (a
+# historical kit must not warn about a component it never had). When present, every deviation
+# is a FAIL: the hap is self-contained (site + shell abc + bundle), so one missing piece means
+# the ArkWeb host cannot boot the verified Blazor site.
+if [ ! -f "$BLAZOR_HAP_NAME" ]; then
+    log "== 2c/4 Blazor WASM 组件：本包未包含（构建时未启用 --with-blazor）"
+else
+    log "== 2c/4 Blazor WASM 组件断言（$BLAZOR_HAP_NAME）"
+    grep -Fq "  $BLAZOR_HAP_NAME" SHA256SUMS || { warn "SHA256SUMS 未收录 $BLAZOR_HAP_NAME"; FAIL=1; }
+    if command -v python3 >/dev/null 2>&1; then
+        BLAZOR_DEEP_FAILS=0
+        python3 - "$KIT" "$BLAZOR_HAP_NAME" "$BLAZOR_BUNDLE_EXPECT" "$TMP/blazor-status" \
+            "$BLAZOR_ABC_VERSION" <<'PY' || FAIL=1
+import json, os, sys, zipfile
+
+kit = sys.argv[1]
+hap_name = sys.argv[2]
+expected_bundle = sys.argv[3]
+status_file = sys.argv[4]
+abc_version = sys.argv[5]
+
+graded = []
+
+
+def grade(level, msg):
+    graded.append((level, msg))
+
+
+fail = 0
+path = os.path.join(kit, hap_name)
+print("  %s  可选 Blazor WASM ArkWeb 宿主（站点内嵌 resources/rawfile/blazor；未签名，安装前按 自签说明.md 重签）"
+      % hap_name)
+z = None
+try:
+    z = zipfile.ZipFile(path)
+except Exception as exc:
+    print("      BAD   无法读取 hap (%s)" % exc)
+    grade("FAIL", "%s: 无法读取 hap (%s)" % (hap_name, exc))
+    fail = 1
+if z is not None:
+    with z:
+        names = z.namelist()
+        bundle = "?"
+        try:
+            data = json.loads(z.read("module.json"))
+            bundle = (data.get("app") or {}).get("bundleName", "?")
+        except Exception as exc:
+            grade("FAIL", "%s: 无法读取 module.json (%s)" % (hap_name, exc))
+            fail = 1
+        print("      bundle=%s" % bundle)
+        if bundle != "?" and bundle != expected_bundle:
+            grade("FAIL", "%s: bundleName 期望 %s，实际 %s — Blazor 宿主必须按期望 bundle 打包"
+                         "（pack-host.sh 默认值；重签不改变 bundle）" % (hap_name, expected_bundle, bundle))
+            fail = 1
+
+        # Embedded ArkWeb site: the host serves resources/rawfile/blazor through
+        # onInterceptRequest, so index.html, at least one _framework *.wasm and the
+        # blazor.webassembly*.js boot script are the minimum servable set (same facts
+        # run-smoke.sh checks at publish time).
+        site_prefix = "resources/rawfile/blazor/"
+        index_html = site_prefix + "index.html"
+        site_files = [n for n in names if n.startswith(site_prefix) and not n.endswith("/")]
+        framework = [n for n in site_files if n.startswith(site_prefix + "_framework/")]
+        wasm = [n for n in framework if n.endswith(".wasm")]
+        boot = [n for n in framework
+                if os.path.basename(n).startswith("blazor.webassembly") and n.endswith(".js")]
+        print("      站点   内嵌文件=%d；_framework=%d（.wasm=%d，blazor.webassembly*.js=%d）"
+              % (len(site_files), len(framework), len(wasm), len(boot)))
+        if index_html not in names:
+            grade("FAIL", "%s: 缺 resources/rawfile/blazor/index.html — 宿主没有可服务的 Blazor 首屏"
+                         "（用 make-device-test-kit.sh --with-blazor 重跑）" % hap_name)
+            fail = 1
+        else:
+            print("      index  index.html %d B" % z.getinfo(index_html).file_size)
+        if not wasm:
+            grade("FAIL", "%s: resources/rawfile/blazor/_framework/ 下没有 .wasm — Blazor WASM 载荷缺失"
+                          % hap_name)
+            fail = 1
+        if not boot:
+            grade("FAIL", "%s: resources/rawfile/blazor/_framework/ 下没有 blazor.webassembly*.js —"
+                         " Blazor 引导脚本缺失" % hap_name)
+            fail = 1
+
+        # Shell abc: same PANDA contract as the five haps (the Blazor host has its own shell,
+        # so only the format version is pinned, not the MAUI shell size).
+        if "ets/modules.abc" not in names:
+            grade("FAIL", "%s: 缺 ets/modules.abc — ArkTS 壳没有可加载的入口" % hap_name)
+            fail = 1
+        else:
+            abc = z.read("ets/modules.abc")
+            ver = ".".join(str(b) for b in abc[0x0C:0x10]) if len(abc) >= 0x10 and abc[:5] == b"PANDA" else None
+            print("      abc    ets/modules.abc %d B，PANDA 头版本 %s" % (len(abc), ver or "?"))
+            if ver is None:
+                grade("FAIL", "%s: ets/modules.abc 不是 PANDA abc（前 4 字节 %r）" % (hap_name, abc[:4]))
+                fail = 1
+            elif ver != abc_version:
+                grade("FAIL", "%s: abc PANDA 头版本 %s != %s（0x0c 处的 4 字节版本；壳/格式漂移）"
+                              % (hap_name, ver, abc_version))
+                fail = 1
+
+        # --slim packing contract: no precompressed siblings and no ICU data in the embedded
+        # site. Scoped to resources/rawfile/blazor/: the host's own ArkTS compile output
+        # carries ets/sourceMaps.map, which is not a web asset and must not be flagged.
+        stray = [n for n in names if n.startswith(site_prefix) and n.endswith((".br", ".gz", ".map"))]
+        icu = [n for n in names
+               if n.startswith(site_prefix) and os.path.basename(n).startswith("icudt") and n.endswith(".dat")]
+        print("      slim   站点内 .br/.gz/.map=%d，icudt*.dat=%d" % (len(stray), len(icu)))
+        if stray:
+            shown = ", ".join(stray[:3]) + (" ..." if len(stray) > 3 else "")
+            grade("FAIL", "%s: 内嵌站点仍有 %d 个 .br/.gz/.map: %s — --slim 未生效（pack-host.sh --slim 应剔除预压缩副本）"
+                          % (hap_name, len(stray), shown))
+            fail = 1
+        if icu:
+            shown = ", ".join(icu[:3]) + (" ..." if len(icu) > 3 else "")
+            grade("FAIL", "%s: 内嵌站点仍有 %d 个 icudt*.dat: %s — --slim 未让 InvariantGlobalization 生效"
+                          % (hap_name, len(icu), shown))
+            fail = 1
+
+with open(status_file, "w") as f:
+    for level, msg in graded:
+        f.write("%s\t%s\n" % (level, msg))
+sys.exit(1 if fail else 0)
+PY
+        if [ -s "$TMP/blazor-status" ]; then
+            TAB="$(printf '\t')"
+            while IFS="$TAB" read -r _lvl _msg; do
+                case "$_lvl" in
+                    FAIL) BLAZOR_DEEP_FAILS=$((BLAZOR_DEEP_FAILS + 1)); DEEP_FAILS=$((DEEP_FAILS + 1)); FAIL=1; fail_msg "$_msg" ;;
+                    WARN) DEEP_WARNS=$((DEEP_WARNS + 1)); warn "$_msg" ;;
+                esac
+            done < "$TMP/blazor-status"
+        fi
+        if [ "$BLAZOR_DEEP_FAILS" -eq 0 ]; then
+            log "   Blazor 组件断言通过：index.html/_framework/abc/bundle/--slim 均符合契约"
+        else
+            log "   Blazor 组件断言汇总：FAIL $BLAZOR_DEEP_FAILS（组件需用 make-device-test-kit.sh --with-blazor 重打包）"
+        fi
+    else
+        warn "python3 不可用，跳过 Blazor 组件断言（index.html/_framework/abc/bundle/--slim）；文件完整性已由 SHA256SUMS 覆盖"
+    fi
 fi
 
 log "== 3/4 安装方式"

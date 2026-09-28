@@ -35,8 +35,14 @@
 #       asset: the stock hap is installed and captured as-is (no interp.txt, no repack).
 #       A failing run never stops the remaining ones; summary ->
 #       <out>/mode-matrix/summary.txt (+ one tester-report tar per run).
+#   3c blazor    --blazor-probe: install a re-signed copy of the kit's Blazor WASM ArkWeb host
+#       (hello-blazorwasm-host-unsigned.hap; --blazor-hap <signed hap>), launch bundle
+#       com.example.opendotnet and assert the two hilog boot markers `marker: BLZ_BOOT` and
+#       `marker: BLZ_RENDERED` from a `hilog -x` dump; a failure archives blazor-hilog.txt and
+#       prints the re-sign hint.
 # Safety: dry-run by default. Nothing is installed/started/removed/recorded unless the matching
-# flag is given (--install --uninstall --start --capture --probes --extra-probes --mode-matrix).
+# flag is given (--install --uninstall --start --capture --probes --extra-probes --a11y-probe
+# --blazor-probe --mode-matrix).
 # --dry-run forces the plan (with the matrix asset list) even when a device is online. Without
 # a device (hdc list targets) device steps are refused: with an action flag it stops immediately,
 # without one it only verifies the kit locally and prints the plan. --uninstall is explicit and
@@ -58,7 +64,7 @@ set -e
 
 # Bumped with every release repack (随发布重打包递增): the kit release notes' "Bundled
 # tester-run.sh" revision.
-SCRIPT_VERSION="12 (2026-09-28)"
+SCRIPT_VERSION="13 (2026-09-28)"
 
 log()  { printf '[%s] %s\n' "$(date '+%H:%M:%S')" "$*"; }
 warn() { printf '[%s] WARN: %s\n' "$(date '+%H:%M:%S')" "$*" >&2; }
@@ -91,6 +97,17 @@ usage() {
                              hilog 窗口里的无障碍行都归档到 a11y/（缺失容忍：无 uitest/无
                              python3/应用未运行只记 a11y_selfcheck，不算失败；需应用在运行，
                              建议与 --start --capture 同用）
+  --blazor-probe             可选探针：把 kit 内的 Blazor WASM 宿主（ArkWeb）安装到设备并启动
+                             （bundle com.example.opendotnet），等 4 秒后取 hilog -x，断言
+                             marker: BLZ_BOOT（window load）与 marker: BLZ_RENDERED（Blazor
+                             首帧）；失败把完整 hilog 落到 blazor/blazor-hilog.txt 并给出重签
+                             提示。kit 内的 hap 未签名，先用你自己的证书/UDID 重签，再用
+                             --blazor-hap <重签后的 hap> 指过来（不要替换 kit 内原件）。
+  --blazor-hap <hap>         （--blazor-probe 用）重签后的 Blazor 宿主 hap 路径；不给时按
+                             <kit>/hello-blazorwasm-host-signed.hap、
+                             <kit>/hello-blazorwasm-host-unsigned.hap、./hello-blazorwasm-host-signed.hap
+                             依次查找（找到 unsigned 会先警告需要重签）
+  --blazor-bundle <name>     （--blazor-probe 用）Blazor 宿主 bundle 名（默认 com.example.opendotnet）
   --mode-matrix              一键运行时模式矩阵（一条命令跑完 JIT/AOT/解释器取证）：
                              Run A JIT stock -> Run B xwe.txt=1 A/B ->（可选）Run C 解释器
                              ->（可选）Run D AOT；每个 Run 是独立子轮，失败不中断其余（!cancelled）。
@@ -172,6 +189,8 @@ usage() {
       --interp-pack ./ohos-interpreter-pack.tar.gz --capture 60
   # 7) 无障碍自检采集：启动后录 30 秒，自动点 A11Y 自检并归档 a11y/
   sh tester-run.sh --kit-dir ./device-test-kit --install --start --capture 30 --a11y-probe
+  # 8) Blazor WASM 承载探针：安装重签后的宿主 hap，断言 BLZ_BOOT / BLZ_RENDERED
+  sh tester-run.sh --kit-dir ./device-test-kit --blazor-probe --blazor-hap ./blazor-signed.hap
 EOF
 }
 
@@ -191,6 +210,19 @@ EXPECT_TREE=""
 HAPS=""
 COMPARE_LIB=""
 A11Y_PROBE=0
+# Blazor WASM ArkWeb host probe (--blazor-probe / --blazor-hap / --blazor-bundle).
+BLAZOR_PROBE=0
+BLAZOR_HAP=""
+BLAZOR_HAP_FILE=""
+BLAZOR_BUNDLE="${BLAZOR_BUNDLE:-com.example.opendotnet}"
+BLAZOR_INSTALL="not_requested"
+BLAZOR_BOOT="not_requested"
+BLAZOR_RENDERED="not_requested"
+BLAZOR_HILOG_LINES=0
+BLAZOR_MARKER_LINES=0
+# Window between `aa start` and the hilog dump (the host logs BLZ_BOOT on window load and
+# BLZ_RENDERED shortly after; 3-5 s is the acceptance doc's range).
+BLAZOR_PROBE_SLEEP="${BLAZOR_PROBE_SLEEP:-4}"
 # Runtime-mode matrix (--mode-matrix) + its optional assets.
 MODE_MATRIX=0
 AOT_HAPS_TAR=""
@@ -310,6 +342,15 @@ $1"; fi
             COMPARE_LIB="$1"
             ;;
         --a11y-probe) A11Y_PROBE=1 ;;
+        --blazor-probe) BLAZOR_PROBE=1 ;;
+        --blazor-hap)
+            shift
+            [ $# -gt 0 ] || { warn "--blazor-hap 需要一个 hap 路径"; usage >&2; exit 2; }
+            BLAZOR_HAP="$1" ;;
+        --blazor-bundle)
+            shift
+            [ $# -gt 0 ] || { warn "--blazor-bundle 需要一个 bundle 名"; usage >&2; exit 2; }
+            BLAZOR_BUNDLE="$1" ;;
         --install)   INSTALL=1 ;;
         --uninstall) UNINSTALL=1 ;;
         --start)     START=1 ;;
@@ -417,6 +458,8 @@ require_safe_bundle_name() {
 
 # KIT_BUNDLE_NAME is the second bundle-name source; it must be valid before it can be used.
 require_safe_bundle_name "$FALLBACK_BUNDLE"
+# The Blazor probe bundle (env/default or --blazor-bundle) reaches `aa start` too.
+require_safe_bundle_name "$BLAZOR_BUNDLE"
 
 # ---- argument validation -------------------------------------------------------------
 # --extra-probes: drop directories named twice (repeatable + comma forms are equivalent)
@@ -467,8 +510,18 @@ else
     # The matrix orchestrates its own install/uninstall/start/capture rounds; the plain
     # action flags would be ignored (--capture seconds still apply), so say so instead of
     # surprising the caller.
-    if [ "$INSTALL" = 1 ] || [ "$UNINSTALL" = 1 ] || [ "$START" = 1 ] || [ -n "$PROBES_DIR" ] || [ -n "$EXTRA_PROBES_DIRS" ] || [ "$A11Y_PROBE" = 1 ]; then
-        warn "--mode-matrix 自带 安装/卸载/启动/采集 编排；--install/--uninstall/--start/--probes/--extra-probes/--a11y-probe 在矩阵下不额外生效（--capture 秒数仍生效）"
+    if [ "$INSTALL" = 1 ] || [ "$UNINSTALL" = 1 ] || [ "$START" = 1 ] || [ -n "$PROBES_DIR" ] || [ -n "$EXTRA_PROBES_DIRS" ] || [ "$A11Y_PROBE" = 1 ] || [ "$BLAZOR_PROBE" = 1 ]; then
+        warn "--mode-matrix 自带 安装/卸载/启动/采集 编排；--install/--uninstall/--start/--probes/--extra-probes/--a11y-probe/--blazor-probe 在矩阵下不额外生效（--capture 秒数仍生效）"
+    fi
+fi
+# --blazor-hap/--blazor-bundle only steer --blazor-probe.
+if [ "$BLAZOR_PROBE" = 0 ]; then
+    if [ -n "$BLAZOR_HAP" ]; then
+        die "--blazor-hap 只在 --blazor-probe 下使用"
+    fi
+else
+    if [ -n "$BLAZOR_HAP" ] && [ ! -f "$BLAZOR_HAP" ]; then
+        die "--blazor-hap 文件不存在: $BLAZOR_HAP"
     fi
 fi
 
@@ -476,7 +529,7 @@ fi
 KMSG_RAW="$OUT/kmsg/kmsg.log"
 
 ACTIONS=0
-if [ "$INSTALL" = 1 ] || [ "$UNINSTALL" = 1 ] || [ "$START" = 1 ] || [ "$CAPTURE" = 1 ] || [ -n "$PROBES_DIR" ] || [ -n "$EXTRA_PROBES_DIRS" ] || [ "$A11Y_PROBE" = 1 ] || [ "$MODE_MATRIX" = 1 ]; then
+if [ "$INSTALL" = 1 ] || [ "$UNINSTALL" = 1 ] || [ "$START" = 1 ] || [ "$CAPTURE" = 1 ] || [ -n "$PROBES_DIR" ] || [ -n "$EXTRA_PROBES_DIRS" ] || [ "$A11Y_PROBE" = 1 ] || [ "$BLAZOR_PROBE" = 1 ] || [ "$MODE_MATRIX" = 1 ]; then
     ACTIONS=1
 fi
 
@@ -592,7 +645,7 @@ if [ -n "$REASON" ]; then
         warn "无可用设备：$REASON"
         warn "  hdc list targets 输出：${TARGETS:-<空>}"
         warn "  请连接设备（已开 USB 调试）或用 hdc tconn <ip:port> 连接，再用 --device <id> 指定目标。"
-        warn "  已拒绝执行设备操作：--install / --uninstall / --start / --capture / --probes / --extra-probes / --a11y-probe / --mode-matrix 都不会执行。"
+        warn "  已拒绝执行设备操作：--install / --uninstall / --start / --capture / --probes / --extra-probes / --a11y-probe / --blazor-probe / --mode-matrix 都不会执行。"
         exit 3
     else
         warn "无可用设备：$REASON"
@@ -999,6 +1052,42 @@ case "$RUNTIME_MODE_DISPLAY" in
         warn "   运行时模式清单值非法: $RUNTIME_MODE_DISPLAY（宿主将保持 jit；摘要如实记录）"
         ;;
 esac
+
+# ---- Blazor probe hap resolution (--blazor-probe) ------------------------------------
+# Explicit --blazor-hap wins; otherwise prefer a re-signed copy the tester dropped next to the
+# kit (any *blazorwasm*.hap that is not the shipped *-unsigned.hap), then the shipped unsigned
+# hap, then a re-signed copy in the launch dir. The unsigned fallback is allowed (a failing
+# install is evidence too) but warned about up front.
+if [ "$BLAZOR_PROBE" = 1 ]; then
+    if [ -n "$BLAZOR_HAP" ]; then
+        BLAZOR_HAP_FILE="$(cd "$(dirname "$BLAZOR_HAP")" && pwd)/$(basename "$BLAZOR_HAP")"
+    else
+        for _cand in "$KIT_DIR/hello-blazorwasm-host-signed.hap"; do
+            [ -f "$_cand" ] && { BLAZOR_HAP_FILE="$_cand"; break; }
+        done
+        if [ -z "$BLAZOR_HAP_FILE" ]; then
+            for _cand in "$KIT_DIR"/*blazorwasm*.hap; do
+                [ -f "$_cand" ] || continue
+                case "$_cand" in *-unsigned.hap) continue ;; esac
+                BLAZOR_HAP_FILE="$_cand"
+                break
+            done
+        fi
+        if [ -z "$BLAZOR_HAP_FILE" ]; then
+            for _cand in "$KIT_DIR/hello-blazorwasm-host-unsigned.hap" \
+                         "$PWD/hello-blazorwasm-host-signed.hap"; do
+                [ -f "$_cand" ] && { BLAZOR_HAP_FILE="$_cand"; break; }
+            done
+        fi
+    fi
+    [ -n "$BLAZOR_HAP_FILE" ] || die "--blazor-probe: 找不到 Blazor hap（kit 内只有未签名的 hello-blazorwasm-host-unsigned.hap 时请先重签，并用 --blazor-hap <hap> 指定）"
+    case "$BLAZOR_HAP_FILE" in
+        *-unsigned.hap)
+            warn "--blazor-probe 用的是未签名 hap（$BLAZOR_HAP_FILE）：真机会报 9568257 拒绝，请先按 自签说明.md 重签"
+            ;;
+    esac
+    log "   Blazor 探针 hap: $BLAZOR_HAP_FILE（bundle $BLAZOR_BUNDLE）"
+fi
 
 # ---- mode matrix (--mode-matrix) -----------------------------------------------------
 # The runtime-mode determination card (JIT / AOT / interpreter) needs several device
@@ -2024,6 +2113,63 @@ a11y_selfcheck_probe() {
     return 0
 }
 
+# ---- Blazor WASM ArkWeb host probe (--blazor-probe) -----------------------------------
+# The kit ships the ArkWeb host as hello-blazorwasm-host-unsigned.hap; our debug profile is
+# bound to the example UDID, so a real device rejects the unsigned hap. The tester re-signs it
+# with their own material (自签说明.md) and passes the result via --blazor-hap. The probe
+# installs it, launches bundle com.example.opendotnet and reads the two boot markers back from
+# a `hilog -x` dump: `marker: BLZ_BOOT` (Web window load) and `marker: BLZ_RENDERED` (Blazor
+# first frame via .NET->JS interop). The full dump lands in blazor/blazor-hilog.txt, so a
+# failed round can be triaged (BLZ_ERROR lines carry forwarded JS errors).
+blazor_probe() {
+    _bp_hap="$1"
+    log "   -- Blazor 宿主: $_bp_hap（bundle $BLAZOR_BUNDLE）"
+    if ! install_one "$_bp_hap" "$OUT/blazor/blazor-install.txt"; then
+        BLAZOR_INSTALL="$INSTALL_RESULT"
+        record "blazor_install=$INSTALL_RESULT"
+        FAILURES=$((FAILURES + 1))
+        warn "   Blazor 探针：安装失败（$INSTALL_RESULT）"
+        warn "     -> kit 内的 hello-blazorwasm-host-unsigned.hap 未签名；按 自签说明.md 用你自己的证书/UDID 重签，"
+        warn "        再用 --blazor-hap <重签后的 hap> 重跑（别替换 kit 内原件：SHA256SUMS/tree digest 会拒绝）"
+        return 0
+    fi
+    BLAZOR_INSTALL="ok"
+    record "blazor_install=ok"
+    _bp_dump="$OUT/blazor/blazor-hilog.txt"
+    _bp_marks="$OUT/blazor/blazor-markers.txt"
+    : > "$_bp_dump"
+    : > "$_bp_marks"
+    hdc_cmd shell hilog -r > /dev/null 2>&1 || true
+    hdc_cmd shell aa start -a EntryAbility -b "$BLAZOR_BUNDLE" > "$OUT/blazor/blazor-start.txt" 2>&1 || true
+    sleep "$BLAZOR_PROBE_SLEEP"
+    hdc_cmd shell hilog -x > "$_bp_dump" 2>&1 || true
+    grep -E 'BlazorWebHost|BLZ_' "$_bp_dump" > "$_bp_marks" 2>/dev/null || true
+    BLAZOR_HILOG_LINES="$(line_count "$_bp_dump")"
+    BLAZOR_MARKER_LINES="$(line_count "$_bp_marks")"
+    if grep -qF 'BLZ_BOOT' "$_bp_marks"; then BLAZOR_BOOT="yes"; else BLAZOR_BOOT="no"; fi
+    if grep -qF 'BLZ_RENDERED' "$_bp_marks"; then BLAZOR_RENDERED="yes"; else BLAZOR_RENDERED="no"; fi
+    record "blazor_boot=$BLAZOR_BOOT"
+    record "blazor_rendered=$BLAZOR_RENDERED"
+    record "blazor_hilog_lines=$BLAZOR_HILOG_LINES"
+    record "blazor_marker_lines=$BLAZOR_MARKER_LINES"
+    if [ "$BLAZOR_BOOT" = yes ] && [ "$BLAZOR_RENDERED" = yes ]; then
+        log "   Blazor 标记 OK：marker: BLZ_BOOT + marker: BLZ_RENDERED（hilog ${BLAZOR_HILOG_LINES} 行 -> $OUT/blazor/）"
+    else
+        FAILURES=$((FAILURES + 1))
+        warn "   Blazor 标记缺失：BLZ_BOOT=$BLAZOR_BOOT BLZ_RENDERED=$BLAZOR_RENDERED（hilog ${BLAZOR_HILOG_LINES} 行已落盘 $_bp_dump）"
+        if grep -qF 'BLZ_ERROR' "$_bp_marks"; then
+            warn "   BLZ_ERROR 行（宿主转发的 JS 错误，取前 3 条）："
+            grep -F 'BLZ_ERROR' "$_bp_marks" | head -n3 > "$TMP/blz-errors.txt" 2>/dev/null || true
+            while IFS= read -r _be; do warn "     $_be"; done < "$TMP/blz-errors.txt"
+        else
+            warn "     未见 BLZ_ERROR 行：优先看安装/启动是否成功与窗口是否太短；回传 blazor-hilog.txt 可定位"
+        fi
+        warn "     重签提示：hello-blazorwasm-host-unsigned.hap 必须用你自己的证书/UDID 重签（自签说明.md），"
+        warn "       再 sh tester-run.sh ... --blazor-probe --blazor-hap <重签后的 hap>"
+    fi
+    return 0
+}
+
 # ---- steps 2 + 3: start / capture ----------------------------------------------------
 if [ "$START" = 0 ] && [ "$CAPTURE" = 0 ]; then
     log "== 2/5 启动（--start） · 3/5 hilog 录制（--capture） =="
@@ -2108,6 +2254,25 @@ if [ "$A11Y_PROBE" = 1 ]; then
         record "a11y_selfcheck=$A11Y_SELFCHECK"
     else
         a11y_selfcheck_probe
+    fi
+fi
+
+# ---- step 3c: Blazor WASM ArkWeb host probe (--blazor-probe) --------------------------
+# Runs after start/capture/a11y and before the probe haps. With only --blazor-probe (no
+# --start/--capture) the step-2/3 branch prints its plan and records skipped; the probe owns
+# its own window below.
+if [ "$BLAZOR_PROBE" = 1 ]; then
+    log "== 3c/5 Blazor WASM ArkWeb 承载探针（--blazor-probe） =="
+    if [ "$DO_DEVICE" = 0 ]; then
+        log "   [dry-run] 将执行: $(hdc_show) install -r \"$BLAZOR_HAP_FILE\""
+        log "   [dry-run]          -> $(hdc_show) shell hilog -r; $(hdc_show) shell aa start -a EntryAbility -b $BLAZOR_BUNDLE; sleep ${BLAZOR_PROBE_SLEEP}s"
+        log "   [dry-run]          -> $(hdc_show) shell hilog -x -> blazor/blazor-hilog.txt; 断言 marker: BLZ_BOOT + marker: BLZ_RENDERED"
+        record "blazor_install=skipped(dry-run)"
+        record "blazor_boot=skipped(dry-run)"
+        record "blazor_rendered=skipped(dry-run)"
+    else
+        mkdir -p "$OUT/blazor"
+        blazor_probe "$BLAZOR_HAP_FILE"
     fi
 fi
 
@@ -2301,6 +2466,9 @@ if [ "$DO_DEVICE" = 0 ]; then
     log "   [dry-run] 将采集 payload 状态: ls -l $DEV_FILES_DIR/ + 读一行 dotnet.marker -> device/payload-*.txt"
     if [ "$A11Y_PROBE" = 1 ]; then
         log "   [dry-run] 将采集无障碍证据（--a11y-probe）: 自检读数 a11y/selfcheck.txt + hilog 过滤 a11y/hilog-a11y.txt（summary: a11y_*）"
+    fi
+    if [ "$BLAZOR_PROBE" = 1 ]; then
+        log "   [dry-run] 将归档 Blazor 探针证据（--blazor-probe）: blazor/blazor-install.txt、blazor-start.txt、blazor-hilog.txt、blazor-markers.txt（summary: blazor_*）"
     fi
     log "   [dry-run] kit hap 自检已在上方打印；设备轮会写入 meta/kit-selfcheck.txt"
     if [ -n "$COMPARE_LIB" ]; then
@@ -2597,6 +2765,15 @@ else
             printf 'a11y_provider_status=%s\n' "$A11Y_PROVIDER_STATUS"
             printf 'a11y_node_count=%s\n' "$A11Y_NODE_COUNT"
         fi
+        if [ "$BLAZOR_PROBE" = 1 ]; then
+            printf 'blazor_hap=%s\n' "$BLAZOR_HAP_FILE"
+            printf 'blazor_bundle=%s\n' "$BLAZOR_BUNDLE"
+            printf 'blazor_install=%s\n' "$BLAZOR_INSTALL"
+            printf 'blazor_boot=%s\n' "$BLAZOR_BOOT"
+            printf 'blazor_rendered=%s\n' "$BLAZOR_RENDERED"
+            printf 'blazor_hilog_lines=%s\n' "$BLAZOR_HILOG_LINES"
+            printf 'blazor_marker_lines=%s\n' "$BLAZOR_MARKER_LINES"
+        fi
         printf 'xpm_mode=%s\n' "$XPM_MODE"
         printf 'verity_require_signatures=%s\n' "$VERITY_REQ"
         printf 'soinfosegment_hap=%s\n' "$SOINFO_HAP"
@@ -2642,6 +2819,9 @@ log "        meta/kit-selfcheck.txt、device/udid.txt、device/app-libs-arm64.tx
 log "        device/payload-files.txt、device/payload-marker.txt、summary.txt。"
 if [ "$A11Y_PROBE" = 1 ]; then
     log "        a11y/（--a11y-probe：selfcheck.txt、selfcheck-layout.json、hilog-a11y.txt）。"
+fi
+if [ "$BLAZOR_PROBE" = 1 ]; then
+    log "        blazor/（--blazor-probe：blazor-hilog.txt、blazor-markers.txt、blazor-start.txt、blazor-install.txt）。"
 fi
 if [ "$FAILURES" -gt 0 ]; then
     warn "本轮有 $FAILURES 项未通过：详情见 $OUT/summary.txt"

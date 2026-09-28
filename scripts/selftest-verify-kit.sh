@@ -28,11 +28,16 @@
 #   S13 usage     --expected-abc with a non-numeric token -> exit 2; unknown option -> exit 2
 #   S14 payload   payload-in-libs marker mutants -> exit 1: marker missing, entry count drift,
 #                 zip-sha mismatch, entry assembly not staged
+#   S15 blazor    the optional Blazor WASM component: the good kit asserts it (S1), mutants
+#                 (missing index.html / no .wasm / no boot script / .br/.gz/.map leftovers /
+#                 icudt*.dat leftover / wrong bundle / bad abc version / hap removed) all
+#                 behave as documented, and a kit without the hap logs one line and stays OK
 #
 # The kit fixture mirrors the real one: five haps (module.json / ets/modules.abc /
 # resources.index / resources/rawfile/dotnet.zip / libs/arm64-v8a/*.so + the payload-in-libs
 # marker and payload files), 自签说明.md, 签名说明.txt, the repository's verify-kit.sh and a
-# regenerated SHA256SUMS (so step 1 passes and only the 2b assertion under test decides). The
+# regenerated SHA256SUMS (so step 1 passes and only the 2b assertion under test decides), plus
+# the optional Blazor WASM component hap. The
 # host ELF is hand-built ELF64 LE with PT_LOAD + PT_DYNAMIC + DT_NEEDED/DT_STRTAB/DT_SYMTAB/
 # DT_HASH, so no toolchain is involved.
 #
@@ -42,7 +47,7 @@
 # Exit: 0 = all checks passed; 1 = at least one check failed (work dir kept for triage).
 set -u
 
-SELFTEST_VERSION="1 (2026-09-24)"
+SELFTEST_VERSION="2 (2026-09-28)"
 
 log()     { printf '[%s] %s\n' "$(date '+%H:%M:%S')" "$*"; }
 section() { printf '\n=== %s ===\n' "$*"; }
@@ -130,6 +135,16 @@ HAPS = [
     "hello-maui-app-api20-permissions.hap",
     "hello-maui-app-unsigned.hap",
 ]
+# The optional Blazor WASM ArkWeb component (make-device-test-kit.sh --with-blazor). Its shell
+# abc is deliberately NOT the MAUI shell size, so the 2c assertion cannot accidentally depend
+# on the 2b size expectation.
+BLAZOR_HAP = "hello-blazorwasm-host-unsigned.hap"
+BLAZOR_ABC_SIZE = 30000
+BLAZOR_MODULE = {
+    "app": {"bundleName": "com.example.opendotnet", "versionName": "1.0.0",
+            "minAPIVersion": 50002014, "targetAPIVersion": 60101024, "apiReleaseType": "Release"},
+    "module": {"name": "entry", "type": "entry", "requestPermissions": []},
+}
 # The 14 libs of a shipped hap: host + libc++ + the 12 runtime ELF.
 LIBS = [
     "libopenharmonyhost.so",
@@ -287,8 +302,29 @@ def write_haps(kit, abc=None, index=INDEX_SIZE, host=None, dotnet=None, libs=Non
             z.writestr(PAYLOAD_MARKER, good_payload_marker(dotnet, payload_entries(libs)))
 
 
+def write_blazor_hap(kit):
+    """The optional Blazor WASM component in its good (slim-packed) shape: ArkTS-only hap with
+    the embedded site, its own PANDA shell abc, bundle com.example.opendotnet and no
+    .br/.gz/.map or ICU leftovers."""
+    with zipfile.ZipFile(os.path.join(kit, BLAZOR_HAP), "w", zipfile.ZIP_DEFLATED) as z:
+        z.writestr("module.json", json.dumps(BLAZOR_MODULE))
+        z.writestr("ets/modules.abc", good_abc(BLAZOR_ABC_SIZE))
+        # The host's own ArkTS compile output: a real packed hap carries ets/sourceMaps.map,
+        # which the site-level --slim assertion must not flag (only web assets count).
+        z.writestr("ets/sourceMaps.map", b"fixture host source map")
+        z.writestr("resources.index", good_index(400))
+        z.writestr("resources/rawfile/blazor/index.html",
+                   b'<!DOCTYPE html><html><body><div id="app">Hello from Blazor WebAssembly</div>'
+                   b'<script src="_framework/blazor.webassembly.js"></script></body></html>')
+        z.writestr("resources/rawfile/blazor/_framework/dotnet.native.wasm", b"\0asm fixture")
+        z.writestr("resources/rawfile/blazor/_framework/blazor.webassembly.js", b"// fixture boot\n")
+        z.writestr("resources/rawfile/blazor/css/app.css", b"html,body{margin:0}\n")
+        z.writestr("resources/rawfile/blazor/hello-blazorwasm.dll", b"fixture payload")
+
+
 def rebuild_sums(kit):
-    names = sorted(HAPS + ["自签说明.md", "签名说明.txt", "verify-kit.sh"])
+    names = HAPS + ([BLAZOR_HAP] if os.path.exists(os.path.join(kit, BLAZOR_HAP)) else [])
+    names = sorted(names + ["自签说明.md", "签名说明.txt", "verify-kit.sh"])
     lines = []
     for name in names:
         with open(os.path.join(kit, name), "rb") as f:
@@ -300,6 +336,7 @@ def rebuild_sums(kit):
 def build_good(kit, verify_script):
     os.makedirs(kit, exist_ok=True)
     write_haps(kit)
+    write_blazor_hap(kit)
     for doc in ("自签说明.md", "签名说明.txt"):
         with open(os.path.join(kit, doc), "w") as f:
             f.write("fixture\n")
@@ -321,6 +358,45 @@ def write_hap(path, items):
 
 
 def patch(kit, op, arg=None):
+    if op.startswith("blazor-"):
+        # The optional Blazor component mutants: operate on BLAZOR_HAP alone (the five MAUI
+        # haps stay valid), then refresh SHA256SUMS so only the 2c assertion under test fires.
+        bpath = os.path.join(kit, BLAZOR_HAP)
+        if op == "blazor-drop-hap":
+            if os.path.exists(bpath):
+                os.remove(bpath)
+            rebuild_sums(kit)
+            return
+        items = read_hap(bpath)
+        if op == "blazor-drop-index-html":
+            items = [(n, d) for n, d in items if n != "resources/rawfile/blazor/index.html"]
+        elif op == "blazor-drop-wasm":
+            items = [(n, d) for n, d in items
+                     if not (n.startswith("resources/rawfile/blazor/_framework/") and n.endswith(".wasm"))]
+        elif op == "blazor-drop-boot":
+            items = [(n, d) for n, d in items
+                     if not (n.startswith("resources/rawfile/blazor/_framework/")
+                             and os.path.basename(n).startswith("blazor.webassembly") and n.endswith(".js"))]
+        elif op == "blazor-add-strays":
+            for name in ("dotnet.native.wasm.br", "dotnet.native.wasm.gz", "dotnet.native.wasm.map"):
+                items.append(("resources/rawfile/blazor/_framework/" + name, b"fixture stray"))
+        elif op == "blazor-add-icu":
+            items.append(("resources/rawfile/blazor/_framework/icudt72l.dat", b"fixture icu"))
+        elif op == "blazor-bundle":
+            data = dict(items)
+            module = json.loads(data["module.json"])
+            module["app"]["bundleName"] = arg
+            data["module.json"] = json.dumps(module).encode()
+            items = [(n, data[n]) for n, _ in items]
+        elif op == "blazor-bad-abc":
+            data = dict(items)
+            data["ets/modules.abc"] = good_abc(BLAZOR_ABC_SIZE, (12, 9, 9, 9))
+            items = [(n, data[n]) for n, _ in items]
+        else:
+            raise SystemExit("unknown patch op: %s" % op)
+        write_hap(bpath, items)
+        rebuild_sums(kit)
+        return
     for hap in HAPS:
         path = os.path.join(kit, hap)
         items = read_hap(path)
@@ -448,6 +524,8 @@ assert_contains "S1 payload-in-libs marker zip bound" "zip=254/" "$LOG_FILE"
 assert_contains "S1 host DT_NEEDED=5" "DT_NEEDED=5" "$LOG_FILE"
 assert_contains "S1 host denylist 0" "denylist 命中=0" "$LOG_FILE"
 assert_contains "S1 dotnet.zip 254 entries / 0 .so" "dotnet.zip entries=254，.so=0" "$LOG_FILE"
+assert_contains "S1 Blazor component section asserts the extra hap" "2c/4 Blazor WASM 组件断言（hello-blazorwasm-host-unsigned.hap）" "$LOG_FILE"
+assert_contains "S1 Blazor component assertions pass" "Blazor 组件断言通过" "$LOG_FILE"
 
 # The kit copy (what a tester actually runs) must behave identically.
 ( cd "$ROOT_DIR" && sh "$GOOD_KIT/verify-kit.sh" "$GOOD_KIT" ) > "$WORK/S1-kitcopy.log" 2>&1
@@ -627,6 +705,58 @@ run_verify "$K"
 assert_rc 1 "$RC" "S14 marker naming an unstaged assembly fails"
 assert_contains "S14 names the missing assembly" "入口程序集 'missing.dll' 不在 libs/arm64-v8a/" "$LOG_FILE"
 
+# ---- S15: optional Blazor WASM component ---------------------------------------------
+section "S15 Blazor component: mutants FAIL, a kit without it stays OK"
+K="$(new_kit kit-blazor-nohtml)"
+python3 "$WORK/fixture.py" patch "$K" blazor-drop-index-html
+run_verify "$K"
+assert_rc 1 "$RC" "S15 missing index.html fails"
+assert_contains "S15 names the missing first page" "缺 resources/rawfile/blazor/index.html" "$LOG_FILE"
+assert_contains "S15 reports KIT CHECK FAILED" "KIT CHECK FAILED" "$LOG_FILE"
+
+K="$(new_kit kit-blazor-nowasm)"
+python3 "$WORK/fixture.py" patch "$K" blazor-drop-wasm
+run_verify "$K"
+assert_rc 1 "$RC" "S15 no _framework .wasm fails"
+assert_contains "S15 names the missing wasm payload" "_framework/ 下没有 .wasm" "$LOG_FILE"
+
+K="$(new_kit kit-blazor-noboot)"
+python3 "$WORK/fixture.py" patch "$K" blazor-drop-boot
+run_verify "$K"
+assert_rc 1 "$RC" "S15 no blazor.webassembly*.js fails"
+assert_contains "S15 names the missing boot script" "没有 blazor.webassembly*.js" "$LOG_FILE"
+
+K="$(new_kit kit-blazor-strays)"
+python3 "$WORK/fixture.py" patch "$K" blazor-add-strays
+run_verify "$K"
+assert_rc 1 "$RC" "S15 .br/.gz/.map leftovers fail"
+assert_contains "S15 counts the precompressed leftovers" "仍有 3 个 .br/.gz/.map" "$LOG_FILE"
+
+K="$(new_kit kit-blazor-icu)"
+python3 "$WORK/fixture.py" patch "$K" blazor-add-icu
+run_verify "$K"
+assert_rc 1 "$RC" "S15 icudt*.dat leftover fails"
+assert_contains "S15 counts the ICU leftovers" "仍有 1 个 icudt*.dat" "$LOG_FILE"
+
+K="$(new_kit kit-blazor-bundle)"
+python3 "$WORK/fixture.py" patch "$K" blazor-bundle com.example.other
+run_verify "$K"
+assert_rc 1 "$RC" "S15 wrong bundle fails"
+assert_contains "S15 names the bundle mismatch" "bundleName 期望 com.example.opendotnet，实际 com.example.other" "$LOG_FILE"
+
+K="$(new_kit kit-blazor-abc)"
+python3 "$WORK/fixture.py" patch "$K" blazor-bad-abc
+run_verify "$K"
+assert_rc 1 "$RC" "S15 abc version drift fails"
+assert_contains "S15 names the abc drift" "PANDA 头版本 12.9.9.9 != 13.0.1.0" "$LOG_FILE"
+
+K="$(new_kit kit-blazor-absent)"
+python3 "$WORK/fixture.py" patch "$K" blazor-drop-hap
+run_verify "$K"
+assert_rc 0 "$RC" "S15 a kit without the Blazor hap stays KIT OK"
+assert_contains "S15 logs the absent component" "2c/4 Blazor WASM 组件：本包未包含" "$LOG_FILE"
+assert_not_contains "S15 does not run the Blazor assertions without the hap" "2c/4 Blazor WASM 组件断言" "$LOG_FILE"
+
 # ---- summary -------------------------------------------------------------------------
 section "summary"
 log "checks: $CHECKS, failed: $FAILED"
@@ -634,7 +764,7 @@ if [ "$FAILED" -gt 0 ]; then
     log "SELFTEST FAILED - work dir kept: $WORK"
     exit 1
 fi
-log "SELFTEST OK - the 2b deep assertions grade kit defects (index/abc/libs/dotnet.zip/host) as designed"
+log "SELFTEST OK - the 2b deep assertions (index/abc/libs/dotnet.zip/host) and the optional 2c Blazor component grade kit defects as designed"
 if [ "$KEEP" = "1" ]; then
     log "work dir kept (SELFTEST_KEEP=1): $WORK"
 else
