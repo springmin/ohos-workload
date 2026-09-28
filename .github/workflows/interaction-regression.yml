@@ -40,7 +40,7 @@ on:
         description: 'maui-ohos commit SHA to compile (defaults to the pinned feature/openharmony tip)'
         required: false
         type: string
-        default: '4b5756de44257914be6fd44c62b5c03cc09329bf'
+        default: '33b0af795f81d3b86c22b7c1012960a8aec7b3e8'
   push:
     branches: [ master ]
   pull_request:
@@ -52,12 +52,12 @@ permissions:
 
 # Reproducible cross-repo compile: the MAUI slice is checked out at an exact commit, not the
 # mutable feature/openharmony branch, so a push to the fork cannot change what this gate compiles.
-# The default is the feature/openharmony tip: 4b5756de, the P2c-DEEPLINK commit (want/activation
-# routing: onCreate/onNewWant -> notifyActivation -> Shell.GoToAsync/NavigationPage with
-# sequence de-duplication and the Navigating approval chain, on top of the P2b-IMG
-# display-size image decode, P1b-LIST list depth/scroll physics, P1a-ANIM, P0c-TEXT-EDIT,
-# P2a-HUKS, A2-TTS, R2-SHELL-EXT and KIT-EXT2 batches). The suite pins 391 checks / floor 371
-# and the full run is green at this compiled tree (local verification: 391/391, floor 371, both
+# The default is the feature/openharmony tip: 33b0af79 (the webview wiring d6325990: history/
+# frame/cookie/domStorage/navigation-event handlers, plus the SEC-SCAN-3 S3-DL3 dot-dot route
+# rejection and the HUKS/deep-link hardening batches 7c75b88f/33b0af79; builds on the P2c
+# deep-link routing, P2b-IMG, P1b-LIST, P1a-ANIM, P0c-TEXT-EDIT, P2a-HUKS, A2-TTS, R2-SHELL-EXT
+# and KIT-EXT2 batches). The suite pins 398 checks / floor 378
+# and the full run is green at this compiled tree (local verification: 398/398, floor 378, both
 # perf lines within budget); advance the pin deliberately and refresh this comment when the
 # harness pins or the tip move (workflow_dispatch can compile any commit).
 env:
