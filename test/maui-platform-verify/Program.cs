@@ -12,7 +12,7 @@ using Microsoft.Maui.Platform;
 // after the fuzz tail) instead of letting every caller repeat its own threshold constant.
 VerifyLineCountingWriter verifyStdout = new(Console.Out);
 Console.SetOut(verifyStdout);
-const int verifyCheckTotal = 432;                     // documented full [verify] line count (+4 MS-MODE runtime mode switch, +10 P2c-DEEPLINK, +4 P2b-IMG, +16 P1b-LIST, +10 P1a-ANIM, +2 SEC3 storage/deep-link pins, +5 W-series WebView wiring, +3 T1 InputView mapping, +4 T2 WebView gaps, +4 T3 GraphicsView interaction, +7 T10 modal accessibility, +4 T4 Label formatted text, +4 T5 layout semantics, +4 T9 window title bar, +4 T11 diagnostics overlay)
+const int verifyCheckTotal = 438;                     // documented full [verify] line count (+4 MS-MODE runtime mode switch, +10 P2c-DEEPLINK, +4 P2b-IMG, +16 P1b-LIST, +10 P1a-ANIM, +2 SEC3 storage/deep-link pins, +5 W-series WebView wiring, +3 T1 InputView mapping, +4 T2 WebView gaps, +4 T3 GraphicsView interaction, +7 T10 modal accessibility, +4 T4 Label formatted text, +4 T5 layout semantics, +6 T7 DatePicker calendar/min-max, +4 T9 window title bar, +4 T11 diagnostics overlay)
 const int verifyCheckFloor = verifyCheckTotal - 20;   // documented floor convention (total - 20)
 
 // A small image file for the Image handler.
@@ -337,18 +337,25 @@ if (!p2bHostContract)
     throw new InvalidOperationException("the progressive image decode host contract drifted");
 }
 
-// W22-8: date/time picker dropdowns.
-var dateCtl = root.Children.OfType<HorizontalStackLayout>().SelectMany(l => l.Children).OfType<DatePicker>().FirstOrDefault();
+// W22-8: date/time picker dropdowns; T7 pins the month calendar and the Min/Max clamping.
+var dateCtl = root.Children.OfType<HorizontalStackLayout>().SelectMany(l => l.Children).OfType<DatePicker>()
+    .FirstOrDefault(d => d.MinimumDate != new DateTime(2026, 9, 10));
 if (dateCtl is not null && dateCtl.Handler?.PlatformView is OpenHarmonyView datePlatform)
 {
     Rect f = dateCtl.Frame;
     host.HandleTouch(true, false, (float)(f.X + 10), (float)(f.Y + f.Height / 2));
     host.HandleTouch(false, true, (float)(f.X + 10), (float)(f.Y + f.Height / 2));
-    Console.WriteLine($"[verify] datepicker open={datePlatform.PopupVisible} month={datePlatform.CalendarYear}-{datePlatform.CalendarMonth:00} selected={datePlatform.CalendarSelectedDay}");
-    // Tap "next month" (>), then a day in the shown month.
+    bool dateOpened = datePlatform.PopupVisible && datePlatform.CalendarYear == 2026
+        && datePlatform.CalendarMonth == 9 && datePlatform.CalendarSelectedDay == 17;
+    Console.WriteLine($"[verify] datepicker open={datePlatform.PopupVisible} month={datePlatform.CalendarYear}-{datePlatform.CalendarMonth:00} selected={datePlatform.CalendarSelectedDay} assert={dateOpened}");
+    // Tap "next month" (>): an unbounded picker navigates freely.
     float headerY = (float)(f.Y + f.Height + OpenHarmonyView.CalendarHeaderHeight / 2);
     host.HandleTouch(true, false, (float)(f.X + OpenHarmonyView.CalendarWidth - 20), headerY);
     host.HandleTouch(false, true, (float)(f.X + OpenHarmonyView.CalendarWidth - 20), headerY);
+    bool dateNavigated = datePlatform.CalendarYear == 2026 && datePlatform.CalendarMonth == 10;
+    Console.WriteLine($"[verify] datepicker calendar next month={datePlatform.CalendarYear}-{datePlatform.CalendarMonth:00} assert={dateNavigated}");
+    // Rendering the open calendar exercises DrawCalendar through the popup path, then tap day 15.
+    bool dateRendered = host.Render();
     int day = 15;
     int leading = ((int)new DateTime(datePlatform.CalendarYear, datePlatform.CalendarMonth, 1).DayOfWeek + 6) % 7;
     int cell = leading + day - 1;
@@ -356,7 +363,69 @@ if (dateCtl is not null && dateCtl.Handler?.PlatformView is OpenHarmonyView date
     float cellY = (float)(f.Y + f.Height + OpenHarmonyView.CalendarHeaderHeight + ((cell / 7) + 1) * OpenHarmonyView.CalendarRowHeight + OpenHarmonyView.CalendarRowHeight / 2);
     host.HandleTouch(true, false, cellX, cellY);
     host.HandleTouch(false, true, cellX, cellY);
-    Console.WriteLine($"[verify] datepicker after calendar tap date={dateCtl.Date:yyyy-MM-dd} text='{datePlatform.Text}' popup={datePlatform.PopupVisible}");
+    string dateText = dateCtl.Date?.ToString(string.IsNullOrEmpty(dateCtl.Format) ? "yyyy-MM-dd" : dateCtl.Format) ?? string.Empty;
+    bool dateSelected = dateCtl.Date == new DateTime(2026, 10, 15) && !datePlatform.PopupVisible
+        && datePlatform.Text == dateText;
+    Console.WriteLine($"[verify] datepicker after calendar tap date={dateCtl.Date:yyyy-MM-dd} text='{datePlatform.Text}' popup={datePlatform.PopupVisible} render={dateRendered} assert={dateSelected}");
+    if (!(dateOpened && dateNavigated && dateRendered && dateSelected))
+    {
+        throw new InvalidOperationException("the DatePicker month calendar drifted (open/next-month/select)");
+    }
+}
+
+// T7: MinimumDate/MaximumDate bound both the selectable days and the month navigation.
+var boundedCtl = root.Children.OfType<HorizontalStackLayout>().SelectMany(l => l.Children).OfType<DatePicker>()
+    .FirstOrDefault(d => d.MinimumDate == new DateTime(2026, 9, 10));
+if (boundedCtl is not null && boundedCtl.Handler?.PlatformView is OpenHarmonyView boundedPlatform)
+{
+    Rect f = boundedCtl.Frame;
+    host.HandleTouch(true, false, (float)(f.X + 10), (float)(f.Y + f.Height / 2));
+    host.HandleTouch(false, true, (float)(f.X + 10), (float)(f.Y + f.Height / 2));
+    bool boundedOpened = boundedPlatform.PopupVisible && boundedPlatform.CalendarSelectedDay == 15;
+    // September 2026 starts on a Tuesday, so day d sits in the cells the calendar geometry walks.
+    int leading = ((int)new DateTime(2026, 9, 1).DayOfWeek + 6) % 7;
+    float HitX(int d) => (float)(f.X + ((leading + d - 1) % 7) * (OpenHarmonyView.CalendarWidth / 7f) + OpenHarmonyView.CalendarWidth / 14f);
+    float HitY(int d) => (float)(f.Y + f.Height + OpenHarmonyView.CalendarHeaderHeight
+        + (((leading + d - 1) / 7) + 1) * OpenHarmonyView.CalendarRowHeight + OpenHarmonyView.CalendarRowHeight / 2);
+    bool boundedRender = host.Render();
+    int hitInside = boundedPlatform.CalendarHit(HitX(12), HitY(12));
+    int hitOutside = boundedPlatform.CalendarHit(HitX(25), HitY(25));
+    bool boundedHitOk = boundedOpened && hitInside == 12 && hitOutside == 0 && boundedRender;
+    Console.WriteLine($"[verify] datepicker min/max hit inside={hitInside} outside={hitOutside} render={boundedRender} assert={boundedHitOk}");
+    // Both header arrows clamp: min and max months are September 2026.
+    float headerY = (float)(f.Y + f.Height + OpenHarmonyView.CalendarHeaderHeight / 2);
+    for (int i = 0; i < 2; i++)
+    {
+        host.HandleTouch(true, false, (float)(f.X + 10), headerY);
+        host.HandleTouch(false, true, (float)(f.X + 10), headerY);
+        host.HandleTouch(true, false, (float)(f.X + OpenHarmonyView.CalendarWidth - 20), headerY);
+        host.HandleTouch(false, true, (float)(f.X + OpenHarmonyView.CalendarWidth - 20), headerY);
+    }
+    bool boundedClamped = boundedPlatform.CalendarYear == 2026 && boundedPlatform.CalendarMonth == 9;
+    Console.WriteLine($"[verify] datepicker min/max month clamp month={boundedPlatform.CalendarYear}-{boundedPlatform.CalendarMonth:00} assert={boundedClamped}");
+    // A tap on a disabled day neither changes the date nor closes the calendar.
+    host.HandleTouch(true, false, HitX(25), HitY(25));
+    host.HandleTouch(false, true, HitX(25), HitY(25));
+    bool boundedTapIgnored = boundedCtl.Date == new DateTime(2026, 9, 15) && boundedPlatform.PopupVisible;
+    Console.WriteLine($"[verify] datepicker min/max outside tap date={boundedCtl.Date:yyyy-MM-dd} popup={boundedPlatform.PopupVisible} assert={boundedTapIgnored}");
+    // Even a selection the grid refuses is clamped by the platform callback (defence in depth).
+    boundedPlatform.CalendarSelectDay?.Invoke(new DateTime(2026, 9, 25));
+    bool boundedSelectClamped = boundedCtl.Date == new DateTime(2026, 9, 20) && !boundedPlatform.PopupVisible
+        && boundedPlatform.CalendarSelectedDay == 20;
+    Console.WriteLine($"[verify] datepicker min/max select clamp date={boundedCtl.Date:yyyy-MM-dd} selected={boundedPlatform.CalendarSelectedDay} popup={boundedPlatform.PopupVisible} assert={boundedSelectClamped}");
+    // Re-open and pick an enabled day: the selection lands and the calendar closes.
+    host.HandleTouch(true, false, (float)(f.X + 10), (float)(f.Y + f.Height / 2));
+    host.HandleTouch(false, true, (float)(f.X + 10), (float)(f.Y + f.Height / 2));
+    host.HandleTouch(true, false, HitX(12), HitY(12));
+    host.HandleTouch(false, true, HitX(12), HitY(12));
+    string boundedText = boundedCtl.Date?.ToString(string.IsNullOrEmpty(boundedCtl.Format) ? "yyyy-MM-dd" : boundedCtl.Format) ?? string.Empty;
+    bool boundedPicked = boundedCtl.Date == new DateTime(2026, 9, 12) && !boundedPlatform.PopupVisible
+        && boundedPlatform.Text == boundedText;
+    Console.WriteLine($"[verify] datepicker min/max inside tap date={boundedCtl.Date:yyyy-MM-dd} text='{boundedPlatform.Text}' popup={boundedPlatform.PopupVisible} assert={boundedPicked}");
+    if (!(boundedHitOk && boundedClamped && boundedTapIgnored && boundedSelectClamped && boundedPicked))
+    {
+        throw new InvalidOperationException("the DatePicker Min/Max clamping drifted");
+    }
 }
 
 var timeCtl = root.Children.OfType<HorizontalStackLayout>().SelectMany(l => l.Children).OfType<TimePicker>().FirstOrDefault();
@@ -9835,10 +9904,17 @@ class TestApp : Application
             "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==")));
         layout.Add(streamImage);
 
-        // W22-8: date/time pickers.
+        // W22-8: date/time pickers; T7 adds a min/max-bounded DatePicker for the calendar clamp.
         var datePicker = new DatePicker { Date = new DateTime(2026, 9, 17), FontSize = 26 };
         var timePicker = new TimePicker { Time = new TimeSpan(14, 30, 0), FontSize = 26 };
-        layout.Add(new HorizontalStackLayout { Spacing = 16, Children = { datePicker, timePicker } });
+        var boundedPicker = new DatePicker
+        {
+            Date = new DateTime(2026, 9, 15),
+            MinimumDate = new DateTime(2026, 9, 10),
+            MaximumDate = new DateTime(2026, 9, 20),
+            FontSize = 26,
+        };
+        layout.Add(new HorizontalStackLayout { Spacing = 16, Children = { datePicker, timePicker, boundedPicker } });
 
         // Gap 1c: swipe gesture recognizer (reuses the drag tracking).
         var swipeLabel = new Label { Text = "swipe me", FontSize = 28 };

@@ -49,7 +49,7 @@ allocation and jitter) budgets are exceeded.
 # (or the MauiSliceDir / HostingDll / OpenHarmonyGraphicsDll MSBuild properties) before building
 # elsewhere; an explicit -p: value wins over the environment and the absolute fallbacks.
 dotnet build -v:q
-dotnet bin/Debug/net11.0/verify.dll | grep -c '\[verify\]'   # expect 432 (419 interaction checks + 4 fuzz + 1 frame perf + 8 a11y perf)
+dotnet bin/Debug/net11.0/verify.dll | grep -c '\[verify\]'   # expect 438 (425 interaction checks + 4 fuzz + 1 frame perf + 8 a11y perf)
 ```
 
 The `interaction-regression` workflow (`.github/workflows/interaction-regression.yml`) runs the
@@ -60,7 +60,7 @@ suite on a GitHub runner as a real gate (on push to `master`, on pull requests a
 points `MAUI_SLICE_DIR` / `HOSTING_DLL` / `OPENHARMONY_GRAPHICS_DLL` at those roots, and fails the
 job unless the run exits 0, the suite's own `[suite]` contract line reports `assert=True` with at
 least the floor declared in `Program.cs`, both perf lines report `within=True`, and no `Unhandled`
-line is logged. The floor (412 = 432 - 20, the documented convention) lives only in `Program.cs`;
+line is logged. The floor (418 = 438 - 20, the documented convention) lives only in `Program.cs`;
 the workflow and `scripts/preflight.sh` both read the printed `[suite] checks=... floor=...` line
 instead of repeating a literal, so the two local/CI thresholds cannot drift apart.
 
@@ -178,8 +178,8 @@ parse.
   blocks codesigned ELF apphosts on some machines).
 - The suite fails loudly (unhandled exception) when a slice change breaks startup or when an
   assertion for the gesture flows (including the drag-and-drop checks) does not hold; keep it at
-  419 interaction checks plus the 4 fuzz lines plus the 1 frame-perf line plus the 8 a11y-perf
-  lines (432 `[verify]` lines) when touching the platform slice. The total and the floor
+  425 interaction checks plus the 4 fuzz lines plus the 1 frame-perf line plus the 8 a11y-perf
+  lines (438 `[verify]` lines) when touching the platform slice. The total and the floor
   (total - 20) are declared in `Program.cs`; the run ends with a `[suite] checks=... floor=...
   assert=...` line and fails itself when the printed count is below the floor, so the CI job and
   `scripts/preflight.sh` do not repeat the threshold.
@@ -865,3 +865,18 @@ parse.
   to be skipped and the lifecycle initializer to rewire it. That is 4 lines: 428 + 4 = 432 = 419
   interaction checks + 4 fuzz + 1 frame perf + 8 a11y perf; the workflow floor moves with the
   total (432 - 20 = 412).
+
+- **T7 DatePicker calendar + Min/Max clamping (6 lines, 2026-09-29)** - the DatePicker popup draws
+  the month calendar through the popup path (`DrawPopup` -> `DrawCalendar`: header with `<`/`>`
+  month navigation, Monday-first weekday row, 6x7 day grid with today/selection highlighting) and
+  `MinimumDate`/`MaximumDate` drive it: out-of-range days draw disabled and `CalendarHit` refuses
+  them, the header clamps at the first/last in-range month, and a selected day is clamped to the
+  range (the control's own coercion keeps the last word). `datepicker open`/`calendar next` pin the
+  tap opening 2026-09 with the 17th selected and the header navigating to 2026-10; `after calendar
+  tap` pins the picked day, the rendered popup and the closed state; `min/max hit` requires day 12
+  to hit-test and day 25 (outside 2026-09-10..2026-09-20) not to; `min/max month clamp` keeps both
+  header arrows in September; `outside tap` keeps the refused day from changing the date or
+  closing the calendar; `select clamp` requires the platform selection callback to clamp a refused
+  2026-09-25 to `MaximumDate`; `inside tap` selects 2026-09-12 and closes. That is 6 new lines:
+  432 + 6 = 438 = 425 interaction checks + 4 fuzz + 1 frame perf + 8 a11y perf; the workflow floor
+  moves with the total (438 - 20 = 418).
