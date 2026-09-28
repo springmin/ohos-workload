@@ -24,6 +24,9 @@
 # Usage: scripts/preflight.sh [--skip-lint] [--skip-interaction] [--skip-pixel] [--quick]
 #   --skip-* narrows the run (--quick = both suites skipped); never use it to hide a failure.
 # Env: DOTNET (default: dotnet), PREFLIGHT_LOG_DIR (logs are kept and the path is printed).
+#      scripts/lib-dotnet-env.sh supplies the overridable dotnet defaults (MSBuild server off,
+#      TMPDIR off /tmp); see the "Known environment quirks" section of
+#      docs/openharmony-hap-packaging.md.
 # Exit code: 0 = every non-skipped step passed; 1 = at least one step failed; 2 = bad usage.
 set -u
 
@@ -34,6 +37,9 @@ W="$(cd "$(dirname "$0")/.." && pwd)"
 DOTNET="${DOTNET:-dotnet}"
 PROJ_INTERACTION="$W/test/maui-platform-verify"
 PROJ_PIXEL="$W/test/headless-render"
+# Shared, overridable dotnet environment (MSBuild server/node reuse off, TMPDIR off /tmp) for
+# every dotnet call below and for the selftests/step scripts this run starts.
+. "$W/scripts/lib-dotnet-env.sh" "$W"
 
 SKIP_LINT=0
 SKIP_INTERACTION=0
@@ -284,18 +290,42 @@ else
     # installed SDK, rewriting an already-signed apphost fails with "Access to the path is
     # denied" on a second run. Remove the outputs so the apphost is always signed exactly once.
     rm -rf "$PROJ_PIXEL/bin"
-    (cd "$PROJ_PIXEL" && "$DOTNET" run -c Release) > "$LOG_DIR/pixel.log" 2>&1
+    PIXEL_LOG="$LOG_DIR/pixel.log"
+    (cd "$PROJ_PIXEL" && "$DOTNET" run -c Release) > "$PIXEL_LOG" 2>&1
     PIXEL_RC=$?
-    if [ "$PIXEL_RC" -eq 0 ] && grep -q 'PIXEL ASSERTIONS PASSED' "$LOG_DIR/pixel.log"; then
-        grep 'PIXEL ASSERTIONS' "$LOG_DIR/pixel.log" | sed 's/^/   /'
+    PIXEL_MODE="dotnet run -c Release"
+    if [ "$PIXEL_RC" -ne 0 ] || ! grep -q 'PIXEL ASSERTIONS PASSED' "$PIXEL_LOG"; then
+        # Host-quirk fallback (docs: "Known environment quirks"): a build wedged by the host
+        # reports "The build failed" with 0 errors instead of a compiler error. Retry once with
+        # the workaround that used to be applied by hand: a --no-restore build plus executing
+        # the entry dll. bin/ is cleared again so codesign still signs exactly once.
+        warn "pixel: dotnet run did not pass; retrying with build --no-restore + dll"
+        PIXEL_LOG="$LOG_DIR/pixel-fallback.log"
+        PIXEL_MODE="dotnet build --no-restore + dll (host fallback)"
+        rm -rf "$PROJ_PIXEL/bin"
+        (cd "$PROJ_PIXEL" && "$DOTNET" build -c Release --no-restore -m:1) > "$LOG_DIR/pixel-fallback-build.log" 2>&1
+        PIXEL_BUILD_RC=$?
+        PIXEL_DLL="$PROJ_PIXEL/bin/Release/net11.0/headless-render.dll"
+        if [ "$PIXEL_BUILD_RC" -eq 0 ] && [ -f "$PIXEL_DLL" ]; then
+            (cd "$PROJ_PIXEL" && "$DOTNET" "$PIXEL_DLL") > "$PIXEL_LOG" 2>&1
+            PIXEL_RC=$?
+        else
+            PIXEL_RC=$PIXEL_BUILD_RC
+            : > "$PIXEL_LOG" 2>/dev/null || true
+            sed 's/^/   /' "$LOG_DIR/pixel-fallback-build.log" | tail -20 >&2
+            warn "pixel fallback build failed (full log: $LOG_DIR/pixel-fallback-build.log)"
+        fi
+    fi
+    if [ "$PIXEL_RC" -eq 0 ] && grep -q 'PIXEL ASSERTIONS PASSED' "$PIXEL_LOG"; then
+        grep 'PIXEL ASSERTIONS' "$PIXEL_LOG" | sed 's/^/   /'
         ST_PIXEL="PASS"
-        log "   dotnet run -c Release: PIXEL ASSERTIONS PASSED"
+        log "   $PIXEL_MODE: PIXEL ASSERTIONS PASSED"
     else
-        sed 's/^/   /' "$LOG_DIR/pixel.log" | tail -30 >&2
+        sed 's/^/   /' "$PIXEL_LOG" | tail -30 >&2
         if [ "$PIXEL_RC" -ne 0 ]; then
             warn "pixel suite exited $PIXEL_RC"
         fi
-        warn "pixel suite did not report PIXEL ASSERTIONS PASSED (full log: $LOG_DIR/pixel.log)"
+        warn "pixel suite did not report PIXEL ASSERTIONS PASSED (full log: $PIXEL_LOG)"
         ST_PIXEL="FAIL (rc=$PIXEL_RC)"
         FAILED=$((FAILED + 1))
     fi

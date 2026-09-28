@@ -1,0 +1,78 @@
+#!/bin/sh
+# lib-dotnet-env.sh - shared dotnet environment defaults for the ohos-workload scripts.
+#
+# Source it once the repository root is known, before the first `dotnet` call:
+#
+#     W="$(cd "$(dirname "$0")/.." && pwd)"
+#     . "$W/scripts/lib-dotnet-env.sh" "$W"
+#
+# The host quirks this absorbs (evidence: docs/openharmony-hap-packaging.md, "Known environment
+# quirks"):
+#   * /tmp is a separate hmfs mount where bind(2) on an AF_UNIX socket is refused with EACCES,
+#     so the MSBuild server (a Unix domain socket at $TMPDIR/MSBuildServer-<hash>) cannot start
+#     there and each CLI build waits out the server handshake before falling back;
+#   * a socket path longer than 108 characters kills the server process ("... is of an invalid
+#     length for use with domain sockets on this platform") and the client waits out its
+#     connection timeout instead;
+#   * a TMPDIR that does not exist fails the build outright (MSB1025, CreateTempSubdirectory).
+#
+# Defaults, each applied only while the variable is unset or empty, so an operator can override
+# any of them (e.g. `TMPDIR=/short sh scripts/preflight.sh`):
+#   DOTNET_CLI_USE_MSBUILD_SERVER=0         this SDK's switch: no server process at all
+#   DOTNET_CLI_DO_NOT_USE_MSBUILD_SERVER=1  the documented switch name (newer SDKs); harmless
+#                                           where the SDK does not read it
+#   MSBUILDDISABLENODEREUSE=1               never reuse a node wedged by an earlier run
+#   DOTNET_CLI_TELEMETRY_OPTOUT=1           no first-run telemetry
+#   DOTNET_NOLOGO=1                         stable output (the scripts grep the build logs)
+#   TMPDIR/TMP/TEMP                         a writable, socket-capable scratch dir: the caller's
+#                                           TMPDIR when usable, else $DOTNET_ENV_TMPDIR, else
+#                                           <repo>/.tmp. Keep it short enough that
+#                                           $TMPDIR/MSBuildServer-* stays under 108 characters.
+#
+# Args: $1 = repository root (used for the .tmp fallback only). Always returns 0.
+
+DOTNET_CLI_USE_MSBUILD_SERVER="${DOTNET_CLI_USE_MSBUILD_SERVER:-0}"
+DOTNET_CLI_DO_NOT_USE_MSBUILD_SERVER="${DOTNET_CLI_DO_NOT_USE_MSBUILD_SERVER:-1}"
+MSBUILDDISABLENODEREUSE="${MSBUILDDISABLENODEREUSE:-1}"
+DOTNET_CLI_TELEMETRY_OPTOUT="${DOTNET_CLI_TELEMETRY_OPTOUT:-1}"
+DOTNET_NOLOGO="${DOTNET_NOLOGO:-1}"
+export DOTNET_CLI_USE_MSBUILD_SERVER DOTNET_CLI_DO_NOT_USE_MSBUILD_SERVER MSBUILDDISABLENODEREUSE \
+    DOTNET_CLI_TELEMETRY_OPTOUT DOTNET_NOLOGO
+
+# A temp dir counts as usable when it exists (or can be created) and a scratch file can be
+# written into it; a non-existing path is created, a file at the path or a read-only dir is not.
+_ode_usable() {
+    [ -n "$1" ] || return 1
+    mkdir -p "$1" 2>/dev/null || return 1
+    _ode_probe="$1/.dotnet-env.$$"
+    : > "$_ode_probe" 2>/dev/null || return 1
+    rm -f "$_ode_probe" 2>/dev/null || true
+    return 0
+}
+
+_ode_tmp=""
+_ode_repo_tmp=""
+if [ -n "${TMPDIR:-}" ] && _ode_usable "$TMPDIR"; then
+    _ode_tmp="$TMPDIR"
+else
+    _ode_repo_tmp="${1:-$PWD}/.tmp"
+    for _ode_dir in "${DOTNET_ENV_TMPDIR:-/data/storage/el2/base/tmp/opencode/tmp}" "$_ode_repo_tmp"; do
+        if _ode_usable "$_ode_dir"; then
+            _ode_tmp="$_ode_dir"
+            break
+        fi
+    done
+fi
+if [ -n "$_ode_tmp" ]; then
+    TMPDIR="$(cd "$_ode_tmp" && pwd -P)" || TMPDIR="$_ode_tmp"
+    # TMP/TEMP are not read by dotnet on Unix, but child tools and ported scripts use them.
+    [ -n "${TMP:-}" ] || TMP="$TMPDIR"
+    [ -n "${TEMP:-}" ] || TEMP="$TMPDIR"
+    export TMPDIR TMP TEMP
+    # The repo .tmp fallback is scratch: ignore its contents from inside itself, so the
+    # fallback never depends on (or edits) the repository .gitignore.
+    if [ "$_ode_tmp" = "$_ode_repo_tmp" ] && [ ! -f "$_ode_tmp/.gitignore" ]; then
+        printf '*\n' > "$_ode_tmp/.gitignore" 2>/dev/null || true
+    fi
+fi
+unset _ode_tmp _ode_repo_tmp _ode_dir _ode_probe

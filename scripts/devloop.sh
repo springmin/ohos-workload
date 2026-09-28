@@ -7,6 +7,9 @@
 # Exit codes: 0 = ok; 1 = a step failed; 2 = usage error; 3 = no hdc / no device (refused).
 # Env: HDC (default hdc; may be an absolute path), DOTNET (default dotnet),
 #      DEVLOOP_SIGN_TOOL (default scripts/sign-for-device.sh; the selftest stubs it), TMPDIR.
+#      scripts/lib-dotnet-env.sh supplies the overridable dotnet defaults (MSBuild server off,
+#      TMPDIR off /tmp); see the "Known environment quirks" section of
+#      docs/openharmony-hap-packaging.md.
 set -e
 
 SCRIPT_VERSION="1 (2026-09-27)"
@@ -89,6 +92,10 @@ W="$(cd "$SELF_DIR/.." && pwd -P)" || W="$SELF_DIR"
 HDC="${HDC:-hdc}"
 DOTNET="${DOTNET:-dotnet}"
 SIGN_TOOL="${DEVLOOP_SIGN_TOOL:-$W/scripts/sign-for-device.sh}"
+
+# Shared, overridable dotnet environment: the publish below and everything it starts inherit
+# the MSBuild-server/node-reuse opt-outs and a TMPDIR away from /tmp.
+. "$SELF_DIR/lib-dotnet-env.sh" "$W"
 
 COMMAND=""
 PROJECT="$W/test/hello-maui-app"
