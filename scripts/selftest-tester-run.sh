@@ -625,6 +625,9 @@ KMSG_EOF
                 # them so the failure path (archive + re-sign hint) is asserted.
                 if [ "${FAKE_HDC_BLAZOR_MISSING:-0}" = 1 ]; then
                     printf '%s\n' '09-22 10:00:05.000 12345 12345 I A00000/unrelated: no Blazor markers in this window'
+                    # A hostile page can smuggle control characters through BLZ_ERROR; the probe
+                    # must strip them before echoing the line to the tester's terminal.
+                    printf '09-22 10:00:05.100 12345 12345 I A00000/BlazorWebHost: BLZ_ERROR \033[31mboom\033[0m\n'
                     exit 0
                 fi
                 cat <<'BLAZOR_EOF'
@@ -2020,6 +2023,8 @@ run_tester S21b "FAKE_HDC_PIDOF_ALIVE_CALLS=99 FAKE_HDC_BLAZOR_MISSING=1" \
 assert_eq "S21b exit code 1 (log: $LOGS/S21b.log)" "1" "$RC"
 assert_contains "S21b names the missing markers" "Blazor 标记缺失：BLZ_BOOT=no BLZ_RENDERED=no" "$LOGS/S21b.log"
 assert_contains "S21b prints the re-sign hint" "重签提示：hello-blazorwasm-host-unsigned.hap 必须用你自己的证书/UDID 重签" "$LOGS/S21b.log"
+assert_contains "S21b prints the sanitized BLZ_ERROR line" "BLZ_ERROR [31mboom[0m" "$LOGS/S21b.log"
+assert_not_contains "S21b strips terminal escapes from the echoed line" "$(printf '\033')" "$LOGS/S21b.log"
 ARCHIVE_S21B="$(report_archive out-blazor-missing)"
 assert_file "S21b report archive produced" "$ARCHIVE_S21B"
 if prepare_report "$ARCHIVE_S21B" "$WORK/x-blazor-missing" out-blazor-missing; then

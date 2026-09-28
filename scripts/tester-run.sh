@@ -2160,7 +2160,12 @@ blazor_probe() {
         if grep -qF 'BLZ_ERROR' "$_bp_marks"; then
             warn "   BLZ_ERROR 行（宿主转发的 JS 错误，取前 3 条）："
             grep -F 'BLZ_ERROR' "$_bp_marks" | head -n3 > "$TMP/blz-errors.txt" 2>/dev/null || true
-            while IFS= read -r _be; do warn "     $_be"; done < "$TMP/blz-errors.txt"
+            while IFS= read -r _be; do
+                # 设备来源文本：去掉控制字符（ESC/CR 等）并限长，页面不能用日志在测试端
+                # 控制台注入终端转义序列。
+                _be_safe="$(printf '%s' "$_be" | tr -d '[:cntrl:]' | cut -c1-400)"
+                warn "     $_be_safe"
+            done < "$TMP/blz-errors.txt"
         else
             warn "     未见 BLZ_ERROR 行：优先看安装/启动是否成功与窗口是否太短；回传 blazor-hilog.txt 可定位"
         fi
