@@ -540,6 +540,13 @@ struct Index {
 
   @State inputText: string = '';
   @State webVisible: boolean = false;
+  // ArkWeb overlay frame (managed WebView PlatformArrange -> WebCommand "frame"): the overlay
+  // starts full-window; a positive width/height replaces the matching dimension and x/y position
+  // it in vp (MAUI DIP). A zero width/height keeps that dimension full-window.
+  @State webFrameX: number = 0;
+  @State webFrameY: number = 0;
+  @State webFrameW: number = 0;
+  @State webFrameH: number = 0;
   @State menuItems: HostMenuItem[] = [];
   // HybridWebView asset bridge state (registered by the managed handler; empty -> no
   // interception, so the regular WebView flows are never touched).
@@ -2559,6 +2566,44 @@ struct Index {
     }
   }
 
+  // WebView history: after every page end, back/forward/refresh the shell reports whether the
+  // ArkWeb can still navigate back/forward; the managed WebView mirrors it into
+  // IWebView.CanGoBack/CanGoForward ("history|<back>|<forward>" on the web event channel).
+  private reportWebHistory(): void {
+    let canBack: boolean = false;
+    let canForward: boolean = false;
+    try {
+      canBack = this.webController.accessBackward();
+      canForward = this.webController.accessForward();
+    } catch {
+      return;
+    }
+    this.hostCall('notifyWebEvent', typeof host !== 'undefined' && typeof host.notifyWebEvent === 'function', (): void => {
+      host.notifyWebEvent(`history|${canBack ? 1 : 0}|${canForward ? 1 : 0}`, '');
+    });
+  }
+
+  // WebView frame: the managed PlatformArrange sends "x\ny\nw\nh" in vp; a non-positive width
+  // or height keeps the matching dimension full-window (the overlay default).
+  private applyWebFrame(arg: string): void {
+    const parts: string[] = arg.split('\n');
+    if (parts.length !== 4) {
+      return;
+    }
+    const x: number = Number.parseFloat(parts[0]);
+    const y: number = Number.parseFloat(parts[1]);
+    const w: number = Number.parseFloat(parts[2]);
+    const h: number = Number.parseFloat(parts[3]);
+    if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(w) || !Number.isFinite(h)) {
+      return;
+    }
+    this.webFrameX = Math.max(0, x);
+    this.webFrameY = Math.max(0, y);
+    this.webFrameW = w > 0 ? w : 0;
+    this.webFrameH = h > 0 ? h : 0;
+    this.webVisible = true;
+  }
+
   // Registered proxies appear on the next page load, so the documented window.__ohosDotNet
   // alias and the window.external compatibility layer are (re)published after every load
   // (best effort; a page that cannot run the script still keeps the dotnetHost global
@@ -3236,6 +3281,51 @@ struct Index {
               if (this.webController.accessBackward()) {
                 this.webController.backward();
               }
+              this.reportWebHistory();
+            } else if (op === 'forward') {
+              if (this.webController.accessForward()) {
+                this.webController.forward();
+              }
+              this.reportWebHistory();
+            } else if (op === 'refresh') {
+              this.webController.refresh();
+              this.reportWebHistory();
+            } else if (op === 'frame') {
+              // WebView PlatformArrange: "x\ny\nw\nh" (vp); also shows the overlay.
+              this.applyWebFrame(arg);
+            } else if (op === 'cookie') {
+              // Minimal cookie surface: "<url>\n<Set-Cookie header>". Only absolute http(s)
+              // URLs are accepted; the managed side validates its half too.
+              const cookieSeparator: number = arg.indexOf('\n');
+              if (cookieSeparator > 0) {
+                const cookieUrl: string = arg.substring(0, cookieSeparator);
+                const cookieValue: string = arg.substring(cookieSeparator + 1);
+                if ((cookieUrl.startsWith('http://') || cookieUrl.startsWith('https://')) &&
+                    cookieValue.length > 0 && cookieValue.length <= 8192) {
+                  web_webview.WebCookieManager.configCookieSync(cookieUrl, cookieValue);
+                }
+              }
+            } else if (op === 'cookieGet') {
+              // Minimal cookie read: "<requestId>\n<url>"; the value travels back through the
+              // eval-result channel (host.notifyWebEvalResult) keyed by the request id.
+              const getSeparator: number = arg.indexOf('\n');
+              const requestId: number = getSeparator > 0 ? Number.parseInt(arg.substring(0, getSeparator), 10) : -1;
+              const cookieUrl: string = getSeparator > 0 ? arg.substring(getSeparator + 1) : '';
+              let cookieValue: string = '';
+              let cookieFailed: number = 0;
+              try {
+                if ((!cookieUrl.startsWith('http://') && !cookieUrl.startsWith('https://')) ||
+                    !Number.isFinite(requestId) || requestId < 0 || Math.floor(requestId) !== requestId) {
+                  cookieFailed = 1;
+                } else {
+                  cookieValue = web_webview.WebCookieManager.fetchCookieSync(cookieUrl);
+                }
+              } catch {
+                cookieFailed = 1;
+              }
+              this.hostCall('notifyWebEvalResult', typeof host !== 'undefined' && typeof host.notifyWebEvalResult === 'function', (): void => {
+                host.notifyWebEvalResult(requestId, cookieValue, cookieFailed);
+              });
             } else if (op === 'hybrid') {
               // HybridWebView asset root registration from the managed handler.
               this.registerHybridAssets(arg);
@@ -4898,9 +4988,15 @@ struct Index {
 
   build() {
     Stack() {
-      // ArkWeb: hidden until the managed WebView asks for it.
+      // ArkWeb: hidden until the managed WebView asks for it. The frame command moves/sizes it
+      // (a zero dimension stays full-window); DOM storage is on by default, matching the MAUI
+      // Android handler (DomStorageEnabled=true), so localStorage works in hybrid/Blazor pages.
       Web({ src: '', controller: this.webController })
+        .domStorageAccess(true)
         .visibility(this.webVisibility())
+        .width(this.webFrameW > 0 ? `${this.webFrameW}vp` : '100%')
+        .height(this.webFrameH > 0 ? `${this.webFrameH}vp` : '100%')
+        .position({ x: this.webFrameX, y: this.webFrameY })
         // The controller is attached here; registering the dotnetHost proxy any earlier fails
         // with BusinessError 17100001 (controller not associated with a Web component).
         .onControllerAttached(() => {
@@ -4975,6 +5071,25 @@ struct Index {
           });
           this.injectPageBridge(pageUrl);
           this.injectBlazorBootstrap(pageUrl);
+          // History availability changed with this document; the managed WebView mirrors it
+          // into IWebView.CanGoBack/CanGoForward.
+          this.reportWebHistory();
+        })
+        .onErrorReceive((event) => {
+          // A failed main-frame load: tell the managed side so it can raise Navigated(Failure)
+          // and clear the overlay (the managed surface shows through); subresource errors are
+          // not page failures and stay on the page.
+          try {
+            if (event && event.request && !event.request.isMainFrame()) {
+              return;
+            }
+            const errorUrl: string = event && event.request ? event.request.getRequestUrl() : '';
+            this.hostCall('notifyWebEvent', typeof host !== 'undefined' && typeof host.notifyWebEvent === 'function', (): void => {
+              host.notifyWebEvent('error', errorUrl);
+            });
+          } catch {
+            // An unexpected event shape must not take the page down.
+          }
         })
 
       // Text entry bridge: the managed Entry reads what is typed here. The input method's
