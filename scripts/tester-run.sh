@@ -2121,6 +2121,13 @@ a11y_selfcheck_probe() {
 # a `hilog -x` dump: `marker: BLZ_BOOT` (Web window load) and `marker: BLZ_RENDERED` (Blazor
 # first frame via .NET->JS interop). The full dump lands in blazor/blazor-hilog.txt, so a
 # failed round can be triaged (BLZ_ERROR lines carry forwarded JS errors).
+#
+# Marker authenticity (SEC-SCAN-3 S3-PRB2): markers are accepted only from the host process
+# (hilog stamps the writer pid; pidof gives the launched bundle pid) and in the host's exact
+# `BlazorWebHost: marker: BLZ_*` form. A host that also announces `session nonce: <token>` and
+# stamps its markers with `[blz:<token>]` must show the same token on both pass markers; a
+# historical host without a token is accepted with a recorded degraded binding. Extra lines
+# from other processes are dumped to blazor/blazor-host-markers.txt when the dump is triaged.
 blazor_probe() {
     _bp_hap="$1"
     log "   -- Blazor 宿主: $_bp_hap（bundle $BLAZOR_BUNDLE）"
@@ -2146,8 +2153,41 @@ blazor_probe() {
     grep -E 'BlazorWebHost|BLZ_' "$_bp_dump" > "$_bp_marks" 2>/dev/null || true
     BLAZOR_HILOG_LINES="$(line_count "$_bp_dump")"
     BLAZOR_MARKER_LINES="$(line_count "$_bp_marks")"
-    if grep -qF 'BLZ_BOOT' "$_bp_marks"; then BLAZOR_BOOT="yes"; else BLAZOR_BOOT="no"; fi
-    if grep -qF 'BLZ_RENDERED' "$_bp_marks"; then BLAZOR_RENDERED="yes"; else BLAZOR_RENDERED="no"; fi
+
+    # Anti-forgery (SEC-SCAN-3 S3-PRB2): a pass marker only counts as the host's own line.
+    # hilog stamps the writer pid, so another process can echo BLZ_BOOT into the log but never
+    # under the host pid: markers must come from a pid pidof reports for the launched bundle,
+    # in the host's `BlazorWebHost: marker: BLZ_*` form. When the host announced a per-launch
+    # session nonce (SEC-SCAN-3 marker hardening), the marker must also carry the same token;
+    # a historical host without one keeps working (degraded and recorded).
+    require_safe_bundle_name "$BLAZOR_BUNDLE"
+    _bp_pids="$(hdc_cmd shell pidof "$BLAZOR_BUNDLE" 2>/dev/null | tr -d '\r' | tr '\n' ' ' | tr -s ' ' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
+    if [ -n "$(printf '%s' "$_bp_pids" | tr -d '0-9 ')" ]; then
+        _bp_pids=""   # unexpected pidof output: fall back to the format filter
+    fi
+    _bp_src="$_bp_marks"
+    if [ -n "$_bp_pids" ]; then
+        awk -v pids="$_bp_pids" '
+            BEGIN { n = split(pids, a, " "); for (i = 1; i <= n; i++) if (a[i] != "") want[a[i]] = 1 }
+            $3 in want { print }
+        ' "$_bp_marks" > "$OUT/blazor/blazor-host-markers.txt" 2>/dev/null || true
+        _bp_src="$OUT/blazor/blazor-host-markers.txt"
+        record "blazor_marker_pid=$(printf '%s' "$_bp_pids" | tr ' ' ',')"
+    else
+        record "blazor_marker_pid=unknown"
+        warn "   Blazor 探针：pidof 未返回 $BLAZOR_BUNDLE 的 pid；标记仅按宿主格式过滤（弱绑定）"
+    fi
+    _bp_nonce="$(grep -oE 'session nonce: [0-9A-Za-z-]+' "$_bp_src" 2>/dev/null | tail -n1 | awk '{print $3}')"
+    if [ -n "$_bp_nonce" ]; then
+        record "blazor_session_nonce=present"
+        if grep -qE "BlazorWebHost: marker: BLZ_BOOT \[blz:$_bp_nonce\]" "$_bp_src"; then BLAZOR_BOOT="yes"; else BLAZOR_BOOT="no"; fi
+        if grep -qE "BlazorWebHost: marker: BLZ_RENDERED \[blz:$_bp_nonce\]" "$_bp_src"; then BLAZOR_RENDERED="yes"; else BLAZOR_RENDERED="no"; fi
+    else
+        record "blazor_session_nonce=absent"
+        warn "   Blazor 探针：dump 无 session nonce（旧宿主构建）；标记按 pid+格式过滤（建议下一 kit 升级宿主）"
+        if grep -qE 'BlazorWebHost: marker: BLZ_BOOT' "$_bp_src"; then BLAZOR_BOOT="yes"; else BLAZOR_BOOT="no"; fi
+        if grep -qE 'BlazorWebHost: marker: BLZ_RENDERED' "$_bp_src"; then BLAZOR_RENDERED="yes"; else BLAZOR_RENDERED="no"; fi
+    fi
     record "blazor_boot=$BLAZOR_BOOT"
     record "blazor_rendered=$BLAZOR_RENDERED"
     record "blazor_hilog_lines=$BLAZOR_HILOG_LINES"

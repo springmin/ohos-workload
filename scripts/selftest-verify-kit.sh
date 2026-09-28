@@ -7,6 +7,8 @@
 # codes plus the exact graded lines. Scenarios:
 #   S0 policy     the HOST_DEPS_DEFAULT copy embedded in verify-kit.sh carries exactly the
 #                 [needed]/[undefined] entries of src/OpenHarmonyHost/host-deps.conf
+#   S0b blazorperms the embedded BLAZOR_SOURCE_PERMS (the 2c source-side permission
+#                 expectation) matches test/hello-blazorwasm/arkts-host module.json5
 #   S1 good       a kit that satisfies the current contract -> exit 0, KIT OK, every 2b
 #                 assertion passes (index 1588 B, abc 281052 B / PANDA 13.0.1.0, 14 .so,
 #                 payload-in-libs marker (assembly + 19 entries + zip sha), DT_NEEDED=5,
@@ -31,7 +33,9 @@
 #   S15 blazor    the optional Blazor WASM component: the good kit asserts it (S1), mutants
 #                 (missing index.html / no .wasm / no boot script / .br/.gz/.map leftovers /
 #                 icudt*.dat leftover / wrong bundle / bad abc version / hap removed) all
-#                 behave as documented, and a kit without the hap logs one line and stays OK
+#                 behave as documented, a kit without the hap logs one line and stays OK, and
+#                 a pre-removal INTERNET permission set is recorded + WARNed (never fatal;
+#                 --blazor-perms ohos.permission.INTERNET makes the same kit WARN-free)
 #
 # The kit fixture mirrors the real one: five haps (module.json / ets/modules.abc /
 # resources.index / resources/rawfile/dotnet.zip / libs/arm64-v8a/*.so + the payload-in-libs
@@ -47,7 +51,7 @@
 # Exit: 0 = all checks passed; 1 = at least one check failed (work dir kept for triage).
 set -u
 
-SELFTEST_VERSION="2 (2026-09-28)"
+SELFTEST_VERSION="3 (2026-09-28)"
 
 log()     { printf '[%s] %s\n' "$(date '+%H:%M:%S')" "$*"; }
 section() { printf '\n=== %s ===\n' "$*"; }
@@ -392,6 +396,15 @@ def patch(kit, op, arg=None):
             data = dict(items)
             data["ets/modules.abc"] = good_abc(BLAZOR_ABC_SIZE, (12, 9, 9, 9))
             items = [(n, data[n]) for n, _ in items]
+        elif op == "blazor-perms":
+            # Kit #31 shape: the hap predates the source-side removal of INTERNET (ohos-workload
+            # 2dcd846) and still declares it. The 2c permission comparison must record it and
+            # WARN, not FAIL.
+            data = dict(items)
+            module = json.loads(data["module.json"])
+            module["module"]["requestPermissions"] = [{"name": "ohos.permission.INTERNET"}]
+            data["module.json"] = json.dumps(module).encode()
+            items = [(n, data[n]) for n, _ in items]
         else:
             raise SystemExit("unknown patch op: %s" % op)
         write_hap(bpath, items)
@@ -506,6 +519,42 @@ if cmp -s "$WORK/embedded.entries" "$WORK/canonical.entries"; then
 else
     fail_ "S0 the embedded policy drifted from $CANONICAL_POLICY"
     diff -u "$WORK/canonical.entries" "$WORK/embedded.entries" | sed 's/^/       /' >&2
+fi
+
+# ---- S0b: the embedded Blazor permission expectation must match the source module.json5 -----
+# BLAZOR_SOURCE_PERMS is the source-side requestPermissions expectation the 2c comparison uses.
+# It must stay in sync with the canonical module.json5 (2dcd846 removed INTERNET), or a later
+# permission edit would be compared against a stale expectation.
+section "S0b embedded Blazor permission expectation equals the source module.json5"
+SRC_MODULE5="$ROOT_DIR/test/hello-blazorwasm/arkts-host/project/entry/src/main/module.json5"
+if grep -q '^BLAZOR_SOURCE_PERMS=' "$VERIFY_SCRIPT" && [ -f "$SRC_MODULE5" ]; then
+    EMBEDDED_PERMS="$(python3 - "$VERIFY_SCRIPT" <<'PY'
+import re, sys
+text = open(sys.argv[1], encoding="utf-8").read()
+m = re.search(r'^BLAZOR_SOURCE_PERMS="\$\{KIT_BLAZOR_PERMS:-(.*)\}"[ \t]*$', text, re.M)
+print(m.group(1) if m else "__NO_MATCH__")
+PY
+)"
+    if [ "$EMBEDDED_PERMS" = "__NO_MATCH__" ]; then
+        fail_ "S0b the BLAZOR_SOURCE_PERMS assignment shape changed; update this pin"
+    else
+        SOURCE_PERMS="$(python3 - "$SRC_MODULE5" <<'PY'
+import re, sys
+text = open(sys.argv[1], encoding="utf-8").read()
+block = re.search(r"requestPermissions\s*:\s*\[(.*?)\]", text, re.S)
+names = sorted(set(re.findall(r"name\s*:\s*['\"]([^'\"]+)['\"]", block.group(1)))) if block else []
+print(",".join(names))
+PY
+)"
+        norm_perms() { printf '%s' "$1" | tr ',' ' ' | tr -s ' ' '\n' | sed '/^$/d' | LC_ALL=C sort | tr '\n' ' '; }
+        if [ "$(norm_perms "$EMBEDDED_PERMS")" = "$(norm_perms "$SOURCE_PERMS")" ]; then
+            pass_ "S0b BLAZOR_SOURCE_PERMS matches the source module.json5 ([$SOURCE_PERMS])"
+        else
+            fail_ "S0b BLAZOR_SOURCE_PERMS [$EMBEDDED_PERMS] drifted from $SRC_MODULE5 [$SOURCE_PERMS]"
+        fi
+    fi
+else
+    fail_ "S0b could not read BLAZOR_SOURCE_PERMS (verify-kit.sh) or $SRC_MODULE5"
 fi
 
 # ---- S1: the good kit passes every 2b assertion --------------------------------------
@@ -756,6 +805,23 @@ run_verify "$K"
 assert_rc 0 "$RC" "S15 a kit without the Blazor hap stays KIT OK"
 assert_contains "S15 logs the absent component" "2c/4 Blazor WASM 组件：本包未包含" "$LOG_FILE"
 assert_not_contains "S15 does not run the Blazor assertions without the hap" "2c/4 Blazor WASM 组件断言" "$LOG_FILE"
+
+# Kit #31 delta: the packed hap still declares INTERNET (source-side removal 2dcd846), which
+# the 2c comparison records and WARNs about; --blazor-perms makes the same kit green with no
+# warning once the caller states the expectation.
+K="$(new_kit kit-blazor-perms)"
+python3 "$WORK/fixture.py" patch "$K" blazor-perms
+run_verify "$K"
+assert_rc 0 "$RC" "S15 pre-removal INTERNET permission is not fatal"
+assert_contains "S15 records the packed permission set" "权限   requestPermissions=1 [INTERNET]" "$LOG_FILE"
+assert_contains "S15 warns about the source-side mismatch" "Blazor hap 权限集 [ohos.permission.INTERNET] 与源侧期望 [0] 不一致（记录实际值，不阻断）" "$LOG_FILE"
+assert_contains "S15 keeps the component assertions green" "Blazor 组件断言通过" "$LOG_FILE"
+assert_contains "S15 KIT OK carries the WARN count" "KIT OK（1 条 WARN" "$LOG_FILE"
+run_verify "$K" --blazor-perms ohos.permission.INTERNET
+assert_rc 0 "$RC" "S15 --blazor-perms accepts the packed set"
+assert_contains "S15 still records the packed permission set" "权限   requestPermissions=1 [INTERNET]" "$LOG_FILE"
+assert_not_contains "S15 override clears the mismatch WARN" "与源侧期望" "$LOG_FILE"
+assert_contains "S15 override run is WARN-free" "KIT OK —" "$LOG_FILE"
 
 # ---- summary -------------------------------------------------------------------------
 section "summary"

@@ -63,11 +63,16 @@
 #                  failed(layout dump), failures=0 and the archive is still produced
 #   S21 blazor ok  --blazor-probe auto-detects a re-signed Blazor host hap in the kit, installs
 #                  it, launches bundle com.example.opendotnet and asserts the BLZ_BOOT /
-#                  BLZ_RENDERED hilog markers; summary blazor_* keys, blazor/blazor-hilog.txt
-#                  and blazor-markers.txt land in the archive, failures=0
-#   S21b blazor miss FAKE_HDC_BLAZOR_MISSING=1: the hilog dump carries no markers -> exit 1,
+#                  BLZ_RENDERED hilog markers, bound to the host pid (pidof 4242) and the
+#                  session nonce the host announced; summary blazor_* keys (incl.
+#                  blazor_marker_pid / blazor_session_nonce), blazor/blazor-hilog.txt and
+#                  blazor-markers.txt land in the archive, failures=0
+#   S21b blazor forgery FAKE_HDC_BLAZOR_MISSING=1: the dump carries only lookalike markers
+#                  (right token from a foreign pid, right pid with a wrong token) -> exit 1,
 #                  blazor_boot/rendered=no, failures counted, the dump is archived and the
 #                  re-sign hint is printed
+#   S21c blazor no pid FAKE_HDC_PIDOF_ALIVE_CALLS=0: no pid to bind, the markers still pass on
+#                  the host format + announced nonce; blazor_marker_pid=unknown is recorded
 # Stub hdc surface (every subcommand tester-run.sh invokes): list targets | install -r <hap> |
 #   uninstall <bundle> | shell aa start -a EntryAbility -b <b> | shell aa force-stop <b> |
 #   shell pidof <b> | shell ps -ef
@@ -95,8 +100,10 @@
 #   source=manifest); FAKE_HDC_NO_AOT_LINE=1 drops the aot=0|1 line (the manifest aot fallback);
 #   FAKE_HDC_NO_UITEST=1 makes `uitest` and the
 #   a11y `file recv` fail so the probe's missing-tool tolerance is asserted;
-#   FAKE_HDC_BLAZOR_MISSING=1 makes the `hilog -x` dump carry no BlazorWebHost/BLZ_ markers,
-#   so the --blazor-probe failure path (archive + re-sign hint) is asserted. A stub
+#   FAKE_HDC_BLAZOR_MISSING=1 makes the `hilog -x` dump carry only forged BlazorWebHost/BLZ_
+#   lookalikes (foreign pid with the right nonce, host pid with a wrong nonce), so the
+#   --blazor-probe pid+nonce binding and the failure path (archive + re-sign hint) are
+#   asserted. A stub
 #   `binary-sign-tool` in $WORK/bin
 #   (prepended to PATH) answers `display-sign` with `code signature is not found`.
 # Kit under test: SELFTEST_KIT_DIR if set; else the local approved device-test-kit dir when it
@@ -621,18 +628,25 @@ KMSG_EOF
                 ;;
             "hilog -x")
                 # --blazor-probe reads the dump with `hilog -x` (print and exit). The default
-                # stream carries the two host boot markers; FAKE_HDC_BLAZOR_MISSING=1 drops
-                # them so the failure path (archive + re-sign hint) is asserted.
+                # stream is the hardened host's output: pid 4242 (what pidof answers), the
+                # session-nonce announcement and the two boot markers stamped with that nonce.
+                # FAKE_HDC_BLAZOR_MISSING=1 replaces the pass markers with forged lookalikes
+                # (right token from a foreign pid, right pid with a wrong token), so the
+                # pid+nonce binding and the failure path are asserted.
                 if [ "${FAKE_HDC_BLAZOR_MISSING:-0}" = 1 ]; then
                     printf '%s\n' '09-22 10:00:05.000 12345 12345 I A00000/unrelated: no Blazor markers in this window'
+                    printf '%s\n' '09-22 10:00:05.050 4242 4242 I A00012/BlazorWebHost: session nonce: 00000000-1111-2222-3333-444444444444'
+                    printf '%s\n' '09-22 10:00:05.100 9999 9999 I A00012/BlazorWebHost: marker: BLZ_BOOT [blz:00000000-1111-2222-3333-444444444444]'
+                    printf '%s\n' '09-22 10:00:05.150 4242 4242 I A00012/BlazorWebHost: marker: BLZ_RENDERED [blz:forged-token]'
                     # A hostile page can smuggle control characters through BLZ_ERROR; the probe
                     # must strip them before echoing the line to the tester's terminal.
-                    printf '09-22 10:00:05.100 12345 12345 I A00000/BlazorWebHost: BLZ_ERROR \033[31mboom\033[0m\n'
+                    printf '09-22 10:00:05.200 12345 12345 I A00000/BlazorWebHost: BLZ_ERROR \033[31mboom\033[0m\n'
                     exit 0
                 fi
                 cat <<'BLAZOR_EOF'
-09-22 10:00:04.000 12345 12345 I A00000/BlazorWebHost: [host] window load marker: BLZ_BOOT
-09-22 10:00:04.300 12345 12345 I A00000/BlazorWebHost: [host] blazor first frame marker: BLZ_RENDERED
+09-22 10:00:03.900 4242 4242 I A00012/BlazorWebHost: session nonce: 00000000-1111-2222-3333-444444444444
+09-22 10:00:04.000 4242 4242 I A00012/BlazorWebHost: marker: BLZ_BOOT [blz:00000000-1111-2222-3333-444444444444]
+09-22 10:00:04.300 4242 4242 I A00012/BlazorWebHost: marker: BLZ_RENDERED [blz:00000000-1111-2222-3333-444444444444]
 09-22 10:00:04.100 12345 12345 I A00000/dotnet: unrelated line
 BLAZOR_EOF
                 exit 0
@@ -2003,6 +2017,8 @@ if prepare_report "$ARCHIVE_S21" "$WORK/x-blazor" out-blazor; then
     assert_eq "S21 summary blazor_boot=yes" "yes" "$(sum_val "$S" blazor_boot)"
     assert_eq "S21 summary blazor_rendered=yes" "yes" "$(sum_val "$S" blazor_rendered)"
     assert_eq "S21 summary blazor_bundle" "com.example.opendotnet" "$(sum_val "$S" blazor_bundle)"
+    assert_eq "S21 summary blazor_marker_pid=4242" "4242" "$(sum_val "$S" blazor_marker_pid)"
+    assert_eq "S21 summary blazor_session_nonce=present" "present" "$(sum_val "$S" blazor_session_nonce)"
     assert_eq "S21 no main capture requested" "skipped(dry-run)" "$(sum_val "$S" capture_result)"
     assert_eq "S21 summary failures=0" "0" "$(sum_val "$S" failures)"
     assert_file "S21 hilog dump archived" "$REPORT/blazor/blazor-hilog.txt"
@@ -2017,7 +2033,7 @@ assert_contains "S21 stub saw the blazor launch" "shell aa start -a EntryAbility
 assert_contains "S21 stub saw the hilog dump" "shell hilog -x" "$STATE_DIR/S21/calls.log"
 assert_scenario_sandbox "S21"
 
-section "S21b --blazor-probe without markers: exit 1 + archive + re-sign hint"
+section "S21b --blazor-probe with only forged markers: exit 1 + archive + re-sign hint"
 run_tester S21b "FAKE_HDC_PIDOF_ALIVE_CALLS=99 FAKE_HDC_BLAZOR_MISSING=1" \
     --kit-dir "$BLAZOR_KIT" --blazor-probe --out "$WORK/out-blazor-missing"
 assert_eq "S21b exit code 1 (log: $LOGS/S21b.log)" "1" "$RC"
@@ -2029,14 +2045,34 @@ ARCHIVE_S21B="$(report_archive out-blazor-missing)"
 assert_file "S21b report archive produced" "$ARCHIVE_S21B"
 if prepare_report "$ARCHIVE_S21B" "$WORK/x-blazor-missing" out-blazor-missing; then
     S="$REPORT/summary.txt"
-    assert_eq "S21b summary blazor_boot=no" "no" "$(sum_val "$S" blazor_boot)"
+    assert_eq "S21b summary blazor_boot=no (foreign pid / wrong token rejected)" "no" "$(sum_val "$S" blazor_boot)"
     assert_eq "S21b summary blazor_rendered=no" "no" "$(sum_val "$S" blazor_rendered)"
+    assert_eq "S21b summary blazor_marker_pid=4242" "4242" "$(sum_val "$S" blazor_marker_pid)"
+    assert_eq "S21b summary blazor_session_nonce=present" "present" "$(sum_val "$S" blazor_session_nonce)"
     assert_gt "S21b failures counted" 0 "$(sum_val "$S" failures)"
     assert_file "S21b failure dump archived" "$REPORT/blazor/blazor-hilog.txt"
 else
     bad "S21b report archive could not be extracted ($ARCHIVE_S21B)"
 fi
 assert_scenario_sandbox "S21b"
+
+section "S21c --blazor-probe without a pid: format+nonce bound markers still pass (degraded)"
+run_tester S21c "FAKE_HDC_PIDOF_ALIVE_CALLS=0" --kit-dir "$BLAZOR_KIT" --blazor-probe --out "$WORK/out-blazor-nopid"
+assert_eq "S21c exit code 0 (log: $LOGS/S21c.log)" "0" "$RC"
+assert_contains "S21c records the degraded binding" "pidof 未返回 com.example.opendotnet 的 pid" "$LOGS/S21c.log"
+ARCHIVE_S21C="$(report_archive out-blazor-nopid)"
+assert_file "S21c report archive produced" "$ARCHIVE_S21C"
+if prepare_report "$ARCHIVE_S21C" "$WORK/x-blazor-nopid" out-blazor-nopid; then
+    S="$REPORT/summary.txt"
+    assert_eq "S21c summary blazor_boot=yes" "yes" "$(sum_val "$S" blazor_boot)"
+    assert_eq "S21c summary blazor_rendered=yes" "yes" "$(sum_val "$S" blazor_rendered)"
+    assert_eq "S21c summary blazor_marker_pid=unknown" "unknown" "$(sum_val "$S" blazor_marker_pid)"
+    assert_eq "S21c summary blazor_session_nonce=present" "present" "$(sum_val "$S" blazor_session_nonce)"
+    assert_eq "S21c summary failures=0" "0" "$(sum_val "$S" failures)"
+else
+    bad "S21c report archive could not be extracted ($ARCHIVE_S21C)"
+fi
+assert_scenario_sandbox "S21c"
 
 # right here so the fast subset exits cleanly inside a 900 s budget.
 if [ "${SELFTEST_SKIP_A11Y:-0}" = 1 ]; then

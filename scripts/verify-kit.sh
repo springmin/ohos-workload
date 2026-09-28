@@ -9,7 +9,9 @@
 # the payload facts that failed on a real device before (each one per hap, see below); (2c) when
 # the optional Blazor WASM component hap is present (hello-blazorwasm-host-unsigned.hap, built
 # with --with-blazor), assert its embedded ArkWeb site (index.html, _framework wasm + boot
-# script, PANDA abc, bundle name, no site-level .br/.gz/.map or icudt*.dat); (3) warn
+# script, PANDA abc, bundle name, no site-level .br/.gz/.map or icudt*.dat) and record its
+# requestPermissions set (a set that disagrees with the source-side expectation is a WARN, not
+# a FAIL: kit #31 predates the source-side INTERNET removal); (3) warn
 # (one line) that the four default haps are self-signed and rejected by a real device
 # (9568257/9568344 -> re-sign hello-maui-app-unsigned.hap or use a pre-signed kit), plus the
 # install options and the self-sign pointer; (4) list the log lines to send back.
@@ -62,8 +64,12 @@
 # The 2c Blazor assertions only run when the optional hello-blazorwasm-host-unsigned.hap is in
 # the kit root (a kit without it logs one line and moves on). Every 2c deviation is FAIL: the
 # component is self-contained, so a missing site file/abc/bundle or a slim leftover means the
-# hap cannot serve the verified Blazor site. Override the name/bundle with KIT_BLAZOR_HAP /
-# KIT_BLAZOR_BUNDLE for a kit packed with a different name/bundle.
+# hap cannot serve the verified Blazor site. The one exception is the requestPermissions set:
+# it is printed and compared with the source-side expectation (BLAZOR_SOURCE_PERMS, default
+# empty because ohos-workload 2dcd846 removed INTERNET from the host's module.json5), and a
+# disagreement is a WARN so a historical kit (#31 carries the pre-removal hap) keeps its real
+# verdict. Override the name/bundle/permissions with KIT_BLAZOR_HAP /
+# KIT_BLAZOR_BUNDLE / KIT_BLAZOR_PERMS (or --blazor-perms) for a kit packed differently.
 # SHA256SUMS lives inside the archive it covers, so it proves internal consistency only:
 #   1. check the transfer checksum of the .tar.gz: `sha256sum -c <kit>.tar.gz.sha256`, or let
 #      this script check the tarball (--anchor / --anchor-file / KIT_ANCHOR);
@@ -277,13 +283,20 @@ Without an argument the current directory is used (it must contain SHA256SUMS).
                         embedded copy (use the repository's
                         src/OpenHarmonyHost/host-deps.conf); fail closed when it cannot be
                         read or has no [needed]/[undefined] entries
+  --blazor-perms <name[,name]>
+                        expected requestPermissions of the Blazor component hap (default:
+                        empty = the source module.json5 declares none after ohos-workload
+                        2dcd846). The packed set is recorded and a disagreement is a WARN,
+                        never a FAIL, so a pre-removal kit (#31) stays verifiable
   env: KIT_ANCHOR, KIT_ANCHOR_FILE, KIT_TREE_DIGEST, KIT_BUNDLE_NAME,
-       KIT_EXPECTED_ABC, KIT_HOST_DEPS, KIT_BLAZOR_HAP, KIT_BLAZOR_BUNDLE
+       KIT_EXPECTED_ABC, KIT_HOST_DEPS, KIT_BLAZOR_HAP, KIT_BLAZOR_BUNDLE,
+       KIT_BLAZOR_PERMS
 
 The optional Blazor WASM component hap (hello-blazorwasm-host-unsigned.hap, built with
 make-device-test-kit.sh --with-blazor) is asserted when present: embedded site index.html,
 _framework *.wasm + blazor.webassembly*.js, PANDA 13.0.1.0 abc, bundle com.example.opendotnet,
-and no .br/.gz/.map or icudt*.dat leftovers; a kit without the hap only logs that fact.
+no .br/.gz/.map or icudt*.dat leftovers, and a recorded requestPermissions set (mismatch vs
+the source-side expectation = WARN); a kit without the hap only logs that fact.
 EOF
 }
 
@@ -302,6 +315,13 @@ BUNDLE_EXPECT="${KIT_BUNDLE_NAME:-com.example.hellomauiapp}"
 BLAZOR_HAP_NAME="${KIT_BLAZOR_HAP:-hello-blazorwasm-host-unsigned.hap}"
 BLAZOR_BUNDLE_EXPECT="${KIT_BLAZOR_BUNDLE:-com.example.opendotnet}"
 BLAZOR_ABC_VERSION="13.0.1.0"
+# Source-side requestPermissions expectation of the Blazor component: the host module.json5 in
+# test/hello-blazorwasm/arkts-host/project/entry declares none after ohos-workload 2dcd846, so
+# the default is empty. A kit packed before that commit (e.g. #31) still carries
+# ohos.permission.INTERNET; the 2c comparison records the packed set and WARNs on a
+# disagreement instead of failing, so a historical kit stays verifiable. The selftest pins this
+# embedded value against the source module.json5 (S0b).
+BLAZOR_SOURCE_PERMS="${KIT_BLAZOR_PERMS:-}"
 while [ $# -gt 0 ]; do
     case "$1" in
         -h|--help) usage; exit 0 ;;
@@ -331,6 +351,11 @@ while [ $# -gt 0 ]; do
             shift
             [ $# -gt 0 ] || { warn "--host-deps 需要一个策略文件路径"; usage >&2; exit 2; }
             HOST_DEPS_FILE="$1"
+            ;;
+        --blazor-perms)
+            shift
+            [ $# -gt 0 ] || { warn "--blazor-perms 需要逗号分隔的权限名（默认空 = 源侧未声明）"; usage >&2; exit 2; }
+            BLAZOR_SOURCE_PERMS="$1"
             ;;
         -*) warn "unknown argument: $1"; usage >&2; exit 2 ;;
         *)
@@ -988,7 +1013,7 @@ else
     if command -v python3 >/dev/null 2>&1; then
         BLAZOR_DEEP_FAILS=0
         python3 - "$KIT" "$BLAZOR_HAP_NAME" "$BLAZOR_BUNDLE_EXPECT" "$TMP/blazor-status" \
-            "$BLAZOR_ABC_VERSION" <<'PY' || FAIL=1
+            "$BLAZOR_ABC_VERSION" "$BLAZOR_SOURCE_PERMS" <<'PY' || FAIL=1
 import json, os, sys, zipfile
 
 kit = sys.argv[1]
@@ -996,6 +1021,7 @@ hap_name = sys.argv[2]
 expected_bundle = sys.argv[3]
 status_file = sys.argv[4]
 abc_version = sys.argv[5]
+expected_perms = [p for p in sys.argv[6].replace(",", " ").split() if p]
 
 graded = []
 
@@ -1019,9 +1045,12 @@ if z is not None:
     with z:
         names = z.namelist()
         bundle = "?"
+        perms = None
         try:
             data = json.loads(z.read("module.json"))
             bundle = (data.get("app") or {}).get("bundleName", "?")
+            module = data.get("module") or {}
+            perms = [p.get("name", "?") for p in (module.get("requestPermissions") or [])]
         except Exception as exc:
             grade("FAIL", "%s: 无法读取 module.json (%s)" % (hap_name, exc))
             fail = 1
@@ -1030,6 +1059,24 @@ if z is not None:
             grade("FAIL", "%s: bundleName 期望 %s，实际 %s — Blazor 宿主必须按期望 bundle 打包"
                          "（pack-host.sh 默认值；重签不改变 bundle）" % (hap_name, expected_bundle, bundle))
             fail = 1
+
+        # requestPermissions: recorded on every run and compared with the source-side
+        # expectation. A disagreement is a WARN (never a FAIL): the kit shipped today may
+        # predate the source-side removal (ohos-workload 2dcd846 removed INTERNET from the
+        # host's module.json5), and a historical kit must keep its real verdict.
+        if perms is not None:
+            if perms:
+                short = ", ".join(p.rsplit(".", 1)[-1] for p in perms)
+                print("      权限   requestPermissions=%d [%s]" % (len(perms), short))
+            else:
+                print("      权限   requestPermissions=0")
+            if sorted(perms) != sorted(expected_perms):
+                exp = ", ".join(sorted(expected_perms)) if expected_perms else "0"
+                act = ", ".join(sorted(perms)) if perms else "0"
+                grade("WARN", "%s: Blazor hap 权限集 [%s] 与源侧期望 [%s] 不一致（记录实际值，不阻断）—"
+                              " ohos-workload 2dcd846 已从源 module.json5 移除 INTERNET；本 hap 若是移除前的"
+                              "构建属已知包内 delta，下一 kit 用 make-device-test-kit.sh --with-blazor"
+                              " 重建后即一致" % (hap_name, act, exp))
 
         # Embedded ArkWeb site: the host serves resources/rawfile/blazor through
         # onInterceptRequest, so index.html, at least one _framework *.wasm and the

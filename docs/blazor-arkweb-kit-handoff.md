@@ -11,7 +11,15 @@
 | `run-smoke.sh [--slim]` | 发布最小 Blazor WASM 站点；`--slim` = `-p:InvariantGlobalization=true`（去掉 ICU 数据），`--require` 供 CI 用 |
 | `arkts-host/pack-host.sh <site> --slim --unsigned-only [--out <hap>]` | 把站点内嵌进 ArkTS 宿主（`resources/rawfile/blazor`），`--slim` 再剔除 `.br/.gz/.map`，`--unsigned-only` 只打包不签名 |
 | `arkts-host/project/.../Index.ets` | 宿主页：`onInterceptRequest` 直供 rawfile + `br/gzip` 协商 + console 标记转发 hilog |
-| 判读标记 | `BLZ_BOOT`（window load）、`BLZ_RENDERED`（Blazor 首帧，.NET→JS interop）、`BLZ_ERROR <msg>`；宿主输出为 `hilog` 的 `BlazorWebHost ... marker: BLZ_*` |
+| 判读标记 | `BLZ_BOOT`（window load）、`BLZ_RENDERED`（Blazor 首帧，.NET→JS interop）、`BLZ_ERROR <msg>`；宿主输出为 `hilog` 的 `BlazorWebHost ... marker: BLZ_* [blz:<nonce>]` |
+
+> **SEC-FIX 增量（2026-09-28 晚，kit #31 之后）：** 宿主页新增请求路径校验（`..`/反斜杠/NUL/
+> 绝对路径/编码变体 → 裸 404）与响应安全头（`nosniff`、`Vary`、HTML 最小 CSP），并给每条转发
+> 标记盖章按启动随机 nonce（页面 URL 携带、hilog 先公告 `session nonce:`）。`tester-run.sh
+> --blazor-probe` 只接受「宿主进程 pid（`pidof <bundle>`）+ 该 nonce」的
+> `BlazorWebHost: marker: BLZ_*` 行：另一个进程往 hilog 写 `BLZ_BOOT` 不再能伪造探针通过；
+> 旧宿主（无 nonce）降级为 pid+格式过滤并记录 WARN。**当前 kit #31 包内的 hap 仍是修复前的
+> 构建**（判读命令 `hilog -x | grep BlazorWebHost` 不变），下一轮 `--with-blazor` 重建后生效。
 
 自签注意：bundle 名是 **`com.example.opendotnet`**（`pack-host.sh --bundle` 可改）。tester 侧任何
 auto-sign 工程需把 `AppScope/app.json5` 的 bundleName 设为同名，流程与 `自签说明.md` 中
