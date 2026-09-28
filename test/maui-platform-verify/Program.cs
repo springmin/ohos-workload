@@ -12,7 +12,7 @@ using Microsoft.Maui.Platform;
 // after the fuzz tail) instead of letting every caller repeat its own threshold constant.
 VerifyLineCountingWriter verifyStdout = new(Console.Out);
 Console.SetOut(verifyStdout);
-const int verifyCheckTotal = 416;                     // documented full [verify] line count (+4 MS-MODE runtime mode switch, +10 P2c-DEEPLINK, +4 P2b-IMG, +16 P1b-LIST, +10 P1a-ANIM, +2 SEC3 storage/deep-link pins, +5 W-series WebView wiring, +3 T1 InputView mapping, +4 T2 WebView gaps, +4 T3 GraphicsView interaction, +7 T10 modal accessibility)
+const int verifyCheckTotal = 420;                     // documented full [verify] line count (+4 MS-MODE runtime mode switch, +10 P2c-DEEPLINK, +4 P2b-IMG, +16 P1b-LIST, +10 P1a-ANIM, +2 SEC3 storage/deep-link pins, +5 W-series WebView wiring, +3 T1 InputView mapping, +4 T2 WebView gaps, +4 T3 GraphicsView interaction, +7 T10 modal accessibility, +4 T4 Label formatted text)
 const int verifyCheckFloor = verifyCheckTotal - 20;   // documented floor convention (total - 20)
 
 // A small image file for the Image handler.
@@ -1962,6 +1962,123 @@ Console.WriteLine($"[verify] i3 input clear/alignment hit={i3ClearHit} cleared={
 if (!i3Ok)
 {
     throw new InvalidOperationException("the InputView clear button or the alignment-aware caret metrics are missing/drifted");
+}
+
+// ---- T4: Label FormattedText/Spans -------------------------------------------------------------
+// The mapper turns a FormattedString into platform runs: span values override the label-level
+// style, font attributes combine with the label's, the text transform inherits (span first), and
+// the view lays the runs out with the same wrapping/max-lines contract as plain text. The run set
+// is rebuilt when a span or the label style changes; setting Text returns the plain path.
+
+string? l1LabelPath = FindHostSource("OpenHarmonyLabelHandler.cs");
+string l1LabelSource = l1LabelPath is null ? string.Empty : File.ReadAllText(l1LabelPath);
+string? l1RunsPath = FindHostSource("OpenHarmonyFormattedText.cs");
+string l1RunsSource = l1RunsPath is null ? string.Empty : File.ReadAllText(l1RunsPath);
+string? l1StyledPath = FindHostSource("OpenHarmonyStyledViews.cs");
+string l1StyledSource = l1StyledPath is null ? string.Empty : File.ReadAllText(l1StyledPath);
+bool l1MapperPin = l1LabelSource.Contains("[nameof(Microsoft.Maui.Controls.Label.FormattedText)] = MapFormattedText,") &&
+    l1LabelSource.Contains("OpenHarmonyFormattedText.Create(label, label as Microsoft.Maui.Controls.Label)") &&
+    l1LabelSource.Contains("if (handler.PlatformView.HasFormattedRuns)");
+bool l1RunsPin = l1RunsSource.Contains("internal sealed class OpenHarmonyTextRun") &&
+    l1RunsSource.Contains("internal sealed class OpenHarmonyFormattedTextLayout") &&
+    l1RunsSource.Contains("span.TextColor ?? label.TextColor") &&
+    l1RunsSource.Contains("(span.FontAttributes & FontAttributes.Bold) != 0") &&
+    l1RunsSource.Contains("span.TextTransform != TextTransform.Default") &&
+    l1RunsSource.Contains("span.GestureRecognizers.Count > 0");
+bool l1ViewPin = l1StyledSource.Contains("internal bool HasFormattedRuns =>") &&
+    l1StyledSource.Contains("internal void SetFormattedRuns(OpenHarmonyTextRun[]? runs)") &&
+    l1StyledSource.Contains("internal OpenHarmonyFormattedTextLayout FormattedLayout(float maxWidth)") &&
+    l1StyledSource.Contains("private void DrawFormattedBlock(MauiCanvas canvas)") &&
+    l1StyledSource.Contains("private void DrawFormattedSegment(");
+bool l1Ok = l1MapperPin && l1RunsPin && l1ViewPin;
+Console.WriteLine($"[verify] l1 label formatted pins mapper={l1MapperPin} runs={l1RunsPin} view={l1ViewPin} assert={l1Ok}");
+if (!l1Ok)
+{
+    throw new InvalidOperationException("the Label FormattedText mapper or the run-aware platform view support is missing/drifted");
+}
+
+// l2: the live mapping drill: a span's colour/size/attributes/decorations/background/spacing and
+// the inherited label style reach the platform runs, formatted mode keeps the plain text out of
+// the draw path, and the measure goes through the run layout.
+var l2Label = new Label { FontSize = 24, TextColor = Colors.Gray, LineHeight = 1.2 };
+var l2Formatted = new FormattedString();
+l2Formatted.Spans.Add(new Span { Text = "Hello", TextColor = Colors.Red });
+l2Formatted.Spans.Add(new Span { Text = " world", FontSize = 40, FontAttributes = FontAttributes.Bold, CharacterSpacing = 2 });
+l2Formatted.Spans.Add(new Span { Text = " tail", TextDecorations = TextDecorations.Underline, BackgroundColor = Colors.Blue, TextTransform = TextTransform.Uppercase });
+l2Label.FormattedText = l2Formatted;
+OpenHarmonyHandlerConnector.Connect(l2Label);
+var l2View = (OpenHarmonyTextView)l2Label.Handler!.PlatformView!;
+var l2Layout = l2View.FormattedLayout(400f);
+var l2Segments = l2Layout.Lines.Count == 1 ? l2Layout.Lines[0].Segments : Array.Empty<OpenHarmonyFormattedSegment>();
+OpenHarmonyTextRun? l2First = l2Segments.Count > 0 ? l2Segments[0].Run : null;
+OpenHarmonyTextRun? l2Second = l2Segments.Count > 1 ? l2Segments[1].Run : null;
+OpenHarmonyTextRun? l2Third = l2Segments.Count > 2 ? l2Segments[2].Run : null;
+bool l2Mapped = l2View.HasFormattedRuns && l2View.Text is null &&
+    l2Segments.Count == 3 &&
+    l2First is { Text: "Hello" } && l2First.TextColor?.ToArgbHex() == Colors.Red.ToArgbHex() && !l2First.IsBold &&
+    Math.Abs(l2First.FontSize - 24f) < 0.01f &&
+    l2Second is { Text: " world" } && l2Second.FontSize > 39f && l2Second.IsBold &&
+    Math.Abs(l2Second.CharacterSpacing - 2) < 0.001 &&
+    l2Third is { Text: " TAIL" } && l2Third.TextColor?.ToArgbHex() == Colors.Gray.ToArgbHex() &&
+    (l2Third.TextDecorations & TextDecorations.Underline) != TextDecorations.None &&
+    l2Third.BackgroundColor?.ToArgbHex() == Colors.Blue.ToArgbHex();
+var l2Measure = l2View.MeasureTextBlock(null, 0f, 400f);
+bool l2Measured = Math.Abs(l2Measure.Height - l2Layout.Height) < 0.01f &&
+    Math.Abs(l2Measure.Width - l2Layout.Width) < 0.01f && l2Layout.Height > 40f;
+bool l2Ok = l2Mapped && l2Measured;
+Console.WriteLine($"[verify] l2 label formatted drill runs={l2Segments.Count} first={l2First?.Text} size={l2Second?.FontSize:0.#} bold={l2Second?.IsBold} third='{l2Third?.Text}' map={l2Mapped} measured={l2Measured} assert={l2Ok}");
+if (!l2Ok)
+{
+    throw new InvalidOperationException("the FormattedText mapping drill did not resolve the span styles onto the platform runs");
+}
+
+// l3: the run set follows span mutations (the label raises FormattedText again), and Text /
+// FormattedText keep clearing each other into one settled mode.
+l2Formatted.Spans[0].TextColor = Colors.Orange;
+var l3Updated = l2View.FormattedLayout(400f);
+bool l3SpanMutation = l3Updated.Lines.Count == 1 && l3Updated.Lines[0].Segments.Count > 0 &&
+    l3Updated.Lines[0].Segments[0].Run.TextColor?.ToArgbHex() == Colors.Orange.ToArgbHex();
+l2Label.Text = "plain again";
+bool l3Plain = !l2View.HasFormattedRuns && l2View.Text == "plain again";
+var l3Formatted = new FormattedString();
+l3Formatted.Spans.Add(new Span { Text = "again" });
+l2Label.FormattedText = l3Formatted;
+bool l3Back = l2View.HasFormattedRuns && l2View.Text is null &&
+    l2View.FormattedLayout(400f).Lines[0].Text == "again";
+l2Label.FormattedText = null;
+bool l3Cleared = !l2View.HasFormattedRuns && string.IsNullOrEmpty(l2View.Text);
+bool l3Ok = l3SpanMutation && l3Plain && l3Back && l3Cleared;
+Console.WriteLine($"[verify] l3 label formatted switches spanColor={l3SpanMutation} plain={l3Plain} reformat={l3Back} cleared={l3Cleared} assert={l3Ok}");
+if (!l3Ok)
+{
+    throw new InvalidOperationException("the FormattedText/Text mode switches or the span mutation refresh are missing/drifted");
+}
+
+// l4: run-aware wrapping and max lines: a wide measure keeps the mixed-font text on one line, a
+// narrow one wraps it (the 40-px run raises the line height), and MaxLines=1 tail-truncates with
+// the ellipsis.
+var l4Label = new Label { FontSize = 20, LineBreakMode = LineBreakMode.WordWrap };
+var l4Formatted = new FormattedString();
+l4Formatted.Spans.Add(new Span { Text = "alpha " });
+l4Formatted.Spans.Add(new Span { Text = "beta", FontSize = 40, TextColor = Colors.Green });
+l4Formatted.Spans.Add(new Span { Text = " gamma delta" });
+l4Label.FormattedText = l4Formatted;
+OpenHarmonyHandlerConnector.Connect(l4Label);
+var l4View = (OpenHarmonyTextView)l4Label.Handler!.PlatformView!;
+var l4Wide = l4View.FormattedLayout(2000f);
+var l4Narrow = l4View.FormattedLayout(200f);
+bool l4Wrapped = l4Wide.Lines.Count == 1 && l4Narrow.Lines.Count >= 2 &&
+    string.Concat(l4Wide.Lines[0].Segments.Select(s => s.Text)) == "alpha beta gamma delta" &&
+    l4Wide.Lines[0].Segments.Any(s => s.Run.FontSize > 39f) &&
+    l4Narrow.Height > l4Wide.Height + 1f;
+l4Label.MaxLines = 1;
+var l4Capped = l4View.FormattedLayout(200f);
+bool l4MaxLines = l4Capped.Lines.Count == 1 && l4Capped.Lines[0].Text.EndsWith("…");
+bool l4Ok = l4Wrapped && l4MaxLines;
+Console.WriteLine($"[verify] l4 label formatted layout wide={l4Wide.Lines.Count} narrow={l4Narrow.Lines.Count} capped='{l4Capped.Lines[0].Text}' wideHeight={l4Wide.Height:0.#} narrowHeight={l4Narrow.Height:0.#} assert={l4Ok}");
+if (!l4Ok)
+{
+    throw new InvalidOperationException("the run-aware wrapping or max-lines truncation contract is missing/drifted");
 }
 
 // ---- T2: WebView residual gaps (file selection / media permissions / window.open /

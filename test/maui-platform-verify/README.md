@@ -49,7 +49,7 @@ allocation and jitter) budgets are exceeded.
 # (or the MauiSliceDir / HostingDll / OpenHarmonyGraphicsDll MSBuild properties) before building
 # elsewhere; an explicit -p: value wins over the environment and the absolute fallbacks.
 dotnet build -v:q
-dotnet bin/Debug/net11.0/verify.dll | grep -c '\[verify\]'   # expect 416 (403 interaction checks + 4 fuzz + 1 frame perf + 8 a11y perf)
+dotnet bin/Debug/net11.0/verify.dll | grep -c '\[verify\]'   # expect 420 (407 interaction checks + 4 fuzz + 1 frame perf + 8 a11y perf)
 ```
 
 The `interaction-regression` workflow (`.github/workflows/interaction-regression.yml`) runs the
@@ -60,7 +60,7 @@ suite on a GitHub runner as a real gate (on push to `master`, on pull requests a
 points `MAUI_SLICE_DIR` / `HOSTING_DLL` / `OPENHARMONY_GRAPHICS_DLL` at those roots, and fails the
 job unless the run exits 0, the suite's own `[suite]` contract line reports `assert=True` with at
 least the floor declared in `Program.cs`, both perf lines report `within=True`, and no `Unhandled`
-line is logged. The floor (396 = 416 - 20, the documented convention) lives only in `Program.cs`;
+line is logged. The floor (400 = 420 - 20, the documented convention) lives only in `Program.cs`;
 the workflow and `scripts/preflight.sh` both read the printed `[suite] checks=... floor=...` line
 instead of repeating a literal, so the two local/CI thresholds cannot drift apart.
 
@@ -178,8 +178,8 @@ parse.
   blocks codesigned ELF apphosts on some machines).
 - The suite fails loudly (unhandled exception) when a slice change breaks startup or when an
   assertion for the gesture flows (including the drag-and-drop checks) does not hold; keep it at
-  403 interaction checks plus the 4 fuzz lines plus the 1 frame-perf line plus the 8 a11y-perf
-  lines (416 `[verify]` lines) when touching the platform slice. The total and the floor
+  407 interaction checks plus the 4 fuzz lines plus the 1 frame-perf line plus the 8 a11y-perf
+  lines (420 `[verify]` lines) when touching the platform slice. The total and the floor
   (total - 20) are declared in `Program.cs`; the run ends with a `[suite] checks=... floor=...
   assert=...` line and fails itself when the printed count is below the floor, so the CI job and
   `scripts/preflight.sh` do not repeat the threshold.
@@ -809,3 +809,17 @@ parse.
   field's text update and OK click ("hi"). That is 7 lines: 409 + 7 = 416 = 403 interaction
   checks + 4 fuzz + 1 frame perf + 8 a11y perf; the workflow floor moves with the total
   (416 - 20 = 396).
+- **T4 Label formatted text (4 lines, 2026-09-28)** - the Label mapper desugars
+  `FormattedString`/`Span` into platform runs (span colour/size/attributes/decorations/
+  background/character-spacing override the label-level style, the text transform inherits
+  from the label) and the styled text view lays the runs out with the same wrapping/max-lines
+  contract as plain text, drawing each run in its own style. `l1 label formatted pins` pins
+  the mapper entry, the Text/FormattedText sync, the run model/layout and the run-aware draw
+  path; `l2 label formatted drill` maps a three-span label and checks the resolved runs, the
+  inherited label colour/line-height and the run-layout measure; `l3 label formatted
+  switches` follows a span mutation, the Text -> plain and FormattedText -> formatted modes
+  and the null reset; `l4 label formatted layout` measures the mixed-font text wide (one
+  line) and narrow (wraps, the 40-px run raises the line height) and requires MaxLines=1 to
+  tail-truncate with the ellipsis. That is 4 lines: 416 + 4 = 420 = 407 interaction checks +
+  4 fuzz + 1 frame perf + 8 a11y perf; the workflow floor moves with the total (420 - 20 =
+  400).
