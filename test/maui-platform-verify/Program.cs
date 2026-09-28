@@ -12,7 +12,7 @@ using Microsoft.Maui.Platform;
 // after the fuzz tail) instead of letting every caller repeat its own threshold constant.
 VerifyLineCountingWriter verifyStdout = new(Console.Out);
 Console.SetOut(verifyStdout);
-const int verifyCheckTotal = 428;                     // documented full [verify] line count (+4 MS-MODE runtime mode switch, +10 P2c-DEEPLINK, +4 P2b-IMG, +16 P1b-LIST, +10 P1a-ANIM, +2 SEC3 storage/deep-link pins, +5 W-series WebView wiring, +3 T1 InputView mapping, +4 T2 WebView gaps, +4 T3 GraphicsView interaction, +7 T10 modal accessibility, +4 T4 Label formatted text, +4 T5 layout semantics, +4 T9 window title bar)
+const int verifyCheckTotal = 432;                     // documented full [verify] line count (+4 MS-MODE runtime mode switch, +10 P2c-DEEPLINK, +4 P2b-IMG, +16 P1b-LIST, +10 P1a-ANIM, +2 SEC3 storage/deep-link pins, +5 W-series WebView wiring, +3 T1 InputView mapping, +4 T2 WebView gaps, +4 T3 GraphicsView interaction, +7 T10 modal accessibility, +4 T4 Label formatted text, +4 T5 layout semantics, +4 T9 window title bar, +4 T11 diagnostics overlay)
 const int verifyCheckFloor = verifyCheckTotal - 20;   // documented floor convention (total - 20)
 
 // A small image file for the Image handler.
@@ -1052,6 +1052,55 @@ if (!(t5ZTopFirst && t5ZSwapped && t5ZIndexRedraws >= 1 && t5InputOk && t5ClipOk
     && t5AnchorTopLeftOk && t5AnchorBottomRightOk && t5AnchorCenterOk))
 {
     throw new InvalidOperationException("the T5 layout semantics (z-order, clip, input transparency, anchors) are missing or drifted");
+}
+
+// T11: the window's VisualDiagnosticsOverlay (Controls' per-window IAdorner host) is initialized
+// by the window lifecycle (OpenHarmonyWindowHandler.MapContent) and drawn by the overlay host, so
+// the adorners an app adds to it render on the compositor canvas. Controls' Invalidate is a no-op
+// on the platform-less build, so the host notices adorner changes on the frame tick (by
+// signature) and requests the repaint instead; a deinitialized overlay is skipped again.
+IWindow t11Window = window!;
+var t11Overlay = t11Window.VisualDiagnosticsOverlay;
+bool t11Present = t11Overlay is not null;
+bool t11Initialized = t11Present && t11Overlay!.IsPlatformViewInitialized;
+Console.WriteLine($"[verify] t11 diagnostics overlay present={t11Present} initialized={t11Initialized} visible={t11Overlay?.IsVisible == true}");
+
+int t11Redraws = 0;
+Action t11OnRedraw = () => t11Redraws++;
+Microsoft.OpenHarmony.Hosting.OpenHarmonyBridge.RedrawRequested += t11OnRedraw;
+bool t11Quiet = !OpenHarmonyWindowOverlayHost.SyncDiagnostics();
+bool t11Adorned = t11Present && t11Overlay!.AddAdorner(page, false);
+bool t11Changed = OpenHarmonyWindowOverlayHost.SyncDiagnostics() && t11Redraws >= 1;
+bool t11Steady = !OpenHarmonyWindowOverlayHost.SyncDiagnostics();
+Microsoft.OpenHarmony.Hosting.OpenHarmonyBridge.RedrawRequested -= t11OnRedraw;
+Console.WriteLine($"[verify] t11 diagnostics sync quiet={t11Quiet} changed={t11Changed} steady={t11Steady} redraws={t11Redraws}");
+
+var t11Canvas = new T11RecordingCanvas();
+OpenHarmonyWindowOverlayHost.OverlayCanvasFactory = () => t11Canvas;
+int t11DrawsBefore = OpenHarmonyWindowOverlayHost.Draws;
+bool t11Rendered = host.Render();
+int t11Draws = OpenHarmonyWindowOverlayHost.Draws - t11DrawsBefore;
+bool t11Painted = t11Rendered && t11Adorned && t11Canvas.Fills > 0 && t11Draws >= 1;
+Console.WriteLine($"[verify] t11 diagnostics adorner painted={t11Painted} fills={t11Canvas.Fills} overlayDraws={t11Draws}");
+
+bool t11Deinitialized = t11Present && t11Overlay!.Deinitialize();
+int t11FillsHidden = t11Canvas.Fills;
+host.Render();
+bool t11Skipped = t11Deinitialized && t11Canvas.Fills == t11FillsHidden;
+OpenHarmonyWindowOverlayHost.EnsureDiagnosticsOverlayInitialized(t11Window);
+host.Render();
+bool t11Rewired = t11Overlay!.IsPlatformViewInitialized && t11Canvas.Fills > t11FillsHidden;
+Console.WriteLine($"[verify] t11 diagnostics skip={t11Skipped} rewired={t11Rewired}");
+
+// Leave no probe residue: the adorner goes away and the default overlay canvas returns.
+OpenHarmonyWindowOverlayHost.OverlayCanvasFactory = null;
+t11Overlay!.RemoveAdorners();
+_ = OpenHarmonyWindowOverlayHost.SyncDiagnostics();
+
+if (!(t11Present && t11Initialized && t11Quiet && t11Changed && t11Steady && t11Painted
+    && t11Skipped && t11Rewired))
+{
+    throw new InvalidOperationException("the T11 VisualDiagnosticsOverlay wiring (initialize, draw, adorner sync) is missing or drifted");
 }
 
 // T9: the Window.TitleBar row. The window-level title bar (Controls.TitleBar, a logical child of
@@ -9559,6 +9608,18 @@ sealed class PerfCanvas : Microsoft.OpenHarmony.Maui.Graphics.OpenHarmonyCanvas
     public override void FillRectangle(float x, float y, float width, float height)
     {
     }
+}
+
+/// <summary>
+/// Overlay canvas that counts fills (T11): the diagnostics overlay paints an adorner with
+/// FillRectangle, so a fill proves the window's adorner reached the frame host's overlay pass;
+/// the rest of the canvas behaviour is irrelevant to the check.
+/// </summary>
+sealed class T11RecordingCanvas : Microsoft.OpenHarmony.Maui.Graphics.OpenHarmonyCanvas
+{
+    public int Fills { get; private set; }
+
+    public override void FillRectangle(float x, float y, float width, float height) => Fills++;
 }
 
 sealed class ProbeDrawable : Microsoft.Maui.Graphics.IDrawable

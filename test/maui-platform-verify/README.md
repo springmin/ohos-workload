@@ -49,7 +49,7 @@ allocation and jitter) budgets are exceeded.
 # (or the MauiSliceDir / HostingDll / OpenHarmonyGraphicsDll MSBuild properties) before building
 # elsewhere; an explicit -p: value wins over the environment and the absolute fallbacks.
 dotnet build -v:q
-dotnet bin/Debug/net11.0/verify.dll | grep -c '\[verify\]'   # expect 428 (415 interaction checks + 4 fuzz + 1 frame perf + 8 a11y perf)
+dotnet bin/Debug/net11.0/verify.dll | grep -c '\[verify\]'   # expect 432 (419 interaction checks + 4 fuzz + 1 frame perf + 8 a11y perf)
 ```
 
 The `interaction-regression` workflow (`.github/workflows/interaction-regression.yml`) runs the
@@ -60,7 +60,7 @@ suite on a GitHub runner as a real gate (on push to `master`, on pull requests a
 points `MAUI_SLICE_DIR` / `HOSTING_DLL` / `OPENHARMONY_GRAPHICS_DLL` at those roots, and fails the
 job unless the run exits 0, the suite's own `[suite]` contract line reports `assert=True` with at
 least the floor declared in `Program.cs`, both perf lines report `within=True`, and no `Unhandled`
-line is logged. The floor (408 = 428 - 20, the documented convention) lives only in `Program.cs`;
+line is logged. The floor (412 = 432 - 20, the documented convention) lives only in `Program.cs`;
 the workflow and `scripts/preflight.sh` both read the printed `[suite] checks=... floor=...` line
 instead of repeating a literal, so the two local/CI thresholds cannot drift apart.
 
@@ -178,8 +178,8 @@ parse.
   blocks codesigned ELF apphosts on some machines).
 - The suite fails loudly (unhandled exception) when a slice change breaks startup or when an
   assertion for the gesture flows (including the drag-and-drop checks) does not hold; keep it at
-  415 interaction checks plus the 4 fuzz lines plus the 1 frame-perf line plus the 8 a11y-perf
-  lines (428 `[verify]` lines) when touching the platform slice. The total and the floor
+  419 interaction checks plus the 4 fuzz lines plus the 1 frame-perf line plus the 8 a11y-perf
+  lines (432 `[verify]` lines) when touching the platform slice. The total and the floor
   (total - 20) are declared in `Program.cs`; the run ends with a `[suite] checks=... floor=...
   assert=...` line and fails itself when the printed count is below the floor, so the CI job and
   `scripts/preflight.sh` do not repeat the threshold.
@@ -847,3 +847,21 @@ parse.
   4 fuzz + 1 frame perf + 8 a11y perf); the workflow floor moves with the total (428 - 20 = 408).
   The pixel suite pins the row's background across the width, the content shift, the leading
   chevron and the hidden-TitleBar fallback (7 new PASS checks in `test/headless-render`).
+
+- **T11 diagnostics overlay (4 lines, 2026-09-28)** - the window's
+  `Window.VisualDiagnosticsOverlay` (Controls' per-window `IAdorner` host) is initialized when the
+  window handler attaches (`OpenHarmonyWindowHandler.MapContent`, the Tizen hook) and drawn by the
+  overlay host next to `IWindow.Overlays`; Controls' `Invalidate` is a no-op on the platform-less
+  build, so a frame-tick signature check (`SyncDiagnostics`, weak keys) requests the redraw when
+  an adorner was added or removed. The window handler also answers
+  `IWindow.RequestDisplayDensity` (1: the compositor draws in device pixels with one logical unit
+  per pixel) because Controls' `Window.RequestDisplayDensity` throws "No result value was set."
+  when the command is unmapped and the adorner path reads the overlay density through it.
+  `t11 diagnostics overlay` requires the initialized+visible overlay after startup;
+  `t11 diagnostics sync` requires the watcher to stay quiet while the adorner set is unchanged,
+  to report a change (and raise `RedrawRequested`) when one adorner is added and to go steady
+  again; `t11 diagnostics adorner` renders the window and requires the adorner's fill on the
+  overlay canvas (one overlay draw pass); `t11 diagnostics skip` requires a deinitialized overlay
+  to be skipped and the lifecycle initializer to rewire it. That is 4 lines: 428 + 4 = 432 = 419
+  interaction checks + 4 fuzz + 1 frame perf + 8 a11y perf; the workflow floor moves with the
+  total (432 - 20 = 412).
