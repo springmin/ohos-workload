@@ -12,7 +12,7 @@ using Microsoft.Maui.Platform;
 // after the fuzz tail) instead of letting every caller repeat its own threshold constant.
 VerifyLineCountingWriter verifyStdout = new(Console.Out);
 Console.SetOut(verifyStdout);
-const int verifyCheckTotal = 424;                     // documented full [verify] line count (+4 MS-MODE runtime mode switch, +10 P2c-DEEPLINK, +4 P2b-IMG, +16 P1b-LIST, +10 P1a-ANIM, +2 SEC3 storage/deep-link pins, +5 W-series WebView wiring, +3 T1 InputView mapping, +4 T2 WebView gaps, +4 T3 GraphicsView interaction, +7 T10 modal accessibility, +4 T4 Label formatted text, +4 T5 layout semantics)
+const int verifyCheckTotal = 428;                     // documented full [verify] line count (+4 MS-MODE runtime mode switch, +10 P2c-DEEPLINK, +4 P2b-IMG, +16 P1b-LIST, +10 P1a-ANIM, +2 SEC3 storage/deep-link pins, +5 W-series WebView wiring, +3 T1 InputView mapping, +4 T2 WebView gaps, +4 T3 GraphicsView interaction, +7 T10 modal accessibility, +4 T4 Label formatted text, +4 T5 layout semantics, +4 T9 window title bar)
 const int verifyCheckFloor = verifyCheckTotal - 20;   // documented floor convention (total - 20)
 
 // A small image file for the Image handler.
@@ -1053,6 +1053,130 @@ if (!(t5ZTopFirst && t5ZSwapped && t5ZIndexRedraws >= 1 && t5InputOk && t5ClipOk
 {
     throw new InvalidOperationException("the T5 layout semantics (z-order, clip, input transparency, anchors) are missing or drifted");
 }
+
+// T9: the Window.TitleBar row. The window-level title bar (Controls.TitleBar, a logical child of
+// the window rather than of the page) is measured/arranged/drawn by the compositor as a top row,
+// with the window content arranged below it; touches route into the arranged template subtree and
+// the leading slot maps onto the window back affordance (IWindow.BackButtonClicked). The probes
+// use standalone windows so the audit page itself is never touched.
+string? t9HandlerPath = FindHostSource("OpenHarmonyWindowHandler.cs");
+string t9HandlerSource = t9HandlerPath is null ? string.Empty : File.ReadAllText(t9HandlerPath);
+string? t9RowPath = FindHostSource("OpenHarmonyTitleBar.cs");
+string t9RowSource = t9RowPath is null ? string.Empty : File.ReadAllText(t9RowPath);
+bool t9SourceOk = t9HandlerSource.Contains("[\"TitleBar\"] = MapTitleBar") &&
+    t9HandlerSource.Contains("internal OpenHarmonyTitleBarRow? TitleBar { get; private set; }") &&
+    t9HandlerSource.Contains("handler.TitleBar = new OpenHarmonyTitleBarRow(window, titleBar);") &&
+    t9RowSource.Contains("internal sealed class OpenHarmonyTitleBarRow") &&
+    t9RowSource.Contains("internal const float BackButtonWidth = 56f") &&
+    t9RowSource.Contains("internal bool InBackButton(float x, float y)") &&
+    t9RowSource.Contains("internal void DrawBackAffordance(MauiCanvas canvas)") &&
+    t9RowSource.Contains("internal static class OpenHarmonyBackNavigation");
+var t9Renderer = app.Services.GetRequiredService<OpenHarmonyWindowRenderer>();
+var t9Page = new ContentPage { BackgroundColor = Colors.DarkSlateBlue, Content = new VerticalStackLayout { Padding = 10 } };
+var t9Window = new Microsoft.Maui.Controls.Window(t9Page);
+OpenHarmonyHandlerConnector.Connect(t9Window);
+var t9Bar = new TitleBar { Title = "T9 title", Subtitle = "sub", HeightRequest = 64 };
+t9Window.TitleBar = t9Bar;
+bool t9Mapped = t9Window.Handler is OpenHarmonyWindowHandler t9WindowHandler &&
+    ReferenceEquals(t9WindowHandler.TitleBar?.VirtualView, t9Bar) &&
+    t9Bar.Handler is OpenHarmonyContentViewHandler;
+Console.WriteLine($"[verify] t9 row attach mapped={t9Mapped} source={t9SourceOk} handler={t9Window.Handler?.GetType().Name ?? "null"}");
+if (!(t9Mapped && t9SourceOk))
+{
+    throw new InvalidOperationException("the Window.TitleBar row (window mapper + row wiring) is missing or drifted");
+}
+
+// Layout: the row takes the top HeightRequest pixels, its template subtree is arranged inside,
+// and the content sits below it; hiding the TitleBar gives the surface back to the content.
+var t9PageLayout = (VerticalStackLayout)t9Page.Content!;
+t9Renderer.Render(t9Page, 300, 200);
+var t9Row = ((OpenHarmonyWindowHandler)t9Window.Handler!).TitleBar!;
+var t9BarPlatform = t9Bar.Handler?.PlatformView as OpenHarmonyView;
+IView? t9TemplateRoot = (t9Bar as Microsoft.Maui.IContentView)?.PresentedContent as IView;
+bool t9RowFrameOk = Math.Abs(t9Row.Frame.X) < 0.01 && Math.Abs(t9Row.Frame.Y) < 0.01 &&
+    Math.Abs(t9Row.Frame.Width - 300) < 0.01 && Math.Abs(t9Row.Frame.Height - 64) < 0.01;
+bool t9TemplateOk = t9BarPlatform is not null && Math.Abs(t9BarPlatform.Frame.Y) < 0.01 &&
+    Math.Abs(t9BarPlatform.Frame.Height - 64) < 0.01 &&
+    t9TemplateRoot is not null && t9TemplateRoot.Frame.Height > 0 &&
+    t9TemplateRoot.Frame.Y < 64;
+bool t9ContentBelowOk = t9PageLayout.Frame.Y >= 64;
+t9Bar.IsVisible = false;
+t9Renderer.Render(t9Page, 300, 200);
+bool t9HiddenOk = t9PageLayout.Frame.Y == 0;
+t9Bar.IsVisible = true;
+t9Renderer.Render(t9Page, 300, 200);
+bool t9LayoutOk = t9RowFrameOk && t9TemplateOk && t9ContentBelowOk && t9HiddenOk;
+Console.WriteLine($"[verify] t9 layout row={t9Row.Frame} content={t9PageLayout.Frame} rowOk={t9RowFrameOk} template={t9TemplateOk} below={t9ContentBelowOk} hidden={t9HiddenOk}");
+if (!t9LayoutOk)
+{
+    throw new InvalidOperationException("the Window.TitleBar row layout (measure/arrange/visibility) is missing or drifted");
+}
+
+// Touch: the template subtree is interactive (a Button set as TitleBar.Content clicks through
+// the compositor) while a page control below the row keeps working.
+int t9RowClicks = 0, t9PageClicks = 0;
+var t9RowButton = new Button { Text = "row button", FontSize = 16 };
+t9RowButton.Clicked += (_, _) => t9RowClicks++;
+t9Bar.Content = t9RowButton;
+var t9PageButton = new Button { Text = "page button", FontSize = 16 };
+t9PageButton.Clicked += (_, _) => t9PageClicks++;
+t9PageLayout.Add(t9PageButton);
+// The template materializes TitleBar.Content through the dispatcher; let that settle before the
+// frame the touches run against (a real app renders frames continuously).
+await Task.Delay(20);
+t9Renderer.Render(t9Page, 300, 200);
+OpenHarmonyView? t9RowButtonView = t9RowButton.Handler?.PlatformView as OpenHarmonyView;
+OpenHarmonyView? t9PageButtonView = t9PageButton.Handler?.PlatformView as OpenHarmonyView;
+if (t9RowButtonView is not null)
+{
+    TapPlatform(t9Renderer, t9Page, t9RowButtonView.Frame);
+}
+if (t9PageButtonView is not null)
+{
+    TapPlatform(t9Renderer, t9Page, t9PageButtonView.Frame);
+}
+bool t9TouchOk = t9RowClicks == 1 && t9PageClicks == 1 && t9RowButtonView is not null &&
+    t9RowButtonView.Frame.Y >= 0 && t9RowButtonView.Frame.Bottom <= 64;
+Console.WriteLine($"[verify] t9 touch rowClicks={t9RowClicks} pageClicks={t9PageClicks} rowButton={t9RowButtonView?.Frame} rowHandler={t9RowButton.Handler?.GetType().Name ?? "null"} barContent={t9Bar.Content?.GetType().Name ?? "null"} assert={t9TouchOk}");
+if (!t9TouchOk)
+{
+    throw new InvalidOperationException("the Window.TitleBar touch routing (passthrough elements) is missing or drifted");
+}
+static void TapPlatform(OpenHarmonyWindowRenderer renderer, IView root, RectF frame)
+{
+    float cx = frame.X + frame.Width / 2, cy = frame.Y + frame.Height / 2;
+    renderer.HandleTouch(root, true, false, cx, cy);
+    renderer.HandleTouch(root, false, true, cx, cy);
+}
+
+// Back affordance: with a navigation stack the row reserves the leading slot, a tap there goes
+// through IWindow.BackButtonClicked (the navigation page pops) and a tap outside the slot does
+// not. Clearing Window.TitleBar drops the row.
+var t9BackNav = new NavigationPage(new ContentPage { Content = new Label { Text = "back one" } });
+await t9BackNav.PushAsync(new ContentPage { Content = new Label { Text = "back two" } }, false);
+t9Window.Page = t9BackNav;
+t9Renderer.Render(t9BackNav, 300, 200);
+var t9BackRow = ((OpenHarmonyWindowHandler)t9Window.Handler!).TitleBar;
+bool t9ShowsBack = t9BackRow is { ShowsBack: true } && t9BackRow.Frame.Height == 64;
+int t9StackBefore = t9BackNav.Navigation.NavigationStack.Count;
+TapPlatform(t9Renderer, t9BackNav, new RectF(20, 30, 2, 2));
+for (int i = 0; i < 200 && t9BackNav.Navigation.NavigationStack.Count > 1; i++)
+{
+    await Task.Delay(10);
+}
+bool t9Popped = t9StackBefore > 1 && t9BackNav.Navigation.NavigationStack.Count == 1;
+TapPlatform(t9Renderer, t9BackNav, new RectF(150, 30, 2, 2));
+await Task.Delay(50);
+bool t9OutsideNoPop = t9BackNav.Navigation.NavigationStack.Count == 1;
+t9Window.TitleBar = null;
+bool t9Cleared = t9Window.Handler is OpenHarmonyWindowHandler t9ClearHandler && t9ClearHandler.TitleBar is null;
+bool t9BackOk = t9ShowsBack && t9Popped && t9OutsideNoPop && t9Cleared;
+Console.WriteLine($"[verify] t9 back showsBack={t9ShowsBack} stack={t9StackBefore}->{t9BackNav.Navigation.NavigationStack.Count} popped={t9Popped} outside={t9OutsideNoPop} cleared={t9Cleared}");
+if (!t9BackOk)
+{
+    throw new InvalidOperationException("the Window.TitleBar back affordance (leading slot + IWindow.BackButtonClicked) is missing or drifted");
+}
+
 var contentViewCtl = root.Children.OfType<ContentView>().FirstOrDefault();
 if (contentViewCtl is not null)
 {

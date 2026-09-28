@@ -49,7 +49,7 @@ allocation and jitter) budgets are exceeded.
 # (or the MauiSliceDir / HostingDll / OpenHarmonyGraphicsDll MSBuild properties) before building
 # elsewhere; an explicit -p: value wins over the environment and the absolute fallbacks.
 dotnet build -v:q
-dotnet bin/Debug/net11.0/verify.dll | grep -c '\[verify\]'   # expect 424 (411 interaction checks + 4 fuzz + 1 frame perf + 8 a11y perf)
+dotnet bin/Debug/net11.0/verify.dll | grep -c '\[verify\]'   # expect 428 (415 interaction checks + 4 fuzz + 1 frame perf + 8 a11y perf)
 ```
 
 The `interaction-regression` workflow (`.github/workflows/interaction-regression.yml`) runs the
@@ -60,7 +60,7 @@ suite on a GitHub runner as a real gate (on push to `master`, on pull requests a
 points `MAUI_SLICE_DIR` / `HOSTING_DLL` / `OPENHARMONY_GRAPHICS_DLL` at those roots, and fails the
 job unless the run exits 0, the suite's own `[suite]` contract line reports `assert=True` with at
 least the floor declared in `Program.cs`, both perf lines report `within=True`, and no `Unhandled`
-line is logged. The floor (404 = 424 - 20, the documented convention) lives only in `Program.cs`;
+line is logged. The floor (408 = 428 - 20, the documented convention) lives only in `Program.cs`;
 the workflow and `scripts/preflight.sh` both read the printed `[suite] checks=... floor=...` line
 instead of repeating a literal, so the two local/CI thresholds cannot drift apart.
 
@@ -178,8 +178,8 @@ parse.
   blocks codesigned ELF apphosts on some machines).
 - The suite fails loudly (unhandled exception) when a slice change breaks startup or when an
   assertion for the gesture flows (including the drag-and-drop checks) does not hold; keep it at
-  411 interaction checks plus the 4 fuzz lines plus the 1 frame-perf line plus the 8 a11y-perf
-  lines (424 `[verify]` lines) when touching the platform slice. The total and the floor
+  415 interaction checks plus the 4 fuzz lines plus the 1 frame-perf line plus the 8 a11y-perf
+  lines (428 `[verify]` lines) when touching the platform slice. The total and the floor
   (total - 20) are declared in `Program.cs`; the run ends with a `[suite] checks=... floor=...
   assert=...` line and fails itself when the printed count is below the floor, so the CI job and
   `scripts/preflight.sh` do not repeat the threshold.
@@ -823,3 +823,27 @@ parse.
   tail-truncate with the ellipsis. That is 4 lines: 416 + 4 = 420 = 407 interaction checks +
   4 fuzz + 1 frame perf + 8 a11y perf; the workflow floor moves with the total (420 - 20 =
   400).
+- **T9 window title bar (4 lines, 2026-09-28)** - `Window.TitleBar` (the window-level
+  `Microsoft.Maui.Controls.TitleBar`, a logical child of the window rather than of the page) is
+  measured/arranged/drawn by the compositor as a top row. The window handler builds the row on
+  the `"TitleBar"` mapper key (the Controls property name travels through
+  `Element.UpdateHandlerValue`); the renderer resolves it through the content's window, gives it
+  the top `HeightRequest` pixels (else the 56-px chrome height), arranges the window content
+  below it, and draws the TitleBar's template subtree (Title/Subtitle/Leading/Content/Trailing)
+  with the row's solid background. Touches that land on the row route into the template's views
+  (a Button set as `TitleBar.Content` clicks through the compositor), and the leading slot maps
+  onto the window's back affordance: while the window's page tree can consume a back press
+  (modal stack / NavigationPage stack / presented flyout / Shell stack, the slice's mirror of
+  Controls' internal `Window.CanConsumeBackNavigation`) the row draws the shell chrome's chevron
+  and a tap invokes `IWindow.BackButtonClicked` (the navigation page pops; a tap outside the slot
+  does not), and clearing `Window.TitleBar` drops the row. `t9 row attach` pins the source
+  contract (mapper entry, `OpenHarmonyTitleBarRow`, `BackButtonWidth`/`InBackButton`,
+  `DrawBackAffordance`, `OpenHarmonyBackNavigation`) plus the mapping and the connected template
+  handler; `t9 layout` pins the row frame (300x64 for HeightRequest 64), the template subtree
+  arranged inside it, the content arranged below and the hidden-TitleBar fallback; `t9 touch`
+  pins both a row button click and a page button click below it; `t9 back` pushes a second page,
+  pops it through the back slot, keeps a tap outside the slot from popping and checks the cleared
+  row. That is 4 lines: 420... the pre-T9 total plus 4 (424 + 4 = 428 = 415 interaction checks +
+  4 fuzz + 1 frame perf + 8 a11y perf); the workflow floor moves with the total (428 - 20 = 408).
+  The pixel suite pins the row's background across the width, the content shift, the leading
+  chevron and the hidden-TitleBar fallback (7 new PASS checks in `test/headless-render`).

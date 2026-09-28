@@ -266,6 +266,59 @@ Check("clip skips the uncovered half",
     Colors.DarkSlateBlue);
 
 Console.WriteLine($"  drawn pixel writes: {canvas.DrawnPixels}");
+
+// T9: the Window.TitleBar row. Window.TitleBar draws as a top row through the compositor: its
+// background covers the whole row, the title/subtitle draw inside it, and the window content is
+// arranged below it. The probe app's window pins the row/background; a second standalone
+// navigation window pins the leading back chevron (shown when the window can go back) and the
+// hidden-TitleBar contract (the content gets the top back).
+var titleBar = new TitleBar
+{
+    Title = "T9 bar",
+    Subtitle = "sub",
+    HeightRequest = 72,
+    BackgroundColor = Colors.MidnightBlue,
+    ForegroundColor = Colors.White,
+};
+((Microsoft.Maui.Controls.Window)host.Window!).TitleBar = titleBar;
+bool titleBarRendered = host.Render();
+Check("title bar row background", canvas.GetPixel(4, 4), Colors.MidnightBlue);
+Check("title bar background spans the row", canvas.GetPixel(1076, 4), Colors.MidnightBlue);
+Rect headingBelow = heading.Frame;
+bool headingShifted = headingBelow.Y >= 72;
+Console.WriteLine($"  [{(headingShifted ? "PASS" : "FAIL")}] content arranged below the title bar: heading.Y={headingBelow.Y} row=72 rendered={titleBarRendered}");
+if (!headingShifted)
+{
+    failures++;
+}
+Check("heading draws below the title bar",
+    canvas.GetPixel((int)(headingBelow.X + 8), (int)(headingBelow.Y + headingBelow.Height - 4)),
+    Colors.White);
+
+var backNav = new NavigationPage(new ContentPage { Content = new Label { Text = "back one" } });
+await backNav.PushAsync(new ContentPage { Content = new Label { Text = "back two" } }, false);
+var backWindow = new Window(backNav);
+OpenHarmonyHandlerConnector.Connect(backWindow);
+OpenHarmonyHandlerConnector.ConnectTree(backNav);
+var backBar = new TitleBar
+{
+    Title = "back",
+    HeightRequest = 72,
+    BackgroundColor = Colors.MidnightBlue,
+    ForegroundColor = Colors.White,
+};
+backWindow.TitleBar = backBar;
+await Task.Delay(20);
+canvas.Reset();
+bool backRendered = renderer.Render(backNav, 1080, 400);
+Check("title bar covers the content top", canvas.GetPixel(500, 36), Colors.MidnightBlue);
+Check("back chevron draws in the leading slot", canvas.GetPixel(23, 37), Colors.White, 60);
+backBar.IsVisible = false;
+canvas.Reset();
+renderer.Render(backNav, 1080, 400);
+Check("hidden title bar gives the top back to the content", canvas.GetPixel(500, 36), Colors.Black, 40);
+Console.WriteLine($"  title bar probe: rendered={backRendered} navStack={backNav.Navigation.NavigationStack.Count}");
+
 Color Blend(Color background, Color foreground, float alpha) => new(
     (float)(foreground.Red * alpha + background.Red * (1 - alpha)),
     (float)(foreground.Green * alpha + background.Green * (1 - alpha)),
