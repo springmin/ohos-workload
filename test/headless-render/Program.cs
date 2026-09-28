@@ -193,6 +193,36 @@ Rect graphicsFrame = graphicsCtl.Frame;
 Check("graphicsview drawable", canvas.GetPixel((int)(graphicsFrame.X + graphicsFrame.Width / 2),
     (int)(graphicsFrame.Y + graphicsFrame.Height / 2)), Colors.Magenta, 10);
 
+// FormattedText: every span is its own run and draws in the run's colour. The formatted label is
+// the last child (its frame is below the earlier controls), so scanning its own frame cannot pick
+// up another control's pixels.
+var formattedCtl = (Label)root.Children[root.Children.Count - 1];
+RenderFresh();
+Rect formattedFrame = formattedCtl.Frame;
+int formattedRed = 0;
+int formattedBlue = 0;
+for (int y = (int)formattedFrame.Y; y < formattedFrame.Y + formattedFrame.Height; y++)
+{
+    for (int x = (int)formattedFrame.X; x < formattedFrame.X + formattedFrame.Width; x++)
+    {
+        Color pixel = canvas.GetPixel(x, y);
+        if (pixel.Red > 0.8f && pixel.Green < 0.3f && pixel.Blue < 0.3f)
+        {
+            formattedRed++;
+        }
+        if (pixel.Blue > 0.8f && pixel.Red < 0.3f && pixel.Green < 0.3f)
+        {
+            formattedBlue++;
+        }
+    }
+}
+bool formattedOk = formattedRed > 0 && formattedBlue > 0;
+Console.WriteLine($"  [{(formattedOk ? "PASS" : "FAIL")}] formatted span colours red={formattedRed} blue={formattedBlue} frame={formattedFrame}");
+if (!formattedOk)
+{
+    failures++;
+}
+
 Console.WriteLine($"  drawn pixel writes: {canvas.DrawnPixels}");
 Color Blend(Color background, Color foreground, float alpha) => new(
     (float)(foreground.Red * alpha + background.Red * (1 - alpha)),
@@ -285,6 +315,13 @@ public sealed class PixelApp : Application
             }),
         };
         layout.Add(selectable);
+        // T4: a label whose runs carry their own colours (each span is drawn as its own run).
+        var formattedLabel = new Label { FontSize = 26 };
+        var formattedText = new FormattedString();
+        formattedText.Spans.Add(new Span { Text = "RED", TextColor = Colors.Red });
+        formattedText.Spans.Add(new Span { Text = "BLUE", TextColor = Colors.Blue });
+        formattedLabel.FormattedText = formattedText;
+        layout.Add(formattedLabel);
         return new ContentPage { BackgroundColor = Colors.DarkSlateBlue, Content = layout };
     }
 }
