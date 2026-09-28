@@ -1303,6 +1303,11 @@ Division of labour with `tester-run.sh`:
   `sign-for-device.sh --external`, so the p12 password goes through its file/interactive path and
   never enters argv or logs.
 
+**Concurrent checkouts.** When several agents share one working tree, never `git add -A`; commit
+only the paths you own through `sh scripts/commit-paths.sh -m "<message>" -- <path>...`, which
+refuses a path with no changes, aborts (restoring the index) when the staged set picks up another
+agent's files, and prints the plan with `--dry-run`.
+
 ## Known environment quirks
 
 Two host quirks of this OpenHarmony sandbox surface as dotnet "environment failures". Both are
