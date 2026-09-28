@@ -880,3 +880,25 @@ parse.
   2026-09-25 to `MaximumDate`; `inside tap` selects 2026-09-12 and closes. That is 6 new lines:
   432 + 6 = 438 = 425 interaction checks + 4 fuzz + 1 frame perf + 8 a11y perf; the workflow floor
   moves with the total (438 - 20 = 418).
+
+- **T8 TableView (6 lines, 2026-09-29)** - the legacy TableView renders on the shared virtualized
+  list pipeline and reads its rows through `ITableViewController.Model` (the platform contract
+  Controls implements on TableView): a section title (or the model's header cell) becomes a
+  section row and every cell is materialized through `OpenHarmonyCellFactory`, the same factory
+  the ListView handler uses (ViewCell inner view, TextCell text/detail, SwitchCell two-way
+  toggle, EntryCell, ImageCell thumbnail, plain View). `TableView.RowHeight` maps to the
+  materializer's fixed row height (the row maths no longer key off the first/header row's
+  measured height) and `HasUnevenRows`/`Cell.Height` are reported once as not modelled by the
+  uniform pipeline. Cells keep their inherited binding context (no row-context overwrite) and are
+  never pooled (a row carries its cell's content). `tableview sections` pins the section
+  projection (header titles coloured by `TableSection.TextColor`, cell order, `RowHeight`
+  content height, untitled section header omitted); `tableview cells` pins the shared cell
+  materialisation (switch two-way binding, image source, TextCell detail, ViewCell inner view);
+  `tableview tap` proves a section row is inert while a cell tap reaches `Cell.Tapped` through
+  `ITableViewController.Model.RowSelected` on the real touch walk; `tableview updates` adds a
+  section, removes a cell and scrolls a tail row into the window through `ModelChanged`;
+  `tableview model` drives a custom `TableModel` (section titles, header cell, `OnRowSelected`);
+  `tableview pins` parses the handler/factory/materializer/registration/public-api contract.
+  That is 6 new lines on top of the N2 empty-ContentPage line (439): 439 + 6 = 445 = 432
+  interaction checks + 4 fuzz + 1 frame perf + 8 a11y perf; the workflow floor moves with the
+  total (445 - 20 = 425).

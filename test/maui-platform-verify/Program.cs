@@ -12,7 +12,7 @@ using Microsoft.Maui.Platform;
 // after the fuzz tail) instead of letting every caller repeat its own threshold constant.
 VerifyLineCountingWriter verifyStdout = new(Console.Out);
 Console.SetOut(verifyStdout);
-const int verifyCheckTotal = 439;                     // documented full [verify] line count (+4 MS-MODE runtime mode switch, +10 P2c-DEEPLINK, +4 P2b-IMG, +16 P1b-LIST, +10 P1a-ANIM, +2 SEC3 storage/deep-link pins, +5 W-series WebView wiring, +3 T1 InputView mapping, +4 T2 WebView gaps, +4 T3 GraphicsView interaction, +7 T10 modal accessibility, +4 T4 Label formatted text, +4 T5 layout semantics, +6 T7 DatePicker calendar/min-max, +4 T9 window title bar, +4 T11 diagnostics overlay, +1 N2 empty ContentPage arrangement)
+const int verifyCheckTotal = 445;                     // documented full [verify] line count (+4 MS-MODE runtime mode switch, +10 P2c-DEEPLINK, +4 P2b-IMG, +16 P1b-LIST, +10 P1a-ANIM, +2 SEC3 storage/deep-link pins, +5 W-series WebView wiring, +3 T1 InputView mapping, +4 T2 WebView gaps, +4 T3 GraphicsView interaction, +7 T10 modal accessibility, +4 T4 Label formatted text, +4 T5 layout semantics, +6 T7 DatePicker calendar/min-max, +4 T9 window title bar, +4 T11 diagnostics overlay, +1 N2 empty ContentPage arrangement, +6 T8 TableView)
 const int verifyCheckFloor = verifyCheckTotal - 20;   // documented floor convention (total - 20)
 
 // A small image file for the Image handler.
@@ -426,6 +426,225 @@ if (boundedCtl is not null && boundedCtl.Handler?.PlatformView is OpenHarmonyVie
     {
         throw new InvalidOperationException("the DatePicker Min/Max clamping drifted");
     }
+}
+
+// T8: TableView renders sections/cells on the shared list pipeline and selects through
+// ITableViewController.Model. The table lives off the page tree (a direct measure/arrange and
+// the window renderer's touch walk), so the surrounding page-layout checks are untouched.
+static List<View> T8Views(View view)
+{
+    var views = new List<View> { view };
+    if (view is Microsoft.Maui.ILayout layout)
+    {
+        foreach (IView child in layout)
+        {
+            if (child is View childView)
+            {
+                views.AddRange(T8Views(childView));
+            }
+        }
+    }
+    return views;
+}
+
+static List<string> T8Texts(View view)
+{
+    var texts = new List<string>();
+    foreach (View candidate in T8Views(view))
+    {
+        if ((candidate.Handler?.PlatformView as OpenHarmonyView)?.Text is { Length: > 0 } text)
+        {
+            texts.Add(text);
+        }
+    }
+    return texts;
+}
+
+static List<string> T8PlatformTexts(OpenHarmonyView platform)
+{
+    var texts = new List<string>();
+    foreach (View row in platform.ViewChildren.OfType<View>())
+    {
+        texts.AddRange(T8Texts(row));
+    }
+    return texts;
+}
+
+var t8Renderer = app.Services.GetRequiredService<OpenHarmonyWindowRenderer>();
+var t8SectionA = new TableSection("Section A")
+{
+    new TextCell { Text = "alpha", TextColor = Colors.Purple },
+    new SwitchCell { Text = "beta switch" },
+};
+t8SectionA.TextColor = Colors.Teal;
+var t8Root = new TableRoot
+{
+    t8SectionA,
+    new TableSection("Section B")
+    {
+        new TextCell { Text = "gamma", Detail = "gamma detail" },
+        new ViewCell { View = new Label { Text = "delta view", FontSize = 26 } },
+        new ImageCell { Text = "img cell", ImageSource = ImageSource.FromFile(imagePath) },
+    },
+    new TableSection
+    {
+        new TextCell { Text = "epsilon" },
+    },
+};
+var t8Table = new TableView { Root = t8Root, RowHeight = 64, HeightRequest = 300 };
+OpenHarmonyHandlerConnector.ConnectTree(t8Table);
+t8Table.Measure(1080, 300);
+t8Table.Arrange(new Rect(0, 0, 1080, 300));
+var t8Platform = (OpenHarmonyView)t8Table.Handler!.PlatformView!;
+var t8Rows = t8Platform.ViewChildren.OfType<View>().ToList();
+var t8RowTexts = t8Rows.Select(row => T8Texts(row).FirstOrDefault() ?? string.Empty).ToList();
+// The window materializes the viewport plus a margin: rows 0..6 of the 8-row content fit, so the
+// last cell (epsilon) is checked after the scroll below.
+bool t8SectionsOk = t8Rows.Count == 7 &&
+    t8RowTexts[0] == "Section A" && t8RowTexts[1] == "alpha" && t8RowTexts[2] == "beta switch" &&
+    t8RowTexts[3] == "Section B" && t8RowTexts[4] == "gamma" && t8RowTexts[5] == "delta view" &&
+    t8RowTexts[6] == "img cell" &&
+    Math.Abs(t8Platform.ScrollContentHeight - 8 * 70) < 0.01 &&
+    // Section styling: the section's TextColor styles the header row and the TextCell's
+    // TextColor reaches its label (both through the label handler's colour mapper).
+    (t8Rows[0].Handler?.PlatformView as OpenHarmonyView)?.TextColor == Colors.Teal &&
+    (t8Rows[1].Handler?.PlatformView as OpenHarmonyView)?.TextColor == Colors.Purple;
+Console.WriteLine($"[verify] tableview sections rows={t8Rows.Count} content={t8Platform.ScrollContentHeight:0} " +
+    $"texts=[{string.Join(",", t8RowTexts)}] headerColor={(t8Rows[0].Handler?.PlatformView as OpenHarmonyView)?.TextColor} " +
+    $"alphaColor={(t8Rows[1].Handler?.PlatformView as OpenHarmonyView)?.TextColor} assert={t8SectionsOk}");
+if (!t8SectionsOk)
+{
+    throw new InvalidOperationException("the TableView section projection drifted (sections/cells/RowHeight)");
+}
+
+// The cell types share the ListView cell factory: the switch row keeps the two-way On binding,
+// the image cell materializes a thumbnail, the TextCell detail line is drawn and the ViewCell
+// yields its inner view.
+var t8SwitchControl = T8Views(t8Rows[2]).OfType<Switch>().FirstOrDefault();
+var t8ImageControl = T8Views(t8Rows[6]).OfType<Image>().FirstOrDefault();
+((SwitchCell)t8Root[0][1]).On = true;
+bool t8SwitchSynced = t8SwitchControl is { IsToggled: true } &&
+    (t8SwitchControl.Handler?.PlatformView as OpenHarmonyView)?.IsOn == true;
+bool t8CellsOk = t8SwitchControl is not null && t8ImageControl?.Source is not null && t8SwitchSynced &&
+    T8Texts(t8Rows[4]).Contains("gamma detail") && t8RowTexts[5] == "delta view";
+Console.WriteLine($"[verify] tableview cells switch={t8SwitchControl is not null} image={t8ImageControl?.Source is not null} " +
+    $"toggled={t8SwitchControl?.IsToggled} detail={T8Texts(t8Rows[4]).Contains("gamma detail")} assert={t8CellsOk}");
+if (!t8CellsOk)
+{
+    throw new InvalidOperationException("the TableView cell materialisation drifted");
+}
+
+// A section row is inert; a cell row selects through ITableViewController.Model.RowSelected,
+// whose default TableSectionModel raises Cell.Tapped.
+int t8Taps = 0;
+((TextCell)t8Root[0][0]).Tapped += (_, _) => t8Taps++;
+Rect t8HeaderRect = t8Rows[0].Frame;
+t8Renderer.HandleTouch(t8Table, true, false, (float)(t8HeaderRect.X + 30), (float)(t8HeaderRect.Y + 20));
+t8Renderer.HandleTouch(t8Table, false, true, (float)(t8HeaderRect.X + 30), (float)(t8HeaderRect.Y + 20));
+bool t8HeaderInert = t8Taps == 0;
+Rect t8CellRect = t8Rows[1].Frame;
+t8Renderer.HandleTouch(t8Table, true, false, (float)(t8CellRect.X + 30), (float)(t8CellRect.Y + 20));
+t8Renderer.HandleTouch(t8Table, false, true, (float)(t8CellRect.X + 30), (float)(t8CellRect.Y + 20));
+bool t8TapOk = t8HeaderInert && t8Taps == 1;
+Console.WriteLine($"[verify] tableview tap headerInert={t8HeaderInert} taps={t8Taps} assert={t8TapOk}");
+if (!t8TapOk)
+{
+    throw new InvalidOperationException("the TableView selection path drifted");
+}
+
+// Live updates: adding a section/cell and removing a cell rebuild through ModelChanged (the
+// TableSectionModel collapses cell changes into it), and a scroll re-materializes the window.
+t8Root.Add(new TableSection("Section C") { new TextCell { Text = "zeta" } });
+bool t8Added = Math.Abs(t8Platform.ScrollContentHeight - 10 * 70) < 0.01;
+t8Root[0].RemoveAt(1);
+bool t8Removed = Math.Abs(t8Platform.ScrollContentHeight - 9 * 70) < 0.01 &&
+    !T8PlatformTexts(t8Platform).Contains("beta switch");
+t8Platform.ScrollOffsetY = 260;
+t8Platform.ScrollOffsetChanged?.Invoke();
+List<string> t8ScrolledTexts = T8PlatformTexts(t8Platform);
+// The scroll window reaches the tail rows the first window could not materialize (the untitled
+// section's epsilon) plus the live-added zeta.
+bool t8Scrolled = t8ScrolledTexts.Contains("zeta") && t8ScrolledTexts.Contains("epsilon") &&
+    t8Platform.ScrollOffsetY > 0;
+bool t8UpdatesOk = t8Added && t8Removed && t8Scrolled;
+Console.WriteLine($"[verify] tableview updates added={t8Added} removed={t8Removed} scrolled={t8Scrolled} " +
+    $"content={t8Platform.ScrollContentHeight:0} offset={t8Platform.ScrollOffsetY:0} assert={t8UpdatesOk}");
+if (!t8UpdatesOk)
+{
+    throw new InvalidOperationException("the TableView live-update path drifted");
+}
+
+// A custom TableModel drives the layout through ITableViewController.Model: section titles and
+// header cells come from the model and a tap lands in the model's OnRowSelected.
+var t8CustomModel = new ProbeTableModel(
+    new[] { new[] { "m1", "m2" }, new[] { "m3" } },
+    new[] { "Model One", "Model Two" });
+var t8Custom = new TableView { Model = t8CustomModel, RowHeight = 56, HeightRequest = 240 };
+OpenHarmonyHandlerConnector.ConnectTree(t8Custom);
+t8Custom.Measure(1080, 240);
+t8Custom.Arrange(new Rect(0, 0, 1080, 240));
+var t8CustomPlatform = (OpenHarmonyView)t8Custom.Handler!.PlatformView!;
+List<string> t8CustomTexts = T8PlatformTexts(t8CustomPlatform);
+bool t8ModelRendered = t8CustomTexts.Contains("model header") && t8CustomTexts.Contains("Model Two") &&
+    t8CustomTexts.Contains("m1") && t8CustomTexts.Contains("m3") &&
+    Math.Abs(t8CustomPlatform.ScrollContentHeight - 5 * 62) < 0.01;
+View? t8ModelRow = t8CustomPlatform.ViewChildren.OfType<View>().FirstOrDefault(r => T8Texts(r).Contains("m1"));
+bool t8ModelOk = false;
+if (t8ModelRow is not null)
+{
+    Rect r = t8ModelRow.Frame;
+    t8Renderer.HandleTouch(t8Custom, true, false, (float)(r.X + 20), (float)(r.Y + 20));
+    t8Renderer.HandleTouch(t8Custom, false, true, (float)(r.X + 20), (float)(r.Y + 20));
+    t8ModelOk = t8ModelRendered && t8CustomModel.Selected.Count == 1 && t8CustomModel.Selected[0] == "m1";
+}
+Console.WriteLine($"[verify] tableview model rows={t8CustomPlatform.ViewChildren.Count} " +
+    $"texts=[{string.Join(",", t8CustomTexts)}] selected=[{string.Join(",", t8CustomModel.Selected)}] assert={t8ModelOk}");
+if (!t8ModelOk)
+{
+    throw new InvalidOperationException("the TableView ITableViewController model path drifted");
+}
+
+// Source contract: the handler consumes the interface model, shares the list cell factory and
+// maps RowHeight; the materializer carries the fixed-height/binding-context/pooling switches;
+// the registration and the public-api baseline pin the new handler.
+string? t8HandlerPath = FindHostSource("OpenHarmonyTableViewHandler.cs");
+string t8Handler = t8HandlerPath is null ? string.Empty : File.ReadAllText(t8HandlerPath);
+string? t8ListHandlerPath = FindHostSource("OpenHarmonyListViewHandler.cs");
+string t8ListHandler = t8ListHandlerPath is null ? string.Empty : File.ReadAllText(t8ListHandlerPath);
+string? t8MatPath = FindHostSource("OpenHarmonyItemListMaterializer.cs");
+string t8Mat = t8MatPath is null ? string.Empty : File.ReadAllText(t8MatPath);
+string? t8ExtPath = FindHostSource("MauiOpenHarmonyExtensions.cs");
+string t8Ext = t8ExtPath is null ? string.Empty : File.ReadAllText(t8ExtPath);
+string? t8ApiPath = FindHostSource("src/Core/src/PublicAPI/net-openharmony/PublicAPI.Unshipped.txt");
+string t8Api = t8ApiPath is null ? string.Empty : File.ReadAllText(t8ApiPath);
+bool t8PinHandler = t8Handler.Contains("ITableViewController") &&
+    t8Handler.Contains("((ITableViewController)table).Model") &&
+    t8Handler.Contains("model.GetSectionTitle(section)") &&
+    t8Handler.Contains("model.GetHeaderCell(section)") &&
+    t8Handler.Contains("model.GetCell(section, row)") &&
+    t8Handler.Contains("Model.RowSelected(cell);") &&
+    t8Handler.Contains("table.ModelChanged += OnModelChanged;") &&
+    t8Handler.Contains("[nameof(TableView.RowHeight)] = MapRowHeight,") &&
+    t8Handler.Contains("materializer.FixedItemHeight = table.RowHeight > -1 ? table.RowHeight : 0;") &&
+    t8Handler.Contains("BindRowContext = false,") &&
+    t8Handler.Contains("DisablePooling = true,") &&
+    t8Handler.Contains("OpenHarmonyCellFactory.Create(item, item)");
+bool t8PinShared = t8ListHandler.Contains("internal static class OpenHarmonyCellFactory") &&
+    t8ListHandler.Contains("OpenHarmonyCellFactory.Create(content, item);") &&
+    t8ListHandler.Contains("ImageCell imageCell => CreateImageCell(imageCell),");
+bool t8PinMaterializer = t8Mat.Contains("public bool BindRowContext { get; set; } = true;") &&
+    t8Mat.Contains("public bool DisablePooling { get; set; }") &&
+    t8Mat.Contains("if (BindRowContext)") &&
+    t8Mat.Contains("if (!DisablePooling && !IsHeader(index) && !IsFooter(index))") &&
+    t8Mat.Contains("ItemHeight = FixedItemHeight;");
+bool t8PinRegistration = t8Ext.Contains("[typeof(Microsoft.Maui.Controls.TableView)] = new(typeof(OpenHarmonyTableViewHandler)),") &&
+    t8Api.Contains("Microsoft.Maui.Platform.OpenHarmonyTableViewHandler");
+bool t8PinsOk = t8PinHandler && t8PinShared && t8PinMaterializer && t8PinRegistration;
+Console.WriteLine($"[verify] tableview pins handler={t8PinHandler} shared={t8PinShared} " +
+    $"materializer={t8PinMaterializer} register={t8PinRegistration} source='{t8HandlerPath ?? "<missing>"}' assert={t8PinsOk}");
+if (!t8PinsOk)
+{
+    throw new InvalidOperationException("the TableView source contract drifted");
 }
 
 var timeCtl = root.Children.OfType<HorizontalStackLayout>().SelectMany(l => l.Children).OfType<TimePicker>().FirstOrDefault();
@@ -9777,6 +9996,39 @@ class RoutedPage : ContentPage
         Title = "Routed";
         Content = new Label { Text = "routed page" };
     }
+}
+
+/// <summary>
+/// Custom ITableViewController model probe for T8: two sections, a header cell on the first
+/// section and per-row text cells created by the default TableModel.GetCell, with selections
+/// recorded to pin the RowSelected path.
+/// </summary>
+sealed class ProbeTableModel : Microsoft.Maui.Controls.Internals.TableModel
+{
+    private readonly string[][] _sections;
+    private readonly string[] _titles;
+
+    public ProbeTableModel(string[][] sections, string[] titles)
+    {
+        _sections = sections;
+        _titles = titles;
+    }
+
+    public List<string> Selected { get; } = new();
+
+    public override object GetItem(int section, int row) => _sections[section][row];
+
+    public override int GetRowCount(int section) => _sections[section].Length;
+
+    public override int GetSectionCount() => _sections.Length;
+
+    public override string GetSectionTitle(int section) => _titles[section];
+
+    public override Microsoft.Maui.Controls.Cell? GetHeaderCell(int section)
+        => section == 0 ? new Microsoft.Maui.Controls.TextCell { Text = "model header" } : null;
+
+    protected override void OnRowSelected(object item)
+        => Selected.Add(item is Microsoft.Maui.Controls.TextCell cell ? cell.Text ?? string.Empty : item?.ToString() ?? string.Empty);
 }
 
 class TestApp : Application
