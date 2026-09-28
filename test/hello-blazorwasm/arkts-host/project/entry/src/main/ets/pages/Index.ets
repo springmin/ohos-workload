@@ -7,7 +7,14 @@
 // Request mapping: https://blazor.local/<path> -> rawfile blazor/<path>. Unknown paths fall
 // back to index.html so client-side routing keeps working; the framework files come from
 // _framework/ with the MIME types Blazor's boot script expects (application/wasm for the
-// .wasm payloads).
+// .wasm payloads). When the request accepts br/gzip and the site ships the sibling
+// .br/.gz file (a full publish does), the compressed variant is served with the matching
+// Content-Encoding, exactly like a static web server would.
+//
+// Diagnostic markers: the page reports BLZ_* console messages (BLZ_BOOT after window load,
+// BLZ_RENDERED after the first Blazor render, BLZ_ERROR on failures) and they are forwarded
+// to hilog under TAG, so a tester can check `hilog | grep BlazorWebHost` for a machine
+// verdict.
 import { webview as web_webview } from '@kit.ArkWeb';
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import { common } from '@kit.AbilityKit';
@@ -62,6 +69,18 @@ function mimeTypeOf(path: string): string {
   return 'application/octet-stream';
 }
 
+// One served asset: the bytes to return plus the content coding already applied to them
+// ('br', 'gz' or '' for the file as-is).
+class ServedFile {
+  bytes: Uint8Array | undefined = undefined;
+  coding: string = '';
+
+  constructor(bytes: Uint8Array | undefined, coding: string) {
+    this.bytes = bytes;
+    this.coding = coding;
+  }
+}
+
 @Entry
 @Component
 struct Index {
@@ -76,6 +95,34 @@ struct Index {
     return this.rawFiles;
   }
 
+  private readRawFile(manager: resourceManager.ResourceManager, path: string): Uint8Array | undefined {
+    try {
+      return manager.getRawFileContentSync(ROOT + path);
+    } catch {
+      return undefined;
+    }
+  }
+
+  // True when the request's Accept-Encoding carries the token (br / gzip).
+  private acceptsEncoding(request: WebResourceRequest, coding: string): boolean {
+    try {
+      const headers: Header[] = request.getRequestHeader();
+      for (let i = 0; i < headers.length; i++) {
+        if (headers[i].headerKey.toLowerCase() === 'accept-encoding') {
+          const parts: string[] = headers[i].headerValue.toLowerCase().split(',');
+          for (let j = 0; j < parts.length; j++) {
+            if (parts[j].split(';')[0].trim() === coding) {
+              return true;
+            }
+          }
+        }
+      }
+    } catch {
+      // No header view means no compressed variant; the plain file is served.
+    }
+    return false;
+  }
+
   private errorResponse(code: number): WebResourceResponse {
     const response: WebResourceResponse = new WebResourceResponse();
     response.setResponseCode(code);
@@ -85,8 +132,26 @@ struct Index {
     return response;
   }
 
+  // Reads <path>, preferring the .br/.gz sibling when the request accepts it.
+  private readNegotiated(manager: resourceManager.ResourceManager, path: string,
+                         acceptBr: boolean, acceptGzip: boolean): ServedFile {
+    if (acceptBr) {
+      const brBytes: Uint8Array | undefined = this.readRawFile(manager, path + '.br');
+      if (brBytes !== undefined) {
+        return new ServedFile(brBytes, 'br');
+      }
+    }
+    if (acceptGzip) {
+      const gzBytes: Uint8Array | undefined = this.readRawFile(manager, path + '.gz');
+      if (gzBytes !== undefined) {
+        return new ServedFile(gzBytes, 'gz');
+      }
+    }
+    return new ServedFile(this.readRawFile(manager, path), '');
+  }
+
   // https://blazor.local/<path>[?query][#fragment] -> rawfile blazor/<path>
-  private serveFile(url: string): WebResourceResponse {
+  private serveFile(request: WebResourceRequest, url: string): WebResourceResponse {
     let path: string = url.startsWith(ORIGIN) ? url.substring(ORIGIN.length) : '';
     const query: number = path.indexOf('?');
     const fragment: number = path.indexOf('#');
@@ -109,24 +174,34 @@ struct Index {
       hilog.error(DOMAIN, TAG, 'no resource manager for %{public}s', path);
       return this.errorResponse(500);
     }
-    let bytes: Uint8Array;
-    try {
-      bytes = manager.getRawFileContentSync(ROOT + path);
-    } catch {
+    const acceptBr: boolean = this.acceptsEncoding(request, 'br');
+    const acceptGzip: boolean = this.acceptsEncoding(request, 'gzip');
+
+    let served: ServedFile = this.readNegotiated(manager, path, acceptBr, acceptGzip);
+    if (served.bytes === undefined) {
       // SPA fallback: a route without a matching rawfile renders the app shell.
-      try {
-        bytes = manager.getRawFileContentSync(ROOT + 'index.html');
-        path = 'index.html';
-      } catch {
-        return this.errorResponse(404);
-      }
+      path = 'index.html';
+      served = this.readNegotiated(manager, path, acceptBr, acceptGzip);
+    }
+    if (served.bytes === undefined) {
+      return this.errorResponse(404);
     }
 
     const response: WebResourceResponse = new WebResourceResponse();
     response.setResponseCode(200);
     response.setResponseMimeType(mimeTypeOf(path));
     response.setResponseEncoding('utf-8');
-    response.setResponseData(bytes.buffer as ArrayBuffer);
+    if (served.coding.length > 0) {
+      const headers: Header[] = [{
+        headerKey: 'Content-Encoding',
+        headerValue: served.coding,
+      }, {
+        headerKey: 'Cache-Control',
+        headerValue: 'no-cache',
+      }];
+      response.setResponseHeader(headers);
+    }
+    response.setResponseData(served.bytes.buffer as ArrayBuffer);
     return response;
   }
 
@@ -143,11 +218,21 @@ struct Index {
             if (!url.startsWith(ORIGIN)) {
               return null;
             }
-            return this.serveFile(url);
+            return this.serveFile(event.request, url);
           } catch (error) {
             hilog.error(DOMAIN, TAG, 'intercept failed: %{public}s', JSON.stringify(error));
             return null;
           }
+        })
+        .onConsole((event) => {
+          // The site logs BLZ_* diagnostics; forward them to hilog as a machine-readable
+          // pass/fail signal (`hilog | grep BlazorWebHost`). Returning false keeps the
+          // browser console output as well.
+          const message: string = event.message.getMessage();
+          if (message.startsWith('BLZ_')) {
+            hilog.info(DOMAIN, TAG, 'marker: %{public}s', message);
+          }
+          return false;
         })
         .onPageEnd(() => {
           hilog.info(DOMAIN, TAG, 'page loaded: %{public}s', ORIGIN);

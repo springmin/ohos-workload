@@ -20,6 +20,13 @@
         <a href="." class="reload">Reload</a>
     </div>
 
+    <!-- Host markers: the ArkTS page forwards BLZ_* console messages to hilog, so the kit
+         tester (or Tester-run.sh) can grep `BlazorWebHost` for a machine verdict. -->
+    <script>
+        window.addEventListener('load', function () { console.log('BLZ_BOOT'); });
+        window.addEventListener('error', function (e) { console.log('BLZ_ERROR ' + (e && e.message)); });
+        window.addEventListener('unhandledrejection', function (e) { console.log('BLZ_ERROR ' + (e && e.reason)); });
+    </script>
     <script src="_framework/blazor.webassembly#[.{fingerprint}].js"></script>
 </body>
 

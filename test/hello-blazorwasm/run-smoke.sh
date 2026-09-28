@@ -12,13 +12,15 @@
 # carrying the eng/ohos-install/build/msbuild-pipe-patch fix (sdk-ohos feature/openharmony,
 # 2026-09-28) passes the first run without the override.
 #
-# usage: run-smoke.sh [--require] [--trim] [--skip-publish] [--out DIR]
+# usage: run-smoke.sh [--require] [--trim] [--slim] [--skip-publish] [--out DIR]
 #   DOTNET=/path/to/dotnet   dotnet to use (default: ~/.dotnet/dotnet, then PATH)
 #
 # Without --require, a publish blocked by restore (feed or pack unavailable) prints SKIP and
 # exits 0, mirroring test/aot-smoke/run-smoke.sh. --require turns that into a failure, for
 # CI-style use. --trim opts into the ILLink trimming pass (needs the rc.2 ILLink tool
-# runtime, see README.md "Trimming").
+# runtime, see README.md "Trimming"). --slim adds -p:InvariantGlobalization=true (drops the
+# ICU data files) for the small kit variant; pack-host.sh --slim additionally strips the
+# .br/.gz/.map siblings at embed time.
 set -e
 
 SELF="$(cd "$(dirname "$0")" && pwd)"
@@ -28,12 +30,14 @@ DOTNET="${DOTNET:-$HOME/.dotnet/dotnet}"
 
 REQUIRE=0
 TRIM=0
+SLIM=0
 SKIP_PUBLISH=0
 OUT="$SELF/out"
 while [ $# -gt 0 ]; do
     case "$1" in
         --require) REQUIRE=1 ;;
         --trim) TRIM=1 ;;
+        --slim) SLIM=1 ;;
         --skip-publish) SKIP_PUBLISH=1 ;;
         --out)
             shift
@@ -48,12 +52,14 @@ mkdir -p "$OUT"
 
 TRIMARG="-p:PublishTrimmed=false"
 [ "$TRIM" = 1 ] && TRIMARG="-p:PublishTrimmed=true"
+SLIMARG=""
+[ "$SLIM" = 1 ] && SLIMARG="-p:InvariantGlobalization=true"
 
 publish() { # <name> <extra msbuild args...>
     name="$1"
     shift
-    echo "== dotnet publish ($name): $DOTNET publish hello-blazorwasm.csproj -c Release -o $OUT/publish $TRIMARG $* =="
-    "$DOTNET" publish "$SELF/hello-blazorwasm.csproj" -c Release -o "$OUT/publish" $TRIMARG "$@" \
+    echo "== dotnet publish ($name): $DOTNET publish hello-blazorwasm.csproj -c Release -o $OUT/publish $TRIMARG $SLIMARG $* =="
+    "$DOTNET" publish "$SELF/hello-blazorwasm.csproj" -c Release -o "$OUT/publish" $TRIMARG $SLIMARG "$@" \
         > "$OUT/publish-$name.log" 2>&1
 }
 
@@ -111,6 +117,10 @@ if ! ls "$WEB"/_framework/dotnet*.wasm >/dev/null 2>&1; then
     echo "MISS _framework/dotnet*.wasm (the .NET runtime payload)" >&2
     OK=1
 fi
+if [ "$SLIM" = 1 ] && ls "$WEB"/_framework/icudt*.dat >/dev/null 2>&1; then
+    echo "MISS --slim publish still carries ICU data (_framework/icudt*.dat); InvariantGlobalization did not apply" >&2
+    OK=1
+fi
 WASM_COUNT=$(ls "$WEB"/_framework/*.wasm 2>/dev/null | wc -l | tr -d ' ')
 [ "$WASM_COUNT" -gt 0 ] || { echo "MISS no .wasm payloads under _framework/" >&2; OK=1; }
 [ "$OK" = 0 ] || { echo "ERROR: the publish output is not a servable Blazor site (see above)" >&2; exit 1; }
@@ -119,7 +129,7 @@ FILE_COUNT=$(find "$WEB" -type f | wc -l | tr -d ' ')
 SIZE=$(du -sh "$WEB" 2>/dev/null | awk '{print $1}')
 echo
 echo "OK: site at $WEB"
-echo "    $FILE_COUNT files, $SIZE, $WASM_COUNT wasm payloads, trimming: $([ "$TRIM" = 1 ] && echo on || echo off)"
-echo "    host it with: test/hello-blazorwasm/arkts-host/pack-host.sh \"$WEB\""
+echo "    $FILE_COUNT files, $SIZE, $WASM_COUNT wasm payloads, trimming: $([ "$TRIM" = 1 ] && echo on || echo off), slim: $([ "$SLIM" = 1 ] && echo on || echo off)"
+echo "    host it with: test/hello-blazorwasm/arkts-host/pack-host.sh$([ "$SLIM" = 1 ] && echo ' --slim') \"$WEB\""
 echo "    or serve it during development: python3 -m http.server --directory \"$WEB\" 8199"
 exit 0

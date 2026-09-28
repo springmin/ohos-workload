@@ -17,9 +17,14 @@
 # usage: pack-host.sh <site-dir> [options]
 #   <site-dir>        published Blazor site: the directory holding index.html
 #                     (normally <publish>/wwwroot; see ../run-smoke.sh)
-#   --out <hap>       output hap (default <arkts-host>/out/hello-blazorwasm-host-signed.hap)
+#   --out <hap>       output hap (default <arkts-host>/out/hello-blazorwasm-host-{signed,unsigned}.hap)
 #   --work <dir>      scratch dir (default <arkts-host>/out/host-work)
 #   --bundle <name>   bundle name (default com.example.opendotnet)
+#   --slim            drop .br/.gz/.map from the embedded site (the host serves the
+#                     uncompressed copies; a full 71 MB site shrinks by ~26 MB and an
+#                     InvariantGlobalization publish another few MB)
+#   --unsigned-only   stop after packing; copy the unsigned hap to --out for external
+#                     signing (the device-test kit consumes this variant)
 #   --help
 # env:
 #   OHOS_SDK_ROOT / OHOS_SDK   OpenHarmony SDK root (default: newest harmonybrew Cellar
@@ -27,9 +32,9 @@
 #                              hap-sign-tool,hap-sign-tool material})
 #   HVIGOR_JS                  hvigor entry point (default
 #                              <repo>/.arkts-build/hvigor/node_modules/@ohos/hvigor/bin/hvigor.js)
-#   HVIGOR_NODE                node binary (default: the harmonybrew node, then the PATH
-#                              node; the OpenHarmony NODE=/data/service/hnp/bin/node is
-#                              refused because that build crashes hvigor at startup)
+#   HVIGOR_NODE                node binary override (default: the harmonybrew node, then the
+#                              PATH node; every candidate must pass a `node -e` smoke test,
+#                              which the OpenHarmony NODE=/data/service/hnp/bin/node fails)
 #   NODE_HOME                  nodejs.dir written to local.properties (default ~/.harmonybrew)
 #   ARKTS_PLATFORM_VERSION     SDK version directory (default 26.0.0)
 #   SIGN_KEY_ALIAS             app signing alias (default "OpenHarmony Application Release")
@@ -47,21 +52,31 @@ SITE=""
 OUT=""
 WORK=""
 BUNDLE="com.example.opendotnet"
+SLIM=0
+UNSIGNED_ONLY=0
 while [ $# -gt 0 ]; do
     case "$1" in
         --out) shift; OUT="${1:-}" ;;
         --work) shift; WORK="${1:-}" ;;
         --bundle) shift; BUNDLE="${1:-}" ;;
-        --help|-h) sed -n '2,40p' "$0"; exit 0 ;;
+        --slim) SLIM=1 ;;
+        --unsigned-only) UNSIGNED_ONLY=1 ;;
+        --help|-h) sed -n '2,44p' "$0"; exit 0 ;;
         -*) die "unknown option: $1 (see --help)" ;;
         *) [ -z "$SITE" ] || die "only one site directory may be given"; SITE="$1" ;;
     esac
     shift
 done
-[ -n "$SITE" ] || die "usage: pack-host.sh <site-dir> [--out <hap>] [--work <dir>] [--bundle <name>]"
+[ -n "$SITE" ] || die "usage: pack-host.sh <site-dir> [--out <hap>] [--work <dir>] [--bundle <name>] [--slim] [--unsigned-only]"
 [ -f "$SITE/index.html" ] || die "$SITE does not look like a Blazor site (no index.html)"
 SITE="$(cd "$SITE" && pwd)"
-OUT="${OUT:-$SELF/out/hello-blazorwasm-host-signed.hap}"
+if [ -z "$OUT" ]; then
+    if [ "$UNSIGNED_ONLY" = 1 ]; then
+        OUT="$SELF/out/hello-blazorwasm-host-unsigned.hap"
+    else
+        OUT="$SELF/out/hello-blazorwasm-host-signed.hap"
+    fi
+fi
 WORK="${WORK:-$SELF/out/host-work}"
 
 # ---- tools -----------------------------------------------------------------
@@ -88,22 +103,22 @@ HVIGOR_JS="${HVIGOR_JS:-$ROOT/.arkts-build/hvigor/node_modules/@ohos/hvigor/bin/
 HVIGOR_MODULES="$(dirname "$(dirname "$(dirname "$(dirname "$HVIGOR_JS")")")")"
 [ -d "$HVIGOR_MODULES/@ohos/hvigor-ohos-plugin" ] || die "hvigor plugin not found under $HVIGOR_MODULES"
 
-# Node selection: the OpenHarmony device environment exports NODE=/data/service/hnp/bin/node
-# (v24), and that build crashes hvigor at startup (V8 "Check failed: 12 == errno" in the V8
-# startup path) - so $NODE is deliberately not the default. Prefer an explicit HVIGOR_NODE,
-# then the harmonybrew node, then PATH; refuse the hnp node up front with a clear message.
-NODE_BIN="${HVIGOR_NODE:-}"
-if [ -z "$NODE_BIN" ] && [ -x "$HOME/.harmonybrew/bin/node" ]; then
-    NODE_BIN="$HOME/.harmonybrew/bin/node"
-fi
-if [ -z "$NODE_BIN" ]; then
-    NODE_BIN="$(command -v node 2>/dev/null || true)"
-fi
-[ -n "$NODE_BIN" ] || die "no node found (set HVIGOR_NODE=/path/to/node, needs node >= 18)"
-case "$NODE_BIN" in
-    /data/service/hnp/*)
-        die "refusing the OpenHarmony hnp node ($NODE_BIN): it crashes hvigor; set HVIGOR_NODE=/path/to/node (e.g. \$HOME/.harmonybrew/bin/node)" ;;
-esac
+# Node selection mirrors scripts/build-arkts-shell.sh: an explicitly requested HVIGOR_NODE
+# wins, then the harmonybrew node, then the PATH node; every candidate must pass the same
+# trivial smoke test (`node -e "process.exit(0)"`). The OpenHarmony environment exports
+# NODE=/data/service/hnp/bin/node (v24.13.0), whose V8 aborts ("Check failed: 12 ==
+# (*__errno_location())") before it runs anything - so a bare $NODE is never trusted.
+node_runs() { sh -c '"$0" -e "process.exit(0)"' "$1" >/dev/null 2>&1; }
+NODE_BIN=""
+for cand in "${HVIGOR_NODE:-}" "$HOME/.harmonybrew/bin/node" "$(command -v node 2>/dev/null || true)"; do
+    [ -n "$cand" ] || continue
+    if node_runs "$cand"; then
+        NODE_BIN="$cand"
+        break
+    fi
+    echo "   note: node candidate $cand failed the smoke test; trying the next one" >&2
+done
+[ -n "$NODE_BIN" ] || die "no runnable node found (set HVIGOR_NODE=/path/to/node, needs node >= 18)"
 
 PLATFORM_VERSION="${ARKTS_PLATFORM_VERSION:-26.0.0}"
 KEY_ALIAS="${SIGN_KEY_ALIAS:-OpenHarmony Application Release}"
@@ -163,6 +178,20 @@ rm -rf "$RAW/blazor"
 mkdir -p "$RAW"
 cp -a "$SITE" "$RAW/blazor"
 
+if [ "$SLIM" = 1 ]; then
+    info "slim: dropping .br/.gz/.map files (the host serves the uncompressed copies)"
+    python3 - "$RAW/blazor" <<'PY'
+import os, sys
+removed = 0
+for dirpath, _, files in os.walk(sys.argv[1]):
+    for name in files:
+        if name.endswith(('.br', '.gz', '.map')):
+            os.remove(os.path.join(dirpath, name))
+            removed += 1
+print(f"   slim: removed {removed} file(s)")
+PY
+fi
+
 # ---- build (CompileArkTS; hvigor's PackageHap may fail, see the header) ----
 info "running hvigor"
 sync
@@ -214,6 +243,15 @@ info "packing (ohos_packing_tool)"
 "$PACK_TOOL" pack $PACK_ARGS > "$WORK/pack.log" 2>&1 || { tail -15 "$WORK/pack.log" >&2; die "packing failed (full log: $WORK/pack.log)"; }
 [ -s "$UNSIGNED" ] || die "packing produced no hap"
 
+# ---- sign (skipped with --unsigned-only: the kit consumes the unsigned hap) -----------------
+if [ "$UNSIGNED_ONLY" = 1 ]; then
+    info "unsigned-only: copying the packed hap to $OUT for external signing"
+    mkdir -p "$(dirname "$OUT")"
+    cp -f "$UNSIGNED" "$OUT"
+fi
+
+if [ "$UNSIGNED_ONLY" != 1 ]; then
+
 # ---- sign ------------------------------------------------------------------
 info "signing (hap-sign-tool)"
 python3 - "$SIGN_LIB/UnsgnedDebugProfileTemplate.json" "$WORK/.signing/profile.json" "$BUNDLE" <<'PY'
@@ -248,6 +286,8 @@ mkdir -p "$(dirname "$OUT")"
     -outProfile "$WORK/.signing/verify.p7b" > "$WORK/verify.log" 2>&1 \
     || { tail -15 "$WORK/verify.log" >&2; die "verify-app failed (full log: $WORK/verify.log)"; }
 
+fi # !unsigned-only
+
 # ---- summary ---------------------------------------------------------------
 RAW_COUNT=$(find "$RAW/blazor" -type f | wc -l | tr -d ' ')
 SIZE=$(du -sh "$OUT" 2>/dev/null | awk '{print $1}')
@@ -264,7 +304,14 @@ echo
 echo "OK: $OUT"
 echo "    size: $SIZE  sha256: $SHA"
 echo "    bundle: $BUNDLE  embedded site files: $RAW_COUNT"
-echo "    install: hdc install \"$OUT\" (or open the hap on the device)"
-echo "    launch:  aa start -b $BUNDLE -a EntryAbility"
-echo "    logs:    hilog | grep BlazorWebHost"
+if [ "$UNSIGNED_ONLY" = 1 ]; then
+    echo "    unsigned: sign before installing, e.g."
+    echo "      hap-sign-tool sign-app -mode localSign -keyAlias <alias> -signAlg SHA256withECDSA \\"
+    echo "        -appCertFile <your.cer> -profileFile <your.p7b> -keystoreFile <your.p12> \\"
+    echo "        -keyPwd <pwd> -keystorePwd <pwd> -signCode 1 -inFile \"$OUT\" -outFile <signed.hap>"
+else
+    echo "    install: hdc install \"$OUT\" (or open the hap on the device)"
+    echo "    launch:  aa start -b $BUNDLE -a EntryAbility"
+    echo "    logs:    hilog | grep BlazorWebHost  (expect BLZ_BOOT / BLZ_RENDERED markers)"
+fi
 exit 0

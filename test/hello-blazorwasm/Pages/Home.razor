@@ -1,4 +1,5 @@
 @page "/"
+@inject IJSRuntime JS
 
 <h1>Hello from Blazor WebAssembly</h1>
 
@@ -14,4 +15,17 @@
 <p><a href="counter">Open the interactive counter</a></p>
 
 @code {
+    private bool markerSent = false;
+
+    // Fires after the first render of the app's root page: proof that the WASM runtime
+    // booted, executed .NET code and rendered the component. The host forwards BLZ_*
+    // console output to hilog (see ../../arkts-host/README.md).
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (firstRender && !markerSent)
+        {
+            markerSent = true;
+            await JS.InvokeVoidAsync("console.log", "BLZ_RENDERED");
+        }
+    }
 }

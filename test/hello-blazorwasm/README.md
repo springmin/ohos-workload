@@ -35,8 +35,9 @@ pattern the in-product HybridWebView/BlazorWebView bridge uses. See `arkts-host/
 ## Publish
 
 ```sh
-test/hello-blazorwasm/run-smoke.sh                   # untrimmed (63 MB site); prints the path
-test/hello-blazorwasm/run-smoke.sh --trim            # ILLink pass (71 MB site)
+test/hello-blazorwasm/run-smoke.sh                   # untrimmed (~52 MB site); prints the path
+test/hello-blazorwasm/run-smoke.sh --trim            # ILLink pass (needs the rc.2 ILLink runtime)
+test/hello-blazorwasm/run-smoke.sh --slim            # InvariantGlobalization: drops ICU (~47 MB)
 test/hello-blazorwasm/run-smoke.sh --require         # CI mode: a restore SKIP becomes a failure
 test/hello-blazorwasm/run-smoke.sh --skip-publish    # verify an existing out/publish only
 ```
@@ -53,27 +54,53 @@ from runtime-ohos `docs/plans/2026-09-28-blazor-wasm-on-device-feasibility.md`).
 `arkts-host/pack-host.sh <site-dir>` stages `arkts-host/project/`, embeds the site under
 `entry/src/main/resources/rawfile/blazor`, builds with hvigor, packs with the SDK's
 `ohos_packing_tool` and signs with `hap-sign-tool` (debug material from the SDK). Output:
-`arkts-host/out/hello-blazorwasm-host-signed.hap` (~70 MB with the full site; the site
-dominates the size).
+`arkts-host/out/hello-blazorwasm-host-signed.hap` (~70 MB with the full site).
+
+Two flags serve the device-test kit variant (see `docs/blazor-arkweb-kit-handoff.md`):
+
+```sh
+test/hello-blazorwasm/arkts-host/pack-host.sh <site> --slim --unsigned-only
+# --slim            drop .br/.gz/.map at embed time (the host serves the uncompressed copies)
+# --unsigned-only   stop after packing: hello-blazorwasm-host-unsigned.hap for external signing
+# measured: --slim embed of a --slim publish = 210 site files, 26 MB unsigned hap (0 compressed
+# leftovers, 0 ICU), and the hap re-signs cleanly with hap-sign-tool sign-app + verify-app
+```
 
 The bundle name defaults to `com.example.opendotnet`; change it with `--bundle`, and sign with
 your own material via the `SIGN_*` environment variables when the device does not trust the
 OpenHarmony debug root.
+
+## Markers (machine-readable pass criteria)
+
+`wwwroot/index.html` logs `BLZ_BOOT` on window load and `BLZ_ERROR <message>` on script errors;
+`Pages/Home.razor` logs `BLZ_RENDERED` after the first render (proof that the WASM runtime
+executed .NET code). The ArkTS host forwards every `BLZ_*` console message to hilog, so a
+tester checks:
+
+```sh
+hilog | grep BlazorWebHost        # expect marker: BLZ_BOOT and marker: BLZ_RENDERED
+```
 
 ## Verified
 
 2026-09-28, OpenHarmony arm64 device, sdk-ohos `feature/openharmony` (statically linked
 OpenSSL SDK, MSBuild pipe patch included):
 
-- publish: untrimmed site = 636 files / 63 MB; trimmed (with the ILLink override) = 753 files
-  / 71 MB; `dotnet build` of a Blazor WASM app succeeds with **no task-host retries** on the
-  patched SDK.
+- publish: default = 642 files / 52 MB; `--slim` = 633 files / 47 MB (ICU dropped);
+  trimmed (with the ILLink override) = 753 files / 71 MB; `dotnet build` of a Blazor WASM app
+  succeeds with **no task-host retries** on the patched SDK.
 - host hap: CompileArkTS, `ohos_packing_tool` pack and `hap-sign-tool sign-app` +
-  `verify-app` all pass; the embedded site contains the 899 rawfile members.
+  `verify-app` all pass; the embedded site contains the 899 rawfile members (full variant).
+- kit variant: `--slim --unsigned-only` = 210 site files, **26 MB unsigned hap**, no
+  `.br/.gz/.map`, no ICU; the hap re-signs and verifies (26.8 MB signed).
 - ArkWeb rendering on a device with a UI is still pending (this test tree runs on a headless
   device; `hdc`/`aa` are not available there). The serving path is the same one the MAUI
   BlazorWebView bridge ships, and the publish output was additionally exercised with a
-  `python3 -m http.server` + curl check of the MIME types.
+  `python3 -m http.server` + curl check of the MIME types. The device-test kit round is the
+  intended vehicle: hand-off spec in `docs/blazor-arkweb-kit-handoff.md`.
+
+`blazor-recipe.yml` (weekly + manual) re-publishes both recipes on a stock x64 runner so
+feed/version drift shows up without a device.
 
 ## Files
 
@@ -82,6 +109,6 @@ hello-blazorwasm.csproj      flight pin + RuntimeFrameworkVersion (see the cspro
 Directory.Build.targets     known-pack version overrides + conditional task-host override import
 taskhost-overrides.targets  in-process UsingTask registrations (only with OhosTaskHostOverride)
 NuGet.config                nuget.org + dnceng public dotnet11 feed
-run-smoke.sh                publish + verify driver (SKIP/--require semantics)
+run-smoke.sh                publish + verify driver (SKIP/--require/--slim semantics)
 arkts-host/                 ArkTS host project + pack-host.sh (see its README)
 ```
