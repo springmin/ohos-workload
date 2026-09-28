@@ -49,7 +49,7 @@ allocation and jitter) budgets are exceeded.
 # (or the MauiSliceDir / HostingDll / OpenHarmonyGraphicsDll MSBuild properties) before building
 # elsewhere; an explicit -p: value wins over the environment and the absolute fallbacks.
 dotnet build -v:q
-dotnet bin/Debug/net11.0/verify.dll | grep -c '\[verify\]'   # expect 405 (392 interaction checks + 4 fuzz + 1 frame perf + 8 a11y perf)
+dotnet bin/Debug/net11.0/verify.dll | grep -c '\[verify\]'   # expect 416 (403 interaction checks + 4 fuzz + 1 frame perf + 8 a11y perf)
 ```
 
 The `interaction-regression` workflow (`.github/workflows/interaction-regression.yml`) runs the
@@ -60,7 +60,7 @@ suite on a GitHub runner as a real gate (on push to `master`, on pull requests a
 points `MAUI_SLICE_DIR` / `HOSTING_DLL` / `OPENHARMONY_GRAPHICS_DLL` at those roots, and fails the
 job unless the run exits 0, the suite's own `[suite]` contract line reports `assert=True` with at
 least the floor declared in `Program.cs`, both perf lines report `within=True`, and no `Unhandled`
-line is logged. The floor (385 = 405 - 20, the documented convention) lives only in `Program.cs`;
+line is logged. The floor (396 = 416 - 20, the documented convention) lives only in `Program.cs`;
 the workflow and `scripts/preflight.sh` both read the printed `[suite] checks=... floor=...` line
 instead of repeating a literal, so the two local/CI thresholds cannot drift apart.
 
@@ -178,8 +178,8 @@ parse.
   blocks codesigned ELF apphosts on some machines).
 - The suite fails loudly (unhandled exception) when a slice change breaks startup or when an
   assertion for the gesture flows (including the drag-and-drop checks) does not hold; keep it at
-  392 interaction checks plus the 4 fuzz lines plus the 1 frame-perf line plus the 8 a11y-perf
-  lines (405 `[verify]` lines) when touching the platform slice. The total and the floor
+  403 interaction checks plus the 4 fuzz lines plus the 1 frame-perf line plus the 8 a11y-perf
+  lines (416 `[verify]` lines) when touching the platform slice. The total and the floor
   (total - 20) are declared in `Program.cs`; the run ends with a `[suite] checks=... floor=...
   assert=...` line and fails itself when the printed count is below the floor, so the CI job and
   `scripts/preflight.sh` do not repeat the threshold.
@@ -792,3 +792,20 @@ parse.
   control-carrying/missing-container shapes to stay inert. That is 7 lines: 398 + 7 = 405 =
   392 interaction checks + 4 fuzz + 1 frame perf + 8 a11y perf; the workflow floor moves with
   the total (405 - 20 = 385).
+- **T10 modal accessibility (7 lines, 2026-09-28)** - the self-drawn Alert/ActionSheet/Prompt
+  overlays join the accessibility shadow tree and trap focus. The dialog root (title, or the
+  message when there is no title), the message, the prompt text field and one button per
+  accept/cancel label or action sheet row are appended after the view tree with shared dialog
+  geometry (`TitleRect`/`MessageRect`/`PromptRect`), and the frame records the modal root id.
+  While an alert is open every background node is republished non-focusable (the host's
+  focus-move scans walk the published table by that bit), background accessibility actions are
+  rejected, and the alert's own nodes accept a screen-reader CLICK through the same tap path a
+  finger uses; closing it restores the background focusables. `alert a11y tree` asserts the
+  dialog/message/OK+Cancel nodes, their parent chain, shared accept-button bounds and the
+  content-update event; `alert a11y trap` counts the background focusable flip to zero (modal
+  focusables stay positive) and requires the stale background CLICK to be rejected without a
+  tap; `alert a11y click` completes the alert and checks the restore. The action sheet and
+  prompt blocks do the same for the three option rows (Alpha/Beta/Cancel) and the prompt
+  field's text update and OK click ("hi"). That is 7 lines: 409 + 7 = 416 = 403 interaction
+  checks + 4 fuzz + 1 frame perf + 8 a11y perf; the workflow floor moves with the total
+  (416 - 20 = 396).

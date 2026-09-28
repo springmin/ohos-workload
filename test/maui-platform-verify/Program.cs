@@ -12,7 +12,7 @@ using Microsoft.Maui.Platform;
 // after the fuzz tail) instead of letting every caller repeat its own threshold constant.
 VerifyLineCountingWriter verifyStdout = new(Console.Out);
 Console.SetOut(verifyStdout);
-const int verifyCheckTotal = 409;                     // documented full [verify] line count (+4 MS-MODE runtime mode switch, +10 P2c-DEEPLINK, +4 P2b-IMG, +16 P1b-LIST, +10 P1a-ANIM, +2 SEC3 storage/deep-link pins, +5 W-series WebView wiring, +3 T1 InputView mapping, +4 T2 WebView gaps, +4 T3 GraphicsView interaction)
+const int verifyCheckTotal = 416;                     // documented full [verify] line count (+4 MS-MODE runtime mode switch, +10 P2c-DEEPLINK, +4 P2b-IMG, +16 P1b-LIST, +10 P1a-ANIM, +2 SEC3 storage/deep-link pins, +5 W-series WebView wiring, +3 T1 InputView mapping, +4 T2 WebView gaps, +4 T3 GraphicsView interaction, +7 T10 modal accessibility)
 const int verifyCheckFloor = verifyCheckTotal - 20;   // documented floor convention (total - 20)
 
 // A small image file for the Image handler.
@@ -753,6 +753,90 @@ var promptAccept = OpenHarmonyAlertHost.AcceptRect;
 host.HandleTouch(true, false, promptAccept.Center.X, promptAccept.Center.Y);
 host.HandleTouch(false, true, promptAccept.Center.X, promptAccept.Center.Y);
 Console.WriteLine($"[verify] prompt result={(promptTask.IsCompleted ? (await promptTask) ?? "<null>" : "pending")}");
+
+// T10: the self-drawn alert overlays join the accessibility shadow tree (dialog root, message,
+// prompt field, buttons) and trap focus: while an alert is open every background node loses the
+// focusable bit, background actions are rejected, and the overlay's own nodes accept a
+// screen-reader CLICK through the same tap path a finger uses.
+host.Render();
+int t10BgFocusableBefore = OpenHarmonyAccessibility.Nodes.Count(n => !OpenHarmonyAccessibility.IsModalNode(n.Id) && n.IsFocusable);
+int t10BgNodeId = OpenHarmonyAccessibility.Nodes.FirstOrDefault(n => n.Text == "tap me" && n.Role == "text")?.Id ?? 0;
+var t10AlertTask = page.DisplayAlert("Alert title", "Alert message", "OK", "Cancel");
+host.Arrange(1080, 1920);
+host.Render();
+var t10Dialog = OpenHarmonyAccessibility.Nodes.FirstOrDefault(n => n.Role == "dialog");
+var t10Ok = OpenHarmonyAccessibility.Nodes.FirstOrDefault(n => n.Role == "button" && n.Text == "OK");
+var t10Cancel = OpenHarmonyAccessibility.Nodes.FirstOrDefault(n => n.Role == "button" && n.Text == "Cancel");
+bool t10ContentEvent = (OpenHarmonyAccessibility.PendingEventCount & OpenHarmonyAccessibility.EventPageContentUpdate) != 0;
+bool t10TreeOk = t10Dialog is not null && t10Dialog.Text == "Alert title" && t10Dialog.ParentId == 0
+    && t10Ok is not null && t10Ok.ParentId == t10Dialog.Id && OpenHarmonyAccessibility.IsModalNode(t10Ok.Id)
+    && t10Cancel is not null && t10Cancel.ParentId == t10Dialog.Id && OpenHarmonyAccessibility.IsModalNode(t10Cancel.Id)
+    && OpenHarmonyAccessibility.Nodes.Any(n => n.Role == "text" && n.Text == "Alert message" && n.ParentId == t10Dialog.Id)
+    && t10BgNodeId != 0 && !OpenHarmonyAccessibility.IsModalNode(t10BgNodeId) && t10ContentEvent;
+bool t10BoundsOk = t10Ok is not null
+    && Math.Abs(t10Ok.Bounds.X - OpenHarmonyAlertHost.AcceptRect.X) < 0.01
+    && Math.Abs(t10Ok.Bounds.Y - OpenHarmonyAlertHost.AcceptRect.Y) < 0.01;
+Console.WriteLine($"[verify] alert a11y tree dialog='{t10Dialog?.Text}' message={t10Dialog is not null && OpenHarmonyAccessibility.Nodes.Any(n => n.Role == "text" && n.Text == "Alert message")} buttons=[{t10Ok?.Text},{t10Cancel?.Text}] contentEvent={t10ContentEvent} boundsOk={t10BoundsOk} assert={t10TreeOk && t10BoundsOk}");
+int t10BgFocusableModal = OpenHarmonyAccessibility.Nodes.Count(n => !OpenHarmonyAccessibility.IsModalNode(n.Id) && n.IsFocusable);
+int t10ModalFocusable = OpenHarmonyAccessibility.Nodes.Count(n => OpenHarmonyAccessibility.IsModalNode(n.Id) && n.IsFocusable);
+int t10TapsBefore = gestures.TapCount;
+bool t10Rejected = !host.HandleAccessibilityAction(t10BgNodeId, 0x10);
+bool t10TapsQuiet = gestures.TapCount == t10TapsBefore;
+bool t10TrapOk = t10BgFocusableBefore > 0 && t10BgFocusableModal == 0 && t10ModalFocusable > 0
+    && t10Rejected && t10TapsQuiet;
+Console.WriteLine($"[verify] alert a11y trap backgroundFocusable {t10BgFocusableBefore}->{t10BgFocusableModal} modalFocusable={t10ModalFocusable} rejected={t10Rejected} tapsQuiet={t10TapsQuiet} assert={t10TrapOk}");
+bool t10ClickHandled = t10Ok is not null && host.HandleAccessibilityAction(t10Ok.Id, 0x10);
+bool t10Accepted = t10AlertTask.IsCompleted && await t10AlertTask;
+host.Render();
+int t10BgFocusableAfter = OpenHarmonyAccessibility.Nodes.Count(n => !OpenHarmonyAccessibility.IsModalNode(n.Id) && n.IsFocusable);
+bool t10Restored = !OpenHarmonyAlertHost.IsVisible && t10BgFocusableAfter > 0
+    && !OpenHarmonyAccessibility.Nodes.Any(n => n.Role == "dialog");
+Console.WriteLine($"[verify] alert a11y click handled={t10ClickHandled} accepted={t10Accepted} restored={t10Restored} assert={t10ClickHandled && t10Accepted && t10Restored}");
+
+var t10SheetTask = page.DisplayActionSheet("Pick one", "Cancel", null, "Alpha", "Beta");
+host.Arrange(1080, 1920);
+host.Render();
+var t10SheetDialog = OpenHarmonyAccessibility.Nodes.FirstOrDefault(n => n.Role == "dialog");
+var t10SheetButtons = OpenHarmonyAccessibility.Nodes
+    .Where(n => n.Role == "button" && OpenHarmonyAccessibility.IsModalNode(n.Id)).ToList();
+bool t10SheetTrap = t10SheetDialog?.Text == "Pick one" && t10SheetButtons.Count == 3
+    && t10SheetButtons.Any(n => n.Text == "Alpha") && t10SheetButtons.Any(n => n.Text == "Beta")
+    && t10SheetButtons.Any(n => n.Text == "Cancel")
+    && OpenHarmonyAccessibility.Nodes.Count(n => !OpenHarmonyAccessibility.IsModalNode(n.Id) && n.IsFocusable) == 0;
+Console.WriteLine($"[verify] sheet a11y dialog='{t10SheetDialog?.Text}' options=[{string.Join(",", t10SheetButtons.Select(n => n.Text))}] backgroundFocusable=0 assert={t10SheetTrap}");
+var t10Beta = t10SheetButtons.FirstOrDefault(n => n.Text == "Beta");
+bool t10SheetClick = t10Beta is not null && host.HandleAccessibilityAction(t10Beta.Id, 0x10);
+string? t10SheetResult = t10SheetTask.IsCompleted ? await t10SheetTask : null;
+host.Render();
+bool t10SheetRestored = !OpenHarmonyAlertHost.IsVisible
+    && OpenHarmonyAccessibility.Nodes.Count(n => !OpenHarmonyAccessibility.IsModalNode(n.Id) && n.IsFocusable) > 0;
+Console.WriteLine($"[verify] sheet a11y click handled={t10SheetClick} result='{t10SheetResult}' restored={t10SheetRestored} assert={t10SheetClick && t10SheetResult == "Beta" && t10SheetRestored}");
+
+var t10PromptTask = page.DisplayPromptAsync("Name", "Type it");
+host.Arrange(1080, 1920);
+host.Render();
+var t10PromptDialog = OpenHarmonyAccessibility.Nodes.FirstOrDefault(n => n.Role == "dialog");
+var t10Field = OpenHarmonyAccessibility.Nodes.FirstOrDefault(n => n.Role == "textInput" && OpenHarmonyAccessibility.IsModalNode(n.Id));
+bool t10FieldOk = t10PromptDialog?.Text == "Name" && t10Field is not null
+    && t10Field.ParentId == t10PromptDialog.Id && t10Field.Text == "";
+OpenHarmonyAlertHost.PromptAppend("hi");
+host.Render();
+var t10FieldAfter = OpenHarmonyAccessibility.Nodes.FirstOrDefault(n => n.Role == "textInput" && OpenHarmonyAccessibility.IsModalNode(n.Id));
+bool t10TextEvent = (OpenHarmonyAccessibility.PendingEventCount & OpenHarmonyAccessibility.EventTextUpdate) != 0;
+var t10PromptAccept = OpenHarmonyAccessibility.Nodes.FirstOrDefault(n => n.Role == "button" && n.Text == "OK" && OpenHarmonyAccessibility.IsModalNode(n.Id));
+Console.WriteLine($"[verify] prompt a11y dialog='{t10PromptDialog?.Text}' field='{t10Field?.Text}'->'{t10FieldAfter?.Text}' textEvent={t10TextEvent} assert={t10FieldOk && t10TextEvent}");
+bool t10PromptClick = t10PromptAccept is not null && host.HandleAccessibilityAction(t10PromptAccept.Id, 0x10);
+string? t10PromptResult = t10PromptTask.IsCompleted ? await t10PromptTask : null;
+host.Render();
+bool t10PromptRestored = !OpenHarmonyAlertHost.IsVisible
+    && OpenHarmonyAccessibility.Nodes.Count(n => !OpenHarmonyAccessibility.IsModalNode(n.Id) && n.IsFocusable) > 0;
+Console.WriteLine($"[verify] prompt a11y click handled={t10PromptClick} result='{t10PromptResult}' restored={t10PromptRestored} assert={t10PromptClick && t10PromptResult == "hi" && t10PromptRestored}");
+if (!(t10TreeOk && t10BoundsOk && t10TrapOk && t10ClickHandled && t10Accepted && t10Restored
+    && t10SheetTrap && t10SheetClick && t10SheetResult == "Beta" && t10SheetRestored
+    && t10FieldOk && t10TextEvent && t10PromptClick && t10PromptResult == "hi" && t10PromptRestored))
+{
+    throw new InvalidOperationException("the T10 modal accessibility contract (shadow-tree overlay nodes + focus trap) is missing or drifted");
+}
 
 // Audit batch 2 assertions.
 var graphicsCtl = root.Children.OfType<GraphicsView>().FirstOrDefault();
