@@ -22,7 +22,7 @@ on:
         description: 'maui-ohos commit SHA to cross-check (defaults to the pinned slice tip)'
         required: false
         type: string
-        default: 'b6a5864511f0e00e94a7cf126e1eb7801e03f9a5'
+        default: '843a6c7cd258742e9903d49a9c988bc79032ea17'
   push:
     branches: [ master ]
   pull_request:
@@ -32,15 +32,16 @@ permissions:
 
 # Reproducible cross-repo check: the slice is checked out at an exact commit, not the mutable
 # feature/openharmony branch, so a push to the fork cannot change what this gate verifies.
-# Current tip: b6a58645 (the T3 GraphicsView merge on top of the T5 layout semantics c1c05f3d,
-# the T4 Label spans, the T10 modal accessibility overlay, the T1 InputView mapping dcc7eaac and
-# T2 WebView CookieContainer sync 8241f1b3, after the SEC-SCAN-3 webview + deep-link batch: the
-# ArkWeb history/frame/cookie handlers, the S3-DL3 dot-dot route rejection and the HUKS/keystore
-# hardening; the T3/T4/T5/T10 batch adds no host exports, so the host export contract is still
-# 143/143).
+# Current tip: 843a6c7c (the T7 DatePicker month calendar with Min/Max clamping, the T11
+# diagnostics overlay and its adorners 89e41efa and the T9 window title bar 05935db3, on top of
+# the T3 GraphicsView merge b6a58645, the T5 layout semantics c1c05f3d, the T4 Label spans, the
+# T10 modal accessibility overlay, the T1 InputView mapping dcc7eaac and T2 WebView CookieContainer
+# sync 8241f1b3, after the SEC-SCAN-3 webview + deep-link batch: the ArkWeb history/frame/cookie
+# handlers, the S3-DL3 dot-dot route rejection and the HUKS/keystore hardening; the T3/T4/T5/T10
+# and T9/T11/T7 batches add no host exports, so the host export contract is still 143/143).
 # Advance the pin deliberately, in lockstep with the interaction/pixel gates.
 env:
-  MAUI_OHOS_REF: ${{ github.event.inputs.maui_ohos_ref || 'b6a5864511f0e00e94a7cf126e1eb7801e03f9a5' }}
+  MAUI_OHOS_REF: ${{ github.event.inputs.maui_ohos_ref || '843a6c7cd258742e9903d49a9c988bc79032ea17' }}
 
 jobs:
   contract:
