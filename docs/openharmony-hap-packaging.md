@@ -1421,6 +1421,11 @@ used to be applied by hand (`dotnet build -c Release --no-restore -m:1`, then ex
 `bin/Release/net11.0/headless-render.dll`), keeping both attempts as `pixel.log` and
 `pixel-fallback*.log`; with the hardened environment the retry should not trigger.
 
+The fallback path itself was exercised by hand on 2026-09-28 (`pixel-guard/pixel-run2.log`):
+`dotnet build -c Release --no-restore -m:1` (56 s) plus running `headless-render.dll` (14 s, rc=0)
+finished in **70 s total** and printed `PIXEL ASSERTIONS PASSED` (2,399,269 pixel writes; the two
+tracked `[KNOWN]` items unchanged), so the retry workaround is proven end-to-end.
+
 ### `dotnet restore` wedging in an idle FUTEX wait
 
 An earlier session recorded `dotnet restore` hanging for more than 5 minutes in an idle FUTEX
