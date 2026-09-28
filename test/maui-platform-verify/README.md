@@ -49,7 +49,7 @@ allocation and jitter) budgets are exceeded.
 # (or the MauiSliceDir / HostingDll / OpenHarmonyGraphicsDll MSBuild properties) before building
 # elsewhere; an explicit -p: value wins over the environment and the absolute fallbacks.
 dotnet build -v:q
-dotnet bin/Debug/net11.0/verify.dll | grep -c '\[verify\]'   # expect 391 (378 checks + 4 fuzz + 1 frame perf + 8 a11y perf)
+dotnet bin/Debug/net11.0/verify.dll | grep -c '\[verify\]'   # expect 405 (392 interaction checks + 4 fuzz + 1 frame perf + 8 a11y perf)
 ```
 
 The `interaction-regression` workflow (`.github/workflows/interaction-regression.yml`) runs the
@@ -60,7 +60,7 @@ suite on a GitHub runner as a real gate (on push to `master`, on pull requests a
 points `MAUI_SLICE_DIR` / `HOSTING_DLL` / `OPENHARMONY_GRAPHICS_DLL` at those roots, and fails the
 job unless the run exits 0, the suite's own `[suite]` contract line reports `assert=True` with at
 least the floor declared in `Program.cs`, both perf lines report `within=True`, and no `Unhandled`
-line is logged. The floor (371 = 391 - 20, the documented convention) lives only in `Program.cs`;
+line is logged. The floor (385 = 405 - 20, the documented convention) lives only in `Program.cs`;
 the workflow and `scripts/preflight.sh` both read the printed `[suite] checks=... floor=...` line
 instead of repeating a literal, so the two local/CI thresholds cannot drift apart.
 
@@ -178,8 +178,8 @@ parse.
   blocks codesigned ELF apphosts on some machines).
 - The suite fails loudly (unhandled exception) when a slice change breaks startup or when an
   assertion for the gesture flows (including the drag-and-drop checks) does not hold; keep it at
-  378 interaction checks plus the 4 fuzz lines plus the 1 frame-perf line plus the 8 a11y-perf
-  lines (391 `[verify]` lines) when touching the platform slice. The total and the floor
+  392 interaction checks plus the 4 fuzz lines plus the 1 frame-perf line plus the 8 a11y-perf
+  lines (405 `[verify]` lines) when touching the platform slice. The total and the floor
   (total - 20) are declared in `Program.cs`; the run ends with a `[suite] checks=... floor=...
   assert=...` line and fails itself when the printed count is below the floor, so the CI job and
   `scripts/preflight.sh` do not repeat the threshold.
@@ -764,3 +764,31 @@ parse.
   then approved. That is 10 lines: 377 + 10 = 387; the MS-MODE runtime-mode batch adds 4
   host/pack pins: 387 + 4 = 391 = 378 interaction checks + 4 fuzz + 1 frame
   perf + 8 a11y perf; the workflow floor moves with the total (391 - 20 = 371).
+- **T1 InputView mapping + T2 WebView residual gaps (7 lines, 2026-09-28)** - the InputView
+  mapper completion and the WebView gaps the W-series left. `i1 input view mapping pins` re-reads
+  the three text handlers and `OpenHarmonyView.cs`: the Entry mapper carries MaxLength/IsReadOnly/
+  Keyboard/IsPassword/ReturnType/ClearButtonVisibility/PlaceholderColor/HorizontalTextAlignment,
+  the Editor and SearchBar mappers carry their subsets, and the platform view keeps the
+  `ApplyKeyboardFilter`/`ClampToMaxLength` rules plus the clear-button geometry and the
+  alignment-aware `TextOriginX`. `i2 input mapping drill` connects a real Entry (MaxLength 5,
+  Keyboard.Numeric, IsPassword, ReturnType.Next, ClearButtonVisibility.WhileEditing,
+  HorizontalTextAlignment.Center, PlaceholderColor Red), drives the private shell-input entry
+  point (the same path `notifyTextInput` takes): the mapped state reaches the platform view, the
+  numeric filter drops letters, MaxLength clamps "ab12cd34567" to "12345", IsReadOnly freezes the
+  text and the drawn form is five bullets. `i3 input clear/alignment` hits the clear button
+  (drawing and hit-test share its centre), clears both views through the real touch path and
+  checks the Start < Center < End origin order plus the x->index round trip on the same metrics.
+  `w6 shell webview gaps` pins the three new shell blocks in every preview pack (and their
+  byte-identity): `onShowFileSelector` feeding the document picker into `handleFileList`,
+  `onPermissionRequest` prompting for CAMERA/MICROPHONE through
+  `abilityAccessCtrl.requestPermissionsFromUser` and granting exactly the granted subset,
+  `multiWindowAccess(true)` with `onWindowNew` loading the popup target in the same component
+  (single-window slice). `w7 webview media feature` pins the `webview-media` feature entries
+  (CAMERA + MICROPHONE, user_grant, reason strings) and the reason resources in every pack.
+  `w8 cookie container pins` pins the managed sync surface (the `IWebView.Cookies` mapper,
+  `SyncContainerToPlatform`, `MergeCookieHeader`, `ScheduleCookieRead` on page finished).
+  `w9 cookie container drill` maps a container cookie to the platform command, merges a
+  shell-shaped "sid=1; theme=dark" header into the container and requires the unsafe/empty/
+  control-carrying/missing-container shapes to stay inert. That is 7 lines: 398 + 7 = 405 =
+  392 interaction checks + 4 fuzz + 1 frame perf + 8 a11y perf; the workflow floor moves with
+  the total (405 - 20 = 385).

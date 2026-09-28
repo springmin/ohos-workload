@@ -11,6 +11,8 @@
     { "name": "permission_reason_calendar_read", "value": "Calendar events are read to show the schedule the app requests." },
     { "name": "permission_reason_calendar_write", "value": "Calendar events are created when the app adds an event." },
     { "name": "permission_reason_print", "value": "Documents the app renders can be sent to the system print service." },
-    { "name": "permission_reason_internet", "value": "Internet access is used when the app loads network content or calls web services." }
+    { "name": "permission_reason_internet", "value": "Internet access is used when the app loads network content or calls web services." },
+    { "name": "permission_reason_camera", "value": "Camera access is requested only when a web page asks to use the camera through the app's WebView." },
+    { "name": "permission_reason_microphone", "value": "Microphone access is requested only when a web page asks to use the microphone through the app's WebView." }
   ]
 }

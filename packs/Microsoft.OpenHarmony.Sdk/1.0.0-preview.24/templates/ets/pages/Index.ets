@@ -4330,6 +4330,20 @@ struct Index {
     }
   }
 
+  // WebView file selection (matrix #11): <input type=file> in an ArkWeb page. The document
+  // picker answers the page's request directly (no managed picker request id): multiple URIs
+  // for a multi-select page, one otherwise, an empty list on cancel/failure.
+  private async selectWebFileUris(multiple: boolean): Promise<string[]> {
+    try {
+      const documentPicker = new picker.DocumentViewPicker(this.hostContext());
+      const uris = await documentPicker.select({ maxSelectNumber: multiple ? 100 : 1 });
+      return uris && uris.length > 0 ? uris : [];
+    } catch (documentError) {
+      this.logError(`[maui] web file selection failed: ${(documentError as Error).message}`);
+      return [];
+    }
+  }
+
   // Photos/videos: photoAccessHelper PhotoViewPicker (media-only gallery UI). Returns null when
   // the module is missing on this device (cached) so the caller falls back to the document
   // picker; an empty array is a user cancel and a pick failure answers like an empty pick.
@@ -5089,6 +5103,85 @@ struct Index {
             });
           } catch {
             // An unexpected event shape must not take the page down.
+          }
+        })
+        // File selection (matrix #11): an <input type=file> in the page reaches
+        // onShowFileSelector; the shell opens the system document picker (multi-select when the
+        // page asked for it) and hands the selection back to ArkWeb. Returning true takes the
+        // selection over; the page's request is always answered (an empty list cancels).
+        .onShowFileSelector((event) => {
+          try {
+            const multiple: boolean = event.fileSelector.getMode() === 1;
+            this.selectWebFileUris(multiple).then((uris: string[]): void => {
+              event.result.handleFileList(uris);
+            }).catch((fileSelectError: Error): void => {
+              this.logError(`[maui] web file selection failed: ${fileSelectError.message}`);
+              event.result.handleFileList([]);
+            });
+          } catch (fileSelectorError) {
+            this.logError(`[maui] web file selection failed: ${(fileSelectorError as Error).message}`);
+            event.result.handleFileList([]);
+          }
+          return true;
+        })
+        // Media permissions (matrix #12): getUserMedia's camera/microphone reaches
+        // onPermissionRequest. The shell prompts for the resources it owns (declared through the
+        // webview-media feature) and grants exactly those; every other resource is denied, so a
+        // page can never self-grant.
+        .onPermissionRequest((event) => {
+          try {
+            const resources: string[] = event.request.getAccessibleResource();
+            const permissions: Permissions[] = [];
+            for (let i = 0; i < resources.length; i++) {
+              const resource: string = resources[i];
+              if (resource === 'ohos.permission.CAMERA' || resource === 'ohos.permission.MICROPHONE') {
+                permissions.push(resource as Permissions);
+              }
+            }
+            if (permissions.length === 0) {
+              event.request.deny();
+              return;
+            }
+            const atManager = abilityAccessCtrl.createAtManager();
+            atManager.requestPermissionsFromUser(this.hostContext(), permissions).then((result) => {
+              const granted: Permissions[] = [];
+              for (let i = 0; i < permissions.length && i < result.authResults.length; i++) {
+                if (result.authResults[i] === 0) {
+                  granted.push(permissions[i]);
+                }
+              }
+              if (granted.length > 0) {
+                event.request.grant(granted);
+              } else {
+                event.request.deny();
+              }
+            }).catch((mediaError: Error): void => {
+              this.logError(`[maui] web media permission failed: ${mediaError.message}`);
+              event.request.deny();
+            });
+          } catch (permissionRequestError) {
+            this.logError(`[maui] web media permission failed: ${(permissionRequestError as Error).message}`);
+            try {
+              event.request.deny();
+            } catch {
+            }
+          }
+        })
+        // Multi-window (matrix #13): window.open asks for a new window. This slice is
+        // single-window, so the target loads in this component instead of creating a second
+        // ArkWeb; the programmatic marker lets the load through the navigation gateway, and the
+        // page's controller handler is left unset (no new window is created).
+        .multiWindowAccess(true)
+        .onWindowNew((event) => {
+          try {
+            const targetUrl: string = event.targetUrl;
+            if (targetUrl.length === 0 || targetUrl.length > this.navMaxUrlLength) {
+              return;
+            }
+            this.navProgrammatic = { url: targetUrl, expires: Date.now() + this.navPendingTtlMs };
+            this.webController.loadUrl(targetUrl);
+          } catch (windowError) {
+            this.logError(`[maui] window.open fallback failed: ${(windowError as Error).message}`);
           }
         })
 

@@ -377,6 +377,21 @@
         <Reason>$string:permission_reason_internet</Reason>
         <UsedSceneWhen>inuse</UsedSceneWhen>
       </_OpenHarmonyFeaturePermission>
+      <!-- webview-media: the ArkWeb onPermissionRequest bridge (camera/microphone). The shell
+           prompts for exactly these two user_grant permissions when a page calls getUserMedia;
+           without the feature the request points stay undeclared and the shell denies. -->
+      <_OpenHarmonyFeaturePermission Include="ohos.permission.CAMERA">
+        <Feature>webview-media</Feature>
+        <GrantMode>user_grant</GrantMode>
+        <Reason>$string:permission_reason_camera</Reason>
+        <UsedSceneWhen>inuse</UsedSceneWhen>
+      </_OpenHarmonyFeaturePermission>
+      <_OpenHarmonyFeaturePermission Include="ohos.permission.MICROPHONE">
+        <Feature>webview-media</Feature>
+        <GrantMode>user_grant</GrantMode>
+        <Reason>$string:permission_reason_microphone</Reason>
+        <UsedSceneWhen>inuse</UsedSceneWhen>
+      </_OpenHarmonyFeaturePermission>
       <!-- The request-point manifest: the shipped shell sources. They are scanned for quoted
            ohos.permission.* literals; the declaration set must keep covering them. -->
       <_OpenHarmonyShellSource Include="$(_OpenHarmonyTemplatesDir)ets/**/*.ets" />

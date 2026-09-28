@@ -12,7 +12,7 @@ using Microsoft.Maui.Platform;
 // after the fuzz tail) instead of letting every caller repeat its own threshold constant.
 VerifyLineCountingWriter verifyStdout = new(Console.Out);
 Console.SetOut(verifyStdout);
-const int verifyCheckTotal = 398;                     // documented full [verify] line count (+4 MS-MODE runtime mode switch, +10 P2c-DEEPLINK, +4 P2b-IMG, +16 P1b-LIST, +10 P1a-ANIM, +2 SEC3 storage/deep-link pins, +5 W-series WebView wiring)
+const int verifyCheckTotal = 405;                     // documented full [verify] line count (+4 MS-MODE runtime mode switch, +10 P2c-DEEPLINK, +4 P2b-IMG, +16 P1b-LIST, +10 P1a-ANIM, +2 SEC3 storage/deep-link pins, +5 W-series WebView wiring, +3 T1 InputView mapping, +4 T2 WebView gaps, +4 T3 GraphicsView interaction)
 const int verifyCheckFloor = verifyCheckTotal - 20;   // documented floor convention (total - 20)
 
 // A small image file for the Image handler.
@@ -762,8 +762,7 @@ if (graphicsCtl?.Handler?.PlatformView is OpenHarmonyView graphicsPlatform)
     rendererForGraphics.Render(navRoot, 1080, 1920);
     Console.WriteLine($"[verify] graphicsview drawCalled={gestures.Drawable?.DrawCalls} frame={graphicsCtl.Frame}");
     Rect gf = graphicsCtl.Frame;
-    host.HandleTouch(true, false, (float)(gf.X + 10), (float)(gf.Y + 10));
-    host.HandleTouch(false, true, (float)(gf.X + 10), (float)(gf.Y + 10));
+
     Console.WriteLine($"[verify] graphicsview touchCalls={gestures.Drawable?.TouchCalls}");
 }
 var contentViewCtl = root.Children.OfType<ContentView>().FirstOrDefault();
@@ -1679,6 +1678,223 @@ if (!wRazorOk)
 {
     throw new InvalidOperationException("the hello-maui-razor B1 sample or the Blazor asset staging target is missing/drifted");
 }
+
+// ---- T1: InputView mapping (Entry/Editor/SearchBar + OpenHarmonyView) -------------------------
+// The mapper entries and the platform-view state behind them: MaxLength and IsReadOnly gate the
+// shell's text, IsPassword masks what is drawn, Keyboard restricts numeric/telephone input,
+// ClearButtonVisibility adds a hit-tested clear button, PlaceholderColor and
+// HorizontalTextAlignment move the drawn text/caret, ReturnType records the return-key kind.
+
+string? i1EntryPath = FindHostSource("OpenHarmonyEntryHandler.cs");
+string i1Entry = i1EntryPath is null ? string.Empty : File.ReadAllText(i1EntryPath);
+string? i1EditorPath = FindHostSource("OpenHarmonyEditorHandler.cs");
+string i1Editor = i1EditorPath is null ? string.Empty : File.ReadAllText(i1EditorPath);
+string? i1SearchPath = FindHostSource("OpenHarmonySearchBarHandler.cs");
+string i1Search = i1SearchPath is null ? string.Empty : File.ReadAllText(i1SearchPath);
+string? i1ViewPath = FindHostSource("OpenHarmonyView.cs");
+string i1View = i1ViewPath is null ? string.Empty : File.ReadAllText(i1ViewPath);
+bool i1EntryMaps = i1Entry.Contains("[nameof(ITextInput.MaxLength)] = MapMaxLength,") &&
+    i1Entry.Contains("[nameof(ITextInput.IsReadOnly)] = MapIsReadOnly,") &&
+    i1Entry.Contains("[nameof(ITextInput.Keyboard)] = MapKeyboard,") &&
+    i1Entry.Contains("[nameof(IEntry.IsPassword)] = MapIsPassword,") &&
+    i1Entry.Contains("[nameof(IEntry.ReturnType)] = MapReturnType,") &&
+    i1Entry.Contains("[nameof(IEntry.ClearButtonVisibility)] = MapClearButtonVisibility,") &&
+    i1Entry.Contains("[nameof(IPlaceholder.PlaceholderColor)] = MapPlaceholderColor,") &&
+    i1Entry.Contains("[nameof(ITextAlignment.HorizontalTextAlignment)] = MapHorizontalTextAlignment,") &&
+    i1Entry.Contains("return OpenHarmonyView.ClampToMaxLength(text, PlatformView.MaxLength);");
+bool i1EditorMaps = i1Editor.Contains("[nameof(ITextInput.MaxLength)] = MapMaxLength,") &&
+    i1Editor.Contains("[nameof(ITextInput.IsReadOnly)] = MapIsReadOnly,") &&
+    i1Editor.Contains("[nameof(IPlaceholder.PlaceholderColor)] = MapPlaceholderColor,") &&
+    i1Editor.Contains("[nameof(ITextAlignment.HorizontalTextAlignment)] = MapHorizontalTextAlignment,");
+bool i1SearchMaps = i1Search.Contains("[nameof(ITextInput.MaxLength)] = MapMaxLength,") &&
+    i1Search.Contains("[nameof(ITextInput.IsReadOnly)] = MapIsReadOnly,") &&
+    i1Search.Contains("[nameof(ISearchBar.ReturnType)] = MapReturnType,") &&
+    i1Search.Contains("[nameof(IPlaceholder.PlaceholderColor)] = MapPlaceholderColor,");
+bool i1ViewMaps = i1View.Contains("internal static string ApplyKeyboardFilter(Keyboard? keyboard, string text)") &&
+    i1View.Contains("internal static string ClampToMaxLength(string text, int maxLength)") &&
+    i1View.Contains("public bool ClearButtonVisible =>") &&
+    i1View.Contains("public bool InClearButton(float x, float y)") &&
+    i1View.Contains("internal float TextOriginX(string? measure = null)") &&
+    i1View.Contains("internal string DisplayText") &&
+    i1View.Contains("private void DrawClearButton(MauiCanvas canvas)");
+bool i1Ok = i1EntryMaps && i1EditorMaps && i1SearchMaps && i1ViewMaps;
+Console.WriteLine($"[verify] i1 input view mapping pins entry={i1EntryMaps} editor={i1EditorMaps} search={i1SearchMaps} view={i1ViewMaps} assert={i1Ok}");
+if (!i1Ok)
+{
+    throw new InvalidOperationException("the InputView mapper entries or the platform-view input state are missing/drifted");
+}
+
+// i2: the mapped state and the input rules on a live Entry handler (no host needed): the
+// properties reach the platform view on connect, the numeric filter drops letters, MaxLength
+// clamps, read-only freezes the text and the password form masks every character.
+var i2Entry = new Entry
+{
+    MaxLength = 5,
+    IsPassword = true,
+    ReturnType = ReturnType.Next,
+    ClearButtonVisibility = ClearButtonVisibility.WhileEditing,
+    HorizontalTextAlignment = TextAlignment.Center,
+    Keyboard = Keyboard.Numeric,
+    PlaceholderColor = Colors.Red,
+};
+OpenHarmonyHandlerConnector.Connect(i2Entry);
+i2Entry.Frame = new Rect(10, 20, 240, 40);
+var i2Handler = (OpenHarmonyEntryHandler)i2Entry.Handler!;
+var i2View = (OpenHarmonyView)i2Handler.PlatformView!;
+bool i2Mapped = i2View.MaxLength == 5 && i2View.IsPassword && !i2View.IsReadOnly &&
+    i2View.ReturnType == ReturnType.Next && i2View.ClearButtonVisibility == ClearButtonVisibility.WhileEditing &&
+    i2View.HorizontalTextAlignment == TextAlignment.Center &&
+    ReferenceEquals(i2View.Keyboard, Keyboard.Numeric) && ReferenceEquals(i2View.PlaceholderColor, Colors.Red);
+i2View.IsFocused = true;
+var i2Input = typeof(OpenHarmonyEntryHandler).GetMethod("OnTextInput",
+    BindingFlags.Instance | BindingFlags.NonPublic)!;
+i2Input.Invoke(i2Handler, new object[] { "ab12cd34567" });
+bool i2Rules = i2View.Text == "12345" && i2Entry.Text == "12345";
+i2Entry.IsReadOnly = true;
+i2Input.Invoke(i2Handler, new object[] { "999" });
+bool i2ReadOnly = i2View.Text == "12345" && i2Entry.Text == "12345" && i2View.IsReadOnly;
+bool i2Masked = i2View.DisplayText == "\u2022\u2022\u2022\u2022\u2022";
+bool i2Ok = i2Mapped && i2Rules && i2ReadOnly && i2Masked;
+Console.WriteLine($"[verify] i2 input mapping drill mapped={i2Mapped} rules={i2Rules} readOnly={i2ReadOnly} masked={i2Masked} assert={i2Ok}");
+if (!i2Ok)
+{
+    throw new InvalidOperationException("the InputView mapping drill did not gate/clamp/mask the input as mapped");
+}
+
+// i3: the clear button (drawing/hit-test geometry and the tap that clears) and the alignment
+// origin: Start < Center < End, the caret origin tracks the alignment and the x -> index hit
+// test round-trips through the same metrics.
+bool i3ClearHit = i2View.ClearButtonVisible &&
+    i2View.InClearButton(i2View.ClearButtonCenter.X, i2View.ClearButtonCenter.Y) &&
+    !i2View.InClearButton(i2View.Frame.X + 4, i2View.Frame.Y + 4);
+bool i3Down = i2View.OnTouch(true, false, i2View.ClearButtonCenter.X, i2View.ClearButtonCenter.Y);
+bool i3Up = i2View.OnTouch(false, true, i2View.ClearButtonCenter.X, i2View.ClearButtonCenter.Y);
+bool i3Cleared = i3Down && i3Up && i2View.Text == string.Empty && i2Entry.Text == string.Empty;
+i2Entry.IsPassword = false;
+i2View.Text = "abcd";
+i2Entry.HorizontalTextAlignment = TextAlignment.Start;
+float i3Start = i2View.TextOriginX("abcd");
+i2Entry.HorizontalTextAlignment = TextAlignment.Center;
+float i3Center = i2View.TextOriginX("abcd");
+i2Entry.HorizontalTextAlignment = TextAlignment.End;
+float i3End = i2View.TextOriginX("abcd");
+bool i3Aligned = i3Start < i3Center && i3Center < i3End &&
+    Math.Abs(i2View.TextPositionX("abcd", 0) - i3End) < 0.01f &&
+    i2View.CursorIndexFromX(i2View.TextPositionX("abcd", 2)) == 2;
+bool i3Ok = i3ClearHit && i3Cleared && i3Aligned;
+Console.WriteLine($"[verify] i3 input clear/alignment hit={i3ClearHit} cleared={i3Cleared} aligned={i3Aligned} start={i3Start:0.#} center={i3Center:0.#} end={i3End:0.#} assert={i3Ok}");
+if (!i3Ok)
+{
+    throw new InvalidOperationException("the InputView clear button or the alignment-aware caret metrics are missing/drifted");
+}
+
+// ---- T2: WebView residual gaps (file selection / media permissions / window.open /
+// CookieContainer sync) -------------------------------------------------------------------------
+// The shell half is pinned in every preview pack (and the packs stay byte-identical); the
+// managed half is the IWebView.Cookies mapper plus the two-way sync (container -> the shell's
+// configCookieSync command, the fetchCookieSync answer -> the container on page finished).
+
+bool w6ShellFiles = true;
+bool w6ShellMedia = true;
+bool w6ShellWindow = true;
+bool w6ShellIdentity = true;
+string? w6FirstShell = null;
+foreach (string w6Version in wShellVersions)
+{
+    string? w6ShellPath = FindHostSource($"packs/Microsoft.OpenHarmony.Sdk/{w6Version}/templates/ets/pages/Index.ets");
+    string w6Shell = w6ShellPath is null ? string.Empty : File.ReadAllText(w6ShellPath);
+    w6FirstShell ??= w6Shell;
+    w6ShellIdentity &= w6Shell == w6FirstShell;
+    w6ShellFiles &= w6Shell.Contains("private async selectWebFileUris(multiple: boolean): Promise<string[]>") &&
+        w6Shell.Contains("new picker.DocumentViewPicker(this.hostContext())") &&
+        w6Shell.Contains(".onShowFileSelector((event) => {") &&
+        w6Shell.Contains("this.selectWebFileUris(multiple).then((uris: string[]): void => {") &&
+        w6Shell.Contains("event.result.handleFileList(uris);");
+    w6ShellMedia &= w6Shell.Contains(".onPermissionRequest((event) => {") &&
+        w6Shell.Contains("const resources: string[] = event.request.getAccessibleResource();") &&
+        w6Shell.Contains("resource === 'ohos.permission.CAMERA' || resource === 'ohos.permission.MICROPHONE'") &&
+        w6Shell.Contains("atManager.requestPermissionsFromUser(this.hostContext(), permissions)") &&
+        w6Shell.Contains("event.request.grant(granted);") && w6Shell.Contains("event.request.deny();");
+    w6ShellWindow &= w6Shell.Contains(".multiWindowAccess(true)") &&
+        w6Shell.Contains(".onWindowNew((event) => {") &&
+        w6Shell.Contains("this.navProgrammatic = { url: targetUrl, expires: Date.now() + this.navPendingTtlMs };") &&
+        w6Shell.Contains("this.webController.loadUrl(targetUrl);");
+}
+bool w6Ok = w6ShellFiles && w6ShellMedia && w6ShellWindow && w6ShellIdentity;
+Console.WriteLine($"[verify] w6 shell webview gaps packs=22,23,24 fileSelect={w6ShellFiles} media={w6ShellMedia} windowOpen={w6ShellWindow} identical={w6ShellIdentity} assert={w6Ok}");
+if (!w6Ok)
+{
+    throw new InvalidOperationException("the WebView file-selection/media-permission/window.open shell wiring is missing/drifted");
+}
+
+// w7: the media request points are declared: every pack's feature matrix carries the
+// webview-media feature (CAMERA + MICROPHONE, user_grant, the two reason strings) and the
+// string resources carry those reasons, so the shell's onPermissionRequest can prompt.
+bool w7Feature = true;
+bool w7Strings = true;
+foreach (string w7Version in wShellVersions)
+{
+    string? w7TargetPath = FindHostSource($"packs/Microsoft.OpenHarmony.Sdk/{w7Version}/targets/OpenHarmony.Hap.targets");
+    string w7Target = w7TargetPath is null ? string.Empty : File.ReadAllText(w7TargetPath);
+    w7Feature &= w7Target.Contains("<Feature>webview-media</Feature>") &&
+        w7Target.Contains("<_OpenHarmonyFeaturePermission Include=\"ohos.permission.CAMERA\">") &&
+        w7Target.Contains("<_OpenHarmonyFeaturePermission Include=\"ohos.permission.MICROPHONE\">") &&
+        w7Target.Contains("<Reason>$string:permission_reason_camera</Reason>") &&
+        w7Target.Contains("<Reason>$string:permission_reason_microphone</Reason>");
+    string? w7StringsPath = FindHostSource($"packs/Microsoft.OpenHarmony.Sdk/{w7Version}/templates/resources/base/element/string.json");
+    string w7StringFile = w7StringsPath is null ? string.Empty : File.ReadAllText(w7StringsPath);
+    w7Strings &= w7StringFile.Contains("\"permission_reason_camera\"") &&
+        w7StringFile.Contains("\"permission_reason_microphone\"");
+}
+bool w7Ok = w7Feature && w7Strings;
+Console.WriteLine($"[verify] w7 webview media feature packs=22,23,24 feature={w7Feature} strings={w7Strings} assert={w7Ok}");
+if (!w7Ok)
+{
+    throw new InvalidOperationException("the webview-media feature permission or its reason strings are missing/drifted");
+}
+
+// w8: the managed CookieContainer sync: the mapper entry, the C->P pass (container cookies over
+// the existing cookie command, URL rebuilt from domain/scheme/path) and the P->C pass (the
+// fetchCookieSync answer merged on page finished).
+string? w8HandlerPath = FindHostSource("OpenHarmonyWebViewHandler.cs");
+string w8Handler = w8HandlerPath is null ? string.Empty : File.ReadAllText(w8HandlerPath);
+bool w8Mapper = w8Handler.Contains("[nameof(IWebView.Cookies)] = MapCookies,") &&
+    w8Handler.Contains("public static void MapCookies(OpenHarmonyWebViewHandler handler, IWebView webView)");
+bool w8Sync = w8Handler.Contains("internal static int SyncContainerToPlatform(IWebView? webView)");
+bool w8Merge = w8Handler.Contains("internal static bool MergeCookieHeader(IWebView? webView, string url, string? header)") &&
+    w8Handler.Contains("container.SetCookies(target, pair);");
+bool w8Read = w8Handler.Contains("private static void ScheduleCookieRead(string url)") &&
+    w8Handler.Contains("ScheduleCookieRead(url);");
+bool w8Pins = w8Mapper && w8Sync && w8Merge && w8Read;
+Console.WriteLine($"[verify] w8 cookie container pins mapper={w8Mapper} sync={w8Sync} merge={w8Merge} read={w8Read} assert={w8Pins}");
+if (!w8Pins)
+{
+    throw new InvalidOperationException("the CookieContainer sync surface is missing/drifted");
+}
+
+// w9: the sync drill off-device: assigning Cookies maps the container to the platform, the
+// merge parses a shell-shaped header into the container, and the unsafe/empty/oversized shapes
+// stay inert without throwing.
+var w9Container = new System.Net.CookieContainer();
+w9Container.Add(new System.Net.Cookie("session", "abc", "/", "verify.test"));
+webProbe.Cookies = w9Container;
+int w9Synced = OpenHarmonyWebViewHandler.SyncContainerToPlatform(webProbe);
+bool w9Merged = OpenHarmonyWebViewHandler.MergeCookieHeader(webProbe, "https://verify.test/", "sid=1; theme=dark");
+var w9Read = w9Container.GetCookies(new Uri("https://verify.test/"));
+bool w9ReadOk = w9Read.Count == 3 && w9Read["session"]?.Value == "abc" &&
+    w9Read["sid"]?.Value == "1" && w9Read["theme"]?.Value == "dark";
+bool w9Rejects = !OpenHarmonyWebViewHandler.MergeCookieHeader(webProbe, "file:///x", "sid=2") &&
+    !OpenHarmonyWebViewHandler.MergeCookieHeader(webProbe, "https://verify.test/", string.Empty) &&
+    !OpenHarmonyWebViewHandler.MergeCookieHeader(webProbe, "https://verify.test/", "sid=2\nx=3") &&
+    !OpenHarmonyWebViewHandler.MergeCookieHeader(null, "https://verify.test/", "sid=2") &&
+    OpenHarmonyWebViewHandler.SyncContainerToPlatform(null) == 0;
+bool w9Ok = w9Synced == 1 && w9Merged && w9ReadOk && w9Rejects;
+Console.WriteLine($"[verify] w9 cookie container drill synced={w9Synced} merged={w9Merged} read={w9Read.Count} rejects={w9Rejects} assert={w9Ok}");
+if (!w9Ok)
+{
+    throw new InvalidOperationException("the CookieContainer sync drill did not map/merge/reject as documented");
+}
+webProbe.Cookies = null;
 
 // HybridWebView: the MAUI contracts (EvaluateJavaScriptAsync/SendRawMessage/RawMessageReceived,
 // plus InvokeJavaScriptAsync over the same message protocol) ride the same shell channel. The

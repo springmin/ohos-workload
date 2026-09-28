@@ -21,13 +21,13 @@
     },
     "ui": {
       "abcVersion": "13.0.1.0",
-      "bytes": 289992,
+      "bytes": 294976,
       "dist": "modules.abc",
       "file": "modules.ui.abc",
-      "sha256": "e005f2366d72430979e8cd65477bf6f4d12284421cd4eccd99ee1f5dbeae0c57",
+      "sha256": "6cf7dda23c96465b17731a7368c83f3a8b12d20ebc2fa21624ca1a6fca343c6f",
       "sources": {
         "entryability/EntryAbility.ui.ets": "f6722648bf1f7edac4bae37a8334a0dfcc15c6ff3ae4d8921804e462f6298991",
-        "pages/Index.ets": "948e9a56aef8108c0d6121fe7d8443ee673a0475e9df2659100ff482a371d5e1"
+        "pages/Index.ets": "525be62c86e2e59e01549b3ab4359f0242d927038acbe30966f23acd8ed1d50d"
       }
     }
   }
