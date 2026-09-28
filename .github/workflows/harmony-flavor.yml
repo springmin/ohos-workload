@@ -10,9 +10,11 @@ name: harmony-flavor
 # not touched: the job only builds the ui abc under .arkts-build/ + dist/ (both gitignored) and
 # uploads it as evidence.
 #
-# Triggers: workflow_dispatch (manual) and a weekly schedule, deliberately NOT pull_request or
-# push - the gate downloads/unpacks a ~2.0 GiB SDK and a flavor-only regression can wait for the
-# scheduled run rather than spend that cost on every PR. The cache makes a repeat run cheap.
+# Triggers: workflow_dispatch (manual), a weekly schedule, and pushes to master limited by a
+# paths filter to the harmony-flavor surface (the flavor-only Map module, the shell build script,
+# the SDK setup script, this workflow). Deliberately NOT pull_request and not a branch-wide push
+# trigger: the gate downloads/unpacks a ~2.0 GiB SDK, so only the changes that can actually break
+# this branch spend that cost (a cold run downloads, a repeat run only unpacks the cache).
 #
 # SDK acquisition: actions/cache holds the sha256-pinned command-line-tools archive (2.1 GB,
 # cache key = its sha256). scripts/setup-harmony-sdk.sh --download verifies the cached archive
@@ -46,6 +48,18 @@ name: harmony-flavor
 # Least privilege: read-only checkout, no secrets, nothing pushed or published.
 on:
   workflow_dispatch:
+  push:
+    branches: [ master ]
+    paths:
+      # The harmony-flavor-only Map overlay module (templates/ets/map/**): it is copied and
+      # compiled only by this branch, so a change here never shows up in the default-flavor gates.
+      - 'packs/**/templates/ets/map/**'
+      # The shell build (the harmony patch/compile logic) and the SDK setup (pins, unpack layout);
+      # a change in either can break this branch without touching the Map module.
+      - 'scripts/build-arkts-shell.sh'
+      - 'scripts/setup-harmony-sdk.sh'
+      # This workflow itself (trigger/pins/assertion changes should run once).
+      - '.github/workflows/harmony-flavor.yml'
   schedule:
     # Weekly, Monday 03:17 UTC - the regression net for the flavor sources between manual runs.
     - cron: '17 3 * * 1'
