@@ -1,0 +1,24 @@
+<Project Sdk="Microsoft.NET.Sdk.BlazorWebAssembly">
+
+  <!-- Minimal Blazor WebAssembly app for the OpenHarmony SDK smoke (see README.md).
+       The publish recipe (dnceng flight + SDK pack version overrides) is pinned in
+       Directory.Build.targets; override BlazorFlightVersion to move to another flight. -->
+  <PropertyGroup>
+    <TargetFramework>net11.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <OverrideHtmlAssetPlaceholders>true</OverrideHtmlAssetPlaceholders>
+    <StaticWebAssetSpaFallbackEnabled>true</StaticWebAssetSpaFallbackEnabled>
+    <BlazorFlightVersion Condition="'$(BlazorFlightVersion)' == ''">11.0.0-rc.2.26459.117</BlazorFlightVersion>
+    <!-- The workload's runtime line is rc.1; the Blazor/WebAssembly packs only exist in the
+         rc.2 flights, so the framework reference follows the pack flight. A command-line
+         -p:RuntimeFrameworkVersion=... still wins. -->
+    <RuntimeFrameworkVersion Condition="'$(RuntimeFrameworkVersion)' == ''">$(BlazorFlightVersion)</RuntimeFrameworkVersion>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.AspNetCore.Components.WebAssembly" Version="$(BlazorFlightVersion)" />
+    <PackageReference Include="Microsoft.AspNetCore.Components.Gateway" Version="$(BlazorFlightVersion)" PrivateAssets="all" />
+  </ItemGroup>
+
+</Project>

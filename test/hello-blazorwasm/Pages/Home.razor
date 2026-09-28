@@ -1,0 +1,17 @@
+@page "/"
+
+<h1>Hello from Blazor WebAssembly</h1>
+
+<p>
+    This app runs in ArkWeb on OpenHarmony. The host HAP embeds the publish output under
+    <code>resources/rawfile</code> and serves it through <code>Web.onInterceptRequest</code>
+    (see <code>arkts-host/</code>), so no local HTTP server is involved.
+</p>
+
+<p>Runtime: <code>@RuntimeInformation.FrameworkDescription</code></p>
+<p>OS: <code>@RuntimeInformation.OSDescription</code></p>
+
+<p><a href="counter">Open the interactive counter</a></p>
+
+@code {
+}

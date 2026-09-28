@@ -24,6 +24,7 @@ packs/Microsoft.OpenHarmony.Ref.<api>/<ver>/
 packs/Microsoft.OpenHarmony.Runtime.<api>.openharmony-arm64/<ver>/
     runtimes/openharmony-arm64/...   # laid out from the released .NET runtime pack
 test/hello-lib/                  # TFM build test
+test/hello-blazorwasm/           # Blazor WASM publish + ArkWeb host hap (rawfile serving)
 scripts/env.sh                   # exports the two workload roots
 ```
 

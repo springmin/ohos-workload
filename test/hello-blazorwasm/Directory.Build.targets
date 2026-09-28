@@ -1,0 +1,25 @@
+<Project>
+
+  <!-- Version alignment for the OpenHarmony SDK smoke (README.md §2): the workload's runtime
+       line cannot restore the fork's rc.1 Blazor/WebAssembly packages, and the dnceng public
+       dotnet11 feed only carries the rc.2 flights. Pin the WebAssembly SDK pack and the Blazor
+       assets pack to the flight the app restores (BlazorFlightVersion, defined in the csproj).
+       The <RuntimeFrameworkVersion> default in the csproj follows the same flight. -->
+  <ItemGroup>
+    <KnownWebAssemblySdkPack Update="Microsoft.NET.Sdk.WebAssembly.Pack"
+                             WebAssemblySdkPackVersion="$(BlazorFlightVersion)" />
+    <KnownAspNetCorePack Update="Microsoft.AspNetCore.App.Internal.Assets"
+                         AspNetCorePackVersion="$(BlazorFlightVersion)" />
+  </ItemGroup>
+
+  <!-- Task-host workaround for SDKs whose Microsoft.Build.Framework still builds the named-pipe
+       path on /tmp (OpenHarmony refuses AF_UNIX binds there, so every task host dies and MSBuild
+       retries 30s x5 before MSB4216; the same applies to the Roslyn compiler server):
+       runtime-ohos docs/plans/2026-09-28-msbuild-taskhost-pipe-rootcause.md.
+       Opt in with -p:OhosTaskHostOverride=true; run-smoke.sh retries with it when the first
+       publish hits MSB4216. An SDK carrying sdk-ohos eng/ohos-install/build/msbuild-pipe-patch
+       (fix shipped in feature/openharmony, 2026-09-28) needs no override. -->
+  <Import Project="$(MSBuildThisFileDirectory)taskhost-overrides.targets"
+          Condition="'$(OhosTaskHostOverride)' == 'true'" />
+
+</Project>

@@ -1,0 +1,31 @@
+<Project>
+
+  <!-- In-process task registrations for the WebAssembly SDK and ILLink packs.
+       Override="true" replaces the pack's own UsingTask registration; omitting TaskFactory
+       makes MSBuild run the task in-process instead of in a TaskHostFactory-spawned host.
+       Imported by Directory.Build.targets only when -p:OhosTaskHostOverride=true. -->
+  <UsingTask TaskName="Microsoft.NET.Sdk.WebAssembly.GenerateWasmBootJson"
+             AssemblyFile="$(NuGetPackageRoot)microsoft.net.sdk.webassembly.pack/$(BlazorFlightVersion)/tools/net/Microsoft.NET.Sdk.WebAssembly.Pack.Tasks.dll"
+             Override="true" />
+  <UsingTask TaskName="Microsoft.NET.Sdk.WebAssembly.ComputeWasmBuildAssets"
+             AssemblyFile="$(NuGetPackageRoot)microsoft.net.sdk.webassembly.pack/$(BlazorFlightVersion)/tools/net/Microsoft.NET.Sdk.WebAssembly.Pack.Tasks.dll"
+             Override="true" />
+  <UsingTask TaskName="Microsoft.NET.Sdk.WebAssembly.ComputeWasmPublishAssets"
+             AssemblyFile="$(NuGetPackageRoot)microsoft.net.sdk.webassembly.pack/$(BlazorFlightVersion)/tools/net/Microsoft.NET.Sdk.WebAssembly.Pack.Tasks.dll"
+             Override="true" />
+  <UsingTask TaskName="Microsoft.NET.Sdk.WebAssembly.ConvertDllsToWebcil"
+             AssemblyFile="$(NuGetPackageRoot)microsoft.net.sdk.webassembly.pack/$(BlazorFlightVersion)/tools/net/Microsoft.NET.Sdk.WebAssembly.Pack.Tasks.dll"
+             Override="true" />
+  <UsingTask TaskName="Microsoft.NET.Sdk.WebAssembly.AttachWebcilSizes"
+             AssemblyFile="$(NuGetPackageRoot)microsoft.net.sdk.webassembly.pack/$(BlazorFlightVersion)/tools/net/Microsoft.NET.Sdk.WebAssembly.Pack.Tasks.dll"
+             Override="true" />
+
+  <!-- ILLink pack tasks (only needed with PublishTrimmed=true). -->
+  <UsingTask TaskName="ILLink"
+             AssemblyFile="$(NuGetPackageRoot)microsoft.net.illink.tasks/$(BlazorFlightVersion)/tools/net/ILLink.Tasks.dll"
+             Override="true" />
+  <UsingTask TaskName="ComputeManagedAssemblies"
+             AssemblyFile="$(NuGetPackageRoot)microsoft.net.illink.tasks/$(BlazorFlightVersion)/tools/net/ILLink.Tasks.dll"
+             Override="true" />
+
+</Project>

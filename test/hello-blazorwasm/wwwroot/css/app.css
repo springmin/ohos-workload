@@ -1,0 +1,48 @@
+html, body {
+    font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+    margin: 0;
+    padding: 1rem;
+    line-height: 1.5;
+}
+
+h1 {
+    font-size: 1.4rem;
+}
+
+code {
+    background: rgba(127, 127, 127, 0.15);
+    border-radius: 3px;
+    padding: 0.1em 0.3em;
+}
+
+.btn {
+    border: 1px solid #888;
+    border-radius: 4px;
+    background: transparent;
+    padding: 0.4rem 0.9rem;
+    font-size: 1rem;
+}
+
+.btn:active {
+    background: rgba(127, 127, 127, 0.2);
+}
+
+.loading {
+    color: #888;
+}
+
+#blazor-error-ui {
+    background: lightyellow;
+    bottom: 0;
+    box-shadow: 0 -1px 2px rgba(0, 0, 0, 0.2);
+    display: none;
+    left: 0;
+    padding: 0.6rem 1.25rem 0.7rem 1.25rem;
+    position: fixed;
+    width: 100%;
+    z-index: 1000;
+}
+
+#blazor-error-ui .reload {
+    margin-left: 0.5rem;
+}

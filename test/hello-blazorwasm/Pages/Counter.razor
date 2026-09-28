@@ -1,0 +1,21 @@
+@page "/counter"
+
+<h1>Counter</h1>
+
+<p>
+    The counter proves the .NET WASM runtime is executing (not just static files being served):
+    every click crosses the ArkWeb -> WASM boundary.
+</p>
+
+<p role="status">Current count: @currentCount</p>
+
+<button class="btn" @onclick="IncrementCount">Click me</button>
+
+@code {
+    private int currentCount = 0;
+
+    private void IncrementCount()
+    {
+        currentCount++;
+    }
+}

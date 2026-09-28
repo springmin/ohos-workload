@@ -1,0 +1,10 @@
+{
+  modelVersion: '6.0.0',
+  name: 'opendotnet',
+  version: '1.0.0',
+  description: 'ArkTS shell for a .NET OpenHarmony app',
+  main: '',
+  author: '',
+  license: 'MIT',
+  dependencies: {},
+}
