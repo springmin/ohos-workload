@@ -49,7 +49,7 @@ allocation and jitter) budgets are exceeded.
 # (or the MauiSliceDir / HostingDll / OpenHarmonyGraphicsDll MSBuild properties) before building
 # elsewhere; an explicit -p: value wins over the environment and the absolute fallbacks.
 dotnet build -v:q
-dotnet bin/Debug/net11.0/verify.dll | grep -c '\[verify\]'   # expect 457 (444 interaction checks + 4 fuzz + 1 frame perf + 8 a11y perf)
+dotnet bin/Debug/net11.0/verify.dll | grep -c '\[verify\]'   # expect 459 (446 interaction checks + 4 fuzz + 1 frame perf + 8 a11y perf)
 ```
 
 The `interaction-regression` workflow (`.github/workflows/interaction-regression.yml`) runs the
@@ -60,7 +60,7 @@ suite on a GitHub runner as a real gate (on push to `master`, on pull requests a
 points `MAUI_SLICE_DIR` / `HOSTING_DLL` / `OPENHARMONY_GRAPHICS_DLL` at those roots, and fails the
 job unless the run exits 0, the suite's own `[suite]` contract line reports `assert=True` with at
 least the floor declared in `Program.cs`, both perf lines report `within=True`, and no `Unhandled`
-line is logged. The floor (437 = 457 - 20, the documented convention) lives only in `Program.cs`;
+line is logged. The floor (439 = 459 - 20, the documented convention) lives only in `Program.cs`;
 the workflow and `scripts/preflight.sh` both read the printed `[suite] checks=... floor=...` line
 instead of repeating a literal, so the two local/CI thresholds cannot drift apart.
 
@@ -178,8 +178,8 @@ parse.
   blocks codesigned ELF apphosts on some machines).
 - The suite fails loudly (unhandled exception) when a slice change breaks startup or when an
   assertion for the gesture flows (including the drag-and-drop checks) does not hold; keep it at
-  444 interaction checks plus the 4 fuzz lines plus the 1 frame-perf line plus the 8 a11y-perf
-  lines (457 `[verify]` lines) when touching the platform slice. The total and the floor
+  446 interaction checks plus the 4 fuzz lines plus the 1 frame-perf line plus the 8 a11y-perf
+  lines (459 `[verify]` lines) when touching the platform slice. The total and the floor
   (total - 20) are declared in `Program.cs`; the run ends with a `[suite] checks=... floor=...
   assert=...` line and fails itself when the printed count is below the floor, so the CI job and
   `scripts/preflight.sh` do not repeat the threshold.
@@ -942,3 +942,17 @@ parse.
   dispatcher's own queue. That is 5 new lines on top of the N2 (+1), T8 (+6) and T6 (+7) lines:
   452 + 5 = 457 = 444 interaction checks + 4 fuzz + 1 frame perf + 8 a11y perf; the workflow
   floor moves with the total (457 - 20 = 437).
+
+- **FIX-TABBED TabbedPage CurrentPage (2 lines, 2026-09-29)** - the device verification report
+  (conclusion 2 / finding 5.3-3: a TabbedPage app drew the tab bar but a black body) traced the
+  root cause to the compositor's `ChildEnumerator`, which enumerated layout children, the
+  content-view's presented content, the navigation page's current page and the flyout
+  detail/panel but not `TabbedPage.CurrentPage`. The enumerator now yields the selected tab's page
+  exactly like `NavigationPage.CurrentPage` (same presented-content reference guard; rc.1's
+  TabbedPage is not an `IContentView`, so the current page is the walk's only source). `tabbed
+  draw current` renders a two-page TabbedPage through a text-recording canvas and requires the
+  selected page's label in the frame with the unselected page's label absent (before the fix the
+  frame carried neither); `tabbed draw after switch` taps the second tab and requires the frame
+  to follow the switch (the new label drawn, the previous label gone). That is 2 new lines on top
+  of the T22 line: 457 + 2 = 459 = 446 interaction checks + 4 fuzz + 1 frame perf + 8 a11y perf;
+  the workflow floor moves with the total (459 - 20 = 439).

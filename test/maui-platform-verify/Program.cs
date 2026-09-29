@@ -12,7 +12,7 @@ using Microsoft.Maui.Platform;
 // after the fuzz tail) instead of letting every caller repeat its own threshold constant.
 VerifyLineCountingWriter verifyStdout = new(Console.Out);
 Console.SetOut(verifyStdout);
-const int verifyCheckTotal = 457;                     // documented full [verify] line count (+4 MS-MODE runtime mode switch, +10 P2c-DEEPLINK, +4 P2b-IMG, +16 P1b-LIST, +10 P1a-ANIM, +2 SEC3 storage/deep-link pins, +5 W-series WebView wiring, +3 T1 InputView mapping, +4 T2 WebView gaps, +4 T3 GraphicsView interaction, +7 T10 modal accessibility, +4 T4 Label formatted text, +4 T5 layout semantics, +6 T7 DatePicker calendar/min-max, +4 T9 window title bar, +4 T11 diagnostics overlay, +1 N2 empty ContentPage arrangement, +6 T8 TableView, +7 T6 RTL flow direction, +5 T22 MainThread bridge)
+const int verifyCheckTotal = 459;                     // documented full [verify] line count (+4 MS-MODE runtime mode switch, +10 P2c-DEEPLINK, +4 P2b-IMG, +16 P1b-LIST, +10 P1a-ANIM, +2 SEC3 storage/deep-link pins, +5 W-series WebView wiring, +3 T1 InputView mapping, +4 T2 WebView gaps, +4 T3 GraphicsView interaction, +7 T10 modal accessibility, +4 T4 Label formatted text, +4 T5 layout semantics, +6 T7 DatePicker calendar/min-max, +4 T9 window title bar, +4 T11 diagnostics overlay, +1 N2 empty ContentPage arrangement, +6 T8 TableView, +7 T6 RTL flow direction, +5 T22 MainThread bridge, +2 FIX-TABBED tabbed CurrentPage)
 const int verifyCheckFloor = verifyCheckTotal - 20;   // documented floor convention (total - 20)
 
 // A small image file for the Image handler.
@@ -2156,11 +2156,48 @@ var renderer = app.Services.GetRequiredService<OpenHarmonyWindowRenderer>();
 if (tabbed.Handler?.PlatformView is OpenHarmonyView tabPlatform)
 {
     Console.WriteLine($"[verify] tabbed titles=[{string.Join(",", tabPlatform.TabTitles)}] selected={tabPlatform.SelectedTab} current='{tabbed.CurrentPage?.Title}'");
+
+    // FIX-TABBED: the compositor walk must enumerate a TabbedPage's CurrentPage exactly like a
+    // NavigationPage's (the device black-screen root cause: only the tab bar was drawn). A probe
+    // canvas records every string the frame draws; the selected page's label must be in the
+    // frame and the unselected page's label must not, both before and after a CurrentPage switch.
+    var tabCanvas = new TabbedProbeCanvas();
+    var tabCanvasFactory = OpenHarmonyWindowRenderer.CanvasFactory;
+    OpenHarmonyWindowRenderer.CanvasFactory = () => tabCanvas;
+    OpenHarmonyWindowRenderer tabRenderer;
+    try
+    {
+        tabRenderer = new OpenHarmonyWindowRenderer();
+    }
+    finally
+    {
+        OpenHarmonyWindowRenderer.CanvasFactory = tabCanvasFactory;
+    }
+    tabRenderer.Render(tabbed, 1080, 1920);
+    bool tabDrewCurrent = tabCanvas.Texts.Contains("tab one");
+    bool tabHidOther = !tabCanvas.Texts.Contains("tab two");
+    Console.WriteLine($"[verify] tabbed draw current drawn={tabDrewCurrent} otherHidden={tabHidOther} texts={tabCanvas.Texts.Count} assert={tabDrewCurrent && tabHidOther}");
+    if (!(tabDrewCurrent && tabHidOther))
+    {
+        throw new InvalidOperationException("the compositor did not draw exactly the TabbedPage's CurrentPage content (ChildEnumerator missed CurrentPage)");
+    }
+
     double tabY = tabbed.Frame.Height - OpenHarmonyView.TabBarHeight / 2;
     double tabX = tabbed.Frame.Width * 0.75;
     renderer.HandleTouch(tabbed, true, false, (float)tabX, (float)tabY);
     renderer.HandleTouch(tabbed, false, true, (float)tabX, (float)tabY);
     Console.WriteLine($"[verify] tabbed after tap selected={tabPlatform.SelectedTab} current='{tabbed.CurrentPage?.Title}'");
+
+    tabCanvas.Texts.Clear();
+    tabRenderer.Render(tabbed, 1080, 1920);
+    bool tabDrewSwitched = tabCanvas.Texts.Contains("tab two");
+    bool tabHidPrevious = !tabCanvas.Texts.Contains("tab one");
+    Console.WriteLine($"[verify] tabbed draw after switch drawn={tabDrewSwitched} previousHidden={tabHidPrevious} assert={tabDrewSwitched && tabHidPrevious}");
+    if (!(tabDrewSwitched && tabHidPrevious))
+    {
+        throw new InvalidOperationException("the compositor frame did not follow the TabbedPage's CurrentPage switch");
+    }
+
     var contentFrame = ((View)tabTwo.Content!).Frame;
     Console.WriteLine($"[verify] tabbed content frame={contentFrame} (page arranged above the bar)");
 }
@@ -10339,6 +10376,21 @@ sealed class T11RecordingCanvas : Microsoft.OpenHarmony.Maui.Graphics.OpenHarmon
     public int Fills { get; private set; }
 
     public override void FillRectangle(float x, float y, float width, float height) => Fills++;
+}
+
+/// <summary>
+/// Tabbed-page probe canvas: records every string the compositor's text path draws, so the
+/// FIX-TABBED checks can prove the selected page's content reached the frame while the
+/// unselected page's content did not.
+/// </summary>
+sealed class TabbedProbeCanvas : Microsoft.OpenHarmony.Maui.Graphics.OpenHarmonyCanvas
+{
+    public List<string> Texts { get; } = new();
+
+    public override void DrawString(string value, float x, float y, float width, float height,
+        Microsoft.Maui.Graphics.HorizontalAlignment horizontalAlignment,
+        Microsoft.Maui.Graphics.VerticalAlignment verticalAlignment, float lineSpacingAdjustment = 0)
+        => Texts.Add(value);
 }
 
 sealed class ProbeDrawable : Microsoft.Maui.Graphics.IDrawable
