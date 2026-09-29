@@ -31,12 +31,13 @@ RID `openharmony-arm64`；workload `openharmony 1.0.0-preview.28/11.0.100-rc.2`�
 
 ## 已知事项（使用注意）
 
-1. **device selfsign 已撤下**：跨构建的 `selfsign-ohos-arm64` 在真机 SIGSEGV，
-   发布资产与锚已移除（安装了它的目录会被安装器清理）。安装/构建签名走
-   **`binary-sign-tool` 回退**；设备上可用实例：
+1. **device selfsign：已重上（设备自建版）** ✓（2026-09-29）：跨构建版曾 SIGSEGV 被撤下；
+   现资产 = 在设备上用修复版 SDK 本地 AOT 构建（未签名剥离版，6,321,296 B / `a403a1b4…`）——
+   安装器会自动 `bootstrap_selfsign` 后用其签署整个安装树 ✓（端到端实测
+   `signed=28 already_signed=1 failed=0`）。`SELFSIGN_SHA256` 已重锚（fail-closed 恢复 ✓）。
+   `binary-sign-tool` 回退仍保留；设备上可用实例：
    `~/.harmonybrew/Cellar/ohos-sdk/26.0.0.18_2/bin/binary-sign-tool`
-   （`~/.harmonybrew/bin` 的 shim 有 bug；安装时把 Cellar 目录前置到 `PATH` 即可）。
-   `SELFSIGN_SHA256` 已置空（fail-closed：将来重加资产必须先锚定）。
+   （`~/.harmonybrew/bin` 的 shim 实测不可靠；安装时把 Cellar 目录前置到 `PATH` 即可）。
 2. **publish 产物无 apphost**：OHOS 形态以 SDK muxer 启动：
    `dotnet <app>.dll`（或经工作负载的发布目标产出可执行形态）。
 3. **AspNetCore 传递 pack**：`.27` 起 workload 已收编
