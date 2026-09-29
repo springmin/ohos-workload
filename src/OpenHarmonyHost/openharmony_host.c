@@ -1242,7 +1242,7 @@ struct OhosHostAppHandle {
     void (*bridge_lifecycle)(int);
     void (*bridge_node)(void*);
     void (*bridge_surface)(void*, int, int, int);
-    void (*bridge_touch)(int, float, float, int, int);
+    void (*bridge_touch)(int, const OhosTouchPoint*, int, int, float, float);
     void (*bridge_frame)(int64_t, int64_t);
     void (*bridge_text_input)(const char*);
     void (*bridge_text_composition)(const char*, int);
@@ -2282,14 +2282,23 @@ void ohos_host_register_input(void* touch, void* frame) {
     if (g_app == NULL) {
         return;
     }
-    g_app->bridge_touch = (void (*)(int, float, float, int, int))touch;
+    g_app->bridge_touch = (void (*)(int, const OhosTouchPoint*, int, int, float, float))touch;
     g_app->bridge_frame = (void (*)(int64_t, int64_t))frame;
 }
 
-void ohos_host_notify_touch(int type, float x, float y, int pointerCount, int pointerId) {
+void ohos_host_notify_touch_points(int type, const OhosTouchPoint* points, int count,
+                                   int pointerId, float x, float y) {
     if (g_app != NULL && g_app->bridge_touch != NULL) {
-        g_app->bridge_touch(type, x, y, pointerCount, pointerId);
+        g_app->bridge_touch(type, points, count, pointerId, x, y);
     }
+}
+
+void ohos_host_notify_touch(int type, float x, float y, int pointerCount, int pointerId) {
+    // The mouse path reports one point; pointerCount stays part of the frozen single-point
+    // signature but the array count is what the managed event carries.
+    (void)pointerCount;
+    OhosTouchPoint point = { pointerId, x, y };
+    ohos_host_notify_touch_points(type, &point, 1, pointerId, x, y);
 }
 
 // IME caret mirror: the managed side writes it through ohos_host_keyboard_set_caret and the

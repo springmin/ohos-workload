@@ -32,8 +32,17 @@ internal static class NativeThunks
     [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
     public delegate void HybridInvokeCallback(int requestId, IntPtr method, IntPtr arguments);
 
+    /// <summary>One entry of the host's touch point array (OhosTouchPoint in openharmony_host.h).</summary>
+    [StructLayout(LayoutKind.Sequential)]
+    public struct TouchPoint
+    {
+        public int Id;
+        public float X;
+        public float Y;
+    }
+
     [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
-    public delegate void TouchCallback(int type, float x, float y, int pointerCount, int pointerId);
+    public delegate void TouchCallback(int type, IntPtr points, int count, int pointerId, float x, float y);
 
     [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
     public delegate void FrameCallback(long timestamp, long targetTimestamp);

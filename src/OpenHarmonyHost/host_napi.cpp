@@ -985,14 +985,45 @@ void OnTouch(OH_NativeXComponent* component, void* window) {
         return;
     }
     MaybeReportPinch(component, event);
+    // Report every active point: each pointer carries its own window coordinates, so the
+    // managed side can associate a multi-finger stream by pointer id (the old point-0-only
+    // report pinned every finger's position to the first one).
+    OhosTouchPoint points[OH_NATIVE_XCOMPONENT_MAX_TOUCH_POINTS_NUMBER];
+    int count = 0;
+    uint32_t total = event.numPoints;
+    if (total > OH_NATIVE_XCOMPONENT_MAX_TOUCH_POINTS_NUMBER) {
+        total = OH_NATIVE_XCOMPONENT_MAX_TOUCH_POINTS_NUMBER;
+    }
+    for (uint32_t i = 0; i < total; i++) {
+        float px = 0.0f;
+        float py = 0.0f;
+        OH_NativeXComponent_GetTouchPointWindowX(component, i, &px);
+        OH_NativeXComponent_GetTouchPointWindowY(component, i, &py);
+        points[count].id = event.touchPoints[i].id;
+        points[count].x = px;
+        points[count].y = py;
+        count++;
+    }
+    // The changed pointer (event.id) supplies the primary coordinates, not point 0; when the
+    // event no longer lists it (a final up may drop its point) fall back to point 0, then to
+    // the event's own coordinates when no point is carried at all.
     float x = event.x;
     float y = event.y;
-    if (event.numPoints > 0) {
-        OH_NativeXComponent_GetTouchPointWindowX(component, 0, &x);
-        OH_NativeXComponent_GetTouchPointWindowY(component, 0, &y);
+    bool matched = false;
+    for (int i = 0; i < count; i++) {
+        if (points[i].id == static_cast<int>(event.id)) {
+            x = points[i].x;
+            y = points[i].y;
+            matched = true;
+            break;
+        }
     }
-    ohos_host_notify_touch(static_cast<int>(event.type), x, y,
-                           static_cast<int>(event.numPoints), static_cast<int>(event.id));
+    if (!matched && count > 0) {
+        x = points[0].x;
+        y = points[0].y;
+    }
+    ohos_host_notify_touch_points(static_cast<int>(event.type), points, count,
+                                  static_cast<int>(event.id), x, y);
 }
 
 void OnMouse(OH_NativeXComponent* component, void* window) {

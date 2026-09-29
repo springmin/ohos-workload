@@ -12,7 +12,7 @@ using Microsoft.Maui.Platform;
 // after the fuzz tail) instead of letting every caller repeat its own threshold constant.
 VerifyLineCountingWriter verifyStdout = new(Console.Out);
 Console.SetOut(verifyStdout);
-const int verifyCheckTotal = 470;                     // documented full [verify] line count (+4 MS-MODE runtime mode switch, +10 P2c-DEEPLINK, +4 P2b-IMG, +16 P1b-LIST, +10 P1a-ANIM, +2 SEC3 storage/deep-link pins, +5 W-series WebView wiring, +3 T1 InputView mapping, +4 T2 WebView gaps, +4 T3 GraphicsView interaction, +7 T10 modal accessibility, +4 T4 Label formatted text, +4 T5 layout semantics, +6 T7 DatePicker calendar/min-max, +4 T9 window title bar, +4 T11 diagnostics overlay, +1 N2 empty ContentPage arrangement, +6 T8 TableView, +7 T6 RTL flow direction, +5 T22 MainThread bridge, +2 FIX-TABBED tabbed CurrentPage, +4 T13 group footer view/N3 picker IsOpen, +5 T21 system font scale, +2 A11Y-TABBED tabbed accessibility)
+const int verifyCheckTotal = 473;                     // documented full [verify] line count (+4 MS-MODE runtime mode switch, +10 P2c-DEEPLINK, +4 P2b-IMG, +16 P1b-LIST, +10 P1a-ANIM, +2 SEC3 storage/deep-link pins, +5 W-series WebView wiring, +3 T1 InputView mapping, +4 T2 WebView gaps, +4 T3 GraphicsView interaction, +7 T10 modal accessibility, +4 T4 Label formatted text, +4 T5 layout semantics, +6 T7 DatePicker calendar/min-max, +4 T9 window title bar, +4 T11 diagnostics overlay, +1 N2 empty ContentPage arrangement, +6 T8 TableView, +7 T6 RTL flow direction, +5 T22 MainThread bridge, +2 FIX-TABBED tabbed CurrentPage, +4 T13 group footer view/N3 picker IsOpen, +5 T21 system font scale, +2 A11Y-TABBED tabbed accessibility, +3 N1 host multi-pointer)
 const int verifyCheckFloor = verifyCheckTotal - 20;   // documented floor convention (total - 20)
 
 // A small image file for the Image handler.
@@ -1229,6 +1229,9 @@ if (graphicsCtl?.Handler?.PlatformView is OpenHarmonyView graphicsPlatform)
     int gvStartPoints = 0, gvDragPoints = 0, gvEndPoints = 0;
     bool gvFirstInside = false, gvSecondInside = true;
     float gvFirstX = float.NaN, gvFirstY = float.NaN;
+    // The latest drag payload: per-pointer coordinates after both pointers of the stream moved
+    // (the renderer tracks each pointer id separately, so each entry keeps its own position).
+    PointF[] gvDragLatest = Array.Empty<PointF>();
     graphicsCtl.StartInteraction += (_, e) =>
     {
         gvStart++;
@@ -1243,6 +1246,7 @@ if (graphicsCtl?.Handler?.PlatformView is OpenHarmonyView graphicsPlatform)
     {
         gvDrag++;
         gvDragPoints = Math.Max(gvDragPoints, e.Touches.Length);
+        gvDragLatest = e.Touches;
     };
     graphicsCtl.EndInteraction += (_, e) =>
     {
@@ -1276,6 +1280,11 @@ if (graphicsCtl?.Handler?.PlatformView is OpenHarmonyView graphicsPlatform)
     host.HandleMove(gx + 12, gy, 7);
     host.HandleTouch(true, false, gx + 30, gy + 10, 9);
     host.HandleMove(gx + 40, gy + 10, 9);
+    // Per-pointer association: pointer 7 keeps the position from its own move while pointer 9
+    // moves (the pre-N1 host reported point 0 for every event, so both entries collapsed).
+    bool gvPointerPointsOk = gvDragLatest.Length == 2 &&
+        Math.Abs(gvDragLatest[0].X - (gx + 12)) < 0.01f && Math.Abs(gvDragLatest[0].Y - gy) < 0.01f &&
+        Math.Abs(gvDragLatest[1].X - (gx + 40)) < 0.01f && Math.Abs(gvDragLatest[1].Y - (gy + 10)) < 0.01f;
     host.HandleTouch(false, true, gx + 40, gy + 10, 9);
     host.HandleMove(gx + 20, gy, 7);
     host.HandleTouch(false, true, gx + 20, gy, 7);
@@ -1292,7 +1301,7 @@ if (graphicsCtl?.Handler?.PlatformView is OpenHarmonyView graphicsPlatform)
 
     bool gvPointerOk = gvStart == 5 && gvDrag == 5 && gvEnd == 4 && gvCancel == 1;
     bool gvPointPinned = Math.Abs(gvFirstX - gx) < 0.01f && Math.Abs(gvFirstY - gy) < 0.01f;
-    Console.WriteLine($"[verify] graphicsview interaction start={gvStart} drag={gvDrag} end={gvEnd} cancel={gvCancel} startPoints={gvStartPoints} dragPoints={gvDragPoints} endPoints={gvEndPoints}");
+    Console.WriteLine($"[verify] graphicsview interaction start={gvStart} drag={gvDrag} end={gvEnd} cancel={gvCancel} startPoints={gvStartPoints} dragPoints={gvDragPoints} endPoints={gvEndPoints} pointerPoints={gvPointerPointsOk}");
     Console.WriteLine($"[verify] graphicsview interaction bounds tapInside={gvFirstInside} dragOutside={!gvSecondInside} pointPinned={gvPointPinned} pointerOk={gvPointerOk}");
     Console.WriteLine($"[verify] graphicsview interaction hover start={gvHoverStart} move={gvHoverMove} end={gvHoverEnd}");
     Microsoft.OpenHarmony.Hosting.OpenHarmonyBridge.RedrawRequested += gvRedraw;
@@ -1302,11 +1311,91 @@ if (graphicsCtl?.Handler?.PlatformView is OpenHarmonyView graphicsPlatform)
     // Restore the audit layout: the following assertions read the normal frames again.
     host.Arrange(1080, 1920);
     bool gvOk = gvPointerOk && gvStartPoints == 2 && gvDragPoints == 2 && gvEndPoints == 2 &&
-        gvFirstInside && !gvSecondInside && gvPointPinned &&
+        gvFirstInside && !gvSecondInside && gvPointPinned && gvPointerPointsOk &&
         gvHoverStart == 1 && gvHoverMove == 1 && gvHoverEnd == 1 && gvRedraws == 1;
     if (!gvOk)
     {
         throw new InvalidOperationException("the GraphicsView interaction contract (press/drag/multi-touch/cancel/hover/invalidate) is missing or drifted");
+    }
+}
+
+// N1: the host reports every pointer of a touch event (window coordinates) and the managed
+// bridge keeps each point addressable by id; the app host dispatches the changed pointer by id.
+// The native OnTouch builds the array from the XComponent event (source-pinned below), so the
+// managed half is driven off-device through the registered thunk with a crafted native buffer.
+{
+    var n1TouchHandlers = typeof(Microsoft.OpenHarmony.Hosting.OpenHarmonyBridge)
+        .GetField("s_touchHandlers", BindingFlags.NonPublic | BindingFlags.Static)
+        ?? throw new InvalidOperationException("OpenHarmonyBridge.s_touchHandlers was not found; the N1 touch contract needs the handler seam");
+    object? n1TouchHandlersBefore = n1TouchHandlers.GetValue(null);
+    var n1TouchEvents = new List<Microsoft.OpenHarmony.Hosting.OpenHarmonyTouchEventArgs>();
+    n1TouchHandlers.SetValue(null, (Action<Microsoft.OpenHarmony.Hosting.OpenHarmonyTouchEventArgs>)n1TouchEvents.Add);
+    try
+    {
+        var n1TouchPoints = new[]
+        {
+            new NativeThunks.TouchPoint { Id = 7, X = 10f, Y = 20f },
+            new NativeThunks.TouchPoint { Id = 9, X = 30f, Y = 40f },
+        };
+        unsafe
+        {
+            fixed (NativeThunks.TouchPoint* n1TouchFirst = n1TouchPoints)
+            {
+                NativeThunks.Invoker<NativeThunks.TouchCallback>(
+                    NativeThunks.Pointer(typeof(Microsoft.OpenHarmony.Hosting.OpenHarmonyBridge), "s_touchThunk"))(
+                    2, (IntPtr)n1TouchFirst, n1TouchPoints.Length, 9, 30f, 40f);
+            }
+            // A final up whose lifted point is already gone from the list still reports the
+            // changed pointer's own coordinates (count 0, no points).
+            NativeThunks.Invoker<NativeThunks.TouchCallback>(
+                NativeThunks.Pointer(typeof(Microsoft.OpenHarmony.Hosting.OpenHarmonyBridge), "s_touchThunk"))(
+                1, IntPtr.Zero, 0, 9, 55f, 66f);
+        }
+    }
+    finally
+    {
+        n1TouchHandlers.SetValue(null, n1TouchHandlersBefore);
+    }
+
+    var n1TouchMove = n1TouchEvents.Count > 0 ? n1TouchEvents[0] : null;
+    var n1TouchUp = n1TouchEvents.Count > 1 ? n1TouchEvents[1] : null;
+    // The primary coordinates follow the changed pointer (id 9 at 30,40), not point 0 (id 7).
+    bool n1TouchMoveOk = n1TouchMove is not null &&
+        n1TouchMove.Action == Microsoft.OpenHarmony.Hosting.OpenHarmonyTouchAction.Move &&
+        n1TouchMove.PointerCount == 2 && n1TouchMove.PointerId == 9 &&
+        Math.Abs(n1TouchMove.X - 30f) < 0.01f && Math.Abs(n1TouchMove.Y - 40f) < 0.01f &&
+        n1TouchMove.Points.Length == 2 &&
+        n1TouchMove.Points[0].Id == 7 && Math.Abs(n1TouchMove.Points[0].X - 10f) < 0.01f &&
+        Math.Abs(n1TouchMove.Points[0].Y - 20f) < 0.01f &&
+        n1TouchMove.Points[1].Id == 9 && Math.Abs(n1TouchMove.Points[1].X - 30f) < 0.01f &&
+        Math.Abs(n1TouchMove.Points[1].Y - 40f) < 0.01f;
+    bool n1TouchUpOk = n1TouchUp is not null &&
+        n1TouchUp.Action == Microsoft.OpenHarmony.Hosting.OpenHarmonyTouchAction.Up &&
+        n1TouchUp.PointerCount == 0 && n1TouchUp.Points.Length == 0 && n1TouchUp.PointerId == 9 &&
+        Math.Abs(n1TouchUp.X - 55f) < 0.01f && Math.Abs(n1TouchUp.Y - 66f) < 0.01f;
+    // Native half: the XComponent walk must report every active point and match the changed
+    // pointer by id (the pre-N1 code read window point 0 for every event).
+    string? n1TouchNativePath = FindHostSource("src/OpenHarmonyHost/host_napi.cpp");
+    string n1TouchNative = n1TouchNativePath is null ? string.Empty : File.ReadAllText(n1TouchNativePath);
+    string? n1TouchHeaderPath = FindHostSource("src/OpenHarmonyHost/openharmony_host.h");
+    string n1TouchHeader = n1TouchHeaderPath is null ? string.Empty : File.ReadAllText(n1TouchHeaderPath);
+    bool n1TouchNativeOk = n1TouchNative.Contains("ohos_host_notify_touch_points(") &&
+        n1TouchNative.Contains("i < total") && n1TouchNative.Contains("event.touchPoints[i].id") &&
+        n1TouchNative.Contains("points[i].id == static_cast<int>(event.id)") &&
+        n1TouchHeader.Contains("} OhosTouchPoint;") &&
+        n1TouchHeader.Contains("ohos_host_notify_touch_points(int type, const OhosTouchPoint* points, int count,");
+    // The ABI struct the thunk reads must stay 12 bytes with the native field order (int id,
+    // float x, float y), otherwise the host would write coordinates the managed side misreads.
+    bool n1TouchLayoutOk = Marshal.SizeOf<NativeThunks.TouchPoint>() == 12 &&
+        (int)Marshal.OffsetOf<NativeThunks.TouchPoint>("Id") == 0 &&
+        (int)Marshal.OffsetOf<NativeThunks.TouchPoint>("X") == 4 &&
+        (int)Marshal.OffsetOf<NativeThunks.TouchPoint>("Y") == 8;
+    Console.WriteLine($"[verify] host touch multi-pointer reported={n1TouchMove?.Points.Length ?? -1} changed={n1TouchMove?.PointerId ?? -1} primary={n1TouchMove?.X ?? float.NaN},{n1TouchMove?.Y ?? float.NaN} assert={n1TouchMoveOk}");
+    Console.WriteLine($"[verify] host touch multi-pointer empty count={n1TouchUp?.PointerCount ?? -1} changed={n1TouchUp?.PointerId ?? -1} primary={n1TouchUp?.X ?? float.NaN},{n1TouchUp?.Y ?? float.NaN} assert={n1TouchUpOk}");
+    Console.WriteLine($"[verify] host touch multi-pointer native allPoints={n1TouchNativeOk} layout={n1TouchLayoutOk} assert={n1TouchNativeOk && n1TouchLayoutOk}");
+    if (!n1TouchMoveOk || !n1TouchUpOk || !n1TouchNativeOk || !n1TouchLayoutOk)
+    {
+        throw new InvalidOperationException("the N1 host multi-pointer contract (all points reported, changed pointer by id) is missing or drifted");
     }
 }
 
@@ -8937,8 +9026,15 @@ void Audit3ProbeHostCallback(string boundary, string fieldName, Delegate thrower
 Action<Microsoft.OpenHarmony.Hosting.OpenHarmonyTouchEventArgs> n30TouchThrower =
     _ => throw new InvalidOperationException("app touch handler failed");
 Audit3ProbeHostCallback("touch", "s_touchHandlers", n30TouchThrower, () =>
-    NativeThunks.Invoker<NativeThunks.TouchCallback>(
-        NativeThunks.Pointer(typeof(Microsoft.OpenHarmony.Hosting.OpenHarmonyBridge), "s_touchThunk"))(0, 0f, 0f, 1, 1));
+{
+    var n30TouchPoint = new NativeThunks.TouchPoint { Id = 1, X = 1f, Y = 2f };
+    unsafe
+    {
+        NativeThunks.Invoker<NativeThunks.TouchCallback>(
+            NativeThunks.Pointer(typeof(Microsoft.OpenHarmony.Hosting.OpenHarmonyBridge), "s_touchThunk"))(
+            0, (IntPtr)(&n30TouchPoint), 1, 1, 1f, 2f);
+    }
+});
 
 Action<Microsoft.OpenHarmony.Hosting.OpenHarmonyFrameEventArgs> n30FrameThrower =
     _ => throw new InvalidOperationException("app frame handler failed");

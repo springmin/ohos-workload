@@ -21,23 +21,68 @@ public enum OpenHarmonyTouchAction
     Cancel = 3,
 }
 
+/// <summary>One pointer of a forwarded touch stream: a stable id and its window coordinates.</summary>
+public readonly struct OpenHarmonyTouchPoint
+{
+    public OpenHarmonyTouchPoint(int id, float x, float y)
+    {
+        Id = id;
+        X = x;
+        Y = y;
+    }
+
+    /// <summary>The finger's id, stable for the whole down..up stream.</summary>
+    public int Id { get; }
+
+    /// <summary>X in window coordinates (the same space as the render/surface frame).</summary>
+    public float X { get; }
+
+    /// <summary>Y in window coordinates.</summary>
+    public float Y { get; }
+}
+
 /// <summary>An XComponent touch/mouse event forwarded from the native host.</summary>
 public sealed class OpenHarmonyTouchEventArgs
 {
+    private static readonly OpenHarmonyTouchPoint[] s_noPoints = Array.Empty<OpenHarmonyTouchPoint>();
+
     public OpenHarmonyTouchEventArgs(OpenHarmonyTouchAction action, float x, float y, int pointerCount, int pointerId)
+        : this(action, x, y, pointerCount, pointerId, s_noPoints)
+    {
+    }
+
+    public OpenHarmonyTouchEventArgs(
+        OpenHarmonyTouchAction action, float x, float y, int pointerCount, int pointerId,
+        OpenHarmonyTouchPoint[] points)
     {
         Action = action;
         X = x;
         Y = y;
         PointerCount = pointerCount;
         PointerId = pointerId;
+        Points = points ?? s_noPoints;
     }
 
     public OpenHarmonyTouchAction Action { get; }
+
+    /// <summary>X of the changed pointer (<see cref="PointerId"/>) in window coordinates.</summary>
     public float X { get; }
+
+    /// <summary>Y of the changed pointer (<see cref="PointerId"/>) in window coordinates.</summary>
     public float Y { get; }
+
+    /// <summary>Number of active points the host reported.</summary>
     public int PointerCount { get; }
+
+    /// <summary>Id of the pointer that changed (the event's own id).</summary>
     public int PointerId { get; }
+
+    /// <summary>
+    /// Every point the host reported for this event, in the native event's order (empty when
+    /// the event carries none, e.g. a final up whose lifted point is already gone). Multi-finger
+    /// consumers associate entries by <see cref="OpenHarmonyTouchPoint.Id"/>.
+    /// </summary>
+    public OpenHarmonyTouchPoint[] Points { get; }
 }
 
 /// <summary>A frame tick from the platform (vsync-aligned).</summary>
@@ -128,6 +173,19 @@ public sealed class OpenHarmonyActivationEventArgs
 
     /// <summary>Shell-assigned want sequence (0 when the shell did not report one).</summary>
     public long Sequence { get; }
+}
+
+/// <summary>
+/// Native layout of one entry of the host's touch point array (OhosTouchPoint in
+/// openharmony_host.h): blittable int/float/float, read through a pointer in the registered
+/// touch thunk. Keep the field order aligned with the C struct.
+/// </summary>
+[StructLayout(LayoutKind.Sequential)]
+internal struct OpenHarmonyNativeTouchPoint
+{
+    public int Id;
+    public float X;
+    public float Y;
 }
 
 /// <summary>Bridge between the native OpenHarmony shell and the managed application.</summary>
@@ -236,7 +294,7 @@ public static partial class OpenHarmonyBridge
     [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
     private delegate void NativeSurfaceDelegate(IntPtr window, int width, int height, int state);
     [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
-    private delegate void NativeTouchDelegate(int type, float x, float y, int pointerCount, int pointerId);
+    private delegate void NativeTouchDelegate(int type, IntPtr points, int count, int pointerId, float x, float y);
     [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
     private delegate void NativeFrameDelegate(long timestamp, long targetTimestamp);
     [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
@@ -263,7 +321,7 @@ public static partial class OpenHarmonyBridge
     private static unsafe IntPtr s_lifecycleThunk = (IntPtr)(delegate* unmanaged[Cdecl]<int, void>)&OnLifecycleNative;
     private static unsafe IntPtr s_nodeThunk = (IntPtr)(delegate* unmanaged[Cdecl]<IntPtr, void>)&OnNodeNative;
     private static unsafe IntPtr s_surfaceThunk = (IntPtr)(delegate* unmanaged[Cdecl]<IntPtr, int, int, int, void>)&OnSurfaceNative;
-    private static unsafe IntPtr s_touchThunk = (IntPtr)(delegate* unmanaged[Cdecl]<int, float, float, int, int, void>)&OnTouchNative;
+    private static unsafe IntPtr s_touchThunk = (IntPtr)(delegate* unmanaged[Cdecl]<int, OpenHarmonyNativeTouchPoint*, int, int, float, float, void>)&OnTouchNative;
     private static unsafe IntPtr s_frameThunk = (IntPtr)(delegate* unmanaged[Cdecl]<long, long, void>)&OnFrameNative;
     private static unsafe IntPtr s_textInputThunk = (IntPtr)(delegate* unmanaged[Cdecl]<IntPtr, void>)&OnTextInputNative;
     private static unsafe IntPtr s_textCompositionThunk = (IntPtr)(delegate* unmanaged[Cdecl]<IntPtr, int, void>)&OnTextCompositionNative;
@@ -1335,12 +1393,32 @@ public static partial class OpenHarmonyBridge
     }
 
     [UnmanagedCallersOnly(CallConvs = new[] { typeof(CallConvCdecl) })]
-    private static void OnTouchNative(int type, float x, float y, int pointerCount, int pointerId)
+    private static unsafe void OnTouchNative(int type, OpenHarmonyNativeTouchPoint* points, int count,
+        int pointerId, float x, float y)
     {
-        // Input is a hot path: the guard below adds no allocation on the normal path.
+        // Input is a hot path: the guard below adds no allocation beyond the event payload.
         try
         {
-            var args = new OpenHarmonyTouchEventArgs((OpenHarmonyTouchAction)type, x, y, pointerCount, pointerId);
+            // The host reports every active pointer; copy them out before the native frame
+            // (and its borrowed array) returns. count is 0 for events that carry no point.
+            OpenHarmonyTouchPoint[] reported = count > 0
+                ? new OpenHarmonyTouchPoint[count]
+                : Array.Empty<OpenHarmonyTouchPoint>();
+            float primaryX = x;
+            float primaryY = y;
+            for (int i = 0; i < count; i++)
+            {
+                OpenHarmonyNativeTouchPoint point = points[i];
+                reported[i] = new OpenHarmonyTouchPoint(point.Id, point.X, point.Y);
+                // The event's primary coordinates belong to the changed pointer: prefer its own
+                // entry by id over the native fallback coordinates.
+                if (point.Id == pointerId)
+                {
+                    primaryX = point.X;
+                    primaryY = point.Y;
+                }
+            }
+            var args = new OpenHarmonyTouchEventArgs((OpenHarmonyTouchAction)type, primaryX, primaryY, count, pointerId, reported);
             Action<OpenHarmonyTouchEventArgs>? handlers;
             lock (s_sync)
             {

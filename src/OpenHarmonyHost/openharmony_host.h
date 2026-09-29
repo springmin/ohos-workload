@@ -80,7 +80,8 @@ const char* ohos_host_get_bundle_name(void);
 void ohos_host_register_bridge(void* lifecycle, void* node, void* surface);
 
 /// Input + frame callbacks (registered by the managed bridge in addition to the render
-/// bridge). touch: void (*)(int type, float x, float y, int pointerCount, int pointerId);
+/// bridge). touch: void (*)(int type, const OhosTouchPoint* points, int count, int pointerId,
+/// float x, float y) - every active point plus the changed point's id and coordinates;
 /// frame: void (*)(int64_t timestamp, int64_t targetTimestamp). Both may be NULL.
 void ohos_host_register_input(void* touch, void* frame);
 
@@ -98,7 +99,24 @@ void ohos_host_register_text_composition(void* callback);
 /// unmangled export name "ohos_host_register_pinch" (OpenHarmonyApp.RegisterPinch).
 void ohos_host_register_pinch(void* callback);
 
-/// Forwards an XComponent touch event to the managed bridge (type: 0=down 1=up 2=move 3=cancel).
+/// One touch point of an XComponent touch event, in window coordinates. The managed bridge
+/// resolves points by id, so a multi-finger stream carries every active pointer with its own
+/// coordinates instead of only point 0.
+typedef struct {
+    int id;
+    float x;
+    float y;
+} OhosTouchPoint;
+
+/// Forwards an XComponent touch event with every active point to the managed bridge (type:
+/// 0=down 1=up 2=move 3=cancel). `pointerId` is the changed point and (x, y) are its
+/// coordinates; `points`/`count` are the event's active points (count 0 when the event lists
+/// none, e.g. a final up whose lifted point is already gone). The array is borrowed for the
+/// duration of the call only.
+void ohos_host_notify_touch_points(int type, const OhosTouchPoint* points, int count,
+                                   int pointerId, float x, float y);
+
+/// Single-point form of ohos_host_notify_touch_points (mouse input, one-point callers).
 void ohos_host_notify_touch(int type, float x, float y, int pointerCount, int pointerId);
 
 /// Text input: forwards text typed in the ArkTS shell to the managed bridge.

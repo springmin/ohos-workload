@@ -49,7 +49,7 @@ allocation and jitter) budgets are exceeded.
 # (or the MauiSliceDir / HostingDll / OpenHarmonyGraphicsDll MSBuild properties) before building
 # elsewhere; an explicit -p: value wins over the environment and the absolute fallbacks.
 dotnet build -v:q
-dotnet bin/Debug/net11.0/verify.dll | grep -c '\[verify\]'   # expect 470 (457 interaction checks + 4 fuzz + 1 frame perf + 8 a11y perf)
+dotnet bin/Debug/net11.0/verify.dll | grep -c '\[verify\]'   # expect 473 (460 interaction checks + 4 fuzz + 1 frame perf + 8 a11y perf)
 ```
 
 The `interaction-regression` workflow (`.github/workflows/interaction-regression.yml`) runs the
@@ -60,7 +60,7 @@ suite on a GitHub runner as a real gate (on push to `master`, on pull requests a
 points `MAUI_SLICE_DIR` / `HOSTING_DLL` / `OPENHARMONY_GRAPHICS_DLL` at those roots, and fails the
 job unless the run exits 0, the suite's own `[suite]` contract line reports `assert=True` with at
 least the floor declared in `Program.cs`, both perf lines report `within=True`, and no `Unhandled`
-line is logged. The floor (450 = 470 - 20, the documented convention) lives only in `Program.cs`;
+line is logged. The floor (453 = 473 - 20, the documented convention) lives only in `Program.cs`;
 the workflow and `scripts/preflight.sh` both read the printed `[suite] checks=... floor=...` line
 instead of repeating a literal, so the two local/CI thresholds cannot drift apart.
 
@@ -178,8 +178,8 @@ parse.
   blocks codesigned ELF apphosts on some machines).
 - The suite fails loudly (unhandled exception) when a slice change breaks startup or when an
   assertion for the gesture flows (including the drag-and-drop checks) does not hold; keep it at
-  457 interaction checks plus the 4 fuzz lines plus the 1 frame-perf line plus the 8 a11y-perf
-  lines (470 `[verify]` lines) when touching the platform slice. The total and the floor
+  460 interaction checks plus the 4 fuzz lines plus the 1 frame-perf line plus the 8 a11y-perf
+  lines (473 `[verify]` lines) when touching the platform slice. The total and the floor
   (total - 20) are declared in `Program.cs`; the run ends with a `[suite] checks=... floor=...
   assert=...` line and fails itself when the printed count is below the floor, so the CI job and
   `scripts/preflight.sh` do not repeat the threshold.
@@ -1009,3 +1009,24 @@ parse.
   requires the tree to follow `CurrentPage` (the new label present, the previous label gone). That
   is 2 new lines on top of the T21 line: 468 + 2 = 470 = 457 interaction checks + 4 fuzz +
   1 frame perf + 8 a11y perf; the workflow floor moves with the total (470 - 20 = 450).
+- **N1 host multi-pointer coordinates (3 lines, 2026-09-29)** - the native `OnTouch` reported
+  only window point 0 for every XComponent event (`ohos_host_notify_touch(type, x, y,
+  numPoints, event.id)`), so a second finger's down/move carried the first finger's position and
+  a multi-finger stream collapsed onto one tracked pointer. `OnTouch` now walks `event.numPoints`
+  (`OH_NATIVE_XCOMPONENT_MAX_TOUCH_POINTS_NUMBER` capped), reads each point's id and window
+  coordinates and reports the whole array through the new `ohos_host_notify_touch_points(type,
+  points, count, pointerId, x, y)`; the primary coordinates follow the changed pointer
+  (`event.id`, matched in the array, falling back to point 0 then to the event's own
+  coordinates), and the old single-point `ohos_host_notify_touch` shim keeps the mouse path. The
+  managed `OpenHarmonyTouchEventArgs` carries the array as `Points` (`OpenHarmonyTouchPoint`
+  id/x/y) and its `X`/`Y` are the changed pointer's; the app host's existing
+  `args.PointerId`/`X`/`Y` dispatch already associates the stream by id. `host touch
+  multi-pointer` drives the registered thunk with a crafted two-point buffer and requires
+  `Points` to carry both ids with their own coordinates and `X`/`Y` to be the changed pointer's
+  (30,40), not point 0's (10,20); `host touch multi-pointer empty` covers the final up whose
+  lifted point is gone (count 0, explicit changed coordinates); `host touch multi-pointer native`
+  pins the native walk/header (all points, changed-point match, the new export). The T3 graphics
+  interaction line additionally pins per-pointer association (`pointerPoints`), i.e. pointer 7
+  keeps its own moved position while pointer 9 moves. That is 3 new lines on top of the
+  A11Y-TABBED line: 470 + 3 = 473 = 460 interaction checks + 4 fuzz + 1 frame perf + 8 a11y
+  perf; the workflow floor moves with the total (473 - 20 = 453).
