@@ -10,14 +10,14 @@
 #   S0b blazorperms the embedded BLAZOR_SOURCE_PERMS (the 2c source-side permission
 #                 expectation) matches test/hello-blazorwasm/arkts-host module.json5
 #   S1 good       a kit that satisfies the current contract -> exit 0, KIT OK, every 2b
-#                 assertion passes (index 1588 B, abc 281052 B / PANDA 13.0.1.0, 14 .so,
+#                 assertion passes (index 1588 B, abc 294976 B / PANDA 13.0.1.0, 14 .so,
 #                 payload-in-libs marker (assembly + 19 entries + zip sha), DT_NEEDED=5,
 #                 denylist 0, dotnet.zip 254 entries / 0 .so); S1b reruns the same kit to
 #                 prove the check leaves no state behind
 #   S2 noindex    one hap loses resources.index -> exit 1, FAIL names it and FIX-DEV3 0f26b74
 #   S3 emptyindex resources.index is 0 B -> exit 1 ("0 B 空文件")
 #   S4 bigindex   resources.index 4096 B -> WARN only, exit 0 (historical/soft drift)
-#   S5 abcdrift   abc 214000 B -> WARN + KIT OK by default; --expected-abc 281052 -> FAIL;
+#   S5 abcdrift   abc 214000 B -> WARN + KIT OK by default; --expected-abc 294976 -> FAIL;
 #                 abc 20916 B (the headless shell) stays accepted without a warning
 #   S6 abcver     abc PANDA version 12.9.9.9 -> exit 1
 #   S7 libs       13 .so -> exit 1 (a runtime ELF is missing); 15 .so -> WARN only
@@ -166,7 +166,7 @@ MODULE = {
             "minAPIVersion": 50002014, "targetAPIVersion": 60101024, "apiReleaseType": "Release"},
     "module": {"name": "entry", "type": "entry", "requestPermissions": []},
 }
-ABC_SIZE = 281052
+ABC_SIZE = 294976
 ABC_VERSION = (13, 0, 1, 0)
 INDEX_SIZE = 1588
 DOTNET_ENTRIES = 254
@@ -578,7 +578,7 @@ assert_rc 0 "$RC" "S1 good kit"
 assert_contains "S1 KIT OK" "KIT OK" "$LOG_FILE"
 assert_contains "S1 all 2b assertions pass" "全部关键断言通过" "$LOG_FILE"
 assert_contains "S1 index 1588 B listed" "resources.index 1588 B（≤2 KiB 合理范围）" "$LOG_FILE"
-assert_contains "S1 abc 281052 / PANDA 13.0.1.0" "ets/modules.abc 281052 B，PANDA 头版本 13.0.1.0" "$LOG_FILE"
+assert_contains "S1 abc 294976 / PANDA 13.0.1.0" "ets/modules.abc 294976 B，PANDA 头版本 13.0.1.0" "$LOG_FILE"
 assert_contains "S1 libs .so=14" "libs/arm64-v8a/: 14 个 .so" "$LOG_FILE"
 assert_contains "S1 payload-in-libs marker staged + counted" "payload-in-libs: assembly=hello-maui-app.dll，条目=19（实测 19）" "$LOG_FILE"
 assert_contains "S1 payload-in-libs marker zip bound" "zip=254/" "$LOG_FILE"
@@ -644,11 +644,11 @@ K="$(new_kit kit-abcdrift)"
 python3 "$WORK/fixture.py" patch "$K" abc-size 214000
 run_verify "$K"
 assert_rc 0 "$RC" "S5 drifted abc still KIT OK by default"
-assert_contains "S5 warns about the drifted size" "abc 大小 214000 不是当前期望（281052/20916）" "$LOG_FILE"
+assert_contains "S5 warns about the drifted size" "abc 大小 214000 不是当前期望（294976/20916）" "$LOG_FILE"
 assert_contains "S5 KIT OK carries the WARN count" "KIT OK（5 条 WARN" "$LOG_FILE"
-run_verify "$K" --expected-abc 281052
-assert_rc 1 "$RC" "S5 pinned --expected-abc 281052 turns the drift into a FAIL"
-assert_contains "S5 reports the pinned set" "不在 --expected-abc 281052 内" "$LOG_FILE"
+run_verify "$K" --expected-abc 294976
+assert_rc 1 "$RC" "S5 pinned --expected-abc 294976 turns the drift into a FAIL"
+assert_contains "S5 reports the pinned set" "不在 --expected-abc 294976 内" "$LOG_FILE"
 assert_contains "S5 KIT CHECK FAILED" "KIT CHECK FAILED" "$LOG_FILE"
 K="$(new_kit kit-headlessabc)"
 python3 "$WORK/fixture.py" patch "$K" abc-size 20916

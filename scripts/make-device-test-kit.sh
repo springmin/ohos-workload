@@ -6,9 +6,11 @@
 #     example UDID): a real device rejects them (9568257/9568344), and the kit-root 签名说明.txt
 #     states this. tester-run.sh and the shipped docs address these names - keep them.
 #   1 unsigned hap      hello-maui-app-unsigned.hap (26.0, re-sign-then-install variant)
-#   0/1 blazor hap      hello-blazorwasm-host-unsigned.hap only with --with-blazor (Blazor
-#                       WASM site embedded into the ArkTS ArkWeb host; bundle
-#                       com.example.opendotnet; unsigned like the variant above)
+#   0/2 blazor haps     hello-blazorwasm-host-unsigned.hap and its no-CSP A/B twin
+#                       hello-blazorwasm-host-nocsp-unsigned.hap only with --with-blazor
+#                       (Blazor WASM site embedded into the ArkTS ArkWeb host; bundle
+#                       com.example.opendotnet; unsigned like the variant above; FIX-BLZ-PATH
+#                       added the twin so one device run can A/B the CSP header)
 #   9 docs             验收说明.md 快速开始.md 真机操作手册.md 文档索引.md 签名与UDID指南.md
 #                       自签说明.md 最终状态.md README-交付说明.md + 签名说明.txt (generated here
 #                       from the heredoc, so it always matches the kit's actual hap names)
@@ -97,8 +99,9 @@ The 4 default haps are self-signed with our own debug material, so a real device
 is installable. 签名说明.txt states this in the kit root.
 
 --with-blazor additionally publishes the Blazor WASM smoke site (recipe gate:
-run-smoke.sh --require --slim) and packs it into the ArkTS ArkWeb host as the extra UNSIGNED
-hap hello-blazorwasm-host-unsigned.hap (bundle com.example.opendotnet; re-sign before
+run-smoke.sh --require --slim) and packs it into the ArkTS ArkWeb host as TWO extra UNSIGNED
+haps: hello-blazorwasm-host-unsigned.hap and the no-CSP A/B twin
+hello-blazorwasm-host-nocsp-unsigned.hap (bundle com.example.opendotnet; re-sign before
 install). Needs the hvigor toolchain from scripts/build-arkts-shell.sh (<repo>/.arkts-build).
 
 --sign-external pre-signs every hap (including the unsigned variant and the --with-blazor
@@ -346,6 +349,24 @@ if [ "$WITH_BLAZOR" = 1 ]; then
     fi
     tail -5 "$BLAZOR_WORK/pack-host.log" | sed 's/^/   /'
     copy_hap "$BLAZOR_WORK/hello-blazorwasm-host-unsigned.hap" "hello-blazorwasm-host-unsigned.hap"
+
+    # no-CSP A/B twin (FIX-BLZ-PATH): the same site packed from a staged host page without
+    # the Content-Security-Policy header. Ships under an explicit nocsp name so a device A/B
+    # is unambiguous; unsigned like the default and re-signed the same way.
+    log "== packing the no-CSP A/B twin (pack-host.sh --no-csp --slim --unsigned-only) =="
+    set -- "$BLAZOR_WORK/site/publish/wwwroot" --slim --unsigned-only --no-csp \
+        --out "$BLAZOR_WORK/hello-blazorwasm-host-nocsp-unsigned.hap" \
+        --work "$BLAZOR_WORK/host-work-nocsp"
+    [ -z "$BLAZOR_BUNDLE" ] || set -- "$@" --bundle "$BLAZOR_BUNDLE"
+    _blazor_rc=0
+    HVIGOR_JS="$BLAZOR_HVIGOR" sh "$BLAZOR_PACK" "$@" > "$BLAZOR_WORK/pack-host-nocsp.log" 2>&1 || _blazor_rc=$?
+    if [ "$_blazor_rc" -ne 0 ]; then
+        warn "Blazor no-CSP twin pack failed (rc=$_blazor_rc, log: $BLAZOR_WORK/pack-host-nocsp.log)"
+        tail -25 "$BLAZOR_WORK/pack-host-nocsp.log" >&2
+        exit 1
+    fi
+    tail -5 "$BLAZOR_WORK/pack-host-nocsp.log" | sed 's/^/   /'
+    copy_hap "$BLAZOR_WORK/hello-blazorwasm-host-nocsp-unsigned.hap" "hello-blazorwasm-host-nocsp-unsigned.hap"
     log "   Blazor scratch (logs/site/hvigor): $BLAZOR_WORK"
 fi
 

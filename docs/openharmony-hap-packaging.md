@@ -283,8 +283,10 @@ passthrough (no password on the generated argv, the original hap survives a fail
 
 ## Blazor WASM ArkWeb kit component (`--with-blazor`)
 
-`scripts/make-device-test-kit.sh --with-blazor` adds a sixth hap to the delivery kit:
-`hello-blazorwasm-host-unsigned.hap`, a self-contained ArkTS-only host (the ArkWeb `Web`
+`scripts/make-device-test-kit.sh --with-blazor` adds two haps to the delivery kit: the
+default `hello-blazorwasm-host-unsigned.hap` and its no-CSP A/B twin
+`hello-blazorwasm-host-nocsp-unsigned.hap` (FIX-BLZ-PATH), a self-contained ArkTS-only host
+(the ArkWeb `Web`
 component; the site under `resources/rawfile/blazor` is served through `onInterceptRequest`)
 around the `dotnet publish` output of `test/hello-blazorwasm`. The publish doubles as the
 offline recipe gate (`--require` turns a restore-level SKIP into a failure; x64 only, no
@@ -294,10 +296,12 @@ device/OHOS SDK needed):
 sh test/hello-blazorwasm/run-smoke.sh --require --slim --out "$WORK/blazor"
 sh test/hello-blazorwasm/arkts-host/pack-host.sh "$WORK/blazor/publish/wwwroot" \
     --slim --unsigned-only --out "$WORK/hello-blazorwasm-host-unsigned.hap"
+sh test/hello-blazorwasm/arkts-host/pack-host.sh "$WORK/blazor/publish/wwwroot" \
+    --slim --unsigned-only --no-csp --out "$WORK/hello-blazorwasm-host-nocsp-unsigned.hap"
 ```
 
-Only the unsigned hap ships (bundle `com.example.opendotnet`; `--blazor-bundle <name>`
-overrides it): our debug profile is bound to the example UDID, so a tester re-signs it exactly
+Only the unsigned haps ship (bundle `com.example.opendotnet`; `--blazor-bundle <name>`
+overrides it): our debug profile is bound to the example UDID, so a tester re-signs them exactly
 like `hello-maui-app-unsigned.hap`. `--slim` drops the `.br/.gz/.map` siblings at embed time
 and the slim publish sets `InvariantGlobalization=true` (no `icudt*.dat`); the measured cut is
 ~26 MB with ~213 embedded site files (210 + the 3 stable-name copies below). The pack consumes
