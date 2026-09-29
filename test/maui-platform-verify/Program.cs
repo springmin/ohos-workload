@@ -12,7 +12,7 @@ using Microsoft.Maui.Platform;
 // after the fuzz tail) instead of letting every caller repeat its own threshold constant.
 VerifyLineCountingWriter verifyStdout = new(Console.Out);
 Console.SetOut(verifyStdout);
-const int verifyCheckTotal = 459;                     // documented full [verify] line count (+4 MS-MODE runtime mode switch, +10 P2c-DEEPLINK, +4 P2b-IMG, +16 P1b-LIST, +10 P1a-ANIM, +2 SEC3 storage/deep-link pins, +5 W-series WebView wiring, +3 T1 InputView mapping, +4 T2 WebView gaps, +4 T3 GraphicsView interaction, +7 T10 modal accessibility, +4 T4 Label formatted text, +4 T5 layout semantics, +6 T7 DatePicker calendar/min-max, +4 T9 window title bar, +4 T11 diagnostics overlay, +1 N2 empty ContentPage arrangement, +6 T8 TableView, +7 T6 RTL flow direction, +5 T22 MainThread bridge, +2 FIX-TABBED tabbed CurrentPage)
+const int verifyCheckTotal = 463;                     // documented full [verify] line count (+4 MS-MODE runtime mode switch, +10 P2c-DEEPLINK, +4 P2b-IMG, +16 P1b-LIST, +10 P1a-ANIM, +2 SEC3 storage/deep-link pins, +5 W-series WebView wiring, +3 T1 InputView mapping, +4 T2 WebView gaps, +4 T3 GraphicsView interaction, +7 T10 modal accessibility, +4 T4 Label formatted text, +4 T5 layout semantics, +6 T7 DatePicker calendar/min-max, +4 T9 window title bar, +4 T11 diagnostics overlay, +1 N2 empty ContentPage arrangement, +6 T8 TableView, +7 T6 RTL flow direction, +5 T22 MainThread bridge, +2 FIX-TABBED tabbed CurrentPage, +4 T13 group footer view/N3 picker IsOpen)
 const int verifyCheckFloor = verifyCheckTotal - 20;   // documented floor convention (total - 20)
 
 // A small image file for the Image handler.
@@ -657,6 +657,86 @@ if (timeCtl is not null && timeCtl.Handler?.PlatformView is OpenHarmonyView time
     host.HandleTouch(true, false, (float)(f.X + 10), rowY);
     host.HandleTouch(false, true, (float)(f.X + 10), rowY);
     Console.WriteLine($"[verify] timepicker time={timeCtl.Time:hh\\:mm} text='{timePlatform.Text}' popup={timePlatform.PopupVisible}");
+}
+
+// N3: Picker/DatePicker/TimePicker IsOpen maps both ways. A programmatic open/close drives the
+// platform popup, a field tap opens it, a selection (or an outside tap) closes it, and every
+// transition raises the control's Opened/Closed exactly once.
+if (pickerTest is not null && pickerTest.Handler?.PlatformView is OpenHarmonyView n3PickerPlatform)
+{
+    int n3PickerOpened = 0;
+    int n3PickerClosed = 0;
+    pickerTest.Opened += (_, _) => n3PickerOpened++;
+    pickerTest.Closed += (_, _) => n3PickerClosed++;
+    pickerTest.IsOpen = true;
+    bool n3PickerProgOpen = pickerTest.IsOpen && n3PickerPlatform.PopupVisible;
+    pickerTest.IsOpen = false;
+    bool n3PickerProgClose = !pickerTest.IsOpen && !n3PickerPlatform.PopupVisible;
+    Rect n3pf = pickerTest.Frame;
+    host.HandleTouch(true, false, (float)(n3pf.X + 20), (float)(n3pf.Y + n3pf.Height / 2));
+    host.HandleTouch(false, true, (float)(n3pf.X + 20), (float)(n3pf.Y + n3pf.Height / 2));
+    bool n3PickerTap = pickerTest.IsOpen && n3PickerPlatform.PopupVisible;
+    // A touch outside the open dropdown reaches the renderer's dismiss path (PopupClosed).
+    host.HandleTouch(true, false, (float)(n3pf.X + 20), (float)(n3pf.Y - 60));
+    host.HandleTouch(false, true, (float)(n3pf.X + 20), (float)(n3pf.Y - 60));
+    bool n3PickerOutside = !pickerTest.IsOpen && !n3PickerPlatform.PopupVisible;
+    bool n3PickerOk = n3PickerProgOpen && n3PickerProgClose && n3PickerTap && n3PickerOutside &&
+        n3PickerOpened == 2 && n3PickerClosed == 2;
+    Console.WriteLine($"[verify] picker isopen prog={n3PickerProgOpen}/{n3PickerProgClose} tap={n3PickerTap} outside={n3PickerOutside} " +
+        $"opened={n3PickerOpened} closed={n3PickerClosed} assert={n3PickerOk}");
+    if (!n3PickerOk)
+    {
+        throw new InvalidOperationException("the Picker IsOpen mapping drifted");
+    }
+}
+if (dateCtl is not null && dateCtl.Handler?.PlatformView is OpenHarmonyView n3DatePlatform)
+{
+    int n3DateOpened = 0;
+    int n3DateClosed = 0;
+    dateCtl.Opened += (_, _) => n3DateOpened++;
+    dateCtl.Closed += (_, _) => n3DateClosed++;
+    dateCtl.IsOpen = true;
+    DateTime n3Date = dateCtl.Date ?? DateTime.Today;
+    bool n3DateProgOpen = dateCtl.IsOpen && n3DatePlatform.PopupVisible &&
+        n3DatePlatform.CalendarYear == n3Date.Year && n3DatePlatform.CalendarMonth == n3Date.Month;
+    dateCtl.IsOpen = false;
+    bool n3DateProgClose = !dateCtl.IsOpen && !n3DatePlatform.PopupVisible;
+    dateCtl.IsOpen = true;
+    // A selection drives the platform close path and syncs IsOpen back to the control.
+    n3DatePlatform.CalendarSelectDay?.Invoke(new DateTime(n3DatePlatform.CalendarYear, n3DatePlatform.CalendarMonth, 10));
+    bool n3DateSelect = !dateCtl.IsOpen && !n3DatePlatform.PopupVisible;
+    bool n3DateOk = n3DateProgOpen && n3DateProgClose && n3DateSelect && n3DateOpened == 2 && n3DateClosed == 2;
+    Console.WriteLine($"[verify] datepicker isopen prog={n3DateProgOpen}/{n3DateProgClose} select={n3DateSelect} " +
+        $"opened={n3DateOpened} closed={n3DateClosed} assert={n3DateOk}");
+    if (!n3DateOk)
+    {
+        throw new InvalidOperationException("the DatePicker IsOpen mapping drifted");
+    }
+}
+if (timeCtl is not null && timeCtl.Handler?.PlatformView is OpenHarmonyView n3TimePlatform)
+{
+    int n3TimeOpened = 0;
+    int n3TimeClosed = 0;
+    timeCtl.Opened += (_, _) => n3TimeOpened++;
+    timeCtl.Closed += (_, _) => n3TimeClosed++;
+    timeCtl.IsOpen = true;
+    bool n3TimeProgOpen = timeCtl.IsOpen && n3TimePlatform.PopupVisible && n3TimePlatform.PopupItems.Count == 48;
+    timeCtl.IsOpen = false;
+    bool n3TimeProgClose = !timeCtl.IsOpen && !n3TimePlatform.PopupVisible;
+    Rect n3tf = timeCtl.Frame;
+    host.HandleTouch(true, false, (float)(n3tf.X + 10), (float)(n3tf.Y + n3tf.Height / 2));
+    host.HandleTouch(false, true, (float)(n3tf.X + 10), (float)(n3tf.Y + n3tf.Height / 2));
+    float n3RowY = (float)(n3tf.Y + n3tf.Height + OpenHarmonyView.PopupRowHeight * 29 + OpenHarmonyView.PopupRowHeight / 2);
+    host.HandleTouch(true, false, (float)(n3tf.X + 10), n3RowY);
+    host.HandleTouch(false, true, (float)(n3tf.X + 10), n3RowY);
+    bool n3TimeSelect = !timeCtl.IsOpen && !n3TimePlatform.PopupVisible;
+    bool n3TimeOk = n3TimeProgOpen && n3TimeProgClose && n3TimeSelect && n3TimeOpened == 2 && n3TimeClosed == 2;
+    Console.WriteLine($"[verify] timepicker isopen prog={n3TimeProgOpen}/{n3TimeProgClose} select={n3TimeSelect} " +
+        $"opened={n3TimeOpened} closed={n3TimeClosed} assert={n3TimeOk}");
+    if (!n3TimeOk)
+    {
+        throw new InvalidOperationException("the TimePicker IsOpen mapping drifted");
+    }
 }
 
 // W22-22: Shell.GoToAsync route navigation.
@@ -9713,6 +9793,43 @@ foreach (IView child in p1bGroupPlatform.ViewChildren)
 bool p1bTapCollapsed = p1bGroupCv.IsGroupCollapsed(p1bGroups[0]);
 bool p1bTapOk = p1bTapCollapsed;
 P1bCheck(p1bTapOk, $"group header tap collapses={p1bTapCollapsed}");
+// T13: a GroupFooterTemplate that materialises a full View (not just a Label) is drawn as the
+// footer row itself, bound to the group object (the plain text path stays for Label templates).
+var p1bViewGroups = new List<T13Group>
+{
+    new("g1", new[] { "v1a", "v1b", "v1c" }),
+    new("g2", new[] { "v2a", "v2b", "v2c" }),
+};
+DataTemplate p1bViewFooter = new(() =>
+{
+    var label = new Label { FontSize = 18 };
+    label.SetBinding(Label.TextProperty, nameof(T13Group.Name));
+    var accent = new BoxView { Color = Colors.Orange, WidthRequest = 12 };
+    var grid = new Grid
+    {
+        HeightRequest = 40,
+        ColumnSpacing = 6,
+        ColumnDefinitions = { new ColumnDefinition(GridLength.Star), new ColumnDefinition(GridLength.Auto) },
+    };
+    grid.Children.Add(label);
+    grid.Children.Add(accent);
+    Grid.SetColumn(accent, 1);
+    return grid;
+});
+var p1bViewCv = P1bList(p1bViewGroups, grouped: true, height: 300, header: p1bHeaderTemplate, footer: p1bViewFooter);
+var p1bViewPlatform = P1bPlatform(p1bViewCv);
+List<View> p1bViewRows = p1bViewPlatform.ViewChildren.OfType<View>().ToList();
+var p1bViewFooters = p1bViewRows.OfType<Grid>().ToList();
+string p1bViewFooterText(int index) => (p1bViewFooters[index].Children[0] as Label)?.Text ?? "<none>";
+bool p1bViewFooterOk = p1bViewRows.Count == 10 && p1bViewFooters.Count == 2 &&
+    ReferenceEquals(p1bViewFooters[0].BindingContext, p1bViewGroups[0]) &&
+    ReferenceEquals(p1bViewFooters[1].BindingContext, p1bViewGroups[1]) &&
+    p1bViewFooterText(0) == "g1" && p1bViewFooterText(1) == "g2" &&
+    p1bViewRows[3] is Label && p1bViewRows[4] is Grid && p1bViewRows[8] is Label && p1bViewRows[9] is Grid;
+P1bCheck(p1bViewFooterOk,
+    $"group footer view rows={p1bViewRows.Count} (10) footers={p1bViewFooters.Count} " +
+    $"texts=[{p1bViewFooterText(0)},{p1bViewFooterText(1)}] " +
+    $"bound={ReferenceEquals(p1bViewFooters[0].BindingContext, p1bViewGroups[0])}/{ReferenceEquals(p1bViewFooters[1].BindingContext, p1bViewGroups[1])}");
 
 // Scroll physics: rubber-band drag past an edge, the release spring, and a fling that carries
 // the content past the edge before the spring returns it (reduced motion clamps instead).
@@ -10484,6 +10601,15 @@ sealed class ProbeTableModel : Microsoft.Maui.Controls.Internals.TableModel
 
     protected override void OnRowSelected(object item)
         => Selected.Add(item is Microsoft.Maui.Controls.TextCell cell ? cell.Text ?? string.Empty : item?.ToString() ?? string.Empty);
+}
+
+// A group object for the T13 footer-view check: the footer template binds to Name, so a
+// materialised footer proves it was bound to the group instance.
+class T13Group : List<string>
+{
+    public T13Group(string name, IEnumerable<string> items) : base(items) => Name = name;
+    public string Name { get; }
+    public override string ToString() => Name;
 }
 
 class TestApp : Application

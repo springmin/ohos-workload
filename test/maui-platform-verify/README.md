@@ -49,7 +49,7 @@ allocation and jitter) budgets are exceeded.
 # (or the MauiSliceDir / HostingDll / OpenHarmonyGraphicsDll MSBuild properties) before building
 # elsewhere; an explicit -p: value wins over the environment and the absolute fallbacks.
 dotnet build -v:q
-dotnet bin/Debug/net11.0/verify.dll | grep -c '\[verify\]'   # expect 459 (446 interaction checks + 4 fuzz + 1 frame perf + 8 a11y perf)
+dotnet bin/Debug/net11.0/verify.dll | grep -c '\[verify\]'   # expect 463 (450 interaction checks + 4 fuzz + 1 frame perf + 8 a11y perf)
 ```
 
 The `interaction-regression` workflow (`.github/workflows/interaction-regression.yml`) runs the
@@ -60,7 +60,7 @@ suite on a GitHub runner as a real gate (on push to `master`, on pull requests a
 points `MAUI_SLICE_DIR` / `HOSTING_DLL` / `OPENHARMONY_GRAPHICS_DLL` at those roots, and fails the
 job unless the run exits 0, the suite's own `[suite]` contract line reports `assert=True` with at
 least the floor declared in `Program.cs`, both perf lines report `within=True`, and no `Unhandled`
-line is logged. The floor (439 = 459 - 20, the documented convention) lives only in `Program.cs`;
+line is logged. The floor (443 = 463 - 20, the documented convention) lives only in `Program.cs`;
 the workflow and `scripts/preflight.sh` both read the printed `[suite] checks=... floor=...` line
 instead of repeating a literal, so the two local/CI thresholds cannot drift apart.
 
@@ -178,8 +178,8 @@ parse.
   blocks codesigned ELF apphosts on some machines).
 - The suite fails loudly (unhandled exception) when a slice change breaks startup or when an
   assertion for the gesture flows (including the drag-and-drop checks) does not hold; keep it at
-  446 interaction checks plus the 4 fuzz lines plus the 1 frame-perf line plus the 8 a11y-perf
-  lines (459 `[verify]` lines) when touching the platform slice. The total and the floor
+  450 interaction checks plus the 4 fuzz lines plus the 1 frame-perf line plus the 8 a11y-perf
+  lines (463 `[verify]` lines) when touching the platform slice. The total and the floor
   (total - 20) are declared in `Program.cs`; the run ends with a `[suite] checks=... floor=...
   assert=...` line and fails itself when the printed count is below the floor, so the CI job and
   `scripts/preflight.sh` do not repeat the threshold.
@@ -956,3 +956,20 @@ parse.
   to follow the switch (the new label drawn, the previous label gone). That is 2 new lines on top
   of the T22 line: 457 + 2 = 459 = 446 interaction checks + 4 fuzz + 1 frame perf + 8 a11y perf;
   the workflow floor moves with the total (459 - 20 = 439).
+
+- **T13 CollectionView GroupFooter view template + N3 Picker/DatePicker/TimePicker IsOpen
+  (4 lines, 2026-09-29)** - a `GroupFooterTemplate` that materialises a full `View` (not just a
+  `Label`) becomes the footer row itself: the handler realises the template per group, binds it
+  to the group object and connects its handler tree, so nested views and bindings render (Label
+  templates keep the existing text path and the one-time status for non-View content is
+  updated). `p1b group footer view` renders two groups with a Grid footer (a Label bound to the
+  group `Name` plus an accent BoxView), requiring the footer Grid rows after each group's items
+  (10 = 2*(1 header + 3 items + 1 footer) slots), both Grids bound to their group object and the
+  bound Label texts `g1`/`g2`. `IsOpen` maps both ways on all three pickers: `picker isopen`
+  opens/closes programmatically, opens by a field tap and dismisses through the renderer's
+  outside-tap `PopupClosed` path, requiring `Opened`/`Closed` exactly twice; `datepicker isopen`
+  opens on the picker's date month, closes programmatically and closes on a day selection;
+  `timepicker isopen` rebuilds the 48 half-hour slots on a programmatic open and closes on a slot
+  selection. That is 4 new lines on top of the T22 and FIX-TABBED lines: 459 + 4 = 463 =
+  450 interaction checks + 4 fuzz + 1 frame perf + 8 a11y perf; the workflow floor moves
+  with the total (463 - 20 = 443).
