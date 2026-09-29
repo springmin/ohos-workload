@@ -49,7 +49,7 @@ allocation and jitter) budgets are exceeded.
 # (or the MauiSliceDir / HostingDll / OpenHarmonyGraphicsDll MSBuild properties) before building
 # elsewhere; an explicit -p: value wins over the environment and the absolute fallbacks.
 dotnet build -v:q
-dotnet bin/Debug/net11.0/verify.dll | grep -c '\[verify\]'   # expect 438 (425 interaction checks + 4 fuzz + 1 frame perf + 8 a11y perf)
+dotnet bin/Debug/net11.0/verify.dll | grep -c '\[verify\]'   # expect 452 (439 interaction checks + 4 fuzz + 1 frame perf + 8 a11y perf)
 ```
 
 The `interaction-regression` workflow (`.github/workflows/interaction-regression.yml`) runs the
@@ -60,7 +60,7 @@ suite on a GitHub runner as a real gate (on push to `master`, on pull requests a
 points `MAUI_SLICE_DIR` / `HOSTING_DLL` / `OPENHARMONY_GRAPHICS_DLL` at those roots, and fails the
 job unless the run exits 0, the suite's own `[suite]` contract line reports `assert=True` with at
 least the floor declared in `Program.cs`, both perf lines report `within=True`, and no `Unhandled`
-line is logged. The floor (418 = 438 - 20, the documented convention) lives only in `Program.cs`;
+line is logged. The floor (432 = 452 - 20, the documented convention) lives only in `Program.cs`;
 the workflow and `scripts/preflight.sh` both read the printed `[suite] checks=... floor=...` line
 instead of repeating a literal, so the two local/CI thresholds cannot drift apart.
 
@@ -178,8 +178,8 @@ parse.
   blocks codesigned ELF apphosts on some machines).
 - The suite fails loudly (unhandled exception) when a slice change breaks startup or when an
   assertion for the gesture flows (including the drag-and-drop checks) does not hold; keep it at
-  425 interaction checks plus the 4 fuzz lines plus the 1 frame-perf line plus the 8 a11y-perf
-  lines (438 `[verify]` lines) when touching the platform slice. The total and the floor
+  439 interaction checks plus the 4 fuzz lines plus the 1 frame-perf line plus the 8 a11y-perf
+  lines (452 `[verify]` lines) when touching the platform slice. The total and the floor
   (total - 20) are declared in `Program.cs`; the run ends with a `[suite] checks=... floor=...
   assert=...` line and fails itself when the printed count is below the floor, so the CI job and
   `scripts/preflight.sh` do not repeat the threshold.
@@ -902,3 +902,24 @@ parse.
   That is 6 new lines on top of the N2 empty-ContentPage line (439): 439 + 6 = 445 = 432
   interaction checks + 4 fuzz + 1 frame perf + 8 a11y perf; the workflow floor moves with the
   total (445 - 20 = 425).
+
+- **T6 RTL/FlowDirection (7 lines, 2026-09-29)** - upstream MAUI leaves RTL layout mirroring to
+  the platform (dotnet/maui#9558), so the compositor mirrors the canvas placement of every child
+  of a right-to-left layout: each walk carries an `OpenHarmonyFlowMap` (`x' = Scale * x +
+  Offset`), a RightToLeft view is a mirror boundary that reflects its children's logical offsets
+  within its physical frame, `MatchParent` inherits, and an LTR tree maps to itself. The MAUI
+  frames stay logical for arrange-time readers; `OpenHarmonyView.CanvasFrame` is the mapped
+  rectangle drawing and hit-testing use. `t6 layout mirror` requires the three children of an RTL
+  `HorizontalStackLayout` at physical 200/100/0 while the logical frames stay 0/100/200 and the
+  MatchParent children resolve RTL; `t6 hit mirror` taps the physical right/left halves and
+  requires the first/second (logical) buttons to click exactly once each; `t6 text` requires an
+  RTL entry's Start origin at the right edge and End at the left with the clear button on the
+  physical left; `t6 nav chrome` requires the back region at the right strip and the toolbar dock
+  at the left (hit-testing both sides); `t6 flyout menu` opens the shell drawer from the
+  hamburger at the physical right, hit-tests row 0 at the right and the dismiss region left of
+  the panel, and selects the second item; `t6 picker popup` requires the dropdown to open from
+  the field's right edge and grow left with row hits and selection; `t6 calendar` requires the
+  previous-month arrow at the right header and next at the left, the mirrored day columns
+  (day 15) and the picked date. That is 7 new lines on top of the N2 (+1) and T8 (+6) lines:
+  445 + 7 = 452 = 439 interaction checks + 4 fuzz + 1 frame perf + 8 a11y perf; the workflow
+  floor moves with the total (452 - 20 = 432).

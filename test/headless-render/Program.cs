@@ -319,6 +319,38 @@ renderer.Render(backNav, 1080, 400);
 Check("hidden title bar gives the top back to the content", canvas.GetPixel(500, 36), Colors.Black, 40);
 Console.WriteLine($"  title bar probe: rendered={backRendered} navStack={backNav.Navigation.NavigationStack.Count}");
 
+// T6: RTL/FlowDirection. A right-to-left layout mirrors its children's placement on the
+// compositor canvas, and a half-filled progress bar fills from the physical right edge (the
+// logical start) while the track stays at the end edge.
+var rtlStack = new HorizontalStackLayout { FlowDirection = FlowDirection.RightToLeft, Spacing = 0, HeightRequest = 80 };
+var rtlFirst = new BoxView { Color = Colors.OrangeRed, WidthRequest = 200 };
+var rtlSecond = new BoxView { Color = Colors.MediumSeaGreen, WidthRequest = 200 };
+rtlStack.Add(rtlFirst);
+rtlStack.Add(rtlSecond);
+root.Add(rtlStack);
+var rtlProgress = new ProgressBar
+{
+    Progress = 0.5,
+    ProgressColor = Colors.Gold,
+    FlowDirection = FlowDirection.RightToLeft,
+    HeightRequest = 24,
+    WidthRequest = 300,
+    HorizontalOptions = LayoutOptions.Start,
+};
+root.Add(rtlProgress);
+host.Arrange(1080, 1920);
+RenderFresh();
+Rect rtlFrame = rtlStack.Frame;
+Check("rtl layout mirrors the first child to the physical right",
+    canvas.GetPixel((int)(rtlFrame.Right - 40), (int)(rtlFrame.Y + rtlFrame.Height / 2)), Colors.OrangeRed);
+Check("rtl layout keeps the second child on the physical left",
+    canvas.GetPixel((int)(rtlFrame.Right - 240), (int)(rtlFrame.Y + rtlFrame.Height / 2)), Colors.MediumSeaGreen);
+Rect rtlBarFrame = rtlProgress.Frame;
+Check("rtl progress fills from the start (right) edge",
+    canvas.GetPixel((int)(rtlBarFrame.Right - 30), (int)(rtlBarFrame.Y + rtlBarFrame.Height / 2)), Colors.Gold);
+Check("rtl progress leaves the track at the end (left) edge",
+    canvas.GetPixel((int)(rtlBarFrame.X + 30), (int)(rtlBarFrame.Y + rtlBarFrame.Height / 2)), Colors.DimGray);
+
 Color Blend(Color background, Color foreground, float alpha) => new(
     (float)(foreground.Red * alpha + background.Red * (1 - alpha)),
     (float)(foreground.Green * alpha + background.Green * (1 - alpha)),

@@ -12,7 +12,7 @@ using Microsoft.Maui.Platform;
 // after the fuzz tail) instead of letting every caller repeat its own threshold constant.
 VerifyLineCountingWriter verifyStdout = new(Console.Out);
 Console.SetOut(verifyStdout);
-const int verifyCheckTotal = 445;                     // documented full [verify] line count (+4 MS-MODE runtime mode switch, +10 P2c-DEEPLINK, +4 P2b-IMG, +16 P1b-LIST, +10 P1a-ANIM, +2 SEC3 storage/deep-link pins, +5 W-series WebView wiring, +3 T1 InputView mapping, +4 T2 WebView gaps, +4 T3 GraphicsView interaction, +7 T10 modal accessibility, +4 T4 Label formatted text, +4 T5 layout semantics, +6 T7 DatePicker calendar/min-max, +4 T9 window title bar, +4 T11 diagnostics overlay, +1 N2 empty ContentPage arrangement, +6 T8 TableView)
+const int verifyCheckTotal = 452;                     // documented full [verify] line count (+4 MS-MODE runtime mode switch, +10 P2c-DEEPLINK, +4 P2b-IMG, +16 P1b-LIST, +10 P1a-ANIM, +2 SEC3 storage/deep-link pins, +5 W-series WebView wiring, +3 T1 InputView mapping, +4 T2 WebView gaps, +4 T3 GraphicsView interaction, +7 T10 modal accessibility, +4 T4 Label formatted text, +4 T5 layout semantics, +6 T7 DatePicker calendar/min-max, +4 T9 window title bar, +4 T11 diagnostics overlay, +1 N2 empty ContentPage arrangement, +6 T8 TableView, +7 T6 RTL flow direction)
 const int verifyCheckFloor = verifyCheckTotal - 20;   // documented floor convention (total - 20)
 
 // A small image file for the Image handler.
@@ -1340,6 +1340,220 @@ if (!(t5ZTopFirst && t5ZSwapped && t5ZIndexRedraws >= 1 && t5InputOk && t5ClipOk
     && t5AnchorTopLeftOk && t5AnchorBottomRightOk && t5AnchorCenterOk))
 {
     throw new InvalidOperationException("the T5 layout semantics (z-order, clip, input transparency, anchors) are missing or drifted");
+}
+
+// T6: RTL/FlowDirection. Upstream MAUI defers RTL to the platform (dotnet/maui#9558): the
+// compositor mirrors the canvas placement of every child of a right-to-left layout (the native
+// platforms' arrange flip), keeps IView.Frame logical for arrange-time readers, resolves
+// Start/End text alignment and trailing affordances against the view's own direction, and
+// mirrors the laid-out chrome (navigation bar/toolbar, shell flyout menu, picker dropdown,
+// calendar) in both drawing and hit testing. MatchParent inherits; LTR trees map to themselves.
+var t6Renderer = app.Services.GetRequiredService<OpenHarmonyWindowRenderer>();
+var t6Stack = new HorizontalStackLayout { FlowDirection = FlowDirection.RightToLeft, Spacing = 0 };
+var t6BoxA = new BoxView { WidthRequest = 100, HeightRequest = 60, Color = Colors.Red };
+var t6BoxB = new BoxView { WidthRequest = 100, HeightRequest = 60, Color = Colors.Green };
+var t6BoxC = new BoxView { WidthRequest = 100, HeightRequest = 60, Color = Colors.Blue };
+t6Stack.Add(t6BoxA);
+t6Stack.Add(t6BoxB);
+t6Stack.Add(t6BoxC);
+OpenHarmonyHandlerConnector.ConnectTree(t6Stack);
+t6Stack.Measure(300, 60);
+t6Stack.Arrange(new Rect(0, 0, 300, 60));
+bool t6Rendered = t6Renderer.Render(t6Stack, 300, 60);
+var t6PlatformA = (OpenHarmonyView)t6BoxA.Handler!.PlatformView!;
+var t6PlatformB = (OpenHarmonyView)t6BoxB.Handler!.PlatformView!;
+var t6PlatformC = (OpenHarmonyView)t6BoxC.Handler!.PlatformView!;
+bool t6LayoutMirrored = Math.Abs(t6PlatformA.CanvasFrame.X - 200) < 0.01
+    && Math.Abs(t6PlatformB.CanvasFrame.X - 100) < 0.01
+    && Math.Abs(t6PlatformC.CanvasFrame.X) < 0.01;
+bool t6LogicalKept = t6BoxA.Frame.X == 0 && t6BoxB.Frame.X == 100 && t6BoxC.Frame.X == 200;
+bool t6MatchParent = t6PlatformA.FlowRightToLeft && t6PlatformB.FlowRightToLeft && t6PlatformC.FlowRightToLeft;
+bool t6LayoutOk = t6Rendered && t6LayoutMirrored && t6LogicalKept && t6MatchParent;
+Console.WriteLine($"[verify] t6 layout mirror rendered={t6Rendered} physical={t6PlatformA.CanvasFrame.X:0}/{t6PlatformB.CanvasFrame.X:0}/{t6PlatformC.CanvasFrame.X:0} logical={t6BoxA.Frame.X:0}/{t6BoxB.Frame.X:0}/{t6BoxC.Frame.X:0} matchParent={t6MatchParent} assert={t6LayoutOk}");
+if (!t6LayoutOk)
+{
+    throw new InvalidOperationException("the T6 RTL placement mirroring (child frames, logical frames kept, MatchParent inheritance) is missing or drifted");
+}
+
+// T6: hits follow the mirrored placement: the physical right half of the RTL stack is the first
+// (logical) child and the physical left half the second.
+var t6HitStack = new HorizontalStackLayout { FlowDirection = FlowDirection.RightToLeft, Spacing = 0 };
+var t6HitFirst = new Button { Text = "first", WidthRequest = 100, HeightRequest = 60 };
+var t6HitSecond = new Button { Text = "second", WidthRequest = 100, HeightRequest = 60 };
+int t6FirstClicks = 0, t6SecondClicks = 0;
+t6HitFirst.Clicked += (_, _) => t6FirstClicks++;
+t6HitSecond.Clicked += (_, _) => t6SecondClicks++;
+t6HitStack.Add(t6HitFirst);
+t6HitStack.Add(t6HitSecond);
+OpenHarmonyHandlerConnector.ConnectTree(t6HitStack);
+t6HitStack.Measure(200, 60);
+t6HitStack.Arrange(new Rect(0, 0, 200, 60));
+t6Renderer.Render(t6HitStack, 200, 60);
+t6Renderer.HandleTouch(t6HitStack, true, false, 150, 30);
+t6Renderer.HandleTouch(t6HitStack, false, true, 150, 30);
+t6Renderer.HandleTouch(t6HitStack, true, false, 50, 30);
+t6Renderer.HandleTouch(t6HitStack, false, true, 50, 30);
+bool t6HitOk = t6FirstClicks == 1 && t6SecondClicks == 1;
+Console.WriteLine($"[verify] t6 hit mirror first={t6FirstClicks} second={t6SecondClicks} assert={t6HitOk}");
+if (!t6HitOk)
+{
+    throw new InvalidOperationException("the T6 mirrored hit testing (RTL stack taps) is missing or drifted");
+}
+
+// T6: an RTL entry starts its text at the physical right edge (Start; End flips to the left) and
+// the clear button moves to the trailing (physical left) edge.
+// No WidthRequest: the entry's desired size is its text metrics, while the arranged frame
+// (the root here) is the 200 px render box the origin math is checked against.
+var t6Entry = new Entry
+{
+    Text = "abc",
+    FlowDirection = FlowDirection.RightToLeft,
+    HeightRequest = 40,
+    ClearButtonVisibility = ClearButtonVisibility.WhileEditing,
+};
+OpenHarmonyHandlerConnector.ConnectTree(t6Entry);
+t6Entry.Measure(200, 40);
+t6Entry.Arrange(new Rect(0, 0, 200, 40));
+t6Renderer.Render(t6Entry, 200, 40);
+var t6EntryPlatform = (OpenHarmonyView)t6Entry.Handler!.PlatformView!;
+t6EntryPlatform.IsFocused = true;
+float t6RtlStart = t6EntryPlatform.TextOriginX("abc");
+t6EntryPlatform.HorizontalTextAlignment = TextAlignment.End;
+float t6RtlEnd = t6EntryPlatform.TextOriginX("abc");
+t6EntryPlatform.HorizontalTextAlignment = TextAlignment.Start;
+bool t6TextOk = t6EntryPlatform.FlowRightToLeft
+    && t6RtlStart > t6EntryPlatform.CanvasFrame.Center.X
+    && t6RtlEnd < t6EntryPlatform.CanvasFrame.Center.X
+    && Math.Abs(t6EntryPlatform.ClearButtonCenter.X - (t6EntryPlatform.CanvasFrame.X + 9f + 12f)) < 0.01;
+Console.WriteLine($"[verify] t6 text start={t6RtlStart:0.#} end={t6RtlEnd:0.#} clearX={t6EntryPlatform.ClearButtonCenter.X:0.#} rtl={t6EntryPlatform.FlowRightToLeft} canvas={t6EntryPlatform.CanvasFrame} assert={t6TextOk}");
+if (!t6TextOk)
+{
+    throw new InvalidOperationException("the T6 RTL text alignment / trailing clear button is missing or drifted");
+}
+
+// T6: the navigation chrome's slots follow the direction: the back region is the physical right
+// strip and the toolbar items dock to the physical left.
+var t6Nav = new NavigationPage(new ContentPage { Title = "rtl", Content = new Label { Text = "nav" } })
+{
+    FlowDirection = FlowDirection.RightToLeft,
+};
+OpenHarmonyHandlerConnector.ConnectTree(t6Nav);
+t6Nav.Measure(300, 200);
+t6Nav.Arrange(new Rect(0, 0, 300, 200));
+t6Renderer.Render(t6Nav, 300, 200);
+var t6NavPlatform = (OpenHarmonyView)t6Nav.Handler!.PlatformView!;
+t6NavPlatform.CanGoBack = true;
+t6NavPlatform.ToolbarItems.Add(("item", () => { }));
+bool t6NavBackOk = t6NavPlatform.InBackRegion(290, 10) && !t6NavPlatform.InBackRegion(10, 10);
+RectF t6ToolbarRect = t6NavPlatform.ToolbarItemRect(0);
+bool t6NavToolbarOk = Math.Abs(t6ToolbarRect.X - t6NavPlatform.CanvasFrame.X) < 0.01
+    && t6NavPlatform.ToolbarItemAt(20, 10) == 0
+    && t6NavPlatform.ToolbarItemAt(280, 10) == -1;
+bool t6NavOk = t6NavBackOk && t6NavToolbarOk;
+Console.WriteLine($"[verify] t6 nav chrome back={t6NavBackOk} toolbar={t6ToolbarRect.X:0} toolbarHit={t6NavPlatform.ToolbarItemAt(20, 10)} outside={t6NavPlatform.ToolbarItemAt(280, 10)} assert={t6NavOk}");
+if (!t6NavOk)
+{
+    throw new InvalidOperationException("the T6 RTL navigation chrome (back slot, toolbar dock) is missing or drifted");
+}
+
+// T6: the shell flyout menu opens from the hamburger at the physical right, its panel is docked
+// to the right, and a row tap selects the item while a tap left of the panel is a dismiss.
+var t6Shell = new Shell { FlowDirection = FlowDirection.RightToLeft };
+t6Shell.Items.Add(new ShellContent { Title = "One", ContentTemplate = new DataTemplate(() => new ContentPage { Title = "One", Content = new Label { Text = "one" } }) });
+t6Shell.Items.Add(new ShellContent { Title = "Two", ContentTemplate = new DataTemplate(() => new ContentPage { Title = "Two", Content = new Label { Text = "two" } }) });
+OpenHarmonyHandlerConnector.ConnectTree(t6Shell);
+t6Shell.Measure(500, 400);
+t6Shell.Arrange(new Rect(0, 0, 500, 400));
+t6Renderer.Render(t6Shell, 500, 400);
+var t6ShellPlatform = (OpenHarmonyView)t6Shell.Handler!.PlatformView!;
+t6ShellPlatform.ChromeRefresh?.Invoke();
+bool t6MenuClosed = !t6ShellPlatform.FlyoutOpen && t6ShellPlatform.FlyoutItems.Count >= 2;
+t6Renderer.HandleTouch(t6Shell, true, false, 490, 20);
+t6Renderer.HandleTouch(t6Shell, false, true, 490, 20);
+bool t6MenuOpened = t6ShellPlatform.FlyoutOpen;
+// The shell panel is docked to the physical right: the right-side point is row 0 and the
+// left-of-panel point is the dismiss region (-2).
+bool t6MenuRows = t6ShellPlatform.FlyoutItemAt(400, 42) == 0 && t6ShellPlatform.FlyoutItemAt(100, 42) == -2;
+t6Renderer.HandleTouch(t6Shell, true, false, 400, 94);
+t6Renderer.HandleTouch(t6Shell, false, true, 400, 94);
+bool t6MenuSelected = !t6ShellPlatform.FlyoutOpen && ReferenceEquals(t6Shell.Items[1], t6Shell.CurrentItem);
+bool t6MenuOk = t6MenuClosed && t6MenuOpened && t6MenuRows && t6MenuSelected;
+Console.WriteLine($"[verify] t6 flyout menu closed={t6MenuClosed} opened={t6MenuOpened} rows={t6MenuRows} selected={t6MenuSelected} assert={t6MenuOk}");
+if (!t6MenuOk)
+{
+    throw new InvalidOperationException("the T6 RTL shell flyout menu (hamburger side, panel dock, row hits) is missing or drifted");
+}
+
+// T6: the picker dropdown opens from the field's physical right edge and grows left; hitting a
+// row selects the item and closes the popup.
+var t6Picker = new Picker { FlowDirection = FlowDirection.RightToLeft, WidthRequest = 160, HeightRequest = 48 };
+t6Picker.Items.Add("alpha");
+t6Picker.Items.Add("beta");
+t6Picker.Items.Add("gamma");
+OpenHarmonyHandlerConnector.ConnectTree(t6Picker);
+t6Picker.Measure(400, 300);
+t6Picker.Arrange(new Rect(0, 0, 400, 300));
+t6Renderer.Render(t6Picker, 400, 300);
+var t6PickerPlatform = (OpenHarmonyView)t6Picker.Handler!.PlatformView!;
+RectF t6PickerFrame = t6PickerPlatform.CanvasFrame;
+t6Renderer.HandleTouch(t6Picker, true, false, t6PickerFrame.Center.X, t6PickerFrame.Center.Y);
+t6Renderer.HandleTouch(t6Picker, false, true, t6PickerFrame.Center.X, t6PickerFrame.Center.Y);
+bool t6PopupOpened = t6PickerPlatform.PopupVisible;
+// The dropdown's width is max(field, 220) and it opens from the field's physical right edge.
+float t6PopupWidth = Math.Max(t6PickerFrame.Width, 220f);
+float t6PopupLeft = t6PickerFrame.Right - t6PopupWidth;
+float t6PopupRowY = t6PickerFrame.Y + t6PickerFrame.Height + OpenHarmonyView.PopupRowHeight * 1.5f;
+bool t6PopupSide = t6PickerPlatform.PopupIndexAt(t6PickerFrame.Right - 10f, t6PopupRowY) == 1
+    && t6PickerPlatform.PopupIndexAt(t6PopupLeft + 10f, t6PopupRowY) == 1
+    && t6PickerPlatform.PopupIndexAt(t6PopupLeft - 10f, t6PopupRowY) == -1;
+t6Renderer.HandleTouch(t6Picker, true, false, t6PickerFrame.Right - 10f, t6PopupRowY);
+t6Renderer.HandleTouch(t6Picker, false, true, t6PickerFrame.Right - 10f, t6PopupRowY);
+bool t6PopupSelected = t6Picker.SelectedIndex == 1 && !t6PickerPlatform.PopupVisible;
+bool t6PopupOk = t6PopupOpened && t6PopupSide && t6PopupSelected;
+Console.WriteLine($"[verify] t6 picker popup opened={t6PopupOpened} side={t6PopupSide} selected={t6Picker.SelectedIndex} closed={!t6PickerPlatform.PopupVisible} assert={t6PopupOk}");
+if (!t6PopupOk)
+{
+    throw new InvalidOperationException("the T6 RTL picker dropdown (right-edge origin, row hits, selection) is missing or drifted");
+}
+
+// T6: the RTL calendar mirrors its columns and header arrows: the previous-month arrow is the
+// physical right one, next is the left, and a day cell hit follows the mirrored column.
+var t6Date = new DatePicker
+{
+    Date = new DateTime(2026, 9, 17),
+    FlowDirection = FlowDirection.RightToLeft,
+    WidthRequest = 160,
+    HeightRequest = 48,
+};
+OpenHarmonyHandlerConnector.ConnectTree(t6Date);
+t6Date.Measure(500, 400);
+t6Date.Arrange(new Rect(0, 0, 500, 400));
+t6Renderer.Render(t6Date, 500, 400);
+var t6DatePlatform = (OpenHarmonyView)t6Date.Handler!.PlatformView!;
+RectF t6DateFrame = t6DatePlatform.CanvasFrame;
+t6Renderer.HandleTouch(t6Date, true, false, t6DateFrame.Center.X, t6DateFrame.Center.Y);
+t6Renderer.HandleTouch(t6Date, false, true, t6DateFrame.Center.X, t6DateFrame.Center.Y);
+bool t6CalendarOpened = t6DatePlatform.PopupVisible && t6DatePlatform.CalendarSelectedDay == 17;
+// The calendar opens below the field: previous is the physical right header arrow, next the
+// left, and the day columns are mirrored (Monday-first from the right).
+float t6HeaderY = t6DateFrame.Y + t6DateFrame.Height + OpenHarmonyView.CalendarHeaderHeight / 2;
+bool t6CalendarArrows = t6DatePlatform.CalendarHit(t6DateFrame.X + OpenHarmonyView.CalendarWidth - 20, t6HeaderY) == -2
+    && t6DatePlatform.CalendarHit(t6DateFrame.X + 20, t6HeaderY) == -3;
+int t6Leading = ((int)new DateTime(2026, 9, 1).DayOfWeek + 6) % 7;
+int t6Cell = t6Leading + 15 - 1;
+int t6Column = 6 - (t6Cell % 7);
+float t6CellX = t6DateFrame.X + t6Column * (OpenHarmonyView.CalendarWidth / 7f) + OpenHarmonyView.CalendarWidth / 14f;
+float t6CellY = t6DateFrame.Y + t6DateFrame.Height + OpenHarmonyView.CalendarHeaderHeight
+    + ((t6Cell / 7) + 1) * OpenHarmonyView.CalendarRowHeight + OpenHarmonyView.CalendarRowHeight / 2;
+bool t6CalendarDay = t6DatePlatform.CalendarHit(t6CellX, t6CellY) == 15;
+t6Renderer.HandleTouch(t6Date, true, false, t6CellX, t6CellY);
+t6Renderer.HandleTouch(t6Date, false, true, t6CellX, t6CellY);
+bool t6CalendarPicked = t6Date.Date == new DateTime(2026, 9, 15) && !t6DatePlatform.PopupVisible;
+bool t6CalendarOk = t6CalendarOpened && t6CalendarArrows && t6CalendarDay && t6CalendarPicked;
+Console.WriteLine($"[verify] t6 calendar open={t6CalendarOpened} arrows={t6CalendarArrows} day15Hit={t6CalendarDay} picked={t6Date.Date:yyyy-MM-dd} assert={t6CalendarOk}");
+if (!t6CalendarOk)
+{
+    throw new InvalidOperationException("the T6 RTL calendar (mirrored arrows/columns, day hit) is missing or drifted");
 }
 
 // T11: the window's VisualDiagnosticsOverlay (Controls' per-window IAdorner host) is initialized
