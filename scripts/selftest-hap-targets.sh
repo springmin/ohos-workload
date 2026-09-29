@@ -14,7 +14,8 @@
 #                  toolchains/lib, naming the property or the missing file (no $HOME probe)
 #   T5 features    the feature -> permission matrix resolves to module.json entries with
 #                  reason/usedScene, an unknown feature id and the strict request-point mode fail,
-#                  'all' emits the eight unique permissions, and the raw extra-permission path
+#                  'all' emits the ten unique permissions (the webview-media camera/microphone
+#                  pair joined in 7cb1f31), and the raw extra-permission path
 #                  keeps its minimal form plus the raw-permission warning
 #   T6 device      hdc-gated install + grant integration: installs OHOS_TEST_HAP, reads the
 #                  installed requestPermissions back through bm dump and checks that each entry
@@ -345,28 +346,29 @@ PY
         || fail_ "T5 no request-point warning"
     run_perm -p:OpenHarmonyFeatures=all
     assert_rc 0 $? "T5 the 'all' feature selection resolves"
-    python3 - "$PERMFIX/out.json" <<'PY' && pass_ "T5 'all' declares the eight unique permissions once each" || fail_ "T5 'all' declaration set is wrong"
+    python3 - "$PERMFIX/out.json" <<'PY' && pass_ "T5 'all' declares the ten unique permissions once each" || fail_ "T5 'all' declaration set is wrong"
 import json, sys
 names = [p['name'] for p in json.load(open(sys.argv[1]))['module']['requestPermissions']]
-assert len(names) == len(set(names)) == 8, names
+assert len(names) == len(set(names)) == 10, names
 for want in ('ohos.permission.ACCESS_BLUETOOTH', 'ohos.permission.APPROXIMATELY_LOCATION',
              'ohos.permission.READ_PASTEBOARD', 'ohos.permission.READ_CONTACTS',
              'ohos.permission.READ_CALENDAR', 'ohos.permission.WRITE_CALENDAR',
-             'ohos.permission.PRINT', 'ohos.permission.INTERNET'):
+             'ohos.permission.PRINT', 'ohos.permission.INTERNET',
+             'ohos.permission.CAMERA', 'ohos.permission.MICROPHONE'):
     assert want in names, (want, names)
 PY
     run_perm -p:OpenHarmonyFeatures=bluetooth -p:OpenHarmonyRequireDeclaredRequestPoints=true
     assert_rc 1 $? "T5 the strict request-point mode fails on an undeclared point"
     grep -qF 'does not declare' "$WORK/T5-case.log" && pass_ "T5 strict mode names the undeclared points" \
         || fail_ "T5 strict mode does not name the undeclared points"
-    run_perm '-p:OpenHarmonyExtraPermissions="ohos.permission.CAMERA"'
+    run_perm '-p:OpenHarmonyExtraPermissions="ohos.permission.VIBRATE"'
     assert_rc 0 $? "T5 the raw extra-permission escape hatch still works"
     grep -qF 'raw permission' "$WORK/T5-case.log" && pass_ "T5 flags a raw permission without a reason" \
         || fail_ "T5 does not flag the raw permission"
     python3 - "$PERMFIX/out.json" <<'PY' && pass_ "T5 the raw extra keeps the minimal entry form" || fail_ "T5 the raw extra entry changed"
 import json, sys
 perms = json.load(open(sys.argv[1]))['module']['requestPermissions']
-assert perms == [{'name': 'ohos.permission.CAMERA'}], perms
+assert perms == [{'name': 'ohos.permission.VIBRATE'}], perms
 PY
 fi
 
