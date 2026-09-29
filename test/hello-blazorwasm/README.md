@@ -52,18 +52,22 @@ from runtime-ohos `docs/plans/2026-09-28-blazor-wasm-on-device-feasibility.md`).
 ## Host hap
 
 `arkts-host/pack-host.sh <site-dir>` stages `arkts-host/project/`, embeds the site under
-`entry/src/main/resources/rawfile/blazor`, builds with hvigor, packs with the SDK's
-`ohos_packing_tool` and signs with `hap-sign-tool` (debug material from the SDK). Output:
-`arkts-host/out/hello-blazorwasm-host-signed.hap` (~70 MB with the full site).
+`entry/src/main/resources/rawfile/blazor` — materializing the stable static-web-asset names
+(`_framework/dotnet.js`, `dotnet.native.js`, `dotnet.runtime.js`) from their fingerprinted
+`<name>.<hash>.js` assets per the publish's `*.staticwebassets.endpoints.json` route table,
+because the host serves the rawfile tree 1:1 with no route table — builds with hvigor, packs
+with the SDK's `ohos_packing_tool` and signs with `hap-sign-tool` (debug material from the
+SDK). Output: `arkts-host/out/hello-blazorwasm-host-signed.hap` (~70 MB with the full site).
 
-Two flags serve the device-test kit variant (see `docs/blazor-arkweb-kit-handoff.md`):
+Two flags serve the device-test kit variant (see `../../docs/blazor-arkweb-kit-handoff.md`):
 
 ```sh
 test/hello-blazorwasm/arkts-host/pack-host.sh <site> --slim --unsigned-only
 # --slim            drop .br/.gz/.map at embed time (the host serves the uncompressed copies)
 # --unsigned-only   stop after packing: hello-blazorwasm-host-unsigned.hap for external signing
-# measured: --slim embed of a --slim publish = 210 site files, 26 MB unsigned hap (0 compressed
-# leftovers, 0 ICU), and the hap re-signs cleanly with hap-sign-tool sign-app + verify-app
+# measured: --slim embed of a --slim publish = 213 site files (210 + the 3 default-name copies),
+# 26 MB unsigned hap (0 compressed leftovers, 0 ICU), and the hap re-signs cleanly with
+# hap-sign-tool sign-app + verify-app
 ```
 
 The bundle name defaults to `com.example.opendotnet`; change it with `--bundle`, and sign with
@@ -91,13 +95,17 @@ OpenSSL SDK, MSBuild pipe patch included):
   succeeds with **no task-host retries** on the patched SDK.
 - host hap: CompileArkTS, `ohos_packing_tool` pack and `hap-sign-tool sign-app` +
   `verify-app` all pass; the embedded site contains the 899 rawfile members (full variant).
-- kit variant: `--slim --unsigned-only` = 210 site files, **26 MB unsigned hap**, no
-  `.br/.gz/.map`, no ICU; the hap re-signs and verifies (26.8 MB signed).
-- ArkWeb rendering on a device with a UI is still pending (this test tree runs on a headless
-  device; `hdc`/`aa` are not available there). The serving path is the same one the MAUI
-  BlazorWebView bridge ships, and the publish output was additionally exercised with a
-  `python3 -m http.server` + curl check of the MIME types. The device-test kit round is the
-  intended vehicle: hand-off spec in `docs/blazor-arkweb-kit-handoff.md`.
+- kit variant: `--slim --unsigned-only` = 213 site files (210 + the 3 default-name copies),
+  **26 MB unsigned hap**, no `.br/.gz/.map`, no ICU; the hap re-signs and verifies (26.8 MB
+  signed). The FIX-BLZ-JS rebuild carries `_framework/dotnet.js` byte-equal to
+  `dotnet.08s0yny1y1.js` (sha256 `25ef2fa5…317c`); kit #31's hap (`36010a9c…ae2e`) predates
+  the mapping and lacks it.
+- ArkWeb rendering reached the device-test kit: kits #31/#32 rendered nothing because the
+  embedded site lacked `_framework/dotnet.js` (the boot script's dynamic import failed:
+  `BLZ_ERROR Failed to fetch dynamically imported module`). A manual copy of the fingerprinted
+  asset rendered the app (`BLZ_RENDERED`); the embed step now does that for every build, and
+  the kit #33 rebuild is the first shipped hap with the mapping. Hand-off spec:
+  `../../docs/blazor-arkweb-kit-handoff.md`.
 
 `blazor-recipe.yml` (weekly + manual) re-publishes both recipes on a stock x64 runner so
 feed/version drift shows up without a device.

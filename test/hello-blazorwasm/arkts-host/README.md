@@ -59,7 +59,14 @@ this variant. The script:
 
 1. stages `project/` into the work dir and writes `local.properties` + `build-profile.json5`
    (version-nested SDK symlink root, signing material under the SDK's `toolchains/lib`);
-2. copies the site to `entry/src/main/resources/rawfile/blazor`;
+2. copies the site to `entry/src/main/resources/rawfile/blazor` and materializes the stable
+   static-web-asset names the site requests — `_framework/dotnet.js`, `dotnet.native.js` and
+   `dotnet.runtime.js` — as byte-identical copies of their fingerprinted `<name>.<hash>.js`
+   assets, using the route table in the publish's `*.staticwebassets.endpoints.json` (or the
+   `<name>.<hash>.js` name convention when the manifest is absent). The host serves the rawfile
+   tree 1:1 with no route table, so without `dotnet.js` the boot script's dynamic import fails
+   with "Failed to fetch dynamically imported module" and the app never renders (the defect
+   kits #31/#32 shipped);
 3. runs hvigor `assembleHap` — **hvigor's own PackageHap failure is tolerated** (toolchains
    that ship only the native `ohos_packing_tool` and no `app_packing_tool.jar` fail there);
    `CompileArkTS` must finish;
@@ -103,7 +110,8 @@ hilog | grep BlazorWebHost
 - `--slim` trades the pre-compressed siblings for size: requests that advertise `br`/`gzip`
   simply fall back to the uncompressed files (rawfile reads make the transfer difference
   invisible in practice).
-- ArkWeb rendering has not been exercised on a device with a UI in this workspace; the hap
-  compiles, packs, signs and verifies, and the serving path is the in-product one. The
-  device-test kit round is the intended verification vehicle (hand-off spec:
-  `../../docs/blazor-arkweb-kit-handoff.md`).
+- ArkWeb rendering was exercised by the device-test kit round (kits #31/#32): the first runs
+  exposed the missing `_framework/dotnet.js` and a manual copy of the fingerprinted asset
+  rendered the app (`BLZ_RENDERED`); packing step 2 now does that mapping for every build, and
+  the kit #33 rebuild is the first shipped hap with it. The serving path is the in-product one
+  (hand-off spec: `../../../docs/blazor-arkweb-kit-handoff.md`).

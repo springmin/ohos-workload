@@ -14,6 +14,14 @@
 # the script mirrors scripts/build-arkts-shell.sh and tolerates a PackageHap failure as long
 # as CompileArkTS finished, then packs the hvigor intermediates itself.
 #
+# .NET's static web assets are fingerprinted: the site requests the stable name
+# `_framework/dotnet.js` while the publish output carries `_framework/dotnet.<hash>.js`, and the
+# route table lives in the publish root's `*.staticwebassets.endpoints.json`. The host serves
+# the rawfile tree 1:1 (no route table), so the embed step materializes the stable JS names
+# (dotnet.js, dotnet.native.js, dotnet.runtime.js) as copies of their fingerprinted assets;
+# without it ArkWeb fails the boot script's dynamic import ("Failed to fetch dynamically
+# imported module") and the app never renders (kit #31/#32 shipped without the mapping).
+#
 # usage: pack-host.sh <site-dir> [options]
 #   <site-dir>        published Blazor site: the directory holding index.html
 #                     (normally <publish>/wwwroot; see ../run-smoke.sh)
@@ -61,7 +69,7 @@ while [ $# -gt 0 ]; do
         --bundle) shift; BUNDLE="${1:-}" ;;
         --slim) SLIM=1 ;;
         --unsigned-only) UNSIGNED_ONLY=1 ;;
-        --help|-h) sed -n '2,44p' "$0"; exit 0 ;;
+        --help|-h) sed -n '2,52p' "$0"; exit 0 ;;
         -*) die "unknown option: $1 (see --help)" ;;
         *) [ -z "$SITE" ] || die "only one site directory may be given"; SITE="$1" ;;
     esac
@@ -177,6 +185,76 @@ RAW="$WORK/project/entry/src/main/resources/rawfile"
 rm -rf "$RAW/blazor"
 mkdir -p "$RAW"
 cp -a "$SITE" "$RAW/blazor"
+
+# ---- materialize the static-web-asset default names ----------------------------------------
+# The publish fingerprints web assets and keeps the stable routes in its endpoints manifest
+# (a sibling of wwwroot; see the header). The embedded rawfile tree is served 1:1, so copy the
+# stable JS names that the same manifest routes at onto their fingerprinted assets.
+MAP_MANIFEST=""
+for cand in "$(dirname "$SITE")"/*.staticwebassets.endpoints.json "$SITE"/*.staticwebassets.endpoints.json; do
+    if [ -f "$cand" ]; then MAP_MANIFEST="$cand"; break; fi
+done
+info "materializing web-asset default names${MAP_MANIFEST:+ (routes from $(basename "$MAP_MANIFEST"))}"
+python3 - "$RAW/blazor" "$MAP_MANIFEST" <<'PY'
+import json, os, re, sys
+
+embed, manifest = sys.argv[1], sys.argv[2]
+
+# .NET fingerprints a route segment as `.<10 lowercase alnum>.` before the extension
+# (dotnet.vqrq26m922.js); a route without it is a stable, referenced-by-name asset.
+FINGERPRINT = re.compile(r"\.[a-z0-9]{10}\.")
+
+
+def is_stable_js(route):
+    base = os.path.basename(route)
+    return base.endswith(".js") and not base.endswith(".map") and not FINGERPRINT.search(base)
+
+
+def materialize(routes):
+    copied = []
+    for target, source in routes:
+        if not target or not source or target == source:
+            continue
+        dst, src = os.path.join(embed, target), os.path.join(embed, source)
+        if os.path.exists(dst) or not os.path.isfile(src):
+            continue
+        os.makedirs(os.path.dirname(dst), exist_ok=True)
+        with open(src, "rb") as fi, open(dst, "wb") as fo:
+            fo.write(fi.read())
+        copied.append((target, source))
+    return copied
+
+
+if manifest:
+    with open(manifest, encoding="utf-8") as f:
+        data = json.load(f)
+    routes = []
+    for e in data.get("Endpoints") or []:
+        route, asset = e.get("Route") or "", e.get("AssetFile") or ""
+        if any((s or {}).get("Name") == "Content-Encoding" for s in e.get("Selectors") or []):
+            continue  # the host negotiates the .br/.gz siblings itself; only the plain route
+        if route != asset and is_stable_js(route):
+            routes.append((route, asset))
+    copied = materialize(routes)
+else:
+    # No manifest (hand-staged site): fall back to the boot-loader names by convention.
+    fw = "_framework"
+    found = {}
+    frame = os.path.join(embed, fw)
+    for name in sorted(os.listdir(frame)) if os.path.isdir(frame) else []:
+        m = re.match(r"^(dotnet(?:\.native|\.runtime)?)\.([a-z0-9]{10})\.js$", name)
+        if m:
+            found.setdefault(m.group(1), []).append(name)
+    routes = []
+    for base, names in sorted(found.items()):
+        newest = max(names, key=lambda n: (os.path.getmtime(os.path.join(frame, n)), n))
+        routes.append((fw + "/" + base + ".js", fw + "/" + newest))
+    copied = materialize(routes)
+
+for target, source in copied:
+    print("   default name: %s <- %s" % (target, source))
+print("   materialized %d default-name asset(s)" % len(copied))
+PY
 
 if [ "$SLIM" = 1 ]; then
     info "slim: dropping .br/.gz/.map files (the host serves the uncompressed copies)"
