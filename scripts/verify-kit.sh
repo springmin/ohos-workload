@@ -9,7 +9,8 @@
 # the payload facts that failed on a real device before (each one per hap, see below); (2c) when
 # the optional Blazor WASM component hap is present (hello-blazorwasm-host-unsigned.hap, built
 # with --with-blazor), assert its embedded ArkWeb site (index.html, _framework wasm + boot
-# script, PANDA abc, bundle name, no site-level .br/.gz/.map or icudt*.dat) and record its
+# script, the stable dotnet.js + its fingerprinted source, PANDA abc, bundle name, no
+# site-level .br/.gz/.map or icudt*.dat) and record its
 # requestPermissions set (a set that disagrees with the source-side expectation is a WARN, not
 # a FAIL: kit #31 predates the source-side INTERNET removal); (3) warn
 # (one line) that the four default haps are self-signed and rejected by a real device
@@ -64,7 +65,10 @@
 # The 2c Blazor assertions only run when the optional hello-blazorwasm-host-unsigned.hap is in
 # the kit root (a kit without it logs one line and moves on). Every 2c deviation is FAIL: the
 # component is self-contained, so a missing site file/abc/bundle or a slim leftover means the
-# hap cannot serve the verified Blazor site. The one exception is the requestPermissions set:
+# hap cannot serve the verified Blazor site. That includes the stable boot-loader name
+# _framework/dotnet.js, which pack-host.sh materializes from the fingerprinted
+# _framework/dotnet.<hash>.js asset (kits #31/#32 predate the mapping and FAIL this assertion).
+# The one exception is the requestPermissions set:
 # it is printed and compared with the source-side expectation (BLAZOR_SOURCE_PERMS, default
 # empty because ohos-workload 2dcd846 removed INTERNET from the host's module.json5), and a
 # disagreement is a WARN so a historical kit (#31 carries the pre-removal hap) keeps its real
@@ -294,9 +298,11 @@ Without an argument the current directory is used (it must contain SHA256SUMS).
 
 The optional Blazor WASM component hap (hello-blazorwasm-host-unsigned.hap, built with
 make-device-test-kit.sh --with-blazor) is asserted when present: embedded site index.html,
-_framework *.wasm + blazor.webassembly*.js, PANDA 13.0.1.0 abc, bundle com.example.opendotnet,
-no .br/.gz/.map or icudt*.dat leftovers, and a recorded requestPermissions set (mismatch vs
-the source-side expectation = WARN); a kit without the hap only logs that fact.
+_framework *.wasm + blazor.webassembly*.js, the stable _framework/dotnet.js (byte-equal to its
+dotnet.<hash>.js fingerprint source; kit #31/#32 shipped without it), PANDA 13.0.1.0 abc,
+bundle com.example.opendotnet, no .br/.gz/.map or icudt*.dat leftovers, and a recorded
+requestPermissions set (mismatch vs the source-side expectation = WARN); a kit without the hap
+only logs that fact.
 EOF
 }
 
@@ -1004,7 +1010,9 @@ fi
 # hello-blazorwasm-host-unsigned.hap; without it the section prints one line and moves on (a
 # historical kit must not warn about a component it never had). When present, every deviation
 # is a FAIL: the hap is self-contained (site + shell abc + bundle), so one missing piece means
-# the ArkWeb host cannot boot the verified Blazor site.
+# the ArkWeb host cannot boot the verified Blazor site. The stable `_framework/dotnet.js` is
+# part of that set: pack-host.sh copies it from the fingerprinted asset since the host has no
+# static-web-assets route table (kits #31/#32 predate the mapping and FAIL here).
 if [ ! -f "$BLAZOR_HAP_NAME" ]; then
     log "== 2c/4 Blazor WASM 组件：本包未包含（构建时未启用 --with-blazor）"
 else
@@ -1014,7 +1022,7 @@ else
         BLAZOR_DEEP_FAILS=0
         python3 - "$KIT" "$BLAZOR_HAP_NAME" "$BLAZOR_BUNDLE_EXPECT" "$TMP/blazor-status" \
             "$BLAZOR_ABC_VERSION" "$BLAZOR_SOURCE_PERMS" <<'PY' || FAIL=1
-import json, os, sys, zipfile
+import json, os, re, sys, zipfile
 
 kit = sys.argv[1]
 hap_name = sys.argv[2]
@@ -1106,6 +1114,37 @@ if z is not None:
                          " Blazor 引导脚本缺失" % hap_name)
             fail = 1
 
+        # Fingerprinted boot loader: .NET serves the stable name `_framework/dotnet.js` from the
+        # fingerprinted asset `_framework/dotnet.<hash>.js`, with the route table only in the
+        # publish's staticwebassets endpoints manifest. The host serves rawfiles 1:1, so
+        # pack-host.sh materializes the stable name at embed time; without it the boot script's
+        # dynamic import fails ("Failed to fetch dynamically imported module") and the verified
+        # site never renders (kits #31/#32 shipped that way).
+        dotnet_js = site_prefix + "_framework/dotnet.js"
+        dotnet_fp = [n for n in framework
+                     if re.match(r"^" + re.escape(site_prefix)
+                                 + r"_framework/dotnet\.[a-z0-9]{10}\.js$", n)]
+        if dotnet_js not in names:
+            grade("FAIL", "%s: 缺 resources/rawfile/blazor/_framework/dotnet.js — 引导脚本动态 import 的"
+                         "稳定名缺失（pack-host.sh 的静态 web assets 默认名映射未生效；kit #31/#32 的 hap"
+                         " 即此缺陷，修复随 kit #33，用 make-device-test-kit.sh --with-blazor 重建）" % hap_name)
+            fail = 1
+        elif not dotnet_fp:
+            grade("FAIL", "%s: 有 _framework/dotnet.js 但没有 _framework/dotnet.<hash>.js 指纹资产 —"
+                         " 无法核对稳定名来自同构建产物" % hap_name)
+            fail = 1
+        else:
+            blob = z.read(dotnet_js)
+            match = next((n for n in dotnet_fp if z.read(n) == blob), None)
+            if match is None:
+                grade("FAIL", "%s: _framework/dotnet.js 与 dotnet.<hash>.js (%s) 内容不一致 —"
+                             " 疑似旧构建残留（pack-host.sh 应复制同构建的指纹资产）"
+                             % (hap_name, os.path.basename(dotnet_fp[0])))
+                fail = 1
+            else:
+                print("      dotnet dotnet.js == %s (%d B)"
+                      % (os.path.basename(match), len(blob)))
+
         # Shell abc: same PANDA contract as the five haps (the Blazor host has its own shell,
         # so only the format version is pinned, not the MAUI shell size).
         if "ets/modules.abc" not in names:
@@ -1156,7 +1195,7 @@ PY
             done < "$TMP/blazor-status"
         fi
         if [ "$BLAZOR_DEEP_FAILS" -eq 0 ]; then
-            log "   Blazor 组件断言通过：index.html/_framework/abc/bundle/--slim 均符合契约"
+            log "   Blazor 组件断言通过：index.html/_framework（dotnet.js 与指纹版同源）/abc/bundle/--slim 均符合契约"
         else
             log "   Blazor 组件断言汇总：FAIL $BLAZOR_DEEP_FAILS（组件需用 make-device-test-kit.sh --with-blazor 重打包）"
         fi

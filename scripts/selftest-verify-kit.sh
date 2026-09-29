@@ -31,8 +31,9 @@
 #   S14 payload   payload-in-libs marker mutants -> exit 1: marker missing, entry count drift,
 #                 zip-sha mismatch, entry assembly not staged
 #   S15 blazor    the optional Blazor WASM component: the good kit asserts it (S1), mutants
-#                 (missing index.html / no .wasm / no boot script / .br/.gz/.map leftovers /
-#                 icudt*.dat leftover / wrong bundle / bad abc version / hap removed) all
+#                 (missing index.html / no .wasm / no boot script / no stable dotnet.js /
+#                 stale dotnet.js / .br/.gz/.map leftovers / icudt*.dat leftover / wrong
+#                 bundle / bad abc version / hap removed) all
 #                 behave as documented, a kit without the hap logs one line and stays OK, and
 #                 a pre-removal INTERNET permission set is recorded + WARNed (never fatal;
 #                 --blazor-perms ohos.permission.INTERNET makes the same kit WARN-free)
@@ -322,6 +323,10 @@ def write_blazor_hap(kit):
                    b'<script src="_framework/blazor.webassembly.js"></script></body></html>')
         z.writestr("resources/rawfile/blazor/_framework/dotnet.native.wasm", b"\0asm fixture")
         z.writestr("resources/rawfile/blazor/_framework/blazor.webassembly.js", b"// fixture boot\n")
+        # The fingerprinted boot loader plus the stable name pack-host.sh materializes from it.
+        loader = b"// fixture .NET loader\n"
+        z.writestr("resources/rawfile/blazor/_framework/dotnet.vqrq26m922.js", loader)
+        z.writestr("resources/rawfile/blazor/_framework/dotnet.js", loader)
         z.writestr("resources/rawfile/blazor/css/app.css", b"html,body{margin:0}\n")
         z.writestr("resources/rawfile/blazor/hello-blazorwasm.dll", b"fixture payload")
 
@@ -381,6 +386,13 @@ def patch(kit, op, arg=None):
             items = [(n, d) for n, d in items
                      if not (n.startswith("resources/rawfile/blazor/_framework/")
                              and os.path.basename(n).startswith("blazor.webassembly") and n.endswith(".js"))]
+        elif op == "blazor-drop-defaultjs":
+            items = [(n, d) for n, d in items
+                     if n != "resources/rawfile/blazor/_framework/dotnet.js"]
+        elif op == "blazor-stale-defaultjs":
+            data = dict(items)
+            data["resources/rawfile/blazor/_framework/dotnet.js"] = b"// stale fixture loader\n"
+            items = [(n, data[n]) for n, _ in items]
         elif op == "blazor-add-strays":
             for name in ("dotnet.native.wasm.br", "dotnet.native.wasm.gz", "dotnet.native.wasm.map"):
                 items.append(("resources/rawfile/blazor/_framework/" + name, b"fixture stray"))
@@ -575,6 +587,7 @@ assert_contains "S1 host denylist 0" "denylist 命中=0" "$LOG_FILE"
 assert_contains "S1 dotnet.zip 254 entries / 0 .so" "dotnet.zip entries=254，.so=0" "$LOG_FILE"
 assert_contains "S1 Blazor component section asserts the extra hap" "2c/4 Blazor WASM 组件断言（hello-blazorwasm-host-unsigned.hap）" "$LOG_FILE"
 assert_contains "S1 Blazor component assertions pass" "Blazor 组件断言通过" "$LOG_FILE"
+assert_contains "S1 dotnet.js is byte-equal to the fingerprinted asset" "dotnet.js == dotnet.vqrq26m922.js" "$LOG_FILE"
 
 # The kit copy (what a tester actually runs) must behave identically.
 ( cd "$ROOT_DIR" && sh "$GOOD_KIT/verify-kit.sh" "$GOOD_KIT" ) > "$WORK/S1-kitcopy.log" 2>&1
@@ -774,6 +787,19 @@ python3 "$WORK/fixture.py" patch "$K" blazor-drop-boot
 run_verify "$K"
 assert_rc 1 "$RC" "S15 no blazor.webassembly*.js fails"
 assert_contains "S15 names the missing boot script" "没有 blazor.webassembly*.js" "$LOG_FILE"
+
+K="$(new_kit kit-blazor-nodotnetjs)"
+python3 "$WORK/fixture.py" patch "$K" blazor-drop-defaultjs
+run_verify "$K"
+assert_rc 1 "$RC" "S15 no stable _framework/dotnet.js fails"
+assert_contains "S15 names the missing stable loader" "缺 resources/rawfile/blazor/_framework/dotnet.js" "$LOG_FILE"
+assert_contains "S15 points at the kit #31/#32 defect" "kit #31/#32" "$LOG_FILE"
+
+K="$(new_kit kit-blazor-staledotnetjs)"
+python3 "$WORK/fixture.py" patch "$K" blazor-stale-defaultjs
+run_verify "$K"
+assert_rc 1 "$RC" "S15 stable dotnet.js not matching its fingerprint source fails"
+assert_contains "S15 reports the stale stable name" "_framework/dotnet.js 与 dotnet.<hash>.js (" "$LOG_FILE"
 
 K="$(new_kit kit-blazor-strays)"
 python3 "$WORK/fixture.py" patch "$K" blazor-add-strays
