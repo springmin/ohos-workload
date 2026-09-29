@@ -21,7 +21,7 @@ name: interaction-regression
 #     tree (Refresh + Publish render step and Publish-alone pass), skip/republish average/max
 #     ceilings and documented republish/skip ratio floors (render >= 1.25x, publish >= 2x).
 #
-# The check-count floor (453 = 473 - 20, the documented convention) is declared once in
+# The check-count floor (469 = 489 - 20, the documented convention) is declared once in
 # test/maui-platform-verify/Program.cs, next to the constants that count the executed suite's own
 # [verify] lines; this job reads the `[suite]` line the run prints (and cross-checks it against
 # `grep -c`) instead of repeating a literal, exactly like scripts/preflight.sh, so the local gate
@@ -40,7 +40,7 @@ on:
         description: 'maui-ohos commit SHA to compile (defaults to the pinned feature/openharmony tip)'
         required: false
         type: string
-        default: 'dc9b19a6f287cbff22b77beb01ae68659de51dae'
+        default: 'a4c4bea9334a8c2b0194d2f850488e4305e66e4b'
   push:
     branches: [ master ]
   pull_request:
@@ -52,10 +52,13 @@ permissions:
 
 # Reproducible cross-repo compile: the MAUI slice is checked out at an exact commit, not the
 # mutable feature/openharmony branch, so a push to the fork cannot change what this gate compiles.
-# The default is the feature/openharmony tip: dc9b19a6, the TabbedPage CurrentPage fix in the
-# accessibility walk (OpenHarmonyAccessibility.PushChildren) on top of the N3
-# Picker/DatePicker/TimePicker IsOpen mapping 3b88f5f3, the T21 system font scale 51cb186c, the
-# T13 CollectionView GroupFooter view templates 5dbd7713 and the FIX-TABBED TabbedPage
+# The default is the feature/openharmony tip: a4c4bea933, the Shell CurrentPage enumeration in
+# the compositor/a11y walks (FIX-SHELL) on top of the T14 rich shell flyout
+# (OpenHarmonyShellFlyout: View/DataTemplate sections and item rows) d8e144a8 and the T12
+# CarouselView group header/footer slides 9ab879ff, on top of the A11Y-TABBED TabbedPage
+# CurrentPage fix in the accessibility walk (OpenHarmonyAccessibility.PushChildren) dc9b19a6,
+# the N3 Picker/DatePicker/TimePicker IsOpen mapping 3b88f5f3, the T21 system font scale 51cb186c,
+# the T13 CollectionView GroupFooter view templates 5dbd7713 and the FIX-TABBED TabbedPage
 # CurrentPage in the compositor walk (ChildEnumerator) 14bdb85f, on top of the T6 flow-direction
 # (RTL) mirroring for
 # placement, drawing and hit-testing on top of the T8 TableView on the shared list pipeline
@@ -67,13 +70,13 @@ permissions:
 # spans 043e6468, the T10 modal accessibility overlay c56bf0fa, the T1 InputView mapping dcc7eaac
 # and the T2 CookieContainer sync 8241f1b3, all on top of the W-series webview wiring d6325990,
 # the SEC-SCAN-3 S3-DL3 dot-dot route rejection and the HUKS/deep-link hardening. The suite pins
-# 473 checks / floor 453 (the N1 host multi-pointer lines live in this repository's harness and
+# 489 checks / floor 469 (the N1 host multi-pointer lines live in this repository's harness and
 # hosting bridge, not in the pinned slice) and the full run is green at this compiled tree (local
-# verification: 473/473, floor 453, both perf lines within budget); advance the pin deliberately
+# verification: 489/489, floor 469, both perf lines within budget); advance the pin deliberately
 # and refresh this comment when the harness pins or the tip move (workflow_dispatch can compile
 # any commit).
 env:
-  MAUI_OHOS_REF: ${{ github.event.inputs.maui_ohos_ref || 'dc9b19a6f287cbff22b77beb01ae68659de51dae' }}
+  MAUI_OHOS_REF: ${{ github.event.inputs.maui_ohos_ref || 'a4c4bea9334a8c2b0194d2f850488e4305e66e4b' }}
   # setup-dotnet installs the requested 11.0.x preview into DOTNET_INSTALL_DIR; on Linux that
   # defaults to /usr/share/dotnet, which a per-user cache cannot persist. Point it at ~/.dotnet
   # (the action resolves the ~ prefix against $HOME) so the cache step below actually avoids the

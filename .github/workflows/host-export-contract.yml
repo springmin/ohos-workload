@@ -22,7 +22,7 @@ on:
         description: 'maui-ohos commit SHA to cross-check (defaults to the pinned slice tip)'
         required: false
         type: string
-        default: 'dc9b19a6f287cbff22b77beb01ae68659de51dae'
+        default: 'a4c4bea9334a8c2b0194d2f850488e4305e66e4b'
   push:
     branches: [ master ]
   pull_request:
@@ -32,10 +32,13 @@ permissions:
 
 # Reproducible cross-repo check: the slice is checked out at an exact commit, not the mutable
 # feature/openharmony branch, so a push to the fork cannot change what this gate verifies.
-# Current tip: dc9b19a6 (the A11Y-TABBED TabbedPage CurrentPage fix in the accessibility walk, the
-# N3 Picker/DatePicker/TimePicker IsOpen mapping 3b88f5f3, the T21 system font scale 51cb186c, the
-# T13 CollectionView GroupFooter view templates 5dbd7713 and the FIX-TABBED TabbedPage CurrentPage
-# in the compositor walk 14bdb85f, on top of the T6 flow-direction (RTL) mirroring, the T8
+# Current tip: a4c4bea933 (the FIX-SHELL Shell CurrentPage enumeration in the compositor/a11y
+# walks on top of the T14 rich shell flyout d8e144a8 and the T12 CarouselView group slides
+# 9ab879ff, on top of the A11Y-TABBED TabbedPage CurrentPage fix in the accessibility walk
+# dc9b19a6, the N3 Picker/DatePicker/TimePicker IsOpen mapping 3b88f5f3, the T21 system font
+# scale 51cb186c, the T13 CollectionView GroupFooter view templates 5dbd7713 and the FIX-TABBED
+# TabbedPage CurrentPage in the compositor walk 14bdb85f, on top of the T6 flow-direction (RTL)
+# mirroring, the T8
 # TableView on the shared list pipeline 12a1971b and the N2 empty-ContentPage placement fix
 # f96d484b, on top of the T7 DatePicker month calendar 843a6c7c, the T11
 # diagnostics overlay and its adorners 89e41efa and the T9 window title bar 05935db3, on top of
@@ -43,11 +46,12 @@ permissions:
 # T10 modal accessibility overlay, the T1 InputView mapping dcc7eaac and T2 WebView CookieContainer
 # sync 8241f1b3, after the SEC-SCAN-3 webview + deep-link batch: the ArkWeb history/frame/cookie
 # handlers, the S3-DL3 dot-dot route rejection and the HUKS/keystore hardening; the T3/T4/T5/T10,
-# T9/T11/T7, N2/T8/T6, FIX-TABBED and A11Y-TABBED batches add no host exports, and T13/T21/N3 only
-# extend the managed slice, so the host export contract is still 143/143).
+# T9/T11/T7, N2/T8/T6, FIX-TABBED, A11Y-TABBED and the T12/T14/FIX-SHELL batches add no host
+# exports, and T13/T21/N3 only extend the managed slice, so the host export contract is still
+# 143/143).
 # Advance the pin deliberately, in lockstep with the interaction/pixel gates.
 env:
-  MAUI_OHOS_REF: ${{ github.event.inputs.maui_ohos_ref || 'dc9b19a6f287cbff22b77beb01ae68659de51dae' }}
+  MAUI_OHOS_REF: ${{ github.event.inputs.maui_ohos_ref || 'a4c4bea9334a8c2b0194d2f850488e4305e66e4b' }}
 
 jobs:
   contract:
