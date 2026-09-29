@@ -48,13 +48,14 @@ RID `openharmony-arm64`；workload `openharmony 1.0.0-preview.28/11.0.100-rc.2`�
    （`20260901.112`；workflow 已按 `runtime_ref` 判定，可省略显式输入）。
 6. **设备上 MSBuild 的平台探测缺陷（影响设备本地 AOT/selfsign/打包）**：设备上
    `RuntimeInformation.IsOSPlatform(OSPlatform.Linux)` 为 **false**（fork 运行时把 OHOS 报为
-   `OPENHARMONY`），导致 MSBuild 的 `IsUnix` 判定为假，所有 `Exec` 写成 **Windows 风格
+   `OPENHARMONY`），导致 MSBuild 的 `IsUnixLike` 判定为假，所有 `Exec` 写成 **Windows 风格
    `.exec.cmd`**（`setlocal`/`%errorlevel%`），NativeAOT 链接器探针因此误报
    “linker not found”（而 `command -v` 与 NDK clang++ 本体都正常；`_WhereLinker=0`
-   全局属性会被探针 Output 覆写）。**修复**：CoreLib 把 OpenHarmony 上报为 LINUX
-   （`OperatingSystem.cs`，runtime `fix/ohos-rc2` = `674ca23bdee`），使
-   `IsLinux()`/`IsOSPlatform('Linux')` 为真，MSBuild 的 Exec/探针恢复正常
-   （CI 验证进行中；设备复测待新 SDK）。
+   全局属性会被探针 Output 覆写）。**修复**：运行时保留规范名 `OPENHARMONY`
+   （`IsOSPlatform("openharmony")` 语义不变），同时接受 **`LINUX` 别名**（macOS 同款手法），
+   并令 `IsLinux()` 为真（`OperatingSystem.cs`，runtime `fix/ohos-rc2` = `417ab220532`；
+   MSBuild 侧 `s_isUnixLike = IsLinux || IsOSX || IsBSD || IsHaiku` 已源码核验）。
+   CI 验证 run 36552629066 进行中；设备复测待新 SDK。
    在此之前，设备本地 AOT 构建（selfsign/bundle 重打）不可用，请用**安装器回退签名**与
    **CI 侧**构建路径。
 
