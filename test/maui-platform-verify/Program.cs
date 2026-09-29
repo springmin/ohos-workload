@@ -12,7 +12,7 @@ using Microsoft.Maui.Platform;
 // after the fuzz tail) instead of letting every caller repeat its own threshold constant.
 VerifyLineCountingWriter verifyStdout = new(Console.Out);
 Console.SetOut(verifyStdout);
-const int verifyCheckTotal = 504;                     // documented full [verify] line count (+4 MS-MODE runtime mode switch, +10 P2c-DEEPLINK, +4 P2b-IMG, +16 P1b-LIST, +10 P1a-ANIM, +2 SEC3 storage/deep-link pins, +5 W-series WebView wiring, +3 T1 InputView mapping, +4 T2 WebView gaps, +4 T3 GraphicsView interaction, +7 T10 modal accessibility, +4 T4 Label formatted text, +4 T5 layout semantics, +6 T7 DatePicker calendar/min-max, +4 T9 window title bar, +4 T11 diagnostics overlay, +1 N2 empty ContentPage arrangement, +6 T8 TableView, +7 T6 RTL flow direction, +5 T22 MainThread bridge, +2 FIX-TABBED tabbed CurrentPage, +4 T13 group footer view/N3 picker IsOpen, +5 T21 system font scale, +2 A11Y-TABBED tabbed accessibility, +3 N1 host multi-pointer, +5 T12 CarouselView group slides, +7 T14 rich shell flyout, +2 FIX-SHELL shell CurrentPage, +2 A11Y-SHELL shell accessibility, +7 T15 rich Shell.TitleView, +8 T16 structured menus, +3 N4 TitleBar accessibility row, +3 T18 Essentials Map)
+const int verifyCheckTotal = 508;                     // documented full [verify] line count (+4 MS-MODE runtime mode switch, +10 P2c-DEEPLINK, +4 P2b-IMG, +16 P1b-LIST, +10 P1a-ANIM, +2 SEC3 storage/deep-link pins, +5 W-series WebView wiring, +3 T1 InputView mapping, +4 T2 WebView gaps, +4 T3 GraphicsView interaction, +7 T10 modal accessibility, +4 T4 Label formatted text, +4 T5 layout semantics, +6 T7 DatePicker calendar/min-max, +4 T9 window title bar, +4 T11 diagnostics overlay, +1 N2 empty ContentPage arrangement, +6 T8 TableView, +7 T6 RTL flow direction, +5 T22 MainThread bridge, +2 FIX-TABBED tabbed CurrentPage, +4 T13 group footer view/N3 picker IsOpen, +5 T21 system font scale, +2 A11Y-TABBED tabbed accessibility, +3 N1 host multi-pointer, +5 T12 CarouselView group slides, +7 T14 rich shell flyout, +2 FIX-SHELL shell CurrentPage, +2 A11Y-SHELL shell accessibility, +7 T15 rich Shell.TitleView, +8 T16 structured menus, +3 N4 TitleBar accessibility row, +3 T18 Essentials Map, +4 N5 overlay passthrough suppression)
 const int verifyCheckFloor = verifyCheckTotal - 20;   // documented floor convention (total - 20)
 
 // A small image file for the Image handler.
@@ -2362,6 +2362,70 @@ if (!(t11Present && t11Initialized && t11Quiet && t11Changed && t11Steady && t11
 {
     throw new InvalidOperationException("the T11 VisualDiagnosticsOverlay wiring (initialize, draw, adorner sync) is missing or drifted");
 }
+
+// N5: the T11 leftover - an active overlay that disables touch passthrough owns the touch stream.
+// IWindowOverlay.DisableUITouchEventPassthrough (which Controls' VisualDiagnosticsOverlay sets when
+// its element selector turns on) makes the app host consume the press/release pair and the moves
+// between them instead of routing them into the page tree, so a control underneath never also
+// receives the gesture; clearing the flag restores pass-through. The probe taps the audit page's
+// Entry through host.HandleTouch and reads its platform focus, the observable the W22 focus checks
+// already use.
+var n5Entry = root.Children.OfType<Entry>().FirstOrDefault();
+var n5EntryPlatform = n5Entry?.Handler?.PlatformView as OpenHarmonyView;
+var n5Overlay = new OpenHarmonyWindowOverlay(window!);
+bool n5Attached = n5EntryPlatform is not null && window!.AddOverlay(n5Overlay);
+n5Overlay.DisableUITouchEventPassthrough = true;
+n5Entry?.Unfocus();
+Rect n5Frame = n5Entry?.Frame ?? default;
+float n5X = (float)(n5Frame.X + 10);
+float n5Y = (float)(n5Frame.Y + 10);
+bool n5Down = host.HandleTouch(true, false, n5X, n5Y);
+bool n5Move = host.HandleMove(n5X, n5Y);
+bool n5Up = host.HandleTouch(false, true, n5X, n5Y);
+bool n5ConsumedOk = n5Attached && n5Down && n5Move && n5Up && !n5EntryPlatform!.IsFocused;
+Console.WriteLine($"[verify] n5 overlay consumes touch attached={n5Attached} down={n5Down} move={n5Move} up={n5Up} focused={n5EntryPlatform.IsFocused} assert={n5ConsumedOk}");
+if (!n5ConsumedOk)
+{
+    throw new InvalidOperationException("the overlay's DisableUITouchEventPassthrough did not consume the touch stream");
+}
+n5Overlay.DisableUITouchEventPassthrough = false;
+n5Entry?.Unfocus();
+bool n5PassDown = host.HandleTouch(true, false, n5X, n5Y);
+bool n5PassUp = host.HandleTouch(false, true, n5X, n5Y);
+bool n5PassOk = n5PassDown && n5PassUp && n5EntryPlatform!.IsFocused;
+Console.WriteLine($"[verify] n5 overlay passthrough restored down={n5PassDown} up={n5PassUp} focused={n5EntryPlatform.IsFocused} assert={n5PassOk}");
+if (!n5PassOk)
+{
+    throw new InvalidOperationException("clearing DisableUITouchEventPassthrough did not restore pass-through to the page tree");
+}
+// The diagnostics overlay path: Controls sets the same flag from EnableElementSelector.
+var n5Diagnostics = window.VisualDiagnosticsOverlay!;
+n5Diagnostics.EnableElementSelector = true;
+bool n5SelectorFlag = n5Diagnostics.DisableUITouchEventPassthrough;
+n5Entry!.Unfocus();
+bool n5SelDown = host.HandleTouch(true, false, n5X, n5Y);
+bool n5SelUp = host.HandleTouch(false, true, n5X, n5Y);
+bool n5SelectorOk = n5SelectorFlag && n5SelDown && n5SelUp && !n5EntryPlatform!.IsFocused;
+Console.WriteLine($"[verify] n5 diagnostics selector consumes flag={n5SelectorFlag} down={n5SelDown} up={n5SelUp} focused={n5EntryPlatform.IsFocused} assert={n5SelectorOk}");
+if (!n5SelectorOk)
+{
+    throw new InvalidOperationException("the diagnostics overlay's element selector did not suppress passthrough");
+}
+n5Diagnostics.EnableElementSelector = false;
+n5Entry.Unfocus();
+bool n5SelectPassDown = host.HandleTouch(true, false, n5X, n5Y);
+bool n5SelectPassUp = host.HandleTouch(false, true, n5X, n5Y);
+bool n5SelectPassOk = !n5Diagnostics.DisableUITouchEventPassthrough &&
+    n5SelectPassDown && n5SelectPassUp && n5EntryPlatform.IsFocused;
+Console.WriteLine($"[verify] n5 diagnostics selector restore flag={n5Diagnostics.DisableUITouchEventPassthrough} down={n5SelectPassDown} up={n5SelectPassUp} focused={n5EntryPlatform.IsFocused} assert={n5SelectPassOk}");
+if (!n5SelectPassOk)
+{
+    throw new InvalidOperationException("clearing the diagnostics element selector did not restore pass-through");
+}
+// Leave no probe residue: the probe overlay goes away and the entry keeps the state the earlier
+// focus checks left it in.
+window.RemoveOverlay(n5Overlay);
+n5Entry.Unfocus();
 
 // T9: the Window.TitleBar row. The window-level title bar (Controls.TitleBar, a logical child of
 // the window rather than of the page) is measured/arranged/drawn by the compositor as a top row,
