@@ -21,7 +21,7 @@ name: interaction-regression
 #     tree (Refresh + Publish render step and Publish-alone pass), skip/republish average/max
 #     ceilings and documented republish/skip ratio floors (render >= 1.25x, publish >= 2x).
 #
-# The check-count floor (432 = 452 - 20, the documented convention) is declared once in
+# The check-count floor (450 = 470 - 20, the documented convention) is declared once in
 # test/maui-platform-verify/Program.cs, next to the constants that count the executed suite's own
 # [verify] lines; this job reads the `[suite]` line the run prints (and cross-checks it against
 # `grep -c`) instead of repeating a literal, exactly like scripts/preflight.sh, so the local gate
@@ -40,7 +40,7 @@ on:
         description: 'maui-ohos commit SHA to compile (defaults to the pinned feature/openharmony tip)'
         required: false
         type: string
-        default: '93ba1cc3a9a795fcdbef8d48a5dc2d5ae49c32d0'
+        default: 'dc9b19a6f287cbff22b77beb01ae68659de51dae'
   push:
     branches: [ master ]
   pull_request:
@@ -52,7 +52,12 @@ permissions:
 
 # Reproducible cross-repo compile: the MAUI slice is checked out at an exact commit, not the
 # mutable feature/openharmony branch, so a push to the fork cannot change what this gate compiles.
-# The default is the feature/openharmony tip: 93ba1cc3, the T6 flow-direction (RTL) mirroring for
+# The default is the feature/openharmony tip: dc9b19a6, the TabbedPage CurrentPage fix in the
+# accessibility walk (OpenHarmonyAccessibility.PushChildren) on top of the N3
+# Picker/DatePicker/TimePicker IsOpen mapping 3b88f5f3, the T21 system font scale 51cb186c, the
+# T13 CollectionView GroupFooter view templates 5dbd7713 and the FIX-TABBED TabbedPage
+# CurrentPage in the compositor walk (ChildEnumerator) 14bdb85f, on top of the T6 flow-direction
+# (RTL) mirroring for
 # placement, drawing and hit-testing on top of the T8 TableView on the shared list pipeline
 # 12a1971b and the N2 empty-ContentPage placement fix f96d484b, on top of the T7 DatePicker month
 # calendar 843a6c7c, the T11 diagnostics overlay and its adorners 89e41efa and the T9 window title
@@ -62,11 +67,11 @@ permissions:
 # spans 043e6468, the T10 modal accessibility overlay c56bf0fa, the T1 InputView mapping dcc7eaac
 # and the T2 CookieContainer sync 8241f1b3, all on top of the W-series webview wiring d6325990,
 # the SEC-SCAN-3 S3-DL3 dot-dot route rejection and the HUKS/deep-link hardening. The suite pins
-# 452 checks / floor 432 and the full run is green at this compiled tree (local verification:
-# 452/452, floor 432, both perf lines within budget); advance the pin deliberately and refresh
+# 470 checks / floor 450 and the full run is green at this compiled tree (local verification:
+# 470/470, floor 450, both perf lines within budget); advance the pin deliberately and refresh
 # this comment when the harness pins or the tip move (workflow_dispatch can compile any commit).
 env:
-  MAUI_OHOS_REF: ${{ github.event.inputs.maui_ohos_ref || '93ba1cc3a9a795fcdbef8d48a5dc2d5ae49c32d0' }}
+  MAUI_OHOS_REF: ${{ github.event.inputs.maui_ohos_ref || 'dc9b19a6f287cbff22b77beb01ae68659de51dae' }}
   # setup-dotnet installs the requested 11.0.x preview into DOTNET_INSTALL_DIR; on Linux that
   # defaults to /usr/share/dotnet, which a per-user cache cannot persist. Point it at ~/.dotnet
   # (the action resolves the ~ prefix against $HOME) so the cache step below actually avoids the
