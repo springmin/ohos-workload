@@ -12,7 +12,7 @@ using Microsoft.Maui.Platform;
 // after the fuzz tail) instead of letting every caller repeat its own threshold constant.
 VerifyLineCountingWriter verifyStdout = new(Console.Out);
 Console.SetOut(verifyStdout);
-const int verifyCheckTotal = 468;                     // documented full [verify] line count (+4 MS-MODE runtime mode switch, +10 P2c-DEEPLINK, +4 P2b-IMG, +16 P1b-LIST, +10 P1a-ANIM, +2 SEC3 storage/deep-link pins, +5 W-series WebView wiring, +3 T1 InputView mapping, +4 T2 WebView gaps, +4 T3 GraphicsView interaction, +7 T10 modal accessibility, +4 T4 Label formatted text, +4 T5 layout semantics, +6 T7 DatePicker calendar/min-max, +4 T9 window title bar, +4 T11 diagnostics overlay, +1 N2 empty ContentPage arrangement, +6 T8 TableView, +7 T6 RTL flow direction, +5 T22 MainThread bridge, +2 FIX-TABBED tabbed CurrentPage, +4 T13 group footer view/N3 picker IsOpen, +5 T21 system font scale)
+const int verifyCheckTotal = 470;                     // documented full [verify] line count (+4 MS-MODE runtime mode switch, +10 P2c-DEEPLINK, +4 P2b-IMG, +16 P1b-LIST, +10 P1a-ANIM, +2 SEC3 storage/deep-link pins, +5 W-series WebView wiring, +3 T1 InputView mapping, +4 T2 WebView gaps, +4 T3 GraphicsView interaction, +7 T10 modal accessibility, +4 T4 Label formatted text, +4 T5 layout semantics, +6 T7 DatePicker calendar/min-max, +4 T9 window title bar, +4 T11 diagnostics overlay, +1 N2 empty ContentPage arrangement, +6 T8 TableView, +7 T6 RTL flow direction, +5 T22 MainThread bridge, +2 FIX-TABBED tabbed CurrentPage, +4 T13 group footer view/N3 picker IsOpen, +5 T21 system font scale, +2 A11Y-TABBED tabbed accessibility)
 const int verifyCheckFloor = verifyCheckTotal - 20;   // documented floor convention (total - 20)
 
 // A small image file for the Image handler.
@@ -2395,6 +2395,21 @@ if (tabbed.Handler?.PlatformView is OpenHarmonyView tabPlatform)
         throw new InvalidOperationException("the compositor did not draw exactly the TabbedPage's CurrentPage content (ChildEnumerator missed CurrentPage)");
     }
 
+    // A11Y-TABBED: the accessibility shadow tree walks its own children builder
+    // (OpenHarmonyAccessibility.PushChildren), which carried the same omission; publishing for
+    // the tabbed page must contain the selected page's subtree through its CurrentPage branch,
+    // and must not leak the unselected page.
+    OpenHarmonyAccessibility.Refresh(tabbed);
+    var a11yTabCurrent = OpenHarmonyAccessibility.Nodes.FirstOrDefault(n => n.Text == "tab one");
+    bool a11yTabCurrentOk = a11yTabCurrent is not null && a11yTabCurrent.Role == "text" &&
+        a11yTabCurrent.ParentId != 0;
+    bool a11yTabOtherHidden = !OpenHarmonyAccessibility.Nodes.Any(n => n.Text == "tab two");
+    Console.WriteLine($"[verify] tabbed a11y current published={a11yTabCurrent is not null} role={a11yTabCurrent?.Role} otherHidden={a11yTabOtherHidden} nodes={OpenHarmonyAccessibility.Nodes.Count} assert={a11yTabCurrentOk && a11yTabOtherHidden}");
+    if (!(a11yTabCurrentOk && a11yTabOtherHidden))
+    {
+        throw new InvalidOperationException("the accessibility tree did not contain exactly the TabbedPage's CurrentPage subtree (PushChildren missed CurrentPage)");
+    }
+
     double tabY = tabbed.Frame.Height - OpenHarmonyView.TabBarHeight / 2;
     double tabX = tabbed.Frame.Width * 0.75;
     renderer.HandleTouch(tabbed, true, false, (float)tabX, (float)tabY);
@@ -2409,6 +2424,17 @@ if (tabbed.Handler?.PlatformView is OpenHarmonyView tabPlatform)
     if (!(tabDrewSwitched && tabHidPrevious))
     {
         throw new InvalidOperationException("the compositor frame did not follow the TabbedPage's CurrentPage switch");
+    }
+
+    // A11Y-TABBED: the shadow tree must follow the switch too: only the new current page stays
+    // published (the previous page's subtree is gone from the frame).
+    OpenHarmonyAccessibility.Refresh(tabbed);
+    bool a11yTabSwitched = OpenHarmonyAccessibility.Nodes.Any(n => n.Text == "tab two");
+    bool a11yTabPreviousGone = !OpenHarmonyAccessibility.Nodes.Any(n => n.Text == "tab one");
+    Console.WriteLine($"[verify] tabbed a11y after switch published={a11yTabSwitched} previousHidden={a11yTabPreviousGone} nodes={OpenHarmonyAccessibility.Nodes.Count} assert={a11yTabSwitched && a11yTabPreviousGone}");
+    if (!(a11yTabSwitched && a11yTabPreviousGone))
+    {
+        throw new InvalidOperationException("the accessibility tree did not follow the TabbedPage's CurrentPage switch");
     }
 
     var contentFrame = ((View)tabTwo.Content!).Frame;
