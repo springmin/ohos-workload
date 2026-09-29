@@ -12,7 +12,7 @@ using Microsoft.Maui.Platform;
 // after the fuzz tail) instead of letting every caller repeat its own threshold constant.
 VerifyLineCountingWriter verifyStdout = new(Console.Out);
 Console.SetOut(verifyStdout);
-const int verifyCheckTotal = 452;                     // documented full [verify] line count (+4 MS-MODE runtime mode switch, +10 P2c-DEEPLINK, +4 P2b-IMG, +16 P1b-LIST, +10 P1a-ANIM, +2 SEC3 storage/deep-link pins, +5 W-series WebView wiring, +3 T1 InputView mapping, +4 T2 WebView gaps, +4 T3 GraphicsView interaction, +7 T10 modal accessibility, +4 T4 Label formatted text, +4 T5 layout semantics, +6 T7 DatePicker calendar/min-max, +4 T9 window title bar, +4 T11 diagnostics overlay, +1 N2 empty ContentPage arrangement, +6 T8 TableView, +7 T6 RTL flow direction)
+const int verifyCheckTotal = 457;                     // documented full [verify] line count (+4 MS-MODE runtime mode switch, +10 P2c-DEEPLINK, +4 P2b-IMG, +16 P1b-LIST, +10 P1a-ANIM, +2 SEC3 storage/deep-link pins, +5 W-series WebView wiring, +3 T1 InputView mapping, +4 T2 WebView gaps, +4 T3 GraphicsView interaction, +7 T10 modal accessibility, +4 T4 Label formatted text, +4 T5 layout semantics, +6 T7 DatePicker calendar/min-max, +4 T9 window title bar, +4 T11 diagnostics overlay, +1 N2 empty ContentPage arrangement, +6 T8 TableView, +7 T6 RTL flow direction, +5 T22 MainThread bridge)
 const int verifyCheckFloor = verifyCheckTotal - 20;   // documented floor convention (total - 20)
 
 // A small image file for the Image handler.
@@ -1554,6 +1554,195 @@ Console.WriteLine($"[verify] t6 calendar open={t6CalendarOpened} arrows={t6Calen
 if (!t6CalendarOk)
 {
     throw new InvalidOperationException("the T6 RTL calendar (mirrored arrows/columns, day hit) is missing or drifted");
+}
+
+// T22: the MainThread bridge. rc.1's Essentials initialization bridges the MAUI application
+// dispatcher into the netstandard MainThread (EssentialsMauiAppBuilderExtensions ->
+// MainThread.SetCustomImplementation), so MainThread works on this platform slice without a
+// native MainThread partial: IsMainThread mirrors the application dispatcher's
+// IsDispatchRequired and BeginInvokeOnMainThread / InvokeOnMainThreadAsync post through the
+// slice's OpenHarmonyDispatcher queue. The safety-net timer drains that queue on a pool
+// thread, and the async continuation thread can itself become the drain thread, so the
+// BeginInvoke/InvokeAsync probes run on dedicated worker threads where IsDispatchRequired is
+// deterministically true: the bridge must queue (never run the callback inline on the worker)
+// and the drained callback must observe IsMainThread true on the drain thread.
+var t22Dispatcher = Application.Current?.Dispatcher;
+bool t22IsMainThread = false;
+bool t22DispatchRequired = false;
+string t22BridgeProbe;
+try
+{
+    t22IsMainThread = Microsoft.Maui.ApplicationModel.MainThread.IsMainThread;
+    t22DispatchRequired = t22Dispatcher?.IsDispatchRequired ?? true;
+    t22BridgeProbe = $"isMainThread={t22IsMainThread} dispatchRequired={t22DispatchRequired}";
+}
+catch (Exception ex)
+{
+    t22BridgeProbe = $"probe threw {ex.GetType().Name}: {ex.Message}";
+}
+
+bool t22BridgeOk = t22Dispatcher is Microsoft.Maui.Platform.OpenHarmonyDispatcher
+    && t22IsMainThread == !t22DispatchRequired;
+Console.WriteLine($"[verify] t22 mainthread bridge dispatcher={t22Dispatcher?.GetType().Name ?? "null"} {t22BridgeProbe} assert={t22BridgeOk}");
+if (!t22BridgeOk)
+{
+    throw new InvalidOperationException("the rc.1 MainThread bridge (application dispatcher -> MainThread with no native MainThread partial) is missing or does not mirror the OpenHarmony dispatcher");
+}
+
+async Task<bool> T22WaitFor(Func<bool> condition, int timeoutMs = 3000)
+{
+    var t22Watch = System.Diagnostics.Stopwatch.StartNew();
+    while (t22Watch.ElapsedMilliseconds < timeoutMs)
+    {
+        if (condition())
+        {
+            return true;
+        }
+        await Task.Delay(25);
+    }
+    return condition();
+}
+
+// BeginInvokeOnMainThread from a fresh worker thread: the dispatcher reports dispatch-required
+// there, so the framework must go through the bridge's dispatcher.Dispatch (queued), never run
+// the callback inline on the worker; the drained callback must observe IsMainThread true.
+int t22PostThreadId = 0;
+bool t22PostIsMain = true;
+bool t22PostRequired = false;
+bool t22PostInline = false;
+bool t22PostRan = false;
+int t22PostRunThread = 0;
+bool t22PostInsideMain = false;
+using (var t22PostGate = new ManualResetEventSlim(false))
+{
+    var t22PostWorker = new System.Threading.Thread(() =>
+    {
+        t22PostThreadId = Environment.CurrentManagedThreadId;
+        t22PostIsMain = Microsoft.Maui.ApplicationModel.MainThread.IsMainThread;
+        t22PostRequired = t22Dispatcher!.IsDispatchRequired;
+        bool t22PostReturned = false;
+        Microsoft.Maui.ApplicationModel.MainThread.BeginInvokeOnMainThread(() =>
+        {
+            if (!Volatile.Read(ref t22PostReturned) && Environment.CurrentManagedThreadId == t22PostThreadId)
+            {
+                t22PostInline = true;
+            }
+            t22PostRunThread = Environment.CurrentManagedThreadId;
+            t22PostInsideMain = Microsoft.Maui.ApplicationModel.MainThread.IsMainThread;
+            t22PostRan = true;
+            t22PostGate.Set();
+        });
+        Volatile.Write(ref t22PostReturned, true);
+        t22PostGate.Wait(3000);
+    })
+    { IsBackground = true };
+    t22PostWorker.Start();
+    bool t22PostJoined = t22PostWorker.Join(4000);
+    bool t22PostOk = t22PostJoined && t22PostRequired && !t22PostIsMain && !t22PostInline
+        && t22PostRan && t22PostInsideMain;
+    Console.WriteLine($"[verify] t22 begin-invoke worker={t22PostThreadId} workerIsMainThread={t22PostIsMain} dispatchRequired={t22PostRequired} inline={t22PostInline} drained={t22PostRan} runThread={t22PostRunThread} insideIsMainThread={t22PostInsideMain} joined={t22PostJoined} assert={t22PostOk}");
+    if (!t22PostOk)
+    {
+        throw new InvalidOperationException("MainThread.BeginInvokeOnMainThread did not queue through the OpenHarmony dispatcher (inline execution / drain / IsMainThread-on-drain contract)");
+    }
+}
+
+// InvokeOnMainThreadAsync<T> from a fresh worker thread completes with the value the drained
+// callback computed, and that callback runs on the drain thread with IsMainThread true.
+string t22FuncValue = "<not-completed>";
+bool t22FuncCompleted = false;
+int t22FuncRunThread = 0;
+bool t22FuncInsideMain = false;
+bool t22FuncWorkerIsMain = true;
+Exception? t22FuncError = null;
+var t22FuncWorker = new System.Threading.Thread(() =>
+{
+    t22FuncWorkerIsMain = Microsoft.Maui.ApplicationModel.MainThread.IsMainThread;
+    try
+    {
+        Task<string> t22FuncTask = Microsoft.Maui.ApplicationModel.MainThread.InvokeOnMainThreadAsync(() =>
+        {
+            t22FuncRunThread = Environment.CurrentManagedThreadId;
+            t22FuncInsideMain = Microsoft.Maui.ApplicationModel.MainThread.IsMainThread;
+            return "t22-dispatched";
+        });
+        t22FuncCompleted = t22FuncTask.Wait(3000) && t22FuncTask.IsCompletedSuccessfully;
+        if (t22FuncCompleted)
+        {
+            t22FuncValue = t22FuncTask.Result;
+        }
+    }
+    catch (Exception ex)
+    {
+        t22FuncError = ex;
+    }
+})
+{ IsBackground = true };
+t22FuncWorker.Start();
+bool t22FuncJoined = t22FuncWorker.Join(4000);
+bool t22FuncOk = t22FuncJoined && t22FuncError is null && t22FuncCompleted
+    && t22FuncValue == "t22-dispatched" && !t22FuncWorkerIsMain && t22FuncInsideMain;
+Console.WriteLine($"[verify] t22 invoke-async func value='{t22FuncValue}' completed={t22FuncCompleted} workerIsMainThread={t22FuncWorkerIsMain} runThread={t22FuncRunThread} insideIsMainThread={t22FuncInsideMain} error={t22FuncError?.GetType().Name ?? "none"} joined={t22FuncJoined} assert={t22FuncOk}");
+if (!t22FuncOk)
+{
+    throw new InvalidOperationException("MainThread.InvokeOnMainThreadAsync<T> did not round-trip through the OpenHarmony dispatcher");
+}
+
+// The non-generic InvokeOnMainThreadAsync(Action) overload from a fresh worker thread
+// completes successfully with exactly one callback that observes IsMainThread true.
+int t22ActionRan = 0;
+bool t22ActionCompleted = false;
+int t22ActionRunThread = 0;
+bool t22ActionInsideMain = false;
+bool t22ActionWorkerIsMain = true;
+Exception? t22ActionError = null;
+var t22ActionWorker = new System.Threading.Thread(() =>
+{
+    t22ActionWorkerIsMain = Microsoft.Maui.ApplicationModel.MainThread.IsMainThread;
+    try
+    {
+        Task t22ActionTask = Microsoft.Maui.ApplicationModel.MainThread.InvokeOnMainThreadAsync(() =>
+        {
+            Interlocked.Increment(ref t22ActionRan);
+            t22ActionRunThread = Environment.CurrentManagedThreadId;
+            t22ActionInsideMain = Microsoft.Maui.ApplicationModel.MainThread.IsMainThread;
+        });
+        t22ActionCompleted = t22ActionTask.Wait(3000) && t22ActionTask.IsCompletedSuccessfully;
+    }
+    catch (Exception ex)
+    {
+        t22ActionError = ex;
+    }
+})
+{ IsBackground = true };
+t22ActionWorker.Start();
+bool t22ActionJoined = t22ActionWorker.Join(4000);
+bool t22ActionOk = t22ActionJoined && t22ActionError is null && t22ActionCompleted
+    && t22ActionRan == 1 && !t22ActionWorkerIsMain && t22ActionInsideMain;
+Console.WriteLine($"[verify] t22 invoke-async action completed={t22ActionCompleted} ran={t22ActionRan} workerIsMainThread={t22ActionWorkerIsMain} runThread={t22ActionRunThread} insideIsMainThread={t22ActionInsideMain} error={t22ActionError?.GetType().Name ?? "none"} joined={t22ActionJoined} assert={t22ActionOk}");
+if (!t22ActionOk)
+{
+    throw new InvalidOperationException("MainThread.InvokeOnMainThreadAsync(Action) did not complete through the OpenHarmony dispatcher");
+}
+
+// The bridge posts into the application dispatcher's own queue: a MainThread post and a direct
+// IDispatcher.Dispatch post drain in FIFO order (whether the bridge call queued or ran inline
+// on this thread), which pins the "application dispatcher" half of the bridge.
+int t22FifoSequence = 0;
+int t22FifoBridgeSeq = -1;
+int t22FifoDispatchSeq = -1;
+Microsoft.Maui.ApplicationModel.MainThread.BeginInvokeOnMainThread(() =>
+    Volatile.Write(ref t22FifoBridgeSeq, Interlocked.Increment(ref t22FifoSequence)));
+bool t22FifoDispatched = t22Dispatcher is not null && t22Dispatcher.Dispatch(() =>
+    Volatile.Write(ref t22FifoDispatchSeq, Interlocked.Increment(ref t22FifoSequence)));
+bool t22FifoDrained = await T22WaitFor(() => Volatile.Read(ref t22FifoBridgeSeq) >= 1 && Volatile.Read(ref t22FifoDispatchSeq) >= 1);
+bool t22FifoOk = t22FifoDispatched && t22FifoDrained
+    && Volatile.Read(ref t22FifoBridgeSeq) == 1
+    && Volatile.Read(ref t22FifoDispatchSeq) == 2;
+Console.WriteLine($"[verify] t22 begin-invoke shares the app dispatcher queue bridgeSeq={Volatile.Read(ref t22FifoBridgeSeq)} dispatchSeq={Volatile.Read(ref t22FifoDispatchSeq)} dispatched={t22FifoDispatched} drained={t22FifoDrained} assert={t22FifoOk}");
+if (!t22FifoOk)
+{
+    throw new InvalidOperationException("MainThread.BeginInvokeOnMainThread did not post into the application dispatcher's queue (FIFO with IDispatcher.Dispatch)");
 }
 
 // T11: the window's VisualDiagnosticsOverlay (Controls' per-window IAdorner host) is initialized

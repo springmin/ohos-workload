@@ -49,7 +49,7 @@ allocation and jitter) budgets are exceeded.
 # (or the MauiSliceDir / HostingDll / OpenHarmonyGraphicsDll MSBuild properties) before building
 # elsewhere; an explicit -p: value wins over the environment and the absolute fallbacks.
 dotnet build -v:q
-dotnet bin/Debug/net11.0/verify.dll | grep -c '\[verify\]'   # expect 452 (439 interaction checks + 4 fuzz + 1 frame perf + 8 a11y perf)
+dotnet bin/Debug/net11.0/verify.dll | grep -c '\[verify\]'   # expect 457 (444 interaction checks + 4 fuzz + 1 frame perf + 8 a11y perf)
 ```
 
 The `interaction-regression` workflow (`.github/workflows/interaction-regression.yml`) runs the
@@ -60,7 +60,7 @@ suite on a GitHub runner as a real gate (on push to `master`, on pull requests a
 points `MAUI_SLICE_DIR` / `HOSTING_DLL` / `OPENHARMONY_GRAPHICS_DLL` at those roots, and fails the
 job unless the run exits 0, the suite's own `[suite]` contract line reports `assert=True` with at
 least the floor declared in `Program.cs`, both perf lines report `within=True`, and no `Unhandled`
-line is logged. The floor (432 = 452 - 20, the documented convention) lives only in `Program.cs`;
+line is logged. The floor (437 = 457 - 20, the documented convention) lives only in `Program.cs`;
 the workflow and `scripts/preflight.sh` both read the printed `[suite] checks=... floor=...` line
 instead of repeating a literal, so the two local/CI thresholds cannot drift apart.
 
@@ -178,8 +178,8 @@ parse.
   blocks codesigned ELF apphosts on some machines).
 - The suite fails loudly (unhandled exception) when a slice change breaks startup or when an
   assertion for the gesture flows (including the drag-and-drop checks) does not hold; keep it at
-  439 interaction checks plus the 4 fuzz lines plus the 1 frame-perf line plus the 8 a11y-perf
-  lines (452 `[verify]` lines) when touching the platform slice. The total and the floor
+  444 interaction checks plus the 4 fuzz lines plus the 1 frame-perf line plus the 8 a11y-perf
+  lines (457 `[verify]` lines) when touching the platform slice. The total and the floor
   (total - 20) are declared in `Program.cs`; the run ends with a `[suite] checks=... floor=...
   assert=...` line and fails itself when the printed count is below the floor, so the CI job and
   `scripts/preflight.sh` do not repeat the threshold.
@@ -923,3 +923,22 @@ parse.
   (day 15) and the picked date. That is 7 new lines on top of the N2 (+1) and T8 (+6) lines:
   445 + 7 = 452 = 439 interaction checks + 4 fuzz + 1 frame perf + 8 a11y perf; the workflow
   floor moves with the total (452 - 20 = 432).
+
+- **T22 MainThread bridge (5 lines, 2026-09-29)** - rc.1's Essentials initialization bridges the
+  MAUI application dispatcher into the netstandard `MainThread` on non-native TFMs
+  (`EssentialsMauiAppBuilderExtensions` -> `MainThread.SetCustomImplementation`, no public API
+  and no platform partial), so `MainThread.IsMainThread` mirrors the app dispatcher's
+  `IsDispatchRequired` and `BeginInvokeOnMainThread` / `InvokeOnMainThreadAsync` post through the
+  slice's `OpenHarmonyDispatcher` queue. `t22 mainthread bridge` requires the app dispatcher to
+  be the slice's `OpenHarmonyDispatcher` and `MainThread.IsMainThread` to equal
+  `!dispatcher.IsDispatchRequired` on the suite thread; `t22 begin-invoke` posts from a fresh
+  worker thread (where `IsDispatchRequired` is deterministically true) and requires the callback
+  to queue rather than run inline on the worker and to observe `IsMainThread` true when the
+  safety-net timer drains it; `t22 invoke-async func` requires the `Func<T>` overload to
+  round-trip its value from a fresh worker thread; `t22 invoke-async action` requires the
+  `Action` overload to complete successfully with exactly one callback; `t22 begin-invoke shares
+  the app dispatcher queue` interleaves a `MainThread` post and a direct `IDispatcher.Dispatch`
+  post and requires FIFO order (1 then 2), pinning that the bridge posts into the application
+  dispatcher's own queue. That is 5 new lines on top of the N2 (+1), T8 (+6) and T6 (+7) lines:
+  452 + 5 = 457 = 444 interaction checks + 4 fuzz + 1 frame perf + 8 a11y perf; the workflow
+  floor moves with the total (457 - 20 = 437).
