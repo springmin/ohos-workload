@@ -152,3 +152,4 @@ ohos_host_web_eval
 ohos_host_web_js_register_message
 ohos_host_web_js_register_result
 ohos_host_web_register_event
+ohos_host_window_decor

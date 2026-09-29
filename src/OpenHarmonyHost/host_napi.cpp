@@ -272,6 +272,7 @@ struct HostBinding {
     HostSink keep_screen_on{"keep screen on", false};
     HostSink window_title{"window title", false};
     HostSink window_rect{"window rect", false};
+    HostSink window_decor{"window decor", false};
     HostSink screenshot{"screenshot", false};
     HostSink shell_search{"shell search", false};
     HostSink shell_flyout{"shell flyout", false};
@@ -334,6 +335,7 @@ static HostBinding* g_host = &g_binding_slots[0].binding;
 #define g_keep_screen_on_sink (g_host->keep_screen_on)
 #define g_window_title_sink (g_host->window_title)
 #define g_window_rect_sink (g_host->window_rect)
+#define g_window_decor_sink (g_host->window_decor)
 #define g_screenshot_sink (g_host->screenshot)
 #define g_shell_search_sink (g_host->shell_search)
 #define g_shell_flyout_sink (g_host->shell_flyout)
@@ -374,6 +376,7 @@ static void HostForEachSink(HostBinding& binding, F&& visit) {
     visit(binding.keep_screen_on);
     visit(binding.window_title);
     visit(binding.window_rect);
+    visit(binding.window_decor);
     visit(binding.screenshot);
     visit(binding.shell_search);
     visit(binding.shell_flyout);
@@ -2686,6 +2689,42 @@ napi_value RegisterWindowRectSink(napi_env env, napi_callback_info info) {
 }
 
 // ---------------------------------------------------------------------------
+// Window decorations (N6): the managed Window.TitleBar row asks the shell to hand the window's
+// title-bar decor to the app (op 4 request / op 5 release) and dispatches the caption and drag
+// commands (0 minimize, 1 maximize/restore toggle, 2 close, 3 startMoving). Op 6 is the
+// availability probe: 1 only when the shell registered the decor sink, which it does solely when
+// the runtime can actually hide its decorations - a fullscreen phone window keeps the system
+// decor and the managed row then draws no caption buttons. One-way like keep-screen-on: ops 0-5
+// return 0 when the command was queued for the shell and -1 when there is no sink.
+// ---------------------------------------------------------------------------
+// (sink moved into the current HostBinding; see the g_* accessors above)
+
+// Called from managed code (P/Invoke): op 0-5 queue a command / request, op 6 answers 0 or 1.
+extern "C" int ohos_host_window_decor(int op) {
+    if (op < 0 || op > 6) {
+        OH_LOG_WARN(LOG_APP, "[openharmony-host] window_decor: invalid op %{public}d", op);
+        return -1;
+    }
+    if (op == 6) {
+        return g_window_decor_sink.tsfn != nullptr ? 1 : 0;
+    }
+    return HostCxxBoundary("window decor", [&] {
+        SinkCall* call = new SinkCall();
+        call->AddInt(op);
+        if (!HostSinkPost(g_window_decor_sink, call)) {
+            OH_LOG_WARN(LOG_APP, "[openharmony-host] window_decor: no shell window decor sink");
+            return -1;
+        }
+        return 0;
+    });
+}
+
+// ArkTS calls host.registerWindowDecorSink(fn) to receive window-decoration commands.
+napi_value RegisterWindowDecorSink(napi_env env, napi_callback_info info) {
+    return HostSinkRegisterFromArgs(env, info, g_window_decor_sink);
+}
+
+// ---------------------------------------------------------------------------
 // Screenshot: the managed side asks the ArkTS shell to snapshot the main window and write a
 // PNG to an app-owned path (window.snapshot + image.createImagePacker). One-way: the shell
 // logs a failed write itself and the managed caller reads the file when it is ready.
@@ -3928,6 +3967,7 @@ napi_value Init(napi_env env, napi_value exports) {
         {"registerKeepScreenOnSink", nullptr, RegisterKeepScreenOnSink, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"registerWindowTitleSink", nullptr, RegisterWindowTitleSink, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"registerWindowRectSink", nullptr, RegisterWindowRectSink, nullptr, nullptr, nullptr, napi_default, nullptr},
+        {"registerWindowDecorSink", nullptr, RegisterWindowDecorSink, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"registerScreenshotSink", nullptr, RegisterScreenshotSink, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"registerShellSearchChangedSink", nullptr, RegisterShellSearchChangedSink, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"shellSearchQuery", nullptr, ShellSearchQuery, nullptr, nullptr, nullptr, napi_default, nullptr},

@@ -319,6 +319,37 @@ renderer.Render(backNav, 1080, 400);
 Check("hidden title bar gives the top back to the content", canvas.GetPixel(500, 36), Colors.Black, 40);
 Console.WriteLine($"  title bar probe: rendered={backRendered} navStack={backNav.Navigation.NavigationStack.Count}");
 
+// N6: the Window.TitleBar row's system caption buttons. When the shell reports app-managed
+// decorations (the availability probe, forced through the bridge's test seam) the row keeps the
+// trailing band for minimize/maximize/close glyphs; without the decor handover the band is free
+// again (the shell keeps its own title-bar buttons).
+OpenHarmonyWindowDecoration.AvailabilityOverride = true;
+var decorBar = new TitleBar
+{
+    Title = "decor",
+    HeightRequest = 72,
+    BackgroundColor = Colors.MidnightBlue,
+    ForegroundColor = Colors.White,
+};
+var decorWindow = new Window(new ContentPage { BackgroundColor = Colors.Black });
+OpenHarmonyHandlerConnector.Connect(decorWindow);
+decorWindow.TitleBar = decorBar;
+await Task.Delay(20);
+canvas.Reset();
+bool decorRendered = renderer.Render((IView)decorWindow.Page, 1080, 400);
+int decorRowMid = 36;
+int decorMinCx = 1080 - 115, decorMaxCx = 1080 - 69, decorCloseCx = 1080 - 23;
+Check("caption minimize glyph draws", canvas.GetPixel(decorMinCx, decorRowMid), Colors.White, 60);
+Check("caption maximize glyph draws", canvas.GetPixel(decorMaxCx - 6, decorRowMid), Colors.White, 60);
+Check("caption close glyph draws", canvas.GetPixel(decorCloseCx - 5, decorRowMid - 5), Colors.White, 60);
+OpenHarmonyWindowDecoration.AvailabilityOverride = false;
+canvas.Reset();
+renderer.Render((IView)decorWindow.Page, 1080, 400);
+Check("no caption glyphs without app-managed decorations", canvas.GetPixel(decorMinCx, decorRowMid), Colors.MidnightBlue, 24);
+OpenHarmonyWindowDecoration.AvailabilityOverride = null;
+decorWindow.TitleBar = null;
+Console.WriteLine($"  caption probe: rendered={decorRendered} min={decorMinCx} max={decorMaxCx} close={decorCloseCx}");
+
 // T6: RTL/FlowDirection. A right-to-left layout mirrors its children's placement on the
 // compositor canvas, and a half-filled progress bar fills from the physical right edge (the
 // logical start) while the track stays at the end edge.

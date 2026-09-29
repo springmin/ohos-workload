@@ -12,7 +12,7 @@ using Microsoft.Maui.Platform;
 // after the fuzz tail) instead of letting every caller repeat its own threshold constant.
 VerifyLineCountingWriter verifyStdout = new(Console.Out);
 Console.SetOut(verifyStdout);
-const int verifyCheckTotal = 508;                     // documented full [verify] line count (+4 MS-MODE runtime mode switch, +10 P2c-DEEPLINK, +4 P2b-IMG, +16 P1b-LIST, +10 P1a-ANIM, +2 SEC3 storage/deep-link pins, +5 W-series WebView wiring, +3 T1 InputView mapping, +4 T2 WebView gaps, +4 T3 GraphicsView interaction, +7 T10 modal accessibility, +4 T4 Label formatted text, +4 T5 layout semantics, +6 T7 DatePicker calendar/min-max, +4 T9 window title bar, +4 T11 diagnostics overlay, +1 N2 empty ContentPage arrangement, +6 T8 TableView, +7 T6 RTL flow direction, +5 T22 MainThread bridge, +2 FIX-TABBED tabbed CurrentPage, +4 T13 group footer view/N3 picker IsOpen, +5 T21 system font scale, +2 A11Y-TABBED tabbed accessibility, +3 N1 host multi-pointer, +5 T12 CarouselView group slides, +7 T14 rich shell flyout, +2 FIX-SHELL shell CurrentPage, +2 A11Y-SHELL shell accessibility, +7 T15 rich Shell.TitleView, +8 T16 structured menus, +3 N4 TitleBar accessibility row, +3 T18 Essentials Map, +4 N5 overlay passthrough suppression)
+const int verifyCheckTotal = 513;                     // documented full [verify] line count (+4 MS-MODE runtime mode switch, +10 P2c-DEEPLINK, +4 P2b-IMG, +16 P1b-LIST, +10 P1a-ANIM, +2 SEC3 storage/deep-link pins, +5 W-series WebView wiring, +3 T1 InputView mapping, +4 T2 WebView gaps, +4 T3 GraphicsView interaction, +7 T10 modal accessibility, +4 T4 Label formatted text, +4 T5 layout semantics, +6 T7 DatePicker calendar/min-max, +4 T9 window title bar, +4 T11 diagnostics overlay, +1 N2 empty ContentPage arrangement, +6 T8 TableView, +7 T6 RTL flow direction, +5 T22 MainThread bridge, +2 FIX-TABBED tabbed CurrentPage, +4 T13 group footer view/N3 picker IsOpen, +5 T21 system font scale, +2 A11Y-TABBED tabbed accessibility, +3 N1 host multi-pointer, +5 T12 CarouselView group slides, +7 T14 rich shell flyout, +2 FIX-SHELL shell CurrentPage, +2 A11Y-SHELL shell accessibility, +7 T15 rich Shell.TitleView, +8 T16 structured menus, +3 N4 TitleBar accessibility row, +3 T18 Essentials Map, +4 N5 overlay passthrough suppression, +5 N6 window decorations)
 const int verifyCheckFloor = verifyCheckTotal - 20;   // documented floor convention (total - 20)
 
 // A small image file for the Image handler.
@@ -2557,6 +2557,147 @@ if (!t9BackOk)
 {
     throw new InvalidOperationException("the Window.TitleBar back affordance (leading slot + IWindow.BackButtonClicked) is missing or drifted");
 }
+
+// N6: the Window.TitleBar row maps the window's system decorations onto the row when the shell
+// runs with app-managed decorations: the trailing caption buttons (close outermost, then the
+// maximize/restore toggle, then minimize; mirrored in RTL) dispatch minimize/maximize/close on a
+// release inside the same button, and a press on the title band that no template child consumed
+// starts the window move (the shell's startMoving). The shell hands the decor over only when its
+// runtime can hide it - the decor sink is registered only for SessionManager-capable, non-
+// fullscreen windows - so off-device the probe answers false and the availability test seam
+// forces the mapped state here. The source pins cover the managed bridge, the host export/sink
+// and the three shell packs (byte-identical).
+string? n6DecorPath = FindHostSource("OpenHarmonyWindowDecoration.cs");
+string n6DecorSource = n6DecorPath is null ? string.Empty : File.ReadAllText(n6DecorPath);
+string? n6HostPath = FindHostSource("src/OpenHarmonyHost/host_napi.cpp");
+string n6HostSource = n6HostPath is null ? string.Empty : File.ReadAllText(n6HostPath);
+string? n6ExportsPath = FindHostSource("src/OpenHarmonyHost/host-exports.txt");
+string n6ExportsSource = n6ExportsPath is null ? string.Empty : File.ReadAllText(n6ExportsPath);
+string[] n6ShellVersions = { "1.0.0-preview.22", "1.0.0-preview.23", "1.0.0-preview.24" };
+string n6ShellFirst = string.Empty;
+bool n6ShellPinsOk = true;
+bool n6ShellIdentical = true;
+foreach (string n6ShellVersion in n6ShellVersions)
+{
+    string? n6ShellPath = FindHostSource($"packs/Microsoft.OpenHarmony.Sdk/{n6ShellVersion}/templates/ets/pages/Index.ets");
+    string n6Shell = n6ShellPath is null ? string.Empty : File.ReadAllText(n6ShellPath);
+    if (n6ShellFirst.Length == 0)
+    {
+        n6ShellFirst = n6Shell;
+    }
+    else if (!string.Equals(n6ShellFirst, n6Shell, StringComparison.Ordinal))
+    {
+        n6ShellIdentical = false;
+    }
+    n6ShellPinsOk &= n6Shell.Contains("registerWindowDecorSink") &&
+        n6Shell.Contains("applyWindowDecor(decorWindow, op)") &&
+        n6Shell.Contains("win.setWindowDecorVisible(false)") &&
+        n6Shell.Contains("win.setWindowDecorVisible(true)") &&
+        n6Shell.Contains("win.startMoving()") &&
+        n6Shell.Contains("this.hostContext().terminateSelf()") &&
+        n6Shell.Contains("canIUse('SystemCapability.Window.SessionManager')");
+}
+bool n6SourceOk = n6ShellPinsOk && n6ShellIdentical &&
+    n6DecorSource.Contains("EntryPoint = \"ohos_host_window_decor\"") &&
+    n6DecorSource.Contains("OpRequestAppManaged = 4") &&
+    n6DecorSource.Contains("OpProbe = 6") &&
+    n6HostSource.Contains("ohos_host_window_decor") &&
+    n6HostSource.Contains("registerWindowDecorSink") &&
+    n6HostSource.Contains("g_window_decor_sink.tsfn != nullptr") &&
+    n6ExportsSource.Contains("ohos_host_window_decor");
+Console.WriteLine($"[verify] n6 decor source managed={n6DecorSource.Length > 0} host={n6HostSource.Contains("ohos_host_window_decor")} shellPins={n6ShellPinsOk} identical={n6ShellIdentical} assert={n6SourceOk}");
+if (!n6SourceOk)
+{
+    throw new InvalidOperationException("the N6 window-decoration contract (managed bridge, host export/sink, shell sink) is missing or drifted");
+}
+var n6Window = new Microsoft.Maui.Controls.Window(new ContentPage
+{
+    BackgroundColor = Colors.DarkSlateBlue,
+    Content = new VerticalStackLayout { Children = { new Label { Text = "N6 body" } } },
+});
+OpenHarmonyHandlerConnector.Connect(n6Window);
+var n6Bar = new TitleBar { Title = "N6 title", HeightRequest = 56 };
+n6Window.TitleBar = n6Bar;
+var n6Renderer = app.Services.GetRequiredService<OpenHarmonyWindowRenderer>();
+var n6Page = n6Window.Page;
+n6Renderer.Render(n6Page, 300, 200);
+var n6Row = ((OpenHarmonyWindowHandler)n6Window.Handler!).TitleBar!;
+bool n6GatedOff = !n6Row.ShowsSystemButtons && n6Row.HitSystemButton(277, 28) is null;
+OpenHarmonyWindowDecoration.AvailabilityOverride = true;
+bool n6GatedOn = n6Row.ShowsSystemButtons &&
+    n6Row.HitSystemButton(277, 28) == OpenHarmonyWindowDecorCommand.Close &&
+    n6Row.HitSystemButton(231, 28) == OpenHarmonyWindowDecorCommand.ToggleMaximize &&
+    n6Row.HitSystemButton(185, 28) == OpenHarmonyWindowDecorCommand.Minimize;
+Console.WriteLine($"[verify] n6 decor gating off={n6GatedOff} on={n6GatedOn} assert={n6GatedOff && n6GatedOn}");
+if (!(n6GatedOff && n6GatedOn))
+{
+    throw new InvalidOperationException("the N6 caption buttons are not gated on the shell's decor availability");
+}
+var n6Commands = new List<OpenHarmonyWindowDecorCommand>();
+OpenHarmonyWindowDecoration.CommandOverride = command =>
+{
+    n6Commands.Add(command);
+    return true;
+};
+n6Renderer.HandleTouch(n6Page, true, false, 277, 28);
+bool n6CloseHandled = n6Renderer.HandleTouch(n6Page, false, true, 277, 28);
+bool n6CloseOk = n6CloseHandled && n6Commands.Count == 1 && n6Commands[0] == OpenHarmonyWindowDecorCommand.Close;
+n6Renderer.HandleTouch(n6Page, true, false, 185, 28);
+n6Renderer.HandleTouch(n6Page, false, true, 120, 28);
+bool n6CanceledOk = n6Commands.Count == 1;
+n6Renderer.HandleTouch(n6Page, true, false, 231, 28);
+n6Renderer.HandleTouch(n6Page, false, true, 231, 28);
+bool n6MaximizeOk = n6Commands.Count == 2 && n6Commands[1] == OpenHarmonyWindowDecorCommand.ToggleMaximize;
+Console.WriteLine($"[verify] n6 decor buttons close={n6CloseOk} canceledRelease={n6CanceledOk} maximize={n6MaximizeOk} commands=[{string.Join(",", n6Commands)}] assert={n6CloseOk && n6CanceledOk && n6MaximizeOk}");
+if (!(n6CloseOk && n6CanceledOk && n6MaximizeOk))
+{
+    throw new InvalidOperationException("the N6 caption buttons do not dispatch minimize/maximize/close with release-inside semantics");
+}
+int n6ButtonClicks = 0;
+var n6ContentButton = new Button { Text = "N6 action", FontSize = 14 };
+n6ContentButton.Clicked += (_, _) => n6ButtonClicks++;
+n6Bar.Content = n6ContentButton;
+OpenHarmonyView? n6ButtonView = null;
+var n6Settle = System.Diagnostics.Stopwatch.StartNew();
+while (n6ButtonView is null && n6Settle.ElapsedMilliseconds < 3000)
+{
+    await Task.Delay(20);
+    n6Renderer.Render(n6Page, 300, 200);
+    n6ButtonView = n6ContentButton.Handler?.PlatformView as OpenHarmonyView;
+}
+// The band press (left of the content button) starts the move; the template button then keeps
+// its own input: one click and no further move command.
+n6Renderer.HandleTouch(n6Page, true, false, 60, 46);
+n6Renderer.HandleTouch(n6Page, false, true, 60, 46);
+bool n6DragOk = n6Commands.Count == 3 && n6Commands[2] == OpenHarmonyWindowDecorCommand.StartMoving;
+int n6CommandsAfterDrag = n6Commands.Count;
+if (n6ButtonView is not null)
+{
+    // The caption band claims the trailing edge, so tap the content button left of it.
+    float n6ButtonTapX = (float)Math.Min(n6ButtonView.Frame.X + 20, 150);
+    TapPlatform(n6Renderer, n6Page,
+        new RectF(n6ButtonTapX, (float)(n6ButtonView.Frame.Y + n6ButtonView.Frame.Height / 2), 2, 2));
+}
+bool n6ButtonOk = n6ButtonClicks == 1 && n6Commands.Count == n6CommandsAfterDrag;
+Console.WriteLine($"[verify] n6 decor drag band={n6DragOk} buttonClicks={n6ButtonClicks} button={n6ButtonView?.Frame} commands=[{string.Join(",", n6Commands)}] assert={n6DragOk && n6ButtonOk}");
+if (!(n6DragOk && n6ButtonOk))
+{
+    throw new InvalidOperationException("the N6 title-band drag mapping drifted (start moving / interactive content)");
+}
+n6Bar.FlowDirection = FlowDirection.RightToLeft;
+n6Renderer.Render(n6Page, 300, 200);
+bool n6RtlOk = n6Row.HitSystemButton(23, 28) == OpenHarmonyWindowDecorCommand.Close &&
+    n6Row.HitSystemButton(69, 28) == OpenHarmonyWindowDecorCommand.ToggleMaximize &&
+    n6Row.HitSystemButton(115, 28) == OpenHarmonyWindowDecorCommand.Minimize &&
+    n6Row.HitSystemButton(277, 28) is null;
+Console.WriteLine($"[verify] n6 decor rtl buttons mirrored={n6RtlOk} assert={n6RtlOk}");
+if (!n6RtlOk)
+{
+    throw new InvalidOperationException("the N6 caption buttons did not mirror to the right-to-left leading edge");
+}
+OpenHarmonyWindowDecoration.AvailabilityOverride = null;
+OpenHarmonyWindowDecoration.CommandOverride = null;
+n6Window.TitleBar = null;
 
 // N4: the Window.TitleBar row joins the accessibility shadow tree. The row is a logical child
 // of the window, not of the page the render walk starts from, so the shadow-tree walk seeds it

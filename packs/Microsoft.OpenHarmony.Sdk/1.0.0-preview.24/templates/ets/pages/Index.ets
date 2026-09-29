@@ -2113,6 +2113,59 @@ struct Index {
     });
   }
 
+  // Window decorations (N6): ops pushed by the managed Window.TitleBar row - 0 minimize,
+  // 1 maximize/restore toggle, 2 close, 3 start moving, 4 hide the shell decor (the app row
+  // takes the caption over), 5 restore the shell decor. The window's own status decides the
+  // toggle; every rejection is logged and leaves the window as it was. setWindowDecorVisible
+  // throws synchronously on a runtime without the SessionManager syscap, which the sink gate
+  // already filters out; the try/catch keeps a device change from breaking the page.
+  private applyWindowDecor(win: window.Window, op: number): void {
+    switch (op) {
+      case 0:
+        win.minimize().catch((decorError: Error): void => {
+          this.logError(`[maui] window minimize failed: ${decorError.message}`);
+        });
+        break;
+      case 1:
+        if (win.getWindowStatus() === window.WindowStatusType.MAXIMIZE) {
+          win.recover().catch((decorError: Error): void => {
+            this.logError(`[maui] window restore failed: ${decorError.message}`);
+          });
+        } else {
+          win.maximize().catch((decorError: Error): void => {
+            this.logError(`[maui] window maximize failed: ${decorError.message}`);
+          });
+        }
+        break;
+      case 2:
+        this.hostContext().terminateSelf().catch((decorError: Error): void => {
+          this.logError(`[maui] window close failed: ${decorError.message}`);
+        });
+        break;
+      case 3:
+        win.startMoving().catch((decorError: Error): void => {
+          this.logError(`[maui] window move failed: ${decorError.message}`);
+        });
+        break;
+      case 4:
+        try {
+          win.setWindowDecorVisible(false);
+        } catch (decorError) {
+          this.logError(`[maui] hide window decor failed: ${(decorError as Error).message}`);
+        }
+        break;
+      case 5:
+        try {
+          win.setWindowDecorVisible(true);
+        } catch (decorError) {
+          this.logError(`[maui] show window decor failed: ${(decorError as Error).message}`);
+        }
+        break;
+      default:
+        break;
+    }
+  }
+
   // Screenshot path containment: canonicalize the requested output path and accept it only
   // when the canonical form stays under the app's temp or cache dir. '..' segments are rejected
   // outright, and every existing component below the matched root is lstat'ed, so a symlinked
@@ -3287,6 +3340,27 @@ struct Index {
         this.applyWindowRect(x, y, w, h);
       });
     });
+    // Window decorations (N6): the managed Window.TitleBar row takes the window's caption over.
+    // The sink is registered only when the runtime can actually hand it over - SessionManager
+    // present and the window not fullscreen - so a fullscreen phone window keeps its system
+    // decorations and the managed row's availability probe stays 0 (no caption buttons drawn,
+    // no decor hidden).
+    const decorSupported: boolean = typeof canIUse === 'function' &&
+      canIUse('SystemCapability.Window.SessionManager');
+    if (decorSupported) {
+      window.getLastWindow(this.hostContext()).then((decorWindow) => {
+        if (decorWindow.getWindowStatus() === window.WindowStatusType.FULL_SCREEN) {
+          return;
+        }
+        this.hostCall('registerWindowDecorSink', typeof host !== 'undefined' && typeof host.registerWindowDecorSink === 'function', (): void => {
+          host.registerWindowDecorSink((op: number): void => {
+            this.applyWindowDecor(decorWindow, op);
+          });
+        });
+      }).catch((decorWindowError: Error): void => {
+        this.logError(`[maui] window decor window unavailable: ${decorWindowError.message}`);
+      });
+    }
     // Screenshot (Window handler): a one-way request carrying an app-owned output path.
     this.hostCall('registerScreenshotSink', typeof host !== 'undefined' && typeof host.registerScreenshotSink === 'function', (): void => {
       host.registerScreenshotSink(async (outPath: string): Promise<void> => {
