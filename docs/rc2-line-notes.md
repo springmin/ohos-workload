@@ -55,7 +55,8 @@ RID `openharmony-arm64`；workload `openharmony 1.0.0-preview.28/11.0.100-rc.2`�
    （`IsOSPlatform("openharmony")` 语义不变），同时接受 **`LINUX` 别名**（macOS 同款手法），
    并令 `IsLinux()` 为真（`OperatingSystem.cs`，runtime `fix/ohos-rc2` = `417ab220532`；
    MSBuild 侧 `s_isUnixLike = IsLinux || IsOSX || IsBSD || IsHaiku` 已源码核验）。
-   CI 验证 run 36552629066 进行中；设备复测待新 SDK。
+   CI 验证 run 36552629066 全绿（冷 57m33s）；**设备实证 ✓**：`OS Platform:
+   Linux`、探针 `IsOSPlatform(Linux)=True`、`Exec` rc=0（基线为 False + MSB3073）。
    在此之前，设备本地 AOT 构建（selfsign/bundle 重打）不可用，请用**安装器回退签名**与
    **CI 侧**构建路径。
 
