@@ -1,5 +1,7 @@
 #!/usr/bin/env node
-// Unit test for the rawfile path validator of the ArkWeb host page (SEC-SCAN-3 S3-AW1).
+// Unit test for the rawfile path validator of the ArkWeb host page (SEC-SCAN-3 S3-AW1) and
+// its FIX-BLZ-PATH namespace contract: validation on resources/rawfile/blazor/,
+// resolution to the rawfile-relative API path blazor/<path>.
 //
 // The block between the `>>> rawfile-path` and `<<< rawfile-path` sentinels in
 // project/entry/src/main/ets/pages/Index.ets is copied verbatim into a temp .ts file and
@@ -13,7 +15,10 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const INDEX_ETS = join(HERE, '..', 'project', 'entry', 'src', 'main', 'ets', 'pages', 'Index.ets');
-const PREFIX = 'resources/rawfile/blazor/';
+// FIX-BLZ-PATH: the validator judges the request against the resources/rawfile/blazor/
+// boundary, but must return the rawfile-relative API namespace blazor/<path> that
+// getRawFileContentSync accepts.
+const API_PREFIX = 'blazor/';
 
 if (!process.features.typescript) {
   console.error(`FAIL: this test needs node with TypeScript type stripping (>= 23.6), got ${process.version}`);
@@ -58,17 +63,18 @@ const MALICIOUS = [
 ];
 
 // Legal requests must keep working unchanged: the site assets, SPA routes, percent-encoded
-// names and the normalizing forms the browser may emit.
+// names and the normalizing forms the browser may emit. The expected values are the API
+// namespace (blazor/...), never the resources/rawfile/ boundary spelling (FIX-BLZ-PATH).
 const LEGAL = [
-  ['origin root -> app shell', '', PREFIX + 'index.html'],
-  ['app shell', 'index.html', PREFIX + 'index.html'],
-  ['framework asset', '_framework/blazor.webassembly.js', PREFIX + '_framework/blazor.webassembly.js'],
-  ['encoded space', '_content/Lib/file%20name.js', PREFIX + '_content/Lib/file name.js'],
-  ['SPA route (rawfile lookup may miss)', 'counter', PREFIX + 'counter'],
-  ['dot segment normalized away', 'a/./b', PREFIX + 'a/b'],
-  ['empty segment normalized away', 'a//b', PREFIX + 'a/b'],
-  ['encoded letters', '%41%42.html', PREFIX + 'AB.html'],
-  ['literal percent after one decode', '100%25.txt', PREFIX + '100%.txt'],
+  ['origin root -> app shell', '', API_PREFIX + 'index.html'],
+  ['app shell', 'index.html', API_PREFIX + 'index.html'],
+  ['framework asset', '_framework/blazor.webassembly.js', API_PREFIX + '_framework/blazor.webassembly.js'],
+  ['encoded space', '_content/Lib/file%20name.js', API_PREFIX + '_content/Lib/file name.js'],
+  ['SPA route (rawfile lookup may miss)', 'counter', API_PREFIX + 'counter'],
+  ['dot segment normalized away', 'a/./b', API_PREFIX + 'a/b'],
+  ['empty segment normalized away', 'a//b', API_PREFIX + 'a/b'],
+  ['encoded letters', '%41%42.html', API_PREFIX + 'AB.html'],
+  ['literal percent after one decode', '100%25.txt', API_PREFIX + '100%.txt'],
 ];
 
 let failures = 0;
@@ -94,12 +100,31 @@ for (const [label, input, want] of LEGAL) {
   check(got === want, `resolves ${label} (${JSON.stringify(input)})`, `got ${JSON.stringify(got)}, want ${JSON.stringify(want)}`);
 }
 
-// Source pins: the regression contract that the validator stays wired into serveFile and the
-// SEC-SCAN-3 headers stay on every served asset (S3-AW1 + S3-AW2).
+// FIX-BLZ-PATH namespace contract: every returned value must be the rawfile-relative API
+// path (start with blazor/) and must never carry the resources/rawfile/ boundary spelling
+// that getRawFileContentSync rejects.
+for (const [label, input] of LEGAL) {
+  const got = resolveRawfilePath(input);
+  const namespaced = typeof got === 'string' && got.startsWith(API_PREFIX) && !got.includes('resources/rawfile/');
+  check(namespaced, `API namespace for ${label} (${JSON.stringify(input)})`,
+    `got ${JSON.stringify(got)}, want a string starting with ${JSON.stringify(API_PREFIX)} without "resources/rawfile/"`);
+}
+// The SPA fallback constant is the same API namespace.
+check(String(resolveRawfilePath('')).startsWith(API_PREFIX), 'app shell fallback is in the API namespace',
+  `got ${JSON.stringify(resolveRawfilePath(''))}`);
+
+// Source pins: the regression contract that the validator stays wired into serveFile, keeps
+// the resources/rawfile/blazor/ boundary judgment, returns the rawfile-relative API namespace
+// (FIX-BLZ-PATH) and keeps the SEC-SCAN-3 headers on every served asset (S3-AW1 + S3-AW2).
 const PINS = [
   ['validator wired into serveFile', 'resolveRawfilePath(path)'],
   ['rejection answers 404', 'return this.errorResponse(404);'],
   ['shell fallback uses the validated constant', 'resolved = INDEX_FILE;'],
+  ['boundary check stays on resources/rawfile/blazor/', 'boundary.indexOf(RAWFILE_PREFIX) !== 0'],
+  ['validator returns the API namespace', "return RAWFILE_API_DIR + kept.join('/')"],
+  ['API namespace is the rawfile root', "const RAWFILE_API_DIR = 'blazor/'"],
+  ['API shell constant', 'const INDEX_FILE = RAWFILE_API_DIR +'],
+  ['rawfile read uses the validated path verbatim', 'return manager.getRawFileContentSync(path);'],
   ['nosniff header', "headerKey: 'X-Content-Type-Options'"],
   ['CSP header', "headerKey: 'Content-Security-Policy'"],
   ['CSP minimal baseline', "default-src 'self'"],

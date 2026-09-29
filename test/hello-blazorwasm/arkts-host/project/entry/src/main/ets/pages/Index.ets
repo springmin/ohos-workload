@@ -13,7 +13,10 @@
 //
 // Security: every request path is validated before it reaches the resource manager
 // (resolveRawfilePath below: decoded-encoding, '..'/backslash/NUL/absolute rejection, and a
-// final resources/rawfile/blazor/ prefix check; violations are a bare 404). Served assets
+// final check that the normalized path still resolves under resources/rawfile/blazor/;
+// violations are a bare 404). The validator judges the boundary spelling
+// (resources/rawfile/blazor/<path>) but returns the rawfile-relative API path
+// (blazor/<path>), which is what ResourceManager.getRawFileContentSync accepts. Served assets
 // carry X-Content-Type-Options: nosniff, Vary: Accept-Encoding and Cache-Control: no-cache,
 // and the HTML shell carries a minimal CSP (SEC-SCAN-3 S3-AW1/S3-AW2). The validator is
 // extracted and unit-tested by test/rawfile-path.test.mjs.
@@ -52,8 +55,15 @@ const CONTENT_SECURITY_POLICY = "default-src 'self'; script-src 'self' 'wasm-uns
 // NUL ('%00') and an absolute path is judged on decoded text. '.' and empty segments are
 // normalized away, '..' is rejected outright, and the result must still sit under
 // resources/rawfile/blazor/ (the prefix check is the final belt-and-braces).
+//
+// Namespaces (FIX-BLZ-PATH): the check runs on the full boundary spelling
+// resources/rawfile/blazor/<path>, but the value handed to the resource manager is the
+// rawfile-relative API path blazor/<path> — getRawFileContentSync rejects the
+// 'resources/rawfile/' prefix (every read failed on device when the SEC-SCAN-3 refactor
+// returned the boundary spelling), while 'blazor/<path>' is what the pre-refactor host used.
 const RAWFILE_PREFIX = 'resources/rawfile/blazor/';
-const INDEX_FILE = RAWFILE_PREFIX + 'index.html';
+const RAWFILE_API_DIR = 'blazor/';
+const INDEX_FILE = RAWFILE_API_DIR + 'index.html';
 
 function hasEscapeSequence(text: string): boolean {
   for (let i: number = 0; i + 2 < text.length; i++) {
@@ -93,8 +103,11 @@ function decodePathFully(path: string): string | undefined {
   return hasEscapeSequence(current) ? undefined : current;
 }
 
-// Maps a request path to the rawfile-relative asset path, or undefined when the request must
-// be rejected. An empty path (the origin root) becomes the app shell.
+// Maps a request path to the rawfile-relative API asset path (blazor/<path>), or undefined
+// when the request must be rejected. An empty path (the origin root) becomes the app shell.
+// The security judgment is made on the boundary spelling
+// (resources/rawfile/blazor/<path>); the returned value stays rawfile-relative so it can go
+// straight to getRawFileContentSync (FIX-BLZ-PATH).
 function resolveRawfilePath(path: string): string | undefined {
   const decoded: string | undefined = decodePathFully(path);
   if (decoded === undefined) {
@@ -118,11 +131,11 @@ function resolveRawfilePath(path: string): string | undefined {
   if (kept.length === 0) {
     return INDEX_FILE;
   }
-  const candidate: string = RAWFILE_PREFIX + kept.join('/');
-  if (candidate.indexOf(RAWFILE_PREFIX) !== 0 || candidate.indexOf('/../') >= 0) {
+  const boundary: string = RAWFILE_PREFIX + kept.join('/');
+  if (boundary.indexOf(RAWFILE_PREFIX) !== 0 || boundary.indexOf('/../') >= 0) {
     return undefined;
   }
-  return candidate;
+  return RAWFILE_API_DIR + kept.join('/');
 }
 // <<< rawfile-path
 
@@ -207,8 +220,9 @@ struct Index {
     return this.rawFiles;
   }
 
-  // path is already an absolute rawfile path (resources/rawfile/...), produced only by
-  // resolveRawfilePath.
+  // path is the rawfile-relative API path (blazor/<...>), produced only by
+  // resolveRawfilePath; getRawFileContentSync does not accept a resources/rawfile/ prefix
+  // (FIX-BLZ-PATH).
   private readRawFile(manager: resourceManager.ResourceManager, path: string): Uint8Array | undefined {
     try {
       return manager.getRawFileContentSync(path);
