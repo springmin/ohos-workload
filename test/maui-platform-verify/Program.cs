@@ -12,7 +12,7 @@ using Microsoft.Maui.Platform;
 // after the fuzz tail) instead of letting every caller repeat its own threshold constant.
 VerifyLineCountingWriter verifyStdout = new(Console.Out);
 Console.SetOut(verifyStdout);
-const int verifyCheckTotal = 478;                     // documented full [verify] line count (+4 MS-MODE runtime mode switch, +10 P2c-DEEPLINK, +4 P2b-IMG, +16 P1b-LIST, +10 P1a-ANIM, +2 SEC3 storage/deep-link pins, +5 W-series WebView wiring, +3 T1 InputView mapping, +4 T2 WebView gaps, +4 T3 GraphicsView interaction, +7 T10 modal accessibility, +4 T4 Label formatted text, +4 T5 layout semantics, +6 T7 DatePicker calendar/min-max, +4 T9 window title bar, +4 T11 diagnostics overlay, +1 N2 empty ContentPage arrangement, +6 T8 TableView, +7 T6 RTL flow direction, +5 T22 MainThread bridge, +2 FIX-TABBED tabbed CurrentPage, +4 T13 group footer view/N3 picker IsOpen, +5 T21 system font scale, +2 A11Y-TABBED tabbed accessibility, +3 N1 host multi-pointer, +5 T12 CarouselView group slides)
+const int verifyCheckTotal = 485;                     // documented full [verify] line count (+4 MS-MODE runtime mode switch, +10 P2c-DEEPLINK, +4 P2b-IMG, +16 P1b-LIST, +10 P1a-ANIM, +2 SEC3 storage/deep-link pins, +5 W-series WebView wiring, +3 T1 InputView mapping, +4 T2 WebView gaps, +4 T3 GraphicsView interaction, +7 T10 modal accessibility, +4 T4 Label formatted text, +4 T5 layout semantics, +6 T7 DatePicker calendar/min-max, +4 T9 window title bar, +4 T11 diagnostics overlay, +1 N2 empty ContentPage arrangement, +6 T8 TableView, +7 T6 RTL flow direction, +5 T22 MainThread bridge, +2 FIX-TABBED tabbed CurrentPage, +4 T13 group footer view/N3 picker IsOpen, +5 T21 system font scale, +2 A11Y-TABBED tabbed accessibility, +3 N1 host multi-pointer, +5 T12 CarouselView group slides, +7 T14 rich shell flyout)
 const int verifyCheckFloor = verifyCheckTotal - 20;   // documented floor convention (total - 20)
 
 // A small image file for the Image handler.
@@ -800,6 +800,115 @@ if (shell.Handler?.PlatformView is OpenHarmonyView shellPlatform)
     rendererForShell.HandleTouch(shell, true, false, 900, 600);
     rendererForShell.HandleTouch(shell, false, true, 900, 600);
     Console.WriteLine($"[verify] shell after outside tap open={shellPlatform.FlyoutOpen}");
+}
+
+// T14: Shell rich flyout. A View/DataTemplate FlyoutHeader/Footer and Shell.ItemTemplate rows
+// are materialized as real views: measured/arranged into the drawer panel (FlyoutRows), drawn
+// by the renderer and touch-routed (row content first, row -> item selection as the fallback).
+int t14Pings = 0;
+string t14PingItem = "<none>";
+var t14Header = new Grid { HeightRequest = 64, BackgroundColor = Colors.Teal };
+t14Header.Children.Add(new Label { Text = "HDR", FontSize = 20 });
+var t14Footer = new Grid { HeightRequest = 40, BackgroundColor = Colors.DarkSlateGray };
+t14Footer.Children.Add(new Label { Text = "FTR", FontSize = 16 });
+var t14ItemTemplate = new DataTemplate(() =>
+{
+    var title = new Label { FontSize = 22 };
+    title.SetBinding(Label.TextProperty, "Title");
+    var ping = new Button { Text = "Ping", HeightRequest = 44 };
+    ping.Clicked += (_, _) =>
+    {
+        t14Pings++;
+        t14PingItem = title.Text ?? "<none>";
+    };
+    return new VerticalStackLayout { Spacing = 2, Children = { title, ping } };
+});
+var t14Shell = new Shell { Title = "T14Shell" };
+t14Shell.Items.Add(new ShellContent { Title = "Alpha", ContentTemplate = new DataTemplate(() => new ContentPage { Title = "Alpha", Content = new Label { Text = "alpha" } }) });
+t14Shell.Items.Add(new ShellContent { Title = "Beta", ContentTemplate = new DataTemplate(() => new ContentPage { Title = "Beta", Content = new Label { Text = "beta" } }) });
+t14Shell.FlyoutHeader = t14Header;
+t14Shell.FlyoutFooter = t14Footer;
+t14Shell.ItemTemplate = t14ItemTemplate;
+OpenHarmonyHandlerConnector.ConnectTree(t14Shell);
+t14Shell.Measure(1080, 1920);
+t14Shell.Arrange(new Rect(0, 0, 1080, 1920));
+var t14Platform = (OpenHarmonyView)t14Shell.Handler!.PlatformView!;
+OpenHarmonyView? t14PanelDrawn = null;
+int t14RichDrawn = -1;
+OpenHarmonyWindowRenderer.FlyoutPanelDrawn = (panel, rich) =>
+{
+    t14PanelDrawn = panel;
+    t14RichDrawn = rich;
+};
+rendererForShell.HandleTouch(t14Shell, true, false, 20, 20);
+rendererForShell.HandleTouch(t14Shell, false, true, 20, 20);
+rendererForShell.Render(t14Shell, 1080, 1920);
+OpenHarmonyWindowRenderer.FlyoutPanelDrawn = null;
+List<OpenHarmonyFlyoutRow> t14Rows = t14Platform.FlyoutRows;
+string t14RowText(OpenHarmonyFlyoutRow row) => row.View is Microsoft.Maui.Controls.Layout layout
+    ? string.Join("|", layout.Children.OfType<Label>().Select(l => l.Text ?? ""))
+    : row.Text ?? "";
+bool t14RowsOk = t14Rows.Count == 4 &&
+    ReferenceEquals(t14Rows[0].View, t14Header) && t14Rows[0].ItemIndex == -1 &&
+    t14Rows[1].View is VerticalStackLayout && t14Rows[1].ItemIndex == 0 &&
+    t14Rows[2].View is VerticalStackLayout && t14Rows[2].ItemIndex == 1 &&
+    ReferenceEquals(t14Rows[3].View, t14Footer) && t14Rows[3].ItemIndex == -1 &&
+    t14Rows[0].PanelIndex == 0 && t14Rows[1].PanelIndex == 1 && t14Rows[2].PanelIndex == 2 && t14Rows[3].PanelIndex == 3;
+Console.WriteLine($"[verify] t14 flyout rows={t14Rows.Count} kinds=[{string.Join(",", t14Rows.Select(r => r.View?.GetType().Name ?? "text:" + r.Text))}] items=[{t14Rows[0].ItemIndex},{t14Rows[1].ItemIndex},{t14Rows[2].ItemIndex},{t14Rows[3].ItemIndex}] panelIndex=[{t14Rows[0].PanelIndex},{t14Rows[1].PanelIndex},{t14Rows[2].PanelIndex},{t14Rows[3].PanelIndex}] ok={t14RowsOk}");
+bool t14FramesOk = t14RowsOk &&
+    Math.Abs(t14Rows[0].Frame.Y - 16) < 0.5 && t14Rows[0].Frame.Height >= 64 &&
+    Math.Abs(t14Rows[1].Frame.Y - (t14Rows[0].Frame.Y + t14Rows[0].Frame.Height + 8)) < 0.5 &&
+    t14Rows[2].Frame.Y > t14Rows[1].Frame.Y && t14Rows[2].Frame.Y < t14Rows[3].Frame.Y &&
+    t14Rows.All(r => r.Frame.X >= 20 && r.Frame.Right <= 320 && r.Frame.Height > 0) &&
+    t14Rows[2].View!.Frame.Height >= 44;
+Console.WriteLine($"[verify] t14 flyout frames header={t14Rows[0].Frame} item0={t14Rows[1].Frame} item1={t14Rows[2].Frame} footer={t14Rows[3].Frame} ok={t14FramesOk}");
+bool t14BindingsOk = t14RowsOk && t14RowText(t14Rows[1]) == "Alpha" && t14RowText(t14Rows[2]) == "Beta" &&
+    ReferenceEquals(t14Rows[1].View!.BindingContext, t14Shell.Items[0]) &&
+    ReferenceEquals(t14Rows[2].View!.BindingContext, t14Shell.Items[1]);
+Console.WriteLine($"[verify] t14 flyout item template texts=[{t14RowText(t14Rows[1])},{t14RowText(t14Rows[2])}] bound={ReferenceEquals(t14Rows[1].View!.BindingContext, t14Shell.Items[0])}/{ReferenceEquals(t14Rows[2].View!.BindingContext, t14Shell.Items[1])} ok={t14BindingsOk}");
+bool t14DrawnOk = ReferenceEquals(t14PanelDrawn, t14Platform) && t14RichDrawn == 4;
+Console.WriteLine($"[verify] t14 flyout panel drawn={ReferenceEquals(t14PanelDrawn, t14Platform)} richRows={t14RichDrawn} ok={t14DrawnOk}");
+// Tap the Beta row (its label area, above the button): the flat row -> item selection fallback
+// must switch the shell item and close the drawer.
+Rect t14BetaRow = new(t14Rows[2].Frame.X, t14Rows[2].Frame.Y, t14Rows[2].Frame.Width, t14Rows[2].Frame.Height);
+rendererForShell.HandleTouch(t14Shell, true, false, (float)(t14BetaRow.X + 12), (float)(t14BetaRow.Y + 6));
+rendererForShell.HandleTouch(t14Shell, false, true, (float)(t14BetaRow.X + 12), (float)(t14BetaRow.Y + 6));
+bool t14RowTapOk = ReferenceEquals(t14Shell.CurrentItem, t14Shell.Items[1]) && !t14Platform.FlyoutOpen;
+Console.WriteLine($"[verify] t14 flyout item tap selected='{t14Shell.CurrentItem?.Title}' open={t14Platform.FlyoutOpen} ok={t14RowTapOk}");
+// The button inside an item template owns its tap: Clicked fires and the row selection/dismiss
+// fallback stays out of the way.
+rendererForShell.HandleTouch(t14Shell, true, false, 20, 20);
+rendererForShell.HandleTouch(t14Shell, false, true, 20, 20);
+rendererForShell.Render(t14Shell, 1080, 1920);
+var t14AlphaButton = (Button)((Microsoft.Maui.Controls.Layout)t14Platform.FlyoutRows[1].View!).Children[1];
+Rect t14ButtonFrame = t14AlphaButton.Frame;
+rendererForShell.HandleTouch(t14Shell, true, false, (float)(t14ButtonFrame.X + t14ButtonFrame.Width / 2), (float)(t14ButtonFrame.Y + t14ButtonFrame.Height / 2));
+rendererForShell.HandleTouch(t14Shell, false, true, (float)(t14ButtonFrame.X + t14ButtonFrame.Width / 2), (float)(t14ButtonFrame.Y + t14ButtonFrame.Height / 2));
+bool t14ButtonOk = t14Pings == 1 && t14PingItem == "Alpha" &&
+    ReferenceEquals(t14Shell.CurrentItem, t14Shell.Items[1]) && t14Platform.FlyoutOpen;
+Console.WriteLine($"[verify] t14 flyout button tap clicks={t14Pings} from='{t14PingItem}' selected='{t14Shell.CurrentItem?.Title}' open={t14Platform.FlyoutOpen} ok={t14ButtonOk}");
+// A DataTemplate section: Shell creates the content (its BindingContext inherits from the
+// Shell), so the resolved header view is materialized as the leading row and its bindings
+// resolve against the shell.
+t14Shell.FlyoutHeader = null;
+t14Shell.FlyoutHeaderTemplate = new DataTemplate(() =>
+{
+    var label = new Label { FontSize = 24 };
+    label.SetBinding(Label.TextProperty, "Title");
+    return label;
+});
+t14Platform.ChromeRefresh?.Invoke();
+View? t14TemplateHeader = t14Platform.FlyoutRows.Count > 0 ? t14Platform.FlyoutRows[0].View : null;
+bool t14TemplateHeaderOk = (t14TemplateHeader as Label)?.Text == "T14Shell" &&
+    ReferenceEquals(t14TemplateHeader?.BindingContext, t14Shell);
+Console.WriteLine($"[verify] t14 flyout template header type={t14TemplateHeader?.GetType().Name} text='{(t14TemplateHeader as Label)?.Text}' ctxShell={ReferenceEquals(t14TemplateHeader?.BindingContext, t14Shell)} ok={t14TemplateHeaderOk}");
+t14Shell.FlyoutHeaderTemplate = null;
+t14Shell.FlyoutHeader = t14Header;
+if (!(t14RowsOk && t14FramesOk && t14BindingsOk && t14DrawnOk && t14RowTapOk && t14ButtonOk && t14TemplateHeaderOk))
+{
+    throw new InvalidOperationException(
+        $"the T14 rich shell flyout is missing or drifted: rows={t14RowsOk} frames={t14FramesOk} bindings={t14BindingsOk} " +
+        $"drawn={t14DrawnOk} rowTap={t14RowTapOk} button={t14ButtonOk} templateHeader={t14TemplateHeaderOk}");
 }
 
 // W22-13: Essentials (Preferences + FileSystem).
