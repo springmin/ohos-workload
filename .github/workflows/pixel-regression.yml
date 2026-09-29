@@ -39,7 +39,7 @@ on:
         description: 'maui-ohos commit SHA to compile (defaults to the pinned feature/openharmony tip)'
         required: false
         type: string
-        default: '843a6c7cd258742e9903d49a9c988bc79032ea17'
+        default: '93ba1cc3a9a795fcdbef8d48a5dc2d5ae49c32d0'
 
 # Least privilege: the job only reads this repository and the public springmin/maui-ohos fork;
 # no step pushes anywhere.
@@ -48,17 +48,19 @@ permissions:
 
 # Reproducible cross-repo compile: the MAUI slice is checked out at an exact commit, not the
 # mutable feature/openharmony branch, so a push to the fork cannot change what this gate compiles.
-# The default is the feature/openharmony tip: 843a6c7c (the T7 DatePicker month calendar with
-# Min/Max clamping, the T11 diagnostics overlay and its adorners 89e41efa and the T9 window title
+# The default is the feature/openharmony tip: 93ba1cc3 (the T6 flow-direction (RTL) mirroring for
+# placement, drawing and hit-testing, the T8 TableView on the shared list pipeline 12a1971b and
+# the N2 empty-ContentPage placement fix f96d484b, on top of the T7 DatePicker month calendar
+# 843a6c7c, the T11 diagnostics overlay and its adorners 89e41efa and the T9 window title
 # bar 05935db3, on top of the T3 GraphicsView merge b6a58645, the T5 layout semantics c1c05f3d,
 # the T4 Label spans, the T10 modal accessibility overlay and the T1 InputView mapping dcc7eaac
 # + T2 WebView CookieContainer sync 8241f1b3, on top of the W-series webview wiring d6325990 and
 # the SEC-SCAN-3 S3-DL3 dot-dot deep-link rejection, on top of the P2c deep-link routing, P2b-IMG,
 # P1b-LIST and P1a-ANIM batches).
-# The interaction harness pins 438 checks / floor 418; advance the pin in lockstep with the
+# The interaction harness pins 452 checks / floor 432; advance the pin in lockstep with the
 # interaction gate and change it deliberately (workflow_dispatch can compile any other commit SHA).
 env:
-  MAUI_OHOS_REF: ${{ github.event.inputs.maui_ohos_ref || '843a6c7cd258742e9903d49a9c988bc79032ea17' }}
+  MAUI_OHOS_REF: ${{ github.event.inputs.maui_ohos_ref || '93ba1cc3a9a795fcdbef8d48a5dc2d5ae49c32d0' }}
   # Same as the interaction gate: keep the setup-dotnet preview SDK in a cacheable per-user path
   # instead of the runner's /usr/share/dotnet; a newer 11.0.x preview is still downloaded (the
   # action re-resolves the channel), the cache only skips the ~200 MB download when it moved.

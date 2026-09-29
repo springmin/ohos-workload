@@ -22,7 +22,7 @@ on:
         description: 'maui-ohos commit SHA to cross-check (defaults to the pinned slice tip)'
         required: false
         type: string
-        default: '843a6c7cd258742e9903d49a9c988bc79032ea17'
+        default: '93ba1cc3a9a795fcdbef8d48a5dc2d5ae49c32d0'
   push:
     branches: [ master ]
   pull_request:
@@ -32,16 +32,18 @@ permissions:
 
 # Reproducible cross-repo check: the slice is checked out at an exact commit, not the mutable
 # feature/openharmony branch, so a push to the fork cannot change what this gate verifies.
-# Current tip: 843a6c7c (the T7 DatePicker month calendar with Min/Max clamping, the T11
+# Current tip: 93ba1cc3 (the T6 flow-direction (RTL) mirroring for placement, drawing and
+# hit-testing, the T8 TableView on the shared list pipeline 12a1971b and the N2 empty-ContentPage
+# placement fix f96d484b, on top of the T7 DatePicker month calendar 843a6c7c, the T11
 # diagnostics overlay and its adorners 89e41efa and the T9 window title bar 05935db3, on top of
 # the T3 GraphicsView merge b6a58645, the T5 layout semantics c1c05f3d, the T4 Label spans, the
 # T10 modal accessibility overlay, the T1 InputView mapping dcc7eaac and T2 WebView CookieContainer
 # sync 8241f1b3, after the SEC-SCAN-3 webview + deep-link batch: the ArkWeb history/frame/cookie
-# handlers, the S3-DL3 dot-dot route rejection and the HUKS/keystore hardening; the T3/T4/T5/T10
-# and T9/T11/T7 batches add no host exports, so the host export contract is still 143/143).
+# handlers, the S3-DL3 dot-dot route rejection and the HUKS/keystore hardening; the T3/T4/T5/T10,
+# T9/T11/T7 and N2/T8/T6 batches add no host exports, so the host export contract is still 143/143).
 # Advance the pin deliberately, in lockstep with the interaction/pixel gates.
 env:
-  MAUI_OHOS_REF: ${{ github.event.inputs.maui_ohos_ref || '843a6c7cd258742e9903d49a9c988bc79032ea17' }}
+  MAUI_OHOS_REF: ${{ github.event.inputs.maui_ohos_ref || '93ba1cc3a9a795fcdbef8d48a5dc2d5ae49c32d0' }}
 
 jobs:
   contract:
