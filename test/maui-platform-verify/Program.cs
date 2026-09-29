@@ -12,7 +12,7 @@ using Microsoft.Maui.Platform;
 // after the fuzz tail) instead of letting every caller repeat its own threshold constant.
 VerifyLineCountingWriter verifyStdout = new(Console.Out);
 Console.SetOut(verifyStdout);
-const int verifyCheckTotal = 496;                     // documented full [verify] line count (+4 MS-MODE runtime mode switch, +10 P2c-DEEPLINK, +4 P2b-IMG, +16 P1b-LIST, +10 P1a-ANIM, +2 SEC3 storage/deep-link pins, +5 W-series WebView wiring, +3 T1 InputView mapping, +4 T2 WebView gaps, +4 T3 GraphicsView interaction, +7 T10 modal accessibility, +4 T4 Label formatted text, +4 T5 layout semantics, +6 T7 DatePicker calendar/min-max, +4 T9 window title bar, +4 T11 diagnostics overlay, +1 N2 empty ContentPage arrangement, +6 T8 TableView, +7 T6 RTL flow direction, +5 T22 MainThread bridge, +2 FIX-TABBED tabbed CurrentPage, +4 T13 group footer view/N3 picker IsOpen, +5 T21 system font scale, +2 A11Y-TABBED tabbed accessibility, +3 N1 host multi-pointer, +5 T12 CarouselView group slides, +7 T14 rich shell flyout, +2 FIX-SHELL shell CurrentPage, +2 A11Y-SHELL shell accessibility, +7 T15 rich Shell.TitleView)
+const int verifyCheckTotal = 498;                     // documented full [verify] line count (+4 MS-MODE runtime mode switch, +10 P2c-DEEPLINK, +4 P2b-IMG, +16 P1b-LIST, +10 P1a-ANIM, +2 SEC3 storage/deep-link pins, +5 W-series WebView wiring, +3 T1 InputView mapping, +4 T2 WebView gaps, +4 T3 GraphicsView interaction, +7 T10 modal accessibility, +4 T4 Label formatted text, +4 T5 layout semantics, +6 T7 DatePicker calendar/min-max, +4 T9 window title bar, +4 T11 diagnostics overlay, +1 N2 empty ContentPage arrangement, +6 T8 TableView, +7 T6 RTL flow direction, +5 T22 MainThread bridge, +2 FIX-TABBED tabbed CurrentPage, +4 T13 group footer view/N3 picker IsOpen, +5 T21 system font scale, +2 A11Y-TABBED tabbed accessibility, +3 N1 host multi-pointer, +5 T12 CarouselView group slides, +7 T14 rich shell flyout, +2 FIX-SHELL shell CurrentPage, +2 A11Y-SHELL shell accessibility, +7 T15 rich Shell.TitleView, +8 T16 structured menus)
 const int verifyCheckFloor = verifyCheckTotal - 20;   // documented floor convention (total - 20)
 
 // A small image file for the Image handler.
@@ -3215,10 +3215,12 @@ if (entry is not null)
     Console.WriteLine($"[verify] text composition preview={previewSet} cleared={previewCleared} commitCursor={commitCaret} virtual={entry.CursorPosition} assert={compositionOk}");
 }
 
-// Menus: the current page's MenuBarItems are published as a flat host table (begin/item/commit)
-// and a shell tap (host.notifyMenuAction -> internal OnMenuAction) activates the source item
-// through IMenuItemController. MenuFlyoutSubItems are flattened and MenuFlyoutSeparators are
-// skipped; an item is enabled only when its bar is enabled too.
+// Menus (T16): the current page's MenuBarItems are published as a structured host table
+// (begin/item_ex/commit): one bar row per MenuBarItem, one row per item/submenu header with its
+// nesting level and the owning bar's title. A shell tap (host.notifyMenuAction -> internal
+// OnMenuAction) activates the source item through IMenuItemController; bar/submenu headers never
+// activate. A host without ohos_host_menu_item_ex gets the legacy flat table (leaf rows only),
+// sharing one activation map.
 int menuClicks = 0;
 int menuCommands = 0;
 int menuDisabledClicks = 0;
@@ -3233,6 +3235,9 @@ menuFileBar.Add(menuOpen);
 var menuExport = new MenuFlyoutSubItem { Text = "Export" };
 menuExport.Add(new MenuFlyoutItem { Text = "PDF" });
 menuExport.Add(new MenuFlyoutItem { Text = "PNG", IsEnabled = false });
+var menuRecent = new MenuFlyoutSubItem { Text = "Recent" };
+menuRecent.Add(new MenuFlyoutItem { Text = "Today" });
+menuExport.Add(menuRecent);
 menuFileBar.Add(menuExport);
 menuPage.MenuBarItems.Add(menuFileBar);
 var menuEditBar = new MenuBarItem { Text = "Edit", IsEnabled = false };
@@ -3241,14 +3246,56 @@ menuUndo.Clicked += (_, _) => menuDisabledClicks++;
 menuEditBar.Add(menuUndo);
 menuPage.MenuBarItems.Add(menuEditBar);
 
+IReadOnlyList<OpenHarmonyMenuEntry> menuRows = OpenHarmonyMenus.Items;
 bool menuPublished = OpenHarmonyMenus.Refresh(menuPage);
-Console.WriteLine($"[verify] menus table count={OpenHarmonyMenus.Items.Count} order=[{string.Join("|", OpenHarmonyMenus.Items.Select(m => $"{m.Index}:{m.Text}"))}] nativePublished={menuPublished} (no host library off-device)");
-Console.WriteLine($"[verify] menus enabled=[{string.Join(",", OpenHarmonyMenus.Items.Select(m => m.IsEnabled ? "on" : "off"))}] depth=[{string.Join(",", OpenHarmonyMenus.Items.Select(m => m.Depth))}]");
+bool menuStructureOk = menuRows.Count == 10 &&
+    menuRows[0].Kind == OpenHarmonyMenuEntryKind.Bar && menuRows[0].Level == 0 &&
+    menuRows[0].Text == "File" && menuRows[0].Item is null && menuRows[0].BarTitle == "File" &&
+    menuRows[1].Kind == OpenHarmonyMenuEntryKind.Item && menuRows[1].Text == "New" &&
+    menuRows[1].Level == 1 && menuRows[1].BarTitle == "File" &&
+    menuRows[2].Text == "Open" && menuRows[2].Level == 1 &&
+    menuRows[3].Kind == OpenHarmonyMenuEntryKind.Submenu && menuRows[3].Text == "Export" && menuRows[3].Level == 1 &&
+    menuRows[4].Text == "PDF" && menuRows[4].Level == 2 &&
+    menuRows[5].Text == "PNG" && menuRows[5].Level == 2 &&
+    menuRows[6].Kind == OpenHarmonyMenuEntryKind.Submenu && menuRows[6].Text == "Recent" && menuRows[6].Level == 2 &&
+    menuRows[7].Text == "Today" && menuRows[7].Level == 3 &&
+    menuRows[8].Kind == OpenHarmonyMenuEntryKind.Bar && menuRows[8].Text == "Edit" && menuRows[8].Level == 0 &&
+    menuRows[9].Text == "Undo" && menuRows[9].Level == 1 && menuRows[9].BarTitle == "Edit" &&
+    menuRows.Select((m, i) => m.Index == i).All(ok => ok);
+Console.WriteLine($"[verify] menus structured rows={menuRows.Count} order=[{string.Join("|", menuRows.Select(m => $"{m.Index}:{m.Kind}:{m.Level}:{m.Text}"))}] published={menuPublished} (no host library off-device) assert={menuStructureOk}");
+if (!menuStructureOk)
+{
+    throw new InvalidOperationException("the structured menu table (bar/submenu/level rows) is missing or drifted");
+}
+bool menuEnabledOk = menuRows[0].IsEnabled && menuRows[1].IsEnabled && menuRows[2].IsEnabled &&
+    menuRows[3].IsEnabled && menuRows[4].IsEnabled && !menuRows[5].IsEnabled &&
+    menuRows[6].IsEnabled && menuRows[7].IsEnabled &&
+    !menuRows[8].IsEnabled && !menuRows[9].IsEnabled;
+Console.WriteLine($"[verify] menus structured enabled=[{string.Join(",", menuRows.Select(m => m.IsEnabled ? "on" : "off"))}] assert={menuEnabledOk}");
+if (!menuEnabledOk)
+{
+    throw new InvalidOperationException("the structured menu table dropped the enabled flags (bar/leaf gating)");
+}
+int menuCommandsBefore = menuCommands;
+int menuClicksBefore = menuClicks;
+bool menuBarActivated = OpenHarmonyMenus.OnMenuAction(0);
+bool menuHeaderActivated = OpenHarmonyMenus.OnMenuAction(3);
+bool menuNestedHeaderActivated = OpenHarmonyMenus.OnMenuAction(6);
+bool menuLeafActivated = OpenHarmonyMenus.OnMenuAction(1);
+bool menuOpenActivated = OpenHarmonyMenus.OnMenuAction(2);
+bool menuDisabledLeafActivated = OpenHarmonyMenus.OnMenuAction(9);
+bool menuActivateOk = !menuBarActivated && !menuHeaderActivated && !menuNestedHeaderActivated &&
+    menuLeafActivated && menuCommands == menuCommandsBefore + 1 &&
+    menuOpenActivated && menuClicks == menuClicksBefore + 1 &&
+    !menuDisabledLeafActivated && menuDisabledClicks == 0;
+Console.WriteLine($"[verify] menus activate bar={menuBarActivated} submenu={menuHeaderActivated}/{menuNestedHeaderActivated} command={menuLeafActivated} clicked={menuOpenActivated} disabledBlocked={!menuDisabledLeafActivated && menuDisabledClicks == 0} assert={menuActivateOk}");
+if (!menuActivateOk)
+{
+    throw new InvalidOperationException("the structured menu activation contract drifted (headers must not activate)");
+}
+// The managed publish intent is observable off-device: no host library means no native traffic,
+// while the snapshot still updates (WouldPublish stays false once the first call failed).
 Console.WriteLine($"[verify] menus publish intent wouldPublish={OpenHarmonyMenus.WouldPublish} lastPublished={OpenHarmonyMenus.LastPublishedCount} available={OpenHarmonyMenus.IsAvailable} (no host library off-device)");
-bool menuActivated = OpenHarmonyMenus.OnMenuAction(0);
-bool menuCommandActivated = OpenHarmonyMenus.OnMenuAction(1);
-bool menuDisabledActivated = OpenHarmonyMenus.OnMenuAction(4);
-Console.WriteLine($"[verify] menus activate click={menuActivated}/{menuClicks} command={menuCommandActivated}/{menuCommands} disabledBlocked={!menuDisabledActivated && menuDisabledClicks == 0}");
 
 // An unchanged table is not republished; a different page replaces it (page-change sync).
 int menuSkips = OpenHarmonyMenus.RefreshesSkipped;
@@ -3260,7 +3307,9 @@ menuZoom.Clicked += (_, _) => menuClicks++;
 menuViewBar.Add(menuZoom);
 menuSecondPage.MenuBarItems.Add(menuViewBar);
 OpenHarmonyMenus.Refresh(menuSecondPage);
-bool menuTableReplaced = OpenHarmonyMenus.Items.Count == 1 && OpenHarmonyMenus.Items[0].Text == "Zoom";
+bool menuTableReplaced = OpenHarmonyMenus.Items.Count == 2 &&
+    OpenHarmonyMenus.Items[0].Kind == OpenHarmonyMenuEntryKind.Bar && OpenHarmonyMenus.Items[0].Text == "View" &&
+    OpenHarmonyMenus.Items[1].Text == "Zoom" && OpenHarmonyMenus.Items[1].Level == 1;
 Console.WriteLine($"[verify] menus unchanged skip={!menuRepublished && OpenHarmonyMenus.RefreshesSkipped == menuSkips + 1} pageChangeReplaced={menuTableReplaced} count={OpenHarmonyMenus.Items.Count} text='{OpenHarmonyMenus.Items.FirstOrDefault()?.Text}'");
 
 // Automatic page-change sync: a menu added to the host window's current page is picked up by
@@ -3272,6 +3321,65 @@ if (navRoot.CurrentPage is ContentPage livePage)
     livePage.MenuBarItems.Add(liveBar);
     Microsoft.OpenHarmony.Hosting.OpenHarmonyBridge.RequestRedraw();
     Console.WriteLine($"[verify] menus auto sync on redraw={OpenHarmonyMenus.Items.Any(m => m.Text == "Live action")} count={OpenHarmonyMenus.Items.Count}");
+}
+
+// T16 native contract: the managed publisher uses the additive ohos_host_menu_item_ex export
+// (kind/level/bar title) with the legacy three-argument form as the fallback, and the host
+// publishes the extra fields through menuItem().
+string? menuSlicePath = FindHostSource("OpenHarmonyMenus.cs");
+string menuSliceSource = menuSlicePath is null ? string.Empty : File.ReadAllText(menuSlicePath);
+string? menuHostPath = FindHostSource("src/OpenHarmonyHost/host_napi.cpp");
+string menuHostSource = menuHostPath is null ? string.Empty : File.ReadAllText(menuHostPath);
+string? menuExportsPath = FindHostSource("src/OpenHarmonyHost/host-exports.txt");
+string menuExportsSource = menuExportsPath is null ? string.Empty : File.ReadAllText(menuExportsPath);
+bool menuNativeOk = menuSliceSource.Contains("EntryPoint = \"ohos_host_menu_item_ex\"") &&
+    menuSliceSource.Contains("OpenHarmonyMenuEntryKind") &&
+    menuSliceSource.Contains("s_published.AddRange(s_items);") &&
+    menuHostSource.Contains("extern \"C\" int ohos_host_menu_item_ex(") &&
+    menuHostSource.Contains("napi_set_named_property(env, object, \"barTitle\", bar_title);") &&
+    menuHostSource.Contains("item.kind = kind;") &&
+    menuExportsSource.Contains("ohos_host_menu_item_ex");
+Console.WriteLine($"[verify] menus native contract slice={menuSlicePath is not null} host={menuHostPath is not null} exports={menuExportsSource.Contains("ohos_host_menu_item_ex")} assert={menuNativeOk}");
+if (!menuNativeOk)
+{
+    throw new InvalidOperationException("the T16 structured menu bridge (managed export + host columns + export list) drifted");
+}
+
+// T16 shell contract: every preview template carries the structured menu rendering (one
+// MenuItemGroup per bar, nested MenuItem({builder}) submenus, leaf taps through
+// notifyMenuAction) and falls back to the legacy MenuElement array; the three packs stay
+// byte-identical (the build gate pins that).
+string[] menuShellVersions = { "1.0.0-preview.22", "1.0.0-preview.23", "1.0.0-preview.24" };
+string menuShellFirst = string.Empty;
+bool menuShellOk = true;
+bool menuShellIdentical = true;
+foreach (string menuShellVersion in menuShellVersions)
+{
+    string? menuShellPath = FindHostSource($"packs/Microsoft.OpenHarmony.Sdk/{menuShellVersion}/templates/ets/pages/Index.ets");
+    string menuShell = menuShellPath is null ? string.Empty : File.ReadAllText(menuShellPath);
+    if (menuShellFirst.Length == 0)
+    {
+        menuShellFirst = menuShell;
+    }
+    else
+    {
+        menuShellIdentical &= string.Equals(menuShellFirst, menuShell, StringComparison.Ordinal);
+    }
+    menuShellOk &= menuShell.Contains("kind?: number;") &&
+        menuShell.Contains("interface HostMenuRowRef {") &&
+        menuShell.Contains("private hasStructuredMenu(): boolean {") &&
+        menuShell.Contains("private childMenuRows(index: number): HostMenuRowRef[] {") &&
+        menuShell.Contains("structuredMenu(): void {") &&
+        menuShell.Contains("MenuItemGroup({ header: bar.text }) {") &&
+        menuShell.Contains("builder: (): void => { this.subMenuRows(entry.index) }") &&
+        menuShell.Contains(".bindMenu(this.structuredMenu)") &&
+        menuShell.Contains(".bindMenu(this.buildMenuElements())") &&
+        menuShell.Contains("host.notifyMenuAction(index);");
+}
+Console.WriteLine($"[verify] menus shell structure structured={menuShellOk} identical={menuShellIdentical} versions=[{string.Join(",", menuShellVersions)}] assert={menuShellOk && menuShellIdentical}");
+if (!(menuShellOk && menuShellIdentical))
+{
+    throw new InvalidOperationException("the T16 structured menu shell pins (or the three-pack byte identity) drifted");
 }
 
 // WebView JavaScript bridge (host ohos_host_web_eval/notifyWebEvalResult + shell

@@ -221,6 +221,12 @@ struct HostSink {
 struct HostMenuItem {
     std::string text;
     bool enabled = false;
+    // T16 structured rows: kind (0 item / 1 submenu header / 2 bar title), nesting level (0 for a
+    // bar row) and the owning MenuBarItem's title. The legacy ohos_host_menu_item leaves these
+    // at their defaults, so an old publisher keeps the pre-T16 flat table.
+    int kind = 0;
+    int level = 0;
+    std::string bar_title;
 };
 
 struct HostMenuSnapshot {
@@ -2130,15 +2136,17 @@ napi_value RegisterFocusSink(napi_env env, napi_callback_info info) {
     return HostSinkRegisterFromArgs(env, info, g_host->focus);
 }
 
-// Menus: the managed side publishes the current page's menu items as a flat table
-// (ohos_host_menu_begin/item/commit). commit copies the builder into an immutable snapshot and
-// hands that snapshot to the JS thread through the menu sink, so the shell's pull
+// Menus: the managed side publishes the current page's menu items as a structured table
+// (ohos_host_menu_begin/item[_ex]/commit). commit copies the builder into an immutable snapshot
+// and hands that snapshot to the JS thread through the menu sink, so the shell's pull
 // (menuCount/menuItem) always serves a fixed value instead of a table being rewritten under it.
 // The ArkTS shell pulls it back after registerMenuChangedSink fires (count, also sent for an
 // empty table so the menu hides) and reports a tap with host.notifyMenuAction(index) -> the
-// managed activation callback. The table carries text/enabled only: nested MenuFlyoutSubItems
-// are flattened by the managed publisher, which drops the depth information because this table
-// has no column for it.
+// managed activation callback. The table rows carry text/enabled plus the T16 structure (kind,
+// level, bar title) filled by ohos_host_menu_item_ex: the shell groups rows per MenuBarItem and
+// renders MenuFlyoutSubItem headers as nested menus. The legacy ohos_host_menu_item keeps its
+// three-argument ABI and fills only text/enabled, so a host without the extended publish still
+// serves the pre-T16 flat table.
 static std::atomic<void (*)(int)> g_menu_action_listener{nullptr};
 
 // The snapshot the JS thread serves from: the one the newest dispatch delivered, or the last
@@ -2162,7 +2170,8 @@ napi_value MenuCount(napi_env env, napi_callback_info info) {
     return result;
 }
 
-// ArkTS calls host.menuItem(index) and receives { text, enabled } (undefined out of range).
+// ArkTS calls host.menuItem(index) and receives { text, enabled, kind, level, barTitle }
+// (undefined out of range). A legacy publisher leaves kind/level 0 and barTitle empty.
 napi_value MenuGetItem(napi_env env, napi_callback_info info) {
     size_t argc = 1;
     napi_value argv[1] = {nullptr};
@@ -2186,6 +2195,15 @@ napi_value MenuGetItem(napi_env env, napi_callback_info info) {
     napi_value enabled = nullptr;
     napi_get_boolean(env, item.enabled, &enabled);
     napi_set_named_property(env, object, "enabled", enabled);
+    napi_value kind = nullptr;
+    napi_create_int32(env, item.kind, &kind);
+    napi_set_named_property(env, object, "kind", kind);
+    napi_value level = nullptr;
+    napi_create_int32(env, item.level, &level);
+    napi_set_named_property(env, object, "level", level);
+    napi_value bar_title = nullptr;
+    napi_create_string_utf8(env, item.bar_title.c_str(), NAPI_AUTO_LENGTH, &bar_title);
+    napi_set_named_property(env, object, "barTitle", bar_title);
     return object;
 }
 
@@ -2244,6 +2262,31 @@ extern "C" int ohos_host_menu_item(int index, const char* text, int enabled) {
         }
         binding->menu_build[position].text = text != nullptr ? text : "";
         binding->menu_build[position].enabled = enabled != 0;
+        return 0;
+    });
+}
+
+// Managed P/Invoke: sets one structured row (T16): kind 0 item / 1 submenu header / 2 bar title,
+// the nesting level (0 for a bar row) and the owning MenuBarItem's title. Additive export: the
+// three-argument form above keeps its ABI and behaviour.
+extern "C" int ohos_host_menu_item_ex(int index, const char* text, int enabled, int kind, int level,
+                                      const char* bar_title) {
+    if (index < 0) {
+        return -1;
+    }
+    return HostCxxBoundary("menu_item_ex", [index, text, enabled, kind, level, bar_title] {
+        HostBinding* binding = g_host;
+        std::lock_guard<std::mutex> guard(binding->menu_lock);
+        size_t position = (size_t)index;
+        if (position >= binding->menu_build.size()) {
+            binding->menu_build.resize(position + 1);
+        }
+        HostMenuItem& item = binding->menu_build[position];
+        item.text = text != nullptr ? text : "";
+        item.enabled = enabled != 0;
+        item.kind = kind;
+        item.level = level;
+        item.bar_title = bar_title != nullptr ? bar_title : "";
         return 0;
     });
 }

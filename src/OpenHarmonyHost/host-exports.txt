@@ -90,6 +90,7 @@ ohos_host_map_result
 ohos_host_menu_begin
 ohos_host_menu_commit
 ohos_host_menu_item
+ohos_host_menu_item_ex
 ohos_host_menu_set_listener
 ohos_host_network_access
 ohos_host_network_access_register
