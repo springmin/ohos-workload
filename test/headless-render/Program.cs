@@ -409,6 +409,43 @@ if (!scalePlaced)
     failures++;
 }
 
+// FIX-SHELL: a Shell root must render its CurrentPage. The pre-fix compositor walk had no Shell
+// branch (rc.1's Shell is neither ILayout nor IContentView), so the shell chrome drew over the
+// renderer background while the page's subtree never reached the frame; the same page as a bare
+// root painted normally (the control below). The probe renders a page as a root (control), then
+// the same page as the Shell's current page (red), then switches the shell item and requires the
+// new page (lime).
+var shellPixelOne = new ContentPage
+{
+    Content = new BoxView { Color = Colors.Red, HorizontalOptions = LayoutOptions.Fill, VerticalOptions = LayoutOptions.Fill },
+};
+var shellPixelTwo = new ContentPage
+{
+    Content = new BoxView { Color = Colors.Lime, HorizontalOptions = LayoutOptions.Fill, VerticalOptions = LayoutOptions.Fill },
+};
+OpenHarmonyHandlerConnector.ConnectTree(shellPixelOne);
+shellPixelOne.Measure(1080, 1920);
+shellPixelOne.Arrange(new Rect(0, 0, 1080, 1920));
+canvas.Reset();
+renderer.Render(shellPixelOne, 1080, 1920);
+Check("shell page as bare root (control)", canvas.GetPixel(540, 600), Colors.Red);
+
+var shellPixel = new Shell();
+shellPixel.Items.Add(new ShellContent { Title = "One", Content = shellPixelOne });
+shellPixel.Items.Add(new ShellContent { Title = "Two", Content = shellPixelTwo });
+OpenHarmonyHandlerConnector.ConnectTree(shellPixel);
+shellPixel.Measure(1080, 1920);
+shellPixel.Arrange(new Rect(0, 0, 1080, 1920));
+canvas.Reset();
+bool shellRendered = renderer.Render(shellPixel, 1080, 1920);
+Check("shell current page draws under the shell", canvas.GetPixel(540, 600), Colors.Red);
+
+shellPixel.CurrentItem = shellPixel.Items[1];
+canvas.Reset();
+renderer.Render(shellPixel, 1080, 1920);
+Check("shell item switch repaints the new page", canvas.GetPixel(540, 600), Colors.Lime);
+Console.WriteLine($"  shell pixel probe: rendered={shellRendered} current='{shellPixel.CurrentPage?.Title}' canvasPixels={canvas.DrawnPixels}");
+
 Color Blend(Color background, Color foreground, float alpha) => new(
     (float)(foreground.Red * alpha + background.Red * (1 - alpha)),
     (float)(foreground.Green * alpha + background.Green * (1 - alpha)),

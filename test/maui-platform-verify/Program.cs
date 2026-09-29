@@ -12,7 +12,7 @@ using Microsoft.Maui.Platform;
 // after the fuzz tail) instead of letting every caller repeat its own threshold constant.
 VerifyLineCountingWriter verifyStdout = new(Console.Out);
 Console.SetOut(verifyStdout);
-const int verifyCheckTotal = 485;                     // documented full [verify] line count (+4 MS-MODE runtime mode switch, +10 P2c-DEEPLINK, +4 P2b-IMG, +16 P1b-LIST, +10 P1a-ANIM, +2 SEC3 storage/deep-link pins, +5 W-series WebView wiring, +3 T1 InputView mapping, +4 T2 WebView gaps, +4 T3 GraphicsView interaction, +7 T10 modal accessibility, +4 T4 Label formatted text, +4 T5 layout semantics, +6 T7 DatePicker calendar/min-max, +4 T9 window title bar, +4 T11 diagnostics overlay, +1 N2 empty ContentPage arrangement, +6 T8 TableView, +7 T6 RTL flow direction, +5 T22 MainThread bridge, +2 FIX-TABBED tabbed CurrentPage, +4 T13 group footer view/N3 picker IsOpen, +5 T21 system font scale, +2 A11Y-TABBED tabbed accessibility, +3 N1 host multi-pointer, +5 T12 CarouselView group slides, +7 T14 rich shell flyout)
+const int verifyCheckTotal = 489;                     // documented full [verify] line count (+4 MS-MODE runtime mode switch, +10 P2c-DEEPLINK, +4 P2b-IMG, +16 P1b-LIST, +10 P1a-ANIM, +2 SEC3 storage/deep-link pins, +5 W-series WebView wiring, +3 T1 InputView mapping, +4 T2 WebView gaps, +4 T3 GraphicsView interaction, +7 T10 modal accessibility, +4 T4 Label formatted text, +4 T5 layout semantics, +6 T7 DatePicker calendar/min-max, +4 T9 window title bar, +4 T11 diagnostics overlay, +1 N2 empty ContentPage arrangement, +6 T8 TableView, +7 T6 RTL flow direction, +5 T22 MainThread bridge, +2 FIX-TABBED tabbed CurrentPage, +4 T13 group footer view/N3 picker IsOpen, +5 T21 system font scale, +2 A11Y-TABBED tabbed accessibility, +3 N1 host multi-pointer, +5 T12 CarouselView group slides, +7 T14 rich shell flyout, +2 FIX-SHELL shell CurrentPage, +2 A11Y-SHELL shell accessibility)
 const int verifyCheckFloor = verifyCheckTotal - 20;   // documented floor convention (total - 20)
 
 // A small image file for the Image handler.
@@ -800,6 +800,83 @@ if (shell.Handler?.PlatformView is OpenHarmonyView shellPlatform)
     rendererForShell.HandleTouch(shell, true, false, 900, 600);
     rendererForShell.HandleTouch(shell, false, true, 900, 600);
     Console.WriteLine($"[verify] shell after outside tap open={shellPlatform.FlyoutOpen}");
+}
+
+// FIX-SHELL: the compositor walk and the accessibility walk must enumerate a Shell's CurrentPage
+// exactly like a TabbedPage's (the pre-fix slice drew only the shell chrome and the tab bar: the
+// page itself was arranged by the shell handler but never visited by ChildEnumerator). Same
+// two-phase pattern as FIX-TABBED: a text-recording canvas requires the current page's label in
+// the frame with the other page's label absent, then the bottom-bar tap must switch CurrentItem
+// and both walks must follow. Both pages use direct Content (not a lazy ContentTemplate) so the
+// "other page hidden" claim is about the walk and not about lazy creation.
+var shellDrawOne = new ContentPage { Title = "One", Content = new Label { Text = "shell page one" } };
+var shellDrawTwo = new ContentPage { Title = "Two", Content = new Label { Text = "shell page two" } };
+var shellDraw = new Shell();
+shellDraw.Items.Add(new ShellContent { Title = "One", Content = shellDrawOne });
+shellDraw.Items.Add(new ShellContent { Title = "Two", Content = shellDrawTwo });
+OpenHarmonyHandlerConnector.ConnectTree(shellDraw);
+shellDraw.Measure(1080, 1920);
+shellDraw.Arrange(new Rect(0, 0, 1080, 1920));
+if (shellDraw.Handler?.PlatformView is OpenHarmonyView shellDrawPlatform)
+{
+    // Shell draw: the current page's label must be in the frame and the other page's must not.
+    var shellCanvas = new TabbedProbeCanvas();
+    var shellCanvasFactory = OpenHarmonyWindowRenderer.CanvasFactory;
+    OpenHarmonyWindowRenderer.CanvasFactory = () => shellCanvas;
+    OpenHarmonyWindowRenderer shellRenderer;
+    try
+    {
+        shellRenderer = new OpenHarmonyWindowRenderer();
+    }
+    finally
+    {
+        OpenHarmonyWindowRenderer.CanvasFactory = shellCanvasFactory;
+    }
+    shellRenderer.Render(shellDraw, 1080, 1920);
+    bool shellDrewCurrent = shellCanvas.Texts.Contains("shell page one");
+    bool shellHidOther = !shellCanvas.Texts.Contains("shell page two");
+    Console.WriteLine($"[verify] shell draw current drawn={shellDrewCurrent} otherHidden={shellHidOther} texts={shellCanvas.Texts.Count} assert={shellDrewCurrent && shellHidOther}");
+    if (!(shellDrewCurrent && shellHidOther))
+    {
+        throw new InvalidOperationException("the compositor did not draw the Shell's CurrentPage content (ChildEnumerator missed CurrentPage)");
+    }
+
+    // Shell a11y: the shadow tree must contain the current page's subtree through the same
+    // branch (PushChildren), and must not leak the other page.
+    OpenHarmonyAccessibility.Refresh(shellDraw);
+    var a11yShellCurrent = OpenHarmonyAccessibility.Nodes.FirstOrDefault(n => n.Text == "shell page one");
+    bool a11yShellCurrentOk = a11yShellCurrent is not null && a11yShellCurrent.Role == "text" &&
+        a11yShellCurrent.ParentId != 0;
+    bool a11yShellOtherHidden = !OpenHarmonyAccessibility.Nodes.Any(n => n.Text == "shell page two");
+    Console.WriteLine($"[verify] shell a11y current published={a11yShellCurrent is not null} role={a11yShellCurrent?.Role} otherHidden={a11yShellOtherHidden} nodes={OpenHarmonyAccessibility.Nodes.Count} assert={a11yShellCurrentOk && a11yShellOtherHidden}");
+    if (!(a11yShellCurrentOk && a11yShellOtherHidden))
+    {
+        throw new InvalidOperationException("the accessibility tree did not contain the Shell's CurrentPage subtree (PushChildren missed CurrentPage)");
+    }
+
+    // Tap the second item in the bottom bar: the shell item switch must make both walks follow.
+    double shellTapY = shellDraw.Frame.Height - OpenHarmonyView.TabBarHeight / 2;
+    double shellTapX = shellDraw.Frame.Width * 0.75;
+    rendererForShell.HandleTouch(shellDraw, true, false, (float)shellTapX, (float)shellTapY);
+    rendererForShell.HandleTouch(shellDraw, false, true, (float)shellTapX, (float)shellTapY);
+    shellCanvas.Texts.Clear();
+    shellRenderer.Render(shellDraw, 1080, 1920);
+    bool shellDrewSwitched = shellCanvas.Texts.Contains("shell page two");
+    bool shellHidPrevious = !shellCanvas.Texts.Contains("shell page one");
+    Console.WriteLine($"[verify] shell draw after switch selected={shellDrawPlatform.SelectedTab} current='{shellDraw.CurrentPage?.Title}' drawn={shellDrewSwitched} previousHidden={shellHidPrevious} assert={shellDrewSwitched && shellHidPrevious}");
+    if (!(shellDrewSwitched && shellHidPrevious))
+    {
+        throw new InvalidOperationException("the compositor frame did not follow the Shell's CurrentPage switch");
+    }
+
+    OpenHarmonyAccessibility.Refresh(shellDraw);
+    bool a11yShellSwitched = OpenHarmonyAccessibility.Nodes.Any(n => n.Text == "shell page two");
+    bool a11yShellPreviousGone = !OpenHarmonyAccessibility.Nodes.Any(n => n.Text == "shell page one");
+    Console.WriteLine($"[verify] shell a11y after switch published={a11yShellSwitched} previousHidden={a11yShellPreviousGone} nodes={OpenHarmonyAccessibility.Nodes.Count} assert={a11yShellSwitched && a11yShellPreviousGone}");
+    if (!(a11yShellSwitched && a11yShellPreviousGone))
+    {
+        throw new InvalidOperationException("the accessibility tree did not follow the Shell's CurrentPage switch");
+    }
 }
 
 // T14: Shell rich flyout. A View/DataTemplate FlyoutHeader/Footer and Shell.ItemTemplate rows
