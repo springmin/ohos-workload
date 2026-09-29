@@ -300,13 +300,27 @@ Only the unsigned hap ships (bundle `com.example.opendotnet`; `--blazor-bundle <
 overrides it): our debug profile is bound to the example UDID, so a tester re-signs it exactly
 like `hello-maui-app-unsigned.hap`. `--slim` drops the `.br/.gz/.map` siblings at embed time
 and the slim publish sets `InvariantGlobalization=true` (no `icudt*.dat`); the measured cut is
-~26 MB with ~210 embedded site files. The pack consumes the hvigor toolchain that
-`scripts/build-arkts-shell.sh` installs once per build host (`<repo>/.arkts-build`, or
-`HVIGOR_JS`); without it the kit builder aborts before publishing.
+~26 MB with ~213 embedded site files (210 + the 3 stable-name copies below). The pack consumes
+the hvigor toolchain that `scripts/build-arkts-shell.sh` installs once per build host
+(`<repo>/.arkts-build`, or `HVIGOR_JS`); without it the kit builder aborts before publishing.
+
+The embed step also materializes the static-web-asset default names. .NET's publish
+fingerprints web assets and serves the stable route `_framework/dotnet.js` from
+`_framework/dotnet.<hash>.js` through the route table in
+`<publish>/*.staticwebassets.endpoints.json`; the ArkWeb host serves the embedded rawfile tree
+1:1, with no route table. `pack-host.sh` reads that manifest (falling back to the boot-loader
+name convention when it is absent) and copies the stable JS routes (`dotnet.js`,
+`dotnet.native.js`, `dotnet.runtime.js`) onto their fingerprinted assets of the same build.
+Without `_framework/dotnet.js` the boot script's dynamic import fails with "Failed to fetch
+dynamically imported module" and the app never renders — the defect kits #31/#32 shipped; the
+kit #33 rebuild is the first with the mapping (`BLZ_BOOT`/`BLZ_RENDERED` confirm the boot
+on-device).
 
 `scripts/verify-kit.sh` asserts the component whenever the hap is present (kit #31+; a kit
 without it only logs that fact): `resources/rawfile/blazor/index.html`, at least one
-`_framework/*.wasm` and a `blazor.webassembly*.js` boot script, a PANDA 13.0.1.0
+`_framework/*.wasm`, a `blazor.webassembly*.js` boot script, the stable
+`_framework/dotnet.js` byte-equal to its `_framework/dotnet.<hash>.js` fingerprint source
+(kits #31/#32 fail this one), a PANDA 13.0.1.0
 `ets/modules.abc`, the `com.example.opendotnet` bundle, and no site-level `.br/.gz/.map` or
 `icudt*.dat` leftovers (the host's own `ets/sourceMaps.map` compile output is not a web asset).
 Every deviation FAILs; `KIT_BLAZOR_HAP`/`KIT_BLAZOR_BUNDLE` override the

@@ -20,6 +20,20 @@
 > `BlazorWebHost: marker: BLZ_*` 行：另一个进程往 hilog 写 `BLZ_BOOT` 不再能伪造探针通过；
 > 旧宿主（无 nonce）降级为 pid+格式过滤并记录 WARN。**当前 kit #31 包内的 hap 仍是修复前的
 > 构建**（判读命令 `hilog -x | grep BlazorWebHost` 不变），下一轮 `--with-blazor` 重建后生效。
+>
+> **FIX-BLZ-JS 增量（2026-09-28 晚，kit #31/#32 之后）：** kit #31/#32 包内的 blazor hap 缺
+> `_framework/dotnet.js`，真机首屏因此不渲染。根因：.NET 的静态 web assets 指纹化把稳定名
+> `_framework/dotnet.js` 路由到 `_framework/dotnet.<hash>.js`，路由表只在 publish 根目录的
+> `*.staticwebassets.endpoints.json` 里；ArkTS 宿主按 rawfile 1:1 直供（没有路由表），于是
+> `blazor.webassembly.js` 动态 `import('./dotnet.js')` 失败 →
+> `BLZ_ERROR Failed to fetch dynamically imported module`。修复：`pack-host.sh` 在嵌入阶段按
+> manifest 复制稳定名（`dotnet.js`/`dotnet.native.js`/`dotnet.runtime.js`，与指纹版同构建同内容；
+> 无 manifest 时按 `<name>.<hash>.js` 约定回退），`verify-kit.sh` 2c 新增断言（`dotnet.js`
+> 存在且与指纹版逐字节一致——因此 kit #31/#32 的 hap 在旧包自检里会 FAIL，属预期）。
+> 已重建 slim unsigned hap 对照：sha256 `25ef2fa577b548015539ddb4c1091ba60f60567f2a3ef8b2202705820657317c`
+> （26 MB，213 个站点文件 = 旧的 210 + 3 个默认名；0 压缩/ICU 残留）；kit #31 包内的旧 hap 为
+> sha256 `36010a9c80d226ed85ea1ca362ad31562ed4566a7b5cc49debd985da2e33ae2e`（缺 dotnet.js）。
+> 修复随 **kit #33** 出货。
 
 自签注意：bundle 名是 **`com.example.opendotnet`**（`pack-host.sh --bundle` 可改）。tester 侧任何
 auto-sign 工程需把 `AppScope/app.json5` 的 bundleName 设为同名，流程与 `自签说明.md` 中
@@ -33,6 +47,7 @@ auto-sign 工程需把 `AppScope/app.json5` 的 bundleName 设为同名，流程
 | `--slim` 发布 | 633 文件 / 47 MB（ICU 已去） |
 | `--slim` 内嵌 | 再剔除 423 个 `.br/.gz/.map` → 站点 **210 文件** |
 | **unsigned hap（kit 用）** | **26 MB**；219 成员（208 framework）；0 压缩残留、0 ICU 残留；`index.html` 在内 |
+| unsigned hap（FIX-BLZ-JS 重建，随 kit #33） | 26 MB；222 成员（211 framework）；213 站点文件 = 210 + 3 个默认名映射；`dotnet.js` 与 `dotnet.08s0yny1y1.js` 逐字节一致；sha256 `25ef2fa5…317c` |
 | 对照：全量签名 hap | 48 MB（此前的完整站点变体） |
 | 可签性 | 该 26 MB unsigned hap 用调试材料 `sign-app` + `verify-app` 成功（签名后 26.8 MB） |
 | 编译 | 宿主页含新协商/标记代码，`CompileArkTS` 通过（`ohos_packing_tool` 打包、未签名） |
