@@ -34,6 +34,21 @@
 > （26 MB，213 个站点文件 = 旧的 210 + 3 个默认名；0 压缩/ICU 残留）；kit #31 包内的旧 hap 为
 > sha256 `36010a9c80d226ed85ea1ca362ad31562ed4566a7b5cc49debd985da2e33ae2e`（缺 dotnet.js）。
 > 修复随 **kit #33** 出货。
+>
+> **FIX-BLZ-PATH 增量（2026-09-29，kit #32 回归根因）：** SEC-FIX 的路径重构把
+> `resolveRawfilePath` 的返回值改成了边界拼写 `resources/rawfile/blazor/<x>`，而
+> `ResourceManager.getRawFileContentSync` 只接受 rawfile 相对路径 `blazor/<x>`（kit #31 的旧宿主
+> 即用此拼写、设备读取正常，属口径已验证）；kit #32 宿主的所有读取因此抛异常、资源一律 404。修复：
+> 安全校验仍以 `resources/rawfile/blazor/` 为边界（语义不变），返回值恢复 `blazor/<x>`
+> （`INDEX_FILE='blazor/index.html'`），`readRawFile`/`readNegotiated`/`serveFile` 全程使用 API
+> 路径（br/gz 变体同理）；`rawfile-path.test.mjs` 新增「返回值必须以 `blazor/` 开头、绝不包含
+> `resources/rawfile/`」断言并保留 12 恶例/9 合法例（43 checks 全绿）。另：`pack-host.sh --no-csp`
+> （或 `BLZ_HOST_NO_CSP=1`）构建不带 CSP 头的对照 hap（默认仍带）——若 CSP-off 变体能渲染而默认
+> 不能，CSP 是次因；两者都不能渲染则 CSP 非瓶颈、以路径修复为准。重建已验：默认 hap sha256
+> `69de2eea62fafb4eebb5ecb722def8f1126ee6fc339ee6e844ed308920523174`，no-csp hap
+> `c1ef7e06d04b0108efb0c5e2faeea8082b9865cc0612ef4e278ae852dd46a6a7`（均 26 MB / 213 站点文件；
+> `_framework/dotnet.js` 在位且与指纹版逐字节一致；CompileArkTS 通过）。**真机复测归 kit
+> #33/tester 轮。**
 
 自签注意：bundle 名是 **`com.example.opendotnet`**（`pack-host.sh --bundle` 可改）。tester 侧任何
 auto-sign 工程需把 `AppScope/app.json5` 的 bundleName 设为同名，流程与 `自签说明.md` 中

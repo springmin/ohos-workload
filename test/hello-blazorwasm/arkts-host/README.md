@@ -17,16 +17,25 @@ pack-host.sh        stage project/, embed a site, build with hvigor, pack + sign
 (`ResourceManager.getRawFileContentSync`):
 
 ```
-https://blazor.local/<path>   ->  resources/rawfile/blazor/<path>
+https://blazor.local/<path>   ->  blazor/<path>              (rawfile API path read by the host)
+the site itself is embedded at  resources/rawfile/blazor/<path>
 ```
+
+The validator (below) judges the request against the `resources/rawfile/blazor/` boundary but
+returns the rawfile-relative API path `blazor/<path>`: `getRawFileContentSync` does not accept
+the `resources/rawfile/` prefix, so the API spelling is the only one that reads files
+(FIX-BLZ-PATH; the SEC-SCAN-3 refactor returned the boundary spelling and every read failed on
+device).
 
 - Unknown paths fall back to `blazor/index.html` (client-side routing keeps working), but a
   path that fails validation is a bare 404: `.` (dot) and empty segments are normalized away,
   `..` segments, backslashes, NUL bytes, absolute paths and undecodable `%XX` escapes are
   rejected on the percent-decoded text (so `%2e%2e` and `%252e%252e` are covered), and the
-  result must still sit under `resources/rawfile/blazor/` (SEC-SCAN-3 S3-AW1). The validator
-  is the `rawfile-path` block in `pages/Index.ets`; `test/run-tests.sh` extracts and unit-tests
-  it offline (`node >= 23.6`, 12 malicious + 9 legal cases + header source pins).
+  result must still resolve under `resources/rawfile/blazor/` (SEC-SCAN-3 S3-AW1) while the
+  returned value stays in the `blazor/` API namespace (FIX-BLZ-PATH). The validator is the
+  `rawfile-path` block in `pages/Index.ets`; `test/run-tests.sh` extracts and unit-tests it
+  offline (`node >= 23.6`, 12 malicious + 9 legal + 9 namespace cases + source pins, 43
+  checks).
 - Served assets carry `X-Content-Type-Options: nosniff`, `Vary: Accept-Encoding` and
   `Cache-Control: no-cache`; the HTML shell additionally carries a minimal CSP (SEC-SCAN-3
   S3-AW2).
@@ -46,7 +55,7 @@ The page deliberately keeps the repository's ArKTS source contract: `@kit.*` imp
 ## Packing
 
 ```sh
-pack-host.sh <site-dir> [--out <hap>] [--work <dir>] [--bundle <name>] [--slim] [--unsigned-only]
+pack-host.sh <site-dir> [--out <hap>] [--work <dir>] [--bundle <name>] [--slim] [--no-csp] [--unsigned-only]
 ```
 
 `<site-dir>` is the directory containing `index.html` (normally `<publish>/wwwroot`; publish
@@ -55,7 +64,15 @@ page prefers them only when the request accepts the coding, so dropping them kee
 fully servable and take a full publish from 48 MB to a 26 MB hap). `--unsigned-only` stops
 after packing and copies the unsigned hap to `--out` (default
 `out/hello-blazorwasm-host-unsigned.hap`) for external signing — the device-test kit consumes
-this variant. The script:
+this variant.
+
+`--no-csp` (or `BLZ_HOST_NO_CSP=1`) builds a diagnostic A/B twin: the
+`Content-Security-Policy` header push is stripped from the **staged** `Index.ets` only, so the
+committed page and its unit tests keep the CSP (SEC-SCAN-3 S3-AW2). Use it on a device to
+decide whether the CSP is a cause of an ArkWeb render failure: if the no-CSP twin renders
+where the default does not, the CSP is at least a contributing cause; if neither renders, the
+CSP is not the blocker and the FIX-BLZ-PATH read path is the thing to verify. The default
+output name gains a `-nocsp` suffix when `--out` is not given. The script:
 
 1. stages `project/` into the work dir and writes `local.properties` + `build-profile.json5`
    (version-nested SDK symlink root, signing material under the SDK's `toolchains/lib`);
@@ -107,11 +124,17 @@ hilog | grep BlazorWebHost
 
 - `onInterceptRequest` builds one response per request synchronously; a 71 MB site loads fine
   because the framework files are read on demand (no full-site buffering).
+- Rawfile reads use the `blazor/<path>` API namespace, never the `resources/rawfile/blazor/`
+  boundary spelling: `getRawFileContentSync` rejects the latter, so the validator judges the
+  boundary but returns the API path (FIX-BLZ-PATH; the SEC-SCAN-3 refactor regressed exactly
+  here). The unit test pins the namespace (returned values must start with `blazor/` and must
+  not contain `resources/rawfile/`).
 - `--slim` trades the pre-compressed siblings for size: requests that advertise `br`/`gzip`
   simply fall back to the uncompressed files (rawfile reads make the transfer difference
   invisible in practice).
 - ArkWeb rendering was exercised by the device-test kit round (kits #31/#32): the first runs
   exposed the missing `_framework/dotnet.js` and a manual copy of the fingerprinted asset
   rendered the app (`BLZ_RENDERED`); packing step 2 now does that mapping for every build, and
-  the kit #33 rebuild is the first shipped hap with it. The serving path is the in-product one
+  the kit #33 rebuild is the first shipped hap with it. The later kit #32 diagnosis also found
+  the rawfile path-namespace regression fixed here. The serving path is the in-product one
   (hand-off spec: `../../../docs/blazor-arkweb-kit-handoff.md`).

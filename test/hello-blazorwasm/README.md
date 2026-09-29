@@ -70,6 +70,11 @@ test/hello-blazorwasm/arkts-host/pack-host.sh <site> --slim --unsigned-only
 # hap-sign-tool sign-app + verify-app
 ```
 
+`--no-csp` (or `BLZ_HOST_NO_CSP=1`) builds the diagnostic A/B twin without the HTML shell's
+`Content-Security-Policy` header (staged copy only; the default keeps the CSP). Run the pair
+on a device: a rendering no-CSP twin makes the CSP a contributing cause; a still-dead twin
+leaves the CSP out as a blocker (then check the `blazor/<path>` rawfile read path, FIX-BLZ-PATH).
+
 The bundle name defaults to `com.example.opendotnet`; change it with `--bundle`, and sign with
 your own material via the `SIGN_*` environment variables when the device does not trust the
 OpenHarmony debug root.
@@ -106,6 +111,14 @@ OpenSSL SDK, MSBuild pipe patch included):
   asset rendered the app (`BLZ_RENDERED`); the embed step now does that for every build, and
   the kit #33 rebuild is the first shipped hap with the mapping. Hand-off spec:
   `../../docs/blazor-arkweb-kit-handoff.md`.
+- FIX-BLZ-PATH (2026-09-29): the kit #32 host page's SEC-SCAN-3 refactor returned
+  `resources/rawfile/blazor/<x>` to `getRawFileContentSync`, which only accepts the
+  rawfile-relative `blazor/<x>`; every read threw and the host answered 404 (kit #31's host
+  used `blazor/<x>` and read fine). The fix keeps the boundary judgment on
+  `resources/rawfile/blazor/` and restores the `blazor/<x>` return; the node test now asserts
+  the namespace (43 checks green). Rebuilds: default sha256 `69de2eea…3174`, `--no-csp` A/B
+  twin sha256 `c1ef7e06…a6a7` (both 26 MB, 213 site files, `dotnet.js` byte-equal to
+  `dotnet.08s0yny1y1.js`).
 
 `blazor-recipe.yml` (weekly + manual) re-publishes both recipes on a stock x64 runner so
 feed/version drift shows up without a device.

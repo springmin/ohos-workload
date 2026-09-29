@@ -316,6 +316,18 @@ dynamically imported module" and the app never renders — the defect kits #31/#
 kit #33 rebuild is the first with the mapping (`BLZ_BOOT`/`BLZ_RENDERED` confirm the boot
 on-device).
 
+The host page reads rawfiles through the rawfile-relative API namespace:
+`getRawFileContentSync` accepts `blazor/<path>` and rejects the `resources/rawfile/` spelling.
+The request validator still judges the `resources/rawfile/blazor/` boundary (SEC-SCAN-3
+S3-AW1) but returns the API path (`blazor/index.html` for the shell fallback; the br/gz
+variants follow), and the offline node test pins that namespace — returned values must start
+with `blazor/` and never contain `resources/rawfile/` (43 checks). The SEC-SCAN-3 refactor had
+returned the boundary spelling, so every read threw and the **kit #32** host answered 404
+(FIX-BLZ-PATH). `pack-host.sh --no-csp` (or `BLZ_HOST_NO_CSP=1`) additionally builds the
+diagnostic twin without the HTML shell's CSP header (stripped from the staged copy only): a
+rendering no-CSP twin makes the CSP a contributing cause; a still-dead twin leaves the CSP out
+as a blocker and points at the path fix instead.
+
 `scripts/verify-kit.sh` asserts the component whenever the hap is present (kit #31+; a kit
 without it only logs that fact): `resources/rawfile/blazor/index.html`, at least one
 `_framework/*.wasm`, a `blazor.webassembly*.js` boot script, the stable
