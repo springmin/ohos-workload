@@ -12,7 +12,7 @@ using Microsoft.Maui.Platform;
 // after the fuzz tail) instead of letting every caller repeat its own threshold constant.
 VerifyLineCountingWriter verifyStdout = new(Console.Out);
 Console.SetOut(verifyStdout);
-const int verifyCheckTotal = 463;                     // documented full [verify] line count (+4 MS-MODE runtime mode switch, +10 P2c-DEEPLINK, +4 P2b-IMG, +16 P1b-LIST, +10 P1a-ANIM, +2 SEC3 storage/deep-link pins, +5 W-series WebView wiring, +3 T1 InputView mapping, +4 T2 WebView gaps, +4 T3 GraphicsView interaction, +7 T10 modal accessibility, +4 T4 Label formatted text, +4 T5 layout semantics, +6 T7 DatePicker calendar/min-max, +4 T9 window title bar, +4 T11 diagnostics overlay, +1 N2 empty ContentPage arrangement, +6 T8 TableView, +7 T6 RTL flow direction, +5 T22 MainThread bridge, +2 FIX-TABBED tabbed CurrentPage, +4 T13 group footer view/N3 picker IsOpen)
+const int verifyCheckTotal = 468;                     // documented full [verify] line count (+4 MS-MODE runtime mode switch, +10 P2c-DEEPLINK, +4 P2b-IMG, +16 P1b-LIST, +10 P1a-ANIM, +2 SEC3 storage/deep-link pins, +5 W-series WebView wiring, +3 T1 InputView mapping, +4 T2 WebView gaps, +4 T3 GraphicsView interaction, +7 T10 modal accessibility, +4 T4 Label formatted text, +4 T5 layout semantics, +6 T7 DatePicker calendar/min-max, +4 T9 window title bar, +4 T11 diagnostics overlay, +1 N2 empty ContentPage arrangement, +6 T8 TableView, +7 T6 RTL flow direction, +5 T22 MainThread bridge, +2 FIX-TABBED tabbed CurrentPage, +4 T13 group footer view/N3 picker IsOpen, +5 T21 system font scale)
 const int verifyCheckFloor = verifyCheckTotal - 20;   // documented floor convention (total - 20)
 
 // A small image file for the Image handler.
@@ -1823,6 +1823,139 @@ Console.WriteLine($"[verify] t22 begin-invoke shares the app dispatcher queue br
 if (!t22FifoOk)
 {
     throw new InvalidOperationException("MainThread.BeginInvokeOnMainThread did not post into the application dispatcher's queue (FIFO with IDispatcher.Dispatch)");
+}
+// ---- T21: system font scale -------------------------------------------------------------------
+// OpenHarmony reports the user's font size setting as a scale factor; the slice applies it at the
+// one boundary every text path shares (OpenHarmonyFontManager). The checks pin the public API
+// (default 1, clamps, invalid resets, the PublicAPI baseline entries), the logical MAUI font
+// values (a Label keeps FontSize 20 and its platform view keeps the logical size), the measured
+// plain and FormattedText blocks following the scale through the generation-keyed caches (and
+// serving the original metrics again after the reset), the entry caret metrics, and the scaled
+// size the draw pass hands the canvas through a recording canvas (the CanvasFactory test hook).
+
+string? t21ApiPath = FindHostSource("src/Core/src/PublicAPI/net-openharmony/PublicAPI.Unshipped.txt");
+string t21ApiText = t21ApiPath is null ? string.Empty : File.ReadAllText(t21ApiPath);
+bool t21ApiPin = t21ApiText.Contains("OpenHarmonyFontManager.SetSystemFontScale(float scale) -> void") &&
+    t21ApiText.Contains("OpenHarmonyFontManager.SystemFontScale.get -> float");
+float t21Default = OpenHarmonyFontManager.SystemFontScale;
+OpenHarmonyFontManager.SetSystemFontScale(99f);
+float t21ClampHigh = OpenHarmonyFontManager.SystemFontScale;
+OpenHarmonyFontManager.SetSystemFontScale(float.NaN);
+float t21Invalid = OpenHarmonyFontManager.SystemFontScale;
+OpenHarmonyFontManager.SetSystemFontScale(-2f);
+float t21Negative = OpenHarmonyFontManager.SystemFontScale;
+OpenHarmonyFontManager.SetSystemFontScale(0.1f);
+float t21ClampLow = OpenHarmonyFontManager.SystemFontScale;
+OpenHarmonyFontManager.SetSystemFontScale(1f);
+bool t21ApiOk = t21ApiPin
+    && Math.Abs(t21Default - 1f) < 0.0001f
+    && Math.Abs(t21ClampHigh - 3f) < 0.0001f
+    && Math.Abs(t21Invalid - 1f) < 0.0001f
+    && Math.Abs(t21Negative - 1f) < 0.0001f
+    && Math.Abs(t21ClampLow - 0.5f) < 0.0001f
+    && Math.Abs(OpenHarmonyFontManager.SystemFontScale - 1f) < 0.0001f;
+Console.WriteLine($"[verify] t21 font scale api default={t21Default} clampHigh={t21ClampHigh} invalid={t21Invalid} negative={t21Negative} clampLow={t21ClampLow} pin={t21ApiPin} assert={t21ApiOk}");
+if (!t21ApiOk)
+{
+    throw new InvalidOperationException("the T21 system font scale API (default, clamps, invalid values, public API pin) is missing or drifted");
+}
+
+// The plain label: the logical FontSize stays untouched while the measured block follows the
+// scale; returning to 1 must serve the original metrics again (the measurement/layout caches
+// are keyed by the scale generation, so a stale block can never come back).
+var t21Label = new Label { Text = "ScaleMe", FontSize = 20 };
+OpenHarmonyHandlerConnector.Connect(t21Label);
+var t21LabelHandler = (OpenHarmonyLabelHandler)t21Label.Handler!;
+var t21LabelView = (OpenHarmonyTextView)t21LabelHandler.PlatformView!;
+var t21Label1 = t21LabelHandler.GetDesiredSize(double.PositiveInfinity, double.PositiveInfinity);
+OpenHarmonyFontManager.SetSystemFontScale(2f);
+var t21Label2 = t21LabelHandler.GetDesiredSize(double.PositiveInfinity, double.PositiveInfinity);
+OpenHarmonyFontManager.SetSystemFontScale(1f);
+var t21Label3 = t21LabelHandler.GetDesiredSize(double.PositiveInfinity, double.PositiveInfinity);
+bool t21LabelOk = t21Label2.Width > t21Label1.Width * 1.9 &&
+    t21Label2.Height > t21Label1.Height * 1.9 &&
+    Math.Abs(t21Label3.Width - t21Label1.Width) < 0.01 &&
+    Math.Abs(t21Label3.Height - t21Label1.Height) < 0.01 &&
+    Math.Abs(t21LabelView.FontSize - 20f) < 0.001f;
+Console.WriteLine($"[verify] t21 label scale w={t21Label1.Width:0.#}->{t21Label2.Width:0.#}->{t21Label3.Width:0.#} h={t21Label1.Height:0.#}->{t21Label2.Height:0.#}->{t21Label3.Height:0.#} logical={t21LabelView.FontSize} assert={t21LabelOk}");
+if (!t21LabelOk)
+{
+    throw new InvalidOperationException("the T21 plain-text scaling (desired size follows the scale, caches invalidate, logical FontSize kept) is missing or drifted");
+}
+
+// FormattedText runs carry their own sizes: the run-aware layout measures them with the scale too.
+var t21FormattedLabel = new Label { FontSize = 16 };
+var t21Formatted = new FormattedString();
+t21Formatted.Spans.Add(new Span { Text = "big", FontSize = 40 });
+t21FormattedLabel.FormattedText = t21Formatted;
+OpenHarmonyHandlerConnector.Connect(t21FormattedLabel);
+var t21FormattedHandler = (OpenHarmonyLabelHandler)t21FormattedLabel.Handler!;
+var t21Formatted1 = t21FormattedHandler.GetDesiredSize(double.PositiveInfinity, double.PositiveInfinity);
+OpenHarmonyFontManager.SetSystemFontScale(1.5f);
+var t21Formatted2 = t21FormattedHandler.GetDesiredSize(double.PositiveInfinity, double.PositiveInfinity);
+OpenHarmonyFontManager.SetSystemFontScale(1f);
+bool t21FormattedOk = t21Formatted2.Width > t21Formatted1.Width * 1.4 &&
+    t21Formatted2.Height > t21Formatted1.Height * 1.4;
+Console.WriteLine($"[verify] t21 formatted scale w={t21Formatted1.Width:0.#}->{t21Formatted2.Width:0.#} h={t21Formatted1.Height:0.#}->{t21Formatted2.Height:0.#} assert={t21FormattedOk}");
+if (!t21FormattedOk)
+{
+    throw new InvalidOperationException("the T21 FormattedText run layout does not measure with the system font scale");
+}
+
+// The text entry: the drawn metrics (origin/caret) follow the scale; the same x lands on a
+// different caret index once the glyph advances double.
+var t21Entry = new Entry { Text = "abcd", FontSize = 20 };
+OpenHarmonyHandlerConnector.Connect(t21Entry);
+t21Entry.Measure(400, 40);
+t21Entry.Arrange(new Rect(0, 0, 400, 40));
+var t21EntryView = (OpenHarmonyView)t21Entry.Handler!.PlatformView!;
+float t21Caret1 = t21EntryView.TextPositionX("abcd", 4);
+int t21Index1 = t21EntryView.CursorIndexFromX(32);
+OpenHarmonyFontManager.SetSystemFontScale(2f);
+float t21Caret2 = t21EntryView.TextPositionX("abcd", 4);
+int t21Index2 = t21EntryView.CursorIndexFromX(32);
+OpenHarmonyFontManager.SetSystemFontScale(1f);
+int t21IndexBack = t21EntryView.CursorIndexFromX(32);
+float t21Origin = t21EntryView.TextOriginX("abcd");
+bool t21EntryOk = t21Caret2 - t21Origin > (t21Caret1 - t21Origin) * 1.9
+    && t21Index1 == 2 && t21Index2 == 1 && t21IndexBack == 2;
+Console.WriteLine($"[verify] t21 entry scale caret={t21Caret1:0.#}->{t21Caret2:0.#} index={t21Index1}->{t21Index2}->{t21IndexBack} origin={t21Origin:0.#} assert={t21EntryOk}");
+if (!t21EntryOk)
+{
+    throw new InvalidOperationException("the T21 text-entry metrics (caret position, hit index, back after reset) are missing or drifted");
+}
+
+// The draw path: the renderer is constructed with a recording canvas (the CanvasFactory hook);
+// the label's glyphs reach the canvas at the scaled size, and back at the logical size after
+// the scale resets.
+var t21DrawLabel = new Label { Text = "DrawMe", FontSize = 18, TextColor = Colors.White };
+OpenHarmonyHandlerConnector.Connect(t21DrawLabel);
+t21DrawLabel.Measure(200, 60);
+t21DrawLabel.Arrange(new Rect(0, 0, 200, 60));
+var t21Canvas = new T21RecordingCanvas();
+var t21SavedFactory = OpenHarmonyWindowRenderer.CanvasFactory;
+OpenHarmonyWindowRenderer.CanvasFactory = () => t21Canvas;
+try
+{
+    var t21DrawRenderer = new OpenHarmonyWindowRenderer();
+    t21DrawRenderer.Render(t21DrawLabel, 200, 60);
+    float t21Draw1 = t21Canvas.LastTextFontSize;
+    t21Canvas.Clear();
+    OpenHarmonyFontManager.SetSystemFontScale(2f);
+    t21DrawRenderer.Render(t21DrawLabel, 200, 60);
+    float t21Draw2 = t21Canvas.LastTextFontSize;
+    bool t21DrawOk = t21Canvas.LastText == "DrawMe" && Math.Abs(t21Draw1 - 18f) < 0.01f
+        && Math.Abs(t21Draw2 - 36f) < 0.01f;
+    Console.WriteLine($"[verify] t21 draw scale font={t21Draw1:0.#}->{t21Draw2:0.#} text='{t21Canvas.LastText}' assert={t21DrawOk}");
+    if (!t21DrawOk)
+    {
+        throw new InvalidOperationException("the T21 draw path does not hand the scaled size to the canvas");
+    }
+}
+finally
+{
+    OpenHarmonyFontManager.SetSystemFontScale(1f);
+    OpenHarmonyWindowRenderer.CanvasFactory = t21SavedFactory;
 }
 
 // T11: the window's VisualDiagnosticsOverlay (Controls' per-window IAdorner host) is initialized
@@ -10508,6 +10641,30 @@ sealed class TabbedProbeCanvas : Microsoft.OpenHarmony.Maui.Graphics.OpenHarmony
         Microsoft.Maui.Graphics.HorizontalAlignment horizontalAlignment,
         Microsoft.Maui.Graphics.VerticalAlignment verticalAlignment, float lineSpacingAdjustment = 0)
         => Texts.Add(value);
+}
+
+/// <summary>
+/// Text-draw recorder (T21): captures the last text the slice draws and the canvas font size at
+/// that moment, so the system font scale can be pinned at the draw boundary.
+/// </summary>
+sealed class T21RecordingCanvas : Microsoft.OpenHarmony.Maui.Graphics.OpenHarmonyCanvas
+{
+    public string? LastText { get; private set; }
+
+    public float LastTextFontSize { get; private set; }
+
+    public override void DrawString(string value, float x, float y, float width, float height,
+        HorizontalAlignment horizontalAlignment, VerticalAlignment verticalAlignment, float lineSpacingAdjustment = 0)
+    {
+        LastText = value;
+        LastTextFontSize = FontSize;
+    }
+
+    public void Clear()
+    {
+        LastText = null;
+        LastTextFontSize = 0f;
+    }
 }
 
 sealed class ProbeDrawable : Microsoft.Maui.Graphics.IDrawable

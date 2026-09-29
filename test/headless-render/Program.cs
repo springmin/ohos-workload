@@ -351,6 +351,64 @@ Check("rtl progress fills from the start (right) edge",
 Check("rtl progress leaves the track at the end (left) edge",
     canvas.GetPixel((int)(rtlBarFrame.X + 30), (int)(rtlBarFrame.Y + rtlBarFrame.Height / 2)), Colors.DimGray);
 
+// T21: the system font scale. The managed rasterizer draws text as a marker bar proportional to
+// the canvas font size, so the same label at the doubled scale must draw a visibly larger marker
+// (more gold pixels, extending past the unscaled width, at a lower line box). The probe appends
+// after the RTL probes, so every earlier frame and sample is unchanged.
+var scaleLabel = new Label { Text = "scale me", FontSize = 30, TextColor = Colors.Gold };
+root.Add(scaleLabel);
+host.Arrange(1080, 1920);
+RenderFresh();
+Rect scaleFrame1 = scaleLabel.Frame;
+
+int GoldPixels(Rect frame, out int lowestY, out int rightMostX)
+{
+    int count = 0;
+    lowestY = -1;
+    rightMostX = -1;
+    for (int y = (int)frame.Y; y < frame.Bottom; y++)
+    {
+        for (int x = (int)frame.X; x < frame.Right; x++)
+        {
+            Color pixel = canvas.GetPixel(x, y);
+            if (pixel.Red > 0.8f && pixel.Green > 0.6f && pixel.Blue < 0.3f)
+            {
+                count++;
+                lowestY = y;
+                rightMostX = Math.Max(rightMostX, x);
+            }
+        }
+    }
+    return count;
+}
+
+int scaleCount1 = GoldPixels(scaleFrame1, out int scaleLowest1, out int scaleRight1);
+OpenHarmonyFontManager.SetSystemFontScale(2f);
+host.Arrange(1080, 1920);
+RenderFresh();
+Rect scaleFrame2 = scaleLabel.Frame;
+int scaleCount2 = GoldPixels(scaleFrame2, out int scaleLowest2, out int scaleRight2);
+OpenHarmonyFontManager.SetSystemFontScale(1f);
+host.Arrange(1080, 1920);
+bool scaleTaller = scaleFrame2.Height > scaleFrame1.Height * 1.5;
+Console.WriteLine($"  [{(scaleTaller ? "PASS" : "FAIL")}] t21 scale frame taller: {scaleFrame1.Height:0.#} -> {scaleFrame2.Height:0.#}");
+if (!scaleTaller)
+{
+    failures++;
+}
+bool scaleGrew = scaleCount2 > scaleCount1 * 2;
+Console.WriteLine($"  [{(scaleGrew ? "PASS" : "FAIL")}] t21 scaled text marker grows: pixels {scaleCount1} -> {scaleCount2}");
+if (!scaleGrew)
+{
+    failures++;
+}
+bool scalePlaced = scaleLowest2 > scaleLowest1 && scaleRight2 > scaleRight1 + 20;
+Console.WriteLine($"  [{(scalePlaced ? "PASS" : "FAIL")}] t21 marker placement: lowest {scaleLowest1}->{scaleLowest2} rightmost {scaleRight1}->{scaleRight2}");
+if (!scalePlaced)
+{
+    failures++;
+}
+
 Color Blend(Color background, Color foreground, float alpha) => new(
     (float)(foreground.Red * alpha + background.Red * (1 - alpha)),
     (float)(foreground.Green * alpha + background.Green * (1 - alpha)),

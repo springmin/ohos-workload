@@ -49,7 +49,7 @@ allocation and jitter) budgets are exceeded.
 # (or the MauiSliceDir / HostingDll / OpenHarmonyGraphicsDll MSBuild properties) before building
 # elsewhere; an explicit -p: value wins over the environment and the absolute fallbacks.
 dotnet build -v:q
-dotnet bin/Debug/net11.0/verify.dll | grep -c '\[verify\]'   # expect 463 (450 interaction checks + 4 fuzz + 1 frame perf + 8 a11y perf)
+dotnet bin/Debug/net11.0/verify.dll | grep -c '\[verify\]'   # expect 468 (455 interaction checks + 4 fuzz + 1 frame perf + 8 a11y perf)
 ```
 
 The `interaction-regression` workflow (`.github/workflows/interaction-regression.yml`) runs the
@@ -60,7 +60,7 @@ suite on a GitHub runner as a real gate (on push to `master`, on pull requests a
 points `MAUI_SLICE_DIR` / `HOSTING_DLL` / `OPENHARMONY_GRAPHICS_DLL` at those roots, and fails the
 job unless the run exits 0, the suite's own `[suite]` contract line reports `assert=True` with at
 least the floor declared in `Program.cs`, both perf lines report `within=True`, and no `Unhandled`
-line is logged. The floor (443 = 463 - 20, the documented convention) lives only in `Program.cs`;
+line is logged. The floor (448 = 468 - 20, the documented convention) lives only in `Program.cs`;
 the workflow and `scripts/preflight.sh` both read the printed `[suite] checks=... floor=...` line
 instead of repeating a literal, so the two local/CI thresholds cannot drift apart.
 
@@ -178,8 +178,8 @@ parse.
   blocks codesigned ELF apphosts on some machines).
 - The suite fails loudly (unhandled exception) when a slice change breaks startup or when an
   assertion for the gesture flows (including the drag-and-drop checks) does not hold; keep it at
-  450 interaction checks plus the 4 fuzz lines plus the 1 frame-perf line plus the 8 a11y-perf
-  lines (463 `[verify]` lines) when touching the platform slice. The total and the floor
+  455 interaction checks plus the 4 fuzz lines plus the 1 frame-perf line plus the 8 a11y-perf
+  lines (468 `[verify]` lines) when touching the platform slice. The total and the floor
   (total - 20) are declared in `Program.cs`; the run ends with a `[suite] checks=... floor=...
   assert=...` line and fails itself when the printed count is below the floor, so the CI job and
   `scripts/preflight.sh` do not repeat the threshold.
@@ -973,3 +973,26 @@ parse.
   selection. That is 4 new lines on top of the T22 and FIX-TABBED lines: 459 + 4 = 463 =
   450 interaction checks + 4 fuzz + 1 frame perf + 8 a11y perf; the workflow floor moves
   with the total (463 - 20 = 443).
+- **T21 system font scale (5 lines, 2026-09-29)** - OpenHarmony reports the user's font size
+  setting as a scale factor; the slice now applies it at the one boundary every text path shares,
+  `OpenHarmonyFontManager` (public `SetSystemFontScale(float)` / `SystemFontScale`, non-finite or
+  non-positive resets to 1, clamped to 0.5..3, with the two `PublicAPI.Unshipped.txt` entries).
+  MAUI font values stay logical (a Label keeps `FontSize` 20) while `ScaleFontSize` multiplies at
+  the measurement and drawing boundary: the plain and `FormattedText` run drawing scale
+  `canvas.FontSize` (bold offset and decoration metrics included), the entry/editor/searchbar
+  text, placeholder, IME composition and per-character caret metrics scale, and the self-drawn
+  chrome (picker values/dropdown rows, calendar labels, tab captions, title/navigation bars,
+  stepper, swipe panel, flyout rows, alerts, tooltips) scales its fixed sizes; a scale of 1 is
+  identity, so existing output is unchanged. Text-measure caches carry the scale generation
+  (label measurement key, view line-break/formatted/natural-height/char-width caches), so a
+  scale change can never serve stale metrics. `t21 font scale api` pins the defaults, the reset
+  and both clamps plus the public-API baseline; `t21 label scale` requires the desired size to
+  double at scale 2, the original metrics to return at scale 1 and the logical `FontSize` to
+  stay 20; `t21 formatted scale` requires the run-aware layout to scale; `t21 entry scale`
+  requires the caret x to double (minus the fixed origin) and the caret hit at one x to move
+  from index 2 to 1; `t21 draw scale` renders through a recording canvas (`CanvasFactory`) and
+  requires the glyph draw at 18 then 36. The pixel suite adds three checks: the label's frame
+  grows (40.5 -> 81), the marker pixel count grows (360 -> 1680), and the marker draws lower and
+  wider (rightmost 145 -> 265). That is 5 new lines on top of the T22 (+5) line:
+  463 + 5 = 468 = 455 interaction checks + 4 fuzz + 1 frame perf + 8 a11y perf; the workflow
+  floor moves with the total (468 - 20 = 448).
