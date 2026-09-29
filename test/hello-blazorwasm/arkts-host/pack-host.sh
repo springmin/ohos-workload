@@ -31,10 +31,17 @@
 #   --slim            drop .br/.gz/.map from the embedded site (the host serves the
 #                     uncompressed copies; a full 71 MB site shrinks by ~26 MB and an
 #                     InvariantGlobalization publish another few MB)
+#   --no-csp          diagnostic A/B build: strip the Content-Security-Policy header from the
+#                     staged host page (default keeps it). Use to decide whether the CSP is a
+#                     cause of an ArkWeb render failure: if the no-CSP twin renders where the
+#                     default does not, the CSP is at least a contributing cause; if neither
+#                     renders, the path fix is not enough / CSP is not the blocker. The default
+#                     output name gains a -nocsp suffix when --out is not given.
 #   --unsigned-only   stop after packing; copy the unsigned hap to --out for external
 #                     signing (the device-test kit consumes this variant)
 #   --help
 # env:
+#   BLZ_HOST_NO_CSP   =1 is equivalent to --no-csp
 #   OHOS_SDK_ROOT / OHOS_SDK   OpenHarmony SDK root (default: newest harmonybrew Cellar
 #                              ohos-sdk install; must hold toolchains/lib/{ohos_packing_tool,
 #                              hap-sign-tool,hap-sign-tool material})
@@ -62,20 +69,22 @@ WORK=""
 BUNDLE="com.example.opendotnet"
 SLIM=0
 UNSIGNED_ONLY=0
+NO_CSP="${BLZ_HOST_NO_CSP:-0}"
 while [ $# -gt 0 ]; do
     case "$1" in
         --out) shift; OUT="${1:-}" ;;
         --work) shift; WORK="${1:-}" ;;
         --bundle) shift; BUNDLE="${1:-}" ;;
         --slim) SLIM=1 ;;
+        --no-csp) NO_CSP=1 ;;
         --unsigned-only) UNSIGNED_ONLY=1 ;;
-        --help|-h) sed -n '2,52p' "$0"; exit 0 ;;
+        --help|-h) sed -n '2,57p' "$0"; exit 0 ;;
         -*) die "unknown option: $1 (see --help)" ;;
         *) [ -z "$SITE" ] || die "only one site directory may be given"; SITE="$1" ;;
     esac
     shift
 done
-[ -n "$SITE" ] || die "usage: pack-host.sh <site-dir> [--out <hap>] [--work <dir>] [--bundle <name>] [--slim] [--unsigned-only]"
+[ -n "$SITE" ] || die "usage: pack-host.sh <site-dir> [--out <hap>] [--work <dir>] [--bundle <name>] [--slim] [--no-csp] [--unsigned-only]"
 [ -f "$SITE/index.html" ] || die "$SITE does not look like a Blazor site (no index.html)"
 SITE="$(cd "$SITE" && pwd)"
 if [ -z "$OUT" ]; then
@@ -84,6 +93,7 @@ if [ -z "$OUT" ]; then
     else
         OUT="$SELF/out/hello-blazorwasm-host-signed.hap"
     fi
+    [ "$NO_CSP" = 1 ] && OUT="${OUT%.hap}-nocsp.hap"
 fi
 WORK="${WORK:-$SELF/out/host-work}"
 
@@ -144,6 +154,37 @@ for c in ets js native previewer toolchains; do
 done
 printf 'sdk.dir=%s\nnodejs.dir=%s\n' "$WORK/sdk" "${NODE_HOME:-$HOME/.harmonybrew}" > "$WORK/project/local.properties"
 ln -sfn "$HVIGOR_MODULES" "$WORK/project/node_modules"
+
+# ---- diagnostic no-CSP variant (FIX-BLZ-PATH A/B) ---------------------------
+# The default build serves the HTML shell with the SEC-SCAN-3 S3-AW2 CSP header. The --no-csp
+# twin strips that header only from the staged copy (the committed source keeps it), so the
+# device run can compare "CSP on" vs "CSP off" without a second code path. The unit test and
+# its source pins still run against the committed page.
+if [ "$NO_CSP" = 1 ]; then
+    info "no-csp: stripping the Content-Security-Policy header from the staged host page"
+    python3 - "$WORK/project/entry/src/main/ets/pages/Index.ets" <<'PY'
+import sys
+path = sys.argv[1]
+with open(path, encoding='utf-8') as f:
+    src = f.read()
+needle = """    if (path.toLowerCase().endsWith('.html')) {
+      headers.push({
+        headerKey: 'Content-Security-Policy',
+        headerValue: CONTENT_SECURITY_POLICY,
+      });
+    }
+"""
+if src.count(needle) != 1:
+    raise SystemExit("--no-csp: the CSP header block was not found exactly once in " + path)
+replacement = """    // BLZ_HOST_NO_CSP diagnostic build: no Content-Security-Policy header is emitted here.
+    // The default build keeps the SEC-SCAN-3 S3-AW2 header; this twin serves without it for
+    // the device A/B comparison of the CSP as a render-failure cause.
+"""
+with open(path, 'w', encoding='utf-8') as f:
+    f.write(src.replace(needle, replacement))
+print("   no-csp: removed the HTML Content-Security-Policy header push")
+PY
+fi
 
 cat > "$WORK/project/build-profile.json5" <<EOF
 {
@@ -382,6 +423,11 @@ echo
 echo "OK: $OUT"
 echo "    size: $SIZE  sha256: $SHA"
 echo "    bundle: $BUNDLE  embedded site files: $RAW_COUNT"
+if [ "$NO_CSP" = 1 ]; then
+    echo "    csp: disabled (BLZ_HOST_NO_CSP diagnostic A/B twin; the default build serves the CSP)"
+else
+    echo "    csp: SEC-SCAN-3 minimal policy on the HTML shell"
+fi
 if [ "$UNSIGNED_ONLY" = 1 ]; then
     echo "    unsigned: sign before installing, e.g."
     echo "      hap-sign-tool sign-app -mode localSign -keyAlias <alias> -signAlg SHA256withECDSA \\"
