@@ -6,7 +6,7 @@
     <ImplicitUsings>enable</ImplicitUsings>
   </PropertyGroup>
   <ItemGroup>
-    <PackageReference Include="Microsoft.Maui.Graphics" Version="11.0.0-rc.1.26451.6" />
+    <PackageReference Include="Microsoft.Maui.Graphics" Version="11.0.0-rc.2.26478.12" />
     <Reference Include="Microsoft.OpenHarmony.Maui.Graphics">
       <HintPath>$(MSBuildThisFileDirectory)../../src/Microsoft.OpenHarmony.Maui.Graphics/bin/Release/net11.0/Microsoft.OpenHarmony.Maui.Graphics.dll</HintPath>
       <Private>false</Private>
