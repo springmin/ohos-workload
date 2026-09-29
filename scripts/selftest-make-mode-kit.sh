@@ -4,7 +4,8 @@
 #
 #   T1 usage       sh -n passes; --help lists the three modes; an unknown option/mode exits 2
 #   T2 dry-run     one publish command per mode with the MS-MODE switch and the mode-specific
-#                  properties (aot: PublishAot/PublishAotUsingRuntimePack/NativeLib; interp:
+#                  properties (aot: PublishAot/PublishAotUsingRuntimePack/NativeLib plus the
+#                  default OpenHarmonyUIPage=pages/Index, which a --property overrides; interp:
 #                  OpenHarmonyInterpreterPack); --mode restricts the run; --property passes
 #                  through; --sign prints the sign-for-device.sh invocations and never injects
 #                  a password; nothing is written
@@ -241,6 +242,16 @@ assert_contains "T2 the aot publish uses the runtime pack" "-p:PublishAotUsingRu
 assert_contains "T2 the aot publish builds a shared library" "-p:NativeLib=Shared" "$WORK/T2-all.out"
 assert_contains "T2 the interp publish points at the pack" "-p:OpenHarmonyInterpreterPack=$FIX/pack" "$WORK/T2-all.out"
 assert_contains "T2 --property is forwarded" "-p:OpenHarmonyUIPage=pages/Index" "$WORK/T2-all.out"
+run_mk T2-aot-ui --project "$FIX/FakeApp.csproj" --tfm t --out-dir "$WORK/out-t2" --mode aot --dry-run
+assert_rc 0 $LAST_RC "T2 --mode aot without --property exits 0"
+assert_contains "T2 the aot default stages the UI shell page" "-p:OpenHarmonyUIPage=pages/Index" "$WORK/T2-aot-ui.out"
+T2_UI_LINES="$(grep -c -- '-p:OpenHarmonyUIPage=' "$WORK/T2-aot-ui.out" || true)"
+[ "$T2_UI_LINES" = 1 ] && pass_ "T2 the aot default page appears exactly once" \
+                       || fail_ "T2 printed $T2_UI_LINES OpenHarmonyUIPage properties (expected 1)"
+run_mk T2-aot-ui-override --project "$FIX/FakeApp.csproj" --tfm t --out-dir "$WORK/out-t2" --mode aot \
+    --property OpenHarmonyUIPage=pages/Custom --dry-run
+assert_contains "T2 --property wins over the aot default page" "-p:OpenHarmonyUIPage=pages/Custom" "$WORK/T2-aot-ui-override.out"
+assert_not_contains "T2 an overridden aot publish carries no default page" "pages/Index" "$WORK/T2-aot-ui-override.out"
 T2_PUBS="$(grep -c '^+ .*publish ' "$WORK/T2-all.out" || true)"
 [ "$T2_PUBS" = 3 ] && pass_ "T2 the dry run prints 3 publish commands" \
                    || fail_ "T2 printed $T2_PUBS publish commands (expected 3)"

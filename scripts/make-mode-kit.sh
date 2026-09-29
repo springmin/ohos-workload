@@ -13,7 +13,10 @@
 #   jit     the default publish; the hap keeps the stock runtime natives and the JIT route
 #   aot     -p:PublishAot=true -p:PublishAotUsingRuntimePack=true -p:NativeLib=Shared (the
 #           aot-haps recipe); the hap must carry lib<stem>.so in libs/<abi>/ (stem = the
-#           app.json assembly name without .dll)
+#           app.json assembly name without .dll). The publish also stages the ArkTS UI shell
+#           (-p:OpenHarmonyUIPage=pages/Index by default, override with --property): without a
+#           page the hap carries the headless abc (empty main_pages, no XComponent/loadContent)
+#           and the MAUI window paints nothing
 #   interp  -p:OpenHarmonyRuntimeMode=interp -p:OpenHarmonyInterpreterPack=<dir> (an extracted
 #           ohos-interpreter-pack: libcoreclr.so + libclrinterpreter.so under <dir>/ or
 #           <dir>/native/); the hap must carry both swapped libraries
@@ -86,7 +89,10 @@ subdirectory per mode plus a SHA256SUMS over every hap.
                           (default: <project>/bin/<configuration>/<tfm>/<rid>)
   --property <name=value> extra MSBuild property, repeatable (e.g.
                           --property OpenHarmonyUIPage=pages/Index); the runtime-mode switch is
-                          appended after these, so the kit always wins over a passed property
+                          appended after these, so the kit always wins over a passed property.
+                          --mode aot also defaults OpenHarmonyUIPage=pages/Index (the prebuilt
+                          UI shell's page) unless --property supplies one: an AOT hap without
+                          a page ships the headless abc and shows a white window on device
   --dry-run               print the publish/sign commands without running them
   --sign <args...>        re-sign each mode hap in place via scripts/sign-for-device.sh; every
                           argument after --sign is passed through (device mode: a UDID;
@@ -354,6 +360,18 @@ verify_mode() {
     esac
 }
 
+# props_has <name>: 0 when --property already carries <name>=... (line-wise, so a prefix of a
+# longer property name never matches)
+props_has() {
+    case "
+$PROPS
+" in
+        *"
+$1="*) return 0 ;;
+    esac
+    return 1
+}
+
 publish_mode() {
     _mode="$1"
     _od="$OUT/$_mode"
@@ -372,7 +390,13 @@ publish_mode() {
     case "$_mode" in
         jit)    set -- "$@" -p:OpenHarmonyRuntimeMode=jit ;;
         aot)    set -- "$@" -p:PublishAot=true -p:PublishAotUsingRuntimePack=true -p:NativeLib=Shared \
-                             -p:CopyOutputSymbolsToPublishDirectory=false -p:OpenHarmonyRuntimeMode=aot ;;
+                             -p:CopyOutputSymbolsToPublishDirectory=false -p:OpenHarmonyRuntimeMode=aot
+                # The AOT hap must carry the UI shell: without OpenHarmonyUIPage the pack stages
+                # templates/ets/modules.abc (headless) and an empty main_pages.json, so the hap
+                # has no XComponent/loadContent and the device paints a white window (the
+                # aot-haps v1/v2 blank-window root cause). pages/Index is the prebuilt UI
+                # shell's page; a caller-supplied --property OpenHarmonyUIPage=... wins.
+                props_has OpenHarmonyUIPage || set -- "$@" -p:OpenHarmonyUIPage=pages/Index ;;
         interp) set -- "$@" -p:OpenHarmonyRuntimeMode=interp -p:OpenHarmonyInterpreterPack="$PACK" ;;
     esac
     if [ "$DRY" = 1 ]; then

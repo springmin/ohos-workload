@@ -242,6 +242,9 @@ publish_variant() {
     else
         log "== publishing $_tfm =="
     fi
+    # OpenHarmonyUIPage is required, not cosmetic: it selects the UI ArkTS shell (XComponent +
+    # loadContent) and writes main_pages.json. Without it the hap carries the headless abc and
+    # the window paints nothing (see docs/openharmony-hap-packaging.md "NativeAOT HAP variant").
     set -- "$PROJ" -c Release -r openharmony-arm64 -m:1 \
         -p:OpenHarmonyUIPage=pages/Index \
         -p:OpenHarmonyArktsModulesAbc="$DIST_DIR/ets/modules.abc" \

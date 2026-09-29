@@ -257,7 +257,7 @@ running them.
 | mode | publish | assertion before the hap is kept |
 |---|---|---|
 | `jit` | the default publish | `libs/<abi>/runtime-mode.txt` reads `jit` |
-| `aot` | `-p:PublishAot=true -p:PublishAotUsingRuntimePack=true -p:NativeLib=Shared` (the aot-haps recipe) | marker `aot` and `libs/<abi>/lib<stem>.so` present (`<stem>` = the `app.json` assembly without `.dll`) |
+| `aot` | `-p:PublishAot=true -p:PublishAotUsingRuntimePack=true -p:NativeLib=Shared` (the aot-haps recipe) plus `-p:OpenHarmonyUIPage=pages/Index` unless `--property` supplies another page (the UI shell must be staged; see "NativeAOT HAP variant") | marker `aot` and `libs/<abi>/lib<stem>.so` present (`<stem>` = the `app.json` assembly without `.dll`) |
 | `interp` | `-p:OpenHarmonyInterpreterPack=<dir>` (an extracted `ohos-interpreter-pack`) | marker `interp` and both swapped `libcoreclr.so` + `libclrinterpreter.so` present |
 
 A missing or mismatching marker, a missing AOT application library, a missing interpreter library
@@ -1262,8 +1262,21 @@ dotnet publish test/hello-maui-app/hello-maui-app.csproj \
     -f net11.0-openharmony26.0 -r openharmony-arm64 -c Release \
     -p:PublishAot=true -p:PublishAotUsingRuntimePack=true \
     -p:CopyOutputSymbolsToPublishDirectory=false \
+    -p:OpenHarmonyUIPage=pages/Index \
     -p:OpenHarmonyHapPackage=true -p:OpenHarmonySdkRoot=$OHOS_SDK
 ```
+
+- **The UI shell is mandatory and shared with the JIT route: `-p:OpenHarmonyUIPage=pages/Index`.**
+  Set, the pack writes `resources/base/profile/main_pages.json` and stages
+  `templates/ets/modules.ui.abc` (the ArkTS shell with `XComponent` + `loadContent`); unset, it
+  stages the headless `templates/ets/modules.abc` and an empty `main_pages.json`. An AOT publish
+  without the property produces a hap with no ArkUI content at all: the MAUI window stays white
+  and WMSDecor logs `IsHitTitleBar: uiContent is null`, at the same time the app process, its
+  .NET threads and its `start_app` call all look healthy. That is the aot-haps v1/v2 defect,
+  fixed by the v3 rebuild (`test/hello-maui-app/AOT.md`; evidence in
+  `runtime-ohos/docs/plans/2026-09-29-ohos-local-device-test-runbook.md` §5).
+  `scripts/make-device-test-kit.sh` (JIT) carries the property; `scripts/make-mode-kit.sh --mode
+  aot` defaults it unless `--property OpenHarmonyUIPage=<page>` overrides it.
 
 - `PublishAotUsingRuntimePack=true` is required: it is what makes the SDK's framework-reference
   processing pick the AOT `KnownRuntimePack` (widened to openharmony-arm64 in the pack, see
