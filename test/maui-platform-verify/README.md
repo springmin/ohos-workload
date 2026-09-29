@@ -49,7 +49,7 @@ allocation and jitter) budgets are exceeded.
 # (or the MauiSliceDir / HostingDll / OpenHarmonyGraphicsDll MSBuild properties) before building
 # elsewhere; an explicit -p: value wins over the environment and the absolute fallbacks.
 dotnet build -v:q
-dotnet bin/Debug/net11.0/verify.dll | grep -c '\[verify\]'   # expect 473 (460 interaction checks + 4 fuzz + 1 frame perf + 8 a11y perf)
+dotnet bin/Debug/net11.0/verify.dll | grep -c '\[verify\]'   # expect 478 (465 interaction checks + 4 fuzz + 1 frame perf + 8 a11y perf)
 ```
 
 The `interaction-regression` workflow (`.github/workflows/interaction-regression.yml`) runs the
@@ -60,7 +60,7 @@ suite on a GitHub runner as a real gate (on push to `master`, on pull requests a
 points `MAUI_SLICE_DIR` / `HOSTING_DLL` / `OPENHARMONY_GRAPHICS_DLL` at those roots, and fails the
 job unless the run exits 0, the suite's own `[suite]` contract line reports `assert=True` with at
 least the floor declared in `Program.cs`, both perf lines report `within=True`, and no `Unhandled`
-line is logged. The floor (453 = 473 - 20, the documented convention) lives only in `Program.cs`;
+line is logged. The floor (458 = 478 - 20, the documented convention) lives only in `Program.cs`;
 the workflow and `scripts/preflight.sh` both read the printed `[suite] checks=... floor=...` line
 instead of repeating a literal, so the two local/CI thresholds cannot drift apart.
 
@@ -178,8 +178,8 @@ parse.
   blocks codesigned ELF apphosts on some machines).
 - The suite fails loudly (unhandled exception) when a slice change breaks startup or when an
   assertion for the gesture flows (including the drag-and-drop checks) does not hold; keep it at
-  460 interaction checks plus the 4 fuzz lines plus the 1 frame-perf line plus the 8 a11y-perf
-  lines (473 `[verify]` lines) when touching the platform slice. The total and the floor
+  465 interaction checks plus the 4 fuzz lines plus the 1 frame-perf line plus the 8 a11y-perf
+  lines (478 `[verify]` lines) when touching the platform slice. The total and the floor
   (total - 20) are declared in `Program.cs`; the run ends with a `[suite] checks=... floor=...
   assert=...` line and fails itself when the printed count is below the floor, so the CI job and
   `scripts/preflight.sh` do not repeat the threshold.
@@ -1030,3 +1030,27 @@ parse.
   keeps its own moved position while pointer 9 moves. That is 3 new lines on top of the
   A11Y-TABBED line: 470 + 3 = 473 = 460 interaction checks + 4 fuzz + 1 frame perf + 8 a11y
   perf; the workflow floor moves with the total (473 - 20 = 453).
+- **T12 CarouselView group slides (5 lines, 2026-09-29)** - `CarouselView` derives from
+  `ItemsView`; it has no grouping API in this MAUI version (no `IsGrouped`, no
+  `GroupHeaderTemplate`/`GroupFooterTemplate` - those live on `GroupableItemsView`, which only
+  `CollectionView` derives from), so the slice flattened a grouped `ItemsSource` (every element
+  a non-string collection) to its item slides and reported the missing headers/footers once.
+  The new platform attached properties `OpenHarmonyCarouselView.GroupHeaderTemplate` /
+  `GroupFooterTemplate` (code-behind or XAML; `PublicAPI.Unshipped.txt` entries) attach the
+  missing half: with a template set, the handler's slide stream gains a header and/or footer
+  slide around every group, realised from the template and bound to the group object (a `Label`
+  template included - its bindings resolve like any item template). A template change
+  re-materialises a connected carousel and re-syncs `CurrentItem`; clearing a template removes
+  its slides. `Position`/`CurrentItem`/`ScrollTo`/the page-indicator dot count all run over the
+  slide stream, and a template that materialises content which is not a `View` is reported once
+  and the group falls back to the item template. `t12 grouped no-template` requires a grouped
+  carousel without templates to stay the legacy flatten (4 item slides, first text `a1`);
+  `t12 grouped templates` requires the 8-slide stream
+  `GroupHeader,Item,Item,GroupFooter,GroupHeader,Item,Item,GroupFooter` with the header slide
+  rendered (`H:g1`) and bound to the group object; `t12 grouped footer` sets `Position` 3 and
+  requires the footer slide (`F:g1`, `CurrentItem` = group 1); `t12 grouped swipe` swipes from
+  the group-1 footer onto the group-2 header (position 4, `H:g2`, `CurrentItem` = group 2);
+  `t12 grouped clear header` clears the header template and requires the 6-slide items+footers
+  stream, the rendered slide `b2` at the retained position 4 and `CurrentItem` following. That
+  is 5 new lines on top of the N1 line: 473 + 5 = 478 = 465 interaction checks + 4 fuzz +
+  1 frame perf + 8 a11y perf; the workflow floor moves with the total (478 - 20 = 458).

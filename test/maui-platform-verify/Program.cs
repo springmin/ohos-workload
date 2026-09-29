@@ -12,7 +12,7 @@ using Microsoft.Maui.Platform;
 // after the fuzz tail) instead of letting every caller repeat its own threshold constant.
 VerifyLineCountingWriter verifyStdout = new(Console.Out);
 Console.SetOut(verifyStdout);
-const int verifyCheckTotal = 473;                     // documented full [verify] line count (+4 MS-MODE runtime mode switch, +10 P2c-DEEPLINK, +4 P2b-IMG, +16 P1b-LIST, +10 P1a-ANIM, +2 SEC3 storage/deep-link pins, +5 W-series WebView wiring, +3 T1 InputView mapping, +4 T2 WebView gaps, +4 T3 GraphicsView interaction, +7 T10 modal accessibility, +4 T4 Label formatted text, +4 T5 layout semantics, +6 T7 DatePicker calendar/min-max, +4 T9 window title bar, +4 T11 diagnostics overlay, +1 N2 empty ContentPage arrangement, +6 T8 TableView, +7 T6 RTL flow direction, +5 T22 MainThread bridge, +2 FIX-TABBED tabbed CurrentPage, +4 T13 group footer view/N3 picker IsOpen, +5 T21 system font scale, +2 A11Y-TABBED tabbed accessibility, +3 N1 host multi-pointer)
+const int verifyCheckTotal = 478;                     // documented full [verify] line count (+4 MS-MODE runtime mode switch, +10 P2c-DEEPLINK, +4 P2b-IMG, +16 P1b-LIST, +10 P1a-ANIM, +2 SEC3 storage/deep-link pins, +5 W-series WebView wiring, +3 T1 InputView mapping, +4 T2 WebView gaps, +4 T3 GraphicsView interaction, +7 T10 modal accessibility, +4 T4 Label formatted text, +4 T5 layout semantics, +6 T7 DatePicker calendar/min-max, +4 T9 window title bar, +4 T11 diagnostics overlay, +1 N2 empty ContentPage arrangement, +6 T8 TableView, +7 T6 RTL flow direction, +5 T22 MainThread bridge, +2 FIX-TABBED tabbed CurrentPage, +4 T13 group footer view/N3 picker IsOpen, +5 T21 system font scale, +2 A11Y-TABBED tabbed accessibility, +3 N1 host multi-pointer, +5 T12 CarouselView group slides)
 const int verifyCheckFloor = verifyCheckTotal - 20;   // documented floor convention (total - 20)
 
 // A small image file for the Image handler.
@@ -8026,26 +8026,44 @@ if (!n20CreateOk)
         $"the PI1 Create=0 / pre-Run activation contract drifted: templates={n20CreateSendOk} hostPreRun={n20HostCreateOk}");
 }
 
-// PI1-3: the CarouselView grouping flatten. CarouselView has no group concept, so a grouped
-// ItemsSource (every element a collection) is materialised to its items with a one-time status
-// note, and the page indicator counts the same materialised slides.
+// PI1-3: the CarouselView slide stream. CarouselView has no group concept of its own, so a
+// grouped ItemsSource (every element a collection) is materialised to its items with a one-time
+// status note; with the OpenHarmonyCarouselView group templates set, a header/footer slide is
+// emitted around every group instead (the T12 checks), and the page indicator counts the same
+// slide stream.
 string? n21CarouselPath = FindHostSource("OpenHarmonyCarouselViewHandler.cs");
 string n21Carousel = n21CarouselPath is null ? string.Empty : File.ReadAllText(n21CarouselPath);
 string? n21RendererPath = FindHostSource("OpenHarmonyWindowRenderer.cs");
 string n21Renderer = n21RendererPath is null ? string.Empty : File.ReadAllText(n21RendererPath);
-bool n21FlattenOk = n21Carousel.Contains("internal static List<object?> MaterializeItems(ItemsView itemsView)") &&
+string? n21GroupViewPath = FindHostSource("OpenHarmonyCarouselView.cs");
+string n21GroupView = n21GroupViewPath is null ? string.Empty : File.ReadAllText(n21GroupViewPath);
+string? n21ApiPath = FindHostSource("src/Core/src/PublicAPI/net-openharmony/PublicAPI.Unshipped.txt");
+string n21Api = n21ApiPath is null ? string.Empty : File.ReadAllText(n21ApiPath);
+bool n21SlidesOk = n21Carousel.Contains("internal static List<CarouselSlide> MaterializeSlides(ItemsView itemsView)") &&
     n21Carousel.Contains("if (items.Count == 0 || !items.All(IsGroup))") &&
     n21Carousel.Contains("OpenHarmonyStatus.Once(\"carousel.grouped\",") &&
     n21Carousel.Contains("private static bool IsGroup(object? item)") &&
     n21Carousel.Contains("=> item is System.Collections.IEnumerable && item is not string;") &&
-    n21Carousel.Contains("foreach (object? item in (System.Collections.IEnumerable)group!)");
-bool n21IndicatorOk = n21Renderer.Contains("int count = OpenHarmonyCarouselViewHandler.MaterializeItems(view).Count;");
-bool n21CarouselOk = n21FlattenOk && n21IndicatorOk;
-Console.WriteLine($"[verify] pi1 carousel flatten={n21FlattenOk} indicator={n21IndicatorOk} source='{n21CarouselPath ?? "<missing>"}' assert={n21CarouselOk}");
+    n21Carousel.Contains("foreach (object? item in (System.Collections.IEnumerable)group!)") &&
+    n21Carousel.Contains("new CarouselSlide(group, CarouselSlideKind.GroupHeader)") &&
+    n21Carousel.Contains("new CarouselSlide(group, CarouselSlideKind.GroupFooter)") &&
+    n21Carousel.Contains("OpenHarmonyCarouselView.GetGroupHeaderTemplate(carousel)") &&
+    n21Carousel.Contains("OpenHarmonyCarouselView.GetGroupFooterTemplate(carousel)");
+bool n21IndicatorOk = n21Renderer.Contains("int count = OpenHarmonyCarouselViewHandler.MaterializeSlides(view).Count;");
+bool n21GroupApiOk = n21GroupView.Contains("public static class OpenHarmonyCarouselView") &&
+    n21GroupView.Contains("GroupHeaderTemplateProperty = BindableProperty.CreateAttached(") &&
+    n21GroupView.Contains("GroupFooterTemplateProperty = BindableProperty.CreateAttached(") &&
+    n21GroupView.Contains("public static void SetGroupHeaderTemplate(BindableObject target, DataTemplate? value)") &&
+    n21GroupView.Contains("handler.RebuildFromGroupTemplates();") &&
+    n21Api.Contains("Microsoft.Maui.Platform.OpenHarmonyCarouselView") &&
+    n21Api.Contains("OpenHarmonyCarouselView.GroupHeaderTemplateProperty -> Microsoft.Maui.Controls.BindableProperty!") &&
+    n21Api.Contains("OpenHarmonyCarouselView.SetGroupFooterTemplate(");
+bool n21CarouselOk = n21SlidesOk && n21IndicatorOk && n21GroupApiOk;
+Console.WriteLine($"[verify] pi1 carousel slides={n21SlidesOk} indicator={n21IndicatorOk} groupapi={n21GroupApiOk} source='{n21CarouselPath ?? "<missing>"}' assert={n21CarouselOk}");
 if (!n21CarouselOk)
 {
     throw new InvalidOperationException(
-        $"the PI1 carousel grouping contract drifted: flatten={n21FlattenOk} indicator={n21IndicatorOk}");
+        $"the PI1 carousel slide-stream contract drifted: slides={n21SlidesOk} indicator={n21IndicatorOk} groupapi={n21GroupApiOk}");
 }
 
 // PI1-4: the shadow mapper + DrawShadow. The renderer draws each platform view's IShadow through
@@ -10313,6 +10331,105 @@ OpenHarmonyAnimationLoop.Clock = p1bSavedClock;
 if (p1bFailures > 0)
 {
     throw new InvalidOperationException($"the P1b-LIST checks failed ({p1bFailures})");
+}
+
+// ---- T12 CarouselView group slides -------------------------------------------------------------
+// A grouped carousel flattens to item slides by default (CarouselView has no group templates of
+// its own). OpenHarmonyCarouselView.GroupHeaderTemplate/GroupFooterTemplate attach the missing
+// half: with a template set the slide stream gains a header/footer slide per group, bound to the
+// group object; the attached-property change re-materialises a connected carousel (Position,
+// CurrentItem and the page-indicator count then all run over the slide stream), and clearing a
+// template removes its slides again.
+int t12Failures = 0;
+void T12Check(bool ok, string detail)
+{
+    if (!ok)
+    {
+        t12Failures++;
+    }
+    Console.WriteLine($"[verify] t12 {detail} assert={ok}");
+}
+
+var t12Groups = new List<T13Group>
+{
+    new("g1", new[] { "a1", "a2" }),
+    new("g2", new[] { "b1", "b2" }),
+};
+DataTemplate t12Item = new(() =>
+{
+    var label = new Label { FontSize = 30 };
+    label.SetBinding(Label.TextProperty, ".");
+    return label;
+});
+DataTemplate t12Header = new(() =>
+{
+    var label = new Label { FontSize = 28 };
+    label.SetBinding(Label.TextProperty, new Binding(nameof(T13Group.Name)) { StringFormat = "H:{0}" });
+    return label;
+});
+DataTemplate t12Footer = new(() =>
+{
+    var label = new Label { FontSize = 26 };
+    label.SetBinding(Label.TextProperty, new Binding(nameof(T13Group.Name)) { StringFormat = "F:{0}" });
+    return label;
+});
+var t12Carousel = new CarouselView
+{
+    ItemsSource = t12Groups,
+    ItemTemplate = t12Item,
+    HeightRequest = 140,
+};
+var t12Page = new ContentPage { Content = new VerticalStackLayout { Children = { t12Carousel } } };
+OpenHarmonyHandlerConnector.ConnectTree(t12Page);
+t12Page.Measure(1080, 220);
+t12Page.Arrange(new Rect(0, 0, 1080, 220));
+var t12Platform = (OpenHarmonyView)t12Carousel.Handler!.PlatformView!;
+string T12Kinds() => string.Join(",", Microsoft.Maui.Platform.OpenHarmonyCarouselViewHandler
+    .MaterializeSlides(t12Carousel).Select(slide => slide.Kind));
+string T12Current() => (t12Platform.ViewChildren.FirstOrDefault()?.Handler?.PlatformView as OpenHarmonyView)?.Text ?? "<none>";
+bool T12BoundTo(object group) => t12Platform.ViewChildren.FirstOrDefault() is View view &&
+    ReferenceEquals(view.BindingContext, group);
+
+var t12Flat = Microsoft.Maui.Platform.OpenHarmonyCarouselViewHandler.MaterializeSlides(t12Carousel);
+bool t12FlatOk = t12Flat.Count == 4 &&
+    t12Flat.All(slide => slide.Kind == Microsoft.Maui.Platform.OpenHarmonyCarouselViewHandler.CarouselSlideKind.Item) &&
+    T12Current() == "a1";
+T12Check(t12FlatOk, $"grouped no-template slides={t12Flat.Count} (4) kinds={T12Kinds()} text='{T12Current()}'");
+
+Microsoft.Maui.Platform.OpenHarmonyCarouselView.SetGroupHeaderTemplate(t12Carousel, t12Header);
+Microsoft.Maui.Platform.OpenHarmonyCarouselView.SetGroupFooterTemplate(t12Carousel, t12Footer);
+var t12All = Microsoft.Maui.Platform.OpenHarmonyCarouselViewHandler.MaterializeSlides(t12Carousel);
+bool t12AllOk = t12All.Count == 8 &&
+    T12Kinds() == "GroupHeader,Item,Item,GroupFooter,GroupHeader,Item,Item,GroupFooter" &&
+    ReferenceEquals(t12All[0].Data, t12Groups[0]) && Equals(t12All[1].Data, "a1") &&
+    ReferenceEquals(t12All[3].Data, t12Groups[0]) && T12Current() == "H:g1" && T12BoundTo(t12Groups[0]);
+T12Check(t12AllOk,
+    $"grouped templates slides={t12All.Count} (8) kinds={T12Kinds()} text='{T12Current()}' bound={T12BoundTo(t12Groups[0])}");
+
+t12Carousel.Position = 3;
+t12Carousel.Handler!.UpdateValue(nameof(Microsoft.Maui.Controls.CarouselView.Position));
+string t12FooterText = T12Current();
+bool t12FooterOk = t12FooterText == "F:g1" && t12Carousel.Position == 3 &&
+    ReferenceEquals(t12Carousel.CurrentItem, t12Groups[0]) && T12BoundTo(t12Groups[0]);
+T12Check(t12FooterOk,
+    $"grouped footer position={t12Carousel.Position} text='{t12FooterText}' currentItem={(t12Carousel.CurrentItem as T13Group)?.Name ?? "<none>"} bound={T12BoundTo(t12Groups[0])}");
+
+t12Platform.Swipe?.Invoke(-60f, 0f);
+string t12HeaderText = T12Current();
+bool t12SwipeOk = t12Carousel.Position == 4 && t12HeaderText == "H:g2" &&
+    ReferenceEquals(t12Carousel.CurrentItem, t12Groups[1]);
+T12Check(t12SwipeOk,
+    $"grouped swipe position={t12Carousel.Position} (4) text='{t12HeaderText}' currentItem={(t12Carousel.CurrentItem as T13Group)?.Name ?? "<none>"}");
+
+Microsoft.Maui.Platform.OpenHarmonyCarouselView.SetGroupHeaderTemplate(t12Carousel, null);
+var t12FooterOnly = Microsoft.Maui.Platform.OpenHarmonyCarouselViewHandler.MaterializeSlides(t12Carousel);
+bool t12ClearOk = t12FooterOnly.Count == 6 && T12Kinds() == "Item,Item,GroupFooter,Item,Item,GroupFooter" &&
+    T12Current() == "b2" && Equals(t12Carousel.CurrentItem, "b2");
+T12Check(t12ClearOk, $"grouped clear header slides={t12FooterOnly.Count} (6) kinds={T12Kinds()} text='{T12Current()}'");
+
+if (t12Failures > 0)
+{
+    throw new InvalidOperationException($"the T12 CarouselView group-slide checks failed ({t12Failures})");
 }
 
 // ---- Deterministic fuzz (bounded, seeded) -----------------------------------------------------
