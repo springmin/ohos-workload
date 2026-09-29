@@ -12,7 +12,7 @@ using Microsoft.Maui.Platform;
 // after the fuzz tail) instead of letting every caller repeat its own threshold constant.
 VerifyLineCountingWriter verifyStdout = new(Console.Out);
 Console.SetOut(verifyStdout);
-const int verifyCheckTotal = 498;                     // documented full [verify] line count (+4 MS-MODE runtime mode switch, +10 P2c-DEEPLINK, +4 P2b-IMG, +16 P1b-LIST, +10 P1a-ANIM, +2 SEC3 storage/deep-link pins, +5 W-series WebView wiring, +3 T1 InputView mapping, +4 T2 WebView gaps, +4 T3 GraphicsView interaction, +7 T10 modal accessibility, +4 T4 Label formatted text, +4 T5 layout semantics, +6 T7 DatePicker calendar/min-max, +4 T9 window title bar, +4 T11 diagnostics overlay, +1 N2 empty ContentPage arrangement, +6 T8 TableView, +7 T6 RTL flow direction, +5 T22 MainThread bridge, +2 FIX-TABBED tabbed CurrentPage, +4 T13 group footer view/N3 picker IsOpen, +5 T21 system font scale, +2 A11Y-TABBED tabbed accessibility, +3 N1 host multi-pointer, +5 T12 CarouselView group slides, +7 T14 rich shell flyout, +2 FIX-SHELL shell CurrentPage, +2 A11Y-SHELL shell accessibility, +7 T15 rich Shell.TitleView, +8 T16 structured menus)
+const int verifyCheckTotal = 501;                     // documented full [verify] line count (+4 MS-MODE runtime mode switch, +10 P2c-DEEPLINK, +4 P2b-IMG, +16 P1b-LIST, +10 P1a-ANIM, +2 SEC3 storage/deep-link pins, +5 W-series WebView wiring, +3 T1 InputView mapping, +4 T2 WebView gaps, +4 T3 GraphicsView interaction, +7 T10 modal accessibility, +4 T4 Label formatted text, +4 T5 layout semantics, +6 T7 DatePicker calendar/min-max, +4 T9 window title bar, +4 T11 diagnostics overlay, +1 N2 empty ContentPage arrangement, +6 T8 TableView, +7 T6 RTL flow direction, +5 T22 MainThread bridge, +2 FIX-TABBED tabbed CurrentPage, +4 T13 group footer view/N3 picker IsOpen, +5 T21 system font scale, +2 A11Y-TABBED tabbed accessibility, +3 N1 host multi-pointer, +5 T12 CarouselView group slides, +7 T14 rich shell flyout, +2 FIX-SHELL shell CurrentPage, +2 A11Y-SHELL shell accessibility, +7 T15 rich Shell.TitleView, +8 T16 structured menus, +3 N4 TitleBar accessibility row)
 const int verifyCheckFloor = verifyCheckTotal - 20;   // documented floor convention (total - 20)
 
 // A small image file for the Image handler.
@@ -2492,6 +2492,77 @@ Console.WriteLine($"[verify] t9 back showsBack={t9ShowsBack} stack={t9StackBefor
 if (!t9BackOk)
 {
     throw new InvalidOperationException("the Window.TitleBar back affordance (leading slot + IWindow.BackButtonClicked) is missing or drifted");
+}
+
+// N4: the Window.TitleBar row joins the accessibility shadow tree. The row is a logical child
+// of the window, not of the page the render walk starts from, so the shadow-tree walk seeds it
+// as the render root's first child: the title/subtitle texts and the template's controls are
+// published with canvas bounds inside the bar, and the page content stays below. Hiding or
+// clearing the TitleBar removes the row's nodes again.
+var n4Window = new Microsoft.Maui.Controls.Window(new ContentPage
+{
+    BackgroundColor = Colors.DarkSlateBlue,
+    Content = new VerticalStackLayout { Children = { new Label { Text = "N4 body" } } },
+});
+OpenHarmonyHandlerConnector.Connect(n4Window);
+int n4Clicks = 0;
+var n4Button = new Button { Text = "N4 action", FontSize = 14 };
+n4Button.Clicked += (_, _) => n4Clicks++;
+var n4Bar = new TitleBar { Title = "N4 title", Subtitle = "N4 sub", HeightRequest = 64, Content = n4Button };
+n4Window.TitleBar = n4Bar;
+var n4Page = (ContentPage)n4Window.Page;
+var n4Settle = System.Diagnostics.Stopwatch.StartNew();
+OpenHarmonyView? n4ButtonView = null;
+while (n4ButtonView is null && n4Settle.ElapsedMilliseconds < 3000)
+{
+    await Task.Delay(20);
+    t9Renderer.Render(n4Page, 300, 200);
+    n4ButtonView = n4Button.Handler?.PlatformView as OpenHarmonyView;
+}
+t9Renderer.Render(n4Page, 300, 200);
+OpenHarmonyAccessibility.Refresh(n4Page);
+var n4Nodes = OpenHarmonyAccessibility.Nodes;
+var n4BarNode = n4Nodes.FirstOrDefault(n => n.Role == "group" && Math.Abs(n.Bounds.X) < 0.5 &&
+    Math.Abs(n.Bounds.Y) < 0.5 && Math.Abs(n.Bounds.Width - 300) < 0.5 && Math.Abs(n.Bounds.Height - 64) < 0.5);
+var n4TitleNode = n4Nodes.FirstOrDefault(n => n.Text == "N4 title");
+var n4SubNode = n4Nodes.FirstOrDefault(n => n.Text == "N4 sub");
+var n4BodyNode = n4Nodes.FirstOrDefault(n => n.Text == "N4 body");
+bool n4FirstChildOk = n4BarNode is not null && n4Nodes.Count > 1 && ReferenceEquals(n4Nodes[1], n4BarNode);
+bool n4RowOk = n4FirstChildOk && n4TitleNode is not null && n4SubNode is not null &&
+    n4TitleNode.ParentId != 0 && n4TitleNode.Bounds.Y >= 0 && n4TitleNode.Bounds.Bottom <= 64 &&
+    n4SubNode.Bounds.Bottom <= 64 &&
+    n4BodyNode is not null && n4BodyNode.Bounds.Y >= 64;
+Console.WriteLine($"[verify] n4 titlebar a11y row firstChild={n4FirstChildOk} title='{n4TitleNode?.Text}' sub='{n4SubNode?.Text}' body={n4BodyNode is not null} barBounds={n4BarNode?.Bounds} assert={n4RowOk}");
+if (!n4RowOk)
+{
+    throw new InvalidOperationException("the Window.TitleBar row is missing from the accessibility shadow tree");
+}
+var n4ButtonNode = n4Nodes.FirstOrDefault(n => n.Role == "button" && n.Text == "N4 action");
+bool n4ButtonViewOk = n4ButtonNode is not null && n4ButtonNode.Bounds.Bottom <= 64 &&
+    OpenHarmonyAccessibility.TryFindView(n4ButtonNode.Id, out IView n4ButtonFound) &&
+    ReferenceEquals(n4ButtonFound, n4Button);
+bool n4ActionsOk = OpenHarmonyAccessibility.ActionsFor("button").Contains(OpenHarmonyAccessibilityAction.Click);
+Console.WriteLine($"[verify] n4 titlebar a11y button node={n4ButtonNode is not null} view={n4ButtonViewOk} clickAction={n4ActionsOk} bounds={n4ButtonNode?.Bounds} assert={n4ButtonViewOk && n4ActionsOk}");
+if (!(n4ButtonViewOk && n4ActionsOk))
+{
+    throw new InvalidOperationException("the title bar row's controls do not route accessibility actions");
+}
+n4Bar.IsVisible = false;
+t9Renderer.Render(n4Page, 300, 200);
+OpenHarmonyAccessibility.Refresh(n4Page);
+bool n4HiddenOk = !OpenHarmonyAccessibility.Nodes.Any(n => n.Text == "N4 title" || n.Text == "N4 action");
+n4Bar.IsVisible = true;
+t9Renderer.Render(n4Page, 300, 200);
+OpenHarmonyAccessibility.Refresh(n4Page);
+bool n4RestoredOk = OpenHarmonyAccessibility.Nodes.Any(n => n.Text == "N4 title");
+n4Window.TitleBar = null;
+t9Renderer.Render(n4Page, 300, 200);
+OpenHarmonyAccessibility.Refresh(n4Page);
+bool n4ClearedOk = !OpenHarmonyAccessibility.Nodes.Any(n => n.Text == "N4 title" || n.Text == "N4 action");
+Console.WriteLine($"[verify] n4 titlebar a11y visibility hidden={n4HiddenOk} restored={n4RestoredOk} cleared={n4ClearedOk} assert={n4HiddenOk && n4RestoredOk && n4ClearedOk}");
+if (!(n4HiddenOk && n4RestoredOk && n4ClearedOk))
+{
+    throw new InvalidOperationException("the Window.TitleBar accessibility visibility follow-through drifted");
 }
 
 // N2: an empty ContentPage (no Content) has nothing to descend into, so the page-aware walk
