@@ -1,0 +1,34 @@
+{
+  "compiler": {
+    "abcVersion": "13.0.1.0",
+    "compatibleSdkVersion": "18",
+    "flavor": "openharmony",
+    "hvigor": "6.26.4",
+    "modelVersion": "6.0.2",
+    "script": "scripts/build-arkts-shell.sh"
+  },
+  "schema": 1,
+  "variants": {
+    "headless": {
+      "abcVersion": "13.0.1.0",
+      "bytes": 20916,
+      "dist": "modules.headless.abc",
+      "file": "modules.abc",
+      "sha256": "54a1a2011cca4a96772b0ed9f99b36ddd7b655fde1e681676669f78ed8138bbb",
+      "sources": {
+        "entryability/EntryAbility.ets": "530455a246132fe1479e24931ee39ce230c51825f3924c63c4d8ab5ef250a8ee"
+      }
+    },
+    "ui": {
+      "abcVersion": "13.0.1.0",
+      "bytes": 294976,
+      "dist": "modules.abc",
+      "file": "modules.ui.abc",
+      "sha256": "6cf7dda23c96465b17731a7368c83f3a8b12d20ebc2fa21624ca1a6fca343c6f",
+      "sources": {
+        "entryability/EntryAbility.ui.ets": "f6722648bf1f7edac4bae37a8334a0dfcc15c6ff3ae4d8921804e462f6298991",
+        "pages/Index.ets": "525be62c86e2e59e01549b3ab4359f0242d927038acbe30966f23acd8ed1d50d"
+      }
+    }
+  }
+}

@@ -1,0 +1,60 @@
+<Project>
+  <!-- Platform item declarations, imported by Sdk/Sdk.targets only after the single-import guard
+       passes. They live in their own file because MSBuild evaluates item conditions in the item
+       pass, where every property is already final: an ItemGroup guarded by a marker that a second
+       import sets would be skipped on the first import too. The import condition runs during
+       import expansion, so the second import never reaches these items. -->
+  <!-- Runtime packs are arm64-only by design: OpenHarmony devices are arm64-v8a, the released
+       BCL pack is Microsoft.NETCore.App.Runtime.openharmony-arm64, and there is no
+       openharmony-x64 platform pack. Widen both RuntimePackRuntimeIdentifiers lists below
+       together once an x64 runtime pack is published. -->
+  <ItemGroup Condition=" '$(TargetPlatformIdentifier)' == 'openharmony' ">
+    <SdkSupportedTargetPlatformIdentifier Include="openharmony" DisplayName="OpenHarmony" />
+    <!-- The installed SDK's bundled RID list predates the openharmony rename; the platform
+         workload owns the RID until it ships in Microsoft.NETCore.Platforms. -->
+    <KnownFrameworkReference Update="Microsoft.NETCore.App"
+                              RuntimePackRuntimeIdentifiers="%(RuntimePackRuntimeIdentifiers);openharmony-arm64" />
+    <!-- NativeAOT runtime pack: the SDK's AOT KnownRuntimePack (RuntimePackLabels="NativeAOT",
+         RuntimePackNamePatterns="Microsoft.NETCore.App.Runtime.NativeAOT.**RID**") lists
+         ohos-arm64 and linux-musl-arm64 but not openharmony-arm64, so an AOT publish of this
+         platform resolved no runtime pack and ilc failed with "The PrivateSdkAssemblies
+         ItemGroup is required". Widen the AOT RID list like the CoreCLR KnownFrameworkReference
+         above; with PublishAotUsingRuntimePack=true the exact openharmony pack then wins over
+         the linux-musl fallback. -->
+    <KnownRuntimePack Update="Microsoft.NETCore.App"
+                      RuntimePackRuntimeIdentifiers="%(RuntimePackRuntimeIdentifiers);openharmony-arm64" />
+    <!-- Valid TargetPlatformVersions (OpenHarmony API levels): CI public SDK = 20, device SDK = 26. -->
+    <SdkSupportedTargetPlatformVersion Include="20.0" MinimumNETVersion="10.0" />
+    <SdkSupportedTargetPlatformVersion Include="26.0" MinimumNETVersion="10.0" />
+    <FrameworkReference Condition=" '$(DisableImplicitFrameworkReferences)' != 'true' "
+                        Include="Microsoft.OpenHarmony" IsImplicitlyDefined="true" Pack="false" PrivateAssets="All" />
+  </ItemGroup>
+  <!-- Published-band AspNetCore runtime pack: the SDK's bundled net11.0 AspNetCore
+       KnownFrameworkReference points at an SDK-band daily build (11.0.0-rc.1.26452.110) whose
+       runtime pack was never published to nuget.org. With the workload RID graph,
+       openharmony-arm64 imports linux-musl-arm64, so a RID-specific restore resolves
+       Microsoft.AspNetCore.App.Runtime.linux-musl-arm64 - at the unpublished SDK version it
+       failed NU1102. Pin ref+runtime to the published RC1 band so projects that reference
+       AspNetCore transitively (Microsoft.AspNetCore.Components.WebView.Maui and friends)
+       restore. net10.0 does not need this: its KFR points at a published 10.0.x version. -->
+  <ItemGroup Condition=" '$(TargetPlatformIdentifier)' == 'openharmony' and '$(TargetFrameworkVersion)' == 'v11.0' ">
+    <KnownFrameworkReference Update="Microsoft.AspNetCore.App"
+                              RuntimePackRuntimeIdentifiers="%(RuntimePackRuntimeIdentifiers);openharmony-arm64"
+                              TargetingPackVersion="11.0.0-rc.1.26425.128"
+                              DefaultRuntimeFrameworkVersion="11.0.0-rc.1.26451.112"
+                              LatestRuntimeFrameworkVersion="11.0.0-rc.1.26451.112" />
+  </ItemGroup>
+  <ItemGroup Condition=" '$(TargetPlatformIdentifier)' == 'openharmony' ">
+    <!-- Version-only TargetFramework: this item only exists for openharmony projects. -->
+    <KnownFrameworkReference Include="Microsoft.OpenHarmony"
+                              TargetFramework="net11.0"
+                              RuntimeFrameworkName="Microsoft.OpenHarmony"
+                              DefaultRuntimeFrameworkVersion="1.0.0-preview.28"
+                              LatestRuntimeFrameworkVersion="1.0.0-preview.28"
+                              TargetingPackName="Microsoft.OpenHarmony.Ref.$(TargetPlatformVersion)"
+                              TargetingPackVersion="1.0.0-preview.28"
+                              RuntimePackNamePatterns="Microsoft.OpenHarmony.Runtime.$(TargetPlatformVersion).**RID**"
+                              RuntimePackRuntimeIdentifiers="openharmony-arm64"
+                              />
+  </ItemGroup>
+</Project>
