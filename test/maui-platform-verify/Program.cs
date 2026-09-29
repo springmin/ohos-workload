@@ -2074,11 +2074,19 @@ t9Bar.Content = t9RowButton;
 var t9PageButton = new Button { Text = "page button", FontSize = 16 };
 t9PageButton.Clicked += (_, _) => t9PageClicks++;
 t9PageLayout.Add(t9PageButton);
-// The template materializes TitleBar.Content through the dispatcher; let that settle before the
-// frame the touches run against (a real app renders frames continuously).
-await Task.Delay(20);
-t9Renderer.Render(t9Page, 300, 200);
-OpenHarmonyView? t9RowButtonView = t9RowButton.Handler?.PlatformView as OpenHarmonyView;
+// The template materializes TitleBar.Content through the dispatcher, and the drain cadence
+// (safety-net timer / frame ticks) can exceed one short sleep on a loaded runner; settle the row
+// button with a bounded poll that re-renders so the connector walks the materialized template
+// (a real app renders frames continuously). The tap assertion below still fails when the handler
+// never materializes, so this only removes the fixed-sleep race.
+var t9Settle = System.Diagnostics.Stopwatch.StartNew();
+OpenHarmonyView? t9RowButtonView = null;
+while (t9RowButtonView is null && t9Settle.ElapsedMilliseconds < 3000)
+{
+    await Task.Delay(20);
+    t9Renderer.Render(t9Page, 300, 200);
+    t9RowButtonView = t9RowButton.Handler?.PlatformView as OpenHarmonyView;
+}
 OpenHarmonyView? t9PageButtonView = t9PageButton.Handler?.PlatformView as OpenHarmonyView;
 if (t9RowButtonView is not null)
 {
