@@ -446,6 +446,44 @@ renderer.Render(shellPixel, 1080, 1920);
 Check("shell item switch repaints the new page", canvas.GetPixel(540, 600), Colors.Lime);
 Console.WriteLine($"  shell pixel probe: rendered={shellRendered} current='{shellPixel.CurrentPage?.Title}' canvasPixels={canvas.DrawnPixels}");
 
+// T15: a rich Shell.TitleView (a non-Label view) draws into the title band. The probe page
+// carries a solid gold box as its TitleView: the box is arranged between the reserved
+// leading/trailing slots, the bar text is suppressed (the band centre is the box colour) and
+// the bar background stays outside the box. Clearing the title view restores the text path.
+var t15TitlePage = new ContentPage
+{
+    Title = "T15Pixel",
+    Content = new BoxView { Color = Colors.DarkSlateBlue },
+};
+var t15TitleBox = new BoxView
+{
+    Color = Colors.Gold,
+    WidthRequest = 200,
+    HeightRequest = 24,
+    HorizontalOptions = LayoutOptions.Center,
+    VerticalOptions = LayoutOptions.Center,
+};
+Shell.SetTitleView(t15TitlePage, t15TitleBox);
+var t15ShellPixel = new Shell();
+t15ShellPixel.Items.Add(new ShellContent { Title = "One", Content = t15TitlePage });
+OpenHarmonyHandlerConnector.ConnectTree(t15ShellPixel);
+t15ShellPixel.Measure(1080, 1920);
+t15ShellPixel.Arrange(new Rect(0, 0, 1080, 1920));
+canvas.Reset();
+renderer.Render(t15ShellPixel, 1080, 1920);
+Check("rich shell title view draws in the title band", canvas.GetPixel(540, 28), Colors.Gold, 12);
+Check("title bar background stays outside the title view", canvas.GetPixel(20, 28), Colors.Black, 40);
+Shell.SetTitleView(t15TitlePage, null);
+canvas.Reset();
+renderer.Render(t15ShellPixel, 1080, 1920);
+Color t15ClearedPixel = canvas.GetPixel(540, 28);
+bool t15ClearedOk = !(t15ClearedPixel.Red > 0.8f && t15ClearedPixel.Green > 0.6f && t15ClearedPixel.Blue < 0.3f);
+Console.WriteLine($"  [{(t15ClearedOk ? "PASS" : "FAIL")}] cleared title view drops the rich band pixel: {t15ClearedPixel.ToHex()}");
+if (!t15ClearedOk)
+{
+    failures++;
+}
+
 Color Blend(Color background, Color foreground, float alpha) => new(
     (float)(foreground.Red * alpha + background.Red * (1 - alpha)),
     (float)(foreground.Green * alpha + background.Green * (1 - alpha)),

@@ -12,7 +12,7 @@ using Microsoft.Maui.Platform;
 // after the fuzz tail) instead of letting every caller repeat its own threshold constant.
 VerifyLineCountingWriter verifyStdout = new(Console.Out);
 Console.SetOut(verifyStdout);
-const int verifyCheckTotal = 489;                     // documented full [verify] line count (+4 MS-MODE runtime mode switch, +10 P2c-DEEPLINK, +4 P2b-IMG, +16 P1b-LIST, +10 P1a-ANIM, +2 SEC3 storage/deep-link pins, +5 W-series WebView wiring, +3 T1 InputView mapping, +4 T2 WebView gaps, +4 T3 GraphicsView interaction, +7 T10 modal accessibility, +4 T4 Label formatted text, +4 T5 layout semantics, +6 T7 DatePicker calendar/min-max, +4 T9 window title bar, +4 T11 diagnostics overlay, +1 N2 empty ContentPage arrangement, +6 T8 TableView, +7 T6 RTL flow direction, +5 T22 MainThread bridge, +2 FIX-TABBED tabbed CurrentPage, +4 T13 group footer view/N3 picker IsOpen, +5 T21 system font scale, +2 A11Y-TABBED tabbed accessibility, +3 N1 host multi-pointer, +5 T12 CarouselView group slides, +7 T14 rich shell flyout, +2 FIX-SHELL shell CurrentPage, +2 A11Y-SHELL shell accessibility)
+const int verifyCheckTotal = 496;                     // documented full [verify] line count (+4 MS-MODE runtime mode switch, +10 P2c-DEEPLINK, +4 P2b-IMG, +16 P1b-LIST, +10 P1a-ANIM, +2 SEC3 storage/deep-link pins, +5 W-series WebView wiring, +3 T1 InputView mapping, +4 T2 WebView gaps, +4 T3 GraphicsView interaction, +7 T10 modal accessibility, +4 T4 Label formatted text, +4 T5 layout semantics, +6 T7 DatePicker calendar/min-max, +4 T9 window title bar, +4 T11 diagnostics overlay, +1 N2 empty ContentPage arrangement, +6 T8 TableView, +7 T6 RTL flow direction, +5 T22 MainThread bridge, +2 FIX-TABBED tabbed CurrentPage, +4 T13 group footer view/N3 picker IsOpen, +5 T21 system font scale, +2 A11Y-TABBED tabbed accessibility, +3 N1 host multi-pointer, +5 T12 CarouselView group slides, +7 T14 rich shell flyout, +2 FIX-SHELL shell CurrentPage, +2 A11Y-SHELL shell accessibility, +7 T15 rich Shell.TitleView)
 const int verifyCheckFloor = verifyCheckTotal - 20;   // documented floor convention (total - 20)
 
 // A small image file for the Image handler.
@@ -986,6 +986,87 @@ if (!(t14RowsOk && t14FramesOk && t14BindingsOk && t14DrawnOk && t14RowTapOk && 
     throw new InvalidOperationException(
         $"the T14 rich shell flyout is missing or drifted: rows={t14RowsOk} frames={t14FramesOk} bindings={t14BindingsOk} " +
         $"drawn={t14DrawnOk} rowTap={t14RowTapOk} button={t14ButtonOk} templateHeader={t14TemplateHeaderOk}");
+}
+
+// T15: rich Shell.TitleView. A non-Label title view is materialized as a real row: the chrome
+// connects/measures/arranges it into the band between the leading and trailing slots, the
+// renderer draws it over the bar (its own content replaces the title text, which the title bar
+// no longer draws) and hit-tests it (a button inside the title view owns its tap). A visible
+// Label keeps the text path; a hidden or cleared title view falls back to the page title.
+int t15Clicks = 0;
+var t15TitleButton = new Button { Text = "TV", WidthRequest = 120, HeightRequest = 40 };
+t15TitleButton.Clicked += (_, _) => t15Clicks++;
+var t15TitleStack = new HorizontalStackLayout
+{
+    Spacing = 4,
+    Children = { t15TitleButton, new Label { Text = "T15", FontSize = 18 } },
+};
+var t15Shell = new Shell();
+var t15Page = new ContentPage { Title = "T15Page", Content = new Label { Text = "t15 body" } };
+t15Shell.Items.Add(new ShellContent { Title = "One", Content = t15Page });
+Shell.SetTitleView(t15Page, t15TitleStack);
+OpenHarmonyHandlerConnector.ConnectTree(t15Shell);
+t15Shell.Measure(1080, 1920);
+t15Shell.Arrange(new Rect(0, 0, 1080, 1920));
+var t15Platform = (OpenHarmonyView)t15Shell.Handler!.PlatformView!;
+int t15DrawnRows = 0;
+RectF t15DrawnBand = default;
+IView? t15DrawnView = null;
+OpenHarmonyWindowRenderer.ShellTitleViewDrawn = (view, band) =>
+{
+    t15DrawnRows++;
+    t15DrawnView = view;
+    t15DrawnBand = band;
+};
+rendererForShell.Render(t15Shell, 1080, 1920);
+OpenHarmonyWindowRenderer.ShellTitleViewDrawn = null;
+OpenHarmonyShellTitleViewRow? t15Row = t15Platform.ShellTitleViewRow;
+bool t15RowOk = ReferenceEquals(t15Row?.View, t15TitleStack) &&
+    t15Platform.TitleText == string.Empty &&
+    Math.Abs(t15Row!.Frame.X - OpenHarmonyShellChrome.TitleViewInset) < 0.5 &&
+    Math.Abs(t15Row.Frame.Y) < 0.5 &&
+    Math.Abs(t15Row.Frame.Width - (1080 - 2 * OpenHarmonyShellChrome.TitleViewInset)) < 0.5 &&
+    Math.Abs(t15Row.Frame.Height - OpenHarmonyView.TitleBarHeight) < 0.5;
+Console.WriteLine($"[verify] t15 title view row type={t15Row?.View?.GetType().Name} text='{t15Platform.TitleText}' frame={t15Row?.Frame} ok={t15RowOk}");
+bool t15ArrangeOk = t15Row is not null &&
+    t15TitleStack.Frame == t15Row.View.Frame &&
+    t15TitleStack.Frame.Width > 0 && t15TitleStack.Frame.Height > 0 &&
+    t15TitleButton.Frame.Width > 0 && t15TitleButton.Frame.Height > 0 &&
+    t15TitleButton.Frame.X >= t15Row.Frame.X && t15TitleButton.Frame.Right <= t15Row.Frame.Right &&
+    t15TitleButton.Frame.Y >= t15Row.Frame.Y && t15TitleButton.Frame.Bottom <= t15Row.Frame.Bottom;
+Console.WriteLine($"[verify] t15 title view arranged stack={t15TitleStack.Frame} button={t15TitleButton.Frame} ok={t15ArrangeOk}");
+bool t15DrawnOk = t15DrawnRows >= 1 && ReferenceEquals(t15DrawnView, t15TitleStack) &&
+    Math.Abs(t15DrawnBand.X - t15Row!.Frame.X) < 0.5 && Math.Abs(t15DrawnBand.Width - t15Row.Frame.Width) < 0.5;
+Console.WriteLine($"[verify] t15 title view drawn rows={t15DrawnRows} view={t15DrawnView?.GetType().Name} band={t15DrawnBand} ok={t15DrawnOk}");
+Rect t15ButtonFrame = t15TitleButton.Frame;
+rendererForShell.HandleTouch(t15Shell, true, false,
+    (float)(t15ButtonFrame.X + t15ButtonFrame.Width / 2), (float)(t15ButtonFrame.Y + t15ButtonFrame.Height / 2));
+rendererForShell.HandleTouch(t15Shell, false, true,
+    (float)(t15ButtonFrame.X + t15ButtonFrame.Width / 2), (float)(t15ButtonFrame.Y + t15ButtonFrame.Height / 2));
+bool t15TapOk = t15Clicks == 1;
+Console.WriteLine($"[verify] t15 title view button tap clicks={t15Clicks} ok={t15TapOk}");
+// The text path stays for a visible Label, and a hidden/cleared rich view falls back to the
+// page title (the row is released, so the renderer stops drawing it).
+var t15LabelTitle = new Label { Text = "T15Label" };
+Shell.SetTitleView(t15Page, t15LabelTitle);
+t15Platform.ChromeRefresh?.Invoke();
+bool t15LabelOk = t15Platform.ShellTitleViewRow is null && t15Platform.TitleText == "T15Label";
+Console.WriteLine($"[verify] t15 title view label path text='{t15Platform.TitleText}' row={t15Platform.ShellTitleViewRow is not null} ok={t15LabelOk}");
+Shell.SetTitleView(t15Page, t15TitleStack);
+t15TitleStack.IsVisible = false;
+t15Platform.ChromeRefresh?.Invoke();
+bool t15HiddenOk = t15Platform.ShellTitleViewRow is null && t15Platform.TitleText == "T15Page";
+Console.WriteLine($"[verify] t15 title view hidden fallback text='{t15Platform.TitleText}' row={t15Platform.ShellTitleViewRow is not null} ok={t15HiddenOk}");
+t15TitleStack.IsVisible = true;
+Shell.SetTitleView(t15Page, null);
+t15Platform.ChromeRefresh?.Invoke();
+bool t15ClearedOk = t15Platform.ShellTitleViewRow is null && t15Platform.TitleText == "T15Page";
+Console.WriteLine($"[verify] t15 title view cleared text='{t15Platform.TitleText}' row={t15Platform.ShellTitleViewRow is not null} ok={t15ClearedOk}");
+if (!(t15RowOk && t15ArrangeOk && t15DrawnOk && t15TapOk && t15LabelOk && t15HiddenOk && t15ClearedOk))
+{
+    throw new InvalidOperationException(
+        $"the T15 rich Shell.TitleView is missing or drifted: row={t15RowOk} arrange={t15ArrangeOk} drawn={t15DrawnOk} " +
+        $"tap={t15TapOk} label={t15LabelOk} hidden={t15HiddenOk} cleared={t15ClearedOk}");
 }
 
 // W22-13: Essentials (Preferences + FileSystem).
@@ -8070,9 +8151,11 @@ if (!n16FocusKeysOk)
         $"the PE2 focus/key contract drifted: focus={n16FocusOk} key={n16KeyOk} host={n16HostOk} shell={n16ShellOk}");
 }
 
-// Audit2-8: Shell TitleView/toolbar chrome. A visible Label title view publishes its text (a
-// rich view is noted once and the page title stays in the bar), and the current page's
-// ToolbarItems are mirrored into the platform bar with a tap that activates the item (guarded
+// Audit2-8: Shell TitleView/toolbar chrome. A visible Label title view publishes its text; a
+// non-Label title view (T15) is materialized into OpenHarmonyView.ShellTitleViewRow by the
+// chrome (connected/measured/arranged into the bar band) for the renderer to draw and
+// hit-test, and the page title stays out of the bar. The current page's ToolbarItems are
+// mirrored into the platform bar with a tap that activates the item (guarded
 // IMenuItemController). The shell handler owns one chrome instance and re-applies it per shell map.
 string? n17ChromePath = FindHostSource("OpenHarmonyShellChrome.cs");
 string n17Chrome = n17ChromePath is null ? string.Empty : File.ReadAllText(n17ChromePath);
@@ -8080,11 +8163,12 @@ string? n17ShellHandlerPath = FindHostSource("OpenHarmonyShellHandler.cs");
 string n17ShellHandler = n17ShellHandlerPath is null ? string.Empty : File.ReadAllText(n17ShellHandlerPath);
 bool n17TitleOk = n17Chrome.Contains("internal sealed class OpenHarmonyShellChrome") &&
     n17Chrome.Contains("public void Apply(Shell shell)") &&
-    n17Chrome.Contains("_view.TitleText = ResolveTitleText(shell);") &&
+    n17Chrome.Contains("ApplyTitleView(shell);") &&
     n17Chrome.Contains("View? titleView = shell.CurrentPage is { } page ? Shell.GetTitleView(page) : null;") &&
     n17Chrome.Contains("titleView ??= Shell.GetTitleView(shell);") &&
-    n17Chrome.Contains("LogRichTitleViewOnce()") &&
-    n17Chrome.Contains("the compositor title bar draws text only, so a rich TitleView is not rendered");
+    n17Chrome.Contains("ArrangeTitleView(titleView);") &&
+    n17Chrome.Contains("_view.ShellTitleViewRow = _titleViewRow;") &&
+    n17Chrome.Contains("internal sealed class OpenHarmonyShellTitleViewRow");
 bool n17ToolbarOk = n17Chrome.Contains("UpdateToolbar(shell.CurrentPage);") &&
     n17Chrome.Contains("private void UpdateToolbar(Page? page)") &&
     n17Chrome.Contains("_view.ToolbarItems.Add((captured.Text ?? string.Empty, () => ActivateToolbarItem(captured)));") &&
