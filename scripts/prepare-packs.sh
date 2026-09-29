@@ -20,7 +20,7 @@
 # -openharmony release and verified against the expected digest.
 set -e
 W="$(cd "$(dirname "$0")/.." && pwd)"
-VER=1.0.0-preview.26
+VER=1.0.0-preview.27
 DOTNET="${DOTNET:-$HOME/.dotnet/dotnet}"
 # Shared, overridable dotnet environment (MSBuild server/node reuse off, a TMPDIR that can host
 # the server socket) for the builds below; see "Known environment quirks" in
