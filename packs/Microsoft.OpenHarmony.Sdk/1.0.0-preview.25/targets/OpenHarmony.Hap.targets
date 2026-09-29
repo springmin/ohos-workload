@@ -1,0 +1,743 @@
+<Project>
+  <!-- .hap packaging for OpenHarmony. The full contract lives in the packaging doc:
+       docs/openharmony-hap-packaging.md (workload repo) - stage layout, staging-directory rules,
+       C++ runtime/libc++_shared.so lookup, runtime natives shipped only in the signed libs/<abi>/
+       and excluded from resources/rawfile/dotnet.zip, payload-in-libs (the managed payload
+       staged into libs/<abi>/ with the .dotnet-payload.json marker), payload determinism, the
+       API bands and the minAPIVersion install limit, bundle-name rules, opt-in permissions,
+       Blazor asset staging.
+       The inline comments below point at the matching section. Keep this file byte-identical
+       across the preview.22/23/24 packs (test/maui-platform-verify PG2a). -->
+  <PropertyGroup>
+    <OpenHarmonyHapPackage Condition=" '$(OpenHarmonyHapPackage)' == '' ">false</OpenHarmonyHapPackage>
+    <OpenHarmonyHapSigning Condition=" '$(OpenHarmonyHapSigning)' == '' ">true</OpenHarmonyHapSigning>
+    <!-- app.bundleName may contain only letters, digits, '_' and '.' (hyphens fail install
+         with 9568344 "bundle name or module name is invalid"), so the default strips hyphens
+         from the assembly name; _OpenHarmonyValidateBundleName below rejects any other
+         illegal character early. OpenHarmonyBundleName overrides the default. -->
+    <OpenHarmonyBundleName Condition=" '$(OpenHarmonyBundleName)' == '' ">com.example.$([System.String]::Copy('$(AssemblyName)').Replace('-', ''))</OpenHarmonyBundleName>
+    <OpenHarmonyAppName Condition=" '$(OpenHarmonyAppName)' == '' ">$(AssemblyName)</OpenHarmonyAppName>
+    <OpenHarmonyVendor Condition=" '$(OpenHarmonyVendor)' == '' ">openharmony</OpenHarmonyVendor>
+    <OpenHarmonyAbilityName Condition=" '$(OpenHarmonyAbilityName)' == '' ">EntryAbility</OpenHarmonyAbilityName>
+    <OpenHarmonyVersionName Condition=" '$(OpenHarmonyVersionName)' == '' ">$(Version)</OpenHarmonyVersionName>
+    <OpenHarmonyVersionName Condition=" '$(OpenHarmonyVersionName)' == '' ">1.0.0</OpenHarmonyVersionName>
+    <OpenHarmonyVersionCode Condition=" '$(OpenHarmonyVersionCode)' == '' ">1</OpenHarmonyVersionCode>
+    <!-- API band per target framework; the decode rule, the device constraints and the
+         overrides are in the packaging doc. openharmony20.0 is the platform 6.0.0 / API 20
+         release band; the device band (every other TFM, e.g. net11.0-openharmony26.0)
+         defaults to the profile the tester's device family accepted. All values stay
+         overridable. -->
+    <OpenHarmonyMinApiVersion Condition=" '$(OpenHarmonyMinApiVersion)' == '' and '$(TargetPlatformVersion)' == '20.0' ">60000020</OpenHarmonyMinApiVersion>
+    <OpenHarmonyTargetApiVersion Condition=" '$(OpenHarmonyTargetApiVersion)' == '' and '$(TargetPlatformVersion)' == '20.0' ">60000020</OpenHarmonyTargetApiVersion>
+    <OpenHarmonyApiReleaseType Condition=" '$(OpenHarmonyApiReleaseType)' == '' and '$(TargetPlatformVersion)' == '20.0' ">Release</OpenHarmonyApiReleaseType>
+    <OpenHarmonyMinApiVersion Condition=" '$(OpenHarmonyMinApiVersion)' == '' ">50002014</OpenHarmonyMinApiVersion>
+    <OpenHarmonyTargetApiVersion Condition=" '$(OpenHarmonyTargetApiVersion)' == '' ">60101024</OpenHarmonyTargetApiVersion>
+    <OpenHarmonyApiReleaseType Condition=" '$(OpenHarmonyApiReleaseType)' == '' ">Release</OpenHarmonyApiReleaseType>
+    <!-- compileSdkType/compileSdkVersion are emitted into module.json when the type is set
+         (the API 20 band keeps both empty on purpose; see the API band section in the packaging doc). The device band
+         defaults to the tester's known-good HarmonyOS 6.0.2.130 identity. Both overridable. -->
+    <OpenHarmonyCompileSdkType Condition=" '$(OpenHarmonyCompileSdkType)' == '' and '$(TargetPlatformVersion)' != '20.0' ">HarmonyOS</OpenHarmonyCompileSdkType>
+    <OpenHarmonyCompileSdkVersion Condition=" '$(OpenHarmonyCompileSdkVersion)' == '' and '$(TargetPlatformVersion)' != '20.0' ">6.0.2.130</OpenHarmonyCompileSdkVersion>
+    <OpenHarmonyHapDebug Condition=" '$(OpenHarmonyHapDebug)' == '' ">true</OpenHarmonyHapDebug>
+    <OpenHarmonyAbi Condition=" '$(OpenHarmonyAbi)' == '' ">arm64-v8a</OpenHarmonyAbi>
+    <!-- Feature-driven module.json requestPermissions (see "Feature permissions" in the
+         packaging doc). OpenHarmonyFeatures is a ';'/',' separated list of feature ids (or
+         'all'); every selected feature declares its permission(s) with the reason resource and
+         the usedScene the platform requires. OpenHarmonyExtraPermissions stays for arbitrary raw
+         permission names (minimal entry, no reason/usedScene). OpenHarmonyPermissionsOptOut
+         lists request points the app deliberately does not declare;
+         OpenHarmonyRequireDeclaredRequestPoints upgrades the undeclared-request-point warning to
+         an error. All empty/false defaults keep the generated module.json byte-identical to the
+         raw-name behaviour for the same inputs. -->
+    <OpenHarmonyExtraPermissions Condition=" '$(OpenHarmonyExtraPermissions)' == '' "></OpenHarmonyExtraPermissions>
+    <OpenHarmonyFeatures Condition=" '$(OpenHarmonyFeatures)' == '' "></OpenHarmonyFeatures>
+    <OpenHarmonyPermissionsOptOut Condition=" '$(OpenHarmonyPermissionsOptOut)' == '' "></OpenHarmonyPermissionsOptOut>
+    <OpenHarmonyRequireDeclaredRequestPoints Condition=" '$(OpenHarmonyRequireDeclaredRequestPoints)' == '' ">false</OpenHarmonyRequireDeclaredRequestPoints>
+    <!-- Payload-in-libs (see "Payload in libs" in the packaging doc): stage the whole managed
+         publish payload into libs/<abi>/ next to the host and write the .dotnet-payload.json
+         marker, so the runtime starts in place from the signed bundle directory - the only
+         directory the device namespace policy allows a dlopen from. Set false to keep the
+         pre-payload-in-libs layout (the payload then travels only inside dotnet.zip). -->
+    <OpenHarmonyHapPayloadInLibs Condition=" '$(OpenHarmonyHapPayloadInLibs)' == '' ">true</OpenHarmonyHapPayloadInLibs>
+    <!-- Payload zip (see "Payload in libs" in the packaging doc): keep the resources/rawfile/dotnet.zip
+         extraction fallback. With payload-in-libs on (default) the zip duplicates the staged
+         libs/<abi>/ payload; set OpenHarmonyHapPayloadZip=false to ship the staged copy only
+         (saves the zip bytes, ~20 MB for CDGSS, but drops the fallback older shells rely on, so
+         it must be validated on a device first). The marker's zip identity is then cleared
+         (zipEntries=0, zipSha256=""; see the marker below). OpenHarmonyHapPayloadZip=false
+         requires OpenHarmonyHapPayloadInLibs=true. Companion changes when opting out:
+         scripts/verify-kit.sh must skip the payload-vs-zip cross-assertions when zipEntries==0
+         (today payloadEntries!=zipEntries and a missing zipSha are FAILs; a missing dotnet.zip
+         is already only a WARN); EntryAbility.ets needs no change for the preview.22-24 shells
+         (findLibsPayloadDir reads only assembly/entries), but shells without the marker probe
+         have no fallback left at all. -->
+    <OpenHarmonyHapPayloadZip Condition=" '$(OpenHarmonyHapPayloadZip)' == '' ">true</OpenHarmonyHapPayloadZip>
+    <!-- Runtime mode switch (MS-MODE; see "Runtime mode switch" in the packaging doc): one
+         property selects the launch shape the hap is built for and writes
+         libs/<abi>/runtime-mode.txt, the marker the host reads before hostfxr starts coreclr.
+         jit (default) keeps the previous launch; aot requires the NativeAOT application library
+         in the publish payload (the aot-haps variant); interp writes the marker and, when
+         OpenHarmonyInterpreterPack points at an extracted ohos-interpreter-pack, stages its
+         feature-enabled libcoreclr.so + libclrinterpreter.so over the publish natives. -->
+    <OpenHarmonyRuntimeMode Condition=" '$(OpenHarmonyRuntimeMode)' == '' ">jit</OpenHarmonyRuntimeMode>
+    <!-- Interpreter pack directory for runtime mode interp: <dir>/libcoreclr.so +
+         <dir>/libclrinterpreter.so or the same two files under <dir>/native/ (the extracted
+         ohos-interpreter-pack layout). Empty keeps the stock runtime natives; the device-side
+         interp.txt + overlay route still works then. -->
+    <OpenHarmonyInterpreterPack Condition=" '$(OpenHarmonyInterpreterPack)' == '' "></OpenHarmonyInterpreterPack>
+    <!-- UI builds: point OpenHarmonyArktsModulesAbc at a modules.abc produced by the ArkTS
+         toolchain (ets-loader/hvigor or DevEco Studio, which compiles both the ability and
+         the ArkUI pages), and set OpenHarmonyUIPage to the page record (e.g. pages/Index).
+         The headless shell (this pack's template) is used when the property is empty. -->
+    <OpenHarmonyUIPage Condition=" '$(OpenHarmonyUIPage)' == '' "></OpenHarmonyUIPage>
+    <!-- Default ArkTS shell: the prebuilt UI shell (official toolchain, ability + page) when a
+         page is requested, otherwise the headless shell compiled from the same sources. -->
+    <OpenHarmonyArktsModulesAbc Condition=" '$(OpenHarmonyArktsModulesAbc)' == '' and '$(OpenHarmonyUIPage)' != '' ">$(MSBuildThisFileDirectory)../templates/ets/modules.ui.abc</OpenHarmonyArktsModulesAbc>
+    <OpenHarmonyArktsModulesAbc Condition=" '$(OpenHarmonyArktsModulesAbc)' == '' ">$(MSBuildThisFileDirectory)../templates/ets/modules.abc</OpenHarmonyArktsModulesAbc>
+    <!-- Toolchain: the OpenHarmony SDK's toolchains/lib (packing + signing tools). -->
+    <OpenHarmonySdkRoot Condition=" '$(OpenHarmonySdkRoot)' == '' ">$(OHOS_SDK_ROOT)</OpenHarmonySdkRoot>
+    <OpenHarmonyToolchainDir Condition=" '$(OpenHarmonyToolchainDir)' == '' and '$(OpenHarmonySdkRoot)' != '' ">$(OpenHarmonySdkRoot)/toolchains/lib</OpenHarmonyToolchainDir>
+    <!-- OpenHarmonyHapStageDir deliberately has no default here: it is derived in
+         _OpenHarmonyResolveHapStageDir once PublishDir/IntermediateOutputPath are set. -->
+    <_OpenHarmonyHapUnsigned>$(OutputPath)$(RuntimeIdentifier)/$(AssemblyName)-unsigned.hap</_OpenHarmonyHapUnsigned>
+    <_OpenHarmonyHapFile>$(OutputPath)$(RuntimeIdentifier)/$(AssemblyName).hap</_OpenHarmonyHapFile>
+  </PropertyGroup>
+
+  <!-- Bundle-name validation: app.bundleName accepts only letters, digits, '_' and '.', and a
+       name with any other character (a hyphen, say) is rejected at install with bm 9568344
+       "bundle name or module name is invalid". Runs before every build of an openharmony
+       project and before the hap staging, so the failure surfaces at build time instead of at
+       install time. The default above is legal; an explicit
+       -p:OpenHarmonyBundleName=<name> is validated the same way. -->
+  <Target Name="_OpenHarmonyValidateBundleName"
+          BeforeTargets="PrepareForBuild;_OpenHarmonyStageHap"
+          Condition=" '$(TargetPlatformIdentifier)' == 'openharmony' ">
+    <PropertyGroup>
+      <_OpenHarmonyBundleNameValid>$([System.Text.RegularExpressions.Regex]::IsMatch('$(OpenHarmonyBundleName)', '^[A-Za-z][A-Za-z0-9_]*(\.[A-Za-z0-9_]+)*$'))</_OpenHarmonyBundleNameValid>
+    </PropertyGroup>
+    <Error Condition=" '$(_OpenHarmonyBundleNameValid)' != 'true' "
+           Text="OpenHarmonyBundleName '$(OpenHarmonyBundleName)' is not a legal OpenHarmony bundle name: use only letters, digits, '_' and '.', starting with a letter (a hyphen is rejected at install time with bm 9568344). Pass a legal name with -p:OpenHarmonyBundleName=&lt;name&gt;." />
+  </Target>
+
+  <!-- Deterministic payload zip: ordinal entry sort and a fixed entry timestamp, so identical
+       payload inputs produce identical bytes. Replaces the SDK ZipDirectory task, whose entry
+       order follows the file system enumeration and whose entry timestamps follow the source
+       files (both differ between two otherwise identical publishes). ExcludeFileNames is a
+       ';'-separated list of file names (no directory part): the runtime ELFs the caller staged
+       into libs/<abi>/ are left out so the payload does not carry an unsigned second copy
+       (see "Runtime native libraries" in the packaging doc); everything else, managed .dll/.json
+       assets included, is packed unchanged. ExcludedCount/IncludedCount are reported for the
+       caller's evidence line. -->
+  <!-- The packaging tasks are compiled into the pack: the UsingTask entries below load
+       tools/Microsoft.OpenHarmony.Tasks.dll (task-assembly migration, audit V8). The assembly is
+       built by scripts/prepare-packs.sh and kept byte-identical in the preview.22/23/24 packs; the
+       task bodies, task parameters and log/error strings are unchanged from the former inline
+       RoslynCodeTaskFactory definitions. The assembly exists so the tasks are unit-testable
+       (test/openharmony-tasks-tests) and evaluated once per build instead of compiled per project. -->
+  <UsingTask TaskName="OpenHarmonyDeterministicZip" AssemblyFile="$(MSBuildThisFileDirectory)../tools/Microsoft.OpenHarmony.Tasks.dll" />
+
+  <!-- Stages the publish payload's runtime native libraries into libs/<abi>/ (see "Runtime
+       native libraries" in the packaging doc): enumerates the *.so files given by the caller
+       (the publish directory), validates the ELF magic, and copies the ELF files into the
+       destination, skipping names already staged by the SDK (the host and libc++_shared.so).
+       CopiedCount/CopiedBytes/CopiedFiles feed the caller's hard emptiness error and its
+       size/name report; an empty or missing source list returns count 0 instead of failing
+       here so the caller can name the publish directory in the error. -->
+  <UsingTask TaskName="OpenHarmonyStageRuntimeLibs" AssemblyFile="$(MSBuildThisFileDirectory)../tools/Microsoft.OpenHarmony.Tasks.dll" />
+
+  <!-- Stages the whole managed publish payload into libs/<abi>/ (see "Payload in libs" in the
+       packaging doc). The device's namespace policy allows a dlopen only from the signed bundle
+       libs/<abi>/ directory (the extracted app data directory is refused), so the payload that
+       the runtime resolves by path - the entry assembly, its .runtimeconfig.json/.deps.json, the
+       managed framework assemblies, satellite resource subdirectories, wwwroot assets - is
+       copied there next to the runtime natives staged above. The relative layout is preserved
+       (recursive copy); SkipFileNames drops the frozen file names already staged by the SDK
+       (host, libc++_shared) and the runtime natives above (they are signed in place by the
+       OpenHarmonyCodesign pass that follows), so each runtime ELF is copied exactly once.
+       SourceDirectory is the normalized publish directory (trailing slash); the file name
+       match mirrors OpenHarmonyDeterministicZip's exclusion semantics. CopiedCount/CopiedBytes
+       feed the caller's evidence line and the payload marker. -->
+  <UsingTask TaskName="OpenHarmonyStagePayloadLibs" AssemblyFile="$(MSBuildThisFileDirectory)../tools/Microsoft.OpenHarmony.Tasks.dll" />
+
+  <!-- Writes libs/<abi>/.dotnet-payload.json, the payload-in-libs marker (see "Payload in libs"
+       in the packaging doc): the entry assembly, the number of files in libs/<abi>/ and the
+       payload staging counters, plus the dotnet.zip identity (entry count + sha256) of the
+       fallback copy. The ArkTS shell uses the marker to skip the rawfile extraction when the
+       bundle already carries the payload, scripts/verify-kit.sh asserts it per hap, and the
+       zip sha256 ties the fallback zip to the same publish. Runs after the zip is written so
+       the hash describes the packed bytes. -->
+  <UsingTask TaskName="OpenHarmonyWritePayloadMarker" AssemblyFile="$(MSBuildThisFileDirectory)../tools/Microsoft.OpenHarmony.Tasks.dll" />
+
+    <!-- Feature-driven requestPermissions resolution and the request-point/declaration
+       cross-check (see "Feature permissions" in the packaging doc). The task expands
+       OpenHarmonyFeatures through the _OpenHarmonyFeaturePermission table, merges
+       OpenHarmonyExtraPermissions, scans the shell sources for the permissions the shell can
+       request at runtime, and reports:
+         * an error when the shell requests a permission no feature/opt-out covers (the matrix
+           drifted), or when a selected feature id is unknown;
+         * an error when a selected feature's entry has no reason/usedScene;
+         * an error (strict mode) or a high-importance warning when a request point is not in the
+           declaration set, naming the feature to enable. -->
+  <UsingTask TaskName="OpenHarmonyResolvePermissions" AssemblyFile="$(MSBuildThisFileDirectory)../tools/Microsoft.OpenHarmony.Tasks.dll" />
+
+    <!-- module.json generation (module.json is not valid JSON before the @PLACEHOLDER@ tokens
+       are substituted, so the task lexes the template, substitutes with JSON string escaping and
+       validates the result as JSON; see the task's own comments). It replaced the former
+       ReadLinesFromFile + string.Replace chain, whose single-line contract broke on any other
+       template formatting. -->
+  <UsingTask TaskName="OpenHarmonyGenerateModuleJson" AssemblyFile="$(MSBuildThisFileDirectory)../tools/Microsoft.OpenHarmony.Tasks.dll" />
+
+  <!-- Toolchain resolution is explicit (audit V5): OpenHarmonyToolchainDir, or
+       OpenHarmonySdkRoot (OHOS_SDK_ROOT) + /toolchains/lib. Nothing under $HOME is probed, so a
+       stale homebrew Cellar install can never satisfy a build silently, and the error names the
+       property to set instead of pointing at a directory the user cannot influence. -->
+  <Target Name="_OpenHarmonyDetectToolchain"
+          Condition=" '$(OpenHarmonyHapPackage)' == 'true' and ('$(OpenHarmonyToolchainDir)' == '' or !Exists('$(OpenHarmonyToolchainDir)/ohos_packing_tool')) ">
+    <Error Condition=" '$(OpenHarmonySdkRoot)' == '' and '$(OpenHarmonyToolchainDir)' == '' "
+           Text="OpenHarmony packaging requires the OpenHarmony SDK toolchain. Set OpenHarmonySdkRoot (or OHOS_SDK_ROOT) to the SDK root that contains toolchains/lib (ohos_packing_tool, restool and hap-sign-tool), or set OpenHarmonyToolchainDir explicitly." />
+    <Error Condition=" '$(OpenHarmonySdkRoot)' != '' and !Exists('$(OpenHarmonySdkRoot)/toolchains/lib/ohos_packing_tool') "
+           Text="OpenHarmonySdkRoot '$(OpenHarmonySdkRoot)' does not contain toolchains/lib/ohos_packing_tool; point it at the SDK root (or set OpenHarmonyToolchainDir explicitly)." />
+    <Error Condition=" '$(OpenHarmonyToolchainDir)' != '' and !Exists('$(OpenHarmonyToolchainDir)/ohos_packing_tool') "
+           Text="OpenHarmonyToolchainDir '$(OpenHarmonyToolchainDir)' does not contain ohos_packing_tool." />
+  </Target>
+
+  <!-- restool comes from the toolchain the packing tool was resolved from: the toolchain
+       directory's sibling (<toolchain dir>/../restool is the SDK's toolchains/restool), then the
+       configured SDK root. _OpenHarmonyDetectToolchain above resolved an unset
+       OpenHarmonyToolchainDir from OpenHarmonySdkRoot (no $HOME probing), so either lookup
+       covers the explicit SDK root; OpenHarmonyRestool overrides both. See "Resource index" in
+       the packaging doc. -->
+  <Target Name="_OpenHarmonyResolveRestool"
+          DependsOnTargets="_OpenHarmonyDetectToolchain"
+          Condition=" '$(OpenHarmonyHapPackage)' == 'true' and '$(TargetPlatformIdentifier)' == 'openharmony' ">
+    <PropertyGroup>
+      <_OpenHarmonySdkRootDir Condition=" '$(OpenHarmonySdkRoot)' != '' ">$([MSBuild]::EnsureTrailingSlash('$(OpenHarmonySdkRoot)'))</_OpenHarmonySdkRootDir>
+      <_OpenHarmonyRestoolNextToToolchain Condition=" '$(OpenHarmonyToolchainDir)' != '' ">$([System.IO.Path]::GetFullPath('$(OpenHarmonyToolchainDir)/../restool'))</_OpenHarmonyRestoolNextToToolchain>
+      <OpenHarmonyRestool Condition=" '$(OpenHarmonyRestool)' == '' and '$(_OpenHarmonyRestoolNextToToolchain)' != '' and Exists('$(_OpenHarmonyRestoolNextToToolchain)') ">$(_OpenHarmonyRestoolNextToToolchain)</OpenHarmonyRestool>
+      <OpenHarmonyRestool Condition=" '$(OpenHarmonyRestool)' == '' and '$(_OpenHarmonySdkRootDir)' != '' and Exists('$(_OpenHarmonySdkRootDir)toolchains/restool') ">$(_OpenHarmonySdkRootDir)toolchains/restool</OpenHarmonyRestool>
+    </PropertyGroup>
+    <Error Condition=" '$(OpenHarmonyRestool)' == '' or !Exists('$(OpenHarmonyRestool)') "
+           Text="OpenHarmony hap packaging requires restool (the resources.index compiler) from the OpenHarmony SDK toolchains. Set OpenHarmonyRestool, or point OpenHarmonySdkRoot (or OHOS_SDK_ROOT) at an SDK root that contains toolchains/restool." />
+  </Target>
+
+  <!-- Resolves the staging directory at target execution time. PublishDir is assigned by the
+       Publish target (and IntermediateOutputPath by the common targets), so evaluating the
+       fallback at import time would leave the stage dir empty and turn every staging path
+       below into a path relative to the project directory. -->
+  <Target Name="_OpenHarmonyResolveHapStageDir">
+    <PropertyGroup>
+      <OpenHarmonyHapStageDir Condition=" '$(OpenHarmonyHapStageDir)' == '' and '$(IntermediateOutputPath)' != '' ">$(IntermediateOutputPath)openharmony-hap/</OpenHarmonyHapStageDir>
+      <OpenHarmonyHapStageDir Condition=" '$(OpenHarmonyHapStageDir)' == '' and '$(BaseIntermediateOutputPath)' != '' ">$(BaseIntermediateOutputPath)openharmony-hap/</OpenHarmonyHapStageDir>
+      <OpenHarmonyHapStageDir Condition=" '$(OpenHarmonyHapStageDir)' == '' and '$(PublishDir)' != '' ">$(PublishDir)openharmony-hap/</OpenHarmonyHapStageDir>
+      <_OpenHarmonyHapStageDir Condition=" '$(OpenHarmonyHapStageDir)' != '' ">$([MSBuild]::NormalizeDirectory('$(MSBuildProjectDirectory)', '$(OpenHarmonyHapStageDir)'))</_OpenHarmonyHapStageDir>
+      <_OpenHarmonyProjectDirNormalized>$([MSBuild]::NormalizeDirectory('$(MSBuildProjectDirectory)'))</_OpenHarmonyProjectDirNormalized>
+    </PropertyGroup>
+    <Error Condition=" '$(OpenHarmonyHapStageDir)' == '' "
+           Text="OpenHarmonyHapStageDir could not be derived (no IntermediateOutputPath, BaseIntermediateOutputPath or PublishDir); set the OpenHarmonyHapStageDir property explicitly." />
+    <Error Condition=" '$(_OpenHarmonyHapStageDir)' == '$(_OpenHarmonyProjectDirNormalized)' "
+           Text="OpenHarmonyHapStageDir must not be the project directory ('$(MSBuildProjectDirectory)'); the packaging writes module.json, ets/, resources/ and libs/ into the staging directory." />
+  </Target>
+
+  <!-- See "Payload determinism" in the packaging doc. Runs only for hap packaging and only in the
+       publish flow (PrepareForPublish is a dependency of every publish alternative); it removes
+       the reused publish directory after the SDK's per-Build codesign pass and before the
+       publish copy repopulates it. Without this, the codesign pass re-signs the stale publish
+       copies (publish/ is enumerated through $(TargetDir)), appending one 4 KB .codesign page
+       per publish that the packaging then packs into dotnet.zip. -->
+  <Target Name="_OpenHarmonyResetHapPublishOutputs"
+          BeforeTargets="PrepareForPublish"
+          Condition=" '$(OpenHarmonyHapPackage)' == 'true' and '$(TargetPlatformIdentifier)' == 'openharmony' and '$(PublishDir)' != '' ">
+    <PropertyGroup>
+      <_OpenHarmonyResetPublishDir>$([MSBuild]::NormalizeDirectory('$(MSBuildProjectDirectory)', '$(PublishDir)'))</_OpenHarmonyResetPublishDir>
+      <_OpenHarmonyResetProjectDir>$([MSBuild]::NormalizeDirectory('$(MSBuildProjectDirectory)'))</_OpenHarmonyResetProjectDir>
+    </PropertyGroup>
+    <Error Condition=" '$(_OpenHarmonyResetPublishDir)' == '$(_OpenHarmonyResetProjectDir)' "
+           Text="PublishDir must not be the project directory ('$(MSBuildProjectDirectory)') when OpenHarmonyHapPackage=true; the hap packaging resets the publish directory before republishing it." />
+    <RemoveDir Directories="$(_OpenHarmonyResetPublishDir)" />
+  </Target>
+
+  <!-- Blazor asset staging: see "Blazor asset staging" in the packaging doc. Runs after the publish
+       copy and before _OpenHarmonyStageHap packs PublishDir, so the staged files travel inside
+       resources/rawfile/dotnet.zip and land under <AppDir>/wwwroot in the extracted payload.
+       Without a wwwroot the target is a no-op (no items, no copies, no output). -->
+  <Target Name="_OpenHarmonyStageBlazorAssets"
+          Condition=" '$(OpenHarmonyHapPackage)' == 'true' and '$(TargetPlatformIdentifier)' == 'openharmony' ">
+    <PropertyGroup>
+      <_OpenHarmonyBlazorWwwroot>$(MSBuildProjectDirectory)/wwwroot</_OpenHarmonyBlazorWwwroot>
+      <_OpenHarmonyBlazorPublishDir>$([MSBuild]::NormalizeDirectory('$(MSBuildProjectDirectory)', '$(PublishDir)'))</_OpenHarmonyBlazorPublishDir>
+    </PropertyGroup>
+    <ItemGroup Condition=" Exists('$(_OpenHarmonyBlazorWwwroot)/') ">
+      <!-- The app's wwwroot content root. The /**/* glob yields files only (extensionless files
+           included), and %(RecursiveDir) keeps the tree shape under publish/wwwroot/. -->
+      <_OpenHarmonyBlazorAsset Include="$(_OpenHarmonyBlazorWwwroot)/**/*" />
+      <!-- Canonical framework script source when the Razor/static-web-assets pipeline ran. -->
+      <_OpenHarmonyBlazorStaticScript Include="@(StaticWebAsset)"
+          Condition=" '%(StaticWebAsset.Filename)%(StaticWebAsset.Extension)' == 'blazor.webview.js' " />
+      <!-- MauiAsset entries produced by ConvertStaticWebAssetsToMauiAssets (when a MAUI SDK ran);
+           TargetPath is the final payload-relative path (wwwroot/...). Only wwwroot entries are
+           consumed so a foreign asset cannot escape the content root. -->
+      <_OpenHarmonyBlazorMauiAsset Include="@(MauiAsset)"
+          Condition=" $([System.String]::Copy('%(MauiAsset.TargetPath)').Replace('\', '/').StartsWith('wwwroot/')) " />
+    </ItemGroup>
+    <!-- Static-web-assets only (audit V6): the Razor/WebView SDK produces blazor.webview.js as a
+         static web asset; a NuGet-cache glob guessed at a path that the SDK does not own and could
+         silently stage a mismatched version. A wwwroot without the asset is a hard error naming
+         the fix. -->
+    <Error Condition=" '@(_OpenHarmonyBlazorAsset)' != '' and '@(_OpenHarmonyBlazorStaticScript)' == '' "
+           Text="OpenHarmony: the project carries wwwroot content but @(StaticWebAsset) has no blazor.webview.js. The Razor/static-web-assets publish pipeline must produce it (reference Microsoft.AspNetCore.Components.WebView.Maui and let the SDK publish the static web assets); the workload no longer falls back to a NuGet-cache copy." />
+    <ItemGroup Condition=" '@(_OpenHarmonyBlazorStaticScript)' != '' ">
+      <_OpenHarmonyBlazorScript Include="@(_OpenHarmonyBlazorStaticScript)" />
+    </ItemGroup>
+    <Copy Condition=" '@(_OpenHarmonyBlazorMauiAsset)' != '' "
+          SourceFiles="@(_OpenHarmonyBlazorMauiAsset)"
+          DestinationFiles="@(_OpenHarmonyBlazorMauiAsset->'$(_OpenHarmonyBlazorPublishDir)%(TargetPath)')" />
+    <Copy Condition=" '@(_OpenHarmonyBlazorAsset)' != '' "
+          SourceFiles="@(_OpenHarmonyBlazorAsset)"
+          DestinationFiles="@(_OpenHarmonyBlazorAsset->'$(_OpenHarmonyBlazorPublishDir)wwwroot/%(RecursiveDir)%(Filename)%(Extension)')" />
+    <Copy Condition=" '@(_OpenHarmonyBlazorScript)' != '' "
+          SourceFiles="@(_OpenHarmonyBlazorScript)"
+          DestinationFiles="@(_OpenHarmonyBlazorScript->'$(_OpenHarmonyBlazorPublishDir)wwwroot/_framework/blazor.webview.js')" />
+    <Message Importance="high" Condition=" '@(_OpenHarmonyBlazorScript)' != '' "
+             Text="OpenHarmony: staged _framework/blazor.webview.js from @(StaticWebAsset) into $(PublishDir)wwwroot (native model; no wasm/dotnet browser assets)" />
+  </Target>
+
+  <!-- Shared ElfSigner task (sdk-ohos Microsoft.NET.Build.Tasks). Re-signs an ELF64 file in
+       place when its .codesign is missing or does not verify (non-ELF files are skipped).
+       MicrosoftNETBuildTasksAssembly is defined by Microsoft.NET.Sdk.Common.targets, which is
+       imported after this file; UsingTask attributes are evaluated after all imports, so the
+       path is resolved by then. Using the task (rather than the selfsign CLI in scripts/) keeps
+       the pack self-contained: consumers only need the OpenHarmony-enabled .NET SDK. -->
+  <UsingTask TaskName="OpenHarmonyCodesign" AssemblyFile="$(MicrosoftNETBuildTasksAssembly)" />
+
+  <!-- Feature permissions (see "Feature permissions" in the packaging doc): the single feature
+       -> permission matrix, the request-point scan over the shell sources and the validation.
+       Runs before _OpenHarmonyStageHap so the generated module.json carries the resolved
+       requestPermissions and a drifted matrix fails the build instead of shipping silently. -->
+  <Target Name="_OpenHarmonyResolvePermissions"
+          Condition=" '$(OpenHarmonyHapPackage)' == 'true' and '$(TargetPlatformIdentifier)' == 'openharmony' ">
+    <PropertyGroup>
+      <_OpenHarmonyTemplatesDir>$(_OpenHarmonySdkPackDir)templates/</_OpenHarmonyTemplatesDir>
+    </PropertyGroup>
+    <ItemGroup>
+      <!-- Feature -> permission matrix. Feature is the id selected through OpenHarmonyFeatures;
+           GrantMode records the platform grant mode (user_grant entries need the reason);
+           Reason names a template string resource (templates/resources/base/element/string.json);
+           When is the usedScene value. -->
+      <_OpenHarmonyFeaturePermission Include="ohos.permission.ACCESS_BLUETOOTH">
+        <Feature>bluetooth</Feature>
+        <GrantMode>user_grant</GrantMode>
+        <Reason>$string:permission_reason_bluetooth</Reason>
+        <UsedSceneWhen>inuse</UsedSceneWhen>
+      </_OpenHarmonyFeaturePermission>
+      <_OpenHarmonyFeaturePermission Include="ohos.permission.APPROXIMATELY_LOCATION">
+        <Feature>location</Feature>
+        <GrantMode>user_grant</GrantMode>
+        <Reason>$string:permission_reason_location</Reason>
+        <UsedSceneWhen>inuse</UsedSceneWhen>
+      </_OpenHarmonyFeaturePermission>
+      <_OpenHarmonyFeaturePermission Include="ohos.permission.READ_PASTEBOARD">
+        <Feature>clipboard</Feature>
+        <GrantMode>user_grant</GrantMode>
+        <Reason>$string:permission_reason_clipboard</Reason>
+        <UsedSceneWhen>inuse</UsedSceneWhen>
+      </_OpenHarmonyFeaturePermission>
+      <_OpenHarmonyFeaturePermission Include="ohos.permission.READ_CONTACTS">
+        <Feature>contacts</Feature>
+        <GrantMode>user_grant</GrantMode>
+        <Reason>$string:permission_reason_contacts</Reason>
+        <UsedSceneWhen>inuse</UsedSceneWhen>
+      </_OpenHarmonyFeaturePermission>
+      <_OpenHarmonyFeaturePermission Include="ohos.permission.READ_CALENDAR">
+        <Feature>calendar-read</Feature>
+        <GrantMode>user_grant</GrantMode>
+        <Reason>$string:permission_reason_calendar_read</Reason>
+        <UsedSceneWhen>inuse</UsedSceneWhen>
+      </_OpenHarmonyFeaturePermission>
+      <_OpenHarmonyFeaturePermission Include="ohos.permission.READ_CALENDAR">
+        <Feature>calendar</Feature>
+        <GrantMode>user_grant</GrantMode>
+        <Reason>$string:permission_reason_calendar_read</Reason>
+        <UsedSceneWhen>inuse</UsedSceneWhen>
+      </_OpenHarmonyFeaturePermission>
+      <_OpenHarmonyFeaturePermission Include="ohos.permission.WRITE_CALENDAR">
+        <Feature>calendar</Feature>
+        <GrantMode>user_grant</GrantMode>
+        <Reason>$string:permission_reason_calendar_write</Reason>
+        <UsedSceneWhen>inuse</UsedSceneWhen>
+      </_OpenHarmonyFeaturePermission>
+      <_OpenHarmonyFeaturePermission Include="ohos.permission.PRINT">
+        <Feature>print</Feature>
+        <GrantMode>system_grant</GrantMode>
+        <Reason>$string:permission_reason_print</Reason>
+        <UsedSceneWhen>inuse</UsedSceneWhen>
+      </_OpenHarmonyFeaturePermission>
+      <_OpenHarmonyFeaturePermission Include="ohos.permission.INTERNET">
+        <Feature>network</Feature>
+        <GrantMode>system_grant</GrantMode>
+        <Reason>$string:permission_reason_internet</Reason>
+        <UsedSceneWhen>inuse</UsedSceneWhen>
+      </_OpenHarmonyFeaturePermission>
+      <!-- webview-media: the ArkWeb onPermissionRequest bridge (camera/microphone). The shell
+           prompts for exactly these two user_grant permissions when a page calls getUserMedia;
+           without the feature the request points stay undeclared and the shell denies. -->
+      <_OpenHarmonyFeaturePermission Include="ohos.permission.CAMERA">
+        <Feature>webview-media</Feature>
+        <GrantMode>user_grant</GrantMode>
+        <Reason>$string:permission_reason_camera</Reason>
+        <UsedSceneWhen>inuse</UsedSceneWhen>
+      </_OpenHarmonyFeaturePermission>
+      <_OpenHarmonyFeaturePermission Include="ohos.permission.MICROPHONE">
+        <Feature>webview-media</Feature>
+        <GrantMode>user_grant</GrantMode>
+        <Reason>$string:permission_reason_microphone</Reason>
+        <UsedSceneWhen>inuse</UsedSceneWhen>
+      </_OpenHarmonyFeaturePermission>
+      <!-- The request-point manifest: the shipped shell sources. They are scanned for quoted
+           ohos.permission.* literals; the declaration set must keep covering them. -->
+      <_OpenHarmonyShellSource Include="$(_OpenHarmonyTemplatesDir)ets/**/*.ets" />
+    </ItemGroup>
+    <OpenHarmonyResolvePermissions FeatureTable="@(_OpenHarmonyFeaturePermission)"
+                                   Features="$(OpenHarmonyFeatures)"
+                                   ExtraPermissions="$(OpenHarmonyExtraPermissions)"
+                                   ShellSources="@(_OpenHarmonyShellSource)"
+                                   AbilityName="$(OpenHarmonyAbilityName)"
+                                   OptOut="$(OpenHarmonyPermissionsOptOut)"
+                                   RequireDeclaredRequestPoints="$(OpenHarmonyRequireDeclaredRequestPoints)">
+      <Output TaskParameter="Permissions" ItemName="_OpenHarmonyModuleJsonPermission" />
+      <Output TaskParameter="RequestedPoints" PropertyName="_OpenHarmonyRequestedPermissions" />
+      <Output TaskParameter="UndeclaredPoints" PropertyName="_OpenHarmonyUndeclaredPermissions" />
+    </OpenHarmonyResolvePermissions>
+    <Message Importance="high" Text="OpenHarmony: permissions features='$(OpenHarmonyFeatures)' declared=@(_OpenHarmonyModuleJsonPermission->Count()) shellRequests='$(_OpenHarmonyRequestedPermissions)' undeclared='$(_OpenHarmonyUndeclaredPermissions)'" />
+  </Target>
+
+  <!-- Runtime mode switch (MS-MODE; see "Runtime mode switch" in the packaging doc): validates
+       OpenHarmonyRuntimeMode, optionally stages the interpreter pack over the publish natives and
+       writes libs/<abi>/runtime-mode.txt. Called by _OpenHarmonyStageHap after the payload
+       staging and before the codesign pass, so replaced interpreter natives are signed with the
+       rest of libs/<abi>/ and the payload marker (written later) counts the marker file. Also
+       runnable stand-alone: the hap-targets selftest drives it with a fixture. -->
+  <Target Name="_OpenHarmonyStageRuntimeMode"
+          DependsOnTargets="_OpenHarmonyResolveHapStageDir"
+          Condition=" '$(OpenHarmonyHapPackage)' == 'true' and '$(TargetPlatformIdentifier)' == 'openharmony' ">
+    <PropertyGroup>
+      <_OpenHarmonyRuntimeModeDir>$(_OpenHarmonyHapStageDir)libs/$(OpenHarmonyAbi)</_OpenHarmonyRuntimeModeDir>
+      <_OpenHarmonyRuntimeModePublishDir>$([MSBuild]::NormalizeDirectory('$(MSBuildProjectDirectory)', '$(PublishDir)'))</_OpenHarmonyRuntimeModePublishDir>
+      <_OpenHarmonyRuntimeModeAotStem Condition=" '$(TargetFileName)' != '' ">$([System.IO.Path]::GetFileNameWithoutExtension('$(TargetFileName)'))</_OpenHarmonyRuntimeModeAotStem>
+      <_OpenHarmonyRuntimeModeAotStem Condition=" '$(_OpenHarmonyRuntimeModeAotStem)' == '' ">$(AssemblyName)</_OpenHarmonyRuntimeModeAotStem>
+      <_OpenHarmonyRuntimeModeAotLibName>lib$(_OpenHarmonyRuntimeModeAotStem).so</_OpenHarmonyRuntimeModeAotLibName>
+      <_OpenHarmonyInterpreterPackDir Condition=" '$(OpenHarmonyInterpreterPack)' != '' ">$([MSBuild]::NormalizeDirectory('$(MSBuildProjectDirectory)', '$(OpenHarmonyInterpreterPack)'))</_OpenHarmonyInterpreterPackDir>
+    </PropertyGroup>
+    <Error Condition=" '$(OpenHarmonyRuntimeMode)' != 'jit' and '$(OpenHarmonyRuntimeMode)' != 'aot' and '$(OpenHarmonyRuntimeMode)' != 'interp' "
+           Text="OpenHarmonyRuntimeMode '$(OpenHarmonyRuntimeMode)' is not a runtime mode: use jit (the default), aot or interp. See &quot;Runtime mode switch&quot; in docs/openharmony-hap-packaging.md." />
+    <Error Condition=" '$(OpenHarmonyRuntimeMode)' == 'aot' and !Exists('$(_OpenHarmonyRuntimeModePublishDir)$(_OpenHarmonyRuntimeModeAotLibName)') "
+           Text="OpenHarmonyRuntimeMode=aot requires the NativeAOT application library $(_OpenHarmonyRuntimeModeAotLibName) in the publish payload ('$(_OpenHarmonyRuntimeModePublishDir)'); publish the AOT variant (-p:PublishAot=true -p:PublishAotUsingRuntimePack=true -p:NativeLib=Shared, the aot-haps build) or set OpenHarmonyRuntimeMode=jit. See &quot;Runtime mode switch&quot; in docs/openharmony-hap-packaging.md." />
+    <Error Condition=" '$(OpenHarmonyInterpreterPack)' != '' and '$(OpenHarmonyRuntimeMode)' != 'interp' "
+           Text="OpenHarmonyInterpreterPack '$(OpenHarmonyInterpreterPack)' is only meaningful with OpenHarmonyRuntimeMode=interp (got '$(OpenHarmonyRuntimeMode)'): it replaces the runtime natives the jit/aot launch shapes resolve from the publish payload." />
+    <ItemGroup>
+      <_OpenHarmonyInterpreterCoreclr Condition=" '$(OpenHarmonyInterpreterPack)' != '' and Exists('$(_OpenHarmonyInterpreterPackDir)libcoreclr.so') " Include="$(_OpenHarmonyInterpreterPackDir)libcoreclr.so" />
+      <_OpenHarmonyInterpreterCoreclr Condition=" '$(OpenHarmonyInterpreterPack)' != '' and Exists('$(_OpenHarmonyInterpreterPackDir)native/libcoreclr.so') " Include="$(_OpenHarmonyInterpreterPackDir)native/libcoreclr.so" />
+      <_OpenHarmonyInterpreterClrinterp Condition=" '$(OpenHarmonyInterpreterPack)' != '' and Exists('$(_OpenHarmonyInterpreterPackDir)libclrinterpreter.so') " Include="$(_OpenHarmonyInterpreterPackDir)libclrinterpreter.so" />
+      <_OpenHarmonyInterpreterClrinterp Condition=" '$(OpenHarmonyInterpreterPack)' != '' and Exists('$(_OpenHarmonyInterpreterPackDir)native/libclrinterpreter.so') " Include="$(_OpenHarmonyInterpreterPackDir)native/libclrinterpreter.so" />
+    </ItemGroup>
+    <Error Condition=" '$(OpenHarmonyInterpreterPack)' != '' and '@(_OpenHarmonyInterpreterCoreclr)' == '' "
+           Text="OpenHarmonyInterpreterPack '$(OpenHarmonyInterpreterPack)' carries no libcoreclr.so (looked in the directory and its native/ subdirectory); extract ohos-interpreter-pack.tar.gz and point OpenHarmonyInterpreterPack at it." />
+    <Error Condition=" '$(OpenHarmonyInterpreterPack)' != '' and '@(_OpenHarmonyInterpreterClrinterp)' == '' "
+           Text="OpenHarmonyInterpreterPack '$(OpenHarmonyInterpreterPack)' carries no libclrinterpreter.so (looked in the directory and its native/ subdirectory); extract ohos-interpreter-pack.tar.gz and point OpenHarmonyInterpreterPack at it." />
+    <MakeDir Directories="$(_OpenHarmonyRuntimeModeDir)" />
+    <Copy Condition=" '@(_OpenHarmonyInterpreterCoreclr)' != '' " SourceFiles="@(_OpenHarmonyInterpreterCoreclr)" DestinationFolder="$(_OpenHarmonyRuntimeModeDir)/" />
+    <Copy Condition=" '@(_OpenHarmonyInterpreterClrinterp)' != '' " SourceFiles="@(_OpenHarmonyInterpreterClrinterp)" DestinationFolder="$(_OpenHarmonyRuntimeModeDir)/" />
+    <WriteLinesToFile File="$(_OpenHarmonyRuntimeModeDir)/runtime-mode.txt" Lines="$(OpenHarmonyRuntimeMode)" Overwrite="true" />
+    <Message Importance="high" Text="OpenHarmony: runtime mode '$(OpenHarmonyRuntimeMode)' written to libs/$(OpenHarmonyAbi)/runtime-mode.txt (the host reads it before hostfxr)" />
+    <Message Importance="high" Condition=" '$(OpenHarmonyRuntimeMode)' == 'interp' and '@(_OpenHarmonyInterpreterCoreclr)' != '' " Text="OpenHarmony: runtime-mode=interp staged the interpreter pack (libcoreclr.so + libclrinterpreter.so) over the publish natives; the host sets DOTNET_InterpMode=3 unless interp.txt overrides it" />
+    <Message Importance="high" Condition=" '$(OpenHarmonyRuntimeMode)' == 'interp' and '$(OpenHarmonyInterpreterPack)' == '' " Text="OpenHarmony: runtime-mode=interp without OpenHarmonyInterpreterPack - libs/$(OpenHarmonyAbi)/ keeps the stock runtime natives; the device-side interpreter overlay + interp.txt route is still required (see &quot;Runtime mode switch&quot; in the packaging doc)" />
+  </Target>
+
+  <!-- AfterTargets=Publish order: consumers can inject targets that must run after the SDK's
+       publish copy and before the hap staging by listing them in OpenHarmonyAfterPublishDependsOn
+       (e.g. a custom asset staging target). The staged libs are re-signed below, after the payload
+       staging and before the zip, so the .codesign pass always covers the final libs/<abi>/ tree. -->
+  <Target Name="_OpenHarmonyStageHap"
+          AfterTargets="Publish"
+          DependsOnTargets="$(OpenHarmonyAfterPublishDependsOn);_OpenHarmonyDetectToolchain;_OpenHarmonyResolveHapStageDir;_OpenHarmonyStageBlazorAssets;_OpenHarmonyResolvePermissions"
+          Condition=" '$(OpenHarmonyHapPackage)' == 'true' and '$(TargetPlatformIdentifier)' == 'openharmony' ">
+    <PropertyGroup>
+      <_OpenHarmonyTemplatesDir>$(_OpenHarmonySdkPackDir)templates/</_OpenHarmonyTemplatesDir>
+      <_OpenHarmonyHostDir>$(_OpenHarmonySdkPackDir)hosts/$(OpenHarmonyAbi)/</_OpenHarmonyHostDir>
+    </PropertyGroup>
+
+    <Error Condition=" !Exists('$(_OpenHarmonyTemplatesDir)ets/modules.abc') " Text="Missing the ArkTS shell in the platform SDK pack ($(_OpenHarmonyTemplatesDir)ets/modules.abc)." />
+    <Error Condition=" !Exists('$(_OpenHarmonyHostDir)libopenharmonyhost.so') " Text="Missing libopenharmonyhost.so in the platform SDK pack (run scripts/build-host.sh)." />
+
+    <RemoveDir Directories="$(_OpenHarmonyHapStageDir)" />
+    <MakeDir Directories="$(_OpenHarmonyHapStageDir)ets;$(_OpenHarmonyHapStageDir)resources/base/element;$(_OpenHarmonyHapStageDir)resources/base/media;$(_OpenHarmonyHapStageDir)resources/base/profile;$(_OpenHarmonyHapStageDir)resources/rawfile;$(_OpenHarmonyHapStageDir)libs/$(OpenHarmonyAbi)" />
+
+    <!-- module.json: see the OpenHarmonyGenerateModuleJson UsingTask. The task reads the whole
+         template, substitutes the @NAME@ tokens in their JSON context (string values are escaped,
+         bare values must be JSON literals), inserts compileSdkVersion/compileSdkType after
+         app.apiReleaseType and requestPermissions as a module member, and validates the result.
+         The bytes are unchanged for the previous single-line template and API-band values. -->
+    <ItemGroup>
+      <_OpenHarmonyModuleJsonReplacement Include="BUNDLE_NAME"><Value>$(OpenHarmonyBundleName)</Value></_OpenHarmonyModuleJsonReplacement>
+      <_OpenHarmonyModuleJsonReplacement Include="VENDOR"><Value>$(OpenHarmonyVendor)</Value></_OpenHarmonyModuleJsonReplacement>
+      <_OpenHarmonyModuleJsonReplacement Include="VERSION_CODE"><Value>$(OpenHarmonyVersionCode)</Value></_OpenHarmonyModuleJsonReplacement>
+      <_OpenHarmonyModuleJsonReplacement Include="VERSION_NAME"><Value>$(OpenHarmonyVersionName)</Value></_OpenHarmonyModuleJsonReplacement>
+      <_OpenHarmonyModuleJsonReplacement Include="MIN_API"><Value>$(OpenHarmonyMinApiVersion)</Value></_OpenHarmonyModuleJsonReplacement>
+      <_OpenHarmonyModuleJsonReplacement Include="TARGET_API"><Value>$(OpenHarmonyTargetApiVersion)</Value></_OpenHarmonyModuleJsonReplacement>
+      <_OpenHarmonyModuleJsonReplacement Include="API_RELEASE_TYPE"><Value>$(OpenHarmonyApiReleaseType)</Value></_OpenHarmonyModuleJsonReplacement>
+      <_OpenHarmonyModuleJsonReplacement Include="DEBUG"><Value>$(OpenHarmonyHapDebug)</Value></_OpenHarmonyModuleJsonReplacement>
+      <_OpenHarmonyModuleJsonReplacement Include="ABILITY_NAME"><Value>$(OpenHarmonyAbilityName)</Value></_OpenHarmonyModuleJsonReplacement>
+    </ItemGroup>
+    <!-- requestPermissions: resolved by _OpenHarmonyResolvePermissions (a dependency of this
+         target) from OpenHarmonyFeatures/OpenHarmonyExtraPermissions, with the reason and
+         usedScene each entry needs; the resolve target also validated the request-point
+         manifest. -->
+    <OpenHarmonyGenerateModuleJson TemplateFile="$(_OpenHarmonyTemplatesDir)module.json.template"
+                                   OutputFile="$(_OpenHarmonyHapStageDir)module.json"
+                                   Replacements="@(_OpenHarmonyModuleJsonReplacement)"
+                                   CompileSdkVersion="$(OpenHarmonyCompileSdkVersion)"
+                                   CompileSdkType="$(OpenHarmonyCompileSdkType)"
+                                   ExtraPermissions="@(_OpenHarmonyModuleJsonPermission)">
+      <Output TaskParameter="Changed" PropertyName="_OpenHarmonyModuleJsonChanged" />
+    </OpenHarmonyGenerateModuleJson>
+    <Message Importance="high" Text="OpenHarmony: wrote $(_OpenHarmonyHapStageDir)module.json (changed=$(_OpenHarmonyModuleJsonChanged), compileSdk=$(OpenHarmonyCompileSdkType)/$(OpenHarmonyCompileSdkVersion), permissions=@(_OpenHarmonyModuleJsonPermission->Count()))" />
+
+    <!-- ArkTS shell (compiled), resources and the native host -->
+    <Error Condition=" !Exists('$(OpenHarmonyArktsModulesAbc)') " Text="OpenHarmonyArktsModulesAbc does not exist: $(OpenHarmonyArktsModulesAbc)" />
+    <Copy SourceFiles="$(OpenHarmonyArktsModulesAbc)" DestinationFiles="$(_OpenHarmonyHapStageDir)ets/modules.abc" />
+    <ItemGroup>
+      <_OpenHarmonyHapResource Include="$(_OpenHarmonyTemplatesDir)resources/base/**/*" />
+    </ItemGroup>
+    <Copy SourceFiles="@(_OpenHarmonyHapResource)" DestinationFiles="@(_OpenHarmonyHapResource->'$(_OpenHarmonyHapStageDir)resources/base/%(RecursiveDir)%(Filename)%(Extension)')" />
+    <Copy SourceFiles="$(_OpenHarmonyHostDir)libopenharmonyhost.so" DestinationFolder="$(_OpenHarmonyHapStageDir)libs/$(OpenHarmonyAbi)/" />
+
+    <!-- C++ runtime staging: see "C++ runtime" in the packaging doc. Candidates are ordered by
+         increasing preference: the Copy task writes them all to the same file name in
+         libs/$(OpenHarmonyAbi)/, so the last existing source wins (an explicit
+         OpenHarmonyLibCxxShared, else the SDK root, else OHOS_NDK). Nothing under $HOME is probed
+         (audit V5): set OpenHarmonySdkRoot or OHOS_NDK explicitly. -->
+    <PropertyGroup>
+      <_OpenHarmonyNativeAbi Condition=" '$(OpenHarmonyAbi)' == 'arm64-v8a' ">aarch64-linux-ohos</_OpenHarmonyNativeAbi>
+      <_OpenHarmonyNativeAbi Condition=" '$(OpenHarmonyAbi)' == 'armeabi-v7a' ">arm-linux-ohos</_OpenHarmonyNativeAbi>
+      <_OpenHarmonyNativeAbi Condition=" '$(OpenHarmonyAbi)' == 'x86_64' ">x86_64-linux-ohos</_OpenHarmonyNativeAbi>
+      <_OpenHarmonyNativeAbi Condition=" '$(_OpenHarmonyNativeAbi)' == '' ">$(OpenHarmonyAbi)</_OpenHarmonyNativeAbi>
+      <_OpenHarmonySdkRootDir Condition=" '$(OpenHarmonySdkRoot)' != '' ">$([MSBuild]::EnsureTrailingSlash('$(OpenHarmonySdkRoot)'))</_OpenHarmonySdkRootDir>
+      <_OpenHarmonyNdkRootDir Condition=" '$(OHOS_NDK)' != '' ">$([MSBuild]::EnsureTrailingSlash('$(OHOS_NDK)'))</_OpenHarmonyNdkRootDir>
+    </PropertyGroup>
+    <ItemGroup>
+      <_OpenHarmonyLibCxxShared Condition=" '$(_OpenHarmonyNdkRootDir)' != '' and Exists('$(_OpenHarmonyNdkRootDir)llvm/lib/$(_OpenHarmonyNativeAbi)/libc++_shared.so') " Include="$(_OpenHarmonyNdkRootDir)llvm/lib/$(_OpenHarmonyNativeAbi)/libc++_shared.so" />
+      <_OpenHarmonyLibCxxShared Condition=" '$(_OpenHarmonyNdkRootDir)' != '' and Exists('$(_OpenHarmonyNdkRootDir)native/llvm/lib/$(_OpenHarmonyNativeAbi)/libc++_shared.so') " Include="$(_OpenHarmonyNdkRootDir)native/llvm/lib/$(_OpenHarmonyNativeAbi)/libc++_shared.so" />
+      <_OpenHarmonyLibCxxShared Condition=" '$(_OpenHarmonySdkRootDir)' != '' and Exists('$(_OpenHarmonySdkRootDir)native/llvm/lib/$(_OpenHarmonyNativeAbi)/libc++_shared.so') " Include="$(_OpenHarmonySdkRootDir)native/llvm/lib/$(_OpenHarmonyNativeAbi)/libc++_shared.so" />
+      <_OpenHarmonyLibCxxShared Condition=" '$(_OpenHarmonySdkRootDir)' != '' and Exists('$(_OpenHarmonySdkRootDir)llvm/lib/$(_OpenHarmonyNativeAbi)/libc++_shared.so') " Include="$(_OpenHarmonySdkRootDir)llvm/lib/$(_OpenHarmonyNativeAbi)/libc++_shared.so" />
+      <_OpenHarmonyLibCxxShared Condition=" '$(OpenHarmonyLibCxxShared)' != '' " Include="$(OpenHarmonyLibCxxShared)" />
+    </ItemGroup>
+    <Error Condition=" '$(OpenHarmonyLibCxxShared)' != '' and !Exists('$(OpenHarmonyLibCxxShared)') "
+           Text="OpenHarmonyLibCxxShared '$(OpenHarmonyLibCxxShared)' does not exist." />
+    <Error Condition=" '@(_OpenHarmonyLibCxxShared)' == '' "
+           Text="libc++_shared.so was not found; libopenharmonyhost.so requires it at runtime and the hap loader refuses libs/$(OpenHarmonyAbi)/ without it. Set OpenHarmonySdkRoot (or OHOS_SDK_ROOT) or OHOS_NDK to the matching SDK/NDK root, or pass -p:OpenHarmonyLibCxxShared=&lt;path&gt;." />
+    <Copy SourceFiles="@(_OpenHarmonyLibCxxShared)" DestinationFolder="$(_OpenHarmonyHapStageDir)libs/$(OpenHarmonyAbi)/" />
+    <Message Importance="high" Text="OpenHarmony: staged libc++_shared.so from @(_OpenHarmonyLibCxxShared->'%(Identity)', '; ')" />
+
+    <!-- Runtime native libraries: see "Runtime native libraries" in the packaging doc. The .so
+         files of the publish payload are enumerated here, at target execution time (after the
+         publish copy repopulated the directory), validated as ELF and staged next to the host
+         and libc++_shared.so BEFORE the codesign pass below, so the HAP signature block covers
+         them (XPM/fs-verity accepts only libs/<abi>/** in an enforcing app process).
+         The staged names are the exclusion set of the payload zip below: the runtime ELFs
+         travel only in libs/<abi>/ (the same file names are skipped by name, so a nested copy
+         would be skipped as well). The size/name report is the packaging evidence; the
+         resolution constraints behind the exclusion are recorded in the packaging doc. -->
+    <PropertyGroup>
+      <_OpenHarmonyRuntimePublishDir>$([MSBuild]::NormalizeDirectory('$(MSBuildProjectDirectory)', '$(PublishDir)'))</_OpenHarmonyRuntimePublishDir>
+    </PropertyGroup>
+    <ItemGroup>
+      <_OpenHarmonyPayloadNativeLib Include="$(_OpenHarmonyRuntimePublishDir)*.so" />
+    </ItemGroup>
+    <OpenHarmonyStageRuntimeLibs SourceFiles="@(_OpenHarmonyPayloadNativeLib)"
+                                 DestinationDirectory="$(_OpenHarmonyHapStageDir)libs/$(OpenHarmonyAbi)"
+                                 SkipFileNames="libopenharmonyhost.so;libc++_shared.so">
+      <Output TaskParameter="CopiedFiles" ItemName="_OpenHarmonyStagedRuntimeLib" />
+      <Output TaskParameter="CopiedCount" PropertyName="_OpenHarmonyStagedRuntimeLibCount" />
+      <Output TaskParameter="CopiedBytes" PropertyName="_OpenHarmonyStagedRuntimeLibBytes" />
+    </OpenHarmonyStageRuntimeLibs>
+    <Error Condition=" '$(_OpenHarmonyStagedRuntimeLibCount)' == '0' or '$(_OpenHarmonyStagedRuntimeLibCount)' == '' "
+           Text="OpenHarmony: no ELF runtime library (*.so) found in the publish payload ('$(_OpenHarmonyRuntimePublishDir)') to stage into libs/$(OpenHarmonyAbi)/; the hap would not carry the .NET runtime libraries the HAP signature has to cover." />
+    <Message Importance="high" Condition=" '$(_OpenHarmonyStagedRuntimeLibCount)' != '0' "
+             Text="OpenHarmony: staged $(_OpenHarmonyStagedRuntimeLibCount) runtime native libraries ($([MSBuild]::Divide($(_OpenHarmonyStagedRuntimeLibBytes), 1048576)) MB, excluded from dotnet.zip) into libs/$(OpenHarmonyAbi)/: @(_OpenHarmonyStagedRuntimeLib->'%(Filename)%(Extension)', ' ')" />
+
+    <!-- Payload-in-libs: see the OpenHarmonyStagePayloadLibs task above and "Payload in libs" in
+         the packaging doc. The whole managed publish payload is copied into libs/<abi>/ (nested
+         directories preserved), skipping the frozen names already staged and the runtime natives
+         above. This runs before the codesign pass below so an ELF the payload still carries in a
+         nested directory is signed like every other staged lib. OpenHarmonyHapPayloadInLibs=false
+         keeps the previous layout: the payload then travels only inside dotnet.zip. -->
+    <OpenHarmonyStagePayloadLibs Condition=" '$(OpenHarmonyHapPayloadInLibs)' == 'true' "
+                                 SourceDirectory="$(_OpenHarmonyRuntimePublishDir)"
+                                 DestinationDirectory="$(_OpenHarmonyHapStageDir)libs/$(OpenHarmonyAbi)"
+                                 SkipFileNames="libopenharmonyhost.so;libc++_shared.so;@(_OpenHarmonyStagedRuntimeLib->'%(Filename)%(Extension)')">
+      <Output TaskParameter="CopiedCount" PropertyName="_OpenHarmonyPayloadInLibsEntries" />
+      <Output TaskParameter="CopiedBytes" PropertyName="_OpenHarmonyPayloadInLibsBytes" />
+    </OpenHarmonyStagePayloadLibs>
+    <Message Importance="high" Condition=" '$(OpenHarmonyHapPayloadInLibs)' == 'true' "
+             Text="OpenHarmony: payload-in-libs staged $(_OpenHarmonyPayloadInLibsEntries) files ($([MSBuild]::Divide($(_OpenHarmonyPayloadInLibsBytes), 1048576)) MB) into libs/$(OpenHarmonyAbi)/ (the only namespace-allowed dlopen path); the same files stay in dotnet.zip as the fallback" />
+
+    <!-- Runtime mode switch (MS-MODE; see "Runtime mode switch" in the packaging doc): writes
+         libs/<abi>/runtime-mode.txt and, for interp, replaces the staged runtime natives with the
+         interpreter pack. Runs after the payload staging and before the codesign pass below, so
+         the replaced natives are re-signed and the payload marker written after the zip counts
+         the marker file. -->
+    <CallTarget Targets="_OpenHarmonyStageRuntimeMode" />
+
+    <!-- The copied lib may carry a vendor .codesign that is not the ElfSigner format the device
+         loader requires (the HarmonyOS SDK's libc++_shared.so ships a PKCS#7 Huawei DevID blob
+         with flags=0). Re-sign the staged libs in place with the shared ElfSigner task, which
+         rewrites any file whose .codesign is missing or does not verify and skips already-valid
+         signatures, so a hap can never carry a non-ElfSigner ELF. A signing failure (or a missing
+         task) fails the build before packing. -->
+    <Error Condition=" !Exists('$(MicrosoftNETBuildTasksAssembly)') "
+           Text="OpenHarmony: the ElfSigner task assembly '$(MicrosoftNETBuildTasksAssembly)' was not found, so $(_OpenHarmonyHapStageDir)libs/$(OpenHarmonyAbi)/ cannot be re-signed; build with an OpenHarmony-enabled .NET SDK." />
+    <OpenHarmonyCodesign Directories="$(_OpenHarmonyHapStageDir)libs" />
+
+    <!-- app name substitution + the app descriptor read by the ArkTS shell -->
+    <PropertyGroup>
+      <_OpenHarmonyStringsJson>$([System.IO.File]::ReadAllText('$(_OpenHarmonyTemplatesDir)resources/base/element/string.json').Replace('@APP_NAME@', '$(OpenHarmonyAppName)'))</_OpenHarmonyStringsJson>
+    </PropertyGroup>
+    <WriteLinesToFile File="$(_OpenHarmonyHapStageDir)resources/base/element/string.json" Lines="$(_OpenHarmonyStringsJson)" Overwrite="true" />
+    <PropertyGroup>
+      <_OpenHarmonyMainPages>{
+  &quot;src&quot;: []
+}</_OpenHarmonyMainPages>
+      <_OpenHarmonyMainPages Condition=" '$(OpenHarmonyUIPage)' != '' ">{
+  &quot;src&quot;: [&quot;$(OpenHarmonyUIPage)&quot;]
+}</_OpenHarmonyMainPages>
+    </PropertyGroup>
+    <WriteLinesToFile File="$(_OpenHarmonyHapStageDir)resources/base/profile/main_pages.json" Lines="$(_OpenHarmonyMainPages)" Overwrite="true" />
+    <PropertyGroup>
+      <!-- Deep links: OpenHarmonyAppLinkHosts is the semicolon-separated https app-link host
+           allow-list (for example "example.com;www.example.com"). It is written into app.json,
+           which the ArkTS shell reads and forwards with every activation; the managed side only
+           accepts an https:// link whose host is on the list. Unset keeps the previous app.json
+           bytes exactly ({"assembly":"..."} plus args when given). -->
+      <_OpenHarmonyAppJson>{&quot;assembly&quot;:&quot;$(TargetFileName)&quot;</_OpenHarmonyAppJson>
+      <_OpenHarmonyAppJson Condition=" '$(OpenHarmonyAppArgs)' != '' ">$(_OpenHarmonyAppJson),&quot;args&quot;:[&quot;$(OpenHarmonyAppArgs)&quot;]</_OpenHarmonyAppJson>
+      <_OpenHarmonyAppLinkHostsJson Condition=" '$(OpenHarmonyAppLinkHosts)' != '' ">$(OpenHarmonyAppLinkHosts.Replace(';', '&quot;,&quot;'))</_OpenHarmonyAppLinkHostsJson>
+      <_OpenHarmonyAppJson Condition=" '$(OpenHarmonyAppLinkHosts)' != '' ">$(_OpenHarmonyAppJson),&quot;linkHosts&quot;:[&quot;$(_OpenHarmonyAppLinkHostsJson)&quot;]</_OpenHarmonyAppJson>
+      <_OpenHarmonyAppJson>$(_OpenHarmonyAppJson)}</_OpenHarmonyAppJson>
+    </PropertyGroup>
+    <WriteLinesToFile File="$(_OpenHarmonyHapStageDir)resources/rawfile/app.json" Lines="$(_OpenHarmonyAppJson)" Overwrite="true" />
+
+    <!-- The published .NET app becomes the hap payload, written with a fixed entry order and
+         timestamp (see "Payload determinism" in the packaging doc). PublishDir is normalized against
+         the project directory because the zip task treats the value as a raw path string (it does
+         no MSBuild path resolution).
+         The runtime native libraries staged into libs/<abi>/ above are passed as the exclusion
+         set, so the payload keeps every managed .dll/.json asset but no unsigned duplicate of
+         a signed runtime ELF (see "Runtime native libraries" in the packaging doc for the resolution
+         constraints this implies). -->
+    <Error Condition=" '$(OpenHarmonyHapPayloadZip)' != 'true' and '$(OpenHarmonyHapPayloadInLibs)' != 'true' "
+           Text="OpenHarmonyHapPayloadZip=false requires OpenHarmonyHapPayloadInLibs=true: without the zip there would be no managed payload in the hap." />
+    <OpenHarmonyDeterministicZip Condition=" '$(OpenHarmonyHapPayloadZip)' == 'true' "
+        SourceDirectory="$([MSBuild]::NormalizeDirectory('$(MSBuildProjectDirectory)', '$(PublishDir)'))"
+        DestinationFile="$(_OpenHarmonyHapStageDir)resources/rawfile/dotnet.zip"
+        ExcludeFileNames="@(_OpenHarmonyStagedRuntimeLib->'%(Filename)%(Extension)')">
+      <Output TaskParameter="ExcludedCount" PropertyName="_OpenHarmonyPayloadZipExcluded" />
+      <Output TaskParameter="IncludedCount" PropertyName="_OpenHarmonyPayloadZipIncluded" />
+    </OpenHarmonyDeterministicZip>
+    <Message Importance="high" Condition=" '$(OpenHarmonyHapPayloadZip)' == 'true' " Text="OpenHarmony: dotnet.zip carries $(_OpenHarmonyPayloadZipIncluded) payload entries and excludes $(_OpenHarmonyPayloadZipExcluded) runtime native libraries that ship in libs/$(OpenHarmonyAbi)/ only" />
+    <Message Importance="high" Condition=" '$(OpenHarmonyHapPayloadZip)' != 'true' " Text="OpenHarmony: OpenHarmonyHapPayloadZip=false - skipping resources/rawfile/dotnet.zip (the payload ships in libs/$(OpenHarmonyAbi)/ only, no extraction fallback)" />
+
+    <!-- Payload-in-libs marker: see the OpenHarmonyWritePayloadMarker task above. Written after
+         the zip so the recorded zip identity describes the packed bytes; the file count covers
+         every file in libs/<abi>/ but the marker itself, so verify-kit.sh can assert the
+         marker against the real directory content. With OpenHarmonyHapPayloadZip=false there is
+         no zip to describe, so the identity is cleared (zipEntries=0, zipSha256=""). -->
+    <PropertyGroup>
+      <_OpenHarmonyPayloadZipIncluded Condition=" '$(OpenHarmonyHapPayloadZip)' != 'true' ">0</_OpenHarmonyPayloadZipIncluded>
+      <_OpenHarmonyPayloadZipFile Condition=" '$(OpenHarmonyHapPayloadZip)' == 'true' ">$(_OpenHarmonyHapStageDir)resources/rawfile/dotnet.zip</_OpenHarmonyPayloadZipFile>
+    </PropertyGroup>
+    <OpenHarmonyWritePayloadMarker Condition=" '$(OpenHarmonyHapPayloadInLibs)' == 'true' "
+                                    DestinationDirectory="$(_OpenHarmonyHapStageDir)libs/$(OpenHarmonyAbi)"
+                                    MarkerFileName=".dotnet-payload.json"
+                                    Assembly="$(TargetFileName)"
+                                    PayloadEntries="$(_OpenHarmonyPayloadInLibsEntries)"
+                                    PayloadBytes="$(_OpenHarmonyPayloadInLibsBytes)"
+                                    ZipEntries="$(_OpenHarmonyPayloadZipIncluded)"
+                                    ZipFile="$(_OpenHarmonyPayloadZipFile)">
+      <Output TaskParameter="LibsEntries" PropertyName="_OpenHarmonyLibsEntries" />
+      <Output TaskParameter="MarkerPath" PropertyName="_OpenHarmonyPayloadMarkerPath" />
+    </OpenHarmonyWritePayloadMarker>
+    <Message Importance="high" Condition=" '$(OpenHarmonyHapPayloadInLibs)' == 'true' "
+             Text="OpenHarmony: wrote $(_OpenHarmonyPayloadMarkerPath) (libs/$(OpenHarmonyAbi)/ carries $(_OpenHarmonyLibsEntries) files: payload-in-libs + host + runtime natives + libc++_shared.so)" />
+    <Message Importance="high" Text="OpenHarmony: staged .hap payload at $(_OpenHarmonyHapStageDir)" />
+
+    <!-- Clean contract (audit V2): every file this target creates is registered in FileWrites in
+         this same target, so `dotnet clean` removes the staging tree instead of leaving it behind. -->
+    <ItemGroup>
+      <FileWrites Include="$(_OpenHarmonyHapStageDir)**/*" />
+    </ItemGroup>
+  </Target>
+
+  <!-- resources.index: the device ResourceManager resolves this hap's resources (resources/rawfile
+       included) through the index, and a hap without one fails the rawfile read with
+       "GetRawFileContent failed, name is empty" (see "Resource index" in the packaging doc). The
+       index is compiled by the SDK's restool from the staged resources with the same module.json
+       that is packed, so the resource ids match the module.json/resource declarations. restool
+       also copies the whole resources/ tree into its output directory; the index is
+       self-contained, so the copy is dropped again and only resources.index is kept. -->
+  <Target Name="_OpenHarmonyGenerateResourceIndex"
+          DependsOnTargets="_OpenHarmonyResolveHapStageDir;_OpenHarmonyStageHap;_OpenHarmonyResolveRestool"
+          Condition=" '$(OpenHarmonyHapPackage)' == 'true' and '$(TargetPlatformIdentifier)' == 'openharmony' ">
+    <PropertyGroup>
+      <!-- Forward slashes: the restool config below is JSON. -->
+      <_OpenHarmonyHapStageDirSlash>$([System.String]::Copy('$(_OpenHarmonyHapStageDir)').Replace('\', '/'))</_OpenHarmonyHapStageDirSlash>
+      <_OpenHarmonyResourceIndexDir>$(_OpenHarmonyHapStageDirSlash)res-index/</_OpenHarmonyResourceIndexDir>
+      <_OpenHarmonyResourceIndex>$(_OpenHarmonyResourceIndexDir)resources.index</_OpenHarmonyResourceIndex>
+      <_OpenHarmonyResourceIndexConfig>$(_OpenHarmonyResourceIndexDir)resConfig.json</_OpenHarmonyResourceIndexConfig>
+      <!-- The module name is fixed by the pack's module.json template ("name":"entry"). -->
+      <_OpenHarmonyResourceIndexJson>{"configPath":"$(_OpenHarmonyHapStageDirSlash)module.json","packageName":"$(OpenHarmonyBundleName)","output":"$(_OpenHarmonyResourceIndexDir)","moduleNames":"entry","ResourceTable":["$(_OpenHarmonyResourceIndexDir)ResourceTable.h","$(_OpenHarmonyResourceIndexDir)ResourceTable.ts"],"applicationResource":"$(_OpenHarmonyHapStageDirSlash)resources","moduleResources":[],"iconCheck":false}</_OpenHarmonyResourceIndexJson>
+    </PropertyGroup>
+    <RemoveDir Directories="$(_OpenHarmonyResourceIndexDir)" />
+    <MakeDir Directories="$(_OpenHarmonyResourceIndexDir)" />
+    <WriteLinesToFile File="$(_OpenHarmonyResourceIndexConfig)" Lines="$(_OpenHarmonyResourceIndexJson)" Overwrite="true" />
+    <Exec Command="&quot;$(OpenHarmonyRestool)&quot; -l &quot;$(_OpenHarmonyResourceIndexConfig)&quot;" />
+    <RemoveDir Directories="$(_OpenHarmonyResourceIndexDir)resources" />
+    <Error Condition=" !Exists('$(_OpenHarmonyResourceIndex)') "
+           Text="restool did not produce $(_OpenHarmonyResourceIndex); see the Resource index section in the packaging doc." />
+    <PropertyGroup>
+      <_OpenHarmonyResourceIndexBytes>$([System.IO.File]::ReadAllBytes('$(_OpenHarmonyResourceIndex)').Length)</_OpenHarmonyResourceIndexBytes>
+    </PropertyGroup>
+    <Message Importance="high" Text="OpenHarmony: compiled $(_OpenHarmonyResourceIndex) ($(_OpenHarmonyResourceIndexBytes) bytes) with restool from $(_OpenHarmonyHapStageDir)resources" />
+
+    <!-- Clean contract: restool's output tree lives under the staging directory; register it so
+         `dotnet clean` removes it too. -->
+    <ItemGroup>
+      <FileWrites Include="$(_OpenHarmonyResourceIndexDir)**/*" />
+    </ItemGroup>
+  </Target>
+
+  <Target Name="_OpenHarmonyPackHap"
+          AfterTargets="_OpenHarmonyStageHap"
+          DependsOnTargets="_OpenHarmonyResolveHapStageDir;_OpenHarmonyGenerateResourceIndex"
+          Condition=" '$(OpenHarmonyHapPackage)' == 'true' and '$(TargetPlatformIdentifier)' == 'openharmony' ">
+    <Exec Command="&quot;$(OpenHarmonyToolchainDir)/ohos_packing_tool&quot; pack --mode hap --json-path &quot;$(_OpenHarmonyHapStageDir)module.json&quot; --ets-path &quot;$(_OpenHarmonyHapStageDir)ets&quot; --resources-path &quot;$(_OpenHarmonyHapStageDir)resources&quot; --index-path &quot;$(_OpenHarmonyResourceIndex)&quot; --lib-path &quot;$(_OpenHarmonyHapStageDir)libs&quot; --out-path &quot;$(_OpenHarmonyHapUnsigned)&quot; --force true" />
+    <Message Importance="high" Text="OpenHarmony: packed $(_OpenHarmonyHapUnsigned)" />
+    <!-- Clean contract: the packer wrote the unsigned hap into OutputPath; register it here. -->
+    <ItemGroup>
+      <FileWrites Include="$(_OpenHarmonyHapUnsigned)" />
+    </ItemGroup>
+  </Target>
+
+  <Target Name="_OpenHarmonySignHap"
+          AfterTargets="_OpenHarmonyPackHap"
+          Condition=" '$(OpenHarmonyHapPackage)' == 'true' and '$(OpenHarmonyHapSigning)' == 'true' and '$(TargetPlatformIdentifier)' == 'openharmony' ">
+    <!-- POSIX hosts use the sh script; Windows uses the PowerShell equivalent. -->
+    <Exec Condition=" !$([MSBuild]::IsOSPlatform('Windows')) "
+          Command="sh &quot;$(_OpenHarmonyTemplatesDir)scripts/sign-hap.sh&quot; &quot;$(OpenHarmonyToolchainDir)&quot; &quot;$(_OpenHarmonyHapUnsigned)&quot; &quot;$(_OpenHarmonyHapFile)&quot; &quot;$(OpenHarmonyBundleName)&quot; &quot;$(OpenHarmonyProfileUdid)&quot;" />
+    <Exec Condition=" $([MSBuild]::IsOSPlatform('Windows')) "
+          Command="powershell -NoProfile -ExecutionPolicy Bypass -File &quot;$(_OpenHarmonyTemplatesDir)scripts/sign-hap.ps1&quot; -Toolchain &quot;$(OpenHarmonyToolchainDir)&quot; -In &quot;$(_OpenHarmonyHapUnsigned)&quot; -Out &quot;$(_OpenHarmonyHapFile)&quot; -Bundle &quot;$(OpenHarmonyBundleName)&quot; -Udid &quot;$(OpenHarmonyProfileUdid)&quot;" />
+    <Message Importance="high" Text="OpenHarmony: signed $(_OpenHarmonyHapFile)" />
+    <!-- Clean contract: the signed hap is the packaged output; register it here. -->
+    <ItemGroup>
+      <FileWrites Include="$(_OpenHarmonyHapFile)" />
+    </ItemGroup>
+  </Target>
+</Project>

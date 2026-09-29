@@ -1,0 +1,20 @@
+== downloading Microsoft.NETCore.App.Runtime.openharmony-arm64.11.0.0-rc.2.26451.112.nupkg Tue Sep 29 13:28:01 CST 2026 ==
+-- try 1: https://gh-proxy.com/https://github.com/springmin/runtime-ohos/releases/download/v11.0.0-rc.2.26451.112-openharmony/Microsoft.NETCore.App.Runtime.openharmony-arm64.11.0.0-rc.2.26451.112.nupkg
+  % Total    % Received % Xferd  Average Speed  Time    Time    Time   Current
+                                 Dload  Upload  Total   Spent   Left   Speed
+  0      0   0      0   0      0      0      0                              0  1 37.93M   1 662.9k   0      0 443.4k      0   01:27   00:01   01:26 662.4k  5 37.93M   5  2.15M   0      0 873.4k      0   00:44   00:02   00:42  1.05M 14 37.93M  14  5.64M   0      0  1.59M      0   00:23   00:03   00:20  1.85M 18 37.93M  18  7.07M   0      0  1.56M      0   00:24   00:04   00:20  1.75M 22 37.93M  22  8.35M   0      0  1.50M      0   00:25   00:05   00:20  1.65M 26 37.93M  26  9.93M   0      0  1.51M      0   00:24   00:06   00:18  1.84M 30 37.93M  30 11.59M   0      0  1.53M      0   00:24   00:07   00:17  1.88M 34 37.93M  34 12.93M   0      0  1.51M      0   00:25   00:08   00:17  1.45M 37 37.93M  37 14.27M   0      0  1.49M      0   00:25   00:09   00:16  1.43M 41 37.93M  41 15.69M   0      0  1.48M      0   00:25   00:10   00:15  1.46M 45 37.93M  45 17.17M   0      0  1.48M      0   00:25   00:11   00:14  1.44M 48 37.93M  48 18.46M   0      0  1.47M      0   00:25   00:12   00:13  1.37M 51 37.93M  51 19.71M   0      0  1.45M      0   00:26   00:13   00:13  1.35M 57 37.93M  57 21.63M   0      0  1.48M      0   00:25   00:14   00:11  1.47M 61 37.93M  61 23.15M   0      0  1.48M      0   00:25   00:15   00:10  1.48M 65 37.93M  65 24.97M   0      0  1.50M      0   00:25   00:16   00:09  1.55M 69 37.93M  69 26.50M   0      0  1.50M      0   00:25   00:17   00:08  1.60M 72 37.93M  72 27.35M   0      0  1.47M      0   00:25   00:18   00:07  1.52M 74 37.93M  74 28.18M   0      0  1.44M      0   00:26   00:19   00:07  1.30M 77 37.93M  77 29.46M   0      0  1.43M      0   00:26   00:20   00:06  1.25M 80 37.93M  80 30.46M   0      0  1.41M      0   00:26   00:21   00:05  1.09M 83 37.93M  83 31.51M   0      0  1.39M      0   00:27   00:22   00:05  0.99M 85 37.93M  85 32.40M   0      0  1.37M      0   00:27   00:23   00:04  1.00M 87 37.93M  87 33.03M   0      0  1.34M      0   00:28   00:24   00:04 988.4k 89 37.93M  89 34.10M   0      0  1.33M      0   00:28   00:25   00:03 945.7k 93 37.93M  93 35.33M   0      0  1.32M      0   00:28   00:26   00:02 992.9k 96 37.93M  96 36.61M   0      0  1.32M      0   00:28   00:27   00:01  1.01M100 37.93M 100 37.93M   0      0  1.33M      0   00:28   00:28          1.01M100 37.93M 100 37.93M   0      0  1.33M      0   00:28   00:28          1.01M100 37.93M 100 37.93M   0      0  1.33M      0   00:28   00:28          1.01M
+-- sha256 bd71b62af9f07c3031115a9cc461c37aa540356bb68d714d842375cfaeb1450b
+== downloaded + verified Tue Sep 29 13:28:30 CST 2026 ==
+== prepare-packs.sh (local pack) Tue Sep 29 13:28:30 CST 2026 ==
+== 0/2 RID graph single source ==
+   graph OK: openharmony-arm/arm64/x64 import linux-musl-* (/storage/Users/currentUser/springsources/ohos-workload/../sdk-ohos/eng/PortableRuntimeIdentifierGraph.openharmony.json)
+== canonical: /storage/Users/currentUser/springsources/ohos-workload/../sdk-ohos/eng/PortableRuntimeIdentifierGraph.openharmony.json
+   sha256: 6e4137cc13376f693fe1b31d43f425af6426c7089bbc607f8b822230da8e51ce
+   ok      Microsoft.OpenHarmony.Sdk/1.0.0-preview.22/ridgraph
+   ok      Microsoft.OpenHarmony.Sdk/1.0.0-preview.23/ridgraph
+   ok      Microsoft.OpenHarmony.Sdk/1.0.0-preview.24/ridgraph
+   ok      Microsoft.OpenHarmony.Sdk/1.0.0-preview.25/ridgraph
+recorded /storage/Users/currentUser/springsources/ohos-workload/packs/ridgraph-canonical.sha256
+RID graph sync: pack copies == sdk-ohos/eng/PortableRuntimeIdentifierGraph.openharmony.json
+== 1/2 platform ref assembly ==
+Signal 9 

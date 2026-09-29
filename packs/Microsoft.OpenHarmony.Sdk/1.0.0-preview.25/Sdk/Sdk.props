@@ -1,0 +1,6 @@
+<Project>
+  <!-- Platform properties known before the project body. Keep this file minimal. -->
+  <PropertyGroup>
+    <_OpenHarmonySdkPackDir>$(MSBuildThisFileDirectory)..\</_OpenHarmonySdkPackDir>
+  </PropertyGroup>
+</Project>
