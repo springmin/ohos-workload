@@ -39,7 +39,7 @@ on:
         description: 'maui-ohos commit SHA to compile (defaults to the pinned feature/openharmony tip)'
         required: false
         type: string
-        default: 'a4c4bea9334a8c2b0194d2f850488e4305e66e4b'
+        default: '63d6fe701993ceea8b1e0ec3ed57c0da4180756f'
 
 # Least privilege: the job only reads this repository and the public springmin/maui-ohos fork;
 # no step pushes anywhere.
@@ -48,8 +48,13 @@ permissions:
 
 # Reproducible cross-repo compile: the MAUI slice is checked out at an exact commit, not the
 # mutable feature/openharmony branch, so a push to the fork cannot change what this gate compiles.
-# The default is the feature/openharmony tip: a4c4bea933, the Shell CurrentPage enumeration in
-# the compositor/a11y walks (FIX-SHELL) on top of the T14 rich shell flyout d8e144a8, the T12
+# The default is the feature/openharmony tip: 63d6fe70 (the N6 window decoration mapping and its
+# four caption-glyph pixel checks, T15's three rich-title-view checks and the T16/N4/N5/T18
+# slices below), the N5 overlay touch passthrough suppression 163e7554, the T18 Essentials IMap system-map
+# launcher b386b1c4, the N4 TitleBar row in the accessibility shadow tree 43996268, the T16
+# structured menus 038449e8 and the T15 rich Shell.TitleView in the title bar 5a24b0c5, on top of
+# the FIX-SHELL Shell CurrentPage enumeration in
+# the compositor/a11y walks a4c4bea933, the T14 rich shell flyout d8e144a8, the T12
 # CarouselView group header/footer slides 9ab879ff, the A11Y-TABBED TabbedPage CurrentPage fix in
 # the accessibility walk dc9b19a6, the N3 Picker/DatePicker/TimePicker IsOpen mapping 3b88f5f3,
 # the T21 system font scale 51cb186c (which also extends this pixel suite with its three scale
@@ -64,10 +69,10 @@ permissions:
 # + T2 WebView CookieContainer sync 8241f1b3, on top of the W-series webview wiring d6325990 and
 # the SEC-SCAN-3 S3-DL3 dot-dot deep-link rejection, on top of the P2c deep-link routing, P2b-IMG,
 # P1b-LIST and P1a-ANIM batches).
-# The interaction harness pins 489 checks / floor 469; advance the pin in lockstep with the
+# The interaction harness pins 513 checks / floor 493; advance the pin in lockstep with the
 # interaction gate and change it deliberately (workflow_dispatch can compile any other commit SHA).
 env:
-  MAUI_OHOS_REF: ${{ github.event.inputs.maui_ohos_ref || 'a4c4bea9334a8c2b0194d2f850488e4305e66e4b' }}
+  MAUI_OHOS_REF: ${{ github.event.inputs.maui_ohos_ref || '63d6fe701993ceea8b1e0ec3ed57c0da4180756f' }}
   # Same as the interaction gate: keep the setup-dotnet preview SDK in a cacheable per-user path
   # instead of the runner's /usr/share/dotnet; a newer 11.0.x preview is still downloaded (the
   # action re-resolves the channel), the cache only skips the ~200 MB download when it moved.
