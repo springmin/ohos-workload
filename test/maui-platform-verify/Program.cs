@@ -12,7 +12,7 @@ using Microsoft.Maui.Platform;
 // after the fuzz tail) instead of letting every caller repeat its own threshold constant.
 VerifyLineCountingWriter verifyStdout = new(Console.Out);
 Console.SetOut(verifyStdout);
-const int verifyCheckTotal = 501;                     // documented full [verify] line count (+4 MS-MODE runtime mode switch, +10 P2c-DEEPLINK, +4 P2b-IMG, +16 P1b-LIST, +10 P1a-ANIM, +2 SEC3 storage/deep-link pins, +5 W-series WebView wiring, +3 T1 InputView mapping, +4 T2 WebView gaps, +4 T3 GraphicsView interaction, +7 T10 modal accessibility, +4 T4 Label formatted text, +4 T5 layout semantics, +6 T7 DatePicker calendar/min-max, +4 T9 window title bar, +4 T11 diagnostics overlay, +1 N2 empty ContentPage arrangement, +6 T8 TableView, +7 T6 RTL flow direction, +5 T22 MainThread bridge, +2 FIX-TABBED tabbed CurrentPage, +4 T13 group footer view/N3 picker IsOpen, +5 T21 system font scale, +2 A11Y-TABBED tabbed accessibility, +3 N1 host multi-pointer, +5 T12 CarouselView group slides, +7 T14 rich shell flyout, +2 FIX-SHELL shell CurrentPage, +2 A11Y-SHELL shell accessibility, +7 T15 rich Shell.TitleView, +8 T16 structured menus, +3 N4 TitleBar accessibility row)
+const int verifyCheckTotal = 504;                     // documented full [verify] line count (+4 MS-MODE runtime mode switch, +10 P2c-DEEPLINK, +4 P2b-IMG, +16 P1b-LIST, +10 P1a-ANIM, +2 SEC3 storage/deep-link pins, +5 W-series WebView wiring, +3 T1 InputView mapping, +4 T2 WebView gaps, +4 T3 GraphicsView interaction, +7 T10 modal accessibility, +4 T4 Label formatted text, +4 T5 layout semantics, +6 T7 DatePicker calendar/min-max, +4 T9 window title bar, +4 T11 diagnostics overlay, +1 N2 empty ContentPage arrangement, +6 T8 TableView, +7 T6 RTL flow direction, +5 T22 MainThread bridge, +2 FIX-TABBED tabbed CurrentPage, +4 T13 group footer view/N3 picker IsOpen, +5 T21 system font scale, +2 A11Y-TABBED tabbed accessibility, +3 N1 host multi-pointer, +5 T12 CarouselView group slides, +7 T14 rich shell flyout, +2 FIX-SHELL shell CurrentPage, +2 A11Y-SHELL shell accessibility, +7 T15 rich Shell.TitleView, +8 T16 structured menus, +3 N4 TitleBar accessibility row, +3 T18 Essentials Map)
 const int verifyCheckFloor = verifyCheckTotal - 20;   // documented floor convention (total - 20)
 
 // A small image file for the Image handler.
@@ -2740,6 +2740,58 @@ catch (Exception ex)
     Console.WriteLine($"[verify] intents share threw {ex.GetType().Name}: {ex.Message}");
 }
 Console.WriteLine($"[verify] intents share degraded without throwing text={shareTextReturned} file={shareFileReturned}");
+
+// T18: Essentials Map (IMap) over the same ArkTS startAbility bridge. The slice's
+// OpenHarmonyMapLauncher is the installed Map.Default ([ModuleInitializer] field install) and
+// the DI singleton; its URI builder produces the Android-shaped geo: URIs the OpenHarmony
+// ability manager matches to installed map applications; off-device every call degrades to
+// false / a completed task without throwing.
+var t18Map = Microsoft.Maui.ApplicationModel.Map.Default;
+var t18MapDi = app.Services.GetRequiredService<Microsoft.Maui.ApplicationModel.IMap>();
+bool t18MapDefaults = t18Map is OpenHarmonyMapLauncher && t18MapDi is OpenHarmonyMapLauncher &&
+    ReferenceEquals(t18Map, t18MapDi);
+Console.WriteLine($"[verify] t18 map defaults type={t18Map.GetType().Name} di={t18MapDi.GetType().Name} same={ReferenceEquals(t18Map, t18MapDi)} assert={t18MapDefaults}");
+if (!t18MapDefaults)
+{
+    throw new InvalidOperationException("Map.Default is not the OpenHarmony map launcher singleton installed by the slice");
+}
+var t18PlainOptions = new Microsoft.Maui.ApplicationModel.MapLaunchOptions();
+string t18LocationUri = OpenHarmonyMapLauncher.GetMapsUri(37.5, -122.25, t18PlainOptions);
+string t18NamedUri = OpenHarmonyMapLauncher.GetMapsUri(37.5, -122.25,
+    new Microsoft.Maui.ApplicationModel.MapLaunchOptions { Name = "Mountain View" });
+// A non-None NavigationMode has no geo: carrier (documented) - the URI stays the plain location.
+string t18PlacemarkUri = OpenHarmonyMapLauncher.GetMapsUri(
+    new Placemark { Thoroughfare = "1 Microsoft Way", Locality = "Redmond", AdminArea = "WA", PostalCode = "98052", CountryName = "USA" },
+    new Microsoft.Maui.ApplicationModel.MapLaunchOptions { NavigationMode = NavigationMode.Driving });
+bool t18MapUris = t18LocationUri == "geo:37.5,-122.25?q=37.5,-122.25" &&
+    t18NamedUri == "geo:37.5,-122.25?q=37.5,-122.25(Mountain%20View)" &&
+    t18PlacemarkUri == "geo:0,0?q=1%20Microsoft%20Way%20Redmond%20WA%2098052%20USA";
+Console.WriteLine($"[verify] t18 map uri location='{t18LocationUri}' named='{t18NamedUri}' placemark='{t18PlacemarkUri}' assert={t18MapUris}");
+if (!t18MapUris)
+{
+    throw new InvalidOperationException("the geo: URI builder drifted from the documented Android-shaped contract");
+}
+bool t18MapNoThrow = true;
+bool t18TryLocation = false;
+bool t18TryPlacemark = false;
+try
+{
+    await t18Map.OpenAsync(37.5, -122.25, new Microsoft.Maui.ApplicationModel.MapLaunchOptions { NavigationMode = NavigationMode.Walking });
+    await t18Map.OpenAsync(new Placemark { FeatureName = "Verify place" }, t18PlainOptions);
+    t18TryLocation = await t18Map.TryOpenAsync(37.5, -122.25, t18PlainOptions);
+    t18TryPlacemark = await t18Map.TryOpenAsync(new Placemark { Locality = "Redmond" }, t18PlainOptions);
+}
+catch (Exception ex)
+{
+    t18MapNoThrow = false;
+    Console.WriteLine($"[verify] t18 map threw {ex.GetType().Name}: {ex.Message}");
+}
+bool t18MapDegraded = t18MapNoThrow && !t18TryLocation && !t18TryPlacemark;
+Console.WriteLine($"[verify] t18 map degraded off-device noThrow={t18MapNoThrow} tryLocation={t18TryLocation} tryPlacemark={t18TryPlacemark} assert={t18MapDegraded}");
+if (!t18MapDegraded)
+{
+    throw new InvalidOperationException("the IMap bridge did not degrade to false / a completed task off-device");
+}
 
 // W22-12: ListView (virtualized cells) + CarouselView swipe.
 var listCtl = root.Children.OfType<ListView>().FirstOrDefault();
