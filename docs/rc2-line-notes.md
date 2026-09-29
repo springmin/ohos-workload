@@ -59,6 +59,11 @@ RID `openharmony-arm64`；workload `openharmony 1.0.0-preview.28/11.0.100-rc.2`�
    Linux`、探针 `IsOSPlatform(Linux)=True`、`Exec` rc=0（基线为 False + MSB3073）。
    在此之前，设备本地 AOT 构建（selfsign/bundle 重打）不可用，请用**安装器回退签名**与
    **CI 侧**构建路径。
+   **2026-09-29 晚更新**：平台修复已随新 SDK 落地，设备本地 AOT selfsign 构建**已打通**并通过
+   安装器端到端验证（自建 selfsign 预置 → `signed=28 already_signed=1 failed=0`，install rc=0
+   ✓✓）；配方固化为 sdk `eng/ohos-install/build/build-selfsign-device.sh`（含自检）。
+   另修复安装器自签缺陷（`sign_all` 会把签名器自身拿去重签 → ETXTBSY ✗→✓，sdk `c1cd3d89c4`）。
+   bundle 重打路径待复测。
 
 ## 交接（kit/tester）
 
