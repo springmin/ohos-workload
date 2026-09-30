@@ -105,6 +105,12 @@ interface BlazorAssetsConfig {
   // Per-registration document id (B1/B3), the Blazor counterpart of HybridAssetsConfig.id:
   // stamped into Blazor documents as window.__ohBlazorId and echoed in every message envelope.
   id: string;
+  // Registration mode (B2): "wasm" marks the root as a Blazor WebAssembly site. The shell then
+  // serves it exactly like a hybrid content root but injects no Blazor Hybrid bootstrap (the
+  // site's own _framework/blazor.webassembly*.js boots the runtime), and the registration does
+  // not load the origin (the WebView's Source drives the load). Absent/"hybrid" keeps the
+  // BlazorWebView behavior above.
+  mode?: string;
 }
 
 // JS -> .NET invocation payload the stock hybridwebview.js POSTs to __hwvInvokeDotNet:
@@ -564,6 +570,10 @@ interface HmsAccessibilityKit {
 // log helpers in the struct keep the %{public}s format so device logs stay readable.
 const DOMAIN = 0x0002;
 const TAG = 'OHOS_MAUI';
+// Blazor WebAssembly console markers (B2): a staged site logs BLZ_* diagnostics; the Web
+// component forwards them to hilog under the same tag the ArkTS Blazor host uses, so a machine
+// verdict is `hilog | grep BlazorWebHost` for both hosts (`marker: BLZ_BOOT` / `BLZ_RENDERED`).
+const BLZ_TAG = 'BlazorWebHost';
 
 @Entry
 @Component
@@ -600,8 +610,18 @@ struct Index {
   private blazorRegistered: boolean = false;
   // Per-registration document id (BlazorAssetsConfig.id), see hybridDocId.
   private blazorDocId: string = '';
-  // MAUI's Blazor origin: BlazorWebViewHandler.AppOrigin (https://0.0.0.0/).
+  // MAUI's Blazor origin: BlazorWebViewHandler.AppOrigin (https://0.0.0.0/). A Blazor
+  // WebAssembly site registration may use a different origin (the managed WebView handler's
+  // WasmSiteOrigin) and sets blazorWasmMode, which keeps the hybrid bootstrap out of the page.
   private blazorOrigin: string = 'https://0.0.0.0/';
+  private blazorWasmMode: boolean = false;
+  // Bounded diagnostics: the first few intercepted Blazor requests are logged so a device run
+  // shows that the origin is armed and being served (the full 600+ request stream would spam).
+  private blazorServeLogs: number = 0;
+  // Managed status-file polling (device diagnostics): bounded reads of <filesDir>/dotnet-status.txt
+  // while the app starts; see pollManagedStatus.
+  private statusReads: number = 0;
+  private statusSeen: string = '';
   // One bootstrap per loaded document: reset in onPageBegin, so a navigation/reload runs the
   // sequence again while repeated onPageEnd callbacks for the same document do not.
   private blazorBootstrapped: boolean = false;
@@ -1723,6 +1743,30 @@ struct Index {
   // Logging (audit ARKTS-S3): console logging is replaced by hilog under the shared DOMAIN/TAG.
   private logInfo(message: string): void {
     hilog.info(DOMAIN, TAG, '%{public}s', message);
+  }
+
+  // Reads the managed bridge's status file a bounded number of times and logs the tail when it
+  // changed. The shell and the managed app share the app sandbox, so the page can read what the
+  // managed side wrote even though hdc/shell cannot; on images that do route managed stderr to
+  // hilog this is harmless (the same lines appear twice at most).
+  private pollManagedStatus(): void {
+    if (this.statusReads >= 12) {
+      return;
+    }
+    this.statusReads++;
+    try {
+      const statusPath: string = `${this.hostContext().filesDir}/dotnet-status.txt`;
+      const text: string = fs.readTextSync(statusPath);
+      if (text !== this.statusSeen) {
+        this.statusSeen = text;
+        const lines: string[] = text.split('\n');
+        const start: number = lines.length > 6 ? lines.length - 6 : 0;
+        this.logInfo(`[maui] status: ${lines.slice(start).join(' | ')}`);
+      }
+    } catch {
+      // No status file yet (or no context): the next poll tries again.
+    }
+    setTimeout(() => this.pollManagedStatus(), 3000);
   }
 
   private logWarn(message: string): void {
@@ -2870,9 +2914,10 @@ struct Index {
   // inside Blazor.start(), so the registration has to exist before the start call; the
   // autostart="false" host-page script is the stock MAUI template). The framework script is
   // injected when the host page does not load it itself. Hybrid pages keep the compatibility
-  // shim injected above unchanged.
+  // shim injected above unchanged. A WASM site registration (blazorWasmMode) is skipped
+  // entirely: it ships its own bootstrap and must never receive _framework/blazor.webview.js.
   private injectBlazorBootstrap(pageUrl: string): void {
-    if (!this.blazorRegistered || this.blazorBootstrapped || !this.isBlazorRootDocument(pageUrl)) {
+    if (!this.blazorRegistered || this.blazorWasmMode || this.blazorBootstrapped || !this.isBlazorRootDocument(pageUrl)) {
       return;
     }
     this.blazorBootstrapped = true;
@@ -3720,8 +3765,13 @@ struct Index {
 
     // WebView: a hidden ArkWeb component that the managed WebView handler drives.
     // Host callback: every controller call runs on the page's UI thread (see runOnUiThread).
-    this.hostCall('registerWebSink', typeof host !== 'undefined' && typeof host.registerWebSink === 'function', (): void => {
+    // The registration result and the navigation-carrying commands are logged: a device run
+    // needs to distinguish "the managed handler never sent" from "the shell never armed".
+    const webSinkRegistered: boolean = this.hostCall('registerWebSink', typeof host !== 'undefined' && typeof host.registerWebSink === 'function', (): void => {
       host.registerWebSink((op: string, arg: string) => {
+        if (op !== 'frame' && op !== 'cookieGet') {
+          this.logInfo(`[maui] web cmd: ${op}`);
+        }
         this.runOnUiThread(() => {
           try {
             if (op === 'show') {
@@ -3733,6 +3783,7 @@ struct Index {
               // B6: the app asked for this URL; let this one load through without a round trip.
               this.navProgrammatic = { url: arg, expires: Date.now() + this.navPendingTtlMs };
               this.webController.loadUrl(arg);
+              this.logInfo(`[maui] web load: ${arg}`);
             } else if (op === 'nav') {
               // B6: the managed handler's answer to an intercepted navigation.
               this.approveNavigation(arg);
@@ -3822,6 +3873,12 @@ struct Index {
         });
       });
     });
+    this.logInfo(`[maui] web sink: ${webSinkRegistered}`);
+    // Managed status file (device diagnostics): the managed bridge appends one line per event
+    // to <filesDir>/dotnet-status.txt, but this image does not route managed stderr to hilog,
+    // so a few bounded reads surface the managed side's own view (window created, web commands
+    // sent, failures). Reads stop after 12 iterations; only changed content is logged.
+    this.pollManagedStatus();
 
     // HybridWebView JS -> .NET invocation results: the managed handler answers a
     // host.notifyHybridInvoke call through ohos_host_hwv_invoke_result, which lands here and
@@ -5107,6 +5164,11 @@ struct Index {
       if (!this.blazorOrigin.endsWith('/')) {
         this.blazorOrigin = `${this.blazorOrigin}/`;
       }
+      // B2: a WASM site registration serves the same layout but must not run the hybrid
+      // bootstrap (the site ships its own blazor.webassembly*.js), and it does not load the
+      // origin: a WebView whose Source is this origin drives the load.
+      this.blazorWasmMode = config.mode === 'wasm';
+      this.blazorServeLogs = 0;
       const safeLayout: boolean = this.isSafeLayoutPart(this.blazorRoot)
         && this.isSafeLayoutPart(this.blazorDefaultFile);
       if (!safeLayout) {
@@ -5115,6 +5177,9 @@ struct Index {
       this.blazorRegistered = safeLayout && this.blazorBase.length > 0 && this.blazorRoot.length > 0
         && this.blazorDefaultFile.length > 0;
       if (this.blazorRegistered) {
+        this.logInfo(`[maui] blazor assets: origin=${this.blazorOrigin} root=${this.blazorRoot} mode=${this.blazorWasmMode ? 'wasm' : 'hybrid'}`);
+      }
+      if (this.blazorRegistered && !this.blazorWasmMode) {
         this.webVisible = true;
         this.webController.loadUrl(this.blazorOrigin);
       }
@@ -5574,6 +5639,10 @@ struct Index {
             // included, is served from <base>/<root>. The hybrid __hwv* endpoints do not exist
             // here: blazor.webview.js talks through window.external (the dotnetHost proxy).
             if (this.blazorRegistered && url.startsWith(this.blazorOrigin)) {
+              if (this.blazorServeLogs < 3) {
+                this.blazorServeLogs++;
+                this.logInfo(`[maui] web serve: ${url}`);
+              }
               return this.serveBlazorFile(url);
             }
             // Only the MAUI hybrid origin is intercepted, and only after the managed handler
@@ -5604,6 +5673,7 @@ struct Index {
         })
         .onPageEnd((event) => {
           const pageUrl: string = event ? event.url : '';
+          this.logInfo(`[maui] web page: ${pageUrl}`);
           this.hostCall('notifyWebEvent', typeof host !== 'undefined' && typeof host.notifyWebEvent === 'function', (): void => {
             host.notifyWebEvent('finished', pageUrl);
           });
@@ -5612,6 +5682,21 @@ struct Index {
           // History availability changed with this document; the managed WebView mirrors it
           // into IWebView.CanGoBack/CanGoForward.
           this.reportWebHistory();
+        })
+        // Blazor WebAssembly console markers (B2): the staged site logs BLZ_* diagnostics;
+        // forward them to hilog under the shared BlazorWebHost tag, so a device run has a
+        // machine verdict (`hilog | grep BlazorWebHost`) independent of the managed status
+        // file. Returning false keeps the browser console output as well.
+        .onConsole((event) => {
+          try {
+            const consoleMessage: string = event.message.getMessage();
+            if (consoleMessage.startsWith('BLZ_')) {
+              hilog.info(DOMAIN, BLZ_TAG, 'marker: %{public}s', consoleMessage);
+            }
+          } catch {
+            // A console event the shell cannot read must not take the page down.
+          }
+          return false;
         })
         .onErrorReceive((event) => {
           // A failed main-frame load: tell the managed side so it can raise Navigated(Failure)
@@ -5622,6 +5707,7 @@ struct Index {
               return;
             }
             const errorUrl: string = event && event.request ? event.request.getRequestUrl() : '';
+            this.logError(`[maui] web error: ${errorUrl}`);
             this.hostCall('notifyWebEvent', typeof host !== 'undefined' && typeof host.notifyWebEvent === 'function', (): void => {
               host.notifyWebEvent('error', errorUrl);
             });
