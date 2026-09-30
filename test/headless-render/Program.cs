@@ -129,7 +129,7 @@ float boxX = drawFrame.X + (drawFrame.Width - side) / 2f;
 float boxY = drawFrame.Y + (drawFrame.Height - side) / 2f;
 Console.WriteLine($"  checkbox virtual={checkFrame} draw={drawFrame} box=({boxX:0},{boxY:0},{side:0})");
 Color boxStroke = checkPlatform?.CheckBoxColor ?? Colors.White;
-Known("checkbox box stroke", canvas.GetPixel((int)(boxX + side / 2f), (int)boxY + 1), boxStroke);
+Check("checkbox box stroke", canvas.GetPixel((int)(boxX + side / 2f), (int)boxY + 1), boxStroke, 0);
 // Check line: sample the first check stroke segment (drawn when IsChecked).
 int checkX = (int)(boxX + side * 0.35f);
 int checkY = (int)(boxY + side * 0.65f);

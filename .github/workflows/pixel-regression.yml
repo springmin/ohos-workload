@@ -21,14 +21,17 @@ name: pixel-regression
 #     is the intended assertion - a shifted corner radius, a lost clip or an over-drawing border
 #     shows up as a 1/255+ deviation. If the compositor ever changes the corner geometry on
 #     purpose, fix the expectation together with that change and document it here; never loosen
-#     the tolerance to make a failure pass.
-#   * two findings are reported through Known(...) and deliberately not counted as failures yet:
-#     "checkbox box stroke" (the sampled stroke position depends on the inset drawing) and
-#     "selection tint" (measured #3959B3 vs the #395AB3 blend, a 1/255 rounding difference). They
-#     must stay visible in every run and must never be deleted or promoted to silent passes; a
-#     root-cause fix (or a proven environment-independent expectation) converts them to Check(...)
-#     with an explicit tolerance in the same commit. Only real Check()/boolean failures fail the
-#     job, so these two do not weaken the gate.
+#     the tolerance to make a failure pass. (The checkbox box-stroke check joined this exact
+#     tolerance after its root cause was fixed below.)
+#   * one finding is reported through Known(...) and deliberately not counted as a failure yet:
+#     "selection tint" (measured #3959B3 vs the #395AB3 blend, a 1/255 rounding difference). It
+#     must stay visible in every run and must never be deleted or promoted to a silent pass; a
+#     root-cause fix (or a proven environment-independent expectation) converts it to Check(...)
+#     with an explicit tolerance in the same commit. The other finding, "checkbox box stroke",
+#     was fixed that way: HeadlessCanvas.DrawRectangle now paints the outline in StrokeColor
+#     (DrawPath/DrawLine semantics) instead of the stale FillColor, and the check is a counted
+#     Check with tolerance 0. Only real Check()/boolean failures fail the job, so the remaining
+#     Known does not weaken the gate.
 on:
   push:
     branches: [ master ]

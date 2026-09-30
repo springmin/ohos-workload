@@ -147,10 +147,16 @@ public sealed class HeadlessCanvas : MauiCanvas
 
     public override void DrawRectangle(float x, float y, float width, float height)
     {
+        // Stroke semantics: the rectangle outline is painted in the stroke colour, like DrawPath
+        // and DrawLine; the outline of the CheckBox box used to come out in the stale FillColor
+        // left by the previously drawn control.
+        Color saved = FillColor;
+        FillColor = StrokeColor;
         FillRectangle(x, y, width, StrokeSize);
         FillRectangle(x, y + height - StrokeSize, width, StrokeSize);
         FillRectangle(x, y, StrokeSize, height);
         FillRectangle(x + width - StrokeSize, y, StrokeSize, height);
+        FillColor = saved;
     }
 
     public override void FillRoundedRectangle(float x, float y, float width, float height, float cornerRadius)
