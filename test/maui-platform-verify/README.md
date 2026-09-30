@@ -415,9 +415,13 @@ parse.
     contract is asserted where this harness cannot reference the Blazor package types.
   - S2 accessibility node count: `ohos_host_accessibility_node_count` is asserted in
     `openharmony_host.c`, the shared header and the napi module table
-    (`AccessibilityNodeCount` -> `host.accessibilityNodeCount`, the shell self-check export), and
-    the managed half proves a rebuilt live-page shadow tree has nodes while the publish pass stays
-    a no-op without the host library (guarded, no throw).
+    (`AccessibilityNodeCount` -> `host.accessibilityNodeCount`, the shell self-check export);
+    the render-frame attachment is pinned too (`OpenHarmonyWindowRenderer` publishes the frame
+    it just enumerated: `Refresh(content)` immediately followed by `Publish()`), and the managed
+    half proves a rebuilt live-page shadow tree has nodes while the publish pass stays a no-op
+    without the host library (guarded, no throw). The rc.2 `nodeCount 0` finding was the render
+    path never running (managed entry unreachable before the W10 AOT fix): on the fixed line the
+    device probe reads status 1 (attached) and nodeCount 5 (wasm page) / 24 (hello-maui-app).
   - S3 flashlight: `Flashlight.Default` is the slice `OpenHarmonyFlashlight`, `IsSupportedAsync`
     answers false and `TurnOnAsync`/`TurnOffAsync` degrade without throwing off-device; the bridge
     is pinned reflectively to the `ohos_host_flashlight_set` entry point in

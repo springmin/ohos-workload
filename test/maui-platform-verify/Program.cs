@@ -6109,19 +6109,28 @@ if (!s1MappingAllOk)
 // S2a: the node-count export the ArkTS accessibility self-check reads
 // (host.accessibilityNodeCount -> ohos_host_accessibility_node_count) is present under its own
 // name in the C source, the header and the napi module table, so the 16-argument publish
-// contract reflection never mistakes it for the publish function.
+// contract reflection never mistakes it for the publish function. The render side fills that
+// count: the window renderer enumerates the frame it just drew (Refresh(content)) and publishes
+// it (Publish()) in the same pass. The rc.2 "nodeCount 0" finding was that path never running
+// (the managed entry was unreachable before the W10 AOT fix), not a broken export; device
+// re-check on the fixed line: status 1 (attached) and nodeCount 5 for the wasm demo page, 24
+// for the hello-maui-app page.
 string? s2NapiPath = FindHostSource("src/OpenHarmonyHost/host_napi.cpp");
 string s2Napi = s2NapiPath is null ? string.Empty : File.ReadAllText(s2NapiPath);
+string? s2RendererPath = FindHostSource("OpenHarmonyWindowRenderer.cs");
+string s2Renderer = s2RendererPath is null ? string.Empty : File.ReadAllText(s2RendererPath);
 bool s2CExportOk = cSource?.Contains("int ohos_host_accessibility_node_count(void)") == true;
 bool s2HeaderOk = hSource?.Contains("int ohos_host_accessibility_node_count(void);") == true;
 bool s2NapiOk = s2Napi.Contains("napi_value AccessibilityNodeCount(") &&
     s2Napi.Contains("ohos_host_accessibility_node_count()") &&
     s2Napi.Contains("\"accessibilityNodeCount\"");
-bool s2ExportOk = s2CExportOk && s2HeaderOk && s2NapiOk;
-Console.WriteLine($"[verify] s2 a11y node-count export c={s2CExportOk} header={s2HeaderOk} napi={s2NapiOk} distinct={cSource?.Contains("int ohos_host_accessibility_count(void)") == true} source='{s2NapiPath ?? "<missing>"}' assert={s2ExportOk}");
+bool s2RenderOk = s2Renderer.Contains(
+    "OpenHarmonyAccessibility.Refresh(content);\n        OpenHarmonyAccessibility.Publish();");
+bool s2ExportOk = s2CExportOk && s2HeaderOk && s2NapiOk && s2RenderOk;
+Console.WriteLine($"[verify] s2 a11y node-count export c={s2CExportOk} header={s2HeaderOk} napi={s2NapiOk} renderAttached={s2RenderOk} distinct={cSource?.Contains("int ohos_host_accessibility_count(void)") == true} source='{s2NapiPath ?? "<missing>"}' renderer='{s2RendererPath ?? "<missing>"}' assert={s2ExportOk}");
 if (!s2ExportOk)
 {
-    throw new InvalidOperationException("the S2 accessibility node-count export is missing from the native host sources");
+    throw new InvalidOperationException("the S2 accessibility node-count export or its render-frame attachment is missing from the sources");
 }
 
 // S2b: managed half of the same count. The shadow tree rebuilt for the live page has nodes, and
