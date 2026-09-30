@@ -98,10 +98,17 @@ export DOTNET_CLI_USE_MSBUILD_SERVER=0
 . "$W/scripts/lib-dotnet-env.sh" "$W"
 
 log "== publish (NativeAOT, UI shell) =="
+# InvariantGlobalization: this image's AOT runtime cannot resolve an ICU provider
+# ("Couldn't find a valid ICU package installed on the system" -> FailFast) and the first
+# culture-sensitive call during startup is the P/Invoke library-name search in the hosting
+# module initializer (String.IndexOf(OrdinalIgnoreCase) -> GlobalizationMode.Settings), so the
+# app would abort before reaching Main. Invariant mode compiles the ICU lookup out; revisit
+# when the platform packs ship a resolvable ICU for NativeAOT.
 "$DOTNET" publish test/hello-maui-app/hello-maui-app.csproj \
     -f "$TFM" -r "$RID" -c Release -m:1 \
     -p:PublishAot=true -p:PublishAotUsingRuntimePack=true -p:CompressSymbols=false \
     -p:CopyOutputSymbolsToPublishDirectory=false \
+    -p:InvariantGlobalization=true \
     -p:OpenHarmonyHapPackage=true -p:OpenHarmonySdkRoot="$OHOS_SDK" \
     -p:OpenHarmonyUIPage=pages/Index \
     -p:OpenHarmonyRuntimeMode=aot \

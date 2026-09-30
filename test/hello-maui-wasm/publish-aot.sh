@@ -116,10 +116,13 @@ PINNED=""
 [ -n "${WASM_ABC:-}" ] && PINNED="$PINNED -p:OpenHarmonyArktsModulesAbc=$WASM_ABC"
 
 log "== publish (NativeAOT, UI shell, wasm site) =="
+# InvariantGlobalization: see test/hello-maui-app/publish-aot.sh - the image's AOT runtime
+# cannot resolve ICU and aborts in the hosting module initializer before Main.
 "$DOTNET" publish test/hello-maui-wasm/hello-maui-wasm.csproj \
     -f "$TFM" -r "$RID" -c Release -m:1 \
     -p:PublishAot=true -p:PublishAotUsingRuntimePack=true -p:CompressSymbols=false \
     -p:CopyOutputSymbolsToPublishDirectory=false \
+    -p:InvariantGlobalization=true \
     -p:OpenHarmonyHapPackage=true -p:OpenHarmonySdkRoot="$OHOS_SDK" \
     -p:OpenHarmonyUIPage=pages/Index \
     -p:OpenHarmonyRuntimeMode=aot \
