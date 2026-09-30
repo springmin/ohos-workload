@@ -7,7 +7,7 @@
 // (payload-in-libs, the namespace-allowed copy this ability starts from) and as
 // resources/rawfile/dotnet.zip, the fallback it unpacks into the app's files dir when the
 // staged payload is absent.
-import { UIAbility, AbilityConstant, Want } from '@kit.AbilityKit';
+import { UIAbility, AbilityConstant, Want, Configuration } from '@kit.AbilityKit';
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import { window } from '@kit.ArkUI';
 import { zlib } from '@kit.BasicServicesKit';
@@ -269,6 +269,17 @@ export default class EntryAbility extends UIAbility {
     this.hostCall('notifyLifecycle', typeof host !== 'undefined' && typeof host.notifyLifecycle === 'function', (): void => {
       host.notifyLifecycle(LIFECYCLE_CREATE);
     });
+    // The initial system font scale (Configuration.fontSizeScale): the managed text pipeline
+    // starts at 1 and applies this before the first frame; the host replays the value when the
+    // managed listener registers later.
+    try {
+      const initialFontScale: number | undefined = this.context.config.fontSizeScale;
+      if (typeof initialFontScale === 'number') {
+        this.reportFontScale(initialFontScale);
+      }
+    } catch {
+      // A context without a configuration leaves the managed default in place.
+    }
     this.bootstrap().catch((error: Error) => {
       hilog.error(DOMAIN, TAG, 'bootstrap failed: %{public}s', error.message);
     });
@@ -350,6 +361,23 @@ export default class EntryAbility extends UIAbility {
       this.hostCall('notifyLifecycle', typeof host !== 'undefined' && typeof host.notifyLifecycle === 'function', (): void => {
         host.notifyLifecycle(LIFECYCLE_DESTROY);
       });
+    }
+  }
+
+  // Forwards the system font-size scale (the user's font size setting) to the managed side,
+  // which applies it to every text metric and re-arranges. The host replays the last value to a
+  // managed listener that registers later, so the startup report cannot be lost.
+  private reportFontScale(scale: number): void {
+    this.hostCall('notifyFontScale', typeof host !== 'undefined' && typeof host.notifyFontScale === 'function', (): void => {
+      host.notifyFontScale(scale);
+    });
+  }
+
+  // System configuration changes: the font size setting is the one the managed text pipeline
+  // follows (the colour mode has its own AppStorage watch in the page).
+  onConfigurationUpdated(config: Configuration): void {
+    if (typeof config.fontSizeScale === 'number') {
+      this.reportFontScale(config.fontSizeScale);
     }
   }
 

@@ -2411,6 +2411,44 @@ napi_value NotifyTheme(napi_env env, napi_callback_info info) {
     return undefined;
 }
 
+// ArkTS calls host.notifyFontScale(scale) when the system font-size setting is read (ability
+// create) or changes (onConfigurationUpdated). The managed side registers through
+// ohos_host_font_scale_set; the last value is remembered and replayed to a late listener, because
+// the shell reports the startup scale before the managed runtime finishes loading. A non-positive
+// or non-finite value is normalized to 1 here (the managed setter clamps the range as well).
+static std::atomic<void (*)(float)> g_font_scale_listener{nullptr};
+static std::atomic<float> g_font_scale_value{-1.0f};
+
+extern "C" void ohos_host_font_scale_set(void* callback) {
+    HostListenerStore(g_font_scale_listener, callback);
+    auto listener = HostListenerLoad(g_font_scale_listener);
+    float value = g_font_scale_value.load();
+    if (listener != nullptr && value > 0.0f) {
+        listener(value);
+    }
+}
+
+napi_value NotifyFontScale(napi_env env, napi_callback_info info) {
+    size_t argc = 1;
+    napi_value argv[1] = {nullptr};
+    napi_get_cb_info(env, info, &argc, argv, nullptr, nullptr);
+    double scale = 1.0;
+    if (argc >= 1) {
+        napi_get_value_double(env, argv[0], &scale);
+    }
+    if (!(scale > 0.0) || scale != scale) {
+        scale = 1.0;
+    }
+    g_font_scale_value.store((float)scale);
+    auto listener = HostListenerLoad(g_font_scale_listener);
+    if (listener != nullptr) {
+        listener((float)scale);
+    }
+    napi_value undefined = nullptr;
+    napi_get_undefined(env, &undefined);
+    return undefined;
+}
+
 // ArkTS calls host.notifyAnimationReduce(isReduce) when the accessibility "reduce animations"
 // setting changes (1 = reduce, 0 = animations allowed). The managed side registers through
 // ohos_host_animation_reduce_set; MAUI's ticker and the slice's transitions gate on the flag.
@@ -4004,6 +4042,7 @@ napi_value Init(napi_env env, napi_value exports) {
         {"notifyAvoidArea", nullptr, NotifyAvoidArea, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"notifySoftInputArea", nullptr, NotifySoftInputArea, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"notifyTheme", nullptr, NotifyTheme, nullptr, nullptr, nullptr, napi_default, nullptr},
+        {"notifyFontScale", nullptr, NotifyFontScale, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"notifyAnimationReduce", nullptr, NotifyAnimationReduce, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"notifyActivation", nullptr, NotifyActivation, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"notifyBattery", nullptr, NotifyBattery, nullptr, nullptr, nullptr, napi_default, nullptr},

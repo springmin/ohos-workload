@@ -58,6 +58,7 @@ ohos_host_draw_set_shadow
 ohos_host_draw_text
 ohos_host_fill_surface
 ohos_host_flashlight_set
+ohos_host_font_scale_set
 ohos_host_geocode_request
 ohos_host_get_app_context
 ohos_host_get_avoid_area

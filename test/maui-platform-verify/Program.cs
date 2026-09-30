@@ -12,7 +12,7 @@ using Microsoft.Maui.Platform;
 // after the fuzz tail) instead of letting every caller repeat its own threshold constant.
 VerifyLineCountingWriter verifyStdout = new(Console.Out);
 Console.SetOut(verifyStdout);
-const int verifyCheckTotal = 528;                     // documented full [verify] line count (+4 MS-MODE runtime mode switch, +10 P2c-DEEPLINK, +4 P2b-IMG, +16 P1b-LIST, +10 P1a-ANIM, +2 SEC3 storage/deep-link pins, +5 W-series WebView wiring, +3 T1 InputView mapping, +4 T2 WebView gaps, +4 T3 GraphicsView interaction, +7 T10 modal accessibility, +4 T4 Label formatted text, +4 T5 layout semantics, +6 T7 DatePicker calendar/min-max, +4 T9 window title bar, +4 T11 diagnostics overlay, +1 N2 empty ContentPage arrangement, +6 T8 TableView, +5 T8 uneven rows, +7 T6 RTL flow direction, +5 T22 MainThread bridge, +2 FIX-TABBED tabbed CurrentPage, +4 T13 group footer view/N3 picker IsOpen, +5 T21 system font scale, +2 A11Y-TABBED tabbed accessibility, +3 N1 host multi-pointer, +5 T12 CarouselView group slides, +7 T14 rich shell flyout, +10 T14 flyout leftovers (MenuItemTemplate/FlyoutContent/AsMultipleItems), +2 FIX-SHELL shell CurrentPage, +2 A11Y-SHELL shell accessibility, +7 T15 rich Shell.TitleView, +8 T16 structured menus, +3 N4 TitleBar accessibility row, +3 T18 Essentials Map, +4 N5 overlay passthrough suppression, +5 N6 window decorations)
+const int verifyCheckTotal = 531;                     // documented full [verify] line count (+4 MS-MODE runtime mode switch, +10 P2c-DEEPLINK, +4 P2b-IMG, +16 P1b-LIST, +10 P1a-ANIM, +2 SEC3 storage/deep-link pins, +5 W-series WebView wiring, +3 T1 InputView mapping, +4 T2 WebView gaps, +4 T3 GraphicsView interaction, +7 T10 modal accessibility, +4 T4 Label formatted text, +4 T5 layout semantics, +6 T7 DatePicker calendar/min-max, +4 T9 window title bar, +4 T11 diagnostics overlay, +1 N2 empty ContentPage arrangement, +6 T8 TableView, +5 T8 uneven rows, +7 T6 RTL flow direction, +5 T22 MainThread bridge, +2 FIX-TABBED tabbed CurrentPage, +4 T13 group footer view/N3 picker IsOpen, +5 T21 system font scale, +3 T21 font scale source wiring, +2 A11Y-TABBED tabbed accessibility, +3 N1 host multi-pointer, +5 T12 CarouselView group slides, +7 T14 rich shell flyout, +10 T14 flyout leftovers (MenuItemTemplate/FlyoutContent/AsMultipleItems), +2 FIX-SHELL shell CurrentPage, +2 A11Y-SHELL shell accessibility, +7 T15 rich Shell.TitleView, +8 T16 structured menus, +3 N4 TitleBar accessibility row, +3 T18 Essentials Map, +4 N5 overlay passthrough suppression, +5 N6 window decorations)
 const int verifyCheckFloor = verifyCheckTotal - 20;   // documented floor convention (total - 20)
 
 // A small image file for the Image handler.
@@ -2623,6 +2623,91 @@ finally
 {
     OpenHarmonyFontManager.SetSystemFontScale(1f);
     OpenHarmonyWindowRenderer.CanvasFactory = t21SavedFactory;
+}
+
+// T21 leftovers: the system font scale's source wiring. The ArkTS abilities read
+// Configuration.fontSizeScale (create + onConfigurationUpdated) and forward it with
+// host.notifyFontScale; the native host keeps the last value and replays it to the managed
+// listener (ohos_host_font_scale_set). Off-device the host library is absent, so the pins cover
+// the shell/host contract and the managed path is driven directly.
+string? t21ScalePath = FindHostSource("OpenHarmonySystemFontScale.cs");
+string t21ScaleSource = t21ScalePath is null ? string.Empty : File.ReadAllText(t21ScalePath);
+string? t21HostPath = FindHostSource("src/OpenHarmonyHost/host_napi.cpp");
+string t21HostSource = t21HostPath is null ? string.Empty : File.ReadAllText(t21HostPath);
+string? t21ExportsPath = FindHostSource("src/OpenHarmonyHost/host-exports.txt");
+string t21ExportsSource = t21ExportsPath is null ? string.Empty : File.ReadAllText(t21ExportsPath);
+string[] t21ShellVersions = { "1.0.0-preview.22", "1.0.0-preview.23", "1.0.0-preview.24" };
+bool t21ShellPinsOk = true;
+bool t21ShellIdentical = true;
+string t21ShellFirstHead = string.Empty;
+string t21ShellFirstUi = string.Empty;
+foreach (string t21ShellVersion in t21ShellVersions)
+{
+    string? t21HeadPath = FindHostSource($"packs/Microsoft.OpenHarmony.Sdk/{t21ShellVersion}/templates/ets/entryability/EntryAbility.ets");
+    string? t21UiPath = FindHostSource($"packs/Microsoft.OpenHarmony.Sdk/{t21ShellVersion}/templates/ets/entryability/EntryAbility.ui.ets");
+    string t21Head = t21HeadPath is null ? string.Empty : File.ReadAllText(t21HeadPath);
+    string t21Ui = t21UiPath is null ? string.Empty : File.ReadAllText(t21UiPath);
+    if (t21ShellFirstHead.Length == 0)
+    {
+        t21ShellFirstHead = t21Head;
+        t21ShellFirstUi = t21Ui;
+    }
+    else if (!string.Equals(t21ShellFirstHead, t21Head, StringComparison.Ordinal) ||
+        !string.Equals(t21ShellFirstUi, t21Ui, StringComparison.Ordinal))
+    {
+        t21ShellIdentical = false;
+    }
+    t21ShellPinsOk &= t21Head.Contains("import { UIAbility, AbilityConstant, Want, Configuration } from '@kit.AbilityKit';") &&
+        t21Head.Contains("const initialFontScale: number | undefined = this.context.config.fontSizeScale;") &&
+        t21Head.Contains("this.reportFontScale(initialFontScale);") &&
+        t21Head.Contains("private reportFontScale(scale: number): void {") &&
+        t21Head.Contains("host.notifyFontScale(scale);") &&
+        t21Head.Contains("onConfigurationUpdated(config: Configuration): void {") &&
+        t21Head.Contains("this.reportFontScale(config.fontSizeScale);") &&
+        t21Ui.Contains("const initialFontScale: number | undefined = this.context.config.fontSizeScale;") &&
+        t21Ui.Contains("this.reportFontScale(initialFontScale);") &&
+        t21Ui.Contains("host.notifyFontScale(scale);") &&
+        t21Ui.Contains("onConfigurationUpdated(config: Configuration): void {") &&
+        t21Ui.Contains("this.reportFontScale(config.fontSizeScale);");
+}
+bool t21ShellOk = t21ShellPinsOk && t21ShellIdentical;
+Console.WriteLine($"[verify] t21 font scale shell pins create={t21ShellPinsOk} configure={t21ShellPinsOk} identical={t21ShellIdentical} assert={t21ShellOk}");
+if (!t21ShellOk)
+{
+    throw new InvalidOperationException("the T21 shell font-scale source pins are missing or drifted (create/onConfigurationUpdated across the three packs)");
+}
+bool t21SourceOk = t21ScaleSource.Contains("EntryPoint = \"ohos_host_font_scale_set\"") &&
+    t21ScaleSource.Contains("OpenHarmonyFontManager.SetSystemFontScale(scale);") &&
+    t21ScaleSource.Contains("Changed?.Invoke();") &&
+    t21ScaleSource.Contains("OpenHarmonyStatus.NativeCallbackFailed(\"font scale change\", ex)") &&
+    t21HostSource.Contains("ohos_host_font_scale_set") &&
+    t21HostSource.Contains("NotifyFontScale") &&
+    t21HostSource.Contains("g_font_scale_value") &&
+    t21HostSource.Contains("listener((float)scale);") &&
+    t21ExportsSource.Contains("ohos_host_font_scale_set");
+Console.WriteLine($"[verify] t21 font scale source contract managed={t21ScaleSource.Length > 0} host={t21HostSource.Contains("NotifyFontScale")} replay={t21HostSource.Contains("g_font_scale_value")} export={t21ExportsSource.Contains("ohos_host_font_scale_set")} assert={t21SourceOk}");
+if (!t21SourceOk)
+{
+    throw new InvalidOperationException("the T21 font-scale host contract (managed listener, NAPI notify, replay, export list) is missing or drifted");
+}
+// The managed path: a reported change publishes through the font manager and asks the app host
+// for exactly one re-arrange; the same setting again is a no-op and an invalid value resets to 1.
+int t21RelayoutsBefore = host.SystemFontScaleRelayouts;
+int t21ChangesBefore = OpenHarmonySystemFontScale.AppliedChanges;
+OpenHarmonySystemFontScale.OnPlatformFontScaleChanged(2f);
+bool t21ApplyOk = Math.Abs(OpenHarmonyFontManager.SystemFontScale - 2f) < 0.001f &&
+    host.SystemFontScaleRelayouts == t21RelayoutsBefore + 1 &&
+    OpenHarmonySystemFontScale.AppliedChanges == t21ChangesBefore + 1;
+OpenHarmonySystemFontScale.OnPlatformFontScaleChanged(2f);
+bool t21RepeatOk = OpenHarmonySystemFontScale.AppliedChanges == t21ChangesBefore + 1 &&
+    host.SystemFontScaleRelayouts == t21RelayoutsBefore + 1;
+OpenHarmonySystemFontScale.OnPlatformFontScaleChanged(float.NaN);
+bool t21ResetOk = Math.Abs(OpenHarmonyFontManager.SystemFontScale - 1f) < 0.001f &&
+    host.SystemFontScaleRelayouts == t21RelayoutsBefore + 2;
+Console.WriteLine($"[verify] t21 font scale apply scale={OpenHarmonyFontManager.SystemFontScale} relayouts={host.SystemFontScaleRelayouts - t21RelayoutsBefore} changes={OpenHarmonySystemFontScale.AppliedChanges - t21ChangesBefore} repeat={t21RepeatOk} reset={t21ResetOk} assert={t21ApplyOk && t21RepeatOk && t21ResetOk}");
+if (!(t21ApplyOk && t21RepeatOk && t21ResetOk))
+{
+    throw new InvalidOperationException("the T21 managed font-scale path (apply, one re-arrange, repeat no-op, invalid reset) is missing or drifted");
 }
 
 // T11: the window's VisualDiagnosticsOverlay (Controls' per-window IAdorner host) is initialized
