@@ -353,14 +353,20 @@ static void OhosHostEnsureRuntimeLibs(const char* caller, const char* app_dir) {
 
 // --- payload-in-libs app_dir resolution -------------------------------------------------------
 //
+// Forward declaration: the AOT launch-image name helper below (main NativeAOT block) is also
+// used here to recognize a staged lib<stem>.so as this directory's entry.
+static int OhosHostAotLibName(char* dst, size_t dst_size, const char* app_assembly_file);
+
 // The packaging stages the whole managed payload into the hap's signed libs/<abi>/ directory
 // (see the "Payload in libs" section of the packaging doc). That directory is the only one the
 // device's namespace policy allows a later dlopen from (the extracted app data directory is
 // refused), so when this library's own directory - resolved through dladdr, the same way
 // OhosHostEnsureRuntimeLibs finds the staged runtime natives - carries the entry assembly, it
-// supersedes the extracted payload the shell passed in as app_dir. A hap without the staged
-// payload (or a plain publish-directory run) has no entry assembly there and keeps the caller's
-// app_dir, with the symlink bridge above making the signed runtime natives visible to it.
+// supersedes the extracted payload the shell passed in as app_dir. A NativeAOT payload ships
+// no managed entry assembly: its launch image is lib<assembly stem>.so, staged in the same
+// directory, and counts as the own-dir entry too (W10). A hap without the staged payload (or a
+// plain publish-directory run) has no entry assembly there and keeps the caller's app_dir,
+// with the symlink bridge above making the signed runtime natives visible to it.
 // Best effort by design: a missing directory or assembly never fails the launch, and the
 // outcome is logged once (hilog + stderr) with the used_own=<0|1> own=<own dir> app=<effective>
 // markers the device reports key on.
@@ -380,6 +386,18 @@ static const char* OhosHostResolveAppDir(const char* caller, const char* app_dir
     struct stat entry_st;
     int own_has_entry = path_join(entry_path, sizeof(entry_path), own_dir, entry_file) == 0 &&
                         stat(entry_path, &entry_st) == 0 && S_ISREG(entry_st.st_mode);
+    if (!own_has_entry) {
+        // NativeAOT form: the managed entry file is compiled into lib<stem>.so (see
+        // OhosHostAotLibName). Its dlopen is what the namespace policy allows from this
+        // directory; the extracted payload copy carries no AOT image at all (the packaging
+        // excludes the root *.so from dotnet.zip), so without this probe an AOT hap would
+        // always resolve to an app_dir the AOT launch can never use.
+        char aot_lib_name[256];
+        char aot_entry_path[4096];
+        own_has_entry = OhosHostAotLibName(aot_lib_name, sizeof(aot_lib_name), entry_file) == 0 &&
+                        path_join(aot_entry_path, sizeof(aot_entry_path), own_dir, aot_lib_name) == 0 &&
+                        stat(aot_entry_path, &entry_st) == 0 && S_ISREG(entry_st.st_mode);
+    }
     const char* effective = own_has_entry ? own_dir : app_dir;
     if (own_has_entry && used_own != NULL) {
         *used_own = 1;
@@ -580,6 +598,80 @@ static int OhosHostWritableDir(const char* app_dir, const char* context_json, ch
     }
     out[0] = '\0';
     return 0;
+}
+
+// W10 observability: the device image does not route the host's stdout/stderr to hilog
+// (libhilog_ndk is absent), so the NativeAOT launch decision and the entry call/return are
+// mirrored into the shell-polled <filesDir>/dotnet-status.txt next to the one-shot probe line.
+// Same writable-directory resolution as the probe; best effort - a missing directory only
+// costs the line.
+static void OhosHostAppendStatusFor(const char* app_dir, const char* context_json, const char* message) {
+    char dir[4096];
+    if (OhosHostWritableDir(app_dir, context_json, dir, sizeof(dir))) {
+        OhosHostAppendStatusLine(dir, message);
+    }
+}
+
+// W10 observability: append the process stderr to <dir>/dotnet-status.txt by redirecting fd 2.
+// The platform runtime (NativeAOT/CoreCLR) writes unhandled-exception text and FailFast
+// diagnostics to stderr only, and this image does not route an app process's stderr to hilog,
+// so the file is the only readable channel; the shell poll surfaces it and the next run reads
+// the previous tail from the file. Best effort (a failure only costs the capture).
+static void OhosHostRedirectStderr(const char* dir) {
+    if (dir == NULL || dir[0] == '\0') {
+        return;
+    }
+    char path[4096];
+    if (path_join(path, sizeof(path), dir, "dotnet-status.txt") != 0) {
+        return;
+    }
+    int fd = open(path, O_WRONLY | O_CREAT | O_APPEND, 0600);
+    if (fd < 0) {
+        return;
+    }
+    if (dup2(fd, 2) < 0) {
+        close(fd);
+        return;
+    }
+    if (fd != 2) {
+        close(fd);
+    }
+}
+
+// Opens an application library (the NativeAOT launch image). RTLD_NOW is the strict contract:
+// every unresolved symbol fails the load. The platform's AOT runtime pack links the OpenSSL
+// shim archive without a provider library, so the image carries hundreds of OpenSSL references
+// the device cannot resolve even though the app never calls them (measured: the wasm demo
+// image has 401 OpenSSL + 2 frame symbols unresolved from every sysroot library); a strict
+// load therefore refuses an image that is otherwise complete. Retry lazily once: RTLD_LAZY
+// defers the unresolved provider calls until first use (a real call would fault then, the same
+// image-level contract a lazily bound ELF has), while every eager relocation still has to
+// resolve. The outcome is recorded in dotnet-status.txt so a device run shows which binding
+// the image needed.
+static void* OhosHostOpenAppLibrary(const char* tag, const char* lib_path, const char* app_dir,
+                                    const char* context_json) {
+    void* lib = dlopen(lib_path, RTLD_NOW | RTLD_LOCAL);
+    char line[4224];
+    if (lib != NULL) {
+        snprintf(line, sizeof(line), "OHOS_HOST %s aot dlopen now=ok %s", tag, lib_path);
+        OhosHostAppendStatusFor(app_dir, context_json, line);
+        return lib;
+    }
+    const char* now_error = dlerror();
+    char reason[512];
+    snprintf(reason, sizeof(reason), "strict dlopen failed (%s)", now_error != NULL ? now_error : "no dlerror");
+    lib = dlopen(lib_path, RTLD_LAZY | RTLD_LOCAL);
+    if (lib != NULL) {
+        OH_LOG_WARN(LOG_APP, "[openharmony-host] %{public}s: %{public}s %{public}s; loaded with RTLD_LAZY",
+                    tag, lib_path, reason);
+        fprintf(stderr, "[openharmony-host] %s: %s %s; loaded with RTLD_LAZY\n", tag, lib_path, reason);
+        snprintf(line, sizeof(line), "OHOS_HOST %s aot dlopen now=err lazy=ok %s %s", tag, reason, lib_path);
+        OhosHostAppendStatusFor(app_dir, context_json, line);
+        return lib;
+    }
+    snprintf(line, sizeof(line), "OHOS_HOST %s aot dlopen now=err lazy=err %s %s", tag, reason, lib_path);
+    OhosHostAppendStatusFor(app_dir, context_json, line);
+    return NULL;
 }
 
 // First byte of <dir>/xwe.txt == '1' turns W^X back on; every other outcome keeps the default.
@@ -986,7 +1078,7 @@ static int OhosHostTryRunAotApp(const char* tag, const char* app_dir, const char
     if (OhosHostAotLibPath(lib_path, sizeof(lib_path), app_dir, app_assembly_file) != 0) {
         return 0;
     }
-    void* app_lib = dlopen(lib_path, RTLD_NOW | RTLD_LOCAL);
+    void* app_lib = OhosHostOpenAppLibrary(tag, lib_path, app_dir, NULL);
     if (app_lib == NULL) {
         // The usual JIT payload has no app library next to the assembly; an aot marker promises
         // one, so that case gets the explicit fallback line.
@@ -1010,7 +1102,14 @@ static int OhosHostTryRunAotApp(const char* tag, const char* app_dir, const char
     }
 
     OH_LOG_INFO(LOG_APP, "[openharmony-host] %{public}s: NativeAOT payload %{public}s aot=1", tag, lib_path);
+    // W10 observability (see OhosHostAppendStatusFor): run_app has no launch context, so the
+    // status line lands in app_dir / its parent when writable.
+    char status_line[4096 + 64];
+    snprintf(status_line, sizeof(status_line), "OHOS_HOST %s aot entry invoking lib=%s", tag, lib_path);
+    OhosHostAppendStatusFor(app_dir, NULL, status_line);
     *exit_code = entry(payload);
+    snprintf(status_line, sizeof(status_line), "OHOS_HOST %s aot entry rc=%d", tag, *exit_code);
+    OhosHostAppendStatusFor(app_dir, NULL, status_line);
     free(payload);
     // Deliberately no dlclose: the AOT runtime may have started threads or registered atexit
     // work in the library, and the process is a one-shot launch from here.
@@ -1020,15 +1119,25 @@ static int OhosHostTryRunAotApp(const char* tag, const char* app_dir, const char
 // Bridged AOT launch state (R2-SHELL-EXT): the entry point start_app resolved from the
 // application library plus the payload built for it. The handle owns the struct; the app-thread
 // trampoline below frees both after the entry returns (the library itself stays loaded, same
-// process-lifetime rationale as OhosHostTryRunAotApp).
+// process-lifetime rationale as OhosHostTryRunAotApp). status_dir carries the resolved
+// dotnet-status.txt directory for the W10 entry invoke/return lines (empty when unavailable).
 typedef struct OhosAotLaunch {
     int (*entry)(const char*);
     char* payload;
+    char status_dir[4096];
 } OhosAotLaunch;
 
 static int OhosAotLaunchRun(void* arg) {
     OhosAotLaunch* launch = (OhosAotLaunch*)arg;
+    if (launch->status_dir[0] != '\0') {
+        OhosHostAppendStatusLine(launch->status_dir, "OHOS_HOST start_app aot entry invoking");
+    }
     int exit_code = launch->entry(launch->payload);
+    if (launch->status_dir[0] != '\0') {
+        char line[64];
+        snprintf(line, sizeof(line), "OHOS_HOST start_app aot entry rc=%d", exit_code);
+        OhosHostAppendStatusLine(launch->status_dir, line);
+    }
     free(launch->payload);
     free(launch);
     return exit_code;
@@ -1466,8 +1575,9 @@ int ohos_host_start_app(const char* app_dir, const char* app_assembly_file,
     int (*aot_entry)(const char*) = NULL;
     char* aot_payload = NULL;
     char aot_lib_path[4096];
+    aot_lib_path[0] = '\0';
     if (OhosHostAotLibPath(aot_lib_path, sizeof(aot_lib_path), effective_app_dir, app_assembly_file) == 0) {
-        aot_lib = dlopen(aot_lib_path, RTLD_NOW | RTLD_LOCAL);
+        aot_lib = OhosHostOpenAppLibrary("start_app", aot_lib_path, effective_app_dir, context_json);
         if (aot_lib != NULL) {
             aot_entry = (int (*)(const char*))dlsym(aot_lib, "openharmony_app_main");
             if (aot_entry == NULL) {
@@ -1500,6 +1610,16 @@ int ohos_host_start_app(const char* app_dir, const char* app_assembly_file,
                 aot, effective_app_dir != NULL ? effective_app_dir : "(null)");
     fprintf(stderr, "[openharmony-host] start_app: aot=%d dir=%s\n", aot,
             effective_app_dir != NULL ? effective_app_dir : "(null)");
+    // W10 observability: mirror the resolved decision and its library path into
+    // dotnet-status.txt so the shell's poll shows the route start_app took even on images that
+    // do not route the host's stderr to hilog.
+    {
+        char line[4096 + 96];
+        snprintf(line, sizeof(line), "OHOS_HOST start_app aot=%d dir=%s lib=%s", aot,
+                 effective_app_dir != NULL ? effective_app_dir : "(null)",
+                 aot_lib_path[0] != '\0' ? aot_lib_path : "-");
+        OhosHostAppendStatusFor(effective_app_dir, context_json, line);
+    }
 
     void* hostfxr = NULL;
     void* ctx = NULL;
@@ -1511,6 +1631,14 @@ int ohos_host_start_app(const char* app_dir, const char* app_assembly_file,
         if (hostfxr == NULL) {
             OH_LOG_ERROR(LOG_APP, "[openharmony-host] start_app: could not load libhostfxr.so (last tried %{public}s)",
                          hostfxr_path);
+            // W10 observability: the JIT route failing to find hostfxr is exactly the state an
+            // AOT hap fell into before the libs-dir resolution fix; keep it visible in
+            // dotnet-status.txt (the shell's poll) next to the aot=0 line above.
+            {
+                char line[4096 + 96];
+                snprintf(line, sizeof(line), "OHOS_HOST start_app no hostfxr (last tried %s)", hostfxr_path);
+                OhosHostAppendStatusFor(effective_app_dir, context_json, line);
+            }
             OhosHostEndLaunch();
             return -1;
         }
@@ -1591,6 +1719,7 @@ int ohos_host_start_app(const char* app_dir, const char* app_assembly_file,
         }
         launch->entry = aot_entry;
         launch->payload = aot_payload;
+        launch->status_dir[0] = '\0';
         handle->run_app = OhosAotLaunchRun;
         handle->ctx = launch;
     } else {
@@ -1661,6 +1790,27 @@ int ohos_host_start_app(const char* app_dir, const char* app_assembly_file,
     if (handle->context_json != NULL &&
         (context_json == NULL || strcmp(handle->context_json, context_json) != 0)) {
         OhosHostApplyExecMemoryPolicy("start_app", effective_app_dir, handle->context_json);
+    }
+
+    // W10 observability: resolve the status directory now that the launch context is final and
+    // record the NativeAOT decision; the trampoline mirrors the entry invoke/return into the
+    // same file once the app thread runs. The process stderr is appended to that file too, so
+    // the runtime's unhandled-exception text / FailFast diagnostics (stderr only, and stderr
+    // is not routed to hilog here) become readable on the next shell poll.
+    if (aot) {
+        OhosAotLaunch* launch = (OhosAotLaunch*)handle->ctx;
+        if (launch != NULL &&
+            OhosHostWritableDir(effective_app_dir, handle->context_json, launch->status_dir, sizeof(launch->status_dir))) {
+            char line[4224];
+            snprintf(line, sizeof(line), "OHOS_HOST start_app aot=1 lib=%s", aot_lib_path);
+            OhosHostAppendStatusLine(launch->status_dir, line);
+            OhosHostRedirectStderr(launch->status_dir);
+        }
+    } else {
+        char redirect_dir[4096];
+        if (OhosHostWritableDir(effective_app_dir, handle->context_json, redirect_dir, sizeof(redirect_dir))) {
+            OhosHostRedirectStderr(redirect_dir);
+        }
     }
 
     pthread_attr_t attr;
