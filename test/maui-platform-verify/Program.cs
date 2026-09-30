@@ -12,7 +12,7 @@ using Microsoft.Maui.Platform;
 // after the fuzz tail) instead of letting every caller repeat its own threshold constant.
 VerifyLineCountingWriter verifyStdout = new(Console.Out);
 Console.SetOut(verifyStdout);
-const int verifyCheckTotal = 513;                     // documented full [verify] line count (+4 MS-MODE runtime mode switch, +10 P2c-DEEPLINK, +4 P2b-IMG, +16 P1b-LIST, +10 P1a-ANIM, +2 SEC3 storage/deep-link pins, +5 W-series WebView wiring, +3 T1 InputView mapping, +4 T2 WebView gaps, +4 T3 GraphicsView interaction, +7 T10 modal accessibility, +4 T4 Label formatted text, +4 T5 layout semantics, +6 T7 DatePicker calendar/min-max, +4 T9 window title bar, +4 T11 diagnostics overlay, +1 N2 empty ContentPage arrangement, +6 T8 TableView, +7 T6 RTL flow direction, +5 T22 MainThread bridge, +2 FIX-TABBED tabbed CurrentPage, +4 T13 group footer view/N3 picker IsOpen, +5 T21 system font scale, +2 A11Y-TABBED tabbed accessibility, +3 N1 host multi-pointer, +5 T12 CarouselView group slides, +7 T14 rich shell flyout, +2 FIX-SHELL shell CurrentPage, +2 A11Y-SHELL shell accessibility, +7 T15 rich Shell.TitleView, +8 T16 structured menus, +3 N4 TitleBar accessibility row, +3 T18 Essentials Map, +4 N5 overlay passthrough suppression, +5 N6 window decorations)
+const int verifyCheckTotal = 518;                     // documented full [verify] line count (+4 MS-MODE runtime mode switch, +10 P2c-DEEPLINK, +4 P2b-IMG, +16 P1b-LIST, +10 P1a-ANIM, +2 SEC3 storage/deep-link pins, +5 W-series WebView wiring, +3 T1 InputView mapping, +4 T2 WebView gaps, +4 T3 GraphicsView interaction, +7 T10 modal accessibility, +4 T4 Label formatted text, +4 T5 layout semantics, +6 T7 DatePicker calendar/min-max, +4 T9 window title bar, +4 T11 diagnostics overlay, +1 N2 empty ContentPage arrangement, +6 T8 TableView, +5 T8 uneven rows, +7 T6 RTL flow direction, +5 T22 MainThread bridge, +2 FIX-TABBED tabbed CurrentPage, +4 T13 group footer view/N3 picker IsOpen, +5 T21 system font scale, +2 A11Y-TABBED tabbed accessibility, +3 N1 host multi-pointer, +5 T12 CarouselView group slides, +7 T14 rich shell flyout, +2 FIX-SHELL shell CurrentPage, +2 A11Y-SHELL shell accessibility, +7 T15 rich Shell.TitleView, +8 T16 structured menus, +3 N4 TitleBar accessibility row, +3 T18 Essentials Map, +4 N5 overlay passthrough suppression, +5 N6 window decorations)
 const int verifyCheckFloor = verifyCheckTotal - 20;   // documented floor convention (total - 20)
 
 // A small image file for the Image handler.
@@ -645,6 +645,134 @@ Console.WriteLine($"[verify] tableview pins handler={t8PinHandler} shared={t8Pin
 if (!t8PinsOk)
 {
     throw new InvalidOperationException("the TableView source contract drifted");
+}
+
+// T8 uneven rows: HasUnevenRows measures every row instead of one RowHeight slot. A positive
+// Cell.Height is the row's height (the Cell.RenderHeight precedence), a ViewCell measures its
+// content and the rows below stack on the measured heights. The pre-change pipeline clipped
+// every row to one slot height, so these checks fail without the variable-height pipeline.
+var t8UnevenRoot = new TableRoot
+{
+    new TableSection("U")
+    {
+        new TextCell { Text = "u-alpha" },
+        new TextCell { Text = "u-pinned", Height = 90 },
+        new ViewCell { View = new BoxView { HeightRequest = 120, Color = Colors.Orange } },
+        new TextCell { Text = "u-tail" },
+    },
+};
+var t8Uneven = new TableView { Root = t8UnevenRoot, HasUnevenRows = true, HeightRequest = 600 };
+OpenHarmonyHandlerConnector.ConnectTree(t8Uneven);
+t8Uneven.Measure(1080, 600);
+t8Uneven.Arrange(new Rect(0, 0, 1080, 600));
+var t8UnevenPlatform = (OpenHarmonyView)t8Uneven.Handler!.PlatformView!;
+var t8UnevenRows = t8UnevenPlatform.ViewChildren.OfType<View>().ToList();
+View? t8PinnedRow = t8UnevenRows.FirstOrDefault(r => T8Texts(r).Contains("u-pinned"));
+View? t8TallRow = t8UnevenRows.FirstOrDefault(r => T8Views(r).OfType<BoxView>().Any(b => b.HeightRequest == 120));
+View? t8AlphaRow = t8UnevenRows.FirstOrDefault(r => T8Texts(r).Contains("u-alpha"));
+bool t8UnevenHeightsOk = t8UnevenRows.Count == 5 && t8PinnedRow is not null && t8TallRow is not null && t8AlphaRow is not null &&
+    Math.Abs(t8PinnedRow.Frame.Height - 90) < 0.5 &&
+    Math.Abs(t8TallRow.Frame.Height - 120) < 0.5 &&
+    t8AlphaRow.Frame.Height > 0 && t8AlphaRow.Frame.Height < 90;
+Console.WriteLine($"[verify] tableview uneven heights rows={t8UnevenRows.Count} pinned={t8PinnedRow?.Frame.Height:0.#} " +
+    $"tall={t8TallRow?.Frame.Height:0.#} alpha={t8AlphaRow?.Frame.Height:0.#} assert={t8UnevenHeightsOk}");
+if (!t8UnevenHeightsOk)
+{
+    throw new InvalidOperationException("the TableView uneven-row height contract drifted");
+}
+
+bool t8StackOk = true;
+for (int t8Row = 1; t8Row < t8UnevenRows.Count; t8Row++)
+{
+    double t8ExpectedY = t8UnevenRows[t8Row - 1].Frame.Y + t8UnevenRows[t8Row - 1].Frame.Height + 6;
+    t8StackOk &= Math.Abs(t8UnevenRows[t8Row].Frame.Y - t8ExpectedY) < 0.01;
+}
+View t8LastUneven = t8UnevenRows[^1];
+bool t8UnevenStackOk = t8StackOk &&
+    Math.Abs(t8UnevenPlatform.ScrollContentHeight - (t8LastUneven.Frame.Y + t8LastUneven.Frame.Height + 6)) < 0.5;
+Console.WriteLine($"[verify] tableview uneven stack chain={t8StackOk} content={t8UnevenPlatform.ScrollContentHeight:0.#} " +
+    $"lastBottom={(t8LastUneven.Frame.Y + t8LastUneven.Frame.Height + 6):0.#} assert={t8UnevenStackOk}");
+if (!t8UnevenStackOk)
+{
+    throw new InvalidOperationException("the TableView uneven-row stacking drifted");
+}
+
+// The variable-height window stays virtualized: a 25-row table materializes a window (not all
+// rows) and a scroll to the content end reaches the last row, whose measured bottom plus the
+// row spacing is the reported content height.
+var t8LongRoot = new TableRoot { new TableSection("L") };
+var t8LongCells = new List<TextCell>();
+for (int t8Index = 0; t8Index < 25; t8Index++)
+{
+    var t8LongCell = new TextCell { Text = $"r-{t8Index}" };
+    t8LongCells.Add(t8LongCell);
+    t8LongRoot[0].Add(t8LongCell);
+}
+t8LongCells[12].Height = 140;
+var t8Long = new TableView { Root = t8LongRoot, HasUnevenRows = true, HeightRequest = 300 };
+OpenHarmonyHandlerConnector.ConnectTree(t8Long);
+t8Long.Measure(1080, 300);
+t8Long.Arrange(new Rect(0, 0, 1080, 300));
+var t8LongPlatform = (OpenHarmonyView)t8Long.Handler!.PlatformView!;
+int t8LongWindowed = t8LongPlatform.ViewChildren.OfType<View>().Count();
+t8LongPlatform.ScrollOffsetY = (float)t8LongPlatform.ScrollContentHeight;
+t8LongPlatform.ScrollOffsetChanged?.Invoke();
+View? t8LongLastRow = t8LongPlatform.ViewChildren.OfType<View>().FirstOrDefault(r => T8Texts(r).Contains("r-24"));
+bool t8UnevenScrollOk = t8LongWindowed < 25 && t8LongLastRow is not null &&
+    Math.Abs(t8LongPlatform.ScrollContentHeight - (t8LongLastRow.Frame.Y + t8LongLastRow.Frame.Height + 6)) < 0.5;
+Console.WriteLine($"[verify] tableview uneven scroll window={t8LongWindowed}/25 last={t8LongLastRow is not null} " +
+    $"content={t8LongPlatform.ScrollContentHeight:0.#} assert={t8UnevenScrollOk}");
+if (!t8UnevenScrollOk)
+{
+    throw new InvalidOperationException("the TableView uneven-row window/scroll path drifted");
+}
+
+// Toggling HasUnevenRows off restores the one-RowHeight contract (mapper -> materializer Reset)
+// and toggling it back re-measures the same rows. In the uniform mode the slot math is what
+// matters: every row occupies the 52+6 pitch (the pinned row, a filling label, sits exactly on
+// its slot), while the variable mode returns the row to its measured/preferred height.
+t8Uneven.HasUnevenRows = false;
+t8Uneven.RowHeight = 52;
+t8Uneven.Measure(1080, 600);
+t8Uneven.Arrange(new Rect(0, 0, 1080, 600));
+var t8UniformRows = t8UnevenPlatform.ViewChildren.OfType<View>().ToList();
+View? t8UniformPinned = t8UniformRows.FirstOrDefault(r => T8Texts(r).Contains("u-pinned"));
+bool t8UniformOk = t8UniformRows.Count == 5 &&
+    Math.Abs(t8UnevenPlatform.ScrollContentHeight - 5 * 58) < 0.01 &&
+    t8UniformPinned is not null &&
+    Math.Abs(t8UniformPinned.Frame.Y - 2 * 58) < 0.01 &&
+    Math.Abs(t8UniformPinned.Frame.Height - 52) < 0.01;
+t8Uneven.HasUnevenRows = true;
+t8Uneven.RowHeight = -1;
+t8Uneven.Measure(1080, 600);
+t8Uneven.Arrange(new Rect(0, 0, 1080, 600));
+View? t8BackPinned = t8UnevenPlatform.ViewChildren.OfType<View>().FirstOrDefault(r => T8Texts(r).Contains("u-pinned"));
+View? t8BackTail = t8UnevenPlatform.ViewChildren.OfType<View>().FirstOrDefault(r => T8Texts(r).Contains("u-tail"));
+bool t8UnevenToggleOk = t8UniformOk && t8BackPinned is not null && t8BackTail is not null &&
+    Math.Abs(t8BackPinned.Frame.Height - 90) < 0.5 &&
+    Math.Abs(t8UnevenPlatform.ScrollContentHeight - (t8BackTail.Frame.Y + t8BackTail.Frame.Height + 6)) < 0.5;
+Console.WriteLine($"[verify] tableview uneven toggle uniform={t8UniformOk} content={t8UnevenPlatform.ScrollContentHeight:0.#} " +
+    $"backPin={t8BackPinned?.Frame.Height:0.#} assert={t8UnevenToggleOk}");
+if (!t8UnevenToggleOk)
+{
+    throw new InvalidOperationException("the TableView uneven-row toggle drifted");
+}
+
+// The variable-height contract: the handler maps HasUnevenRows onto the materializer switch and
+// reads Cell.Height, and the degradation note is gone.
+bool t8UnevenPins = t8Handler.Contains("VariableItemHeights = table.HasUnevenRows;") &&
+    t8Handler.Contains("preferredItemHeight = PreferredRowHeight,") &&
+    t8Handler.Contains("item is Cell cell && cell.Height > 0") &&
+    !t8Handler.Contains("not represented") &&
+    t8Mat.Contains("public bool VariableItemHeights { get; set; }") &&
+    t8Mat.Contains("public Func<object?, double>? preferredItemHeight;") &&
+    t8Mat.Contains("private double RowHeightFor(int row)") &&
+    t8Mat.Contains("private void EnsureRowYLocked()") &&
+    t8Mat.Contains("private int NextVisibleRow(int row)");
+Console.WriteLine($"[verify] tableview uneven pins contract={t8UnevenPins} source='{t8HandlerPath ?? "<missing>"}' assert={t8UnevenPins}");
+if (!t8UnevenPins)
+{
+    throw new InvalidOperationException("the TableView uneven-row source contract drifted");
 }
 
 var timeCtl = root.Children.OfType<HorizontalStackLayout>().SelectMany(l => l.Children).OfType<TimePicker>().FirstOrDefault();
@@ -8386,7 +8514,8 @@ bool n12ScrollOk = n12List.Contains("private void OnScrollToRequested(object? se
     n12Mat.Contains("public Func<View?>? emptyViewFactory;") &&
     n12Mat.Contains("public void ScrollTo(int row, ScrollToPosition position)") &&
     n12Mat.Contains("public int RowForGroupItemIndex(int groupIndex, int itemIndex)");
-bool n12WindowOk = n12Mat.Contains("public double TotalHeight => _headerHeight + GridRowCount * SlotHeight + _footerHeight;") &&
+bool n12WindowOk = n12Mat.Contains("public double TotalHeight") &&
+    n12Mat.Contains("GridRowCount * SlotHeight") &&
     n12Mat.Contains("public bool HasGroups => _groups.Count > 0;") &&
     n12Mat.Contains("public double EmptyHeight => _emptyHeight;") &&
     n12Mat.Contains("public int LastVisibleItemIndex");
