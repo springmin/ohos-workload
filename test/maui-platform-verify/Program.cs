@@ -12,7 +12,7 @@ using Microsoft.Maui.Platform;
 // after the fuzz tail) instead of letting every caller repeat its own threshold constant.
 VerifyLineCountingWriter verifyStdout = new(Console.Out);
 Console.SetOut(verifyStdout);
-const int verifyCheckTotal = 518;                     // documented full [verify] line count (+4 MS-MODE runtime mode switch, +10 P2c-DEEPLINK, +4 P2b-IMG, +16 P1b-LIST, +10 P1a-ANIM, +2 SEC3 storage/deep-link pins, +5 W-series WebView wiring, +3 T1 InputView mapping, +4 T2 WebView gaps, +4 T3 GraphicsView interaction, +7 T10 modal accessibility, +4 T4 Label formatted text, +4 T5 layout semantics, +6 T7 DatePicker calendar/min-max, +4 T9 window title bar, +4 T11 diagnostics overlay, +1 N2 empty ContentPage arrangement, +6 T8 TableView, +5 T8 uneven rows, +7 T6 RTL flow direction, +5 T22 MainThread bridge, +2 FIX-TABBED tabbed CurrentPage, +4 T13 group footer view/N3 picker IsOpen, +5 T21 system font scale, +2 A11Y-TABBED tabbed accessibility, +3 N1 host multi-pointer, +5 T12 CarouselView group slides, +7 T14 rich shell flyout, +2 FIX-SHELL shell CurrentPage, +2 A11Y-SHELL shell accessibility, +7 T15 rich Shell.TitleView, +8 T16 structured menus, +3 N4 TitleBar accessibility row, +3 T18 Essentials Map, +4 N5 overlay passthrough suppression, +5 N6 window decorations)
+const int verifyCheckTotal = 528;                     // documented full [verify] line count (+4 MS-MODE runtime mode switch, +10 P2c-DEEPLINK, +4 P2b-IMG, +16 P1b-LIST, +10 P1a-ANIM, +2 SEC3 storage/deep-link pins, +5 W-series WebView wiring, +3 T1 InputView mapping, +4 T2 WebView gaps, +4 T3 GraphicsView interaction, +7 T10 modal accessibility, +4 T4 Label formatted text, +4 T5 layout semantics, +6 T7 DatePicker calendar/min-max, +4 T9 window title bar, +4 T11 diagnostics overlay, +1 N2 empty ContentPage arrangement, +6 T8 TableView, +5 T8 uneven rows, +7 T6 RTL flow direction, +5 T22 MainThread bridge, +2 FIX-TABBED tabbed CurrentPage, +4 T13 group footer view/N3 picker IsOpen, +5 T21 system font scale, +2 A11Y-TABBED tabbed accessibility, +3 N1 host multi-pointer, +5 T12 CarouselView group slides, +7 T14 rich shell flyout, +10 T14 flyout leftovers (MenuItemTemplate/FlyoutContent/AsMultipleItems), +2 FIX-SHELL shell CurrentPage, +2 A11Y-SHELL shell accessibility, +7 T15 rich Shell.TitleView, +8 T16 structured menus, +3 N4 TitleBar accessibility row, +3 T18 Essentials Map, +4 N5 overlay passthrough suppression, +5 N6 window decorations)
 const int verifyCheckFloor = verifyCheckTotal - 20;   // documented floor convention (total - 20)
 
 // A small image file for the Image handler.
@@ -1067,10 +1067,18 @@ bool t14FramesOk = t14RowsOk &&
     t14Rows.All(r => r.Frame.X >= 20 && r.Frame.Right <= 320 && r.Frame.Height > 0) &&
     t14Rows[2].View!.Frame.Height >= 44;
 Console.WriteLine($"[verify] t14 flyout frames header={t14Rows[0].Frame} item0={t14Rows[1].Frame} item1={t14Rows[2].Frame} footer={t14Rows[3].Frame} ok={t14FramesOk}");
+// The canonical flyout model (GenerateFlyoutGrouping) binds an implicit item's row to the
+// ShellContent the row stands for: the implicit ShellItem/ShellSection wrappers flatten away,
+// exactly like MAUI's platform renderers.
+object t14AlphaElement = t14Shell.Items[0].CurrentItem!.CurrentItem!;
+object t14BetaElement = t14Shell.Items[1].CurrentItem!.CurrentItem!;
 bool t14BindingsOk = t14RowsOk && t14RowText(t14Rows[1]) == "Alpha" && t14RowText(t14Rows[2]) == "Beta" &&
-    ReferenceEquals(t14Rows[1].View!.BindingContext, t14Shell.Items[0]) &&
-    ReferenceEquals(t14Rows[2].View!.BindingContext, t14Shell.Items[1]);
-Console.WriteLine($"[verify] t14 flyout item template texts=[{t14RowText(t14Rows[1])},{t14RowText(t14Rows[2])}] bound={ReferenceEquals(t14Rows[1].View!.BindingContext, t14Shell.Items[0])}/{ReferenceEquals(t14Rows[2].View!.BindingContext, t14Shell.Items[1])} ok={t14BindingsOk}");
+    ReferenceEquals(t14Rows[1].View!.BindingContext, t14AlphaElement) &&
+    ReferenceEquals(t14Rows[2].View!.BindingContext, t14BetaElement);
+Console.WriteLine($"[verify] t14 flyout item template texts=[{t14RowText(t14Rows[1])},{t14RowText(t14Rows[2])}] bound={ReferenceEquals(t14Rows[1].View!.BindingContext, t14AlphaElement)}/{ReferenceEquals(t14Rows[2].View!.BindingContext, t14BetaElement)} ok={t14BindingsOk}");
+bool t14TargetsOk = t14RowsOk && ReferenceEquals(t14Rows[1].Target, t14AlphaElement) &&
+    ReferenceEquals(t14Rows[2].Target, t14BetaElement) && t14Rows[0].Target is null && t14Rows[3].Target is null;
+Console.WriteLine($"[verify] t14 flyout row targets=[{t14Rows[1].Target?.GetType().Name},{t14Rows[2].Target?.GetType().Name}] section={((ShellContent)t14AlphaElement).Parent?.GetType().Name} ok={t14TargetsOk}");
 bool t14DrawnOk = ReferenceEquals(t14PanelDrawn, t14Platform) && t14RichDrawn == 4;
 Console.WriteLine($"[verify] t14 flyout panel drawn={ReferenceEquals(t14PanelDrawn, t14Platform)} richRows={t14RichDrawn} ok={t14DrawnOk}");
 // Tap the Beta row (its label area, above the button): the flat row -> item selection fallback
@@ -1109,12 +1117,187 @@ bool t14TemplateHeaderOk = (t14TemplateHeader as Label)?.Text == "T14Shell" &&
 Console.WriteLine($"[verify] t14 flyout template header type={t14TemplateHeader?.GetType().Name} text='{(t14TemplateHeader as Label)?.Text}' ctxShell={ReferenceEquals(t14TemplateHeader?.BindingContext, t14Shell)} ok={t14TemplateHeaderOk}");
 t14Shell.FlyoutHeaderTemplate = null;
 t14Shell.FlyoutHeader = t14Header;
-if (!(t14RowsOk && t14FramesOk && t14BindingsOk && t14DrawnOk && t14RowTapOk && t14ButtonOk && t14TemplateHeaderOk))
+if (!(t14RowsOk && t14FramesOk && t14BindingsOk && t14TargetsOk && t14DrawnOk && t14RowTapOk && t14ButtonOk && t14TemplateHeaderOk))
 {
     throw new InvalidOperationException(
         $"the T14 rich shell flyout is missing or drifted: rows={t14RowsOk} frames={t14FramesOk} bindings={t14BindingsOk} " +
-        $"drawn={t14DrawnOk} rowTap={t14RowTapOk} button={t14ButtonOk} templateHeader={t14TemplateHeaderOk}");
+        $"targets={t14TargetsOk} drawn={t14DrawnOk} rowTap={t14RowTapOk} button={t14ButtonOk} templateHeader={t14TemplateHeaderOk}");
 }
+
+// T14 leftovers: Shell.MenuItemTemplate / FlyoutContent / AsMultipleItems. The rows come from
+// MAUI's canonical flyout grouping, so a MenuItem row activates its Clicked/Command, a
+// FlyoutContent replaces the item rows with a full-panel body and an AsMultipleItems item shows
+// one row per child (the row selects exactly that child).
+int t14MenuClicks = 0;
+var t14MenuTemplate = new DataTemplate(() =>
+{
+    var label = new Label { FontSize = 22 };
+    label.SetBinding(Label.TextProperty, "Text");
+    return new VerticalStackLayout { Spacing = 2, Children = { label } };
+});
+var t14MenuShell = new Shell { Title = "T14Menu" };
+var t14MenuContent = new ShellContent
+{
+    Title = "Home",
+    ContentTemplate = new DataTemplate(() => new ContentPage { Title = "Home", Content = new Label { Text = "home" } }),
+};
+var t14About = new MenuItem { Text = "About" };
+t14About.Clicked += (_, _) => t14MenuClicks++;
+var t14Logout = new MenuItem { Text = "Logout" };
+t14Logout.Clicked += (_, _) => t14MenuClicks++;
+t14MenuContent.MenuItems.Add(t14About);
+t14MenuContent.MenuItems.Add(t14Logout);
+t14MenuShell.Items.Add(t14MenuContent);
+t14MenuShell.MenuItemTemplate = t14MenuTemplate;
+OpenHarmonyHandlerConnector.ConnectTree(t14MenuShell);
+t14MenuShell.Measure(1080, 1920);
+t14MenuShell.Arrange(new Rect(0, 0, 1080, 1920));
+var t14MenuPlatform = (OpenHarmonyView)t14MenuShell.Handler!.PlatformView!;
+t14MenuPlatform.FlyoutOpen = true;
+rendererForShell.Render(t14MenuShell, 1080, 1920);
+List<OpenHarmonyFlyoutRow> t14MenuRows = t14MenuPlatform.FlyoutRows;
+bool t14MenuRowsOk = t14MenuRows.Count == 3 &&
+    t14RowText(t14MenuRows[0]) == "Home" && t14MenuRows[0].Target is ShellContent && t14MenuRows[0].ItemIndex == 0 &&
+    t14MenuRows[1].Target is MenuItem && t14MenuRows[1].ItemIndex == -1 &&
+    t14MenuRows[2].Target is MenuItem &&
+    ReferenceEquals(t14MenuRows[1].View?.BindingContext, t14About) &&
+    ReferenceEquals(t14MenuRows[2].View?.BindingContext, t14Logout) &&
+    t14RowText(t14MenuRows[1]) == "About" && t14RowText(t14MenuRows[2]) == "Logout";
+Console.WriteLine($"[verify] t14 menu item template rows={t14MenuRows.Count} kinds=[{string.Join(",", t14MenuRows.Select(r => r.View?.GetType().Name ?? "text:" + r.Text))}] texts=[{t14RowText(t14MenuRows[1])},{t14RowText(t14MenuRows[2])}] bound={ReferenceEquals(t14MenuRows[1].View?.BindingContext, t14About)}/{ReferenceEquals(t14MenuRows[2].View?.BindingContext, t14Logout)} ok={t14MenuRowsOk}");
+if (!t14MenuRowsOk)
+{
+    throw new InvalidOperationException("the T14 Shell.MenuItemTemplate rows are missing or drifted");
+}
+// A tap on the Logout row activates the MenuItem (Clicked) and closes the drawer; the shell
+// selection stays untouched because a menu row is not a shell item.
+Rect t14LogoutRow = new(t14MenuRows[2].Frame.X, t14MenuRows[2].Frame.Y, t14MenuRows[2].Frame.Width, t14MenuRows[2].Frame.Height);
+rendererForShell.HandleTouch(t14MenuShell, true, false, (float)(t14LogoutRow.X + 12), (float)(t14LogoutRow.Y + 6));
+rendererForShell.HandleTouch(t14MenuShell, false, true, (float)(t14LogoutRow.X + 12), (float)(t14LogoutRow.Y + 6));
+bool t14MenuActivateOk = t14MenuClicks == 1 && !t14MenuPlatform.FlyoutOpen &&
+    ReferenceEquals(t14MenuShell.CurrentItem, t14MenuShell.Items[0]);
+Console.WriteLine($"[verify] t14 menu item activation clicks={t14MenuClicks} open={t14MenuPlatform.FlyoutOpen} current='{t14MenuShell.CurrentItem?.Title}' ok={t14MenuActivateOk}");
+if (!t14MenuActivateOk)
+{
+    throw new InvalidOperationException("the T14 menu row activation (IMenuItemController.Activate) is missing or drifted");
+}
+// Without a template the menu row keeps the MenuItem text (the slice's label-cell fallback) and
+// still activates.
+t14MenuShell.MenuItemTemplate = null;
+t14MenuPlatform.FlyoutOpen = true;
+t14MenuPlatform.ChromeRefresh?.Invoke();
+bool t14MenuTextOk = t14MenuPlatform.FlyoutRows.Count == 3 &&
+    t14RowText(t14MenuPlatform.FlyoutRows[1]) == "About" &&
+    t14RowText(t14MenuPlatform.FlyoutRows[2]) == "Logout" &&
+    t14MenuPlatform.FlyoutRows[1].View is null && t14MenuPlatform.FlyoutRows[2].View is null;
+Console.WriteLine($"[verify] t14 menu item text fallback rows={t14MenuPlatform.FlyoutRows.Count} texts=[{t14RowText(t14MenuPlatform.FlyoutRows[1])},{t14RowText(t14MenuPlatform.FlyoutRows[2])}] views={t14MenuPlatform.FlyoutRows[1].View is not null}/{t14MenuPlatform.FlyoutRows[2].View is not null} ok={t14MenuTextOk}");
+if (!t14MenuTextOk)
+{
+    throw new InvalidOperationException("the T14 menu row text fallback is missing or drifted");
+}
+
+// AsMultipleItems: a FlyoutItem whose sections/contents opt in gets one row per child; the row
+// selects the child section/content (not just the top-level item).
+var t14MultiShell = new Shell();
+var t14MultiItem = new FlyoutItem { Title = "Animals", FlyoutDisplayOptions = FlyoutDisplayOptions.AsMultipleItems };
+var t14Cats = new ShellContent { Title = "Cats", ContentTemplate = new DataTemplate(() => new ContentPage { Title = "Cats", Content = new Label { Text = "cats" } }) };
+var t14Dogs = new ShellContent { Title = "Dogs", ContentTemplate = new DataTemplate(() => new ContentPage { Title = "Dogs", Content = new Label { Text = "dogs" } }) };
+t14MultiItem.Items.Add(t14Cats);
+t14MultiItem.Items.Add(t14Dogs);
+t14MultiShell.Items.Add(t14MultiItem);
+OpenHarmonyHandlerConnector.ConnectTree(t14MultiShell);
+t14MultiShell.Measure(1080, 1920);
+t14MultiShell.Arrange(new Rect(0, 0, 1080, 1920));
+var t14MultiPlatform = (OpenHarmonyView)t14MultiShell.Handler!.PlatformView!;
+t14MultiPlatform.FlyoutOpen = true;
+rendererForShell.Render(t14MultiShell, 1080, 1920);
+List<OpenHarmonyFlyoutRow> t14MultiRows = t14MultiPlatform.FlyoutRows;
+bool t14MultiRowsOk = t14MultiRows.Count == 2 &&
+    t14RowText(t14MultiRows[0]) == "Cats" && t14RowText(t14MultiRows[1]) == "Dogs" &&
+    ReferenceEquals(t14MultiRows[0].Target, t14Cats) && ReferenceEquals(t14MultiRows[1].Target, t14Dogs) &&
+    t14MultiRows[0].ItemIndex == 0 && t14MultiRows[1].ItemIndex == 0;
+Console.WriteLine($"[verify] t14 as-multiple-items rows={t14MultiRows.Count} texts=[{t14RowText(t14MultiRows[0])},{t14RowText(t14MultiRows[1])}] targets=[{(t14MultiRows[0].Target as ShellContent)?.Title},{(t14MultiRows[1].Target as ShellContent)?.Title}] item=[{t14MultiRows[0].ItemIndex},{t14MultiRows[1].ItemIndex}] ok={t14MultiRowsOk}");
+if (!t14MultiRowsOk)
+{
+    throw new InvalidOperationException("the T14 AsMultipleItems rows are missing or drifted");
+}
+Rect t14DogsRow = new(t14MultiRows[1].Frame.X, t14MultiRows[1].Frame.Y, t14MultiRows[1].Frame.Width, t14MultiRows[1].Frame.Height);
+rendererForShell.HandleTouch(t14MultiShell, true, false, (float)(t14DogsRow.X + 12), (float)(t14DogsRow.Y + 6));
+rendererForShell.HandleTouch(t14MultiShell, false, true, (float)(t14DogsRow.X + 12), (float)(t14DogsRow.Y + 6));
+bool t14MultiSelectOk = !t14MultiPlatform.FlyoutOpen &&
+    ReferenceEquals(t14MultiShell.CurrentItem, t14MultiItem) &&
+    ReferenceEquals(t14MultiItem.CurrentItem?.CurrentItem, t14Dogs);
+Console.WriteLine($"[verify] t14 as-multiple-items select current='{t14MultiShell.CurrentItem?.Title}' section='{t14MultiItem.CurrentItem?.Title}' content='{t14MultiItem.CurrentItem?.CurrentItem?.Title}' ok={t14MultiSelectOk}");
+if (!t14MultiSelectOk)
+{
+    throw new InvalidOperationException("the T14 AsMultipleItems row does not select its child section/content");
+}
+
+// FlyoutContent: the resolved content view replaces the item rows and fills the panel between
+// the header and footer; its own content owns touches, exactly like a rich item row.
+int t14BodyClicks = 0;
+var t14BodyButton = new Button { Text = "Inside", HeightRequest = 44 };
+t14BodyButton.Clicked += (_, _) => t14BodyClicks++;
+var t14Body = new VerticalStackLayout
+{
+    Spacing = 4,
+    Children = { new Label { Text = "BODY", FontSize = 24 }, t14BodyButton },
+};
+var t14ContentShell = new Shell { Title = "T14Content" };
+t14ContentShell.Items.Add(new ShellContent { Title = "Hidden", ContentTemplate = new DataTemplate(() => new ContentPage { Title = "Hidden", Content = new Label { Text = "hidden" } }) });
+t14ContentShell.FlyoutContent = t14Body;
+OpenHarmonyHandlerConnector.ConnectTree(t14ContentShell);
+t14ContentShell.Measure(1080, 1920);
+t14ContentShell.Arrange(new Rect(0, 0, 1080, 1920));
+var t14ContentPlatform = (OpenHarmonyView)t14ContentShell.Handler!.PlatformView!;
+t14ContentPlatform.FlyoutOpen = true;
+rendererForShell.Render(t14ContentShell, 1080, 1920);
+List<OpenHarmonyFlyoutRow> t14BodyRows = t14ContentPlatform.FlyoutRows;
+bool t14BodyRowsOk = t14BodyRows.Count == 1 && t14BodyRows[0].IsBody &&
+    ReferenceEquals(t14BodyRows[0].View, t14Body) && t14BodyRows[0].Target is null &&
+    t14BodyRows.All(r => r.ItemIndex < 0);
+Console.WriteLine($"[verify] t14 flyout content rows={t14BodyRows.Count} body={t14BodyRows[0].IsBody} same={ReferenceEquals(t14BodyRows[0].View, t14Body)} itemRows={t14BodyRows.Count(r => r.ItemIndex >= 0)} ok={t14BodyRowsOk}");
+if (!t14BodyRowsOk)
+{
+    throw new InvalidOperationException("the T14 Shell.FlyoutContent body row is missing or drifted (items not replaced)");
+}
+RectF t14BodyFrame = t14BodyRows[0].Frame;
+bool t14BodyLayoutOk = t14BodyFrame.Height > 1000 && t14Body.Frame.Height > 1000 &&
+    t14BodyButton.Frame.Height > 0 && t14BodyButton.Frame.Width > 0;
+Console.WriteLine($"[verify] t14 flyout content layout frame={t14BodyFrame} body={t14Body.Frame} button={t14BodyButton.Frame} ok={t14BodyLayoutOk}");
+if (!t14BodyLayoutOk)
+{
+    throw new InvalidOperationException("the T14 FlyoutContent body does not fill the panel between the sections");
+}
+Rect t14BodyButtonRect = t14BodyButton.Frame;
+rendererForShell.HandleTouch(t14ContentShell, true, false,
+    (float)(t14BodyButtonRect.X + t14BodyButtonRect.Width / 2), (float)(t14BodyButtonRect.Y + t14BodyButtonRect.Height / 2));
+rendererForShell.HandleTouch(t14ContentShell, false, true,
+    (float)(t14BodyButtonRect.X + t14BodyButtonRect.Width / 2), (float)(t14BodyButtonRect.Y + t14BodyButtonRect.Height / 2));
+bool t14BodyTapOk = t14BodyClicks == 1;
+Console.WriteLine($"[verify] t14 flyout content button tap clicks={t14BodyClicks} ok={t14BodyTapOk}");
+if (!t14BodyTapOk)
+{
+    throw new InvalidOperationException("a control inside the T14 FlyoutContent body does not receive its touch");
+}
+// A FlyoutContentTemplate resolves through the Shell (the same contract as the section
+// templates): the content Shell creates is bound to the shell object.
+t14ContentShell.FlyoutContent = null;
+t14ContentShell.FlyoutContentTemplate = new DataTemplate(() =>
+{
+    var label = new Label { FontSize = 24 };
+    label.SetBinding(Label.TextProperty, "Title");
+    return label;
+});
+t14ContentPlatform.ChromeRefresh?.Invoke();
+View? t14TemplateBody = t14ContentPlatform.FlyoutRows.Count > 0 ? t14ContentPlatform.FlyoutRows[0].View : null;
+bool t14BodyTemplateOk = t14ContentPlatform.FlyoutRows.Count == 1 && t14ContentPlatform.FlyoutRows[0].IsBody &&
+    (t14TemplateBody as Label)?.Text == "T14Content" && ReferenceEquals(t14TemplateBody?.BindingContext, t14ContentShell);
+Console.WriteLine($"[verify] t14 flyout content template type={t14TemplateBody?.GetType().Name} text='{(t14TemplateBody as Label)?.Text}' ctxShell={ReferenceEquals(t14TemplateBody?.BindingContext, t14ContentShell)} ok={t14BodyTemplateOk}");
+if (!t14BodyTemplateOk)
+{
+    throw new InvalidOperationException("the T14 FlyoutContentTemplate body is missing or drifted");
+}
+
 
 // T15: rich Shell.TitleView. A non-Label title view is materialized as a real row: the chrome
 // connects/measures/arranges it into the band between the leading and trailing slots, the
