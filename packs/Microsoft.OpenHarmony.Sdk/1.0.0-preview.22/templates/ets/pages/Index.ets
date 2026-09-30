@@ -11,7 +11,7 @@
 import { NodeContent } from '@kit.ArkUI';
 import { abilityAccessCtrl, common, Permissions, Want, wantConstant } from '@kit.AbilityKit';
 import { display, window, NodeController } from '@kit.ArkUI';
-import { fileIo, fileIo as fs, fileUri, picker } from '@kit.CoreFileKit';
+import { fileIo as fs, fileUri, picker } from '@kit.CoreFileKit';
 import host from 'libopenharmonyhost.so';
 import { pasteboard } from '@kit.BasicServicesKit';
 import { uniformTypeDescriptor as utd } from '@kit.ArkData';
@@ -1748,7 +1748,10 @@ struct Index {
   // Reads the managed bridge's status file a bounded number of times and logs the tail when it
   // changed. The shell and the managed app share the app sandbox, so the page can read what the
   // managed side wrote even though hdc/shell cannot; on images that do route managed stderr to
-  // hilog this is harmless (the same lines appear twice at most).
+  // hilog this is harmless (the same lines appear twice at most). W10: the file also receives
+  // the app process's stderr (the runtime's unhandled-exception text), and the last poll of a
+  // crashed run is what the next launch reads here, so the window covers 60 lines, one hilog
+  // entry per line.
   private pollManagedStatus(): void {
     if (this.statusReads >= 12) {
       return;
@@ -1760,8 +1763,12 @@ struct Index {
       if (text !== this.statusSeen) {
         this.statusSeen = text;
         const lines: string[] = text.split('\n');
-        const start: number = lines.length > 6 ? lines.length - 6 : 0;
-        this.logInfo(`[maui] status: ${lines.slice(start).join(' | ')}`);
+        const start: number = lines.length > 60 ? lines.length - 60 : 0;
+        for (let i = start; i < lines.length; i++) {
+          if (lines[i].length > 0) {
+            this.logInfo(`[maui] status: ${lines[i]}`);
+          }
+        }
       }
     } catch {
       // No status file yet (or no context): the next poll tries again.
@@ -2281,7 +2288,7 @@ struct Index {
       current = current + relative[i];
       const isLast: boolean = i === relative.length - 1;
       try {
-        if (fileIo.lstatSync(current).isSymbolicLink()) {
+        if (fs.lstatSync(current).isSymbolicLink()) {
           return null;
         }
       } catch (pathError) {
@@ -2322,13 +2329,13 @@ struct Index {
         const win = await window.getLastWindow(this.hostContext());
         const pixelMap = await win.snapshot();
         const packer = image.image.createImagePacker();
-        const file = fileIo.openSync(safePath, fileIo.OpenMode.READ_WRITE | fileIo.OpenMode.CREATE
-          | fileIo.OpenMode.TRUNC);
+        const file = fs.openSync(safePath, fs.OpenMode.READ_WRITE | fs.OpenMode.CREATE
+          | fs.OpenMode.TRUNC);
         try {
           await packer.packToFile(pixelMap, file.fd, { format: 'image/png', quality: 100 });
           return 0;
         } finally {
-          fileIo.closeSync(file);
+          fs.closeSync(file);
           await packer.release();
           await pixelMap.release();
         }
@@ -3947,10 +3954,10 @@ struct Index {
               });
               const captureUri: string = picked.resultUri;
               const captureName: string = captureUri.substring(captureUri.lastIndexOf('/') + 1);
-              const captureFile = fileIo.openSync(captureUri, fileIo.OpenMode.READ_ONLY);
-              const captureBuffer = new ArrayBuffer(fileIo.statSync(captureUri).size);
-              fileIo.readSync(captureFile.fd, captureBuffer);
-              fileIo.closeSync(captureFile);
+              const captureFile = fs.openSync(captureUri, fs.OpenMode.READ_ONLY);
+              const captureBuffer = new ArrayBuffer(fs.statSync(captureUri).size);
+              fs.readSync(captureFile.fd, captureBuffer);
+              fs.closeSync(captureFile);
               const captureBase64 = new util.Base64Helper().encodeToStringSync(new Uint8Array(captureBuffer));
               this.hostCall('notifyPickerResult', typeof host !== 'undefined' && typeof host.notifyPickerResult === 'function', (): void => {
                 host.notifyPickerResult(requestId, 0, captureName, captureBase64);
@@ -5177,7 +5184,7 @@ struct Index {
       this.blazorRegistered = safeLayout && this.blazorBase.length > 0 && this.blazorRoot.length > 0
         && this.blazorDefaultFile.length > 0;
       if (this.blazorRegistered) {
-        this.logInfo(`[maui] blazor assets: origin=${this.blazorOrigin} root=${this.blazorRoot} mode=${this.blazorWasmMode ? 'wasm' : 'hybrid'}`);
+        this.logInfo(`[maui] blazor assets: origin=${this.blazorOrigin} root=${this.blazorRoot} base=${this.blazorBase} mode=${this.blazorWasmMode ? 'wasm' : 'hybrid'}`);
       }
       if (this.blazorRegistered && !this.blazorWasmMode) {
         this.webVisible = true;
@@ -5324,7 +5331,7 @@ struct Index {
   }
 
   // Static web asset fingerprint fallback. .NET static web assets are requested under
-  // fingerprinted names (stem.<8-32 lowercase hex chars>.ext) while the extracted payload
+  // fingerprinted names (stem.<10 lowercase alnum chars>.ext) while the extracted payload
   // carries the base file; a request whose exact file is missing is retried once with the
   // suffix stripped (name.<hash>.ext -> name.ext). The grammar is deliberately conservative:
   // the hex run must be the last stem segment and a non-empty stem must remain, so ordinary
@@ -5341,11 +5348,59 @@ struct Index {
     }
     const stem: string = filePath.substring(nameStart, dot);
     const extension: string = filePath.substring(dot);
-    const match = new RegExp('^(.+)\\.[0-9a-f]{8,32}$').exec(stem);
+    // .NET static web asset fingerprints are 10 lowercase alphanumerics (observed:
+    // dotnet.s704ca7iy0.js) - NOT hex, so [0-9a-f] would never strip a real fingerprint.
+    const match = new RegExp('^(.+)\\.[0-9a-z]{10}$').exec(stem);
     if (match === null) {
       return filePath;
     }
     return `${filePath.substring(0, nameStart)}${match[1]}${extension}`;
+  }
+
+  // Fingerprint lookup in the base-name direction (W10): .NET static web assets are published
+  // only under their fingerprinted names while the Blazor boot script still requests the base
+  // name (`_framework/dotnet.js` next to `dotnet.<fingerprint>.js`). A static host has to
+  // perform the mapping the ASP.NET Core static file middleware normally does: when the
+  // requested exact file is missing and the parent directory carries
+  // `<stem>.<10 lowercase alnum><extension>`, that file is served. Returns undefined when no
+  // match exists.
+  private staticFingerprintFile(filePath: string): string | undefined {
+    const slash: number = filePath.lastIndexOf('/');
+    const nameStart: number = slash + 1;
+    const dot: number = filePath.lastIndexOf('.');
+    if (dot <= nameStart) {
+      return undefined;
+    }
+    const stem: string = filePath.substring(nameStart, dot);
+    const extension: string = filePath.substring(dot);
+    const directory: string = slash > 0 ? filePath.substring(0, slash) : '/';
+    try {
+      const names: string[] = fs.listFileSync(directory);
+      const prefix: string = `${stem}.`;
+      for (const name of names) {
+        if (!name.startsWith(prefix) || !name.endsWith(extension)) {
+          continue;
+        }
+        const hash: string = name.substring(prefix.length, name.length - extension.length);
+        if (hash.length !== 10) {
+          continue;
+        }
+        let alnum: boolean = true;
+        for (let i = 0; i < hash.length; i++) {
+          const c: number = hash.charCodeAt(i);
+          if ((c < 0x30 || c > 0x39) && (c < 0x61 || c > 0x7a)) {
+            alnum = false;
+            break;
+          }
+        }
+        if (alnum) {
+          return `${directory}/${name}`;
+        }
+      }
+    } catch {
+      // A missing directory or a listing failure is not a readable file.
+    }
+    return undefined;
   }
 
   // Cache policy for a served payload file. A fingerprinted request is pinned by its name, so
@@ -5369,14 +5424,14 @@ struct Index {
   private readPayloadFile(filePath: string, fingerprinted: boolean): WebResourceResponse | undefined {
     let fd: number = -1;
     try {
-      const stat = fileIo.statSync(filePath);
+      const stat = fs.statSync(filePath);
       if (!stat.isFile()) {
         return undefined;
       }
-      const file = fileIo.openSync(filePath, fileIo.OpenMode.READ_ONLY);
+      const file = fs.openSync(filePath, fs.OpenMode.READ_ONLY);
       fd = file.fd;
       const buffer = new ArrayBuffer(stat.size);
-      fileIo.readSync(fd, buffer);
+      fs.readSync(fd, buffer);
       const response: WebResourceResponse = new WebResourceResponse();
       response.setResponseCode(200);
       response.setResponseMimeType(this.hybridMimeType(filePath));
@@ -5384,12 +5439,17 @@ struct Index {
       response.setResponseData(buffer);
       response.setResponseHeader(this.payloadCacheHeaders(fingerprinted));
       return response;
-    } catch {
+    } catch (readError) {
+      // W10 serve diagnostics: the first intercepted reads log their failure so a device run
+      // shows why a registered payload file is answered 404 (path typo vs access vs missing).
+      if (this.blazorServeLogs <= 4) {
+        this.logWarn(`[maui] payload read failed: ${filePath}: ${(readError as Error).message}`);
+      }
       return undefined;
     } finally {
       if (fd >= 0) {
         try {
-          fileIo.closeSync(fd);
+          fs.closeSync(fd);
         } catch {
           // The handle is released with the response in the worst case.
         }
@@ -5415,6 +5475,16 @@ struct Index {
       const fallback: WebResourceResponse | undefined = this.readPayloadFile(baseFile, true);
       if (fallback !== undefined) {
         return fallback;
+      }
+    } else {
+      // Base name requested, fingerprinted file published (W10: the Blazor boot script imports
+      // `_framework/dotnet.js` while the publish carries `dotnet.<hash>.js`).
+      const resolved: string | undefined = this.staticFingerprintFile(filePath);
+      if (resolved !== undefined) {
+        const mapped: WebResourceResponse | undefined = this.readPayloadFile(resolved, true);
+        if (mapped !== undefined) {
+          return mapped;
+        }
       }
     }
     return this.hybridErrorResponse(404);
@@ -5641,7 +5711,7 @@ struct Index {
             if (this.blazorRegistered && url.startsWith(this.blazorOrigin)) {
               if (this.blazorServeLogs < 3) {
                 this.blazorServeLogs++;
-                this.logInfo(`[maui] web serve: ${url}`);
+                this.logInfo(`[maui] web serve: ${url} -> ${this.blazorFilePath(url)}`);
               }
               return this.serveBlazorFile(url);
             }

@@ -62,17 +62,33 @@ interface PayloadMarker {
 const LIBS_ABI_DIRS = ['arm64', 'arm', 'x86_64'];
 const PAYLOAD_MARKER_NAME = '.dotnet-payload.json';
 
+// NativeAOT payloads compile the managed entry into lib<stem>.so (the host's lib<assembly
+// stem>.so launch-image rule) and ship no <assembly>; the marker still names the assembly, so
+// a staged AOT image next to the marker is a complete payload-in-libs staging too (W10: the
+// rawfile zip excludes the root *.so by design, so an AOT app that missed this probe landed on
+// a fallback with no AOT image at all).
+function libsAotEntryName(assembly: string): string {
+  const dot = assembly.lastIndexOf('.');
+  const stem = dot > 0 ? assembly.substring(0, dot) : assembly;
+  return `lib${stem}.so`;
+}
+
 // Returns the bundle libs directory when it carries a complete payload-in-libs staging: the
-// marker file, the entry assembly and a marker that names that assembly. Any error (missing
-// directory, unreadable bundle) is the zip fallback's business and returns undefined.
+// marker file, the entry (the managed <assembly> or its NativeAOT launch image lib<stem>.so)
+// and a marker that names that assembly. Any error (missing directory, unreadable bundle) is
+// the zip fallback's business and returns undefined.
 function findLibsPayloadDir(bundleCodeDir: string, assembly: string): string | undefined {
   if (bundleCodeDir.length === 0) {
     return undefined;
   }
+  const aotEntry = libsAotEntryName(assembly);
   for (const abi of LIBS_ABI_DIRS) {
     const dir = `${bundleCodeDir}/libs/${abi}`;
     try {
-      if (!fs.accessSync(dir) || !fs.accessSync(`${dir}/${PAYLOAD_MARKER_NAME}`) || !fs.accessSync(`${dir}/${assembly}`)) {
+      if (!fs.accessSync(dir) || !fs.accessSync(`${dir}/${PAYLOAD_MARKER_NAME}`)) {
+        continue;
+      }
+      if (!fs.accessSync(`${dir}/${assembly}`) && !fs.accessSync(`${dir}/${aotEntry}`)) {
         continue;
       }
       const marker = JSON.parse(fs.readTextSync(`${dir}/${PAYLOAD_MARKER_NAME}`)) as PayloadMarker;
