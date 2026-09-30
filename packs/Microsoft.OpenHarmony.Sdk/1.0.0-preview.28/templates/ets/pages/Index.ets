@@ -48,13 +48,26 @@ import type { geoLocationManager } from '@kit.LocationKit';
 import type { resourceManager } from '@kit.LocalizationKit';
 
 // Menu bridge: the managed side publishes the current page's menu bars (MenuBarItem/MenuFlyout)
-// as a flat table through the host. registerMenuChangedSink fires after every commit - including
-// the empty table that hides the menu - and the table is pulled back with menuCount/menuItem.
-// The rows are rendered by an ArkUI bindMenu below and a tap goes back to the managed item
-// through host.notifyMenuAction(index).
+// as a structured table through the host. registerMenuChangedSink fires after every commit -
+// including the empty table that hides the menu - and the table is pulled back with
+// menuCount/menuItem. Each row carries its kind (0 item / 1 submenu header / 2 bar title), its
+// nesting level and the owning bar's title (T16); the shell groups the rows per bar with
+// MenuItemGroup and renders a submenu header as a nested MenuItem({builder}) menu. A tap goes
+// back to the managed item through host.notifyMenuAction(index). A host library that predates
+// the structured table returns rows without kind/level; the shell then keeps the legacy flat
+// MenuElement rendering.
 interface HostMenuItem {
   text: string;
   enabled: boolean;
+  kind?: number;
+  level?: number;
+  barTitle?: string;
+}
+
+// One table row plus its index in the pulled table (the value host.notifyMenuAction expects).
+interface HostMenuRowRef {
+  row: HostMenuItem;
+  index: number;
 }
 
 // HybridWebView asset bridge: the managed handler registers the extracted app payload
@@ -2100,6 +2113,59 @@ struct Index {
     });
   }
 
+  // Window decorations (N6): ops pushed by the managed Window.TitleBar row - 0 minimize,
+  // 1 maximize/restore toggle, 2 close, 3 start moving, 4 hide the shell decor (the app row
+  // takes the caption over), 5 restore the shell decor. The window's own status decides the
+  // toggle; every rejection is logged and leaves the window as it was. setWindowDecorVisible
+  // throws synchronously on a runtime without the SessionManager syscap, which the sink gate
+  // already filters out; the try/catch keeps a device change from breaking the page.
+  private applyWindowDecor(win: window.Window, op: number): void {
+    switch (op) {
+      case 0:
+        win.minimize().catch((decorError: Error): void => {
+          this.logError(`[maui] window minimize failed: ${decorError.message}`);
+        });
+        break;
+      case 1:
+        if (win.getWindowStatus() === window.WindowStatusType.MAXIMIZE) {
+          win.recover().catch((decorError: Error): void => {
+            this.logError(`[maui] window restore failed: ${decorError.message}`);
+          });
+        } else {
+          win.maximize().catch((decorError: Error): void => {
+            this.logError(`[maui] window maximize failed: ${decorError.message}`);
+          });
+        }
+        break;
+      case 2:
+        this.hostContext().terminateSelf().catch((decorError: Error): void => {
+          this.logError(`[maui] window close failed: ${decorError.message}`);
+        });
+        break;
+      case 3:
+        win.startMoving().catch((decorError: Error): void => {
+          this.logError(`[maui] window move failed: ${decorError.message}`);
+        });
+        break;
+      case 4:
+        try {
+          win.setWindowDecorVisible(false);
+        } catch (decorError) {
+          this.logError(`[maui] hide window decor failed: ${(decorError as Error).message}`);
+        }
+        break;
+      case 5:
+        try {
+          win.setWindowDecorVisible(true);
+        } catch (decorError) {
+          this.logError(`[maui] show window decor failed: ${(decorError as Error).message}`);
+        }
+        break;
+      default:
+        break;
+    }
+  }
+
   // Screenshot path containment: canonicalize the requested output path and accept it only
   // when the canonical form stays under the app's temp or cache dir. '..' segments are rejected
   // outright, and every existing component below the matched root is lstat'ed, so a symlinked
@@ -2344,7 +2410,8 @@ struct Index {
   }
 
   // Maps the table to ArkUI menu elements; the managed enabled flag is carried over so ArkUI
-  // greys out disabled rows and does not run their action.
+  // greys out disabled rows and does not run their action. This is the legacy rendering for a
+  // host library that predates the structured table (T16).
   private buildMenuElements(): MenuElement[] {
     const elements: MenuElement[] = [];
     for (let i = 0; i < this.menuItems.length; i++) {
@@ -2362,6 +2429,90 @@ struct Index {
       elements.push(element);
     }
     return elements;
+  }
+
+  // True when the pulled table carries the structured rows (T16): the managed publisher emits a
+  // bar title first, so a non-empty table whose first row is a bar row is structured. A legacy
+  // host returns rows without kind/level, and the shell keeps the flat element rendering.
+  private hasStructuredMenu(): boolean {
+    return this.menuItems.length > 0 && this.menuItems[0].kind === 2;
+  }
+
+  // The row's nesting level; a legacy row (no level) is a top-level item of its menu.
+  private menuLevel(row: HostMenuItem): number {
+    return row.level !== undefined ? row.level : 1;
+  }
+
+  // The direct children of the row at `index`: the following rows with the next level, up to
+  // the first row that closes the menu (a level <= the parent's). A bar row's direct children
+  // are the bar's top-level items; a submenu header's are the items it opens.
+  private childMenuRows(index: number): HostMenuRowRef[] {
+    const children: HostMenuRowRef[] = [];
+    if (index < 0 || index >= this.menuItems.length) {
+      return children;
+    }
+    const parentLevel: number = this.menuLevel(this.menuItems[index]);
+    for (let i = index + 1; i < this.menuItems.length; i++) {
+      const row: HostMenuItem = this.menuItems[i];
+      const level: number = this.menuLevel(row);
+      if (level <= parentLevel) {
+        break;
+      }
+      if (level === parentLevel + 1) {
+        children.push({ row: row, index: i });
+      }
+    }
+    return children;
+  }
+
+  // Sends a leaf row's index back to the managed activation route (host.notifyMenuAction).
+  private activateMenuRow(index: number): void {
+    this.hostCall('notifyMenuAction', typeof host !== 'undefined' && typeof host.notifyMenuAction === 'function', (): void => {
+      host.notifyMenuAction(index);
+    });
+  }
+
+  // One row of a submenu: a nested submenu header opens its own children (recursively), a leaf
+  // sends its index back. The Menu the builder renders is the submenu body.
+  @Builder
+  subMenuRows(index: number): void {
+    Menu() {
+      ForEach(this.childMenuRows(index), (entry: HostMenuRowRef) => {
+        if (entry.row.kind === 1) {
+          MenuItem({ content: entry.row.text, builder: (): void => { this.subMenuRows(entry.index) } })
+            .enabled(entry.row.enabled)
+        } else {
+          MenuItem({ content: entry.row.text })
+            .enabled(entry.row.enabled)
+            .onClick((): void => { this.activateMenuRow(entry.index) })
+        }
+      }, (entry: HostMenuRowRef): string => `${entry.index}`)
+    }
+  }
+
+  // The structured menu (T16): one MenuItemGroup per MenuBarItem (its title is the group
+  // header) with the bar's top-level rows; a submenu header renders as a MenuItem that opens
+  // its children as a nested menu.
+  @Builder
+  structuredMenu(): void {
+    Menu() {
+      ForEach(this.menuItems, (bar: HostMenuItem, barIndex: number) => {
+        if (bar.kind === 2) {
+          MenuItemGroup({ header: bar.text }) {
+            ForEach(this.childMenuRows(barIndex), (entry: HostMenuRowRef) => {
+              if (entry.row.kind === 1) {
+                MenuItem({ content: entry.row.text, builder: (): void => { this.subMenuRows(entry.index) } })
+                  .enabled(entry.row.enabled)
+              } else {
+                MenuItem({ content: entry.row.text })
+                  .enabled(entry.row.enabled)
+                  .onClick((): void => { this.activateMenuRow(entry.index) })
+              }
+            }, (entry: HostMenuRowRef): string => `${entry.index}`)
+          }
+        }
+      }, (bar: HostMenuItem, barIndex: number): string => `${barIndex}`)
+    }
   }
 
   // JavaScript bridge: registers the dotnetHost proxy that page scripts call to reach the
@@ -3189,6 +3340,27 @@ struct Index {
         this.applyWindowRect(x, y, w, h);
       });
     });
+    // Window decorations (N6): the managed Window.TitleBar row takes the window's caption over.
+    // The sink is registered only when the runtime can actually hand it over - SessionManager
+    // present and the window not fullscreen - so a fullscreen phone window keeps its system
+    // decorations and the managed row's availability probe stays 0 (no caption buttons drawn,
+    // no decor hidden).
+    const decorSupported: boolean = typeof canIUse === 'function' &&
+      canIUse('SystemCapability.Window.SessionManager');
+    if (decorSupported) {
+      window.getLastWindow(this.hostContext()).then((decorWindow) => {
+        if (decorWindow.getWindowStatus() === window.WindowStatusType.FULL_SCREEN) {
+          return;
+        }
+        this.hostCall('registerWindowDecorSink', typeof host !== 'undefined' && typeof host.registerWindowDecorSink === 'function', (): void => {
+          host.registerWindowDecorSink((op: number): void => {
+            this.applyWindowDecor(decorWindow, op);
+          });
+        });
+      }).catch((decorWindowError: Error): void => {
+        this.logError(`[maui] window decor window unavailable: ${decorWindowError.message}`);
+      });
+    }
     // Screenshot (Window handler): a one-way request carrying an app-owned output path.
     this.hostCall('registerScreenshotSink', typeof host !== 'undefined' && typeof host.registerScreenshotSink === 'function', (): void => {
       host.registerScreenshotSink(async (outPath: string): Promise<void> => {
@@ -5330,9 +5502,17 @@ struct Index {
         .hitTestBehavior(this.shellSearchHitTest())
       }
 
-      // Menu handle: only present while the managed page publishes menu bars. The ArkUI menu is
-      // bound to the flat element array; choosing a row calls host.notifyMenuAction(index).
-      if (this.menuItems.length > 0) {
+      // Menu handle: only present while the managed page publishes menu bars. A structured
+      // table (T16) renders one MenuItemGroup per bar with nested submenus; a legacy flat table
+      // keeps the MenuElement array. Choosing a leaf calls host.notifyMenuAction(index).
+      if (this.hasStructuredMenu()) {
+        Button('Menu')
+          .align(Alignment.TopEnd)
+          .margin({ top: 8 + this.avoidTop, right: 8 + this.avoidRight })
+          .height(40)
+          .fontSize(18)
+          .bindMenu(this.structuredMenu)
+      } else if (this.menuItems.length > 0) {
         Button('Menu')
           .align(Alignment.TopEnd)
           .margin({ top: 8 + this.avoidTop, right: 8 + this.avoidRight })
