@@ -229,6 +229,9 @@ export default class EntryAbility extends UIAbility {
   private pendingWant: Want | null = null;
   private activationReady: boolean = false;
   private launchSequence: number = 0;
+  // Delivery stage of the next activation (see publishActivation); starts hot so a direct
+  // call site without bootstrap still reads correctly.
+  private activationStage: string = 'hot';
   private linkHosts: string[] = [];
   // Host-availability guard (device-compat): a libopenharmonyhost.so that fails to load (for
   // example an unresolved DT_NEEDED the HAP loader cannot satisfy) leaves the static import
@@ -327,8 +330,20 @@ export default class EntryAbility extends UIAbility {
 
   private publishActivation(want: Want): void {
     const payload: string = this.buildActivation(want);
+    // Activation evidence (T19): the want that reached the ability is logged with its delivery
+    // stage (cold = the onCreate want bootstrap hands over before startApp, hot = every onNewWant
+    // while the app runs), the sequence the managed side deduplicates on and the host's answer
+    // (1 = delivered to the managed listener, 0 = queued, no listener yet), so a device log
+    // shows both delivery paths and whether the runtime had registered its callback.
+    const uri: string = typeof want.uri === 'string' ? want.uri : '';
+    const action: string = typeof want.action === 'string' ? want.action : '';
+    hilog.info(DOMAIN, TAG, 'activation %{public}s seq=%{public}d uri=%{public}s action=%{public}s',
+      this.activationStage, this.launchSequence, uri.length > 256 ? uri.substring(0, 256) : uri,
+      action.length > 128 ? action.substring(0, 128) : action);
     this.hostCall('notifyActivation', typeof host !== 'undefined' && typeof host.notifyActivation === 'function', (): void => {
-      host.notifyActivation(payload);
+      const rc: number = host.notifyActivation(payload) as number;
+      hilog.info(DOMAIN, TAG, 'activation %{public}s seq=%{public}d delivered=%{public}d',
+        this.activationStage, this.launchSequence, rc);
     });
   }
 
@@ -429,6 +444,7 @@ export default class EntryAbility extends UIAbility {
     // starting) and flushes it on registration, so onCreate's want cannot race the launch. Once
     // this point is passed, onNewWant delivers directly.
     if (this.pendingWant !== null) {
+      this.activationStage = 'cold';
       this.publishActivation(this.pendingWant);
       this.pendingWant = null;
     }

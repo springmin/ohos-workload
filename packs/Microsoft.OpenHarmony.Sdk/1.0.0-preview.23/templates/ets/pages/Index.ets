@@ -28,6 +28,7 @@ import { webview as web_webview } from '@kit.ArkWeb';
 // compile-time types used in annotations:
 //   camera            - Camera Kit (flashlight, picker camera position)
 //   calendarManager   - Calendar Kit
+//   media             - Media Kit (AVPlayer type; the module is imported lazily)
 //   access            - Connectivity Kit (Bluetooth adapter state)
 //   ble               - Connectivity Kit (BLE GATT client: createGattClientDevice and friends)
 //   connection        - Network Kit (Connectivity change observer)
@@ -35,6 +36,7 @@ import { webview as web_webview } from '@kit.ArkWeb';
 //   commonEventManager, BusinessError - Basic Services Kit (battery events)
 import type { camera } from '@kit.CameraKit';
 import type { calendarManager } from '@kit.CalendarKit';
+import type { media } from '@kit.MediaKit';
 import type { access, ble } from '@kit.ConnectivityKit';
 import type { connection } from '@kit.NetworkKit';
 import type { commonEventManager, print } from '@kit.BasicServicesKit';
@@ -173,6 +175,23 @@ interface BluetoothGattAnswer {
 interface BluetoothGattMtuAnswer {
   code: number;
   mtu: number;
+}
+
+// Media playback (platform extra): one managed media request is answered with a result code and
+// an operation-specific payload. The code map is the managed OpenHarmonyMediaStatus: 0 = the
+// request completed, -1 = the platform path is unavailable (the Media Kit is missing), -2 = a
+// transient kit failure; a failure payload is a diagnostic message. op 6 (status) answers
+// "state\tpositionMs\tdurationMs".
+interface MediaAnswer {
+  code: number;
+  payload: string;
+}
+
+// Structural view of the @kit.MediaKit namespace: an image whose runtime resolves the module
+// without the media members (no createAVPlayer) is treated as unavailable instead of failing
+// each call with a TypeError.
+interface MediaKitNamespace {
+  createAVPlayer(): Promise<media.AVPlayer>;
 }
 
 // HMS Kit feature probes (KIT-IMPL 2026-09-25; Share + Scan). The OpenHarmony SDK this shell
@@ -2094,6 +2113,7 @@ struct Index {
   // keep-screen-on use). setWindowTitle is a SessionManager API (15+), so a device without the
   // syscap rejects the promise; that is logged and leaves the shell title in place.
   private applyWindowTitle(title: string): void {
+    this.logInfo(`[maui] window title applied: ${title}`);
     window.getLastWindow(this.hostContext()).then((win) => {
       return win.setWindowTitle(title);
     }).catch((windowTitleError: Error): void => {
@@ -3294,6 +3314,276 @@ struct Index {
     }
   }
 
+  // --- Media playback (platform extra) ---------------------------------------
+  // Managed Ops (the host's ohos_host_media_request; see OpenHarmonyMediaPlayer.cs):
+  //   0 load (payload "kind\tlocation"; kind 0 url / 1 rawfile / 2 sandbox file path),
+  //   1 play, 2 pause, 3 stop, 4 seek (payload = position ms), 5 release,
+  //   6 status (answers "state\tpositionMs\tdurationMs").
+  // One AVPlayer is owned per process (the managed surface is static): a load releases the
+  // previous source first. Every stateChange/timeUpdate/durationUpdate/error is pushed to the
+  // managed side through host.notifyMediaEvent as "state\tname[\treason]" / "time\tms" /
+  // "duration\tms" / "error\tcode\tmessage". Requests are serialized through a promise chain,
+  // so one load cannot race another. Device-compat: the Media Kit is imported lazily on the
+  // first request; a missing kit is cached and answers -1 (the Bluetooth GATT sink pattern).
+  private mediaPlayer: media.AVPlayer | undefined = undefined;
+  private mediaFile: fs.File | undefined = undefined;
+  private mediaRawName: string = '';
+  private mediaState: string = 'idle';
+  private mediaWaiters: Map<string, () => void> = new Map();
+  private mediaChain: Promise<void> = Promise.resolve();
+
+  private answerMedia(requestId: number, code: number, payload: string): void {
+    this.logInfo(`[maui] media answer request=${requestId} code=${code}${payload.length > 0 ? ` payload=${payload}` : ''}`);
+    this.hostCall('notifyMediaResult', typeof host !== 'undefined' && typeof host.notifyMediaResult === 'function', (): void => {
+      host.notifyMediaResult(requestId, code, payload);
+    });
+  }
+
+  private pushMedia(record: string): void {
+    this.hostCall('notifyMediaEvent', typeof host !== 'undefined' && typeof host.notifyMediaEvent === 'function', (): void => {
+      host.notifyMediaEvent(record);
+    });
+  }
+
+  // The SDK's StateChangeReason enum (user 1 / background 2); an unknown value travels as its
+  // decimal form so the managed side still sees it.
+  private mediaReasonName(reason: number): string {
+    if (reason === 1) {
+      return 'user';
+    }
+    if (reason === 2) {
+      return 'background';
+    }
+    return `${reason}`;
+  }
+
+  // Registers the AVPlayer listeners once per player. The state waiters are resolved here, so a
+  // load can await the 'initialized'/'prepared' transitions without polling.
+  private mediaAttach(player: media.AVPlayer): void {
+    player.on('stateChange', (state: media.AVPlayerState, reason: media.StateChangeReason): void => {
+      this.mediaState = state;
+      this.logInfo(`[maui] media state=${state} reason=${this.mediaReasonName(reason)}`);
+      const waiter: (() => void) | undefined = this.mediaWaiters.get(`state:${state}`);
+      if (waiter !== undefined) {
+        this.mediaWaiters.delete(`state:${state}`);
+        waiter();
+      }
+      this.pushMedia(`state\t${state}\t${this.mediaReasonName(reason)}`);
+    });
+    player.on('timeUpdate', (position: number): void => {
+      this.pushMedia(`time\t${Math.max(0, Math.trunc(position))}`);
+    });
+    player.on('durationUpdate', (duration: number): void => {
+      this.pushMedia(`duration\t${Math.max(0, Math.trunc(duration))}`);
+    });
+    player.on('error', (error: BusinessError): void => {
+      this.logError(`[maui] media player error code=${error.code} message=${error.message}`);
+      this.pushMedia(`error\t${error.code}\t${this.escapeRecordField(error.message)}`);
+    });
+  }
+
+  // Resolves true when the player reaches <name> before the timeout. Requests are serialized,
+  // so at most one state wait is pending.
+  private mediaWaitForState(name: string, timeoutMs: number): Promise<boolean> {
+    if (this.mediaState === name) {
+      return Promise.resolve(true);
+    }
+    return new Promise<boolean>((resolve: (value: boolean) => void): void => {
+      let settled: boolean = false;
+      const finish = (ok: boolean): void => {
+        if (settled) {
+          return;
+        }
+        settled = true;
+        this.mediaWaiters.delete(`state:${name}`);
+        resolve(ok);
+      };
+      this.mediaWaiters.set(`state:${name}`, (): void => {
+        finish(true);
+      });
+      setTimeout((): void => {
+        finish(false);
+      }, timeoutMs);
+    });
+  }
+
+  // Releases the current player and closes whichever descriptor was opened for it, best effort:
+  // a failing release/close is logged and never fails the caller.
+  private async mediaTeardown(): Promise<void> {
+    const player: media.AVPlayer | undefined = this.mediaPlayer;
+    this.mediaPlayer = undefined;
+    if (player !== undefined) {
+      try {
+        await player.release();
+      } catch (releaseError) {
+        this.logWarn(`[maui] media release failed: ${(releaseError as Error).message}`);
+      }
+    }
+    if (this.mediaFile !== undefined) {
+      try {
+        fs.closeSync(this.mediaFile);
+      } catch (closeError) {
+        this.logWarn(`[maui] media file close failed: ${(closeError as Error).message}`);
+      }
+      this.mediaFile = undefined;
+    }
+    if (this.mediaRawName.length > 0) {
+      const rawName: string = this.mediaRawName;
+      this.mediaRawName = '';
+      try {
+        const manager: resourceManager.ResourceManager = this.hostContext().resourceManager;
+        await manager.closeRawFd(rawName);
+      } catch (rawCloseError) {
+        this.logWarn(`[maui] media rawfile close failed: ${(rawCloseError as Error).message}`);
+      }
+    }
+    this.mediaState = 'released';
+    this.mediaWaiters.clear();
+  }
+
+  // Serializes one media request behind the previous one and keeps the chain alive after a
+  // failure (the failure still reaches this request's caller).
+  private mediaEnqueue(op: number, payload: string): Promise<MediaAnswer> {
+    const result: Promise<MediaAnswer> = this.mediaChain.then((): Promise<MediaAnswer> => this.runMedia(op, payload));
+    this.mediaChain = result.then((): void => {}, (): void => {});
+    return result;
+  }
+
+  // Runs one managed media request. The lazy import stays outside the inner try so a missing
+  // Media Kit bubbles to the sink handler (cached, answered -1); a kit namespace that resolves
+  // without the player factory is treated the same way, because this image family ships images
+  // whose runtime resolves @kit.MediaKit but carries no media namespace (the player API is
+  // unreachable). Everything after the namespace check answers its own code (-2 for kit or
+  // argument failures).
+  private async runMedia(op: number, payload: string): Promise<MediaAnswer> {
+    if (op === 5) {
+      await this.mediaTeardown();
+      return { code: 0, payload: '' };
+    }
+    if (op === 6 && this.mediaPlayer === undefined) {
+      // No source is loaded: status answers idle without importing the kit.
+      return { code: 0, payload: 'idle\t0\t0' };
+    }
+    const kit = await import('@kit.MediaKit');
+    const mediaKit: MediaKitNamespace | undefined = (kit as ESObject).media as MediaKitNamespace | undefined;
+    if (mediaKit === undefined || mediaKit === null || typeof mediaKit.createAVPlayer !== 'function') {
+      this.noteLazyFailure('mediaKit', new Error('the Media Kit namespace or createAVPlayer is missing'));
+      return { code: -1, payload: '' };
+    }
+    try {
+      if (op === 0) {
+        await this.mediaTeardown();
+        const fields: string[] = payload.length > 0 ? payload.split('\t') : [];
+        if (fields.length < 2 || fields[1].length === 0) {
+          return { code: -2, payload: 'the source location is required' };
+        }
+        const kind: number = Number(fields[0]);
+        const location: string = fields[1];
+        const player: media.AVPlayer = await mediaKit.createAVPlayer();
+        this.mediaAttach(player);
+        this.mediaPlayer = player;
+        if (kind === 0) {
+          // Stream or file URL: the Media Kit owns the fetch.
+          player.url = location;
+        } else if (kind === 1) {
+          // HAP rawfile: the resource manager hands the descriptor to the player, which reads
+          // it for the whole playback; it is closed on release/teardown.
+          const info: resourceManager.RawFileDescriptor = await this.hostContext().resourceManager.getRawFd(location);
+          this.mediaRawName = location;
+          const rawFd: media.AVFileDescriptor = { fd: info.fd, offset: info.offset, length: info.length };
+          player.fdSrc = rawFd;
+        } else if (kind === 2) {
+          // Sandbox file (app files/cache dir): the shell owns the descriptor until release.
+          const file: fs.File = fs.openSync(location, fs.OpenMode.READ_ONLY);
+          this.mediaFile = file;
+          const size: number = fs.statSync(location).size;
+          const fileFd: media.AVFileDescriptor = { fd: file.fd, offset: 0, length: size };
+          player.fdSrc = fileFd;
+        } else {
+          return { code: -2, payload: `unknown media source kind ${kind}` };
+        }
+        if (!(await this.mediaWaitForState('initialized', 10000))) {
+          return { code: -2, payload: 'the player did not reach initialized' };
+        }
+        await player.prepare();
+        if (!(await this.mediaWaitForState('prepared', 10000))) {
+          return { code: -2, payload: 'the player did not reach prepared' };
+        }
+        return { code: 0, payload: '' };
+      }
+      const player: media.AVPlayer | undefined = this.mediaPlayer;
+      if (player === undefined) {
+        return { code: -2, payload: 'no media source is loaded' };
+      }
+      if (op === 1) {
+        if (this.mediaState !== 'playing') {
+          await player.play();
+        }
+        return { code: 0, payload: '' };
+      }
+      if (op === 2) {
+        if (this.mediaState === 'playing') {
+          await player.pause();
+        }
+        return { code: 0, payload: '' };
+      }
+      if (op === 3) {
+        if (this.mediaState !== 'stopped' && this.mediaState !== 'released' && this.mediaState !== 'idle') {
+          await player.stop();
+        }
+        return { code: 0, payload: '' };
+      }
+      if (op === 4) {
+        const positionMs: number = Number(payload);
+        if (!Number.isFinite(positionMs) || positionMs < 0) {
+          return { code: -2, payload: 'the seek position is required' };
+        }
+        player.seek(Math.trunc(positionMs));
+        return { code: 0, payload: '' };
+      }
+      if (op === 6) {
+        let position: number = 0;
+        let duration: number = 0;
+        try {
+          position = Math.max(0, Math.trunc(player.currentTime));
+        } catch (positionError) {
+          position = 0;
+        }
+        try {
+          const reported: number = player.duration;
+          duration = reported > 0 ? Math.trunc(reported) : 0;
+        } catch (durationError) {
+          duration = 0;
+        }
+        return { code: 0, payload: `${this.mediaState}\t${position}\t${duration}` };
+      }
+      return { code: -2, payload: `unsupported media op ${op}` };
+    } catch (mediaError) {
+      this.logError(`[maui] media op ${op} failed: ${(mediaError as Error).message}`);
+      return { code: -2, payload: (mediaError as Error).message };
+    }
+  }
+
+  // Device probe: checks whether this runtime can reach the Media Kit player API and answers
+  // one op-6 status through the sink's own processing path, so every device run carries a
+  // clear media availability line in hilog independently of the managed side.
+  private async mediaSelfTest(): Promise<void> {
+    try {
+      const kit: ESObject = await import('@kit.MediaKit');
+      const mediaObject: ESObject = kit.media;
+      let available: boolean = mediaObject !== undefined && mediaObject !== null;
+      if (available) {
+        const create: ESObject = mediaObject.createAVPlayer;
+        available = typeof create === 'function';
+      }
+      this.logInfo(`[maui] media self-test media-kit=${available ? 'available' : 'missing'} media-core-capability=${typeof canIUse === 'function' ? canIUse('SystemCapability.Multimedia.Media.Core') : false}`);
+    } catch (shapeError) {
+      this.logWarn(`[maui] media self-test kit probe failed: ${(shapeError as Error).message}`);
+    }
+    const status: MediaAnswer = await this.runMedia(6, '');
+    this.logInfo(`[maui] media self-test status code=${status.code} payload='${status.payload}'`);
+  }
+
   aboutToAppear(): void {
     // 0 = create: the ability exists by the time the page appears. The native host queues
     // lifecycle events that arrive before the managed app is up, so sending it before the
@@ -4264,6 +4554,68 @@ struct Index {
           });
         }
       });
+    });
+
+    // Media playback (platform extra): the managed side asks through ohos_host_media_request
+    // with (op, '\t' separated fields) and is answered through host.notifyMediaResult(
+    // requestId, code, payload); the shell drives one AVPlayer and pushes state/time/duration/
+    // error records through host.notifyMediaEvent. Device-compat: the Media Kit is imported
+    // lazily inside runMedia; a missing kit is cached and answers -1.
+    this.hostCall('registerMediaSink', typeof host !== 'undefined' && typeof host.registerMediaSink === 'function', (): void => {
+      host.registerMediaSink(async (requestId: number, op: number, payload: string): Promise<void> => {
+        this.logInfo(`[maui] media request op=${op} request=${requestId}${payload.length > 0 ? ` payload=${payload}` : ''}`);
+        if (this.lazyUnavailable('mediaKit')) {
+          this.answerMedia(requestId, -1, '');
+          return;
+        }
+        let answer: MediaAnswer = { code: -1, payload: '' };
+        try {
+          answer = await this.mediaEnqueue(op, payload);
+        } catch (mediaImportError) {
+          this.noteLazyFailure('mediaKit', mediaImportError as Error);
+        }
+        this.answerMedia(requestId, answer.code, answer.payload);
+      });
+      this.logInfo('[maui] media sink registered');
+      // Self-test (temporary device probe): write a short WAV into the cache dir and drive the
+      // same runMedia path the managed bridge uses (load -> play -> status), so the AVPlayer
+      // sink is exercised on-device independently of the managed side.
+      setTimeout((): void => {
+        try {
+          this.mediaSelfTest();
+        } catch (selfTestError) {
+          this.logWarn(`[maui] media self-test threw: ${(selfTestError as Error).message}`);
+        }
+      }, 3000);
+    });
+
+    // Device diagnostics (W9D): mirror the managed status file's tail to hilog once at startup,
+    // so the managed app is observable on images whose host hilog bridge is missing (the file
+    // itself is 0600 in the ability's files dir, unreadable for the hdc shell).
+    this.hostCall('statusMirror', true, (): void => {
+      setTimeout((): void => {
+        try {
+          const statusPath: string = `${this.hostContext().filesDir}/dotnet-status.txt`;
+          if (!fs.accessSync(statusPath)) {
+            this.logInfo('[managed] dotnet-status.txt not present');
+            return;
+          }
+          const lines: string[] = fs.readTextSync(statusPath).split('\n');
+          const meaningful: string[] = [];
+          for (const line of lines) {
+            if (line.length > 0 && !line.includes('OHOS_DOTNET probe:')) {
+              meaningful.push(line);
+            }
+          }
+          this.logInfo(`[managed] dotnet-status.txt lines=${lines.length} meaningful=${meaningful.length}`);
+          const from: number = Math.max(0, meaningful.length - 120);
+          for (let i = from; i < meaningful.length; i++) {
+            this.logInfo(`[managed] ${meaningful[i]}`);
+          }
+        } catch (statusError) {
+          this.logWarn(`[maui] managed status mirror failed: ${(statusError as Error).message}`);
+        }
+      }, 9000);
     });
 
     // Launcher/Browser/Share: managed requests arrive through ohos_host_ability_start /

@@ -88,6 +88,9 @@ ohos_host_map_available
 ohos_host_map_command
 ohos_host_map_register_result
 ohos_host_map_result
+ohos_host_media_register_event
+ohos_host_media_register_result
+ohos_host_media_request
 ohos_host_menu_begin
 ohos_host_menu_commit
 ohos_host_menu_item

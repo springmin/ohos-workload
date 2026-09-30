@@ -3,7 +3,9 @@ using Microsoft.AspNetCore.Components.WebView.Maui;
 using Microsoft.Maui;
 using Microsoft.Maui.Controls;
 using Microsoft.Maui.Controls.Shapes;
+using Microsoft.Maui.Platform;
 using Microsoft.Maui.Storage;
+using Microsoft.OpenHarmony.Hosting;
 using System.Diagnostics.CodeAnalysis;
 
 namespace HelloMauiApp;
@@ -21,9 +23,10 @@ public sealed class App : Application
         => target.SetBinding(property, ".");
 
     protected override Window CreateWindow(IActivationState? activationState)
+    {
         // The window hosts a flyout page (drawer) whose detail is a tabbed page; the main page
         // itself lives in a navigation page so the slice exercises every page type.
-        => new Window(new FlyoutPage
+        var window = new Window(new FlyoutPage
         {
             Flyout = new ContentPage
             {
@@ -48,6 +51,77 @@ public sealed class App : Application
                 },
             },
         });
+        // Replay the last activation title once the window exists (a warm activation that
+        // arrived while the window was being created).
+        if (s_lastActivation is { } pending)
+        {
+            ApplyActivationTitle(window, pending);
+        }
+        // T20 media probe trigger: a media activation that arrives while the app runs starts
+        // the probe here (cold-start wants are owned by OpenHarmonyAppLinks, the first
+        // Activation subscriber, so this handler intentionally serves the warm path).
+        OpenHarmonyBridge.Activation += OnActivation;
+        return window;
+    }
+
+    private static string? s_lastActivation;
+
+    /// <summary>
+    /// Startup heartbeat: sets the window title once the handlers are attached. The shell logs
+    /// every title application ([maui] window title applied), so the line doubles as the
+    /// managed-to-shell liveness marker on devices whose status file is unreadable.
+    /// </summary>
+    protected override void OnStart()
+    {
+        base.OnStart();
+        if (CurrentWindow() is { } window)
+        {
+            ApplyActivationTitle(window, "w9d boot");
+        }
+    }
+
+    /// <summary>
+    /// Handles one warm activation the shell delivered (onNewWant). The subscription lives in
+    /// CreateWindow, after the app host installed OpenHarmonyAppLinks: the hosting bridge replays
+    /// a buffered cold activation to its first subscriber (AppLinks owns that path), so this
+    /// diagnostic handler intentionally only sees the activations that arrive while running.
+    /// </summary>
+    internal static void OnActivation(OpenHarmonyActivationEventArgs activation)
+    {
+        string uri = activation.Uri ?? string.Empty;
+        // T19 device evidence + T20 probe trigger. The window title is a WindowManagerService-
+        // visible channel; the status line goes to dotnet-status.txt.
+        OpenHarmonyBridge.WriteStatus(
+            $"[hello-maui-app] activation seq={activation.Sequence} uri='{uri}' action='{activation.Action}'");
+        string suffix = uri.Length > 64 ? uri[..64] : uri;
+        string title = $"activation {activation.Sequence}: {suffix}";
+        s_lastActivation = title;
+        if (CurrentWindow() is { } window)
+        {
+            ApplyActivationTitle(window, title);
+        }
+        if (uri.StartsWith("app://media/probe", StringComparison.OrdinalIgnoreCase) &&
+            CurrentWindow() is { } probeWindow)
+        {
+            MediaProbe.Start(probeWindow);
+        }
+    }
+
+    private static Window? CurrentWindow()
+        => Application.Current?.Windows.FirstOrDefault() as Window;
+
+    private static void ApplyActivationTitle(Window window, string title)
+    {
+        try
+        {
+            window.Dispatcher.Dispatch(() => window.Title = title);
+        }
+        catch (Exception ex)
+        {
+            // Diagnostics only: a dispatch failure must not break the activation chain.
+            OpenHarmonyBridge.WriteStatus($"[hello-maui-app] activation title dispatch failed: {ex.GetType().Name}");
+        }
+    }
 
     private static View BuildAnimationPage()
     {
@@ -79,6 +153,32 @@ public sealed class App : Application
         var positionLabel = new Label { Text = "swipe the carousel", FontSize = 24, HorizontalOptions = LayoutOptions.Center };
         carousel.PositionChanged += (_, _) => positionLabel.Text = $"slide {carousel.Position + 1}";
         return new VerticalStackLayout { Padding = 32, Spacing = 24, Children = { fadeTarget, carousel, positionLabel, run, status } };
+    }
+
+    // T20 media bridge demo: drives the AVPlayer playback bridge with the local sine tone the
+    // probe writes into the cache dir (no packaged asset and no device codec stream needed).
+    // The shell logs every state transition to hilog; the managed side mirrors the outcome into
+    // the window title as well.
+    private static View BuildMediaSection()
+    {
+        var status = new Label { Text = "media: tap Play tone (local wav in the cache dir)", FontSize = 22 };
+        var play = new Button { Text = "Play tone", FontSize = 26 };
+        play.Clicked += (_, _) =>
+        {
+            status.Text = "media: playing...";
+            if (Application.Current?.Windows.FirstOrDefault() is Window window)
+            {
+                MediaProbe.Start(window);
+            }
+        };
+        var stop = new Button { Text = "Stop media", FontSize = 26 };
+        stop.Clicked += (_, _) =>
+        {
+            status.Text = "media: stopping";
+            MediaProbe.StopFromUi(Application.Current?.Windows.FirstOrDefault());
+        };
+        var caption = new Label { Text = "Media playback bridge (ArkTS AVPlayer)", FontSize = 22 };
+        return new VerticalStackLayout { Spacing = 8, Children = { caption, play, stop, status } };
     }
 
     private static ContentPage BuildPage()
@@ -228,8 +328,7 @@ public sealed class App : Application
             status.Text = "reset";
         };
 
-        var layout = new VerticalStackLayout { Padding = 32, Spacing = 20 };
-        // W22-5: shapes, border, stepper, radio button, search bar.
+        var layout = new VerticalStackLayout { Padding = 32, Spacing = 20 };        // W22-5: shapes, border, stepper, radio button, search bar.
         var shapeRow = new HorizontalStackLayout { Spacing = 12 };
         shapeRow.Add(new Rectangle { WidthRequest = 48, HeightRequest = 48, Fill = Colors.OrangeRed, Stroke = Colors.White, StrokeThickness = 2 });
         shapeRow.Add(new Ellipse { WidthRequest = 48, HeightRequest = 48, Fill = Colors.MediumSeaGreen });
@@ -266,6 +365,7 @@ public sealed class App : Application
         layout.Add(shapeRow);
         layout.Add(borderBox);
         layout.Add(valueRow2);
+        layout.Add(BuildMediaSection());
         layout.Add(legacyList);
         layout.Add(collection);
         layout.Add(scroll);

@@ -263,6 +263,7 @@ struct HostBinding {
     HostSink bluetooth{"bluetooth", false};
     HostSink bluetooth_gatt{"bluetooth gatt", false};
     HostSink print{"print", false};
+    HostSink media{"media", false};
     HostSink ability{"ability", false};
     HostSink flashlight{"flashlight", false};
     HostSink focus{"focus", false};
@@ -326,6 +327,7 @@ static HostBinding* g_host = &g_binding_slots[0].binding;
 #define g_bluetooth_sink (g_host->bluetooth)
 #define g_bluetooth_gatt_sink (g_host->bluetooth_gatt)
 #define g_print_sink (g_host->print)
+#define g_media_sink (g_host->media)
 #define g_ability_sink (g_host->ability)
 #define g_flashlight_sink (g_host->flashlight)
 #define g_focus_sink (g_host->focus)
@@ -367,6 +369,7 @@ static void HostForEachSink(HostBinding& binding, F&& visit) {
     visit(binding.bluetooth);
     visit(binding.bluetooth_gatt);
     visit(binding.print);
+    visit(binding.media);
     visit(binding.ability);
     visit(binding.flashlight);
     visit(binding.focus);
@@ -2020,6 +2023,101 @@ napi_value NotifyPrintResult(napi_env env, napi_callback_info info) {
     if (argc >= 2) napi_get_value_int32(env, argv[1], &code);
     if (argc >= 3) message = GetStringArg(env, argv[2]);
     ohos_host_print_result(requestId, code, message.c_str());
+    napi_value undefined = nullptr;
+    napi_get_undefined(env, &undefined);
+    return undefined;
+}
+
+// Media playback (platform extra): the managed side forwards one request through
+// ohos_host_media_request(requestId, op, payload); the ArkTS shell's registerMediaSink handler
+// lazily imports @kit.MediaKit and drives one AVPlayer: op 0 load (payload "kind\tlocation";
+// kind 0 url / 1 rawfile / 2 sandbox file path; the answer waits for 'prepared'), 1 play,
+// 2 pause, 3 stop, 4 seek (payload = position ms), 5 release (stop + release + close the
+// descriptor), 6 status (answers "state\tpositionMs\tdurationMs" from the live player).
+// Requests and answers travel as one operation code plus a tab-separated payload; code 0 is a
+// complete answer, -1 unavailable, -2 a kit failure. Every AVPlayer stateChange/timeUpdate/
+// durationUpdate/error is pushed as an unsolicited event through host.notifyMediaEvent
+// ("state\tname[\treason]", "time\tms", "duration\tms", "error\tcode\tmessage"). The
+// request payload is capped by AddString (a missing shell sink or an over-long payload answers
+// -1 without dispatching). The device-event push lives on its own export so a host without it
+// still serves the request/response half.
+static std::atomic<void (*)(int, int, const char*)> g_media_result_listener{nullptr};
+static std::atomic<void (*)(const char*)> g_media_event_listener{nullptr};
+
+// Called from managed code (P/Invoke): forwards a media operation to the ArkTS sink; returns 0
+// when it was dispatched, -1 when there is no sink (or the payload was dropped).
+extern "C" int ohos_host_media_request(int request_id, int op, const char* payload) {
+    return HostCxxBoundary("media request", [&] {
+        SinkCall* call = new SinkCall();
+        call->AddInt(request_id);
+        call->AddInt(op);
+        call->AddString(payload);
+        if (!HostSinkPost(g_media_sink, call)) {
+            OH_LOG_WARN(LOG_APP, "[openharmony-host] media: request dropped (no shell sink or over-long payload)");
+            return -1;
+        }
+        return 0;
+    });
+}
+
+// The managed side registers the callback that completes a pending media request.
+extern "C" void ohos_host_media_register_result(void* callback) {
+    HostListenerStore(g_media_result_listener, callback);
+}
+
+// Called by the NAPI notify below: hands the shell's answer back to managed code. The listener
+// is invoked outside any sink lock (HostSinkPost/HostSinkDispatch never call back under one).
+extern "C" void ohos_host_media_result(int request_id, int code, const char* payload) {
+    auto listener = HostListenerLoad(g_media_result_listener);
+    if (listener != nullptr) {
+        listener(request_id, code, payload != nullptr ? payload : "");
+    }
+}
+
+// The managed side registers the callback that receives the unsolicited player events.
+extern "C" void ohos_host_media_register_event(void* callback) {
+    HostListenerStore(g_media_event_listener, callback);
+}
+
+// Called by the NAPI notify below: pushes one player event (state change / time tick / known
+// duration / error) to managed code, NULL-safe.
+extern "C" void ohos_host_media_event(const char* payload) {
+    auto listener = HostListenerLoad(g_media_event_listener);
+    if (listener != nullptr) {
+        listener(payload != nullptr ? payload : "");
+    }
+}
+
+// ArkTS calls host.registerMediaSink(fn) to receive media requests.
+napi_value RegisterMediaSink(napi_env env, napi_callback_info info) {
+    return HostSinkRegisterFromArgs(env, info, g_media_sink);
+}
+
+// ArkTS calls host.notifyMediaResult(requestId, code, payload) when a request finished.
+napi_value NotifyMediaResult(napi_env env, napi_callback_info info) {
+    size_t argc = 3;
+    napi_value argv[3] = {nullptr, nullptr, nullptr};
+    napi_get_cb_info(env, info, &argc, argv, nullptr, nullptr);
+    int requestId = 0;
+    int code = -1;
+    std::string payload;
+    if (argc >= 1) napi_get_value_int32(env, argv[0], &requestId);
+    if (argc >= 2) napi_get_value_int32(env, argv[1], &code);
+    if (argc >= 3) payload = GetStringArg(env, argv[2]);
+    ohos_host_media_result(requestId, code, payload.c_str());
+    napi_value undefined = nullptr;
+    napi_get_undefined(env, &undefined);
+    return undefined;
+}
+
+// ArkTS calls host.notifyMediaEvent(payload) for one unsolicited player event.
+napi_value NotifyMediaEvent(napi_env env, napi_callback_info info) {
+    size_t argc = 1;
+    napi_value argv[1] = {nullptr};
+    napi_get_cb_info(env, info, &argc, argv, nullptr, nullptr);
+    std::string payload;
+    if (argc >= 1) payload = GetStringArg(env, argv[0]);
+    ohos_host_media_event(payload.c_str());
     napi_value undefined = nullptr;
     napi_get_undefined(env, &undefined);
     return undefined;
@@ -3998,6 +4096,9 @@ napi_value Init(napi_env env, napi_value exports) {
         {"notifyBluetoothGattEvent", nullptr, NotifyBluetoothGattEvent, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"registerPrintSink", nullptr, RegisterPrintSink, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"notifyPrintResult", nullptr, NotifyPrintResult, nullptr, nullptr, nullptr, napi_default, nullptr},
+        {"registerMediaSink", nullptr, RegisterMediaSink, nullptr, nullptr, nullptr, napi_default, nullptr},
+        {"notifyMediaResult", nullptr, NotifyMediaResult, nullptr, nullptr, nullptr, napi_default, nullptr},
+        {"notifyMediaEvent", nullptr, NotifyMediaEvent, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"registerAbilitySink", nullptr, RegisterAbilitySink, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"registerFocusSink", nullptr, RegisterFocusSink, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"keyEvent", nullptr, KeyEvent, nullptr, nullptr, nullptr, napi_default, nullptr},

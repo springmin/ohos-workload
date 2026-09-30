@@ -1054,3 +1054,20 @@ parse.
   stream, the rendered slide `b2` at the retained position 4 and `CurrentItem` following. That
   is 5 new lines on top of the N1 line: 473 + 5 = 478 = 465 interaction checks + 4 fuzz +
   1 frame perf + 8 a11y perf; the workflow floor moves with the total (478 - 20 = 458).
+
+- T20 media bridge (ArkTS AVPlayer sink + host exports + `OpenHarmonyMediaPlayer`): four lines.
+  `t20 media pins` pins the three-pack shell (lazy `@kit.MediaKit`, `registerMediaSink`, the
+  url/rawfile/file descriptor loads, prepare/play/pause/stop/seek/release, the state/time/
+  duration event records), the native exports (`ohos_host_media_*`, the `HostSink media`
+  binding, the NAPI names) and the managed `EntryPoint`s; `t20 media degrade` requires every
+  call to answer `Unavailable` off-device (an invalid source and a negative seek fail fast,
+  `IsSupported` false); `t20 media events` drives the native-shaped state/time/duration/error
+  payloads and requires the mapping plus malformed-payload immunity; `t20 media status`
+  requires the op-6 `state\tpositionMs\tdurationMs` parser to mirror into the surface and hold
+  on malformed input. On device the shell page's self-test reports
+  `media self-test media-kit=missing media-core-capability=true` on the local desktop image
+  (the kit resolves without the player API, so playback is blocked at the platform layer while
+  the sink answers status), and the app's `app://media/probe` activation probe drives the
+  managed round trip when the kit is present. That is 4 lines: 531 + 4 = 535 = 522 interaction
+  checks + 4 fuzz + 1 frame perf + 8 a11y perf; the workflow floor follows the printed line
+  (535 - 20 = 515).

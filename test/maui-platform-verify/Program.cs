@@ -12,7 +12,7 @@ using Microsoft.Maui.Platform;
 // after the fuzz tail) instead of letting every caller repeat its own threshold constant.
 VerifyLineCountingWriter verifyStdout = new(Console.Out);
 Console.SetOut(verifyStdout);
-const int verifyCheckTotal = 531;                     // documented full [verify] line count (+4 MS-MODE runtime mode switch, +10 P2c-DEEPLINK, +4 P2b-IMG, +16 P1b-LIST, +10 P1a-ANIM, +2 SEC3 storage/deep-link pins, +5 W-series WebView wiring, +3 T1 InputView mapping, +4 T2 WebView gaps, +4 T3 GraphicsView interaction, +7 T10 modal accessibility, +4 T4 Label formatted text, +4 T5 layout semantics, +6 T7 DatePicker calendar/min-max, +4 T9 window title bar, +4 T11 diagnostics overlay, +1 N2 empty ContentPage arrangement, +6 T8 TableView, +5 T8 uneven rows, +7 T6 RTL flow direction, +5 T22 MainThread bridge, +2 FIX-TABBED tabbed CurrentPage, +4 T13 group footer view/N3 picker IsOpen, +5 T21 system font scale, +3 T21 font scale source wiring, +2 A11Y-TABBED tabbed accessibility, +3 N1 host multi-pointer, +5 T12 CarouselView group slides, +7 T14 rich shell flyout, +10 T14 flyout leftovers (MenuItemTemplate/FlyoutContent/AsMultipleItems), +2 FIX-SHELL shell CurrentPage, +2 A11Y-SHELL shell accessibility, +7 T15 rich Shell.TitleView, +8 T16 structured menus, +3 N4 TitleBar accessibility row, +3 T18 Essentials Map, +4 N5 overlay passthrough suppression, +5 N6 window decorations)
+const int verifyCheckTotal = 535;                     // documented full [verify] line count (+4 MS-MODE runtime mode switch, +10 P2c-DEEPLINK, +4 P2b-IMG, +16 P1b-LIST, +10 P1a-ANIM, +2 SEC3 storage/deep-link pins, +5 W-series WebView wiring, +3 T1 InputView mapping, +4 T2 WebView gaps, +4 T3 GraphicsView interaction, +7 T10 modal accessibility, +4 T4 Label formatted text, +4 T5 layout semantics, +6 T7 DatePicker calendar/min-max, +4 T9 window title bar, +4 T11 diagnostics overlay, +1 N2 empty ContentPage arrangement, +6 T8 TableView, +5 T8 uneven rows, +7 T6 RTL flow direction, +5 T22 MainThread bridge, +2 FIX-TABBED tabbed CurrentPage, +4 T13 group footer view/N3 picker IsOpen, +5 T21 system font scale, +3 T21 font scale source wiring, +2 A11Y-TABBED tabbed accessibility, +3 N1 host multi-pointer, +5 T12 CarouselView group slides, +7 T14 rich shell flyout, +10 T14 flyout leftovers (MenuItemTemplate/FlyoutContent/AsMultipleItems), +2 FIX-SHELL shell CurrentPage, +2 A11Y-SHELL shell accessibility, +7 T15 rich Shell.TitleView, +8 T16 structured menus, +3 N4 TitleBar accessibility row, +3 T18 Essentials Map, +4 N5 overlay passthrough suppression, +5 N6 window decorations, +4 T20 media bridge)
 const int verifyCheckFloor = verifyCheckTotal - 20;   // documented floor convention (total - 20)
 
 // A small image file for the Image handler.
@@ -11692,7 +11692,7 @@ bool p2cShellOnNewWant = p2cHeadless.Contains("onNewWant(want: Want, launchParam
 bool p2cShellPreStart = p2cHeadless.Contains("this.publishActivation(this.pendingWant);") &&
     p2cUi.Contains("this.publishActivation(this.pendingWant);") &&
     p2cHeadless.Contains("this.activationReady = true;") && p2cUi.Contains("this.activationReady = true;");
-bool p2cShellPayload = p2cHeadless.Contains("host.notifyActivation(payload);") && p2cUi.Contains("host.notifyActivation(payload);") &&
+bool p2cShellPayload = p2cHeadless.Contains("host.notifyActivation(payload)") && p2cUi.Contains("host.notifyActivation(payload)") &&
     p2cHeadless.Contains("linkHosts: this.linkHosts") && p2cUi.Contains("linkHosts: this.linkHosts");
 int p2cPackSources = 0;
 foreach (string p2cPackVersion in new[] { "1.0.0-preview.22", "1.0.0-preview.23", "1.0.0-preview.24" })
@@ -11931,6 +11931,213 @@ try
 catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
 {
     // Diagnostic leftovers must not fail the suite.
+}
+
+// T20: media playback bridge (ArkTS AVPlayer sink + host exports + managed surface). The shell
+// half lives in the byte-identical preview templates; the host half is pinned in the native
+// sources and the export contract; the managed half is OpenHarmonyMediaPlayer.cs.
+string? t20MediaPath = FindHostSource("OpenHarmonyMediaPlayer.cs");
+string t20MediaSource = t20MediaPath is null ? string.Empty : File.ReadAllText(t20MediaPath);
+string? t20HostPath = FindHostSource("src/OpenHarmonyHost/host_napi.cpp");
+string t20Host = t20HostPath is null ? string.Empty : File.ReadAllText(t20HostPath);
+string? t20ExportsPath = FindHostSource("src/OpenHarmonyHost/host-exports.txt");
+string t20Exports = t20ExportsPath is null ? string.Empty : File.ReadAllText(t20ExportsPath);
+string[] t20ShellVersions = { "1.0.0-preview.22", "1.0.0-preview.23", "1.0.0-preview.24" };
+bool t20ShellPinsOk = true;
+bool t20ShellIdentical = true;
+string t20ShellFirst = string.Empty;
+foreach (string t20ShellVersion in t20ShellVersions)
+{
+    string? t20IndexPath = FindHostSource($"packs/Microsoft.OpenHarmony.Sdk/{t20ShellVersion}/templates/ets/pages/Index.ets");
+    string t20Index = t20IndexPath is null ? string.Empty : File.ReadAllText(t20IndexPath);
+    if (t20ShellFirst.Length == 0)
+    {
+        t20ShellFirst = t20Index;
+    }
+    else if (!string.Equals(t20ShellFirst, t20Index, StringComparison.Ordinal))
+    {
+        t20ShellIdentical = false;
+    }
+    t20ShellPinsOk &= t20Index.Contains("import type { media } from '@kit.MediaKit';") &&
+        t20Index.Contains("host.registerMediaSink(async (requestId: number, op: number, payload: string): Promise<void> => {") &&
+        t20Index.Contains("const kit = await import('@kit.MediaKit');") &&
+        t20Index.Contains("const player: media.AVPlayer = await mediaKit.createAVPlayer();") &&
+        t20Index.Contains("interface MediaKitNamespace {") &&
+        t20Index.Contains("typeof mediaKit.createAVPlayer !== 'function'") &&
+        t20Index.Contains("player.url = location;") &&
+        t20Index.Contains("player.fdSrc = rawFd;") &&
+        t20Index.Contains("player.fdSrc = fileFd;") &&
+        t20Index.Contains("await player.prepare();") &&
+        t20Index.Contains("await player.play();") &&
+        t20Index.Contains("await player.pause();") &&
+        t20Index.Contains("await player.stop();") &&
+        t20Index.Contains("player.seek(Math.trunc(positionMs));") &&
+        t20Index.Contains("await player.release();") &&
+        t20Index.Contains("`state\\t${state}\\t${this.mediaReasonName(reason)}`") &&
+        t20Index.Contains("`time\\t${Math.max(0, Math.trunc(position))}`") &&
+        t20Index.Contains("`duration\\t${Math.max(0, Math.trunc(duration))}`") &&
+        t20Index.Contains("host.notifyMediaResult(requestId, code, payload);");
+}
+bool t20PinsOk = t20ShellPinsOk && t20ShellIdentical &&
+    t20MediaSource.Contains("EntryPoint = \"ohos_host_media_request\"") &&
+    t20MediaSource.Contains("EntryPoint = \"ohos_host_media_register_result\"") &&
+    t20MediaSource.Contains("EntryPoint = \"ohos_host_media_register_event\"") &&
+    t20MediaSource.Contains("private const int OpLoad = 0;") &&
+    t20MediaSource.Contains("private const int OpStatus = 6;") &&
+    t20MediaSource.Contains("OpenHarmonyBridge.WriteStatus(\"[maui] media sink is not available\")") &&
+    t20Host.Contains("extern \"C\" int ohos_host_media_request(int request_id, int op, const char* payload)") &&
+    t20Host.Contains("napi_value RegisterMediaSink(") &&
+    t20Host.Contains("napi_value NotifyMediaResult(") &&
+    t20Host.Contains("napi_value NotifyMediaEvent(") &&
+    t20Host.Contains("{\"registerMediaSink\"") &&
+    t20Host.Contains("HostSink media{\"media\", false};") &&
+    t20Exports.Contains("ohos_host_media_register_event") &&
+    t20Exports.Contains("ohos_host_media_register_result") &&
+    t20Exports.Contains("ohos_host_media_request");
+Console.WriteLine($"[verify] t20 media pins slice={t20MediaPath is not null} host={t20HostPath is not null} shell={t20ShellPinsOk} identical={t20ShellIdentical} assert={t20PinsOk}");
+if (!t20PinsOk)
+{
+    throw new InvalidOperationException($"the T20 media bridge source contract drifted: shell={t20ShellPinsOk} identical={t20ShellIdentical} slice='{t20MediaPath ?? "<missing>"}' host='{t20HostPath ?? "<missing>"}'");
+}
+
+// t20 media degrade: off-device (no host library) every call answers Unavailable without
+// throwing; an invalid source and a negative seek fail before the bridge is touched; the
+// static surface keeps the documented initial values.
+bool t20DegradeOk = false;
+bool t20InvalidSourceOk = false;
+string t20DegradeDetail = string.Empty;
+try
+{
+    OpenHarmonyMediaResult t20InvalidSource = await OpenHarmonyMediaPlayer.LoadAsync(OpenHarmonyMediaSource.FromRawFile(""));
+    t20InvalidSourceOk = t20InvalidSource.Status == OpenHarmonyMediaStatus.Failed &&
+        t20InvalidSource.Message.Contains("the source location is empty or too long");
+    OpenHarmonyMediaResult t20Load = await OpenHarmonyMediaPlayer.LoadAsync(OpenHarmonyMediaSource.FromFile("/nonexistent/w9d-probe.wav"));
+    OpenHarmonyMediaResult t20Play = await OpenHarmonyMediaPlayer.PlayAsync();
+    OpenHarmonyMediaResult t20Pause = await OpenHarmonyMediaPlayer.PauseAsync();
+    OpenHarmonyMediaResult t20Stop = await OpenHarmonyMediaPlayer.StopAsync();
+    OpenHarmonyMediaResult t20Seek = await OpenHarmonyMediaPlayer.SeekAsync(TimeSpan.FromMilliseconds(100));
+    OpenHarmonyMediaResult t20SeekInvalid = await OpenHarmonyMediaPlayer.SeekAsync(TimeSpan.FromSeconds(-1));
+    OpenHarmonyMediaResult t20Release = await OpenHarmonyMediaPlayer.ReleaseAsync();
+    OpenHarmonyMediaStatusResult t20Status = await OpenHarmonyMediaPlayer.StatusAsync();
+    t20DegradeOk = t20InvalidSourceOk &&
+        t20Load.Status == OpenHarmonyMediaStatus.Unavailable &&
+        t20Play.Status == OpenHarmonyMediaStatus.Unavailable &&
+        t20Pause.Status == OpenHarmonyMediaStatus.Unavailable &&
+        t20Stop.Status == OpenHarmonyMediaStatus.Unavailable &&
+        t20Seek.Status == OpenHarmonyMediaStatus.Unavailable &&
+        t20SeekInvalid.Status == OpenHarmonyMediaStatus.Failed &&
+        t20Release.Status == OpenHarmonyMediaStatus.Unavailable &&
+        t20Status.Status == OpenHarmonyMediaStatus.Unavailable &&
+        !OpenHarmonyMediaPlayer.IsSupported &&
+        OpenHarmonyMediaPlayer.State == OpenHarmonyMediaPlaybackState.Unknown &&
+        OpenHarmonyMediaPlayer.Position == TimeSpan.Zero &&
+        OpenHarmonyMediaPlayer.Duration == TimeSpan.Zero;
+    t20DegradeDetail = $"load={t20Load.Status} play={t20Play.Status} pause={t20Pause.Status} stop={t20Stop.Status} seek={t20Seek.Status} seekNeg={t20SeekInvalid.Status} release={t20Release.Status} status={t20Status.Status} invalid={t20InvalidSource.Status}";
+}
+catch (Exception ex)
+{
+    t20DegradeDetail = $"threw {ex.GetType().Name}: {ex.Message}";
+}
+Console.WriteLine($"[verify] t20 media degrade supported={OpenHarmonyMediaPlayer.IsSupported} {t20DegradeDetail} assert={t20DegradeOk}");
+if (!t20DegradeOk)
+{
+    throw new InvalidOperationException($"the T20 media bridge did not degrade cleanly off-device: {t20DegradeDetail}");
+}
+
+// t20 media events: the native-shaped event parser maps every AVPlayer push onto the managed
+// events, mirrors state/position/duration and ignores malformed payloads.
+int t20StateEvents = 0;
+int t20PositionEvents = 0;
+int t20DurationEvents = 0;
+int t20ErrorEvents = 0;
+OpenHarmonyMediaPlaybackState t20LastState = OpenHarmonyMediaPlaybackState.Unknown;
+string t20LastReason = string.Empty;
+TimeSpan t20LastPosition = TimeSpan.Zero;
+TimeSpan t20LastDuration = TimeSpan.Zero;
+string t20LastError = string.Empty;
+void t20OnState(object? sender, OpenHarmonyMediaStateChangedEventArgs args)
+{
+    t20StateEvents++;
+    t20LastState = args.State;
+    t20LastReason = args.Reason;
+}
+void t20OnPosition(object? sender, OpenHarmonyMediaPositionChangedEventArgs args)
+{
+    t20PositionEvents++;
+    t20LastPosition = args.Position;
+}
+void t20OnDuration(object? sender, OpenHarmonyMediaDurationChangedEventArgs args)
+{
+    t20DurationEvents++;
+    t20LastDuration = args.Duration;
+}
+void t20OnError(object? sender, OpenHarmonyMediaFailedEventArgs args)
+{
+    t20ErrorEvents++;
+    t20LastError = args.Message;
+}
+OpenHarmonyMediaPlayer.StateChanged += t20OnState;
+OpenHarmonyMediaPlayer.PositionChanged += t20OnPosition;
+OpenHarmonyMediaPlayer.DurationChanged += t20OnDuration;
+OpenHarmonyMediaPlayer.Failed += t20OnError;
+OpenHarmonyMediaPlayer.OnEventPayload("state\tprepared\tuser");
+OpenHarmonyMediaPlayer.OnEventPayload("time\t1234");
+OpenHarmonyMediaPlayer.OnEventPayload("duration\t4321");
+OpenHarmonyMediaPlayer.OnEventPayload("state\tbogus");
+OpenHarmonyMediaPlayer.OnEventPayload("time\tnope");
+OpenHarmonyMediaPlayer.OnEventPayload(null);
+OpenHarmonyMediaPlayer.OnEventPayload("error\t5400102\tboom");
+OpenHarmonyMediaPlayer.StateChanged -= t20OnState;
+OpenHarmonyMediaPlayer.PositionChanged -= t20OnPosition;
+OpenHarmonyMediaPlayer.DurationChanged -= t20OnDuration;
+OpenHarmonyMediaPlayer.Failed -= t20OnError;
+bool t20EventsOk = t20StateEvents == 1 && t20PositionEvents == 1 && t20DurationEvents == 1 && t20ErrorEvents == 1 &&
+    t20LastState == OpenHarmonyMediaPlaybackState.Prepared &&
+    t20LastReason == "user" &&
+    t20LastPosition == TimeSpan.FromMilliseconds(1234) &&
+    t20LastDuration == TimeSpan.FromMilliseconds(4321) &&
+    t20LastError == "boom" &&
+    OpenHarmonyMediaPlayer.State == OpenHarmonyMediaPlaybackState.Error &&
+    OpenHarmonyMediaPlayer.Position == TimeSpan.FromMilliseconds(1234) &&
+    OpenHarmonyMediaPlayer.Duration == TimeSpan.FromMilliseconds(4321) &&
+    OpenHarmonyMediaPlayer.ParseState("playing") == OpenHarmonyMediaPlaybackState.Playing &&
+    OpenHarmonyMediaPlayer.ParseState("nonsense") == OpenHarmonyMediaPlaybackState.Unknown;
+Console.WriteLine($"[verify] t20 media events states={t20StateEvents} positions={t20PositionEvents} durations={t20DurationEvents} errors={t20ErrorEvents} last='{t20LastState}/{t20LastReason}' assert={t20EventsOk}");
+if (!t20EventsOk)
+{
+    throw new InvalidOperationException("the T20 media event parser drifted");
+}
+
+// t20 media status parse: the op 6 status payload ("state\tpositionMs\tdurationMs") mirrors
+// into the managed surface; a malformed payload leaves the previous snapshot untouched.
+bool t20StatusParseOk = false;
+try
+{
+    OpenHarmonyMediaPlayer.ApplyStatusPayload("playing\t1500\t6500");
+    bool t20Applied = OpenHarmonyMediaPlayer.State == OpenHarmonyMediaPlaybackState.Playing &&
+        OpenHarmonyMediaPlayer.Position == TimeSpan.FromMilliseconds(1500) &&
+        OpenHarmonyMediaPlayer.Duration == TimeSpan.FromMilliseconds(6500);
+    OpenHarmonyMediaPlayer.ApplyStatusPayload("garbage");
+    OpenHarmonyMediaPlayer.ApplyStatusPayload("playing\tnan\t6500");
+    OpenHarmonyMediaPlayer.ApplyStatusPayload("bogus\t10\t20");
+    OpenHarmonyMediaPlayer.ApplyStatusPayload(null);
+    bool t20Held = OpenHarmonyMediaPlayer.State == OpenHarmonyMediaPlaybackState.Playing &&
+        OpenHarmonyMediaPlayer.Position == TimeSpan.FromMilliseconds(1500) &&
+        OpenHarmonyMediaPlayer.Duration == TimeSpan.FromMilliseconds(6500);
+    OpenHarmonyMediaPlayer.ApplyStatusPayload("released\t0\t0");
+    bool t20Second = OpenHarmonyMediaPlayer.State == OpenHarmonyMediaPlaybackState.Released &&
+        OpenHarmonyMediaPlayer.Position == TimeSpan.Zero &&
+        OpenHarmonyMediaPlayer.Duration == TimeSpan.Zero;
+    t20StatusParseOk = t20Applied && t20Held && t20Second;
+}
+catch (Exception ex)
+{
+    Console.WriteLine($"[verify] t20 media status parse threw {ex.GetType().Name}: {ex.Message}");
+}
+Console.WriteLine($"[verify] t20 media status parse state={OpenHarmonyMediaPlayer.State} pos={OpenHarmonyMediaPlayer.Position.TotalMilliseconds} dur={OpenHarmonyMediaPlayer.Duration.TotalMilliseconds} assert={t20StatusParseOk}");
+if (!t20StatusParseOk)
+{
+    throw new InvalidOperationException("the T20 media status parser drifted");
 }
 
 // The suite's own check-count contract: report what was actually emitted and fail when it is
