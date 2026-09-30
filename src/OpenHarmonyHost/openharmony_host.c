@@ -2848,8 +2848,46 @@ int ohos_host_get_soft_input_area(int* bottom) {
 
 static void (*g_web_listener)(const char* op, const char* arg) = NULL;
 
+// A web command can beat the shell's registerWebSink call: with the payload staged in libs the
+// shell starts the managed app immediately (the zip copy/inflate is skipped), while the page
+// registers its sink later, in aboutToAppear. The startup commands (the Blazor site
+// registration and the WebView source load) used to be dropped in that window and the WebView
+// stayed unarmed, so they are buffered here until the listener is installed. Bounded by command
+// count and payload bytes; an overflow drops the command and logs once. The flush runs outside
+// the lock (the listener only enqueues into the shell sink and never calls back here).
+#define OHOS_WEB_PENDING_MAX 16
+#define OHOS_WEB_PENDING_BYTES (64 * 1024)
+
+typedef struct OhosWebPendingCommand {
+    char* op;
+    char* arg;
+} OhosWebPendingCommand;
+
+static pthread_mutex_t g_web_pending_lock = PTHREAD_MUTEX_INITIALIZER;
+static OhosWebPendingCommand g_web_pending[OHOS_WEB_PENDING_MAX];
+static int g_web_pending_count = 0;
+static size_t g_web_pending_bytes = 0;
+static int g_web_pending_overflow_logged = 0;
+
 void ohos_host_web_set_listener(void (*listener)(const char*, const char*)) {
+    OhosWebPendingCommand pending[OHOS_WEB_PENDING_MAX];
+    int count = 0;
+    pthread_mutex_lock(&g_web_pending_lock);
     g_web_listener = listener;
+    if (listener != NULL) {
+        count = g_web_pending_count;
+        if (count > 0) {
+            memcpy(pending, g_web_pending, sizeof(pending[0]) * (size_t)count);
+            g_web_pending_count = 0;
+            g_web_pending_bytes = 0;
+        }
+    }
+    pthread_mutex_unlock(&g_web_pending_lock);
+    for (int i = 0; i < count; i++) {
+        listener(pending[i].op, pending[i].arg);
+        free(pending[i].op);
+        free(pending[i].arg);
+    }
 }
 
 void ohos_host_web_register_event(void* callback) {
@@ -2859,9 +2897,41 @@ void ohos_host_web_register_event(void* callback) {
 }
 
 void ohos_host_web_command(const char* op, const char* arg) {
-    if (g_web_listener != NULL) {
-        g_web_listener(op != NULL ? op : "", arg != NULL ? arg : "");
+    const char* safe_op = op != NULL ? op : "";
+    const char* safe_arg = arg != NULL ? arg : "";
+    void (*listener)(const char*, const char*) = NULL;
+    pthread_mutex_lock(&g_web_pending_lock);
+    listener = g_web_listener;
+    if (listener == NULL) {
+        size_t length = strlen(safe_op) + strlen(safe_arg);
+        if (g_web_pending_count >= OHOS_WEB_PENDING_MAX || g_web_pending_bytes + length > OHOS_WEB_PENDING_BYTES) {
+            if (!g_web_pending_overflow_logged) {
+                g_web_pending_overflow_logged = 1;
+                OH_LOG_WARN(LOG_APP,
+                            "[openharmony-host] web command buffer full before the shell sink registered; dropping commands");
+            }
+        } else {
+            char* copied_op = strdup(safe_op);
+            char* copied_arg = strdup(safe_arg);
+            if (copied_op != NULL && copied_arg != NULL) {
+                g_web_pending[g_web_pending_count].op = copied_op;
+                g_web_pending[g_web_pending_count].arg = copied_arg;
+                g_web_pending_bytes += length;
+                g_web_pending_count++;
+            } else {
+                free(copied_op);
+                free(copied_arg);
+                if (!g_web_pending_overflow_logged) {
+                    g_web_pending_overflow_logged = 1;
+                    OH_LOG_WARN(LOG_APP, "[openharmony-host] web command could not be buffered (allocation failed)");
+                }
+            }
+        }
+        pthread_mutex_unlock(&g_web_pending_lock);
+        return;
     }
+    pthread_mutex_unlock(&g_web_pending_lock);
+    listener(safe_op, safe_arg);
 }
 
 void ohos_host_web_notify_event(const char* state, const char* url) {

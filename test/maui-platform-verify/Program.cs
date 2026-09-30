@@ -4434,12 +4434,15 @@ if (!b2StagingOk)
         $"the wasm site staging target or the hello-maui-wasm demo is missing or drifted: staging={b2Staging} demo={b2Demo}");
 }
 
-// W10 shell: the payload-in-libs probe accepts the NativeAOT form next to the marker. A
-// NativeAOT publish replaces the managed <assembly> with lib<stem>.so; the zip fallback carries
-// no AOT image (the packaging excludes the root *.so), so without this the launch fell through
-// to an extracted app_dir the device namespace refuses to dlopen from. Both ability variants of
-// every synced pack carry the probe.
+// W10 shell: the payload-in-libs probe accepts the NativeAOT form next to the marker and both
+// bundle libs roots the device images use - <bundleCodeDir>/libs/<abi> (libIsolation) and
+// <bundleCodeDir>/<moduleName>/libs/<abi> (the module layout measured on 7.0.0.111+:
+// /data/storage/el1/bundle/entry/libs/arm64). A NativeAOT publish replaces the managed
+// <assembly> with lib<stem>.so; the zip fallback carries no AOT image (the packaging excludes
+// the root *.so), so without this the launch fell through to an extracted app_dir the device
+// namespace refuses to dlopen from. Both ability variants of every synced pack carry the probe.
 bool w10Shell = true;
+bool w10Roots = true;
 foreach (string w10Version in new[] { "1.0.0-preview.22", "1.0.0-preview.23", "1.0.0-preview.24", "1.0.0-preview.28" })
 {
     string? w10AbilityPath = FindHostSource($"packs/Microsoft.OpenHarmony.Sdk/{w10Version}/templates/ets/entryability/EntryAbility.ets");
@@ -4454,6 +4457,14 @@ foreach (string w10Version in new[] { "1.0.0-preview.22", "1.0.0-preview.23", "1
         w10AbilityUi.Contains("!fs.accessSync(`${dir}/${assembly}`) && !fs.accessSync(`${dir}/${aotEntry}`)") &&
         w10Ability.Contains("return `lib${stem}.so`;") &&
         w10AbilityUi.Contains("return `lib${stem}.so`;");
+    // The module-scoped root: bundleCodeDir alone misses the installed module layout, so the
+    // probe builds both roots from the ability's module name (the W10 follow-up fix).
+    w10Roots &= w10Ability.Contains("function findLibsPayloadDir(bundleCodeDir: string, moduleName: string, assembly: string): string | undefined {") &&
+        w10AbilityUi.Contains("function findLibsPayloadDir(bundleCodeDir: string, moduleName: string, assembly: string): string | undefined {") &&
+        w10Ability.Contains("? [`${bundleCodeDir}/${moduleName}/libs`, `${bundleCodeDir}/libs`]") &&
+        w10AbilityUi.Contains("? [`${bundleCodeDir}/${moduleName}/libs`, `${bundleCodeDir}/libs`]") &&
+        w10Ability.Contains("findLibsPayloadDir(this.context.bundleCodeDir, this.context.abilityInfo.moduleName, config.assembly)") &&
+        w10AbilityUi.Contains("findLibsPayloadDir(this.context.bundleCodeDir, this.context.abilityInfo.moduleName, config.assembly)");
     string? w10IndexPath = FindHostSource($"packs/Microsoft.OpenHarmony.Sdk/{w10Version}/templates/ets/pages/Index.ets");
     string w10Index = w10IndexPath is null ? string.Empty : File.ReadAllText(w10IndexPath);
     // Page shell: the payload read uses the single `fs` alias (the duplicate `fileIo` binding
@@ -4465,10 +4476,10 @@ foreach (string w10Version in new[] { "1.0.0-preview.22", "1.0.0-preview.23", "1
         w10Index.Contains("new RegExp('^(.+)\\\\.[0-9a-z]{10}$').exec(stem)") &&
         w10Index.Contains("const resolved: string | undefined = this.staticFingerprintFile(filePath);");
 }
-Console.WriteLine($"[verify] w10 shell aot payload probe packs=22,23,24,28 markerAotEntry={w10Shell} variants=2 assert={w10Shell}");
-if (!w10Shell)
+Console.WriteLine($"[verify] w10 shell aot payload probe packs=22,23,24,28 markerAotEntry={w10Shell} moduleRoot={w10Roots} variants=2 assert={w10Shell && w10Roots}");
+if (!(w10Shell && w10Roots))
 {
-    throw new InvalidOperationException("the W10 AOT-aware payload-in-libs probe is missing or drifted in the shell variants");
+    throw new InvalidOperationException("the W10 AOT-aware payload-in-libs probe (or the module-scoped libs root) is missing or drifted in the shell variants");
 }
 
 // ---- T1: InputView mapping (Entry/Editor/SearchBar + OpenHarmonyView) -------------------------
@@ -7580,7 +7591,14 @@ if (!a7NativeOk)
 // excludes the root *.so by design and the device namespace refuses a dlopen from the extracted
 // data directory, so an AOT hap without this resolved to an app_dir the AOT launch can never
 // use. The same route records its decision and the entry call/return in dotnet-status.txt
-// (the shell-polled channel; this image does not route the host's stderr to hilog).
+// (the shell-polled channel; this image does not route the host's stderr to hilog). The in-place
+// start also runs the managed startup before the shell page registers its web sink, so the host
+// buffers pre-registration web commands (bounded) and flushes them on registerWebSink.
+bool w10HostWebQueue = cSource?.Contains("#define OHOS_WEB_PENDING_MAX 16") == true &&
+    cSource.Contains("#define OHOS_WEB_PENDING_BYTES (64 * 1024)") &&
+    cSource.Contains("web command buffer full before the shell sink registered; dropping commands") &&
+    cSource.Contains("count = g_web_pending_count;") &&
+    cSource.Contains("listener(pending[i].op, pending[i].arg);");
 bool w10HostResolve = cSource?.Contains("static int OhosHostAotLibName(char* dst, size_t dst_size, const char* app_assembly_file);") == true &&
     cSource.Contains("own_has_entry = OhosHostAotLibName(aot_lib_name, sizeof(aot_lib_name), entry_file) == 0 &&") &&
     cSource.Contains("char status_dir[4096];") &&
@@ -7590,12 +7608,13 @@ bool w10HostResolve = cSource?.Contains("static int OhosHostAotLibName(char* dst
     cSource.Contains("static void* OhosHostOpenAppLibrary(const char* tag, const char* lib_path, const char* app_dir,") &&
     cSource.Contains("lib = dlopen(lib_path, RTLD_LAZY | RTLD_LOCAL);") &&
     cSource.Contains("static void OhosHostRedirectStderr(const char* dir)") &&
-    cSource.Contains("OhosHostRedirectStderr(launch->status_dir);");
-Console.WriteLine($"[verify] w10 host aot resolve ownAotImage={w10HostResolve} statusLines={w10HostResolve} source='{cSourcePath ?? "<missing>"}' assert={w10HostResolve}");
+    cSource.Contains("OhosHostRedirectStderr(launch->status_dir);") &&
+    w10HostWebQueue;
+Console.WriteLine($"[verify] w10 host aot resolve ownAotImage={w10HostResolve} statusLines={w10HostResolve} webPending={w10HostWebQueue} source='{cSourcePath ?? "<missing>"}' assert={w10HostResolve}");
 if (!w10HostResolve)
 {
     throw new InvalidOperationException(
-        $"the W10 NativeAOT host app_dir resolution or its dotnet-status observability drifted: source={cSourcePath ?? "<missing>"}");
+        $"the W10 NativeAOT host app_dir resolution, its dotnet-status observability or the pre-sink web command buffer drifted: source={cSourcePath ?? "<missing>"}");
 }
 
 // A8: both IME text paths truncate through ImeUtf8PrefixLength, which backs off over UTF-8

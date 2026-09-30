@@ -11,22 +11,22 @@
   "variants": {
     "headless": {
       "abcVersion": "13.0.1.0",
-      "bytes": 23516,
+      "bytes": 24324,
       "dist": "modules.headless.abc",
       "file": "modules.abc",
-      "sha256": "6bce40637cf9dcde287cc90bfd1ee676dc76fde3cc7ecff659d469da7a62b67a",
+      "sha256": "798b2477151b7a273343cb0874ecc0c462da2d986563a411ae77ca802f90a3e7",
       "sources": {
-        "entryability/EntryAbility.ets": "c0f80227289a54e62eb184a3e7daef9ddd3cc4e1c23e3b14dd94ed8a303169c0"
+        "entryability/EntryAbility.ets": "55f7d7da953fa89e81f062230d507e7a075be8669f7334d5a3baae8cab4b1335"
       }
     },
     "ui": {
       "abcVersion": "13.0.1.0",
-      "bytes": 339164,
+      "bytes": 339964,
       "dist": "modules.abc",
       "file": "modules.ui.abc",
-      "sha256": "74054e2df8dc89c306f5cdf268c4ba5a9991bc49ead6eaec3da9822c4af36ddd",
+      "sha256": "fc54d2b83f41a3b75025a3be421b1b20ebc9bb254d60b18f247b2bb107c70b5c",
       "sources": {
-        "entryability/EntryAbility.ui.ets": "dc2fa71d275eb9e8182bb0d8a953a9adcb08f96676a44365f393e37d9720ec57",
+        "entryability/EntryAbility.ui.ets": "eff19968215fecca3a3800165cabf4ec85c519500c2fb8d7e524aca9d206f565",
         "pages/Index.ets": "90227f6156ef6b392a7537b8b7a82e04775a3742bdab7bd5a429a4f194213bee"
       }
     }

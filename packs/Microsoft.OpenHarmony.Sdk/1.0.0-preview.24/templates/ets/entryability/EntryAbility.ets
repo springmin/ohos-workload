@@ -70,30 +70,42 @@ function libsAotEntryName(assembly: string): string {
   return `lib${stem}.so`;
 }
 
+// Bundle libs directory shapes seen on device: the libIsolation staging keeps the module libs
+// directly under <bundleCodeDir>/libs/<abi> (the shape the kit #22 tester device accepted a
+// dlopen from), while the module layout on 7.0.0.111+ installs them under
+// <bundleCodeDir>/<moduleName>/libs/<abi> (measured on HAD-W32:
+// /data/storage/el1/bundle/entry/libs/arm64). Some images expose only one of the two shapes,
+// so both roots are probed and either layout starts in place.
+//
 // Returns the bundle libs directory when it carries a complete payload-in-libs staging: the
 // marker file, the entry (the managed <assembly> or its NativeAOT launch image lib<stem>.so)
 // and a marker that names that assembly. Any error (missing directory, unreadable bundle) is
 // the zip fallback's business and returns undefined.
-function findLibsPayloadDir(bundleCodeDir: string, assembly: string): string | undefined {
+function findLibsPayloadDir(bundleCodeDir: string, moduleName: string, assembly: string): string | undefined {
   if (bundleCodeDir.length === 0) {
     return undefined;
   }
   const aotEntry = libsAotEntryName(assembly);
-  for (const abi of LIBS_ABI_DIRS) {
-    const dir = `${bundleCodeDir}/libs/${abi}`;
-    try {
-      if (!fs.accessSync(dir) || !fs.accessSync(`${dir}/${PAYLOAD_MARKER_NAME}`)) {
-        continue;
+  const libsRoots = moduleName.length > 0
+    ? [`${bundleCodeDir}/${moduleName}/libs`, `${bundleCodeDir}/libs`]
+    : [`${bundleCodeDir}/libs`];
+  for (const libsRoot of libsRoots) {
+    for (const abi of LIBS_ABI_DIRS) {
+      const dir = `${libsRoot}/${abi}`;
+      try {
+        if (!fs.accessSync(dir) || !fs.accessSync(`${dir}/${PAYLOAD_MARKER_NAME}`)) {
+          continue;
+        }
+        if (!fs.accessSync(`${dir}/${assembly}`) && !fs.accessSync(`${dir}/${aotEntry}`)) {
+          continue;
+        }
+        const marker = JSON.parse(fs.readTextSync(`${dir}/${PAYLOAD_MARKER_NAME}`)) as PayloadMarker;
+        if (marker.assembly === assembly && marker.entries > 0) {
+          return dir;
+        }
+      } catch (probeError) {
+        // keep probing: an unreadable or malformed candidate is not a payload-in-libs staging
       }
-      if (!fs.accessSync(`${dir}/${assembly}`) && !fs.accessSync(`${dir}/${aotEntry}`)) {
-        continue;
-      }
-      const marker = JSON.parse(fs.readTextSync(`${dir}/${PAYLOAD_MARKER_NAME}`)) as PayloadMarker;
-      if (marker.assembly === assembly && marker.entries > 0) {
-        return dir;
-      }
-    } catch (probeError) {
-      // keep probing: an unreadable or malformed candidate is not a payload-in-libs staging
     }
   }
   return undefined;
@@ -414,13 +426,17 @@ export default class EntryAbility extends UIAbility {
     // Payload-in-libs (see findLibsPayloadDir): a staged bundle payload is the namespace-allowed
     // copy, so it is used in place and the rawfile zip stays the fallback. Otherwise the zip is
     // unpacked into filesDir exactly as before (P17 marker logic included).
-    const libsDir = findLibsPayloadDir(this.context.bundleCodeDir, config.assembly);
+    const libsDir = findLibsPayloadDir(this.context.bundleCodeDir, this.context.abilityInfo.moduleName, config.assembly);
     let appDir: string;
     if (libsDir !== undefined) {
       appDir = libsDir;
       hilog.info(DOMAIN, TAG, 'payload-in-libs: running from %{public}s (dotnet.zip not unpacked)', libsDir);
       removeStaleExtraction(payloadDir, markerPath, cached);
     } else {
+      // The probe is silent on a miss; name it once per launch so a device log distinguishes
+      // "staging absent or unreadable" from the extracted-tree fallback below (a silent miss
+      // here was W10's root cause).
+      hilog.info(DOMAIN, TAG, 'payload-in-libs: no staged payload under %{public}s (dotnet.zip fallback)', this.context.bundleCodeDir);
       const zip = await this.context.resourceManager.getRawFd('dotnet.zip');
       // The marker pins the rawfile bytes; when fstat is unavailable the -1 identity never
       // matches, which degrades to the old unconditional unpack instead of skipping wrongly.

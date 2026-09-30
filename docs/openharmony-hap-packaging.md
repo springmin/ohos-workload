@@ -370,7 +370,11 @@ round measured six candidate paths and found exactly one accepted `libcoreclr.so
 bundle `libs/<abi>` directory, matching Huawei's faqs-ndk-development guidance. `hostpolicy`
 and `coreclr` resolve `libhostpolicy.so`/`libcoreclr.so`/`libclrjit.so`/`libclrgc*.so` from
 `app_dir` (see the previous section), so a payload extracted into the data directory cannot be
-used there even though its files are readable.
+used there even though its files are readable. HAP-installed images from 7.0.0.111 on expose the
+module libs under `<bundleCodeDir>/<moduleName>/libs/<abi>` (measured on HAD-W32: the host and
+the staged AOT image map from `/data/storage/el1/bundle/entry/libs/arm64`), so the shell probes
+that module root as well as the flat `<bundleCodeDir>/libs/<abi>` shape (see the consumer
+behavior below).
 
 The packaging therefore stages the whole publish payload into `libs/<abi>/` next to the host
 and the runtime natives (`OpenHarmonyStagePayloadLibs` in the targets file): managed
@@ -394,14 +398,22 @@ The target writes `libs/<abi>/.dotnet-payload.json`
 
 Consumer behavior, all backwards compatible:
 
-- The ArkTS shell probes `<bundleCodeDir>/libs/{arm64,arm,x86_64}` for the marker, the entry
-  assembly and a marker naming that assembly. When they match, the app starts in place and the
-  `dotnet.zip` copy/inflate is skipped (a payload an earlier kit extracted into `filesDir` is
-  removed once); otherwise the shell unpacks exactly as before, P17 marker logic included.
+- The ArkTS shell probes both bundle libs roots - `<bundleCodeDir>/libs/{arm64,arm,x86_64}` and
+  `<bundleCodeDir>/<moduleName>/libs/{arm64,arm,x86_64}` (the module layout measured on
+  7.0.0.111+, e.g. `/data/storage/el1/bundle/entry/libs/arm64`) - for the marker, the entry
+  assembly (or its NativeAOT `lib<stem>.so`) and a marker naming that assembly. When they match,
+  the app starts in place and the `dotnet.zip` copy/inflate is skipped (a payload an earlier kit
+  extracted into `filesDir` is removed once); otherwise the shell unpacks exactly as before, P17
+  marker logic included.
 - `ohos_host_run_app`/`ohos_host_start_app` resolve this library's own directory through
   `dladdr` and use it as `app_dir` when `<own_dir>/<entry assembly>` exists. The outcome is
   logged as `used_own=1 own=<dir> app=<dir>` (or `used_own=0`), and the symlink bridge stays
   the fallback for haps packed without the staged payload.
+- An in-place start runs the managed app before the shell page registers its web-command sink
+  (the page's `registerWebSink` in `aboutToAppear`), so web commands that arrive in that window
+  (the Blazor site registration and the WebView source load) are buffered in the host - bounded
+  to 16 commands / 64 KiB, then dropped with one log line - and flushed on registration instead
+  of being lost to the race.
 - `scripts/verify-kit.sh` asserts the marker per hap: present, the named assembly staged, the
   count equal to the real `libs/<abi>/` file count, `payloadEntries == zipEntries`, and the
   recorded zip sha256 equal to the packed zip bytes. A missing or inconsistent marker is a
