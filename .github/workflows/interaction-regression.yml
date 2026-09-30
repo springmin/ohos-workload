@@ -21,7 +21,7 @@ name: interaction-regression
 #     tree (Refresh + Publish render step and Publish-alone pass), skip/republish average/max
 #     ceilings and documented republish/skip ratio floors (render >= 1.25x, publish >= 2x).
 #
-# The check-count floor (493 = 513 - 20, the documented convention) is declared once in
+# The check-count floor (520 = 540 - 20, the documented convention) is declared once in
 # test/maui-platform-verify/Program.cs, next to the constants that count the executed suite's own
 # [verify] lines; this job reads the `[suite]` line the run prints (and cross-checks it against
 # `grep -c`) instead of repeating a literal, exactly like scripts/preflight.sh, so the local gate
@@ -52,7 +52,7 @@ permissions:
 
 # Reproducible cross-repo compile: the MAUI slice is checked out at an exact commit, not the
 # mutable feature/openharmony branch, so a push to the fork cannot change what this gate compiles.
-# The default is the feature/openharmony tip: 27c8ef6540, the W9 consolidation on top of the
+# The default is the feature/openharmony tip: eec30c01cd, the W9 consolidation on top of the
 # rc.2 slice re-anchor ebffdd787c (dotnet/maui release/11.0.1xx-rc2 349017b7 + the OpenHarmony
 # delta, Microsoft.Maui.* 11.0.0-rc.2.26478.12): W9B T14 flyout leftovers + T21 font-scale
 # wiring, W9C T8 uneven TableView rows, W9D T20 media bridge and W9A B2 staged-WASM WebView.
@@ -82,9 +82,10 @@ permissions:
 # spans 043e6468, the T10 modal accessibility overlay c56bf0fa, the T1 InputView mapping dcc7eaac
 # and the T2 CookieContainer sync 8241f1b3, all on top of the W-series webview wiring d6325990,
 # the SEC-SCAN-3 S3-DL3 dot-dot route rejection and the HUKS/deep-link hardening. The suite pins
-# 538 checks / floor 518 (the N1 host multi-pointer lines live in this repository's harness and
-# hosting bridge, not in the pinned slice) and the full run is green at this compiled tree (local
-# verification: 538/538, floor 518, both perf lines within budget); advance the pin deliberately
+# 540 checks / floor 520 (the N1 host multi-pointer and W10 AOT-entry lines live in this
+# repository's harness and hosting bridge, not in the pinned slice) and the full run is green at
+# this compiled tree (local verification: 540/540, floor 520, both perf lines within budget);
+# advance the pin deliberately
 # and refresh this comment when the harness pins or the tip move (workflow_dispatch can compile
 # any commit).
 env:

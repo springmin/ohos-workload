@@ -32,7 +32,7 @@ permissions:
 
 # Reproducible cross-repo check: the slice is checked out at an exact commit, not the mutable
 # feature/openharmony branch, so a push to the fork cannot change what this gate verifies.
-# Current tip: 27c8ef6540 (the W9 consolidation: W9B T14 flyout leftovers + T21 font-scale
+# Current tip: eec30c01cd (the W9 consolidation: W9B T14 flyout leftovers + T21 font-scale
 # wiring, W9C T8 uneven TableView rows, W9D T20 media bridge adding the three ohos_host_media_*
 # exports and W9A B2 staged-WASM WebView; on top of the rc.2 slice re-anchor ebffdd787c:
 # dotnet/maui release/11.0.1xx-rc2
