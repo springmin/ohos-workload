@@ -109,6 +109,11 @@ jobs:
         with:
           dotnet-version: '11.0.x'
           dotnet-quality: 'preview'
+      - name: Add the dnceng dotnet11 feed (MAUI rc.2 daily packages)
+        # The pinned slice carries Microsoft.Maui.* 11.0.0-rc.2.26478.12, a dnceng dotnet11
+        # daily that is not on nuget.org yet (see docs/rc2-line-notes.md). Drop this step
+        # when the official rc.2 packages ship and the slice pins move to nuget.org versions.
+        run: dotnet nuget add source https://pkgs.dev.azure.com/dnceng/public/_packaging/dotnet11/nuget/v3/index.json --name dnceng-dotnet11
       - name: Reject machine-specific absolute paths in build inputs
         run: sh scripts/check-no-absolute-paths.sh
       # One run only: the previous workflow ran the suite twice (once for the exit code, once for
