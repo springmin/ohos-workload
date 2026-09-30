@@ -65,6 +65,14 @@ RID `openharmony-arm64`；workload `openharmony 1.0.0-preview.28/11.0.100-rc.2`�
    ✓✓）；配方固化为 sdk `eng/ohos-install/build/build-selfsign-device.sh`（含自检）。
    另修复安装器自签缺陷（`sign_all` 会把签名器自身拿去重签 → ETXTBSY ✗→✓，sdk `c1cd3d89c4`）。
    bundle 重打路径待复测。
+   **2026-09-30 更新**：bundle 重打**全链复测通过** ✓✓（`prepare-packs` 15s + bundle 打包 5s；
+   产物 `WorkloadManifest.json` 与发布版 `.28` **字节级一致** ✓）。构建环境提示（本机三处同源怪癖 ✗）：
+   ① MSBuild server 握手挂起（`lib-dotnet-env.sh` 已挡 ✓）；② **Roslyn 编译器服务器握手挂起** ✗
+   （**未挡** ✗：全新 checkout 开箱构建会挂 ✗——需 `UseSharedCompilation=false` ✓）；
+   ③ **网络还原无超时会挂** ✗（需离线/最小 `RestoreConfigFile` ✓）。
+- **发布重跑协议（第四锚）**：selfsign 已重上 ✓ → 发布面为**四锚**（SDK / runtime / workload /
+  selfsign ✓，`SELFSIGN_SHA256=a403a1b4…` ✓）。CI `OHOS_SELFSIGN_PUBLISH` 门保持关闭 ✓；
+  release 重跑若重建 SHA256SUMS 或覆盖资产，需按锚刷新协议重测并**重挂设备版 selfsign** ✓。
 
 ## 交接（kit/tester）
 
