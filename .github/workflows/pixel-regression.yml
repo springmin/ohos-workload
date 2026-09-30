@@ -39,7 +39,7 @@ on:
         description: 'maui-ohos commit SHA to compile (defaults to the pinned feature/openharmony tip)'
         required: false
         type: string
-        default: 'a00c30631a41c180c13fc5288fe35256de80f5df'
+        default: 'ebffdd787c8e0dcd99a9c4cccfd279e2a057a494'
 
 # Least privilege: the job only reads this repository and the public springmin/maui-ohos fork;
 # no step pushes anywhere.
@@ -48,7 +48,7 @@ permissions:
 
 # Reproducible cross-repo compile: the MAUI slice is checked out at an exact commit, not the
 # mutable feature/openharmony branch, so a push to the fork cannot change what this gate compiles.
-# The default is the feature/openharmony tip: a00c30631a, the rc.2 slice re-anchor
+# The default is the feature/openharmony tip: ebffdd787c, the rc.2 slice re-anchor
 # (dotnet/maui release/11.0.1xx-rc2 349017b7 + the OpenHarmony delta, Microsoft.Maui.*
 # 11.0.0-rc.2.26478.12; the N6 window decoration mapping and its
 # four caption-glyph pixel checks, T15's three rich-title-view checks and the T16/N4/N5/T18
@@ -74,7 +74,7 @@ permissions:
 # The interaction harness pins 513 checks / floor 493; advance the pin in lockstep with the
 # interaction gate and change it deliberately (workflow_dispatch can compile any other commit SHA).
 env:
-  MAUI_OHOS_REF: ${{ github.event.inputs.maui_ohos_ref || 'a00c30631a41c180c13fc5288fe35256de80f5df' }}
+  MAUI_OHOS_REF: ${{ github.event.inputs.maui_ohos_ref || 'ebffdd787c8e0dcd99a9c4cccfd279e2a057a494' }}
   # Same as the interaction gate: keep the setup-dotnet preview SDK in a cacheable per-user path
   # instead of the runner's /usr/share/dotnet; a newer 11.0.x preview is still downloaded (the
   # action re-resolves the channel), the cache only skips the ~200 MB download when it moved.

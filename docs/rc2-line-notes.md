@@ -86,5 +86,5 @@ RID `openharmony-arm64`；workload `openharmony 1.0.0-preview.28/11.0.100-rc.2`�
 - 设备冒烟基线（2026-09-29）：install `rc=0`、签名由回退工具完成、workload list 正确、
   workload-TFM publish + 真机运行通过。
 - **rc.2 主线并入（2026-09-30）**：runtime / sdk / aspnetcore / maui-ohos 的 rc.2 线已并入各自
-  `feature/openharmony`，本仓 `master` 同轮把 pin 指向新主线 tip（`MAUI_OHOS_REF=a00c30631a`、
+  `feature/openharmony`，本仓 `master` 同轮把 pin 指向新主线 tip（`MAUI_OHOS_REF=ebffdd787c`、
   `SDK_OHOS_REF=469eae2734`）；后续 kit/tester 直接取主线即可。
