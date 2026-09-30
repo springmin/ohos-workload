@@ -40,6 +40,13 @@ dotnet publish test/hello-maui-app/hello-maui-app.csproj \
   (see "Known environment quirks" in `docs/openharmony-hap-packaging.md`); run with
   `OHOS_AOT_HOOKS=<aot-local-hooks.targets>` to apply the same workaround the released
   packages were built with.
+- On the rc.2 line (`~/.dotnet.rc2-fix` + feed) the two AOT packs come from the
+  `sdk-ohos` `aot-packs-11.0.0-rc.2` mirror
+  (`Microsoft.NETCore.App.Runtime.NativeAOT.openharmony-arm64` +
+  `runtime.openharmony-arm64.Microsoft.DotNet.ILCompiler` `11.0.0-rc.2.26451.112`;
+  `eng/ohos-install/fetch-nativeaot-packs.sh` verifies the `versions.env` sha256 pins).
+  The pack-time host and the UI shell abc are the workload preview.28 ones
+  (`libopenharmonyhost.so` 285,600 B / `00ee9c84…`, `modules.ui.abc` 311,424 B / `7c1a3cac…`).
 
 ## Shape checks (per hap)
 
@@ -62,7 +69,10 @@ dotnet publish test/hello-maui-app/hello-maui-app.csproj \
 | `aot-haps.tar.gz` | kit #28 host, no TabbedPage fix, no UIPage | white window (control) |
 | `aot-haps-v2.tar.gz` | TabbedPage render fix (`springmin/maui-ohos` `14bdb85f`) | still white: headless abc (no UIPage) |
 | `aot-haps-v3.tar.gz` | UIPage fix on the v2 slice | UI shell abc, `ohos_dotnet_surface` buffer, window paints |
+| `aot-haps-v3-rc2.tar.gz` | rc.2-mainline rebuild (SDK `11.0.100-rc.2.26451.112` / workload `1.0.0-preview.28`; slice = `springmin/maui-ohos` `ebffdd787c`, W6/W7/W8) keeping the UIPage fix | UI shell abc 311,424 B, `ohos_dotnet_surface` buffer, window paints (rc.2, 2026-09-30) |
 
 Numbers (sizes/sha256, asset ids) are per asset in its `aot-haps-*-README.md` on the
 `springmin/sdk-ohos` `device-test-kit` release; the rebuild runs are recorded in
-`runtime-ohos/docs/plans/2026-09-29-ohos-aot-v2-rebuild.md` (v2) and its v3 counterpart.
+`runtime-ohos/docs/plans/2026-09-29-ohos-aot-v2-rebuild.md` (v2), its v3 counterpart and
+`2026-09-30-ohos-aot-v3-rc2-rebuild.md` (rc.2). The kit #34 (rc.2) AOT pick is
+`aot-haps-v3-rc2.tar.gz`; v3/v2/v1 stay as controls.
