@@ -59,6 +59,16 @@
          directory the device namespace policy allows a dlopen from. Set false to keep the
          pre-payload-in-libs layout (the payload then travels only inside dotnet.zip). -->
     <OpenHarmonyHapPayloadInLibs Condition=" '$(OpenHarmonyHapPayloadInLibs)' == '' ">true</OpenHarmonyHapPayloadInLibs>
+    <!-- Device compat for enforcing images (>= 7.0.0.111): such images verify a per-file code
+         signature for every libs/<abi>/ file at install. The SDK hap-sign-tool never lists an
+         extension-less file name in the HAP code-sign block (the installer then reports "Libs
+         signature not found"), and a file of exactly 4096 bytes fails the fs-verity enable
+         ("enable code signature failed: 8519738"); both fail the install with 9568393. true
+         stages such a payload file as <name>.so (ELF) / <name>.bin (otherwise) and appends 4
+         padding bytes to an exactly-4096-byte file in the libs copy; the dotnet.zip fallback
+         keeps the original names and bytes. false (default) keeps the previous bytes and logs a
+         warning naming the incompatible staged files (see "Payload in libs" in the packaging doc). -->
+    <OpenHarmonyHapPayloadInLibsDeviceCompat Condition=" '$(OpenHarmonyHapPayloadInLibsDeviceCompat)' == '' ">false</OpenHarmonyHapPayloadInLibsDeviceCompat>
     <!-- Payload zip (see "Payload in libs" in the packaging doc): keep the resources/rawfile/dotnet.zip
          extraction fallback. With payload-in-libs on (default) the zip duplicates the staged
          libs/<abi>/ payload; set OpenHarmonyHapPayloadZip=false to ship the staged copy only
@@ -573,12 +583,16 @@
     <OpenHarmonyStagePayloadLibs Condition=" '$(OpenHarmonyHapPayloadInLibs)' == 'true' "
                                  SourceDirectory="$(_OpenHarmonyRuntimePublishDir)"
                                  DestinationDirectory="$(_OpenHarmonyHapStageDir)libs/$(OpenHarmonyAbi)"
-                                 SkipFileNames="libopenharmonyhost.so;libc++_shared.so;@(_OpenHarmonyStagedRuntimeLib->'%(Filename)%(Extension)')">
+                                 SkipFileNames="libopenharmonyhost.so;libc++_shared.so;@(_OpenHarmonyStagedRuntimeLib->'%(Filename)%(Extension)')"
+                                 DeviceCompat="$(OpenHarmonyHapPayloadInLibsDeviceCompat)">
       <Output TaskParameter="CopiedCount" PropertyName="_OpenHarmonyPayloadInLibsEntries" />
       <Output TaskParameter="CopiedBytes" PropertyName="_OpenHarmonyPayloadInLibsBytes" />
+      <Output TaskParameter="CompatRewrites" PropertyName="_OpenHarmonyPayloadInLibsCompatRewrites" />
     </OpenHarmonyStagePayloadLibs>
     <Message Importance="high" Condition=" '$(OpenHarmonyHapPayloadInLibs)' == 'true' "
              Text="OpenHarmony: payload-in-libs staged $(_OpenHarmonyPayloadInLibsEntries) files ($([MSBuild]::Divide($(_OpenHarmonyPayloadInLibsBytes), 1048576)) MB) into libs/$(OpenHarmonyAbi)/ (the only namespace-allowed dlopen path); the same files stay in dotnet.zip as the fallback" />
+    <Message Importance="high" Condition=" '$(OpenHarmonyHapPayloadInLibs)' == 'true' and '$(_OpenHarmonyPayloadInLibsCompatRewrites)' != '' and '$(_OpenHarmonyPayloadInLibsCompatRewrites)' != '0' "
+             Text="OpenHarmony: payload-in-libs device compat rewrote $(_OpenHarmonyPayloadInLibsCompatRewrites) staged file(s) for enforcing images (>= 7.0.0.111); dotnet.zip keeps the original names/bytes" />
 
     <!-- Runtime mode switch (MS-MODE; see "Runtime mode switch" in the packaging doc): writes
          libs/<abi>/runtime-mode.txt and, for interp, replaces the staged runtime natives with the

@@ -207,6 +207,58 @@ internal static class Program
         var (missingOk, engine) = Harness.Run(missing);
         Check("payload missing source directory is an error", !missingOk);
         Check("payload missing source directory names the path", engine.HasErrorContaining("does not exist"));
+
+        // Device compat (enforcing images >= 7.0.0.111): the SDK HAP signer never covers an
+        // extension-less libs file in the code-sign block and a file of exactly 4096 bytes fails
+        // the fs-verity enable, so the opt-in rewrite stages <name>.so/.bin and pads 4096 -> 4100.
+        string compatSrc = Harness.TempDir("payload-compat-src");
+        Harness.WriteBytes(Path.Combine(compatSrc, "createdump"), Elf(new byte[8]));
+        Harness.WriteFile(Path.Combine(compatSrc, "notes"), "no extension, not ELF");
+        Harness.WriteBytes(Path.Combine(compatSrc, "exact.dll"), new byte[4096]);
+        Harness.WriteFile(Path.Combine(compatSrc, "keep.dll"), "keep");
+        string compatDst = Harness.TempDir("payload-compat-dst");
+        var compat = new OpenHarmonyStagePayloadLibs
+        {
+            SourceDirectory = compatSrc,
+            DestinationDirectory = compatDst,
+            DeviceCompat = true,
+        };
+        var (compatOk, _) = Harness.Run(compat);
+        Check("device compat staging succeeds", compatOk);
+        CheckEqual("device compat copied count", 4, compat.CopiedCount);
+        CheckEqual("device compat rewrite count", 3, compat.CompatRewrites);
+        CheckEqual("device compat copied bytes account for the padding", 4137L, compat.CopiedBytes);
+        Check("device compat stages ELF as .so", File.Exists(Path.Combine(compatDst, "createdump.so")));
+        Check("device compat stages non-ELF as .bin", File.Exists(Path.Combine(compatDst, "notes.bin")));
+        CheckEqual("device compat pads a 4096-byte file", 4100L, new FileInfo(Path.Combine(compatDst, "exact.dll")).Length);
+        CheckEqual("device compat keeps other files untouched", "keep", File.ReadAllText(Path.Combine(compatDst, "keep.dll")));
+
+        string plainDst = Harness.TempDir("payload-plain-dst");
+        var plain = new OpenHarmonyStagePayloadLibs
+        {
+            SourceDirectory = compatSrc,
+            DestinationDirectory = plainDst,
+        };
+        var (plainOk, plainEngine) = Harness.Run(plain);
+        Check("default layout staging succeeds", plainOk);
+        Check("default layout warns about enforcing images", plainEngine.HasWarningContaining("7.0.0.111"));
+        Check("default layout warning names the extension-less file", plainEngine.HasWarningContaining("createdump"));
+        Check("default layout keeps the extension-less name", File.Exists(Path.Combine(plainDst, "createdump")));
+        CheckEqual("default layout keeps the 4096-byte size", 4096L, new FileInfo(Path.Combine(plainDst, "exact.dll")).Length);
+        CheckEqual("default layout does not rewrite", 0, plain.CompatRewrites);
+
+        string collideSrc = Harness.TempDir("payload-collide-src");
+        Harness.WriteBytes(Path.Combine(collideSrc, "createdump"), Elf());
+        Harness.WriteBytes(Path.Combine(collideSrc, "createdump.so"), Elf());
+        var collide = new OpenHarmonyStagePayloadLibs
+        {
+            SourceDirectory = collideSrc,
+            DestinationDirectory = Harness.TempDir("payload-collide-dst"),
+            DeviceCompat = true,
+        };
+        var (collideOk, collideEngine) = Harness.Run(collide);
+        Check("device compat name collision is an error", !collideOk);
+        Check("device compat collision names the mapped name", collideEngine.HasErrorContaining("createdump.so"));
     }
 
     // ---------------------------------------------------------------- payload marker

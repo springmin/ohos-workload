@@ -407,11 +407,45 @@ Consumer behavior, all backwards compatible:
   recorded zip sha256 equal to the packed zip bytes. A missing or inconsistent marker is a
   FAIL, because such a hap falls back to the refused data-directory extraction.
 - `-p:OpenHarmonyHapPayloadInLibs=false` restores the previous layout (payload only inside
-  `dotnet.zip`, no marker), for a rollback without a source change.
+  `dotnet.zip`, no marker), for a rollback without a source change; on an enforcing image
+  (>= 7.0.0.111) it is also the second accepted layout when the device-compat rewrite is not
+  used (see "Enforcing images" below).
 
 Cost: the payload travels stored (uncompressed) inside the HAP because the packing tool keeps
 `libs/**` mmap-friendly; on the reference kit the signed hap grew from ~32.7 MB to ~75.3 MB
 (253 payload files, ~38.7 MB) while every other hap entry stayed byte-identical.
+
+### Enforcing images (>= 7.0.0.111) and the device-compat rewrite
+
+Device images from 7.0.0.111 on (measured on HAD-W24 `7.0.0.111(SP3ENTC293E104R2P1log)`, API 26)
+enforce a per-file code signature for **every** `libs/<abi>/` entry at install. The per-file
+enable (`CODE_SIGN` hilog domain, `EnableCodeSignForFile`) has two traps the payload-in-libs
+layout can hit and the tester's 7.0.0.105 image does not:
+
+1. An **extension-less file name** is never listed in the HAP code-sign block: the SDK
+   `hap-sign-tool -signCode 1` builds its `NativeLibInfoSegment` from `libs/**` entries that have
+   a file extension, so `libs/arm64-v8a/createdump` (the diagnostics ELF) is missing from the
+   block while the installer counts it in `entryPathMap`. Install fails with
+   `ParseNativeLibSignInfo: Libs signature not found: signMap_ size:<all>, signMapPreSize:1` →
+   `enable code signature failed: 8519738` → bm `9568393 verify code signature failed`. The
+   HAP-level signature itself verifies (`hap-sign-tool verify-app` succeeds) and the same hap
+   installs on 7.0.0.105.
+2. A file of **exactly 4096 bytes** (one fs-verity block) fails the fs-verity enable with
+   `EnforceCodeSignForFile ... ret = -768` (`CS_ERR_ENABLE`), independent of content
+   (4095/4097/8192-byte and `MZ`/ELF/text probes all pass; the reference payload's 4096-byte
+   `Microsoft.OpenHarmony.dll` fails).
+
+`-p:OpenHarmonyHapPayloadInLibsDeviceCompat=true` makes the staging rewrite the **staged libs
+copy** of such files: an extension-less ELF is staged as `<name>.so`, any other extension-less
+file as `<name>.bin`, and a 4096-byte file gets 4 zero padding bytes appended (4096 -> 4100). The
+`dotnet.zip` fallback keeps the original names and bytes, the count-based marker stays valid, and
+the rewrite is applied before the `OpenHarmonyCodesign` pass, so a padded ELF is re-signed.
+`false` (default) keeps the previous bytes and the task logs a warning naming the incompatible
+staged files, so a build for an enforcing device cannot ship silently. Validated on the local
+HAD-W24: the kit #34 JIT hap with both rewrites (rename + pad) installs, and the
+`-p:OpenHarmonyHapPayloadInLibs=false` layout (payload only in `dotnet.zip`, host symlink bridge)
+installs as well. The full evidence and the device-side probe recipe are recorded in the
+runtime-ohos plan `docs/plans/2026-09-30-ohos-jit-payload-install-policy.md`.
 
 ## Payload determinism
 
@@ -1328,7 +1362,10 @@ defined inline with `RoslynCodeTaskFactory` (task-assembly migration, audit V8):
   host (Visual Studio / `MSBuild.exe`, net472+) and under the .NET MSBuild host (`dotnet build`);
   `Microsoft.Build.Framework`/`Microsoft.Build.Utilities.Core` are compile-only references
   (`ExcludeAssets="runtime"`) because the host provides them at task-load time. The assembly is
-  deterministic; no deps.json is shipped.
+  deterministic; no deps.json is shipped. `DebugType=none` keeps a rebuild byte-identical across
+  the rc.2 SDK builds (`.109`/`.112`): the portable PDB identity (CodeView GUID, PDB checksum,
+  debug-entry timestamp) was the only byte drift, and no PDB is shipped, so the
+  `scripts/selftest-tasks.sh` S3 pack gate compares the sources, not the compiler build.
 - **Distribution**: `scripts/prepare-packs.sh` builds it and copies it into
   `packs/Microsoft.OpenHarmony.Sdk/<version>/tools/`. The pack targets load it with
   `UsingTask AssemblyFile="$(MSBuildThisFileDirectory)../tools/Microsoft.OpenHarmony.Tasks.dll"`.
