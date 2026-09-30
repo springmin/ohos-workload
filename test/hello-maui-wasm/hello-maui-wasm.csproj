@@ -1,0 +1,75 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <!-- B2 demo: a MAUI window whose WebView hosts a full Blazor WebAssembly site. The site is
+         the publish/wwwroot output of test/hello-blazorwasm; the pack target
+         _OpenHarmonyStageWasmSite copies OpenHarmonyWasmSiteDir into the hap payload under
+         wasmsite/, and App.cs registers that root with the ArkTS shell
+         (OpenHarmonyWebViewHandler.RegisterWasmSite) before pointing the WebView at
+         OpenHarmonyWebViewHandler.WasmSiteOrigin. No Razor SDK is needed: this project carries
+         no wwwroot of its own and no BlazorWebView control (a WASM site boots itself from
+         _framework/blazor.webassembly*.js). -->
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <TargetFrameworks>net11.0-openharmony20.0;net11.0-openharmony26.0</TargetFrameworks>
+    <OutputType>Exe</OutputType>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <!-- HarmonyOS bundle names accept only letters, digits, '_' and '.'; the assembly name has
+         hyphens, so pin a legal default (overridable). -->
+    <OpenHarmonyBundleName Condition=" '$(OpenHarmonyBundleName)' == '' ">com.example.hellomauiwasm</OpenHarmonyBundleName>
+    <!-- The published Blazor WebAssembly site. Override with -p:OpenHarmonyWasmSiteDir=<dir>
+         (the default is test/hello-blazorwasm/out/publish/wwwroot, where run-smoke.sh writes
+         it). The pack target fails the publish when the directory has no index.html, so a
+         hap can never ship without the site. -->
+    <OpenHarmonyWasmSiteDir Condition=" '$(OpenHarmonyWasmSiteDir)' == '' ">$(MSBuildThisFileDirectory)../hello-blazorwasm/out/publish/wwwroot</OpenHarmonyWasmSiteDir>
+    <!-- NativeAOT variant (AOT-MAUI): the marker is inferred from PublishAot so the documented
+         `dotnet publish -p:PublishAot=true` needs no extra property; -p:OpenHarmonyAotApp=true
+         is the short form and turns the AOT publish properties on itself. The variant compiles
+         the app to a native shared library (NativeLib=Shared) with its own openharmony_app_main
+         export (AotEntry.cs under OPENHARMONY_AOT) because the hosting assembly's export is the
+         JIT-only hostfxr route. The hap packaging targets consume the same marker to emit the
+         AOT hap variant (docs/openharmony-hap-packaging.md, "NativeAOT HAP variant"). -->
+    <OpenHarmonyAotApp Condition=" '$(OpenHarmonyAotApp)' == '' and '$(PublishAot)' == 'true' ">true</OpenHarmonyAotApp>
+    <PublishAot Condition=" '$(OpenHarmonyAotApp)' == 'true' ">true</PublishAot>
+    <NativeLib Condition=" '$(OpenHarmonyAotApp)' == 'true' and '$(NativeLib)' == '' ">Shared</NativeLib>
+  </PropertyGroup>
+  <PropertyGroup Condition=" '$(OpenHarmonyAotApp)' == 'true' ">
+    <DefineConstants>$(DefineConstants);OPENHARMONY_AOT</DefineConstants>
+    <!-- NativeAOT's shared-library mode (NativeLib=Shared) is only reachable from a library
+         project: Microsoft.NETCore.Native.Publish.targets fails the publish with "NativeLib
+         requires OutputType=Library" otherwise. The AOT app has no managed entry point to
+         generate either - the native host dlopens lib$(TargetName).so and calls the
+         openharmony_app_main export from AotEntry.cs - so OutputType is switched per variant
+         instead of at the top of the file (the JIT route keeps OutputType=Exe and its
+         apphost/entry-point behaviour). A Library target still publishes TargetFileName
+         (hello-maui-wasm.dll), which the hap staging writes into resources/rawfile/app.json as
+         the assembly name the host derives lib<stem>.so from. -->
+    <OutputType>Library</OutputType>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="Microsoft.Maui.Controls" Version="11.0.0-rc.2.26478.12" />
+    <PackageReference Include="Microsoft.Maui.Graphics" Version="11.0.0-rc.2.26478.12" />
+    <!-- The slice's BlazorWebView handler compiles against these types (test/Directory.Build.props
+         defines OPENHARMONY_BLAZOR_WEBVIEW for every test project). -->
+    <PackageReference Include="Microsoft.AspNetCore.Components.WebView.Maui" Version="11.0.0-rc.2.26478.12" />
+    <!-- First-party assemblies default to ProjectReferences; a pinned HOSTING_DLL /
+         OPENHARMONY_GRAPHICS_DLL (or -p:HostingDll=) still wins. Roots come from
+         test/Directory.Build.props. -->
+    <ProjectReference Include="$(HostingProject)" Condition="'$(HostingDll)' == ''" />
+    <ProjectReference Include="$(GraphicsProject)" Condition="'$(OpenHarmonyGraphicsDll)' == ''" />
+    <Reference Include="Microsoft.OpenHarmony.Hosting" Condition="'$(HostingDll)' != ''">
+      <HintPath>$(HostingDll)</HintPath>
+      <Private>true</Private>
+    </Reference>
+    <Reference Include="Microsoft.OpenHarmony.Maui.Graphics" Condition="'$(OpenHarmonyGraphicsDll)' != ''">
+      <HintPath>$(OpenHarmonyGraphicsDll)</HintPath>
+      <Private>true</Private>
+    </Reference>
+    <Compile Include="$(MauiSliceDir)/*.cs" />
+  </ItemGroup>
+  <Target Name="_HelloMauiWasmInputs" BeforeTargets="PrepareForBuild">
+    <Error Condition="'$(MauiSliceDir)' == ''"
+           Text="MauiSliceDir is empty. Check out springmin/maui-ohos and set MAUI_SLICE_DIR (or pass -p:MauiSliceDir=&lt;dir&gt;)." />
+    <Error Condition="'$(MauiSliceDir)' != '' and !Exists('$(MauiSliceDir)')"
+           Text="The maui-ohos slice directory '$(MauiSliceDir)' does not exist; set MAUI_SLICE_DIR (or -p:MauiSliceDir=&lt;dir&gt;) to src/Core/src/Platform/OpenHarmony." />
+  </Target>
+</Project>
