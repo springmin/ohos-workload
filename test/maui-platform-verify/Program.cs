@@ -12,7 +12,7 @@ using Microsoft.Maui.Platform;
 // after the fuzz tail) instead of letting every caller repeat its own threshold constant.
 VerifyLineCountingWriter verifyStdout = new(Console.Out);
 Console.SetOut(verifyStdout);
-const int verifyCheckTotal = 535;                     // documented full [verify] line count (+4 MS-MODE runtime mode switch, +10 P2c-DEEPLINK, +4 P2b-IMG, +16 P1b-LIST, +10 P1a-ANIM, +2 SEC3 storage/deep-link pins, +5 W-series WebView wiring, +3 T1 InputView mapping, +4 T2 WebView gaps, +4 T3 GraphicsView interaction, +7 T10 modal accessibility, +4 T4 Label formatted text, +4 T5 layout semantics, +6 T7 DatePicker calendar/min-max, +4 T9 window title bar, +4 T11 diagnostics overlay, +1 N2 empty ContentPage arrangement, +6 T8 TableView, +5 T8 uneven rows, +7 T6 RTL flow direction, +5 T22 MainThread bridge, +2 FIX-TABBED tabbed CurrentPage, +4 T13 group footer view/N3 picker IsOpen, +5 T21 system font scale, +3 T21 font scale source wiring, +2 A11Y-TABBED tabbed accessibility, +3 N1 host multi-pointer, +5 T12 CarouselView group slides, +7 T14 rich shell flyout, +10 T14 flyout leftovers (MenuItemTemplate/FlyoutContent/AsMultipleItems), +2 FIX-SHELL shell CurrentPage, +2 A11Y-SHELL shell accessibility, +7 T15 rich Shell.TitleView, +8 T16 structured menus, +3 N4 TitleBar accessibility row, +3 T18 Essentials Map, +4 N5 overlay passthrough suppression, +5 N6 window decorations, +4 T20 media bridge)
+const int verifyCheckTotal = 538;                     // documented full [verify] line count (+4 MS-MODE runtime mode switch, +10 P2c-DEEPLINK, +4 P2b-IMG, +16 P1b-LIST, +10 P1a-ANIM, +2 SEC3 storage/deep-link pins, +5 W-series WebView wiring, +3 T1 InputView mapping, +4 T2 WebView gaps, +4 T3 GraphicsView interaction, +7 T10 modal accessibility, +4 T4 Label formatted text, +4 T5 layout semantics, +6 T7 DatePicker calendar/min-max, +4 T9 window title bar, +4 T11 diagnostics overlay, +1 N2 empty ContentPage arrangement, +6 T8 TableView, +5 T8 uneven rows, +7 T6 RTL flow direction, +5 T22 MainThread bridge, +2 FIX-TABBED tabbed CurrentPage, +4 T13 group footer view/N3 picker IsOpen, +5 T21 system font scale, +3 T21 font scale source wiring, +2 A11Y-TABBED tabbed accessibility, +3 N1 host multi-pointer, +5 T12 CarouselView group slides, +7 T14 rich shell flyout, +10 T14 flyout leftovers (MenuItemTemplate/FlyoutContent/AsMultipleItems), +2 FIX-SHELL shell CurrentPage, +2 A11Y-SHELL shell accessibility, +7 T15 rich Shell.TitleView, +8 T16 structured menus, +3 N4 TitleBar accessibility row, +3 T18 Essentials Map, +4 N5 overlay passthrough suppression, +5 N6 window decorations, +4 T20 media bridge, +3 B2 wasm site in a MAUI WebView)
 const int verifyCheckFloor = verifyCheckTotal - 20;   // documented floor convention (total - 20)
 
 // A small image file for the Image handler.
@@ -4329,6 +4329,109 @@ Console.WriteLine($"[verify] w5 blazor sample razor={wRazorSample} staging={wRaz
 if (!wRazorOk)
 {
     throw new InvalidOperationException("the hello-maui-razor B1 sample or the Blazor asset staging target is missing/drifted");
+}
+
+// ---- B2: Blazor WebAssembly in a MAUI WebView (registration + shell wasm mode + staging) ------
+// The managed half: OpenHarmonyWebViewHandler.RegisterWasmSite validates a safe payload root,
+// stamps the wire config for the shell ("blazor" + mode "wasm" through the source-generated
+// context) and degrades to false without an app payload context. The origin/root constants are
+// the contract the pack staging target and the demo app share.
+bool b2Origin = OpenHarmonyWebViewHandler.WasmSiteOrigin == "https://blazorwasm.local/" &&
+    OpenHarmonyWebViewHandler.WasmSiteRoot == "wasmsite";
+bool b2RegisterDegrades = true;
+bool b2RegisterRejected = true;
+try
+{
+    // No app payload context off-device: the registration degrades without throwing.
+    b2RegisterDegrades = !OpenHarmonyWebViewHandler.RegisterWasmSite();
+    // Unsafe roots are refused before the app context is even consulted.
+    b2RegisterRejected = !OpenHarmonyWebViewHandler.RegisterWasmSite("../escape") &&
+        !OpenHarmonyWebViewHandler.RegisterWasmSite("/rooted") &&
+        !OpenHarmonyWebViewHandler.RegisterWasmSite("\\rooted") &&
+        !OpenHarmonyWebViewHandler.RegisterWasmSite("nested/../escape");
+}
+catch (Exception ex)
+{
+    Console.WriteLine($"[verify] b2 register threw {ex.GetType().Name}: {ex.Message}");
+    b2RegisterDegrades = false;
+}
+bool b2ManagedOk = b2Origin && b2RegisterDegrades && b2RegisterRejected;
+Console.WriteLine($"[verify] b2 wasm site managed origin={b2Origin} degradesOffDevice={b2RegisterDegrades} rejectsUnsafeRoots={b2RegisterRejected} assert={b2ManagedOk}");
+if (!b2ManagedOk)
+{
+    throw new InvalidOperationException("the WebView wasm site registration API is missing or drifted");
+}
+
+// The wire + shell halves: the handler sends the "blazor" command with mode "wasm" through the
+// source-generated WasmSiteConfig, the JSON context carries the type, and every preview pack's
+// shell clears the hybrid bootstrap for a wasm registration, keeps the hybrid auto-load out and
+// forwards BLZ_* console markers to hilog under the shared BlazorWebHost tag.
+bool b2Wire = wHandler.Contains("public static bool RegisterWasmSite(string? contentRoot = null)") &&
+    wHandler.Contains("public const string WasmSiteOrigin = \"https://blazorwasm.local/\";") &&
+    wHandler.Contains("public const string WasmSiteRoot = \"wasmsite\";") &&
+    wHandler.Contains("OpenHarmonyBridge.WebCommand(\"blazor\", JsonSerializer.Serialize(new WasmSiteConfig") &&
+    wHandler.Contains("public string Mode { get; init; } = \"wasm\";");
+string? b2ContextPath = FindHostSource("OpenHarmonySliceJsonContext.cs");
+string b2Context = b2ContextPath is null ? string.Empty : File.ReadAllText(b2ContextPath);
+b2Wire &= b2Context.Contains("[JsonSerializable(typeof(OpenHarmonyWebViewHandler.WasmSiteConfig))]");
+// NativeAOT launch ordering: the app host re-attaches the bridge on construction, so the
+// context cached by the module initializer before the host published it is refreshed.
+string? b2AppHostPath = FindHostSource("OpenHarmonyMauiAppHost.cs");
+string b2AppHost = b2AppHostPath is null ? string.Empty : File.ReadAllText(b2AppHostPath);
+b2Wire &= b2AppHost.Contains("OpenHarmonyBridge.Attach();");
+bool b2ShellWasm = true;
+foreach (string b2Version in wShellVersions)
+{
+    string? b2ShellPath = FindHostSource($"packs/Microsoft.OpenHarmony.Sdk/{b2Version}/templates/ets/pages/Index.ets");
+    string b2Shell = b2ShellPath is null ? string.Empty : File.ReadAllText(b2ShellPath);
+    b2ShellWasm &= b2Shell.Contains("mode?: string;") &&
+        b2Shell.Contains("this.blazorWasmMode = config.mode === 'wasm';") &&
+        b2Shell.Contains("if (this.blazorRegistered && !this.blazorWasmMode) {") &&
+        b2Shell.Contains("!this.blazorRegistered || this.blazorWasmMode || this.blazorBootstrapped") &&
+        b2Shell.Contains("const BLZ_TAG = 'BlazorWebHost';") &&
+        b2Shell.Contains(".onConsole((event) => {") &&
+        b2Shell.Contains("hilog.info(DOMAIN, BLZ_TAG, 'marker: %{public}s', consoleMessage);") &&
+        b2Shell.Contains("this.logInfo(`[maui] blazor assets: origin=${this.blazorOrigin} root=${this.blazorRoot}") &&
+        b2Shell.Contains("this.logInfo(`[maui] web load: ${arg}`);") &&
+        b2Shell.Contains("this.logInfo(`[maui] web serve: ${url}`);") &&
+        b2Shell.Contains("this.blazorServeLogs = 0;");
+}
+bool b2WireOk = b2Wire && b2ShellWasm;
+Console.WriteLine($"[verify] b2 wasm wire wire={b2Wire} shellWasmMode={b2ShellWasm} packs=22,23,24 assert={b2WireOk}");
+if (!b2WireOk)
+{
+    throw new InvalidOperationException(
+        $"the wasm site wire or the shell wasm mode is missing or drifted: wire={b2Wire} shell={b2ShellWasm}");
+}
+
+// The staging + demo halves: every preview pack's target copies the published site into the
+// payload (fail-fast index.html check, safe-root guard, wired into the hap staging target), and
+// the hello-maui-wasm demo defaults OpenHarmonyWasmSiteDir to the smoke publish and points its
+// WebView at the wasm origin after registering the site.
+bool b2Staging = true;
+foreach (string b2Version in wShellVersions)
+{
+    string? b2TargetPath = FindHostSource($"packs/Microsoft.OpenHarmony.Sdk/{b2Version}/targets/OpenHarmony.Hap.targets");
+    string b2Target = b2TargetPath is null ? string.Empty : File.ReadAllText(b2TargetPath);
+    b2Staging &= b2Target.Contains("<Target Name=\"_OpenHarmonyStageWasmSite\"") &&
+        b2Target.Contains("_OpenHarmonyStageBlazorAssets;_OpenHarmonyStageWasmSite;_OpenHarmonyResolvePermissions") &&
+        b2Target.Contains("OpenHarmonyWasmSiteRoot") &&
+        b2Target.Contains("carries no index.html");
+}
+string? b2DemoProjectPath = FindHostSource("test/hello-maui-wasm/hello-maui-wasm.csproj");
+string b2DemoProject = b2DemoProjectPath is null ? string.Empty : File.ReadAllText(b2DemoProjectPath);
+string? b2DemoAppPath = FindHostSource("test/hello-maui-wasm/App.cs");
+string b2DemoApp = b2DemoAppPath is null ? string.Empty : File.ReadAllText(b2DemoAppPath);
+bool b2Demo = b2DemoProject.Contains("OpenHarmonyWasmSiteDir") &&
+    b2DemoProject.Contains("hello-blazorwasm/out/publish/wwwroot") &&
+    b2DemoApp.Contains("OpenHarmonyWebViewHandler.RegisterWasmSite()") &&
+    b2DemoApp.Contains("Source = OpenHarmonyWebViewHandler.WasmSiteOrigin");
+bool b2StagingOk = b2Staging && b2Demo;
+Console.WriteLine($"[verify] b2 wasm staging staging={b2Staging} demo={b2Demo} packs=22,23,24 assert={b2StagingOk}");
+if (!b2StagingOk)
+{
+    throw new InvalidOperationException(
+        $"the wasm site staging target or the hello-maui-wasm demo is missing or drifted: staging={b2Staging} demo={b2Demo}");
 }
 
 // ---- T1: InputView mapping (Entry/Editor/SearchBar + OpenHarmonyView) -------------------------
