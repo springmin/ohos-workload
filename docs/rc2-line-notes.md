@@ -54,7 +54,8 @@ RID `openharmony-arm64`；workload `openharmony 1.0.0-preview.28/11.0.100-rc.2`�
    “linker not found”（而 `command -v` 与 NDK clang++ 本体都正常；`_WhereLinker=0`
    全局属性会被探针 Output 覆写）。**修复**：运行时保留规范名 `OPENHARMONY`
    （`IsOSPlatform("openharmony")` 语义不变），同时接受 **`LINUX` 别名**（macOS 同款手法），
-   并令 `IsLinux()` 为真（`OperatingSystem.cs`，runtime `fix/ohos-rc2` = `417ab220532`；
+   并令 `IsLinux()` 为真（`OperatingSystem.cs`，runtime `fix/ohos-rc2` = `417ab220532`，
+   已随 rc.2 线并入 `feature/openharmony`（merge `9b31ed2d08a`）；
    MSBuild 侧 `s_isUnixLike = IsLinux || IsOSX || IsBSD || IsHaiku` 已源码核验）。
    CI 验证 run 36552629066 全绿（冷 57m33s）；**设备实证 ✓**：`OS Platform:
    Linux`、探针 `IsOSPlatform(Linux)=True`、`Exec` rc=0（基线为 False + MSB3073）。
@@ -82,3 +83,6 @@ RID `openharmony-arm64`；workload `openharmony 1.0.0-preview.28/11.0.100-rc.2`�
   `.28` release 已取代 `.27`（`.25` 已删除；`.26`/`.27` 保留历史）。
 - 设备冒烟基线（2026-09-29）：install `rc=0`、签名由回退工具完成、workload list 正确、
   workload-TFM publish + 真机运行通过。
+- **rc.2 主线并入（2026-09-30）**：runtime / sdk / aspnetcore / maui-ohos 的 rc.2 线已并入各自
+  `feature/openharmony`，本仓 `master` 同轮把 pin 指向新主线 tip（`MAUI_OHOS_REF=a00c30631a`、
+  `SDK_OHOS_REF=469eae2734`）；后续 kit/tester 直接取主线即可。

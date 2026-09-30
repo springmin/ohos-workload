@@ -40,7 +40,7 @@ on:
         description: 'maui-ohos commit SHA to compile (defaults to the pinned feature/openharmony tip)'
         required: false
         type: string
-        default: '63d6fe701993ceea8b1e0ec3ed57c0da4180756f'
+        default: 'a00c30631a41c180c13fc5288fe35256de80f5df'
   push:
     branches: [ master ]
   pull_request:
@@ -52,7 +52,9 @@ permissions:
 
 # Reproducible cross-repo compile: the MAUI slice is checked out at an exact commit, not the
 # mutable feature/openharmony branch, so a push to the fork cannot change what this gate compiles.
-# The default is the feature/openharmony tip: 63d6fe70, the N6 window decoration mapping
+# The default is the feature/openharmony tip: a00c30631a, the rc.2 slice re-anchor
+# (dotnet/maui release/11.0.1xx-rc2 349017b7 + the OpenHarmony delta, Microsoft.Maui.*
+# 11.0.0-rc.2.26478.12); it carries the N6 window decoration mapping
 # (OpenHarmonyWindowDecoration: system minimize/maximize/close buttons and the title-band drag
 # onto the managed TitleBar row, `ohos_host_window_decor`) on top of the N5 overlay touch
 # passthrough suppression (OpenHarmonyMauiAppHost consumes the stream while an overlay sets
@@ -84,7 +86,7 @@ permissions:
 # and refresh this comment when the harness pins or the tip move (workflow_dispatch can compile
 # any commit).
 env:
-  MAUI_OHOS_REF: ${{ github.event.inputs.maui_ohos_ref || '63d6fe701993ceea8b1e0ec3ed57c0da4180756f' }}
+  MAUI_OHOS_REF: ${{ github.event.inputs.maui_ohos_ref || 'a00c30631a41c180c13fc5288fe35256de80f5df' }}
   # setup-dotnet installs the requested 11.0.x preview into DOTNET_INSTALL_DIR; on Linux that
   # defaults to /usr/share/dotnet, which a per-user cache cannot persist. Point it at ~/.dotnet
   # (the action resolves the ~ prefix against $HOME) so the cache step below actually avoids the
