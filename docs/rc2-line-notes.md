@@ -69,8 +69,9 @@ RID `openharmony-arm64`；workload `openharmony 1.0.0-preview.28/11.0.100-rc.2`�
    **2026-09-30 更新**：bundle 重打**全链复测通过** ✓✓（`prepare-packs` 15s + bundle 打包 5s；
    产物 `WorkloadManifest.json` 与发布版 `.28` **字节级一致** ✓）。构建环境提示（本机三处同源怪癖 ✗）：
 
-   ① MSBuild server 握手挂起（`lib-dotnet-env.sh` 已挡 ✓）；② **Roslyn 编译器服务器握手挂起** ✗
-   （**未挡** ✗：全新 checkout 开箱构建会挂 ✗——需 `UseSharedCompilation=false` ✓）；
+   ① MSBuild server 握手挂起（`lib-dotnet-env.sh` 已挡 ✓）；② **Roslyn 编译器服务器握手挂起**
+   （**已挡** ✓：`lib-dotnet-env.sh` 已默认 `UseSharedCompilation=false`，ohos-workload `e22aecd` ✓
+   ——全新 checkout 开箱构建 4.9s ✓）；
    ③ **网络还原无超时会挂** ✗（需离线/最小 `RestoreConfigFile` ✓）。
 
 - **发布重跑协议（第四锚）**：selfsign 已重上 ✓ → 发布面为**四锚**（SDK / runtime / workload /
