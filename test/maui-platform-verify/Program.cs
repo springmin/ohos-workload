@@ -12,7 +12,7 @@ using Microsoft.Maui.Platform;
 // after the fuzz tail) instead of letting every caller repeat its own threshold constant.
 VerifyLineCountingWriter verifyStdout = new(Console.Out);
 Console.SetOut(verifyStdout);
-const int verifyCheckTotal = 538;                     // documented full [verify] line count (+4 MS-MODE runtime mode switch, +10 P2c-DEEPLINK, +4 P2b-IMG, +16 P1b-LIST, +10 P1a-ANIM, +2 SEC3 storage/deep-link pins, +5 W-series WebView wiring, +3 T1 InputView mapping, +4 T2 WebView gaps, +4 T3 GraphicsView interaction, +7 T10 modal accessibility, +4 T4 Label formatted text, +4 T5 layout semantics, +6 T7 DatePicker calendar/min-max, +4 T9 window title bar, +4 T11 diagnostics overlay, +1 N2 empty ContentPage arrangement, +6 T8 TableView, +5 T8 uneven rows, +7 T6 RTL flow direction, +5 T22 MainThread bridge, +2 FIX-TABBED tabbed CurrentPage, +4 T13 group footer view/N3 picker IsOpen, +5 T21 system font scale, +3 T21 font scale source wiring, +2 A11Y-TABBED tabbed accessibility, +3 N1 host multi-pointer, +5 T12 CarouselView group slides, +7 T14 rich shell flyout, +10 T14 flyout leftovers (MenuItemTemplate/FlyoutContent/AsMultipleItems), +2 FIX-SHELL shell CurrentPage, +2 A11Y-SHELL shell accessibility, +7 T15 rich Shell.TitleView, +8 T16 structured menus, +3 N4 TitleBar accessibility row, +3 T18 Essentials Map, +4 N5 overlay passthrough suppression, +5 N6 window decorations, +4 T20 media bridge, +3 B2 wasm site in a MAUI WebView)
+const int verifyCheckTotal = 540;                     // documented full [verify] line count (+4 MS-MODE runtime mode switch, +10 P2c-DEEPLINK, +4 P2b-IMG, +16 P1b-LIST, +10 P1a-ANIM, +2 SEC3 storage/deep-link pins, +5 W-series WebView wiring, +3 T1 InputView mapping, +4 T2 WebView gaps, +4 T3 GraphicsView interaction, +7 T10 modal accessibility, +4 T4 Label formatted text, +4 T5 layout semantics, +6 T7 DatePicker calendar/min-max, +4 T9 window title bar, +4 T11 diagnostics overlay, +1 N2 empty ContentPage arrangement, +6 T8 TableView, +5 T8 uneven rows, +7 T6 RTL flow direction, +5 T22 MainThread bridge, +2 FIX-TABBED tabbed CurrentPage, +4 T13 group footer view/N3 picker IsOpen, +5 T21 system font scale, +3 T21 font scale source wiring, +2 A11Y-TABBED tabbed accessibility, +3 N1 host multi-pointer, +5 T12 CarouselView group slides, +7 T14 rich shell flyout, +10 T14 flyout leftovers (MenuItemTemplate/FlyoutContent/AsMultipleItems), +2 FIX-SHELL shell CurrentPage, +2 A11Y-SHELL shell accessibility, +7 T15 rich Shell.TitleView, +8 T16 structured menus, +3 N4 TitleBar accessibility row, +3 T18 Essentials Map, +4 N5 overlay passthrough suppression, +5 N6 window decorations, +4 T20 media bridge, +3 B2 wasm site in a MAUI WebView, +2 W10 NativeAOT managed entry (host libs-dir resolution + shell AOT payload probe))
 const int verifyCheckFloor = verifyCheckTotal - 20;   // documented floor convention (total - 20)
 
 // A small image file for the Image handler.
@@ -4393,7 +4393,7 @@ foreach (string b2Version in wShellVersions)
         b2Shell.Contains("hilog.info(DOMAIN, BLZ_TAG, 'marker: %{public}s', consoleMessage);") &&
         b2Shell.Contains("this.logInfo(`[maui] blazor assets: origin=${this.blazorOrigin} root=${this.blazorRoot}") &&
         b2Shell.Contains("this.logInfo(`[maui] web load: ${arg}`);") &&
-        b2Shell.Contains("this.logInfo(`[maui] web serve: ${url}`);") &&
+        b2Shell.Contains("this.logInfo(`[maui] web serve: ${url} -> ${this.blazorFilePath(url)}`);") &&
         b2Shell.Contains("this.blazorServeLogs = 0;");
 }
 bool b2WireOk = b2Wire && b2ShellWasm;
@@ -4432,6 +4432,43 @@ if (!b2StagingOk)
 {
     throw new InvalidOperationException(
         $"the wasm site staging target or the hello-maui-wasm demo is missing or drifted: staging={b2Staging} demo={b2Demo}");
+}
+
+// W10 shell: the payload-in-libs probe accepts the NativeAOT form next to the marker. A
+// NativeAOT publish replaces the managed <assembly> with lib<stem>.so; the zip fallback carries
+// no AOT image (the packaging excludes the root *.so), so without this the launch fell through
+// to an extracted app_dir the device namespace refuses to dlopen from. Both ability variants of
+// every synced pack carry the probe.
+bool w10Shell = true;
+foreach (string w10Version in new[] { "1.0.0-preview.22", "1.0.0-preview.23", "1.0.0-preview.24", "1.0.0-preview.28" })
+{
+    string? w10AbilityPath = FindHostSource($"packs/Microsoft.OpenHarmony.Sdk/{w10Version}/templates/ets/entryability/EntryAbility.ets");
+    string? w10AbilityUiPath = FindHostSource($"packs/Microsoft.OpenHarmony.Sdk/{w10Version}/templates/ets/entryability/EntryAbility.ui.ets");
+    string w10Ability = w10AbilityPath is null ? string.Empty : File.ReadAllText(w10AbilityPath);
+    string w10AbilityUi = w10AbilityUiPath is null ? string.Empty : File.ReadAllText(w10AbilityUiPath);
+    w10Shell &= w10Ability.Contains("function libsAotEntryName(assembly: string): string {") &&
+        w10AbilityUi.Contains("function libsAotEntryName(assembly: string): string {") &&
+        w10Ability.Contains("const aotEntry = libsAotEntryName(assembly);") &&
+        w10AbilityUi.Contains("const aotEntry = libsAotEntryName(assembly);") &&
+        w10Ability.Contains("!fs.accessSync(`${dir}/${assembly}`) && !fs.accessSync(`${dir}/${aotEntry}`)") &&
+        w10AbilityUi.Contains("!fs.accessSync(`${dir}/${assembly}`) && !fs.accessSync(`${dir}/${aotEntry}`)") &&
+        w10Ability.Contains("return `lib${stem}.so`;") &&
+        w10AbilityUi.Contains("return `lib${stem}.so`;");
+    string? w10IndexPath = FindHostSource($"packs/Microsoft.OpenHarmony.Sdk/{w10Version}/templates/ets/pages/Index.ets");
+    string w10Index = w10IndexPath is null ? string.Empty : File.ReadAllText(w10IndexPath);
+    // Page shell: the payload read uses the single `fs` alias (the duplicate `fileIo` binding
+    // never resolved on device: "fileIo is not defined" -> every served asset 404), and the
+    // static-asset fingerprint map resolves both directions (10 lowercase alnum fingerprint).
+    w10Shell &= w10Index.Contains("import { fileIo as fs, fileUri, picker } from '@kit.CoreFileKit';") &&
+        !w10Index.Contains("fileIo.") &&
+        w10Index.Contains("private staticFingerprintFile(filePath: string): string | undefined {") &&
+        w10Index.Contains("new RegExp('^(.+)\\\\.[0-9a-z]{10}$').exec(stem)") &&
+        w10Index.Contains("const resolved: string | undefined = this.staticFingerprintFile(filePath);");
+}
+Console.WriteLine($"[verify] w10 shell aot payload probe packs=22,23,24,28 markerAotEntry={w10Shell} variants=2 assert={w10Shell}");
+if (!w10Shell)
+{
+    throw new InvalidOperationException("the W10 AOT-aware payload-in-libs probe is missing or drifted in the shell variants");
 }
 
 // ---- T1: InputView mapping (Entry/Editor/SearchBar + OpenHarmonyView) -------------------------
@@ -7538,6 +7575,29 @@ if (!a7NativeOk)
         $"endLaunchCalls={a7EndLaunchCalls} aotRoute={a7AotRoute} aotProbe={a7AotProbe} source={cSourcePath ?? "<missing>"}");
 }
 
+// W10 host: the payload-in-libs app_dir resolution recognizes the NativeAOT launch image
+// (lib<stem>.so) next to the staged marker, not only the managed <assembly>: the zip fallback
+// excludes the root *.so by design and the device namespace refuses a dlopen from the extracted
+// data directory, so an AOT hap without this resolved to an app_dir the AOT launch can never
+// use. The same route records its decision and the entry call/return in dotnet-status.txt
+// (the shell-polled channel; this image does not route the host's stderr to hilog).
+bool w10HostResolve = cSource?.Contains("static int OhosHostAotLibName(char* dst, size_t dst_size, const char* app_assembly_file);") == true &&
+    cSource.Contains("own_has_entry = OhosHostAotLibName(aot_lib_name, sizeof(aot_lib_name), entry_file) == 0 &&") &&
+    cSource.Contains("char status_dir[4096];") &&
+    cSource.Contains("OHOS_HOST start_app aot=%d dir=%s lib=%s") &&
+    cSource.Contains("\"OHOS_HOST start_app aot entry invoking\"") &&
+    cSource.Contains("OHOS_HOST start_app aot entry rc=%d") &&
+    cSource.Contains("static void* OhosHostOpenAppLibrary(const char* tag, const char* lib_path, const char* app_dir,") &&
+    cSource.Contains("lib = dlopen(lib_path, RTLD_LAZY | RTLD_LOCAL);") &&
+    cSource.Contains("static void OhosHostRedirectStderr(const char* dir)") &&
+    cSource.Contains("OhosHostRedirectStderr(launch->status_dir);");
+Console.WriteLine($"[verify] w10 host aot resolve ownAotImage={w10HostResolve} statusLines={w10HostResolve} source='{cSourcePath ?? "<missing>"}' assert={w10HostResolve}");
+if (!w10HostResolve)
+{
+    throw new InvalidOperationException(
+        $"the W10 NativeAOT host app_dir resolution or its dotnet-status observability drifted: source={cSourcePath ?? "<missing>"}");
+}
+
 // A8: both IME text paths truncate through ImeUtf8PrefixLength, which backs off over UTF-8
 // continuation bytes when the buffer limit cuts a sequence (keyboard_set_text replaces the
 // whole buffer, ImeAppendUtf8 appends), so the managed TextInput contract never receives half
@@ -8655,7 +8715,7 @@ foreach (string arktsVersion in new[] { "1.0.0-preview.22", "1.0.0-preview.23", 
         arktsUi.Contains("new picker.DocumentViewPicker(this.hostContext())");
     arktsS3Ok &= !arktsUi.Contains("focusControl") &&
         arktsUi.Contains("this.getUIContext().getFocusController().requestFocus(") &&
-        arktsUi.Contains("new RegExp('^(.+)\\\\.[0-9a-f]{8,32}$').exec(stem)") &&
+        arktsUi.Contains("new RegExp('^(.+)\\\\.[0-9a-z]{10}$').exec(stem)") &&
         arktsUi.Contains("private webVisibility(): Visibility {") &&
         arktsUi.Contains("private shellSearchHitTest(): HitTestMode {") &&
         arktsUi.Contains("private runDisposers(): void {") &&
