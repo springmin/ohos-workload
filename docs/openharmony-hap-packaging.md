@@ -598,9 +598,30 @@ needs `blazor.webview.js` and the message transport, and no
 `dotnet.js`/`dotnet.native.wasm`/`_*.dll` browser assets are staged. A project without `wwwroot`
 is untouched, so its payload stays byte-identical.
 
+### Blazor WebAssembly site staging (B2)
+
+`_OpenHarmonyStageWasmSite` hosts a **published** Blazor WebAssembly site (`dotnet publish` of a
+`blazorwasm` app) in any MAUI app: `-p:OpenHarmonyWasmSiteDir=<publish/wwwroot>` copies that
+directory (index.html, `_framework/blazor.webassembly*.js`, `dotnet.*.js`, the wasm/ICU payloads)
+into the publish payload under `wwwroot`'s sibling `wasmsite/` (`OpenHarmonyWasmSiteRoot`
+overrides the name), so the hap extracts it to `<AppDir>/wasmsite`. A set-but-unusable site
+directory (missing `index.html`, unsafe root) fails the build; an unset `OpenHarmonyWasmSiteDir`
+leaves the target inert, so every other app's payload is byte-identical.
+
+The app arms the shell once with
+`OpenHarmonyWebViewHandler.RegisterWasmSite()` (mode `"wasm"` on the shell's `blazor`
+registration): requests for `https://blazorwasm.local/` are answered from
+`<AppDir>/wasmsite/<path>` with the payload MIME types, **no** Blazor Hybrid bootstrap is
+injected (the site's own `_framework/blazor.webassembly*.js` boots the runtime) and the
+registration does not load the origin - the `WebView.Source =
+OpenHarmonyWebViewHandler.WasmSiteOrigin` load is the single load. The shell forwards the site's
+`BLZ_*` console messages to hilog under the `BlazorWebHost` tag (the same verdict channel the
+ArkTS Blazor host uses), and the demo `test/hello-maui-wasm` covers the end-to-end wiring.
+
 MAUI WebView 接线（ArkWeb 六小缺口：history/frame/cookie/DOM storage/导航事件/失败清屏）与 B1 复跑
 记录（含本机 rc.2 SDK 双偏差 hook、离线门禁数字）见 runtime-ohos
-`docs/plans/2026-09-28-ohos-maui-webview-wiring.md`。
+`docs/plans/2026-09-28-ohos-maui-webview-wiring.md`。B2 的实装/设备证据见 runtime-ohos
+`docs/plans/2026-09-30-ohos-blazor-wasm-webview-b2.md`。
 
 ## Toolchain resolution
 

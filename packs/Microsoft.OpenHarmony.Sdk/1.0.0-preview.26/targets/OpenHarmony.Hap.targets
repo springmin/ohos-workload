@@ -311,6 +311,38 @@
              Text="OpenHarmony: staged _framework/blazor.webview.js from @(StaticWebAsset) into $(PublishDir)wwwroot (native model; no wasm/dotnet browser assets)" />
   </Target>
 
+  <!-- Blazor WebAssembly site staging (B2): a published WASM site directory (the wwwroot
+       `dotnet publish` produces: index.html, _framework/dotnet.js, the fingerprinted runtime
+       assets) is copied under <PublishDir>/<OpenHarmonyWasmSiteRoot> so it travels inside
+       resources/rawfile/dotnet.zip and lands under <AppDir>/wasmsite in the extracted payload.
+       The managed side arms the shell for the site's origin with
+       OpenHarmonyWebViewHandler.RegisterWasmSite (mode "wasm": no Blazor Hybrid bootstrap; the
+       site's own blazor.webassembly*.js boots the runtime); the shell serves the registered
+       root with the payload MIME types. A missing directory is a no-op; a set-but-unusable
+       directory fails the build instead of shipping a site-less app. -->
+  <Target Name="_OpenHarmonyStageWasmSite"
+          Condition=" '$(OpenHarmonyHapPackage)' == 'true' and '$(TargetPlatformIdentifier)' == 'openharmony' and '$(OpenHarmonyWasmSiteDir)' != '' ">
+    <PropertyGroup>
+      <_OpenHarmonyWasmSiteRoot Condition=" '$(_OpenHarmonyWasmSiteRoot)' == '' ">wasmsite</_OpenHarmonyWasmSiteRoot>
+      <_OpenHarmonyWasmSitePublishDir>$([MSBuild]::NormalizeDirectory('$(MSBuildProjectDirectory)', '$(PublishDir)'))</_OpenHarmonyWasmSitePublishDir>
+      <_OpenHarmonyWasmSiteSource>$([MSBuild]::NormalizeDirectory('$(MSBuildProjectDirectory)', '$(OpenHarmonyWasmSiteDir)'))</_OpenHarmonyWasmSiteSource>
+    </PropertyGroup>
+    <!-- The root is joined into the payload as <AppDir>/<root>; it must not be rooted and must
+         not carry empty, "." or ".." segments (the shell's isSafeLayoutPart and the managed
+         registration's ResolveContentRoot enforce the same rule at runtime). -->
+    <Error Condition=" '$(_OpenHarmonyWasmSiteRoot)' == '' or $([System.String]::Copy('$(_OpenHarmonyWasmSiteRoot)').StartsWith('/')) or $([System.String]::Copy('$(_OpenHarmonyWasmSiteRoot)').Contains('\')) or $([System.String]::Copy('$(_OpenHarmonyWasmSiteRoot)').Contains('..')) "
+           Text="OpenHarmonyWasmSiteRoot '$(OpenHarmonyWasmSiteRoot)' must be a safe payload-relative path (no leading '/', no '\' and no '..' segments)." />
+    <Error Condition=" !Exists('$(_OpenHarmonyWasmSiteSource)index.html') "
+           Text="OpenHarmonyWasmSiteDir '$(OpenHarmonyWasmSiteDir)' carries no index.html (point it at the publish/wwwroot directory of a Blazor WebAssembly app)." />
+    <ItemGroup>
+      <_OpenHarmonyWasmSiteAsset Include="$(_OpenHarmonyWasmSiteSource)**/*" />
+    </ItemGroup>
+    <Copy SourceFiles="@(_OpenHarmonyWasmSiteAsset)"
+          DestinationFiles="@(_OpenHarmonyWasmSiteAsset->'$(_OpenHarmonyWasmSitePublishDir)$(_OpenHarmonyWasmSiteRoot)/%(RecursiveDir)%(Filename)%(Extension)')" />
+    <Message Importance="high"
+             Text="OpenHarmony: staged the Blazor WebAssembly site from $(_OpenHarmonyWasmSiteDir) into $(PublishDir)$(_OpenHarmonyWasmSiteRoot) (@(_OpenHarmonyWasmSiteAsset->Count()) files); an app loads it from OpenHarmonyWebViewHandler.WasmSiteOrigin after RegisterWasmSite" />
+  </Target>
+
   <!-- Shared ElfSigner task (sdk-ohos Microsoft.NET.Build.Tasks). Re-signs an ELF64 file in
        place when its .codesign is missing or does not verify (non-ELF files are skipped).
        MicrosoftNETBuildTasksAssembly is defined by Microsoft.NET.Sdk.Common.targets, which is
@@ -468,7 +500,7 @@
        staging and before the zip, so the .codesign pass always covers the final libs/<abi>/ tree. -->
   <Target Name="_OpenHarmonyStageHap"
           AfterTargets="Publish"
-          DependsOnTargets="$(OpenHarmonyAfterPublishDependsOn);_OpenHarmonyDetectToolchain;_OpenHarmonyResolveHapStageDir;_OpenHarmonyStageBlazorAssets;_OpenHarmonyResolvePermissions"
+          DependsOnTargets="$(OpenHarmonyAfterPublishDependsOn);_OpenHarmonyDetectToolchain;_OpenHarmonyResolveHapStageDir;_OpenHarmonyStageBlazorAssets;_OpenHarmonyStageWasmSite;_OpenHarmonyResolvePermissions"
           Condition=" '$(OpenHarmonyHapPackage)' == 'true' and '$(TargetPlatformIdentifier)' == 'openharmony' ">
     <PropertyGroup>
       <_OpenHarmonyTemplatesDir>$(_OpenHarmonySdkPackDir)templates/</_OpenHarmonyTemplatesDir>
