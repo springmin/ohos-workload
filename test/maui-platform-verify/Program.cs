@@ -12,7 +12,7 @@ using Microsoft.Maui.Platform;
 // after the fuzz tail) instead of letting every caller repeat its own threshold constant.
 VerifyLineCountingWriter verifyStdout = new(Console.Out);
 Console.SetOut(verifyStdout);
-const int verifyCheckTotal = 540;                     // documented full [verify] line count (+4 MS-MODE runtime mode switch, +10 P2c-DEEPLINK, +4 P2b-IMG, +16 P1b-LIST, +10 P1a-ANIM, +2 SEC3 storage/deep-link pins, +5 W-series WebView wiring, +3 T1 InputView mapping, +4 T2 WebView gaps, +4 T3 GraphicsView interaction, +7 T10 modal accessibility, +4 T4 Label formatted text, +4 T5 layout semantics, +6 T7 DatePicker calendar/min-max, +4 T9 window title bar, +4 T11 diagnostics overlay, +1 N2 empty ContentPage arrangement, +6 T8 TableView, +5 T8 uneven rows, +7 T6 RTL flow direction, +5 T22 MainThread bridge, +2 FIX-TABBED tabbed CurrentPage, +4 T13 group footer view/N3 picker IsOpen, +5 T21 system font scale, +3 T21 font scale source wiring, +2 A11Y-TABBED tabbed accessibility, +3 N1 host multi-pointer, +5 T12 CarouselView group slides, +7 T14 rich shell flyout, +10 T14 flyout leftovers (MenuItemTemplate/FlyoutContent/AsMultipleItems), +2 FIX-SHELL shell CurrentPage, +2 A11Y-SHELL shell accessibility, +7 T15 rich Shell.TitleView, +8 T16 structured menus, +3 N4 TitleBar accessibility row, +3 T18 Essentials Map, +4 N5 overlay passthrough suppression, +5 N6 window decorations, +4 T20 media bridge, +3 B2 wasm site in a MAUI WebView, +2 W10 NativeAOT managed entry (host libs-dir resolution + shell AOT payload probe))
+const int verifyCheckTotal = 544;                     // documented full [verify] line count (+4 FIX-HOME home page arrange/draw (NavigationPage-in-TabbedPage descent), +4 MS-MODE runtime mode switch, +10 P2c-DEEPLINK, +4 P2b-IMG, +16 P1b-LIST, +10 P1a-ANIM, +2 SEC3 storage/deep-link pins, +5 W-series WebView wiring, +3 T1 InputView mapping, +4 T2 WebView gaps, +4 T3 GraphicsView interaction, +7 T10 modal accessibility, +4 T4 Label formatted text, +4 T5 layout semantics, +6 T7 DatePicker calendar/min-max, +4 T9 window title bar, +4 T11 diagnostics overlay, +1 N2 empty ContentPage arrangement, +6 T8 TableView, +5 T8 uneven rows, +7 T6 RTL flow direction, +5 T22 MainThread bridge, +2 FIX-TABBED tabbed CurrentPage, +4 T13 group footer view/N3 picker IsOpen, +5 T21 system font scale, +3 T21 font scale source wiring, +2 A11Y-TABBED tabbed accessibility, +3 N1 host multi-pointer, +5 T12 CarouselView group slides, +7 T14 rich shell flyout, +10 T14 flyout leftovers (MenuItemTemplate/FlyoutContent/AsMultipleItems), +2 FIX-SHELL shell CurrentPage, +2 A11Y-SHELL shell accessibility, +7 T15 rich Shell.TitleView, +8 T16 structured menus, +3 N4 TitleBar accessibility row, +3 T18 Essentials Map, +4 N5 overlay passthrough suppression, +5 N6 window decorations, +4 T20 media bridge, +3 B2 wasm site in a MAUI WebView, +2 W10 NativeAOT managed entry (host libs-dir resolution + shell AOT payload probe))
 const int verifyCheckFloor = verifyCheckTotal - 20;   // documented floor convention (total - 20)
 
 // A small image file for the Image handler.
@@ -3527,6 +3527,80 @@ if (tabbed.Handler?.PlatformView is OpenHarmonyView tabPlatform)
 
     var contentFrame = ((View)tabTwo.Content!).Frame;
     Console.WriteLine($"[verify] tabbed content frame={contentFrame} (page arranged above the bar)");
+}
+
+// FIX-HOME: a NavigationPage nested in a TabbedPage (itself the detail of a FlyoutPage) must
+// arrange and draw its CurrentPage. The parent container handlers arrange their child page
+// through IView.Arrange, and the navigation handler had no descent into CurrentPage, so the
+// Home tab's page subtree never got a frame and the compositor drew only the chrome (the
+// device black-screen/Home-blank defect). The probe mirrors the hello-maui-app window shape and
+// pins the descent after a parent arrange and across a tab switch/switch-back.
+var fixHomeRows = new VerticalStackLayout { Padding = 24, Spacing = 8 };
+var fixHomeLabel = new Label { Text = "fix-home marker", FontSize = 28, TextColor = Colors.White };
+fixHomeRows.Add(fixHomeLabel);
+var fixHomePage = new ContentPage { Title = "Home", Content = fixHomeRows };
+var fixHomeNav = new NavigationPage(fixHomePage) { Title = "Home", BarBackgroundColor = Colors.DarkSlateBlue };
+var fixAnimLabel = new Label { Text = "fix-anim marker", FontSize = 28 };
+var fixAnimPage = new ContentPage { Title = "Animations", Content = fixAnimLabel };
+var fixHomeTabbed = new TabbedPage { Children = { fixHomeNav, fixAnimPage } };
+var fixHomeFlyout = new FlyoutPage
+{
+    Flyout = new ContentPage { Title = "menu", Content = new Label { Text = "fix-flyout" } },
+    Detail = fixHomeTabbed,
+};
+OpenHarmonyHandlerConnector.ConnectTree(fixHomeFlyout);
+fixHomeFlyout.Measure(1080, 1920);
+fixHomeFlyout.Arrange(new Rect(0, 0, 1080, 1920));
+double fixNavBar = ((OpenHarmonyView)fixHomeNav.Handler!.PlatformView!).NavBarHeight;
+bool fixHomeArranged = fixHomeLabel.Frame.Width > 0 && fixHomeLabel.Frame.Height > 0 &&
+    fixHomeLabel.Frame.Y >= fixNavBar;
+Console.WriteLine($"[verify] fix-home arrange home={fixHomeLabel.Frame} anim={fixAnimLabel.Frame} navBar={fixNavBar} assert={fixHomeArranged}");
+if (!fixHomeArranged)
+{
+    throw new InvalidOperationException("arranging a NavigationPage through its parent did not descend into its CurrentPage (the Home page subtree stayed unarranged)");
+}
+
+var fixHomeCanvas = new TabbedProbeCanvas();
+var fixHomeFactory = OpenHarmonyWindowRenderer.CanvasFactory;
+OpenHarmonyWindowRenderer.CanvasFactory = () => fixHomeCanvas;
+OpenHarmonyWindowRenderer fixHomeRenderer;
+try
+{
+    fixHomeRenderer = new OpenHarmonyWindowRenderer();
+}
+finally
+{
+    OpenHarmonyWindowRenderer.CanvasFactory = fixHomeFactory;
+}
+fixHomeRenderer.Render(fixHomeFlyout, 1080, 1920);
+bool fixHomeDrawn = fixHomeCanvas.Texts.Contains("fix-home marker") &&
+    !fixHomeCanvas.Texts.Contains("fix-anim marker");
+Console.WriteLine($"[verify] fix-home draw home drawn={fixHomeDrawn} texts={fixHomeCanvas.Texts.Count} assert={fixHomeDrawn}");
+if (!fixHomeDrawn)
+{
+    throw new InvalidOperationException("the compositor did not draw the NavigationPage's current page (Home tab content missing)");
+}
+
+fixHomeTabbed.CurrentPage = fixAnimPage;
+fixHomeCanvas.Texts.Clear();
+fixHomeRenderer.Render(fixHomeFlyout, 1080, 1920);
+bool fixAnimDrawn = fixHomeCanvas.Texts.Contains("fix-anim marker") &&
+    !fixHomeCanvas.Texts.Contains("fix-home marker");
+Console.WriteLine($"[verify] fix-home tab switch to anim drawn={fixAnimDrawn} assert={fixAnimDrawn}");
+if (!fixAnimDrawn)
+{
+    throw new InvalidOperationException("the tab switch did not draw the Animations page content");
+}
+
+fixHomeTabbed.CurrentPage = fixHomeNav;
+fixHomeCanvas.Texts.Clear();
+fixHomeRenderer.Render(fixHomeFlyout, 1080, 1920);
+bool fixHomeRedrawn = fixHomeCanvas.Texts.Contains("fix-home marker") &&
+    fixHomeLabel.Frame.Width > 0 && fixHomeLabel.Frame.Y >= fixNavBar;
+Console.WriteLine($"[verify] fix-home tab switch back home drawn={fixHomeCanvas.Texts.Contains("fix-home marker")} frame={fixHomeLabel.Frame} assert={fixHomeRedrawn}");
+if (!fixHomeRedrawn)
+{
+    throw new InvalidOperationException("switching back to the Home tab did not re-arrange/draw the NavigationPage's current page");
 }
 
 // W22-6: gestures, selection, transforms.
