@@ -19,7 +19,14 @@ public static class AotEntryPoint
         string text = Marshal.PtrToStringUTF8(payload) ?? string.Empty;
         string[] lines = text.Split('\n');
         string[] args = lines.Length > 1 ? lines[1..] : Array.Empty<string>();
-        return Program.Run(args);
+        // Entry breadcrumb written straight to the shell-readable status file, bypassing
+        // OpenHarmonyBridge.Context (which may still be empty this early on the AOT route):
+        // the shell polls <filesDir>/dotnet-status.txt, so this proves whether the NativeAOT
+        // trampoline reached the managed entry at all.
+        StatusBreadcrumb.Write($"entry reached (lines={lines.Length})");
+        int rc = Program.Run(args);
+        StatusBreadcrumb.Write($"entry returning rc={rc}");
+        return rc;
     }
 }
 #endif

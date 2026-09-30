@@ -21,7 +21,7 @@ public static class Program
         // Entry-point breadcrumb: on this image the managed side's only readable channel during
         // startup is dotnet-status.txt (the shell polls it); writing here proves whether the
         // NativeAOT trampoline reached the managed entry point at all.
-        OpenHarmonyBridge.WriteStatus("[hello-maui-wasm] managed entry reached");
+        StatusBreadcrumb.Write("managed Main reached");
         return Run(args);
     }
 
@@ -33,6 +33,7 @@ public static class Program
         }
         catch (Exception ex)
         {
+            StatusBreadcrumb.Write($"FAILURE: {ex.GetType().Name}: {ex.Message}");
             // Diagnostic surface: this image has no readable managed stderr/hilog for an app
             // process, so a startup failure is pushed through the shell's web overlay as a data
             // page (visible in the app window and in the shell's [maui] web cmd: data log) and
@@ -55,19 +56,18 @@ public static class Program
 
     public static int RunCore(string[] args)
     {
-        OpenHarmonyBridge.WriteStatus("[hello-maui-wasm] runcore: building");
+        StatusBreadcrumb.Write("runcore: building");
         var builder = MauiApp.CreateBuilder();
         builder.UseOpenHarmony();
         builder.UseMauiApp<App>();
 
         var mauiApp = builder.Build();
-        OpenHarmonyBridge.WriteStatus("[hello-maui-wasm] runcore: built");
+        StatusBreadcrumb.Write("runcore: built");
         var host = mauiApp.Services.GetRequiredService<OpenHarmonyMauiAppHost>();
-        OpenHarmonyBridge.WriteStatus("[hello-maui-wasm] runcore: host resolved");
+        StatusBreadcrumb.Write("runcore: host resolved");
 
-        OpenHarmonyBridge.WriteStatus("[hello-maui-wasm] starting MAUI application");
         host.Run(mauiApp.Services.GetRequiredService<IApplication>());
-        OpenHarmonyBridge.WriteStatus("[hello-maui-wasm] runcore: host.Run returned");
+        StatusBreadcrumb.Write("runcore: host.Run returned");
 
         using var finished = new ManualResetEventSlim(false);
         OpenHarmonyBridge.LifecycleChanged += e =>
