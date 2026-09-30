@@ -42,7 +42,7 @@ on:
         description: 'maui-ohos commit SHA to compile (defaults to the pinned feature/openharmony tip)'
         required: false
         type: string
-        default: 'ebffdd787c8e0dcd99a9c4cccfd279e2a057a494'
+        default: 'eec30c01cd17b8e80526e37fe70fa756a466e214'
 
 # Least privilege: the job only reads this repository and the public springmin/maui-ohos fork;
 # no step pushes anywhere.
@@ -51,9 +51,11 @@ permissions:
 
 # Reproducible cross-repo compile: the MAUI slice is checked out at an exact commit, not the
 # mutable feature/openharmony branch, so a push to the fork cannot change what this gate compiles.
-# The default is the feature/openharmony tip: ebffdd787c, the rc.2 slice re-anchor
-# (dotnet/maui release/11.0.1xx-rc2 349017b7 + the OpenHarmony delta, Microsoft.Maui.*
-# 11.0.0-rc.2.26478.12; the N6 window decoration mapping and its
+# The default is the feature/openharmony tip: 27c8ef6540, the W9 consolidation on top of the
+# rc.2 slice re-anchor ebffdd787c (dotnet/maui release/11.0.1xx-rc2 349017b7 + the OpenHarmony
+# delta, Microsoft.Maui.* 11.0.0-rc.2.26478.12): W9B T14 flyout leftovers + T21 font-scale
+# wiring, W9C T8 uneven TableView rows, W9D T20 media bridge and W9A B2 staged-WASM WebView.
+# The rc.2 tree carries the N6 window decoration mapping and its
 # four caption-glyph pixel checks, T15's three rich-title-view checks and the T16/N4/N5/T18
 # slices below), the N5 overlay touch passthrough suppression 163e7554, the T18 Essentials IMap system-map
 # launcher b386b1c4, the N4 TitleBar row in the accessibility shadow tree 43996268, the T16
@@ -74,10 +76,10 @@ permissions:
 # + T2 WebView CookieContainer sync 8241f1b3, on top of the W-series webview wiring d6325990 and
 # the SEC-SCAN-3 S3-DL3 dot-dot deep-link rejection, on top of the P2c deep-link routing, P2b-IMG,
 # P1b-LIST and P1a-ANIM batches).
-# The interaction harness pins 513 checks / floor 493; advance the pin in lockstep with the
+# The interaction harness pins 538 checks / floor 518; advance the pin in lockstep with the
 # interaction gate and change it deliberately (workflow_dispatch can compile any other commit SHA).
 env:
-  MAUI_OHOS_REF: ${{ github.event.inputs.maui_ohos_ref || 'ebffdd787c8e0dcd99a9c4cccfd279e2a057a494' }}
+  MAUI_OHOS_REF: ${{ github.event.inputs.maui_ohos_ref || 'eec30c01cd17b8e80526e37fe70fa756a466e214' }}
   # Same as the interaction gate: keep the setup-dotnet preview SDK in a cacheable per-user path
   # instead of the runner's /usr/share/dotnet; a newer 11.0.x preview is still downloaded (the
   # action re-resolves the channel), the cache only skips the ~200 MB download when it moved.

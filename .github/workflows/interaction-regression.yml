@@ -40,7 +40,7 @@ on:
         description: 'maui-ohos commit SHA to compile (defaults to the pinned feature/openharmony tip)'
         required: false
         type: string
-        default: 'ebffdd787c8e0dcd99a9c4cccfd279e2a057a494'
+        default: 'eec30c01cd17b8e80526e37fe70fa756a466e214'
   push:
     branches: [ master ]
   pull_request:
@@ -52,9 +52,11 @@ permissions:
 
 # Reproducible cross-repo compile: the MAUI slice is checked out at an exact commit, not the
 # mutable feature/openharmony branch, so a push to the fork cannot change what this gate compiles.
-# The default is the feature/openharmony tip: ebffdd787c, the rc.2 slice re-anchor
-# (dotnet/maui release/11.0.1xx-rc2 349017b7 + the OpenHarmony delta, Microsoft.Maui.*
-# 11.0.0-rc.2.26478.12); it carries the N6 window decoration mapping
+# The default is the feature/openharmony tip: 27c8ef6540, the W9 consolidation on top of the
+# rc.2 slice re-anchor ebffdd787c (dotnet/maui release/11.0.1xx-rc2 349017b7 + the OpenHarmony
+# delta, Microsoft.Maui.* 11.0.0-rc.2.26478.12): W9B T14 flyout leftovers + T21 font-scale
+# wiring, W9C T8 uneven TableView rows, W9D T20 media bridge and W9A B2 staged-WASM WebView.
+# The rc.2 tree carries the N6 window decoration mapping
 # (OpenHarmonyWindowDecoration: system minimize/maximize/close buttons and the title-band drag
 # onto the managed TitleBar row, `ohos_host_window_decor`) on top of the N5 overlay touch
 # passthrough suppression (OpenHarmonyMauiAppHost consumes the stream while an overlay sets
@@ -80,13 +82,13 @@ permissions:
 # spans 043e6468, the T10 modal accessibility overlay c56bf0fa, the T1 InputView mapping dcc7eaac
 # and the T2 CookieContainer sync 8241f1b3, all on top of the W-series webview wiring d6325990,
 # the SEC-SCAN-3 S3-DL3 dot-dot route rejection and the HUKS/deep-link hardening. The suite pins
-# 513 checks / floor 493 (the N1 host multi-pointer lines live in this repository's harness and
+# 538 checks / floor 518 (the N1 host multi-pointer lines live in this repository's harness and
 # hosting bridge, not in the pinned slice) and the full run is green at this compiled tree (local
-# verification: 513/513, floor 493, both perf lines within budget); advance the pin deliberately
+# verification: 538/538, floor 518, both perf lines within budget); advance the pin deliberately
 # and refresh this comment when the harness pins or the tip move (workflow_dispatch can compile
 # any commit).
 env:
-  MAUI_OHOS_REF: ${{ github.event.inputs.maui_ohos_ref || 'ebffdd787c8e0dcd99a9c4cccfd279e2a057a494' }}
+  MAUI_OHOS_REF: ${{ github.event.inputs.maui_ohos_ref || 'eec30c01cd17b8e80526e37fe70fa756a466e214' }}
   # setup-dotnet installs the requested 11.0.x preview into DOTNET_INSTALL_DIR; on Linux that
   # defaults to /usr/share/dotnet, which a per-user cache cannot persist. Point it at ~/.dotnet
   # (the action resolves the ~ prefix against $HOME) so the cache step below actually avoids the

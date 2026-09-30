@@ -89,3 +89,7 @@ RID `openharmony-arm64`；workload `openharmony 1.0.0-preview.28/11.0.100-rc.2`�
 - **rc.2 主线并入（2026-09-30）**：runtime / sdk / aspnetcore / maui-ohos 的 rc.2 线已并入各自
   `feature/openharmony`，本仓 `master` 同轮把 pin 指向新主线 tip（`MAUI_OHOS_REF=ebffdd787c`、
   `SDK_OHOS_REF=469eae2734`）；后续 kit/tester 直接取主线即可。
+- **W9 并入（2026-09-30，承上）**：W9A/B/C/D 四线并入主线（maui `eec30c01cd`、本仓 `master`），
+  三 workflow pin 指向 `eec30c01cd`（套件 **538/floor 518**、导出 **149/149**、切片 0 error/0 IL）；
+  合并壳 abc **336148/22900**（sources `388db42b`），四包 `preview.22/23/24/28` 同步 + provenance；
+  遗留：B2 托管入口缺口、T19 `delivered=0`、本机媒体镜像无 Media Kit。

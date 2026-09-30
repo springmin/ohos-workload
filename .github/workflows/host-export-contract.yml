@@ -22,7 +22,7 @@ on:
         description: 'maui-ohos commit SHA to cross-check (defaults to the pinned slice tip)'
         required: false
         type: string
-        default: 'ebffdd787c8e0dcd99a9c4cccfd279e2a057a494'
+        default: 'eec30c01cd17b8e80526e37fe70fa756a466e214'
   push:
     branches: [ master ]
   pull_request:
@@ -32,7 +32,10 @@ permissions:
 
 # Reproducible cross-repo check: the slice is checked out at an exact commit, not the mutable
 # feature/openharmony branch, so a push to the fork cannot change what this gate verifies.
-# Current tip: ebffdd787c (the rc.2 slice re-anchor: dotnet/maui release/11.0.1xx-rc2
+# Current tip: 27c8ef6540 (the W9 consolidation: W9B T14 flyout leftovers + T21 font-scale
+# wiring, W9C T8 uneven TableView rows, W9D T20 media bridge adding the three ohos_host_media_*
+# exports and W9A B2 staged-WASM WebView; on top of the rc.2 slice re-anchor ebffdd787c:
+# dotnet/maui release/11.0.1xx-rc2
 # 349017b7 + the OpenHarmony delta, Microsoft.Maui.* 11.0.0-rc.2.26478.12; the N6 window
 # decoration mapping - it adds `ohos_host_window_decor` for
 # the caption buttons/title-band drag - on top of the N5 overlay touch passthrough suppression
@@ -55,10 +58,12 @@ permissions:
 # handlers, the S3-DL3 dot-dot route rejection and the HUKS/keystore hardening; the T3/T4/T5/T10,
 # T9/T11/T7, N2/T8/T6, FIX-TABBED, A11Y-TABBED and the T12/T14/FIX-SHELL batches add no host
 # exports, T13/T21/N3 only extend the managed slice, and T15/N4/T18/N5 are managed-only, so with
-# the T16/N6 bridge additions the host export contract is 145/145).
+# the T16/N6 bridge additions and the T20 media bridge (ohos_host_media_request /
+# ohos_host_media_register_result / ohos_host_media_register_event) the host export contract is
+# 149/149).
 # Advance the pin deliberately, in lockstep with the interaction/pixel gates.
 env:
-  MAUI_OHOS_REF: ${{ github.event.inputs.maui_ohos_ref || 'ebffdd787c8e0dcd99a9c4cccfd279e2a057a494' }}
+  MAUI_OHOS_REF: ${{ github.event.inputs.maui_ohos_ref || 'eec30c01cd17b8e80526e37fe70fa756a466e214' }}
 
 jobs:
   contract:
