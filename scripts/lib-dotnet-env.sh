@@ -15,6 +15,13 @@
 #     length for use with domain sockets on this platform") and the client waits out its
 #     connection timeout instead;
 #   * a TMPDIR that does not exist fails the build outright (MSB1025, CreateTempSubdirectory).
+#   * the Roslyn compiler server (VBCSCompiler) speaks over a socket of the same kind and wedges
+#     fresh builds the same way; UseSharedCompilation=false runs csc in-process instead
+#     (measured 2026-09-30: a rebuild with nothing up to date hung >300s without it, 6s with it).
+#
+# Not absorbed here (no safe default): network restores have no timeout of their own and can
+# stall for hours on a flaky link; for package-less builds point RestoreConfigFile at a
+# minimal/offline config (an empty <packageSources><clear/> suffices).
 #
 # Defaults, each applied only while the variable is unset or empty, so an operator can override
 # any of them (e.g. `TMPDIR=/short sh scripts/preflight.sh`):
@@ -24,6 +31,7 @@
 #   MSBUILDDISABLENODEREUSE=1               never reuse a node wedged by an earlier run
 #   DOTNET_CLI_TELEMETRY_OPTOUT=1           no first-run telemetry
 #   DOTNET_NOLOGO=1                         stable output (the scripts grep the build logs)
+#   UseSharedCompilation=false              Roslyn compiler server off (see the quirks above)
 #   TMPDIR/TMP/TEMP                         a writable, socket-capable scratch dir: the caller's
 #                                           TMPDIR when usable, else $DOTNET_ENV_TMPDIR, else
 #                                           /data/storage/el2/base/tmp/opencode/t, else
@@ -43,8 +51,9 @@ DOTNET_CLI_DO_NOT_USE_MSBUILD_SERVER="${DOTNET_CLI_DO_NOT_USE_MSBUILD_SERVER:-1}
 MSBUILDDISABLENODEREUSE="${MSBUILDDISABLENODEREUSE:-1}"
 DOTNET_CLI_TELEMETRY_OPTOUT="${DOTNET_CLI_TELEMETRY_OPTOUT:-1}"
 DOTNET_NOLOGO="${DOTNET_NOLOGO:-1}"
+UseSharedCompilation="${UseSharedCompilation:-false}"
 export DOTNET_CLI_USE_MSBUILD_SERVER DOTNET_CLI_DO_NOT_USE_MSBUILD_SERVER MSBUILDDISABLENODEREUSE \
-    DOTNET_CLI_TELEMETRY_OPTOUT DOTNET_NOLOGO
+    DOTNET_CLI_TELEMETRY_OPTOUT DOTNET_NOLOGO UseSharedCompilation
 
 # A temp dir counts as usable when it exists (or can be created) and a scratch file can be
 # written into it; a non-existing path is created, a file at the path or a read-only dir is not.
