@@ -14,24 +14,24 @@ name: pixel-regression
 # The suite runs exactly once (the run's stdout is teed to result.txt) and the job fails unless it
 # exits 0 and printed "PIXEL ASSERTIONS PASSED".
 #
-# Pixel-expectation policy (documented so the two special cases below are not changed silently):
-#   * "button rounded corner" is the only Check(...) with tolerance=0: the pixel one step inside
-#     the button's top-left corner must stay exactly the page background (DarkSlateBlue). The
-#     managed rasterizer is deterministic off-device (no GPU/anti-aliasing variance), so exactness
-#     is the intended assertion - a shifted corner radius, a lost clip or an over-drawing border
-#     shows up as a 1/255+ deviation. If the compositor ever changes the corner geometry on
-#     purpose, fix the expectation together with that change and document it here; never loosen
-#     the tolerance to make a failure pass. (The checkbox box-stroke check joined this exact
-#     tolerance after its root cause was fixed below.)
-#   * one finding is reported through Known(...) and deliberately not counted as a failure yet:
-#     "selection tint" (measured #3959B3 vs the #395AB3 blend, a 1/255 rounding difference). It
-#     must stay visible in every run and must never be deleted or promoted to a silent pass; a
-#     root-cause fix (or a proven environment-independent expectation) converts it to Check(...)
-#     with an explicit tolerance in the same commit. The other finding, "checkbox box stroke",
-#     was fixed that way: HeadlessCanvas.DrawRectangle now paints the outline in StrokeColor
-#     (DrawPath/DrawLine semantics) instead of the stale FillColor, and the check is a counted
-#     Check with tolerance 0. Only real Check()/boolean failures fail the job, so the remaining
-#     Known does not weaken the gate.
+# Pixel-expectation policy (documented so the special cases below are not changed silently):
+#   * "button rounded corner" is the only Check(...) with tolerance=0 on a *derived* colour: the
+#     pixel one step inside the button's top-left corner must stay exactly the page background
+#     (DarkSlateBlue). The managed rasterizer is deterministic off-device (no GPU/anti-aliasing
+#     variance), so exactness is the intended assertion - a shifted corner radius, a lost clip or
+#     an over-drawing border shows up as a 1/255+ deviation. If the compositor ever changes the
+#     corner geometry on purpose, fix the expectation together with that change and document it
+#     here; never loosen the tolerance to make a failure pass. (The checkbox box-stroke check
+#     joined this exact tolerance after its root cause was fixed below.)
+#   * the former "selection tint" Known(...) finding is now a counted Check with tolerance 0:
+#     HeadlessCanvas.Blend quantizes the 0.35 alpha to a byte first (89/255) and truncates the
+#     blended channel, so the expectation is computed with the same byte quantization
+#     (QuantizedBlend in Program.cs) instead of the float blend - the exact #3959B3 is
+#     deterministic and environment-independent, while the float blend read one LSB high in green
+#     (#395AB3). The earlier finding, "checkbox box stroke", was fixed the same way:
+#     HeadlessCanvas.DrawRectangle now paints the outline in StrokeColor (DrawPath/DrawLine
+#     semantics) instead of the stale FillColor. Only real Check()/boolean failures fail the job;
+#     a known deviation must stay visible in every run rather than being deleted or silenced.
 on:
   push:
     branches: [ master ]

@@ -173,7 +173,11 @@ Rect squareFrame = squareButton.Frame;
 RenderFresh();
 Check("corner radius 0 stays square", canvas.GetPixel((int)squareFrame.X + 1, (int)squareFrame.Y + 1), Colors.MediumSeaGreen, 30);
 
-// Selection tint: tapping an item blends DodgerBlue 35% over the page.
+// Selection tint: tapping an item blends DodgerBlue 35% over the page. The rasterizer quantizes
+// the alpha to a byte (0.35 -> 89/255) and truncates the blended channel, so the expectation is
+// the byte-quantized blend (see QuantizedBlend) rather than the float blend: exact and
+// environment-independent (the old float expectation read one LSB high in green, #395AB3 vs the
+// deterministic #3959B3).
 var selectable = root.Children.OfType<CollectionView>().First();
 RenderFresh();
 Rect item0 = ((OpenHarmonyView)selectable.Handler!.PlatformView!).ViewChildren.FirstOrDefault()?.Frame ?? default;
@@ -184,7 +188,7 @@ host.HandleTouch(false, true, itemX, itemY);
 RenderFresh();
 Console.WriteLine($"  selection item0={item0} tapped=({itemX:0},{itemY:0}) selected='{selectable.SelectedItem}'");
 Color tinted = canvas.GetPixel((int)itemX, (int)itemY);
-Known("selection tint", tinted, Blend(Colors.DarkSlateBlue, Colors.DodgerBlue, 0.35f));
+Check("selection tint", tinted, QuantizedBlend(Colors.DarkSlateBlue, Colors.DodgerBlue, 0.35f), 0);
 
 // GraphicsView: the IDrawable paints through the compositor canvas.
 var graphicsCtl = root.Children.OfType<Microsoft.Maui.Controls.GraphicsView>().First();
@@ -521,10 +525,26 @@ Color Blend(Color background, Color foreground, float alpha) => new(
     (float)(foreground.Blue * alpha + background.Blue * (1 - alpha)),
     1f);
 
-// Known findings: reported with their samples but not counted as CI failures until fixed.
-void Known(string what, Color actual, Color expected)
+// The byte-quantized counterpart of Blend, mirroring HeadlessCanvas.Blend exactly: the alpha is
+// truncated to a byte first (0.35f * 255 = 89.25 -> 89, t = 89/255) and every blended channel is
+// truncated to a byte as well. The selection tint assertion uses this form because the managed
+// rasterizer is deterministic and the quantization is part of the compositor contract: the float
+// blend predicts #395AB3 while the rasterizer writes #3959B3 (one LSB in green).
+Color QuantizedBlend(Color background, Color foreground, float alpha)
 {
-    Console.WriteLine($"  [KNOWN] {what}: got {actual.ToHex()} expected {expected.ToHex()} (tracked in docs)");
+    int a = (int)Math.Clamp(alpha * 255f, 0, 255);
+    int sr = (int)Math.Clamp(foreground.Red * 255f, 0, 255);
+    int sg = (int)Math.Clamp(foreground.Green * 255f, 0, 255);
+    int sb = (int)Math.Clamp(foreground.Blue * 255f, 0, 255);
+    int dr = (int)Math.Clamp(background.Red * 255f, 0, 255);
+    int dg = (int)Math.Clamp(background.Green * 255f, 0, 255);
+    int db = (int)Math.Clamp(background.Blue * 255f, 0, 255);
+    float t = a / 255f;
+    return Color.FromRgba(
+        (byte)(sr * t + dr * (1 - t)),
+        (byte)(sg * t + dg * (1 - t)),
+        (byte)(sb * t + db * (1 - t)),
+        (byte)255);
 }
 
 Console.WriteLine(failures == 0 ? "PIXEL ASSERTIONS PASSED" : $"PIXEL ASSERTIONS FAILED ({failures})");
