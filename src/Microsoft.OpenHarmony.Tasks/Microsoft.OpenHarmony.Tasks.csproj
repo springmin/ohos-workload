@@ -29,7 +29,13 @@
          the pack-drift gate in scripts/selftest-tasks.sh S3 could never settle). The assembly
          version is the task contract; the revision belongs to the source, not the artifact. -->
     <IncludeSourceRevisionInInformationalVersion>false</IncludeSourceRevisionInInformationalVersion>
-    <DebugType>portable</DebugType>
+    <!-- Reproducibility across toolchains: the pack ships the DLL alone (no PDB), and a portable
+         PDB embeds the compiler build in the DLL (CodeView GUID, PDB checksum, debug-entry
+         timestamp), which was the only byte drift between the .109 and .112 rc.2 SDK rebuilds of
+         this same source. DebugType=none makes the output a function of the sources, so
+         scripts/selftest-tasks.sh S3 compares bytes across either SDK. Override with
+         -p:DebugType=portable when debugging a task locally. -->
+    <DebugType>none</DebugType>
     <GenerateDocumentationFile>false</GenerateDocumentationFile>
   </PropertyGroup>
   <ItemGroup>
