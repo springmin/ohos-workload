@@ -497,9 +497,17 @@ public static partial class OpenHarmonyBridge
         }
     }
 
+    /// <summary>
+    /// Raised for every web command before it reaches the native host (diagnostics/tests); the
+    /// command still goes to the native host when one is present. A test observer sees exactly
+    /// the op/arg pairs the shell receives (e.g. the FIX-WVP overlay hide/show suspension).
+    /// </summary>
+    public static event Action<string, string?>? WebCommandSent;
+
     /// <summary>Sends a WebView command to the shell's ArkWeb component (show/hide/load/eval/back).</summary>
     public static void WebCommand(string op, string? arg = null)
     {
+        WebCommandSent?.Invoke(op, arg);
         try
         {
             WebCommandNative(op, arg ?? string.Empty);

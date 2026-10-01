@@ -635,6 +635,15 @@ MAUI WebView 接线（ArkWeb 六小缺口：history/frame/cookie/DOM storage/导
 `docs/plans/2026-09-28-ohos-maui-webview-wiring.md`。B2 的实装/设备证据见 runtime-ohos
 `docs/plans/2026-09-30-ohos-blazor-wasm-webview-b2.md`。
 
+FIX-WVP（2026-10-01，UI-LOCAL-3）：MAUI 合成器按设备像素布局（`OpenHarmonyWindowHandler.
+RequestDisplayDensity` 答复 1），壳 `frame` 命令因此收到像素值，`applyWebFrame` 用 `px2vp`
+换算成 ArkUI vp 再定位/缩放；非正宽高的 frame（尚未排布的控件）被忽略、覆盖层保持上次有效
+位置（初始整窗），不再被 0 高控件放大到全窗。ArkWeb `Web` 必须在 `XComponent`/`ContentSlot`
+（托管表面）之后声明：Stack 后声明者在上，声明在前的覆盖层一直被托管表面盖住（页内白区）。
+单覆盖层按注册仲裁：HybridWebView 已注册时，后到的 Blazor 注册只武装 origin、不重载组件，
+`https://0.0.0.1/` 保持被服务（此前被 `0.0.0.0` 叠加、hybrid 页零请求）。设备证据与断言见
+runtime-ohos `docs/plans/2026-10-01-ohos-webview-overlay.md`。
+
 ## Toolchain resolution
 
 `_OpenHarmonyDetectToolchain` resolves the packing tool from `OpenHarmonyToolchainDir` or

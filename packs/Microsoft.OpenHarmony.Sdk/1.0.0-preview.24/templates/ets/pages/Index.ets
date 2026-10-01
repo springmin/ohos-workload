@@ -582,9 +582,17 @@ struct Index {
 
   @State inputText: string = '';
   @State webVisible: boolean = false;
+  // FIX-WVP overlay suspension: a managed drawer renders in the managed surface below the
+  // overlay, so while it is presented (`suspend`) the overlay hides and frame/load commands only
+  // update its geometry instead of re-showing it; `resume` restores the pre-suspend visibility
+  // (a page without a web control cannot make a stale overlay reappear). A tab switch uses the
+  // plain `hide`: the hidden page is not arranged, so no stale frame follows, and the next page's
+  // web control (if any) re-shows through its own frame.
+  private webSuspended: boolean = false;
+  private webVisibleBeforeSuspend: boolean = false;
   // ArkWeb overlay frame (managed WebView PlatformArrange -> WebCommand "frame"): the overlay
-  // starts full-window; a positive width/height replaces the matching dimension and x/y position
-  // it in vp (MAUI DIP). A zero width/height keeps that dimension full-window.
+  // starts full-window; the frame arrives in device pixels and is converted to vp with px2vp,
+  // and a frame with a non-positive width/height (control not arranged yet) is ignored.
   @State webFrameX: number = 0;
   @State webFrameY: number = 0;
   @State webFrameW: number = 0;
@@ -618,6 +626,9 @@ struct Index {
   // Bounded diagnostics: the first few intercepted Blazor requests are logged so a device run
   // shows that the origin is armed and being served (the full 600+ request stream would spam).
   private blazorServeLogs: number = 0;
+  // The same bounded diagnostics for the hybrid origin (https://0.0.0.1/): its served requests
+  // are the device evidence that the HybridWebView page really loaded.
+  private hybridServeLogs: number = 0;
   // Managed status-file polling (device diagnostics): bounded reads of <filesDir>/dotnet-status.txt
   // while the app starts; see pollManagedStatus.
   private statusReads: number = 0;
@@ -2805,8 +2816,14 @@ struct Index {
     });
   }
 
-  // WebView frame: the managed PlatformArrange sends "x\ny\nw\nh" in vp; a non-positive width
-  // or height keeps the matching dimension full-window (the overlay default).
+  // WebView frame: the managed PlatformArrange sends "x\ny\nw\nh". The managed compositor draws
+  // in device pixels (OpenHarmonyWindowHandler.RequestDisplayDensity answers 1), so the frame
+  // values are pixels; the ArkUI overlay places in vp. Convert with px2vp (the display's own
+  // px/vp ratio), so the overlay lands on exactly the frame the managed control was arranged
+  // with. A frame with a non-positive width or height is a control that is not laid out yet
+  // (e.g. a web handler without a desired height): it is ignored and the overlay keeps its
+  // previous placement - full-window until the first valid frame - instead of expanding to the
+  // whole window and hiding the rest of the page.
   private applyWebFrame(arg: string): void {
     const parts: string[] = arg.split('\n');
     if (parts.length !== 4) {
@@ -2819,11 +2836,18 @@ struct Index {
     if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(w) || !Number.isFinite(h)) {
       return;
     }
-    this.webFrameX = Math.max(0, x);
-    this.webFrameY = Math.max(0, y);
-    this.webFrameW = w > 0 ? w : 0;
-    this.webFrameH = h > 0 ? h : 0;
-    this.webVisible = true;
+    const xVp: number = px2vp(Math.max(0, x));
+    const yVp: number = px2vp(Math.max(0, y));
+    const wVp: number = px2vp(w);
+    const hVp: number = px2vp(h);
+    if (!(wVp > 0) || !(hVp > 0)) {
+      return;
+    }
+    this.webFrameX = xVp;
+    this.webFrameY = yVp;
+    this.webFrameW = wVp;
+    this.webFrameH = hVp;
+    this.webVisible = !this.webSuspended;
   }
 
   // Registered proxies appear on the next page load, so the documented window.__ohosDotNet
@@ -3782,11 +3806,27 @@ struct Index {
         this.runOnUiThread(() => {
           try {
             if (op === 'show') {
-              this.webVisible = true;
+              // Historical: show the overlay (a WebView without a Source). A suspended overlay
+              // stays hidden under a presented drawer.
+              this.webVisible = !this.webSuspended;
             } else if (op === 'hide') {
+              // FIX-WVP tab switch: hide; the hidden page is not arranged, so no stale frame
+              // re-shows it, and the next page's web control re-shows through its own frame.
               this.webVisible = false;
+            } else if (op === 'suspend') {
+              // FIX-WVP drawer presented: hide and keep frame/load commands from re-showing the
+              // overlay (the flyout's own arrange cycle re-emits the detail's web frame).
+              if (!this.webSuspended) {
+                this.webVisibleBeforeSuspend = this.webVisible;
+                this.webSuspended = true;
+              }
+              this.webVisible = false;
+            } else if (op === 'resume') {
+              // FIX-WVP drawer dismissed: restore the visibility the suspend remember
+              this.webSuspended = false;
+              this.webVisible = this.webVisibleBeforeSuspend;
             } else if (op === 'load') {
-              this.webVisible = true;
+              this.webVisible = !this.webSuspended;
               // B6: the app asked for this URL; let this one load through without a round trip.
               this.navProgrammatic = { url: arg, expires: Date.now() + this.navPendingTtlMs };
               this.webController.loadUrl(arg);
@@ -3795,7 +3835,7 @@ struct Index {
               // B6: the managed handler's answer to an intercepted navigation.
               this.approveNavigation(arg);
             } else if (op === 'data') {
-              this.webVisible = true;
+              this.webVisible = !this.webSuspended;
               this.webController.loadData(arg, 'text/html', 'UTF-8');
             } else if (op === 'back') {
               if (this.webController.accessBackward()) {
@@ -5147,7 +5187,9 @@ struct Index {
       this.hybridRegistered = safeLayout && this.hybridBase.length > 0 && this.hybridRoot.length > 0
         && this.hybridDefaultFile.length > 0;
       if (this.hybridRegistered) {
-        this.webVisible = true;
+        this.hybridServeLogs = 0;
+        this.logInfo(`[maui] hybrid assets: origin=${this.hybridOrigin} root=${this.hybridRoot} base=${this.hybridBase}`);
+        this.webVisible = !this.webSuspended;
         this.webController.loadUrl(this.hybridOrigin);
       }
     } catch (hybridError) {
@@ -5187,8 +5229,17 @@ struct Index {
         this.logInfo(`[maui] blazor assets: origin=${this.blazorOrigin} root=${this.blazorRoot} base=${this.blazorBase} mode=${this.blazorWasmMode ? 'wasm' : 'hybrid'}`);
       }
       if (this.blazorRegistered && !this.blazorWasmMode) {
-        this.webVisible = true;
-        this.webController.loadUrl(this.blazorOrigin);
+        if (this.hybridRegistered) {
+          // Single-overlay arbitration (FIX-WVP): the shell owns one ArkWeb component, and the
+          // hybrid registration is the one whose page is served for the HybridWebView. A later
+          // Blazor registration must not reload the component (that superseded the hybrid's
+          // https://0.0.0.1/ load and left the hybrid area blank): the Blazor origin stays
+          // armed (interception + document id) without stealing the overlay.
+          this.logInfo('[maui] blazor origin armed; the hybrid page keeps the single ArkWeb overlay');
+        } else {
+          this.webVisible = !this.webSuspended;
+          this.webController.loadUrl(this.blazorOrigin);
+        }
       }
     } catch (blazorError) {
       this.logError(`[maui] blazor assets registration failed: ${(blazorError as Error).message}`);
@@ -5661,9 +5712,71 @@ struct Index {
 
   build() {
     Stack() {
+      // Text entry bridge: the managed Entry reads what is typed here. The input method's
+      // composing (preview) text rides onChange's second argument and its own export so the
+      // managed self-drawn editor can render the preedit at the caret (underline/highlight)
+      // and replace it when the commit arrives as the plain text change. An empty preview value
+      // means committed/cancelled.
+      TextInput({ text: this.inputText, placeholder: 'type here', controller: this.controller })
+        .id('ohos_dotnet_input')
+        .height(56)
+        .position({ x: 0, y: 0 })
+        .onChange((value: string, previewText?: PreviewText) => {
+          this.inputText = value;
+          // Per-keystroke path: a mismatched host logs once, not once per character.
+          this.hostCall('notifyTextInput', typeof host !== 'undefined' && typeof host.notifyTextInput === 'function', (): void => {
+            host.notifyTextInput(value);
+          });
+          this.hostCall('notifyTextComposition', typeof host !== 'undefined' && typeof host.notifyTextComposition === 'function', (): void => {
+            host.notifyTextComposition(this.previewTextValue(previewText), this.previewTextOffset(previewText));
+          });
+        })
+        .onSubmit(() => {
+          // The managed Entry/SearchBar raises Completed/SearchButtonPressed.
+          this.hostCall('notifyTextSubmitted', typeof host !== 'undefined' && typeof host.notifyTextSubmitted === 'function', (): void => {
+            host.notifyTextSubmitted(this.inputText);
+          });
+        })
+
+      XComponent({
+        id: 'ohos_dotnet_surface',
+        type: XComponentType.SURFACE,
+        libraryname: 'openharmonyhost',
+      })
+        .focusable(true)
+        .onKeyEvent((event: KeyEvent): void => {
+          // Hardware keys pressed while the .NET surface holds focus: forward the raw ArkUI key
+          // code and the down/up type (KeyType.Down = 0, KeyType.Up = 1) to host.keyEvent ->
+          // ohos_host_register_key_event. MAUI rc.1 exposes no key hook (no IKeyListener), so
+          // the managed bridge keeps the callback as its documented internal surface.
+          this.hostCall('keyEvent', typeof host !== 'undefined' && typeof host.keyEvent === 'function', (): void => {
+            host.keyEvent(event.keyCode, event.type === KeyType.Down ? 0 : 1);
+          });
+        })
+        .onLoad(() => {
+          // Binds the native XComponent so libopenharmonyhost receives surface callbacks.
+          // Guarded like every other host export: a host that failed to load (for example an
+          // unresolved DT_NEEDED in the .so) leaves the surface unattached and logs the
+          // unavailability once instead of throwing TypeError out of the XComponent callback.
+          this.hostCall('registerXComponent', typeof host !== 'undefined' && typeof host.registerXComponent === 'function', (): void => {
+            host.registerXComponent();
+          });
+          // Surface ready: publish the app context (payload dir + ability paths) so a
+          // startApp without one can still be completed by the managed bridge.
+          this.publishAppContext();
+        })
+        .width('100%')
+        .height('100%')
+
+      ContentSlot(this.content)
+
       // ArkWeb: hidden until the managed WebView asks for it. The frame command moves/sizes it
       // (a zero dimension stays full-window); DOM storage is on by default, matching the MAUI
       // Android handler (DomStorageEnabled=true), so localStorage works in hybrid/Blazor pages.
+      // Declared after the XComponent/ContentSlot: a Stack composites later children above
+      // earlier ones, and the managed app surface is the earlier child, so the overlay really
+      // shows over the managed surface (FIX-WVP; declared first it stayed under the surface and
+      // every served web page was invisible).
       Web({ src: '', controller: this.webController })
         .domStorageAccess(true)
         .visibility(this.webVisibility())
@@ -5719,6 +5832,10 @@ struct Index {
             // registered the payload root; everything else is left to the Web engine.
             if (!this.hybridRegistered || !url.startsWith(this.hybridOrigin)) {
               return null;
+            }
+            if (this.hybridServeLogs < 3) {
+              this.hybridServeLogs++;
+              this.logInfo(`[maui] web serve: ${url} -> ${this.hybridFilePath(url)}`);
             }
             if (url.startsWith(this.hybridOrigin + '__hwvInvokeDotNet')) {
               return this.hybridInvokeResponse(event);
@@ -5864,64 +5981,6 @@ struct Index {
             this.logError(`[maui] window.open fallback failed: ${(windowError as Error).message}`);
           }
         })
-
-      // Text entry bridge: the managed Entry reads what is typed here. The input method's
-      // composing (preview) text rides onChange's second argument and its own export so the
-      // managed self-drawn editor can render the preedit at the caret (underline/highlight)
-      // and replace it when the commit arrives as the plain text change. An empty preview value
-      // means committed/cancelled.
-      TextInput({ text: this.inputText, placeholder: 'type here', controller: this.controller })
-        .id('ohos_dotnet_input')
-        .height(56)
-        .position({ x: 0, y: 0 })
-        .onChange((value: string, previewText?: PreviewText) => {
-          this.inputText = value;
-          // Per-keystroke path: a mismatched host logs once, not once per character.
-          this.hostCall('notifyTextInput', typeof host !== 'undefined' && typeof host.notifyTextInput === 'function', (): void => {
-            host.notifyTextInput(value);
-          });
-          this.hostCall('notifyTextComposition', typeof host !== 'undefined' && typeof host.notifyTextComposition === 'function', (): void => {
-            host.notifyTextComposition(this.previewTextValue(previewText), this.previewTextOffset(previewText));
-          });
-        })
-        .onSubmit(() => {
-          // The managed Entry/SearchBar raises Completed/SearchButtonPressed.
-          this.hostCall('notifyTextSubmitted', typeof host !== 'undefined' && typeof host.notifyTextSubmitted === 'function', (): void => {
-            host.notifyTextSubmitted(this.inputText);
-          });
-        })
-
-      XComponent({
-        id: 'ohos_dotnet_surface',
-        type: XComponentType.SURFACE,
-        libraryname: 'openharmonyhost',
-      })
-        .focusable(true)
-        .onKeyEvent((event: KeyEvent): void => {
-          // Hardware keys pressed while the .NET surface holds focus: forward the raw ArkUI key
-          // code and the down/up type (KeyType.Down = 0, KeyType.Up = 1) to host.keyEvent ->
-          // ohos_host_register_key_event. MAUI rc.1 exposes no key hook (no IKeyListener), so
-          // the managed bridge keeps the callback as its documented internal surface.
-          this.hostCall('keyEvent', typeof host !== 'undefined' && typeof host.keyEvent === 'function', (): void => {
-            host.keyEvent(event.keyCode, event.type === KeyType.Down ? 0 : 1);
-          });
-        })
-        .onLoad(() => {
-          // Binds the native XComponent so libopenharmonyhost receives surface callbacks.
-          // Guarded like every other host export: a host that failed to load (for example an
-          // unresolved DT_NEEDED in the .so) leaves the surface unattached and logs the
-          // unavailability once instead of throwing TypeError out of the XComponent callback.
-          this.hostCall('registerXComponent', typeof host !== 'undefined' && typeof host.registerXComponent === 'function', (): void => {
-            host.registerXComponent();
-          });
-          // Surface ready: publish the app context (payload dir + ability paths) so a
-          // startApp without one can still be completed by the managed bridge.
-          this.publishAppContext();
-        })
-        .width('100%')
-        .height('100%')
-
-      ContentSlot(this.content)
 
       // Map overlay (R2-3): only mounted while the managed side created the overlay through the
       // Map sink (op 1) and the shell resolved the harmony-flavor overlay module. The

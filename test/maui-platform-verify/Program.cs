@@ -12,7 +12,7 @@ using Microsoft.Maui.Platform;
 // after the fuzz tail) instead of letting every caller repeat its own threshold constant.
 VerifyLineCountingWriter verifyStdout = new(Console.Out);
 Console.SetOut(verifyStdout);
-const int verifyCheckTotal = 546;                     // documented full [verify] line count (+2 FIX-DISMISS flyout drawer dismiss under the device display conditions, +4 FIX-HOME home page arrange/draw (NavigationPage-in-TabbedPage descent), +4 MS-MODE runtime mode switch, +10 P2c-DEEPLINK, +4 P2b-IMG, +16 P1b-LIST, +10 P1a-ANIM, +2 SEC3 storage/deep-link pins, +5 W-series WebView wiring, +3 T1 InputView mapping, +4 T2 WebView gaps, +4 T3 GraphicsView interaction, +7 T10 modal accessibility, +4 T4 Label formatted text, +4 T5 layout semantics, +6 T7 DatePicker calendar/min-max, +4 T9 window title bar, +4 T11 diagnostics overlay, +1 N2 empty ContentPage arrangement, +6 T8 TableView, +5 T8 uneven rows, +7 T6 RTL flow direction, +5 T22 MainThread bridge, +2 FIX-TABBED tabbed CurrentPage, +4 T13 group footer view/N3 picker IsOpen, +5 T21 system font scale, +3 T21 font scale source wiring, +2 A11Y-TABBED tabbed accessibility, +3 N1 host multi-pointer, +5 T12 CarouselView group slides, +7 T14 rich shell flyout, +10 T14 flyout leftovers (MenuItemTemplate/FlyoutContent/AsMultipleItems), +2 FIX-SHELL shell CurrentPage, +2 A11Y-SHELL shell accessibility, +7 T15 rich Shell.TitleView, +8 T16 structured menus, +3 N4 TitleBar accessibility row, +3 T18 Essentials Map, +4 N5 overlay passthrough suppression, +5 N6 window decorations, +4 T20 media bridge, +3 B2 wasm site in a MAUI WebView, +2 W10 NativeAOT managed entry (host libs-dir resolution + shell AOT payload probe))
+const int verifyCheckTotal = 550;                     // documented full [verify] line count (+4 FIX-WVP overlay px->vp/degenerate-frame/hybrid-overlay arbitration/suspend-restore (shell+slice), +2 FIX-DISMISS flyout drawer dismiss under the device display conditions, +4 FIX-HOME home page arrange/draw (NavigationPage-in-TabbedPage descent), +4 MS-MODE runtime mode switch, +10 P2c-DEEPLINK, +4 P2b-IMG, +16 P1b-LIST, +10 P1a-ANIM, +2 SEC3 storage/deep-link pins, +5 W-series WebView wiring, +3 T1 InputView mapping, +4 T2 WebView gaps, +4 T3 GraphicsView interaction, +7 T10 modal accessibility, +4 T4 Label formatted text, +4 T5 layout semantics, +6 T7 DatePicker calendar/min-max, +4 T9 window title bar, +4 T11 diagnostics overlay, +1 N2 empty ContentPage arrangement, +6 T8 TableView, +5 T8 uneven rows, +7 T6 RTL flow direction, +5 T22 MainThread bridge, +2 FIX-TABBED tabbed CurrentPage, +4 T13 group footer view/N3 picker IsOpen, +5 T21 system font scale, +3 T21 font scale source wiring, +2 A11Y-TABBED tabbed accessibility, +3 N1 host multi-pointer, +5 T12 CarouselView group slides, +7 T14 rich shell flyout, +10 T14 flyout leftovers (MenuItemTemplate/FlyoutContent/AsMultipleItems), +2 FIX-SHELL shell CurrentPage, +2 A11Y-SHELL shell accessibility, +7 T15 rich Shell.TitleView, +8 T16 structured menus, +3 N4 TitleBar accessibility row, +3 T18 Essentials Map, +4 N5 overlay passthrough suppression, +5 N6 window decorations, +4 T20 media bridge, +3 B2 wasm site in a MAUI WebView, +2 W10 NativeAOT managed entry (host libs-dir resolution + shell AOT payload probe))
 const int verifyCheckFloor = verifyCheckTotal - 20;   // documented floor convention (total - 20)
 
 // A small image file for the Image handler.
@@ -4242,7 +4242,7 @@ if (!jsMessageOk)
 
 // W1: the shell half in every pack: the forward/refresh ops, the history report, the frame
 // command with its position/size state, the cookie set/get pair and the error event.
-string[] wShellVersions = { "1.0.0-preview.22", "1.0.0-preview.23", "1.0.0-preview.24" };
+string[] wShellVersions = { "1.0.0-preview.22", "1.0.0-preview.23", "1.0.0-preview.24", "1.0.0-preview.28" };
 bool wShellHistory = true;
 bool wShellFrame = true;
 bool wShellCookie = true;
@@ -4270,7 +4270,7 @@ foreach (string wVersion in wShellVersions)
         wShell.Contains("host.notifyWebEvent('error', errorUrl);");
 }
 bool wShellOk = wShellHistory && wShellFrame && wShellCookie && wShellStorage && wShellError;
-Console.WriteLine($"[verify] w1 shell web wiring packs=22,23,24 history={wShellHistory} frame={wShellFrame} cookie={wShellCookie} storage={wShellStorage} error={wShellError} assert={wShellOk}");
+Console.WriteLine($"[verify] w1 shell web wiring packs=22,23,24,28 history={wShellHistory} frame={wShellFrame} cookie={wShellCookie} storage={wShellStorage} error={wShellError} assert={wShellOk}");
 if (!wShellOk)
 {
     throw new InvalidOperationException(
@@ -4315,6 +4315,129 @@ if (!wHandlersOk)
     throw new InvalidOperationException(
         $"the WebView handler wiring is missing or drifted: commands={wHandlerCommands} events={wHandlerEvents} " +
         $"frame={wHandlerFrame} cookie={wHandlerCookie} frameShared={wHandlerFrameShared}");
+}
+
+// FIX-WVP: the shell overlay geometry and origin arbitration. The managed compositor
+// arranges in device pixels (OpenHarmonyWindowHandler.RequestDisplayDensity answers 1) and the
+// shell command carries "x\ny\nw\nh" pixels; the ArkUI overlay places in vp, so applyWebFrame
+// must convert with px2vp - the previous pass-through placed the overlay at density times the
+// element frame (the UI-LOCAL-3 RosenWeb surface sat 1.9x off-window at (576,1704) 3849x1324).
+// A frame with a non-positive width or height is a not-yet-arranged control and must not move
+// or expand the overlay. The single ArkWeb component is arbitrated on registration: the hybrid
+// registration keeps it (0.0.0.1 stays served) while a later Blazor registration only arms its
+// origin instead of reloading the component (UI-LOCAL-3: only 0.0.0.0 was served and the
+// hybrid area stayed blank). The hybrid registration/serve lines are the device evidence.
+bool w6FrameConvert = true;
+bool w6FrameGuard = true;
+bool w6Origin = true;
+bool w6ServeLogs = true;
+bool w6ZOrder = true;
+bool w6Suspend = true;
+foreach (string w6Version in new[] { "1.0.0-preview.22", "1.0.0-preview.23", "1.0.0-preview.24", "1.0.0-preview.28" })
+{
+    string? w6ShellPath = FindHostSource($"packs/Microsoft.OpenHarmony.Sdk/{w6Version}/templates/ets/pages/Index.ets");
+    string w6Shell = w6ShellPath is null ? string.Empty : File.ReadAllText(w6ShellPath);
+    w6FrameConvert &= w6Shell.Contains("const xVp: number = px2vp(Math.max(0, x));") &&
+        w6Shell.Contains("const yVp: number = px2vp(Math.max(0, y));") &&
+        w6Shell.Contains("const wVp: number = px2vp(w);") &&
+        w6Shell.Contains("const hVp: number = px2vp(h);") &&
+        w6Shell.Contains("this.webFrameX = xVp;") && w6Shell.Contains("this.webFrameW = wVp;") &&
+        !w6Shell.Contains("this.webFrameW = w > 0 ? w : 0;");
+    w6FrameGuard &= w6Shell.Contains("if (!(wVp > 0) || !(hVp > 0)) {") &&
+        w6Shell.Contains(".width(this.webFrameW > 0 ? `${this.webFrameW}vp` : '100%')");
+    // The ArkWeb overlay must be declared after the managed XComponent/ContentSlot: a Stack
+    // composites later children above earlier ones, and declared first the overlay stayed under
+    // the managed surface (every served web page was invisible - the UI-LOCAL-3 white area).
+    w6ZOrder &= w6Shell.IndexOf("ContentSlot(this.content)", StringComparison.Ordinal) >= 0 &&
+        w6Shell.IndexOf("ContentSlot(this.content)", StringComparison.Ordinal) <
+        w6Shell.IndexOf("ArkWeb: hidden until", StringComparison.Ordinal);
+    // Overlay suspension: the drawer's suspend blocks frame/load re-shows and resume restores
+    // the pre-suspend visibility; the tab switch's plain hide lets the next page's web control
+    // re-show through its own frame.
+    w6Suspend &= w6Shell.Contains("private webSuspended: boolean = false;") &&
+        w6Shell.Contains("private webVisibleBeforeSuspend: boolean = false;") &&
+        w6Shell.Contains("} else if (op === 'suspend') {") &&
+        w6Shell.Contains("} else if (op === 'resume') {") &&
+        w6Shell.Contains("this.webVisible = !this.webSuspended;");
+    w6Origin &= w6Shell.Contains("if (this.hybridRegistered) {") &&
+        w6Shell.Contains("this.logInfo('[maui] blazor origin armed; the hybrid page keeps the single ArkWeb overlay');") &&
+        w6Shell.Contains("this.webController.loadUrl(this.blazorOrigin);") &&
+        w6Shell.Contains("this.webController.loadUrl(this.hybridOrigin);");
+    w6ServeLogs &= w6Shell.Contains("private hybridServeLogs: number = 0;") &&
+        w6Shell.Contains("if (this.hybridServeLogs < 3) {") &&
+        w6Shell.Contains("this.logInfo(`[maui] web serve: ${url} -> ${this.hybridFilePath(url)}`);") &&
+        w6Shell.Contains("this.logInfo(`[maui] hybrid assets: origin=${this.hybridOrigin} root=${this.hybridRoot} base=${this.hybridBase}`);");
+}
+bool w6FixConvert = w6FrameConvert;
+Console.WriteLine($"[verify] fix-wvp frame px->vp packs=22,23,24,28 convert={w6FrameConvert} assert={w6FixConvert}");
+if (!w6FixConvert)
+{
+    throw new InvalidOperationException("the FIX-WVP frame px->vp conversion is missing or drifted in a synced shell pack");
+}
+
+bool w6FixGuard = w6FrameGuard;
+Console.WriteLine($"[verify] fix-wvp degenerate frame guard packs=22,23,24,28 ignoreZero={w6FrameGuard} assert={w6FixGuard}");
+if (!w6FixGuard)
+{
+    throw new InvalidOperationException("the FIX-WVP degenerate-frame guard is missing or drifted in a synced shell pack");
+}
+
+bool w6FixOrigin = w6Origin && w6ServeLogs && w6ZOrder && w6Suspend;
+Console.WriteLine($"[verify] fix-wvp hybrid overlay arbitration packs=22,23,24,28 hybridKeepsOverlay={w6Origin} serveLogs={w6ServeLogs} overlayAboveSurface={w6ZOrder} suspendRestore={w6Suspend} assert={w6FixOrigin}");
+if (!w6FixOrigin)
+{
+    throw new InvalidOperationException(
+        $"the FIX-WVP hybrid overlay arbitration is missing or drifted: hybridKeepsOverlay={w6Origin} serveLogs={w6ServeLogs} " +
+        $"overlayAboveSurface={w6ZOrder} suspendRestore={w6Suspend}");
+}
+
+// FIX-WVP: the managed overlay suspension. The ArkWeb overlay renders above the managed
+// surface, so the slice handlers suspend it before a compositor-drawn drawer or a tab switch
+// can be covered and restore it when the drawer closes (a web control re-shows via its frame).
+var w6SuspendOps = new List<string>();
+void W6OnWebCommandSent(string op, string? arg) => w6SuspendOps.Add(op);
+Microsoft.OpenHarmony.Hosting.OpenHarmonyBridge.WebCommandSent += W6OnWebCommandSent;
+bool w6SuspendTabHide = false;
+bool w6SuspendDrawerHideShow = false;
+try
+{
+    var w6TabA = new Microsoft.Maui.Controls.ContentPage { Title = "a", Content = new Microsoft.Maui.Controls.Label { Text = "a" } };
+    var w6TabB = new Microsoft.Maui.Controls.ContentPage { Title = "b", Content = new Microsoft.Maui.Controls.Label { Text = "b" } };
+    var w6TabHost = new Microsoft.Maui.Controls.TabbedPage { Children = { w6TabA, w6TabB } };
+    OpenHarmonyHandlerConnector.ConnectTree(w6TabHost);
+    w6TabHost.Measure(1080, 1920);
+    w6TabHost.Arrange(new Rect(0, 0, 1080, 1920));
+    w6SuspendOps.Clear();
+    w6TabHost.CurrentPage = w6TabB;
+    w6SuspendTabHide = w6SuspendOps.Contains("hide");
+
+    var w6FlyoutHost = new Microsoft.Maui.Controls.FlyoutPage
+    {
+        Flyout = new Microsoft.Maui.Controls.ContentPage { Title = "menu", Content = new Microsoft.Maui.Controls.Label { Text = "m" } },
+        Detail = new Microsoft.Maui.Controls.ContentPage { Title = "detail", Content = new Microsoft.Maui.Controls.Label { Text = "d" } },
+        IsPresented = false,
+    };
+    OpenHarmonyHandlerConnector.ConnectTree(w6FlyoutHost);
+    w6FlyoutHost.Measure(1080, 1920);
+    w6FlyoutHost.Arrange(new Rect(0, 0, 1080, 1920));
+    w6SuspendOps.Clear();
+    w6FlyoutHost.IsPresented = true;
+    bool w6DrawerHid = w6SuspendOps.Contains("suspend");
+    w6SuspendOps.Clear();
+    w6FlyoutHost.IsPresented = false;
+    bool w6DrawerShowed = w6SuspendOps.Contains("resume");
+    w6SuspendDrawerHideShow = w6DrawerHid && w6DrawerShowed;
+}
+finally
+{
+    Microsoft.OpenHarmony.Hosting.OpenHarmonyBridge.WebCommandSent -= W6OnWebCommandSent;
+}
+bool w6SuspendBehavior = w6SuspendTabHide && w6SuspendDrawerHideShow;
+Console.WriteLine($"[verify] fix-wvp overlay suspension tabHide={w6SuspendTabHide} drawerHideShow={w6SuspendDrawerHideShow} assert={w6SuspendBehavior}");
+if (!w6SuspendBehavior)
+{
+    throw new InvalidOperationException(
+        $"the FIX-WVP managed overlay suspension drifted: tabHide={w6SuspendTabHide} drawerHideShow={w6SuspendDrawerHideShow}");
 }
 
 // W3: off-device behavior drill on the live probe: the history state mirrors into
@@ -4824,7 +4947,7 @@ foreach (string w6Version in wShellVersions)
         w6Shell.Contains("this.webController.loadUrl(targetUrl);");
 }
 bool w6Ok = w6ShellFiles && w6ShellMedia && w6ShellWindow && w6ShellIdentity;
-Console.WriteLine($"[verify] w6 shell webview gaps packs=22,23,24 fileSelect={w6ShellFiles} media={w6ShellMedia} windowOpen={w6ShellWindow} identical={w6ShellIdentity} assert={w6Ok}");
+Console.WriteLine($"[verify] w6 shell webview gaps packs=22,23,24,28 fileSelect={w6ShellFiles} media={w6ShellMedia} windowOpen={w6ShellWindow} identical={w6ShellIdentity} assert={w6Ok}");
 if (!w6Ok)
 {
     throw new InvalidOperationException("the WebView file-selection/media-permission/window.open shell wiring is missing/drifted");
