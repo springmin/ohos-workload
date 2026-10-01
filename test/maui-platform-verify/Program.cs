@@ -12,7 +12,7 @@ using Microsoft.Maui.Platform;
 // after the fuzz tail) instead of letting every caller repeat its own threshold constant.
 VerifyLineCountingWriter verifyStdout = new(Console.Out);
 Console.SetOut(verifyStdout);
-const int verifyCheckTotal = 544;                     // documented full [verify] line count (+4 FIX-HOME home page arrange/draw (NavigationPage-in-TabbedPage descent), +4 MS-MODE runtime mode switch, +10 P2c-DEEPLINK, +4 P2b-IMG, +16 P1b-LIST, +10 P1a-ANIM, +2 SEC3 storage/deep-link pins, +5 W-series WebView wiring, +3 T1 InputView mapping, +4 T2 WebView gaps, +4 T3 GraphicsView interaction, +7 T10 modal accessibility, +4 T4 Label formatted text, +4 T5 layout semantics, +6 T7 DatePicker calendar/min-max, +4 T9 window title bar, +4 T11 diagnostics overlay, +1 N2 empty ContentPage arrangement, +6 T8 TableView, +5 T8 uneven rows, +7 T6 RTL flow direction, +5 T22 MainThread bridge, +2 FIX-TABBED tabbed CurrentPage, +4 T13 group footer view/N3 picker IsOpen, +5 T21 system font scale, +3 T21 font scale source wiring, +2 A11Y-TABBED tabbed accessibility, +3 N1 host multi-pointer, +5 T12 CarouselView group slides, +7 T14 rich shell flyout, +10 T14 flyout leftovers (MenuItemTemplate/FlyoutContent/AsMultipleItems), +2 FIX-SHELL shell CurrentPage, +2 A11Y-SHELL shell accessibility, +7 T15 rich Shell.TitleView, +8 T16 structured menus, +3 N4 TitleBar accessibility row, +3 T18 Essentials Map, +4 N5 overlay passthrough suppression, +5 N6 window decorations, +4 T20 media bridge, +3 B2 wasm site in a MAUI WebView, +2 W10 NativeAOT managed entry (host libs-dir resolution + shell AOT payload probe))
+const int verifyCheckTotal = 546;                     // documented full [verify] line count (+2 FIX-DISMISS flyout drawer dismiss under the device display conditions, +4 FIX-HOME home page arrange/draw (NavigationPage-in-TabbedPage descent), +4 MS-MODE runtime mode switch, +10 P2c-DEEPLINK, +4 P2b-IMG, +16 P1b-LIST, +10 P1a-ANIM, +2 SEC3 storage/deep-link pins, +5 W-series WebView wiring, +3 T1 InputView mapping, +4 T2 WebView gaps, +4 T3 GraphicsView interaction, +7 T10 modal accessibility, +4 T4 Label formatted text, +4 T5 layout semantics, +6 T7 DatePicker calendar/min-max, +4 T9 window title bar, +4 T11 diagnostics overlay, +1 N2 empty ContentPage arrangement, +6 T8 TableView, +5 T8 uneven rows, +7 T6 RTL flow direction, +5 T22 MainThread bridge, +2 FIX-TABBED tabbed CurrentPage, +4 T13 group footer view/N3 picker IsOpen, +5 T21 system font scale, +3 T21 font scale source wiring, +2 A11Y-TABBED tabbed accessibility, +3 N1 host multi-pointer, +5 T12 CarouselView group slides, +7 T14 rich shell flyout, +10 T14 flyout leftovers (MenuItemTemplate/FlyoutContent/AsMultipleItems), +2 FIX-SHELL shell CurrentPage, +2 A11Y-SHELL shell accessibility, +7 T15 rich Shell.TitleView, +8 T16 structured menus, +3 N4 TitleBar accessibility row, +3 T18 Essentials Map, +4 N5 overlay passthrough suppression, +5 N6 window decorations, +4 T20 media bridge, +3 B2 wasm site in a MAUI WebView, +2 W10 NativeAOT managed entry (host libs-dir resolution + shell AOT payload probe))
 const int verifyCheckFloor = verifyCheckTotal - 20;   // documented floor convention (total - 20)
 
 // A small image file for the Image handler.
@@ -5949,6 +5949,45 @@ if (!displayPushOk || !keepScreenOnOk)
     throw new InvalidOperationException("the display payload push assertion failed");
 }
 Console.WriteLine($"[verify] display off-device info={emptyInfo.Width}x{emptyInfo.Height} density={emptyInfo.Density} rotation={emptyInfo.Rotation} orientation={emptyInfo.Orientation} (empty default asserted)");
+
+// ---- FIX-DISMISS: the plain FlyoutPage drawer must dismiss under the device conditions -------
+// UI-LOCAL-3: on the 2in1 device the drawer opened (hamburger) but an outside tap/drag never
+// closed it; Back was consumed by the system (window backgrounded). Reproduced off-device once
+// the shell's display snapshot (landscape) is applied: MAUI's FlyoutPage resolves the default
+// FlyoutLayoutBehavior against the idiom and orientation, and a non-phone idiom on a landscape
+// display is split mode - IsPresented is pinned true and the dismiss write-back throws
+// "Can't change IsPresented when setting Default" inside the touch callback (the device run
+// reports the throw and keeps drawing the open panel). The slice handler renders an overlay
+// popover and states FlyoutLayoutBehavior.Popover at connect, so the same tap now clears the
+// managed IsPresented and the platform FlyoutPresented. The display block above leaves the
+// landscape snapshot (2340x1080, orientation 3) in place; this check pins it for the reader.
+OpenHarmonyDeviceDisplay.OnDisplayPayload("2340\t1080\t320\t3\t90\t3");
+var rendererForDismiss = app.Services.GetRequiredService<OpenHarmonyWindowRenderer>();
+var dismissFlyout = new ContentPage { Title = "menu", Content = new Label { Text = "flyout content" } };
+var dismissDetail = new ContentPage { Title = "detail", Content = new Label { Text = "detail content" } };
+var dismissPage = new FlyoutPage { Flyout = dismissFlyout, Detail = dismissDetail, IsPresented = false };
+OpenHarmonyHandlerConnector.ConnectTree(dismissPage);
+bool dismissPopover = dismissPage.FlyoutLayoutBehavior == FlyoutLayoutBehavior.Popover;
+dismissPage.Measure(1080, 1920);
+dismissPage.Arrange(new Rect(0, 0, 1080, 1920));
+bool dismissOpened = false;
+bool dismissClosed = false;
+if (dismissPage.Handler?.PlatformView is OpenHarmonyView dismissPlatform)
+{
+    // Landscape + a non-phone idiom would pin Default open and throw on the close write-back.
+    Console.WriteLine($"[verify] flyout dismiss behavior orientation={Microsoft.Maui.Devices.DeviceDisplay.MainDisplayInfo.Orientation} idiom={Microsoft.Maui.Devices.DeviceInfo.Current.Idiom} behavior={dismissPage.FlyoutLayoutBehavior} popover={dismissPopover} width={dismissPlatform.FlyoutWidth:0} assert={dismissPopover}");
+    rendererForDismiss.HandleTouch(dismissPage, true, false, 20, 20);
+    rendererForDismiss.HandleTouch(dismissPage, false, true, 20, 20);
+    dismissOpened = dismissPage.IsPresented && dismissPlatform.FlyoutPresented;
+    rendererForDismiss.HandleTouch(dismissPage, true, false, 800, 400); // outside the 360px panel
+    rendererForDismiss.HandleTouch(dismissPage, false, true, 800, 400);
+    dismissClosed = !dismissPage.IsPresented && !dismissPlatform.FlyoutPresented;
+}
+Console.WriteLine($"[verify] flyout dismiss outside tap opened={dismissOpened} closed={dismissClosed} managed={dismissPage.IsPresented} platform={((dismissPage.Handler?.PlatformView as OpenHarmonyView)?.FlyoutPresented ?? false)} assert={dismissClosed && dismissOpened && dismissPopover}");
+if (!(dismissClosed && dismissOpened && dismissPopover))
+{
+    throw new InvalidOperationException("the flyout drawer did not dismiss under the device (landscape) display conditions (FIX-DISMISS)");
+}
 
 // ---- R2b: accessibility publish contract (managed <-> C) and value mapping -------------------
 // The defect fixed here was an argument-count drift: the managed DllImport declared hint as its
