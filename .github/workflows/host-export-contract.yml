@@ -22,7 +22,7 @@ on:
         description: 'maui-ohos commit SHA to cross-check (defaults to the pinned slice tip)'
         required: false
         type: string
-        default: 'eec30c01cd17b8e80526e37fe70fa756a466e214'
+        default: '68ec598037a27e45c679e11d3e79e3a56f5467de'
   push:
     branches: [ master ]
   pull_request:
@@ -32,7 +32,9 @@ permissions:
 
 # Reproducible cross-repo check: the slice is checked out at an exact commit, not the mutable
 # feature/openharmony branch, so a push to the fork cannot change what this gate verifies.
-# Current tip: eec30c01cd (the W9 consolidation: W9B T14 flyout leftovers + T21 font-scale
+# Current tip: 68ec598037 (FIX-HOME: the NavigationPage handler descends its arrange into
+# the current page, so the Hello Home tab - a FlyoutPage/TabbedPage/NavigationPage shape -
+# draws; no new host exports) on eec30c01cd (the W9 consolidation: W9B T14 flyout leftovers + T21 font-scale
 # wiring, W9C T8 uneven TableView rows, W9D T20 media bridge adding the three ohos_host_media_*
 # exports and W9A B2 staged-WASM WebView; on top of the rc.2 slice re-anchor ebffdd787c:
 # dotnet/maui release/11.0.1xx-rc2
@@ -63,7 +65,7 @@ permissions:
 # 149/149).
 # Advance the pin deliberately, in lockstep with the interaction/pixel gates.
 env:
-  MAUI_OHOS_REF: ${{ github.event.inputs.maui_ohos_ref || 'eec30c01cd17b8e80526e37fe70fa756a466e214' }}
+  MAUI_OHOS_REF: ${{ github.event.inputs.maui_ohos_ref || '68ec598037a27e45c679e11d3e79e3a56f5467de' }}
 
 jobs:
   contract:

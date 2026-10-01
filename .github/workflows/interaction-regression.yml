@@ -40,7 +40,7 @@ on:
         description: 'maui-ohos commit SHA to compile (defaults to the pinned feature/openharmony tip)'
         required: false
         type: string
-        default: 'eec30c01cd17b8e80526e37fe70fa756a466e214'
+        default: '68ec598037a27e45c679e11d3e79e3a56f5467de'
   push:
     branches: [ master ]
   pull_request:
@@ -52,7 +52,9 @@ permissions:
 
 # Reproducible cross-repo compile: the MAUI slice is checked out at an exact commit, not the
 # mutable feature/openharmony branch, so a push to the fork cannot change what this gate compiles.
-# The default is the feature/openharmony tip: eec30c01cd, the W9 consolidation on top of the
+# The default is the feature/openharmony tip: 68ec598037 (FIX-HOME: the NavigationPage
+# handler descends its arrange into its current page - the Hello Home tab's content subtree
+# draws), on top of eec30c01cd, the W9 consolidation on top of the
 # rc.2 slice re-anchor ebffdd787c (dotnet/maui release/11.0.1xx-rc2 349017b7 + the OpenHarmony
 # delta, Microsoft.Maui.* 11.0.0-rc.2.26478.12): W9B T14 flyout leftovers + T21 font-scale
 # wiring, W9C T8 uneven TableView rows, W9D T20 media bridge and W9A B2 staged-WASM WebView.
@@ -89,7 +91,7 @@ permissions:
 # and refresh this comment when the harness pins or the tip move (workflow_dispatch can compile
 # any commit).
 env:
-  MAUI_OHOS_REF: ${{ github.event.inputs.maui_ohos_ref || 'eec30c01cd17b8e80526e37fe70fa756a466e214' }}
+  MAUI_OHOS_REF: ${{ github.event.inputs.maui_ohos_ref || '68ec598037a27e45c679e11d3e79e3a56f5467de' }}
   # setup-dotnet installs the requested 11.0.x preview into DOTNET_INSTALL_DIR; on Linux that
   # defaults to /usr/share/dotnet, which a per-user cache cannot persist. Point it at ~/.dotnet
   # (the action resolves the ~ prefix against $HOME) so the cache step below actually avoids the
