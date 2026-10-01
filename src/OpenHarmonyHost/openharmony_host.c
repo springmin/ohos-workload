@@ -1368,6 +1368,7 @@ struct OhosHostAppHandle {
     void (*bridge_raw_file_result_bytes)(int request_id, int rc, const unsigned char* data, size_t length);
     void (*bridge_network_access)(int level);
     void (*bridge_key_event)(int key_code, int event_type);
+    int (*bridge_back_pressed)(void);
     void (*bridge_soft_input_change)(int bottom);
     void* surface_window;
     int surface_width;
@@ -3284,6 +3285,24 @@ void ohos_host_key_event(int key_code, int event_type) {
     if (g_app != NULL && g_app->bridge_key_event != NULL) {
         g_app->bridge_key_event(key_code, event_type);
     }
+}
+
+// System Back press: the shell's onBackPress calls host.backPressed; the managed callback
+// registered here runs synchronously and answers whether it consumed the press (1 = a drawer
+// closed, the ArkTS hook returns true and the system does not background the app; 0 = the
+// default path runs). No callback (an app built before the hook, or one that registered
+// nothing) answers 0.
+void ohos_host_register_back_pressed(void* callback) {
+    if (g_app != NULL) {
+        g_app->bridge_back_pressed = (int (*)(void))callback;
+    }
+}
+
+int ohos_host_back_pressed(void) {
+    if (g_app != NULL && g_app->bridge_back_pressed != NULL) {
+        return g_app->bridge_back_pressed();
+    }
+    return 0;
 }
 
 int ohos_host_keyboard_show(void) {

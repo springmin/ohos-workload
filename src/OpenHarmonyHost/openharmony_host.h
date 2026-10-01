@@ -573,6 +573,13 @@ void ohos_host_register_text_submitted(void* callback);
 void ohos_host_register_key_event(void* callback);
 void ohos_host_key_event(int key_code, int event_type);
 
+/// System Back press: the shell page's onBackPress forwards through host.backPressed; the host
+/// delivers it to the callback registered here: int (*)(void), which returns 1 when the managed
+/// app consumed the press (a drawer closed) and 0 when the system may run its default (background
+/// the ability). The NAPI call returns that flag to the ArkTS onBackPress result.
+void ohos_host_register_back_pressed(void* callback);
+int ohos_host_back_pressed(void);
+
 /// Asks the ArkTS shell to show/hide the soft keyboard (the NAPI layer owns the sink).
 void ohos_host_request_text_input(int show);
 

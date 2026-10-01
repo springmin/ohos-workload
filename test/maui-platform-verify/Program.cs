@@ -12,7 +12,7 @@ using Microsoft.Maui.Platform;
 // after the fuzz tail) instead of letting every caller repeat its own threshold constant.
 VerifyLineCountingWriter verifyStdout = new(Console.Out);
 Console.SetOut(verifyStdout);
-const int verifyCheckTotal = 550;                     // documented full [verify] line count (+4 FIX-WVP overlay px->vp/degenerate-frame/hybrid-overlay arbitration/suspend-restore (shell+slice), +2 FIX-DISMISS flyout drawer dismiss under the device display conditions, +4 FIX-HOME home page arrange/draw (NavigationPage-in-TabbedPage descent), +4 MS-MODE runtime mode switch, +10 P2c-DEEPLINK, +4 P2b-IMG, +16 P1b-LIST, +10 P1a-ANIM, +2 SEC3 storage/deep-link pins, +5 W-series WebView wiring, +3 T1 InputView mapping, +4 T2 WebView gaps, +4 T3 GraphicsView interaction, +7 T10 modal accessibility, +4 T4 Label formatted text, +4 T5 layout semantics, +6 T7 DatePicker calendar/min-max, +4 T9 window title bar, +4 T11 diagnostics overlay, +1 N2 empty ContentPage arrangement, +6 T8 TableView, +5 T8 uneven rows, +7 T6 RTL flow direction, +5 T22 MainThread bridge, +2 FIX-TABBED tabbed CurrentPage, +4 T13 group footer view/N3 picker IsOpen, +5 T21 system font scale, +3 T21 font scale source wiring, +2 A11Y-TABBED tabbed accessibility, +3 N1 host multi-pointer, +5 T12 CarouselView group slides, +7 T14 rich shell flyout, +10 T14 flyout leftovers (MenuItemTemplate/FlyoutContent/AsMultipleItems), +2 FIX-SHELL shell CurrentPage, +2 A11Y-SHELL shell accessibility, +7 T15 rich Shell.TitleView, +8 T16 structured menus, +3 N4 TitleBar accessibility row, +3 T18 Essentials Map, +4 N5 overlay passthrough suppression, +5 N6 window decorations, +4 T20 media bridge, +3 B2 wasm site in a MAUI WebView, +2 W10 NativeAOT managed entry (host libs-dir resolution + shell AOT payload probe))
+const int verifyCheckTotal = 554;                     // documented full [verify] line count (+4 FIX-BACKSIZE Back-press forwarding/drawer drill/ shell drawer/BlazorWebView desired size, +4 FIX-WVP overlay px->vp/degenerate-frame/hybrid-overlay arbitration/suspend-restore (shell+slice), +2 FIX-DISMISS flyout drawer dismiss under the device display conditions, +4 FIX-HOME home page arrange/draw (NavigationPage-in-TabbedPage descent), +4 MS-MODE runtime mode switch, +10 P2c-DEEPLINK, +4 P2b-IMG, +16 P1b-LIST, +10 P1a-ANIM, +2 SEC3 storage/deep-link pins, +5 W-series WebView wiring, +3 T1 InputView mapping, +4 T2 WebView gaps, +4 T3 GraphicsView interaction, +7 T10 modal accessibility, +4 T4 Label formatted text, +4 T5 layout semantics, +6 T7 DatePicker calendar/min-max, +4 T9 window title bar, +4 T11 diagnostics overlay, +1 N2 empty ContentPage arrangement, +6 T8 TableView, +5 T8 uneven rows, +7 T6 RTL flow direction, +5 T22 MainThread bridge, +2 FIX-TABBED tabbed CurrentPage, +4 T13 group footer view/N3 picker IsOpen, +5 T21 system font scale, +3 T21 font scale source wiring, +2 A11Y-TABBED tabbed accessibility, +3 N1 host multi-pointer, +5 T12 CarouselView group slides, +7 T14 rich shell flyout, +10 T14 flyout leftovers (MenuItemTemplate/FlyoutContent/AsMultipleItems), +2 FIX-SHELL shell CurrentPage, +2 A11Y-SHELL shell accessibility, +7 T15 rich Shell.TitleView, +8 T16 structured menus, +3 N4 TitleBar accessibility row, +3 T18 Essentials Map, +4 N5 overlay passthrough suppression, +5 N6 window decorations, +4 T20 media bridge, +3 B2 wasm site in a MAUI WebView, +2 W10 NativeAOT managed entry (host libs-dir resolution + shell AOT payload probe))
 const int verifyCheckFloor = verifyCheckTotal - 20;   // documented floor convention (total - 20)
 
 // A small image file for the Image handler.
@@ -4438,6 +4438,226 @@ if (!w6SuspendBehavior)
 {
     throw new InvalidOperationException(
         $"the FIX-WVP managed overlay suspension drifted: tabHide={w6SuspendTabHide} drawerHideShow={w6SuspendDrawerHideShow}");
+}
+
+// ---- FIX-BACKSIZE (a): system Back closes the drawer through the host bridge ------------------
+// The platform consumes the Back key before the page's onKeyEvent sees it (the window just
+// backgrounded; FIX-DISMISS device note), so the shell page's onBackPress forwards the key
+// through the new host.backPressed NAPI -> ohos_host_register_back_pressed ->
+// OpenHarmonyBridge.BackPressed and returns the handler's answer (true = consumed, no
+// background). The slice's drawer handlers subscribe: FlyoutPage writes IsPresented back, the
+// Shell closes FlyoutOpen and writes FlyoutIsPresented back; with no drawer open the answer is
+// false and the platform default still runs.
+string? backHostingPath = FindHostSource("src/Microsoft.OpenHarmony.Hosting/OpenHarmonyApp.cs");
+string backHosting = backHostingPath is null ? string.Empty : File.ReadAllText(backHostingPath);
+string? backNativePath = FindHostSource("src/OpenHarmonyHost/openharmony_host.c");
+string backNative = backNativePath is null ? string.Empty : File.ReadAllText(backNativePath);
+string? backHeaderPath = FindHostSource("src/OpenHarmonyHost/openharmony_host.h");
+string backHeader = backHeaderPath is null ? string.Empty : File.ReadAllText(backHeaderPath);
+string? backNapiPath = FindHostSource("src/OpenHarmonyHost/host_napi.cpp");
+string backNapi = backNapiPath is null ? string.Empty : File.ReadAllText(backNapiPath);
+string? backExportsPath = FindHostSource("src/OpenHarmonyHost/host-exports.txt");
+string backExports = backExportsPath is null ? string.Empty : File.ReadAllText(backExportsPath);
+bool backManagedOk =
+    backHosting.Contains("ohos_host_register_back_pressed") &&
+    backHosting.Contains("s_backPressedThunk = (IntPtr)(delegate* unmanaged[Cdecl]<int>)&OnBackPressedNative;") &&
+    backHosting.Contains("RegisterBackPressedNative(s_backPressedThunk);") &&
+    backHosting.Contains("public static event BackPressedHandler? BackPressed") &&
+    backHosting.Contains("public static bool CompleteBackPressed()");
+bool backNativeOk =
+    backHeader.Contains("void ohos_host_register_back_pressed(void* callback);") &&
+    backHeader.Contains("int ohos_host_back_pressed(void);") &&
+    backNative.Contains("g_app->bridge_back_pressed = (int (*)(void))callback;") &&
+    backNative.Contains("return g_app->bridge_back_pressed();") &&
+    backNapi.Contains("napi_value BackPressed(napi_env env, napi_callback_info info)") &&
+    backNapi.Contains("ohos_host_back_pressed() != 0") &&
+    backExports.Contains("ohos_host_register_back_pressed");
+bool backShellPacks = true;
+foreach (string backVersion in new[] { "1.0.0-preview.22", "1.0.0-preview.23", "1.0.0-preview.24", "1.0.0-preview.28" })
+{
+    string? backPackShellPath = FindHostSource($"packs/Microsoft.OpenHarmony.Sdk/{backVersion}/templates/ets/pages/Index.ets");
+    string backPackShell = backPackShellPath is null ? string.Empty : File.ReadAllText(backPackShellPath);
+    backShellPacks &= backPackShell.Contains("onBackPress(): boolean {") &&
+        backPackShell.Contains("handled = host.backPressed() === true;") &&
+        backPackShell.Contains("return handled;");
+}
+Console.WriteLine($"[verify] fix-backsize back forwarding managed={backManagedOk} native={backNativeOk} shellPacks={backShellPacks} assert={backManagedOk && backNativeOk && backShellPacks}");
+if (!(backManagedOk && backNativeOk && backShellPacks))
+{
+    throw new InvalidOperationException(
+        $"the FIX-BACKSIZE Back forwarding drifted: managed={backManagedOk} native={backNativeOk} shell={backShellPacks}");
+}
+
+// The native thunk - the exact pointer Attach registers - enters the handler chain: a
+// presented FlyoutPage consumes the press and writes the managed state back (IsPresented plus
+// the platform FlyoutPresented and the overlay "resume"), and a closed one falls through (0),
+// which is what keeps the system's background default for a drawer-less app.
+var backOps = new List<string>();
+void BackOnWebCommandSent(string op, string? arg) => backOps.Add(op);
+var backFlyout = new Microsoft.Maui.Controls.FlyoutPage
+{
+    Flyout = new Microsoft.Maui.Controls.ContentPage { Title = "menu", Content = new Microsoft.Maui.Controls.Label { Text = "m" } },
+    Detail = new Microsoft.Maui.Controls.ContentPage { Title = "detail", Content = new Microsoft.Maui.Controls.Label { Text = "d" } },
+    IsPresented = false,
+};
+OpenHarmonyHandlerConnector.ConnectTree(backFlyout);
+backFlyout.Measure(1080, 1920);
+backFlyout.Arrange(new Rect(0, 0, 1080, 1920));
+IntPtr backThunk = NativeThunks.Pointer(typeof(Microsoft.OpenHarmony.Hosting.OpenHarmonyBridge), "s_backPressedThunk");
+// The event asks every subscriber newest first, and the earlier shell drills deliberately leave
+// their own drawers open (T14): the fall-through half of a drill must run against an isolated
+// (empty) handler set, or a still-open drawer elsewhere consumes the press and masks the native
+// 0. The field seam is the N1-style reflective one; the real subscriber set is restored after.
+FieldInfo backHandlersField = typeof(Microsoft.OpenHarmony.Hosting.OpenHarmonyBridge)
+    .GetField("s_backPressedHandlers", BindingFlags.NonPublic | BindingFlags.Static)
+    ?? throw new InvalidOperationException("OpenHarmonyBridge.s_backPressedHandlers was not found; the FIX-BACKSIZE fall-through drill needs the handler seam");
+object? backHandlersBefore = backHandlersField.GetValue(null);
+bool BackFallsThroughWhenEmpty()
+{
+    try
+    {
+        backHandlersField.SetValue(null, null);
+        return NativeThunks.Invoker<NativeThunks.IntReturnCallback>(backThunk)() == 0 &&
+            !Microsoft.OpenHarmony.Hosting.OpenHarmonyBridge.CompleteBackPressed();
+    }
+    finally
+    {
+        backHandlersField.SetValue(null, backHandlersBefore);
+    }
+}
+bool backConsumed;
+bool backFallsThrough;
+Microsoft.OpenHarmony.Hosting.OpenHarmonyBridge.WebCommandSent += BackOnWebCommandSent;
+try
+{
+    backOps.Clear();
+    backFlyout.IsPresented = true;
+    backOps.Clear();
+    backConsumed = NativeThunks.Invoker<NativeThunks.IntReturnCallback>(backThunk)() == 1 &&
+        !backFlyout.IsPresented && backOps.Contains("resume");
+    backFallsThrough = BackFallsThroughWhenEmpty();
+}
+finally
+{
+    Microsoft.OpenHarmony.Hosting.OpenHarmonyBridge.WebCommandSent -= BackOnWebCommandSent;
+}
+Console.WriteLine($"[verify] fix-backsize drawer back consumed={backConsumed} fallsThrough={backFallsThrough} managed={backFlyout.IsPresented} platform={((backFlyout.Handler?.PlatformView as OpenHarmonyView)?.FlyoutPresented ?? false)} assert={backConsumed && backFallsThrough}");
+if (!(backConsumed && backFallsThrough))
+{
+    throw new InvalidOperationException(
+        $"the Back press did not close the drawer through the registered native thunk: consumed={backConsumed} fallsThrough={backFallsThrough}");
+}
+
+// The shell drawer: Back closes the compositor's FlyoutOpen and writes Shell.FlyoutIsPresented
+// back; a closed drawer falls through to the system default.
+var backShell = new Microsoft.Maui.Controls.Shell { FlyoutBehavior = Microsoft.Maui.FlyoutBehavior.Flyout };
+backShell.Items.Add(new Microsoft.Maui.Controls.ShellContent
+{
+    Title = "back",
+    ContentTemplate = new DataTemplate(() => new Microsoft.Maui.Controls.ContentPage { Title = "back", Content = new Microsoft.Maui.Controls.Label { Text = "back" } }),
+});
+OpenHarmonyHandlerConnector.ConnectTree(backShell);
+backShell.Measure(1080, 1920);
+backShell.Arrange(new Rect(0, 0, 1080, 1920));
+var backShellView = (OpenHarmonyView)backShell.Handler!.PlatformView!;
+backShellView.FlyoutOpen = true;
+backShell.FlyoutIsPresented = true;
+bool backShellConsumed = Microsoft.OpenHarmony.Hosting.OpenHarmonyBridge.CompleteBackPressed() &&
+    !backShellView.FlyoutOpen && !backShell.FlyoutIsPresented;
+bool backShellFallsThrough = BackFallsThroughWhenEmpty();
+Console.WriteLine($"[verify] fix-backsize shell drawer back consumed={backShellConsumed} fallsThrough={backShellFallsThrough} platformOpen={backShellView.FlyoutOpen} managedPresented={backShell.FlyoutIsPresented} assert={backShellConsumed && backShellFallsThrough}");
+if (!(backShellConsumed && backShellFallsThrough))
+{
+    throw new InvalidOperationException(
+        $"the Back press did not close the shell drawer: consumed={backShellConsumed} fallsThrough={backShellFallsThrough}");
+}
+
+// ---- FIX-BACKSIZE (b): the BlazorWebView desired size ----------------------------------------
+// The OpenHarmony slice compiles ViewHandlerOfT.Standard, whose GetDesiredSize answers Size.Zero;
+// the BlazorWebView handler was the only web handler without an override, so the control
+// reported 0x0, its parent arranged a zero-height frame, PlatformArrange sent a degenerate
+// "frame" and the shell ignored it (the FIX-WVP guard). After a tab switch or a drawer the
+// single ArkWeb overlay stays hidden, so the control never re-shows itself. The fix mirrors the
+// WebView/HybridWebView handlers (width = constraint, height capped at 400) and honours an
+// explicit HeightRequest. The drill connects a BlazorWebView (no HostPage: no WebViewManager
+// starts off-device), measures/arranges it and requires the frame command to be non-degenerate.
+string? blazorHandlerPath = FindHostSource("OpenHarmonyBlazorWebViewHandler.cs");
+string blazorHandler = blazorHandlerPath is null ? string.Empty : File.ReadAllText(blazorHandlerPath);
+bool blazorDesiredSource = blazorHandler.Contains("public override Size GetDesiredSize(double widthConstraint, double heightConstraint)") &&
+    blazorHandler.Contains("Math.Min(400, heightConstraint)") &&
+    blazorHandler.Contains("element?.HeightRequest > 0");
+// The frame must follow the shell's single-overlay ownership (FIX-WVP registration
+// arbitration): a registered HybridWebView keeps the overlay, so this handler withholds its
+// frame while OpenHarmonyHybridWebViewHandler.HasRegisteredOverlay holds (on the device the
+// unguarded frame moved the hybrid page onto the BlazorWebView's box and blanked the hybrid
+// area). A BlazorWebView-only page has no hybrid owner and still places the overlay.
+bool blazorOwnershipSource = blazorHandler.Contains("if (!OpenHarmonyHybridWebViewHandler.HasRegisteredOverlay)") &&
+    blazorHandler.Contains("OpenHarmonyWebViewHandler.SendPlatformFrame(frame);");
+string? blazorHybridSourcePath = FindHostSource("OpenHarmonyHybridWebViewHandler.cs");
+string blazorHybridSource = blazorHybridSourcePath is null ? string.Empty : File.ReadAllText(blazorHybridSourcePath);
+bool blazorOwnershipApi = blazorHybridSource.Contains("internal static bool HasRegisteredOverlay") &&
+    blazorHybridSource.Contains("private static int s_registeredOverlayOwners;") &&
+    blazorHybridSource.Contains("s_registeredOverlayOwners++;") &&
+    blazorHybridSource.Contains("s_registeredOverlayOwners--;");
+var blazorSized = new Microsoft.AspNetCore.Components.WebView.Maui.BlazorWebView { HeightRequest = 400 };
+OpenHarmonyHandlerConnector.ConnectTree(blazorSized);
+blazorSized.Measure(1080, 1920);
+Size blazorDesired = blazorSized.DesiredSize;
+string? blazorFrameArg = null;
+int blazorFrameCount = 0;
+void BlazorFrameSent(string op, string? arg)
+{
+    if (op == "frame")
+    {
+        blazorFrameCount++;
+        blazorFrameArg = arg;
+    }
+}
+Microsoft.OpenHarmony.Hosting.OpenHarmonyBridge.WebCommandSent += BlazorFrameSent;
+bool blazorOwnerWithheld = false;
+try
+{
+    blazorSized.Arrange(new Rect(40, 500, 1000, 400));
+    int blazorFramesWithoutHybrid = blazorFrameCount;
+    // Simulate a connected HybridWebView that registered with the shell (the same counter the
+    // real registration increments): a second arrange must not emit another overlay frame.
+    FieldInfo blazorHybridOwnersField = typeof(OpenHarmonyHybridWebViewHandler)
+        .GetField("s_registeredOverlayOwners", BindingFlags.NonPublic | BindingFlags.Static)
+        ?? throw new InvalidOperationException("OpenHarmonyHybridWebViewHandler.s_registeredOverlayOwners was not found; the FIX-BACKSIZE overlay-ownership drill needs the counter seam");
+    object? blazorHybridOwnersBefore = blazorHybridOwnersField.GetValue(null);
+    try
+    {
+        blazorHybridOwnersField.SetValue(null, 1);
+        blazorSized.Arrange(new Rect(40, 506, 1000, 400));
+    }
+    finally
+    {
+        blazorHybridOwnersField.SetValue(null, blazorHybridOwnersBefore);
+    }
+    blazorOwnerWithheld = blazorFramesWithoutHybrid == 1 && blazorFrameCount == 1;
+}
+finally
+{
+    Microsoft.OpenHarmony.Hosting.OpenHarmonyBridge.WebCommandSent -= BlazorFrameSent;
+}
+double blazorFrameW = 0;
+double blazorFrameH = 0;
+if (blazorFrameArg is not null)
+{
+    string[] blazorFrameParts = blazorFrameArg.Split('\n');
+    if (blazorFrameParts.Length == 4)
+    {
+        double.TryParse(blazorFrameParts[2], out blazorFrameW);
+        double.TryParse(blazorFrameParts[3], out blazorFrameH);
+    }
+}
+bool blazorDesiredOk = blazorDesired.Width > 0 && Math.Abs(blazorDesired.Height - 400) < 0.5;
+bool blazorFrameOk = blazorFrameW > 0 && blazorFrameH > 0;
+Console.WriteLine($"[verify] fix-backsize blazor desired={blazorDesired.Width:0}x{blazorDesired.Height:0} frame={blazorFrameW:0}x{blazorFrameH:0} frames={blazorFrameCount} source={blazorDesiredSource && blazorOwnershipSource && blazorOwnershipApi} ownerWithheld={blazorOwnerWithheld} assert={blazorDesiredSource && blazorOwnershipSource && blazorOwnershipApi && blazorDesiredOk && blazorFrameOk && blazorOwnerWithheld}");
+if (!(blazorDesiredSource && blazorOwnershipSource && blazorOwnershipApi && blazorDesiredOk && blazorFrameOk && blazorOwnerWithheld))
+{
+    throw new InvalidOperationException(
+        $"the BlazorWebView desired size/overlay ownership drifted: source={blazorDesiredSource && blazorOwnershipSource && blazorOwnershipApi} desired={blazorDesired} frame={blazorFrameW}x{blazorFrameH} ownerWithheld={blazorOwnerWithheld}");
 }
 
 // W3: off-device behavior drill on the live probe: the history state mirrors into

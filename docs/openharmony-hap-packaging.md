@@ -644,6 +644,16 @@ RequestDisplayDensity` 答复 1），壳 `frame` 命令因此收到像素值，`
 `https://0.0.0.1/` 保持被服务（此前被 `0.0.0.0` 叠加、hybrid 页零请求）。设备证据与断言见
 runtime-ohos `docs/plans/2026-10-01-ohos-webview-overlay.md`。
 
+FIX-BACKSIZE（2026-10-01）：系统 Back 在页面的 `onKeyEvent` 之前被平台消费（FIX-DISMISS 真机
+观察到窗口直接收后台），壳页面因此新增 `onBackPress(): boolean`，经 `host.backPressed` ->
+`ohos_host_register_back_pressed` -> `OpenHarmonyBridge.BackPressed`（`int (*)(void)` 返回 1 =
+已消费）同步询问托管抽屉处理器：FlyoutPage 把 `IsPresented` 写回、Shell 关闭 `FlyoutOpen` 并写回
+`FlyoutIsPresented`，无处理器时返回 0，系统默认（收后台）不变。BlazorWebView 侧：切片编译的是
+`ViewHandlerOfT.Standard`（`GetDesiredSize` 恒为 `Size.Zero`），而 BlazorWebView 是唯一没有覆写
+的 web handler，期望尺寸 0x0 使其父布局排布出 0 高 frame、`PlatformArrange` 发出的 frame 被壳
+的退化保护忽略（FIX-WVP）；现按 WebView/HybridWebView 的同一形状覆写（宽=约束，高上限 400）并
+尊重显式 `HeightRequest`。新壳 abc 342,160 B（`ffda66da…`），宿主新增 1 个导出（150/150）。
+
 ## Toolchain resolution
 
 `_OpenHarmonyDetectToolchain` resolves the packing tool from `OpenHarmonyToolchainDir` or

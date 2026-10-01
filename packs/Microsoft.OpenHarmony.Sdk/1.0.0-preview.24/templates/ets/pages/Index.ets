@@ -5050,6 +5050,20 @@ struct Index {
     });
   }
 
+  // System Back: the platform consumes the key before the XComponent's onKeyEvent sees it, so a
+  // presented drawer could not be closed (the window simply backgrounded; FIX-DISMISS device
+  // note). onBackPress runs on the page and forwards through host.backPressed ->
+  // ohos_host_register_back_pressed; the managed slice's drawer handlers answer true (consumed)
+  // and the page returns true so the system does not background the app. With no drawer open -
+  // or on a host library without the export - the result is false and the platform default runs.
+  onBackPress(): boolean {
+    let handled: boolean = false;
+    this.hostCall('backPressed', typeof host !== 'undefined' && typeof host.backPressed === 'function', (): void => {
+      handled = host.backPressed() === true;
+    });
+    return handled;
+  }
+
   // Clipboard (Essentials): the pasteboard 'update' observer is registered on the page's
   // context and would outlive the page, so it is unregistered with the exact stored callback
   // when the page disappears; a later page registers again. The Bluetooth GATT clients (platform

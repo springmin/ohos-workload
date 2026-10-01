@@ -62,6 +62,10 @@ internal static class NativeThunks
     [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
     public delegate void ActivationCallback(IntPtr payloadUtf8);
 
+    /// <summary>int (*)(void): the Back-press callback (1 = consumed).</summary>
+    [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+    public delegate int IntReturnCallback();
+
     /// <summary>
     /// Reads the registered native function pointer from a private static IntPtr field. Throws
     /// when the field is missing or not bound, so a slice that stops registering the thunk fails

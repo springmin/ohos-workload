@@ -221,6 +221,9 @@ public static partial class OpenHarmonyBridge
     [LibraryImport(HostLibrary, EntryPoint = "ohos_host_register_text_submitted")]
     private static partial void RegisterTextSubmittedNative(IntPtr callback);
 
+    [LibraryImport(HostLibrary, EntryPoint = "ohos_host_register_back_pressed")]
+    private static partial void RegisterBackPressedNative(IntPtr callback);
+
     [LibraryImport(HostLibrary, EntryPoint = "ohos_host_register_activation")]
     private static partial void RegisterActivationNative(IntPtr callback);
 
@@ -303,6 +306,10 @@ public static partial class OpenHarmonyBridge
     private delegate void NativeTextCompositionDelegate(IntPtr utf8, int offset);
     [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
     private delegate void NativeTextSubmittedDelegate();
+    // Back press: int (*)(void) - returns 1 when a managed handler consumed the press (a
+    // drawer closed) and 0 when the system may background the app.
+    [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+    private delegate int NativeBackPressedDelegate();
     [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
     private delegate void NativeKeystoreResultDelegate(int requestId, int rc, IntPtr dataUtf8);
     [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
@@ -326,6 +333,7 @@ public static partial class OpenHarmonyBridge
     private static unsafe IntPtr s_textInputThunk = (IntPtr)(delegate* unmanaged[Cdecl]<IntPtr, void>)&OnTextInputNative;
     private static unsafe IntPtr s_textCompositionThunk = (IntPtr)(delegate* unmanaged[Cdecl]<IntPtr, int, void>)&OnTextCompositionNative;
     private static unsafe IntPtr s_textSubmittedThunk = (IntPtr)(delegate* unmanaged[Cdecl]<void>)&OnTextSubmittedNative;
+    private static unsafe IntPtr s_backPressedThunk = (IntPtr)(delegate* unmanaged[Cdecl]<int>)&OnBackPressedNative;
     private static unsafe IntPtr s_keystoreResultThunk = (IntPtr)(delegate* unmanaged[Cdecl]<int, int, IntPtr, void>)&OnKeystoreResultNative;
     private static unsafe IntPtr s_pickerResultThunk = (IntPtr)(delegate* unmanaged[Cdecl]<int, int, IntPtr, IntPtr, void>)&OnPickerResultNative;
     private static unsafe IntPtr s_webEventThunk = (IntPtr)(delegate* unmanaged[Cdecl]<IntPtr, IntPtr, void>)&OnWebEventNative;
@@ -344,6 +352,8 @@ public static partial class OpenHarmonyBridge
     private static Action<string, int>? s_textCompositionHandlers;
     private static Action? s_redrawHandlers;
     private static Action? s_textSubmittedHandlers;
+    // Back-press handlers in registration order; CompleteBackPressed walks them newest first.
+    private static BackPressedHandler? s_backPressedHandlers;
     private static OpenHarmonySurfaceInfo? s_surface;
     private static Action<OpenHarmonyAppContext>? s_initializedHandlers;
     private static Action<OpenHarmonyLifecycleEvent>? s_lifecycleHandlers;
@@ -546,6 +556,59 @@ public static partial class OpenHarmonyBridge
     {
         add { lock (s_sync) { s_textSubmittedHandlers += value; } }
         remove { lock (s_sync) { s_textSubmittedHandlers -= value; } }
+    }
+
+    /// <summary>
+    /// Asks a handler to consume a system Back press (the ArkTS page's onBackPress hook,
+    /// forwarded through host.backPressed -> ohos_host_register_back_pressed). Returns true when
+    /// the press was consumed - the shell then keeps the app in the foreground; false lets the
+    /// system run its default (background the ability).
+    /// </summary>
+    public delegate bool BackPressedHandler();
+
+    /// <summary>
+    /// Raised for every system Back press. Handlers are asked newest first and the first true
+    /// consumes the press, so the drawer that was opened last wins; an app without a drawer
+    /// keeps the platform default. MAUI rc.1 exposes no back hook, so this bridge event is the
+    /// documented internal surface (the same shape as the key-event callback).
+    /// </summary>
+    public static event BackPressedHandler? BackPressed
+    {
+        add { lock (s_sync) { s_backPressedHandlers += value; } }
+        remove { lock (s_sync) { s_backPressedHandlers -= value; } }
+    }
+
+    /// <summary>
+    /// Walks the registered <see cref="BackPressed"/> handlers newest first and returns true when
+    /// one consumed the press. Both the native back thunk and the off-device suite enter here.
+    /// </summary>
+    public static bool CompleteBackPressed()
+    {
+        BackPressedHandler? handlers;
+        lock (s_sync)
+        {
+            handlers = s_backPressedHandlers;
+        }
+        if (handlers is null)
+        {
+            return false;
+        }
+        Delegate[] chain = handlers.GetInvocationList();
+        for (int i = chain.Length - 1; i >= 0; i--)
+        {
+            try
+            {
+                if (((BackPressedHandler)chain[i])())
+                {
+                    return true;
+                }
+            }
+            catch (Exception ex)
+            {
+                ReportCallbackFailure("back pressed", ex);
+            }
+        }
+        return false;
     }
 
     /// <summary>Raised when the UI asks for a redraw (navigation pushes/pops, app state changes).</summary>
@@ -1072,6 +1135,7 @@ public static partial class OpenHarmonyBridge
                 RegisterTextInputNative(s_textInputThunk);
                 RegisterTextCompositionNative(s_textCompositionThunk);
                 RegisterTextSubmittedNative(s_textSubmittedThunk);
+                RegisterBackPressedNative(s_backPressedThunk);
                 RegisterKeystoreResultNative(s_keystoreResultThunk);
                 RegisterPickerResultNative(s_pickerResultThunk);
                 RegisterWebEventNative(s_webEventThunk);
@@ -1546,6 +1610,23 @@ public static partial class OpenHarmonyBridge
         catch (Exception ex)
         {
             ReportCallbackFailure("text submitted", ex);
+        }
+    }
+
+    // Reverse entry for the shell's system Back press (host.backPressed -> this thunk). The
+    // return value crosses back through the NAPI call, so an exception must not escape: it is
+    // reported and the press falls back to the platform default (0 = not handled).
+    [UnmanagedCallersOnly(CallConvs = new[] { typeof(CallConvCdecl) })]
+    private static int OnBackPressedNative()
+    {
+        try
+        {
+            return CompleteBackPressed() ? 1 : 0;
+        }
+        catch (Exception ex)
+        {
+            ReportCallbackFailure("back pressed", ex);
+            return 0;
         }
     }
 

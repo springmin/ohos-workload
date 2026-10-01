@@ -3649,6 +3649,19 @@ napi_value KeyEvent(napi_env env, napi_callback_info info) {
     return undefined;
 }
 
+// ArkTS calls host.backPressed() from the page's onBackPress; the host asks the managed
+// callback registered with ohos_host_register_back_pressed whether the app consumed the press.
+// true keeps the app in the foreground (a drawer closed); false/absent lets the system run its
+// default (background the ability), which is the ArkTS onBackPress false result. A shell with
+// the handler but a host library without the export logs the standard missing-export warning
+// (hostCall) and the system default still runs.
+napi_value BackPressed(napi_env env, napi_callback_info info) {
+    bool handled = ohos_host_back_pressed() != 0;
+    napi_value result = nullptr;
+    napi_get_boolean(env, handled, &result);
+    return result;
+}
+
 // Geocoding (Essentials): request/response like the clipboard bridge. The managed side asks
 // through ohos_host_geocode_request (op 0 address -> location with a JSON object of one
 // address as arg, op 1 location -> address with "lat,lon" as arg); the shell's
@@ -4110,6 +4123,7 @@ napi_value Init(napi_env env, napi_value exports) {
         {"registerAbilitySink", nullptr, RegisterAbilitySink, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"registerFocusSink", nullptr, RegisterFocusSink, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"keyEvent", nullptr, KeyEvent, nullptr, nullptr, nullptr, napi_default, nullptr},
+        {"backPressed", nullptr, BackPressed, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"registerFlashlightSink", nullptr, RegisterFlashlightSink, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"registerKeepScreenOnSink", nullptr, RegisterKeepScreenOnSink, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"registerWindowTitleSink", nullptr, RegisterWindowTitleSink, nullptr, nullptr, nullptr, napi_default, nullptr},

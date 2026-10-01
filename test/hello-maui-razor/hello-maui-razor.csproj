@@ -43,6 +43,19 @@
          hyphens). Still overridable: -p:OpenHarmonyBundleName=... wins, and the pack's
          _OpenHarmonyValidateBundleName fails the build early on an illegal effective value. -->
     <OpenHarmonyBundleName Condition=" '$(OpenHarmonyBundleName)' == '' ">com.example.hellomauirazor</OpenHarmonyBundleName>
+    <!-- NativeAOT variant (AOT-MAUI), the same marker the demo uses: the pack targets consume
+         it to emit the AOT hap variant, AotEntry.cs (OPENHARMONY_AOT) supplies the native
+         openharmony_app_main export and OutputType switches to Library for NativeLib=Shared
+         (tests/README "NativeAOT HAP variant" and docs/aot-single-entry.md). Added so the
+         BlazorWebView-only app can be verified on the device's AOT route (FIX-BACKSIZE), where
+         the demo's hybrid page has no bearing on the single overlay. -->
+    <OpenHarmonyAotApp Condition=" '$(OpenHarmonyAotApp)' == '' and '$(PublishAot)' == 'true' ">true</OpenHarmonyAotApp>
+    <PublishAot Condition=" '$(OpenHarmonyAotApp)' == 'true' ">true</PublishAot>
+    <NativeLib Condition=" '$(OpenHarmonyAotApp)' == 'true' and '$(NativeLib)' == '' ">Shared</NativeLib>
+  </PropertyGroup>
+  <PropertyGroup Condition=" '$(OpenHarmonyAotApp)' == 'true' ">
+    <DefineConstants>$(DefineConstants);OPENHARMONY_AOT</DefineConstants>
+    <OutputType>Library</OutputType>
   </PropertyGroup>
   <ItemGroup>
     <PackageReference Include="Microsoft.Maui.Controls" Version="11.0.0-rc.2.26478.12" />
