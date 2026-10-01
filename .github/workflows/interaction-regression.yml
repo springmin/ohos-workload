@@ -21,7 +21,7 @@ name: interaction-regression
 #     tree (Refresh + Publish render step and Publish-alone pass), skip/republish average/max
 #     ceilings and documented republish/skip ratio floors (render >= 1.25x, publish >= 2x).
 #
-# The check-count floor (524 = 544 - 20, the documented convention) is declared once in
+# The check-count floor (530 = 550 - 20, the documented convention) is declared once in
 # test/maui-platform-verify/Program.cs, next to the constants that count the executed suite's own
 # [verify] lines; this job reads the `[suite]` line the run prints (and cross-checks it against
 # `grep -c`) instead of repeating a literal, exactly like scripts/preflight.sh, so the local gate
@@ -40,7 +40,7 @@ on:
         description: 'maui-ohos commit SHA to compile (defaults to the pinned feature/openharmony tip)'
         required: false
         type: string
-        default: '68ec598037a27e45c679e11d3e79e3a56f5467de'
+        default: '47d79add0125cdda20b9f2ea7c18db01e8d9c35f'
   push:
     branches: [ master ]
   pull_request:
@@ -52,7 +52,12 @@ permissions:
 
 # Reproducible cross-repo compile: the MAUI slice is checked out at an exact commit, not the
 # mutable feature/openharmony branch, so a push to the fork cannot change what this gate compiles.
-# The default is the feature/openharmony tip: 68ec598037 (FIX-HOME: the NavigationPage
+# The default is the feature/openharmony tip: 47d79add01 (FIX-WVP: the ArkWeb overlay converts
+# the element frame from device pixels to vp, keeps the hybrid registration when a later Blazor
+# load follows, draws above the managed surface and suspends under a presented drawer/tab
+# switch), on top of 86b439ffc8 (FIX-DISMISS: the flyout page's default layout behavior is
+# stated as Popover at connect, so an outside tap dismisses it under the device's landscape +
+# non-phone display conditions), on top of 68ec598037 (FIX-HOME: the NavigationPage
 # handler descends its arrange into its current page - the Hello Home tab's content subtree
 # draws), on top of eec30c01cd, the W9 consolidation on top of the
 # rc.2 slice re-anchor ebffdd787c (dotnet/maui release/11.0.1xx-rc2 349017b7 + the OpenHarmony
@@ -84,14 +89,14 @@ permissions:
 # spans 043e6468, the T10 modal accessibility overlay c56bf0fa, the T1 InputView mapping dcc7eaac
 # and the T2 CookieContainer sync 8241f1b3, all on top of the W-series webview wiring d6325990,
 # the SEC-SCAN-3 S3-DL3 dot-dot route rejection and the HUKS/deep-link hardening. The suite pins
-# 544 checks / floor 524 (the N1 host multi-pointer and W10 AOT-entry lines live in this
+# 550 checks / floor 530 (the N1 host multi-pointer and W10 AOT-entry lines live in this
 # repository's harness and hosting bridge, not in the pinned slice) and the full run is green at
-# this compiled tree (local verification: 544/544, floor 524, both perf lines within budget);
+# this compiled tree (local verification: 550/550, floor 530, both perf lines within budget);
 # advance the pin deliberately
 # and refresh this comment when the harness pins or the tip move (workflow_dispatch can compile
 # any commit).
 env:
-  MAUI_OHOS_REF: ${{ github.event.inputs.maui_ohos_ref || '68ec598037a27e45c679e11d3e79e3a56f5467de' }}
+  MAUI_OHOS_REF: ${{ github.event.inputs.maui_ohos_ref || '47d79add0125cdda20b9f2ea7c18db01e8d9c35f' }}
   # setup-dotnet installs the requested 11.0.x preview into DOTNET_INSTALL_DIR; on Linux that
   # defaults to /usr/share/dotnet, which a per-user cache cannot persist. Point it at ~/.dotnet
   # (the action resolves the ~ prefix against $HOME) so the cache step below actually avoids the
