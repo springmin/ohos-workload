@@ -1017,8 +1017,8 @@ parse.
   only window point 0 for every XComponent event (`ohos_host_notify_touch(type, x, y,
   numPoints, event.id)`), so a second finger's down/move carried the first finger's position and
   a multi-finger stream collapsed onto one tracked pointer. `OnTouch` now walks `event.numPoints`
-  (`OH_NATIVE_XCOMPONENT_MAX_TOUCH_POINTS_NUMBER` capped), reads each point's id and window
-  coordinates and reports the whole array through the new `ohos_host_notify_touch_points(type,
+  (`OH_NATIVE_XCOMPONENT_MAX_TOUCH_POINTS_NUMBER` capped), reads each point's id and element
+  (surface) coordinates and reports the whole array through the new `ohos_host_notify_touch_points(type,
   points, count, pointerId, x, y)`; the primary coordinates follow the changed pointer
   (`event.id`, matched in the array, falling back to point 0 then to the event's own
   coordinates), and the old single-point `ohos_host_notify_touch` shim keeps the mouse path. The
@@ -1029,7 +1029,10 @@ parse.
   `Points` to carry both ids with their own coordinates and `X`/`Y` to be the changed pointer's
   (30,40), not point 0's (10,20); `host touch multi-pointer empty` covers the final up whose
   lifted point is gone (count 0, explicit changed coordinates); `host touch multi-pointer native`
-  pins the native walk/header (all points, changed-point match, the new export). The T3 graphics
+  pins the native walk/header (all points, changed-point match, the new export, and - FIX-ITOUCH
+  2026-10-01 - that the walk reads the points' element-relative x/y and no longer the window
+  accessors, which on a decorated window include the title bar and shifted injected taps down by
+  the decoration height). The T3 graphics
   interaction line additionally pins per-pointer association (`pointerPoints`), i.e. pointer 7
   keeps its own moved position while pointer 9 moves. That is 3 new lines on top of the
   A11Y-TABBED line: 470 + 3 = 473 = 460 interaction checks + 4 fuzz + 1 frame perf + 8 a11y

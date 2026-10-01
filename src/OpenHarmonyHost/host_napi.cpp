@@ -963,13 +963,14 @@ static bool g_pinch_active = false;
 static double g_pinch_start_distance = 0.0;
 
 // Two-finger pinch straight from the XComponent touch event (the event carries every point).
-static void MaybeReportPinch(OH_NativeXComponent* component, const OH_NativeXComponent_TouchEvent& event) {
+// The points' element-relative coordinates (see OnTouch) feed the centre, so the managed
+// pinch hit-test sees the same surface space as every other input path.
+static void MaybeReportPinch(const OH_NativeXComponent_TouchEvent& event) {
     if (event.numPoints >= 2) {
-        float x0 = 0.0f, y0 = 0.0f, x1 = 0.0f, y1 = 0.0f;
-        OH_NativeXComponent_GetTouchPointWindowX(component, 0, &x0);
-        OH_NativeXComponent_GetTouchPointWindowY(component, 0, &y0);
-        OH_NativeXComponent_GetTouchPointWindowX(component, 1, &x1);
-        OH_NativeXComponent_GetTouchPointWindowY(component, 1, &y1);
+        float x0 = event.touchPoints[0].x;
+        float y0 = event.touchPoints[0].y;
+        float x1 = event.touchPoints[1].x;
+        float y1 = event.touchPoints[1].y;
         double dx = static_cast<double>(x1) - static_cast<double>(x0);
         double dy = static_cast<double>(y1) - static_cast<double>(y0);
         double squared = dx * dx + dy * dy;
@@ -996,10 +997,21 @@ void OnTouch(OH_NativeXComponent* component, void* window) {
     if (OH_NativeXComponent_GetTouchEvent(component, window, &event) != 0) {
         return;
     }
-    MaybeReportPinch(component, event);
-    // Report every active point: each pointer carries its own window coordinates, so the
+    MaybeReportPinch(event);
+    // Report every active point with its element-relative (surface) coordinates, so the
     // managed side can associate a multi-finger stream by pointer id (the old point-0-only
     // report pinned every finger's position to the first one).
+    //
+    // FIX-ITOUCH 2026-10-01: the coordinates come from the touch point's own x/y fields -
+    // the same element space the mouse event exposes - NOT from
+    // OH_NativeXComponent_GetTouchPointWindowX/Y. On a decorated (free) window the "window"
+    // space includes the system title bar above the page, so window coordinates arrived
+    // shifted down by the decoration height (measured 70 px on the 2in1 test device: an
+    // injected tap on a button drawn at surface y=368 arrived as y=438 and resolved below
+    // it, while the Shell's bottom tab bar - whose band test has no upper bound - still
+    // matched, so uitest injection looked selectively dead). Element coordinates are
+    // surface-relative in every window mode and normalise injection, real touch and mouse
+    // onto one space.
     OhosTouchPoint points[OH_NATIVE_XCOMPONENT_MAX_TOUCH_POINTS_NUMBER];
     int count = 0;
     uint32_t total = event.numPoints;
@@ -1007,13 +1019,9 @@ void OnTouch(OH_NativeXComponent* component, void* window) {
         total = OH_NATIVE_XCOMPONENT_MAX_TOUCH_POINTS_NUMBER;
     }
     for (uint32_t i = 0; i < total; i++) {
-        float px = 0.0f;
-        float py = 0.0f;
-        OH_NativeXComponent_GetTouchPointWindowX(component, i, &px);
-        OH_NativeXComponent_GetTouchPointWindowY(component, i, &py);
         points[count].id = event.touchPoints[i].id;
-        points[count].x = px;
-        points[count].y = py;
+        points[count].x = event.touchPoints[i].x;
+        points[count].y = event.touchPoints[i].y;
         count++;
     }
     // The changed pointer (event.id) supplies the primary coordinates, not point 0; when the

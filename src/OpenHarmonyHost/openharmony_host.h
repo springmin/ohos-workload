@@ -99,9 +99,11 @@ void ohos_host_register_text_composition(void* callback);
 /// unmangled export name "ohos_host_register_pinch" (OpenHarmonyApp.RegisterPinch).
 void ohos_host_register_pinch(void* callback);
 
-/// One touch point of an XComponent touch event, in window coordinates. The managed bridge
-/// resolves points by id, so a multi-finger stream carries every active pointer with its own
-/// coordinates instead of only point 0.
+/// One touch point of an XComponent touch event, in element (surface) coordinates - the same
+/// space the mouse event exposes. Window coordinates are NOT used: on a decorated window they
+/// include the system title bar above the page and shift every tap down by the decoration
+/// height (FIX-ITOUCH 2026-10-01). The managed bridge resolves points by id, so a multi-finger
+/// stream carries every active pointer with its own coordinates instead of only point 0.
 typedef struct {
     int id;
     float x;

@@ -1897,8 +1897,9 @@ if (graphicsCtl?.Handler?.PlatformView is OpenHarmonyView graphicsPlatform)
     }
 }
 
-// N1: the host reports every pointer of a touch event (window coordinates) and the managed
-// bridge keeps each point addressable by id; the app host dispatches the changed pointer by id.
+// N1: the host reports every pointer of a touch event (element/surface coordinates, see
+// FIX-ITOUCH) and the managed bridge keeps each point addressable by id; the app host
+// dispatches the changed pointer by id.
 // The native OnTouch builds the array from the XComponent event (source-pinned below), so the
 // managed half is driven off-device through the registered thunk with a crafted native buffer.
 {
@@ -1957,10 +1958,18 @@ if (graphicsCtl?.Handler?.PlatformView is OpenHarmonyView graphicsPlatform)
     string n1TouchNative = n1TouchNativePath is null ? string.Empty : File.ReadAllText(n1TouchNativePath);
     string? n1TouchHeaderPath = FindHostSource("src/OpenHarmonyHost/openharmony_host.h");
     string n1TouchHeader = n1TouchHeaderPath is null ? string.Empty : File.ReadAllText(n1TouchHeaderPath);
+    // FIX-ITOUCH: the reported coordinates must be the touch point's element-relative x/y -
+    // the window accessors include the system title bar on a decorated window and shifted
+    // every injected tap by the decoration height (uitest clicks resolved a full title bar
+    // below their target). The window/display accessors must not come back.
     bool n1TouchNativeOk = n1TouchNative.Contains("ohos_host_notify_touch_points(") &&
         n1TouchNative.Contains("i < total") && n1TouchNative.Contains("event.touchPoints[i].id") &&
+        n1TouchNative.Contains("points[count].x = event.touchPoints[i].x") &&
+        n1TouchNative.Contains("points[count].y = event.touchPoints[i].y") &&
+        !n1TouchNative.Contains("GetTouchPointWindowX(component") &&
         n1TouchNative.Contains("points[i].id == static_cast<int>(event.id)") &&
         n1TouchHeader.Contains("} OhosTouchPoint;") &&
+        n1TouchHeader.Contains("element (surface) coordinates") &&
         n1TouchHeader.Contains("ohos_host_notify_touch_points(int type, const OhosTouchPoint* points, int count,");
     // The ABI struct the thunk reads must stay 12 bytes with the native field order (int id,
     // float x, float y), otherwise the host would write coordinates the managed side misreads.
