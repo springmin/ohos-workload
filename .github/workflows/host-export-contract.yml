@@ -22,7 +22,7 @@ on:
         description: 'maui-ohos commit SHA to cross-check (defaults to the pinned slice tip)'
         required: false
         type: string
-        default: '52b082a0717e2c8fc6622bf564b49bde4b52415d'
+        default: '15d81f31b1829479beb8922ad2fc785169ce9c4f'
   push:
     branches: [ master ]
   pull_request:
@@ -32,9 +32,12 @@ permissions:
 
 # Reproducible cross-repo check: the slice is checked out at an exact commit, not the mutable
 # feature/openharmony branch, so a push to the fork cannot change what this gate verifies.
-# Current tip: 52b082a071 (FIX-BWVMount: mount the BlazorWebView page under NativeAOT - the
-# handler's static constructor touches the source-generated JsonElement[] type info so the
-# package's reflection-only ArrayConverter stays in the AOT image; managed-only for this contract)
+# Current tip: 15d81f31b1 (FIX-JSCALL: root the BlazorWebView IPC's JSCallResultType/JSCallType/
+# NavigationOptions value types in OpenHarmonySliceJsonContext for NativeAOT and drop the
+# stub-interop click probe; managed-only, the export set does not move) on 52b082a071
+# (FIX-BWVMount: mount the BlazorWebView page under NativeAOT - the handler's static constructor
+# touches the source-generated JsonElement[] type info so the package's reflection-only
+# ArrayConverter stays in the AOT image; managed-only for this contract)
 # on be09a48817 (FIX-BACKSIZE: the system Back press routing and the BlazorWebView desired size
 # are slice-side, and the host-side registration hook `ohos_host_register_back_pressed` is this
 # repository's own addition) on 47d79add01 (FIX-WVP:
@@ -73,10 +76,10 @@ permissions:
 # the T16/N6 bridge additions and the T20 media bridge (ohos_host_media_request /
 # ohos_host_media_register_result / ohos_host_media_register_event) and the FIX-BACKSIZE
 # back-press hook (ohos_host_register_back_pressed, consumed by this repository's hosting
-# bridge) the host export contract is 150/150).
+# bridge) and the FIX-JSCALL AOT-roots fix (managed-only) the host export contract is 150/150).
 # Advance the pin deliberately, in lockstep with the interaction/pixel gates.
 env:
-  MAUI_OHOS_REF: ${{ github.event.inputs.maui_ohos_ref || '52b082a0717e2c8fc6622bf564b49bde4b52415d' }}
+  MAUI_OHOS_REF: ${{ github.event.inputs.maui_ohos_ref || '15d81f31b1829479beb8922ad2fc785169ce9c4f' }}
 
 jobs:
   contract:

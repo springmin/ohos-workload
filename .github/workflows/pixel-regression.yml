@@ -42,7 +42,7 @@ on:
         description: 'maui-ohos commit SHA to compile (defaults to the pinned feature/openharmony tip)'
         required: false
         type: string
-        default: '52b082a0717e2c8fc6622bf564b49bde4b52415d'
+        default: '15d81f31b1829479beb8922ad2fc785169ce9c4f'
 
 # Least privilege: the job only reads this repository and the public springmin/maui-ohos fork;
 # no step pushes anywhere.
@@ -51,10 +51,14 @@ permissions:
 
 # Reproducible cross-repo compile: the MAUI slice is checked out at an exact commit, not the
 # mutable feature/openharmony branch, so a push to the fork cannot change what this gate compiles.
-# The default is the feature/openharmony tip: 52b082a071 (FIX-BWVMount: mount the BlazorWebView
-# page under NativeAOT - the handler's static constructor touches the source-generated
-# JsonElement[] type info so the package's reflection-only ArrayConverter stays in the AOT image,
-# plus start/connect diagnostics and a message-time BLZ_DIAG probe), on top of be09a48817
+# The default is the feature/openharmony tip: 15d81f31b1 (FIX-JSCALL: root the BlazorWebView IPC's
+# JSCallResultType/JSCallType/NavigationOptions value types in OpenHarmonySliceJsonContext so the
+# package's reflection-only IpcCommon serialize path keeps the resolver-built EnumConverter
+# instantiations in the AOT image, and drop the stub-interop click probe), on top of 52b082a071
+# (FIX-BWVMount: mount the BlazorWebView page under NativeAOT - the handler's static constructor
+# touches the source-generated JsonElement[] type info so the package's reflection-only
+# ArrayConverter stays in the AOT image, plus start/connect diagnostics and a message-time
+# BLZ_DIAG probe), on top of be09a48817
 # (FIX-BACKSIZE: the system Back press from the shell/host bridge closes a presented drawer -
 # the flyout/shell handlers subscribe to OpenHarmonyBridge.BackPressed and write
 # IsPresented/FlyoutIsPresented, otherwise report unhandled - and the BlazorWebView handler
@@ -92,10 +96,10 @@ permissions:
 # + T2 WebView CookieContainer sync 8241f1b3, on top of the W-series webview wiring d6325990 and
 # the SEC-SCAN-3 S3-DL3 dot-dot deep-link rejection, on top of the P2c deep-link routing, P2b-IMG,
 # P1b-LIST and P1a-ANIM batches).
-# The interaction harness pins 554 checks / floor 534; advance the pin in lockstep with the
+# The interaction harness pins 555 checks / floor 535; advance the pin in lockstep with the
 # interaction gate and change it deliberately (workflow_dispatch can compile any other commit SHA).
 env:
-  MAUI_OHOS_REF: ${{ github.event.inputs.maui_ohos_ref || '52b082a0717e2c8fc6622bf564b49bde4b52415d' }}
+  MAUI_OHOS_REF: ${{ github.event.inputs.maui_ohos_ref || '15d81f31b1829479beb8922ad2fc785169ce9c4f' }}
   # Same as the interaction gate: keep the setup-dotnet preview SDK in a cacheable per-user path
   # instead of the runner's /usr/share/dotnet; a newer 11.0.x preview is still downloaded (the
   # action re-resolves the channel), the cache only skips the ~200 MB download when it moved.
