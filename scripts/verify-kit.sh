@@ -30,9 +30,10 @@
 #                    (--expected-abc <bytes[,bytes]> / KIT_EXPECTED_ABC pins the set; a size
 #                    outside it then FAILs instead of warning, so a historical kit's old abc
 #                    does not kill the run).
-#   libs             libs/arm64-v8a/ exists with exactly 14 .so files (fewer = a runtime ELF is
+#   libs             libs/arm64-v8a/ exists with exactly 15 .so files (fewer = a runtime ELF is
 #                    missing and the device loader will refuse the hap -> FAIL; more = WARN,
-#                    update the expectation when the runtime file set really changed).
+#                    update the expectation when the runtime file set really changed; kit #41
+#                    added createdump.so via the DEVCOMPAT-DEFAULT `.so` rewrite).
 #   payload-in-libs  libs/arm64-v8a/.dotnet-payload.json exists and is self-consistent: the
 #                    entry assembly it names is staged in the libs directory, its file count
 #                    equals the real libs file count (marker excluded), payloadEntries equals
@@ -45,7 +46,8 @@
 #                    check by design.
 #   dotnet.zip       readable -> must carry no .so (an unsigned duplicate would be dlopen'd from
 #                    the extracted app dir and rejected by an enforcing device -> FAIL) and its
-#                    entry count is expected to stay 254 (drift = WARN).
+#                    entry count is expected to stay 257 (drift = WARN; kit #41 added the
+#                    MULTI-OVERLAY-FULL hybrid-a/b/c.html demo assets).
 #   host ELF         libs/arm64-v8a/libopenharmonyhost.so: DT_NEEDED (readelf -d equivalent)
 #                    must be a subset of the host-deps.conf [needed] whitelist, must not name
 #                    libhostfxr.so (resolved through the dlopen handle, never at load time), and
@@ -594,8 +596,8 @@ expected_abc = [int(v) for v in sys.argv[6].split()]
 abc_pinned = sys.argv[7] == "1"
 
 # Current-generation expectations; the abc sizes come from the shell (--expected-abc).
-EXPECT_LIBS = 14            # host + libc++ + 12 runtime ELF under libs/arm64-v8a/
-EXPECT_ZIP_ENTRIES = 254    # dotnet.zip entries (deterministic writer with the ELF names excluded)
+EXPECT_LIBS = 15            # host + libc++ + 12 runtime ELF + createdump.so under libs/arm64-v8a/
+EXPECT_ZIP_ENTRIES = 257    # dotnet.zip entries (deterministic writer with the ELF names excluded)
 INDEX_SANE_MAX = 2560       # resources.index measured 1894 B (API 26) / 2102 B (API 20) on the rc.2 line
                             # (the WebView media-permission reason strings add ~320 B)
 ABC_VERSION = "13.0.1.0"    # 4-byte PANDA version field at offset 0x0c
