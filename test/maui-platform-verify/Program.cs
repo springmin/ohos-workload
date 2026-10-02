@@ -12,7 +12,7 @@ using Microsoft.Maui.Platform;
 // after the fuzz tail) instead of letting every caller repeat its own threshold constant.
 VerifyLineCountingWriter verifyStdout = new(Console.Out);
 Console.SetOut(verifyStdout);
-const int verifyCheckTotal = 554;                     // documented full [verify] line count (+4 FIX-BACKSIZE Back-press forwarding/drawer drill/ shell drawer/BlazorWebView desired size, +4 FIX-WVP overlay px->vp/degenerate-frame/hybrid-overlay arbitration/suspend-restore (shell+slice), +2 FIX-DISMISS flyout drawer dismiss under the device display conditions, +4 FIX-HOME home page arrange/draw (NavigationPage-in-TabbedPage descent), +4 MS-MODE runtime mode switch, +10 P2c-DEEPLINK, +4 P2b-IMG, +16 P1b-LIST, +10 P1a-ANIM, +2 SEC3 storage/deep-link pins, +5 W-series WebView wiring, +3 T1 InputView mapping, +4 T2 WebView gaps, +4 T3 GraphicsView interaction, +7 T10 modal accessibility, +4 T4 Label formatted text, +4 T5 layout semantics, +6 T7 DatePicker calendar/min-max, +4 T9 window title bar, +4 T11 diagnostics overlay, +1 N2 empty ContentPage arrangement, +6 T8 TableView, +5 T8 uneven rows, +7 T6 RTL flow direction, +5 T22 MainThread bridge, +2 FIX-TABBED tabbed CurrentPage, +4 T13 group footer view/N3 picker IsOpen, +5 T21 system font scale, +3 T21 font scale source wiring, +2 A11Y-TABBED tabbed accessibility, +3 N1 host multi-pointer, +5 T12 CarouselView group slides, +7 T14 rich shell flyout, +10 T14 flyout leftovers (MenuItemTemplate/FlyoutContent/AsMultipleItems), +2 FIX-SHELL shell CurrentPage, +2 A11Y-SHELL shell accessibility, +7 T15 rich Shell.TitleView, +8 T16 structured menus, +3 N4 TitleBar accessibility row, +3 T18 Essentials Map, +4 N5 overlay passthrough suppression, +5 N6 window decorations, +4 T20 media bridge, +3 B2 wasm site in a MAUI WebView, +2 W10 NativeAOT managed entry (host libs-dir resolution + shell AOT payload probe))
+const int verifyCheckTotal = 555;                     // documented full [verify] line count (+4 FIX-BACKSIZE Back-press forwarding/drawer drill/ shell drawer/BlazorWebView desired size, +4 FIX-WVP overlay px->vp/degenerate-frame/hybrid-overlay arbitration/suspend-restore (shell+slice), +2 FIX-DISMISS flyout drawer dismiss under the device display conditions, +4 FIX-HOME home page arrange/draw (NavigationPage-in-TabbedPage descent), +4 MS-MODE runtime mode switch, +10 P2c-DEEPLINK, +4 P2b-IMG, +16 P1b-LIST, +10 P1a-ANIM, +2 SEC3 storage/deep-link pins, +5 W-series WebView wiring, +3 T1 InputView mapping, +4 T2 WebView gaps, +4 T3 GraphicsView interaction, +7 T10 modal accessibility, +4 T4 Label formatted text, +4 T5 layout semantics, +6 T7 DatePicker calendar/min-max, +4 T9 window title bar, +4 T11 diagnostics overlay, +1 N2 empty ContentPage arrangement, +6 T8 TableView, +5 T8 uneven rows, +7 T6 RTL flow direction, +5 T22 MainThread bridge, +2 FIX-TABBED tabbed CurrentPage, +4 T13 group footer view/N3 picker IsOpen, +5 T21 system font scale, +3 T21 font scale source wiring, +2 A11Y-TABBED tabbed accessibility, +3 N1 host multi-pointer, +5 T12 CarouselView group slides, +7 T14 rich shell flyout, +10 T14 flyout leftovers (MenuItemTemplate/FlyoutContent/AsMultipleItems), +2 FIX-SHELL shell CurrentPage, +2 A11Y-SHELL shell accessibility, +7 T15 rich Shell.TitleView, +8 T16 structured menus, +3 N4 TitleBar accessibility row, +3 T18 Essentials Map, +4 N5 overlay passthrough suppression, +5 N6 window decorations, +4 T20 media bridge, +3 B2 wasm site in a MAUI WebView, +2 W10 NativeAOT managed entry (host libs-dir resolution + shell AOT payload probe), +1 FIX-JSCALL Blazor IPC enum/struct AOT roots (JSCallResultType/JSCallType/NavigationOptions in the slice context + handler static-ctor touch + stub click-probe removed))
 const int verifyCheckFloor = verifyCheckTotal - 20;   // documented floor convention (total - 20)
 
 // A small image file for the Image handler.
@@ -4315,6 +4315,37 @@ if (!wHandlersOk)
     throw new InvalidOperationException(
         $"the WebView handler wiring is missing or drifted: commands={wHandlerCommands} events={wHandlerEvents} " +
         $"frame={wHandlerFrame} cookie={wHandlerCookie} frameShared={wHandlerFrameShared}");
+}
+
+// FIX-JSCALL: the BlazorWebView IPC's outbound half serializes JSCallResultType/JSCallType
+// (IpcSender.BeginInvokeJS) and NavigationOptions (IpcSender.Navigate) through the package's
+// static JsonSerializerOptionsProvider.Options, whose reflection resolver builds closed
+// value-type instantiations (EnumConverter<T>/JsonTypeInfo<T>). NativeAOT only carries code for
+// instantiations it statically saw, so the slice's source-generated context lists the three types
+// and the handler's static constructor touches their JsonTypeInfo at startup - the same root
+// pattern FIX-BWVMount used for JsonElement[]. Without it the renderer's fire-and-forget attach
+// interop call dies inside IpcCommon.Serialize (kit #39: EnumConverter<JSCallResultType> missing
+// native code), no interop methods register, and a button click never reaches DispatchEventAsync
+// (count stayed 0). The FIX-BWVMount click probe that stubbed the interop and masked the failure
+// must stay out.
+string? jscallContextPath = FindHostSource("OpenHarmonySliceJsonContext.cs");
+string jscallContext = jscallContextPath is null ? string.Empty : File.ReadAllText(jscallContextPath);
+bool jscallContextOk = jscallContext.Contains("[JsonSerializable(typeof(JSCallResultType))]") &&
+    jscallContext.Contains("[JsonSerializable(typeof(JSCallType))]") &&
+    jscallContext.Contains("[JsonSerializable(typeof(NavigationOptions))]");
+bool jscallRootOk = wBlazorHandler.Contains("GetTypeInfo(typeof(JsonElement[]))") &&
+    wBlazorHandler.Contains("GetTypeInfo(typeof(JSCallResultType))") &&
+    wBlazorHandler.Contains("GetTypeInfo(typeof(JSCallType))") &&
+    wBlazorHandler.Contains("GetTypeInfo(typeof(NavigationOptions))");
+bool jscallProbeGone = !wBlazorHandler.Contains("attachWebRendererInterop(3,") &&
+    !wBlazorHandler.Contains("_clickProbeDone");
+bool jscallOk = jscallContextOk && jscallRootOk && jscallProbeGone;
+Console.WriteLine($"[verify] w2 fix-jscall aot roots context={jscallContextOk} staticCtor={jscallRootOk} probeGone={jscallProbeGone} assert={jscallOk}");
+if (!jscallOk)
+{
+    throw new InvalidOperationException(
+        $"the BlazorWebView IPC AOT roots are missing or drifted: context={jscallContextOk} " +
+        $"staticCtor={jscallRootOk} probeGone={jscallProbeGone}");
 }
 
 // FIX-WVP: the shell overlay geometry and origin arbitration. The managed compositor
