@@ -577,7 +577,64 @@ internal static class Program
             CheckEqual("module.json raw permission stays minimal", 1, permissions[1].EnumerateObject().Count());
         }
 
-        // 6. A malformed template and a missing template both fail with the documented messages.
+        // 6. app links: OpenHarmonyAppLinkHosts appends the browsable/viewData skill with one
+        //    https uri per host (trimmed and de-duplicated) and domainVerify from
+        //    AppLinkDomainVerify; the home skill element stays the first element.
+        string linkTemplate = TemplateDir("json-applink",
+            "{\"app\":{\"bundleName\":\"x\"},\"module\":{\"name\":\"entry\",\"abilities\":[{\"name\":\"EntryAbility\",\"skills\":[{\"entities\":[\"entity.system.home\"],\"actions\":[\"action.system.home\"]}]}]}}");
+        string linkOutput = Path.Combine(Harness.TempDir("json-applink-out"), "module.json");
+        var link = Generator(linkTemplate, linkOutput);
+        link.AppLinkHosts = "example.com; www.example.com ;example.com";
+        link.AppLinkDomainVerify = "true";
+        var (linkOk, linkEngine) = Harness.Run(link);
+        Check("module.json app-link insertion succeeds", linkOk, linkEngine.Errors.FirstOrDefault());
+        using (var document = JsonDocument.Parse(File.ReadAllText(linkOutput)))
+        {
+            var skills = document.RootElement.GetProperty("module").GetProperty("abilities")[0].GetProperty("skills");
+            CheckEqual("module.json app link keeps the home skill", "entity.system.home", skills[0].GetProperty("entities")[0].GetString());
+            CheckEqual("module.json app link appends one skill element", 2, skills.GetArrayLength());
+            var uris = skills[1].GetProperty("uris");
+            CheckEqual("module.json app link uri count (trimmed/deduped)", 2, uris.GetArrayLength());
+            CheckEqual("module.json app link scheme", "https", uris[0].GetProperty("scheme").GetString());
+            CheckEqual("module.json app link host order", "example.com|www.example.com", string.Join("|", uris.EnumerateArray().Select(u => u.GetProperty("host").GetString())));
+            CheckEqual("module.json app link entity", "entity.system.browsable", skills[1].GetProperty("entities")[0].GetString());
+            CheckEqual("module.json app link action", "ohos.want.action.viewData", skills[1].GetProperty("actions")[0].GetString());
+            Check("module.json app link domainVerify is true", skills[1].GetProperty("domainVerify").GetBoolean());
+        }
+
+        //    domainVerify=false omits the member (the pre-registration form) and an empty skills
+        //    array still gets exactly one element.
+        string noVerifyTemplate = TemplateDir("json-applink-noverify",
+            "{\"app\":{\"bundleName\":\"x\"},\"module\":{\"name\":\"entry\",\"abilities\":[{\"skills\":[]}]}}");
+        string noVerifyOutput = Path.Combine(Harness.TempDir("json-applink-noverify-out"), "module.json");
+        var noVerify = Generator(noVerifyTemplate, noVerifyOutput);
+        noVerify.AppLinkHosts = "example.com";
+        noVerify.AppLinkDomainVerify = "false";
+        var (noVerifyOk, _) = Harness.Run(noVerify);
+        Check("module.json app link with an empty skills array succeeds", noVerifyOk);
+        using (var document = JsonDocument.Parse(File.ReadAllText(noVerifyOutput)))
+        {
+            var skills = document.RootElement.GetProperty("module").GetProperty("abilities")[0].GetProperty("skills");
+            CheckEqual("module.json app link empty skills gets one element", 1, skills.GetArrayLength());
+            Check("module.json app link domainVerify omitted when off", !skills[0].TryGetProperty("domainVerify", out _));
+        }
+
+        //    Invalid and empty host lists fail, and a template without the skills anchor fails.
+        var badHost = Generator(linkTemplate, Path.Combine(Harness.TempDir("json-applink-badhost-out"), "module.json"));
+        badHost.AppLinkHosts = "exa mple.com";
+        var (badHostOk, badHostEngine) = Harness.Run(badHost);
+        Check("module.json app link invalid host fails", !badHostOk && badHostEngine.HasErrorContaining("is not a host name"));
+        var noHost = Generator(linkTemplate, Path.Combine(Harness.TempDir("json-applink-nohost-out"), "module.json"));
+        noHost.AppLinkHosts = ";;";
+        var (noHostOk, noHostEngine) = Harness.Run(noHost);
+        Check("module.json app link empty host list fails", !noHostOk && noHostEngine.HasErrorContaining("carries no host"));
+        var noSkills = Generator(TemplateDir("json-applink-noskills", "{\"app\":{\"bundleName\":\"x\"},\"module\":{\"name\":\"entry\"}}"),
+            Path.Combine(Harness.TempDir("json-applink-noskills-out"), "module.json"));
+        noSkills.AppLinkHosts = "example.com";
+        var (noSkillsOk, noSkillsEngine) = Harness.Run(noSkills);
+        Check("module.json app link missing skills anchor fails", !noSkillsOk && noSkillsEngine.HasErrorContaining("needs a module.abilities[0].skills array"));
+
+        // 7. A malformed template and a missing template both fail with the documented messages.
         string badTemplate = TemplateDir("json-bad", "{\"app\":{\"bundleName\"\"x\"},\"module\":{}}");
         var bad = Generator(badTemplate, Path.Combine(Harness.TempDir("json-bad-out"), "module.json"));
         var (badOk, badEngine) = Harness.Run(bad);
