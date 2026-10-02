@@ -40,7 +40,7 @@ on:
         description: 'maui-ohos commit SHA to compile (defaults to the pinned feature/openharmony tip)'
         required: false
         type: string
-        default: '15d81f31b1829479beb8922ad2fc785169ce9c4f'
+        default: '07423dfe93007708bd280ca331347d4ffee5216c'
   push:
     branches: [ master ]
   pull_request:
@@ -52,7 +52,11 @@ permissions:
 
 # Reproducible cross-repo compile: the MAUI slice is checked out at an exact commit, not the
 # mutable feature/openharmony branch, so a push to the fork cannot change what this gate compiles.
-# The default is the feature/openharmony tip: 15d81f31b1 (FIX-JSCALL: root the BlazorWebView IPC's
+# The default is the feature/openharmony tip: 07423dfe93 (MULTI-OVERLAY-FULL: LRU overlay-slot
+# reuse behind the IOpenHarmonyOverlaySlotOwner preempt/restore contract, per-slot hybrid serve/
+# message/invoke channels with slot-tagged request ids, activation-ordered z-order and the
+# payload-in-libs appDir probe; MULTI-OVL 75c410e798 below adds one ArkWeb overlay slot per web
+# handler), on top of 15d81f31b1 (FIX-JSCALL: root the BlazorWebView IPC's
 # JSCallResultType/JSCallType/NavigationOptions value types in OpenHarmonySliceJsonContext so the
 # package's reflection-only IpcCommon serialize path keeps the resolver-built EnumConverter
 # instantiations in the AOT image, and drop the stub-interop click probe), on top of 52b082a071
@@ -102,15 +106,15 @@ permissions:
 # spans 043e6468, the T10 modal accessibility overlay c56bf0fa, the T1 InputView mapping dcc7eaac
 # and the T2 CookieContainer sync 8241f1b3, all on top of the W-series webview wiring d6325990,
 # the SEC-SCAN-3 S3-DL3 dot-dot route rejection and the HUKS/deep-link hardening. The suite pins
-# 555 checks / floor 535 (the N1 host multi-pointer, W10 AOT-entry and FIX-BACKSIZE Back-press
+# 563 checks / floor 543 (the N1 host multi-pointer, W10 AOT-entry and FIX-BACKSIZE Back-press
 # lines live in this repository's harness and hosting bridge, not in the pinned slice) and the
-# full run is green at this compiled tree (local verification: 555/555, floor 535, both perf
+# full run is green at this compiled tree (local verification: 563/563, floor 543, both perf
 # lines within budget);
 # advance the pin deliberately
 # and refresh this comment when the harness pins or the tip move (workflow_dispatch can compile
 # any commit).
 env:
-  MAUI_OHOS_REF: ${{ github.event.inputs.maui_ohos_ref || '15d81f31b1829479beb8922ad2fc785169ce9c4f' }}
+  MAUI_OHOS_REF: ${{ github.event.inputs.maui_ohos_ref || '07423dfe93007708bd280ca331347d4ffee5216c' }}
   # setup-dotnet installs the requested 11.0.x preview into DOTNET_INSTALL_DIR; on Linux that
   # defaults to /usr/share/dotnet, which a per-user cache cannot persist. Point it at ~/.dotnet
   # (the action resolves the ~ prefix against $HOME) so the cache step below actually avoids the
