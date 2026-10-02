@@ -86,6 +86,9 @@ interface HybridAssetsConfig {
   // into the documents it serves (window.__ohHybridId, page end) and echoes it in every message
   // envelope, so the managed side can match a message to the page that registration loaded.
   id: string;
+  // MULTI-OVL: the overlay slot this registration owns; the shell loads the hybrid origin on
+  // that slot's WebviewController. Absent/-1 keeps the legacy first overlay.
+  slot?: number;
 }
 
 // BlazorWebView asset bridge (milestone 3): the managed handler registers the app payload
@@ -111,6 +114,9 @@ interface BlazorAssetsConfig {
   // not load the origin (the WebView's Source drives the load). Absent/"hybrid" keeps the
   // BlazorWebView behavior above.
   mode?: string;
+  // MULTI-OVL: the overlay slot this registration owns; the shell loads the Blazor origin on
+  // that slot's WebviewController. Absent/-1 keeps the legacy first overlay.
+  slot?: number;
 }
 
 // JS -> .NET invocation payload the stock hybridwebview.js POSTs to __hwvInvokeDotNet:
@@ -141,6 +147,8 @@ interface HybridPendingInvoke {
 interface PendingNavigation {
   url: string;
   expires: number;
+  // MULTI-OVL: the overlay that cancelled this load; the approval reloads that slot's controller.
+  slot: number;
 }
 
 // One-shot marker that lets exactly one load pass onLoadIntercept without a managed round
@@ -581,22 +589,31 @@ struct Index {
   private content: NodeContent = new NodeContent();
 
   @State inputText: string = '';
-  @State webVisible: boolean = false;
+  // MULTI-OVL: the shell declares two ArkWeb overlays and every per-overlay state is indexed by
+  // slot (0/1). The managed web handlers claim a slot when they connect (the HybridWebView is
+  // created before the BlazorWebView on the sample page, so hybrid -> 0, Blazor -> 1), tag their
+  // commands with it ("s<slot>" / "s<slot>\n<arg>") and receive the shell's page events tagged
+  // the same way. Global commands (hide/suspend/resume/cookie) stay untagged and apply to both
+  // overlays, and an untagged per-overlay command still lands on slot 0 (a legacy handler).
+  @State webVisible: boolean[] = [false, false];
   // FIX-WVP overlay suspension: a managed drawer renders in the managed surface below the
-  // overlay, so while it is presented (`suspend`) the overlay hides and frame/load commands only
-  // update its geometry instead of re-showing it; `resume` restores the pre-suspend visibility
-  // (a page without a web control cannot make a stale overlay reappear). A tab switch uses the
-  // plain `hide`: the hidden page is not arranged, so no stale frame follows, and the next page's
-  // web control (if any) re-shows through its own frame.
+  // overlays, so while it is presented (`suspend`) every overlay hides and frame/load commands
+  // only update its geometry instead of re-showing it; `resume` restores the pre-suspend
+  // visibility (a page without a web control cannot make a stale overlay reappear). A tab
+  // switch uses the plain `hide`: the hidden page is not arranged, so no stale frame follows,
+  // and the next page's web control re-shows through its own frame.
   private webSuspended: boolean = false;
-  private webVisibleBeforeSuspend: boolean = false;
-  // ArkWeb overlay frame (managed WebView PlatformArrange -> WebCommand "frame"): the overlay
+  private webVisibleBeforeSuspend: boolean[] = [false, false];
+  // ArkWeb overlay frames (managed WebView PlatformArrange -> WebCommand "frame"): each overlay
   // starts full-window; the frame arrives in device pixels and is converted to vp with px2vp,
   // and a frame with a non-positive width/height (control not arranged yet) is ignored.
-  @State webFrameX: number = 0;
-  @State webFrameY: number = 0;
-  @State webFrameW: number = 0;
-  @State webFrameH: number = 0;
+  @State webFrameX: number[] = [0, 0];
+  @State webFrameY: number[] = [0, 0];
+  @State webFrameW: number[] = [0, 0];
+  @State webFrameH: number[] = [0, 0];
+  // One controller per overlay; the Web components below bind them in slot order.
+  private webControllers: web_webview.WebviewController[] =
+    [new web_webview.WebviewController(), new web_webview.WebviewController()];
   @State menuItems: HostMenuItem[] = [];
   // HybridWebView asset bridge state (registered by the managed handler; empty -> no
   // interception, so the regular WebView flows are never touched).
@@ -634,8 +651,9 @@ struct Index {
   private statusReads: number = 0;
   private statusSeen: string = '';
   // One bootstrap per loaded document: reset in onPageBegin, so a navigation/reload runs the
-  // sequence again while repeated onPageEnd callbacks for the same document do not.
-  private blazorBootstrapped: boolean = false;
+  // sequence again while repeated onPageEnd callbacks for the same document do not. Indexed by
+  // slot (MULTI-OVL): a slot-0 page begin must not reset the Blazor overlay's bootstrap.
+  private blazorBootstrapped: boolean[] = [false, false];
   // JS -> .NET invocation state: the intercepted __hwvInvokeDotNet responses held open until
   // the managed handler answers through host.registerHybridInvokeResultSink.
   private hybridInvokeSeq: number = 0;
@@ -643,8 +661,9 @@ struct Index {
   // Last-resort timeout so a lost invocation rejects the fetch instead of hanging it; the
   // managed handler answers with its own error payload after 10 s.
   private hybridInvokeTimeoutMs: number = 15000;
-  // JavaScript bridge: set once the dotnetHost proxy was registered on the attached controller.
-  private dotNetHostRegistered: boolean = false;
+  // JavaScript bridge: set once the dotnetHost proxy was registered on the attached controller,
+  // per overlay slot (the proxy is registered on each Web component's controller).
+  private dotNetHostRegistered: boolean[] = [false, false];
   // App theme: 'colorMode' is an ArkUI environment property that the framework keeps in
   // AppStorage and refreshes when the device switches between light and dark. The watch
   // forwards every change to the managed side through host.notifyTheme(isDark).
@@ -798,11 +817,11 @@ struct Index {
   private rawFileErrorLogged: boolean = false;
   // B6 navigation allow-list state: a cancelled external navigation waits for the managed
   // Navigating decision under its unguessable id; navApproved/navProgrammatic are the one-shot
-  // markers that let the shell's own reloads pass. All entries are time-bounded and dropped
-  // when they expire.
+  // markers that let the shell's own reloads pass, indexed by overlay slot (MULTI-OVL). All
+  // entries are time-bounded and dropped when they expire.
   private navPending: Map<string, PendingNavigation> = new Map();
-  private navApproved: ApprovedNavigation | null = null;
-  private navProgrammatic: ApprovedNavigation | null = null;
+  private navApproved: (ApprovedNavigation | null)[] = [null, null];
+  private navProgrammatic: (ApprovedNavigation | null)[] = [null, null];
   private navPendingLimit: number = 8;
   private navPendingTtlMs: number = 5000;
   private navMaxUrlLength: number = 8192;
@@ -2600,12 +2619,12 @@ struct Index {
   // JavaScript bridge: registers the dotnetHost proxy that page scripts call to reach the
   // managed side. registerJavaScriptProxy needs the controller attached to the Web component
   // (BusinessError 17100001 otherwise), so onControllerAttached calls this.
-  private registerDotNetHost(): void {
-    if (this.dotNetHostRegistered) {
+  private registerDotNetHost(slot: number): void {
+    if (this.dotNetHostRegistered[slot]) {
       return;
     }
     try {
-      this.webController.registerJavaScriptProxy({
+      this.slotController(slot).registerJavaScriptProxy({
         postMessage: (payload: string): void => {
           // ArkWeb registers the proxy into every frame, but the managed side trusts the
           // __OHORIGIN envelope built below. Drop the call when the calling frame url is a
@@ -2613,8 +2632,8 @@ struct Index {
           // open and the returned url's exact device semantics still need validation.
           let callerUrl: string = '';
           try {
-            if (typeof this.webController.getLastJavascriptProxyCallingFrameUrl === 'function') {
-              callerUrl = this.webController.getLastJavascriptProxyCallingFrameUrl();
+            if (typeof this.slotController(slot).getLastJavascriptProxyCallingFrameUrl === 'function') {
+              callerUrl = this.slotController(slot).getLastJavascriptProxyCallingFrameUrl();
             }
           } catch {
             callerUrl = '';
@@ -2622,7 +2641,7 @@ struct Index {
           if (typeof callerUrl === 'string' && callerUrl.length > 0) {
             let mainUrl: string = '';
             try {
-              mainUrl = this.webController.getUrl();
+              mainUrl = this.slotController(slot).getUrl();
             } catch {
               mainUrl = '';
             }
@@ -2631,13 +2650,13 @@ struct Index {
             }
           }
           this.hostCall('notifyJsMessage', typeof host !== 'undefined' && typeof host.notifyJsMessage === 'function', (): void => {
-            host.notifyJsMessage(this.originEnvelope(payload));
+            host.notifyJsMessage(this.originEnvelope(payload, slot));
           });
         }
       }, 'dotnetHost', ['postMessage']);
-      this.dotNetHostRegistered = true;
+      this.dotNetHostRegistered[slot] = true;
     } catch (proxyError) {
-      this.logError(`[maui] dotnetHost proxy registration failed: ${(proxyError as Error).message}`);
+      this.logError(`[maui] dotnetHost proxy registration failed (slot ${slot}): ${(proxyError as Error).message}`);
     }
   }
 
@@ -2649,10 +2668,10 @@ struct Index {
   // window.__ohBlazorId, see injectPageBridge). A document the shell did not stamp carries an
   // empty id, which every handler treats as a mismatch. getUrl() is synchronous but may throw
   // before a controller is attached; an unknown url is reported empty and fails the match too.
-  private originEnvelope(payload: string): string {
+  private originEnvelope(payload: string, slot: number): string {
     let url: string = '';
     try {
-      url = this.webController.getUrl();
+      url = this.slotController(slot).getUrl();
     } catch {
       url = '';
     }
@@ -2711,19 +2730,51 @@ struct Index {
     return false;
   }
 
+  // MULTI-OVL slot helpers. A tagged per-overlay argument starts with "s0"/"s1", optionally
+  // followed by '\n' and the payload; an untagged argument lands on slot 0 (legacy handler or
+  // a global command). The tag is the wire contract the managed handlers build in
+  // OpenHarmonyOverlays.Tag/TagScript and parse back from the event states.
+  private webSlotOf(arg: string): number {
+    if (arg.length >= 2 && arg.charAt(0) === 's') {
+      const slot: number = arg.charCodeAt(1) - 48;
+      if ((slot === 0 || slot === 1) && (arg.length === 2 || arg.charAt(2) === '\n')) {
+        return slot;
+      }
+    }
+    return 0;
+  }
+
+  private webSlotPayload(arg: string): string {
+    if (arg.length >= 3 && arg.charAt(0) === 's' && (arg.charAt(1) === '0' || arg.charAt(1) === '1') &&
+        arg.charAt(2) === '\n') {
+      return arg.substring(3);
+    }
+    return arg;
+  }
+
+  // MULTI-OVL: the page-event state carries the slot ("s0|finished"), so the managed side routes
+  // the event to the handler that owns the overlay.
+  private webEventState(slot: number, state: string): string {
+    return `s${slot}|${state}`;
+  }
+
+  private slotController(slot: number): web_webview.WebviewController {
+    return this.webControllers[slot === 1 ? 1 : 0];
+  }
+
   // B6: consumes a one-shot marker for a load the shell itself requested (WebCommand "load")
   // or one the managed handler approved. The marker lets exactly that reload pass
   // onLoadIntercept without another managed round trip (loop guard); expired markers are stale.
-  private consumeApprovedNavigation(url: string): boolean {
+  private consumeApprovedNavigation(url: string, slot: number): boolean {
     const now: number = Date.now();
-    const programmatic: ApprovedNavigation | null = this.navProgrammatic;
+    const programmatic: ApprovedNavigation | null = this.navProgrammatic[slot];
     if (programmatic !== null && programmatic.expires >= now && programmatic.url === url) {
-      this.navProgrammatic = null;
+      this.navProgrammatic[slot] = null;
       return true;
     }
-    const approved: ApprovedNavigation | null = this.navApproved;
+    const approved: ApprovedNavigation | null = this.navApproved[slot];
     if (approved !== null && approved.expires >= now && approved.url === url) {
-      this.navApproved = null;
+      this.navApproved[slot] = null;
       return true;
     }
     return false;
@@ -2731,22 +2782,23 @@ struct Index {
 
   // B6: retires a marker once the approved/app-requested load actually started, so a later
   // page-initiated navigation to the same URL is asked about again.
-  private retireNavigationMarker(url: string): void {
-    const programmatic: ApprovedNavigation | null = this.navProgrammatic;
+  private retireNavigationMarker(url: string, slot: number): void {
+    const programmatic: ApprovedNavigation | null = this.navProgrammatic[slot];
     if (programmatic !== null && programmatic.url === url) {
-      this.navProgrammatic = null;
+      this.navProgrammatic[slot] = null;
     }
-    const approved: ApprovedNavigation | null = this.navApproved;
+    const approved: ApprovedNavigation | null = this.navApproved[slot];
     if (approved !== null && approved.url === url) {
-      this.navApproved = null;
+      this.navApproved[slot] = null;
     }
   }
 
   // B6: asks the managed handler for a Navigating decision on a cancelled main-frame load.
   // The URL stays with the shell (the managed side only sees it to decide); the id is
   // unguessable and short-lived, the pending table is bounded, and the oldest entry is
-  // dropped when it is full.
-  private askManagedAboutNavigation(url: string): void {
+  // dropped when it is full. MULTI-OVL: the cancelled overlay's slot travels in the envelope
+  // ("__OHNAV|s<slot>|<url>|<id>") and the managed answer echoes it.
+  private askManagedAboutNavigation(slot: number, url: string): void {
     const now: number = Date.now();
     this.navPending.forEach((pending: PendingNavigation, id: string): void => {
       if (pending.expires < now) {
@@ -2766,9 +2818,9 @@ struct Index {
     } catch {
       id = `${now.toString(16)}-${Math.random().toString(16).substring(2)}`;
     }
-    this.navPending.set(id, { url: url, expires: now + this.navPendingTtlMs });
+    this.navPending.set(id, { url: url, expires: now + this.navPendingTtlMs, slot: slot });
     const delivered: boolean = this.hostCall('notifyJsMessage', typeof host !== 'undefined' && typeof host.notifyJsMessage === 'function', (): void => {
-      host.notifyJsMessage(`__OHNAV|${url}|${id}`);
+      host.notifyJsMessage(`__OHNAV|s${slot}|${url}|${id}`);
     });
     if (!delivered) {
       // No host channel: nothing can approve the load, so it stays cancelled.
@@ -2777,23 +2829,26 @@ struct Index {
   }
 
   // B6: the managed handler answers an intercepted navigation (WebCommand op "nav"); the
-  // argument is "<id>\n<url>". The URL must be the exact one the shell cancelled for that id,
-  // and the approval is one-shot: only the reload that follows may pass.
+  // MULTI-OVL argument is "s<slot>\n<id>\n<url>" (legacy "<id>\n<url>"). The URL must be the
+  // exact one the shell cancelled for that id on that slot, and the approval is one-shot: only
+  // the reload that follows may pass.
   private approveNavigation(arg: string): void {
-    const separator: number = arg.indexOf('\n');
-    const id: string = separator >= 0 ? arg.substring(0, separator) : arg;
-    const url: string = separator >= 0 ? arg.substring(separator + 1) : '';
+    const slot: number = this.webSlotOf(arg);
+    const tagged: string = this.webSlotPayload(arg);
+    const separator: number = tagged.indexOf('\n');
+    const id: string = separator >= 0 ? tagged.substring(0, separator) : tagged;
+    const url: string = separator >= 0 ? tagged.substring(separator + 1) : '';
     const pending: PendingNavigation | undefined = this.navPending.get(id);
     if (pending === undefined) {
       return;
     }
     this.navPending.delete(id);
-    if (pending.expires < Date.now() || pending.url !== url) {
+    if (pending.expires < Date.now() || pending.url !== url || pending.slot !== slot) {
       return;
     }
-    this.navApproved = { url: pending.url, expires: Date.now() + this.navPendingTtlMs };
+    this.navApproved[slot] = { url: pending.url, expires: Date.now() + this.navPendingTtlMs };
     try {
-      this.webController.loadUrl(pending.url);
+      this.slotController(slot).loadUrl(pending.url);
     } catch {
       // The reload failed (e.g., the controller detached); the navigation stays cancelled.
     }
@@ -2801,31 +2856,35 @@ struct Index {
 
   // WebView history: after every page end, back/forward/refresh the shell reports whether the
   // ArkWeb can still navigate back/forward; the managed WebView mirrors it into
-  // IWebView.CanGoBack/CanGoForward ("history|<back>|<forward>" on the web event channel).
-  private reportWebHistory(): void {
+  // IWebView.CanGoBack/CanGoForward ("s<slot>|history|<back>|<forward>" on the web event channel).
+  private reportWebHistory(slot: number): void {
     let canBack: boolean = false;
     let canForward: boolean = false;
     try {
-      canBack = this.webController.accessBackward();
-      canForward = this.webController.accessForward();
+      const controller: web_webview.WebviewController = this.slotController(slot);
+      canBack = controller.accessBackward();
+      canForward = controller.accessForward();
     } catch {
       return;
     }
     this.hostCall('notifyWebEvent', typeof host !== 'undefined' && typeof host.notifyWebEvent === 'function', (): void => {
-      host.notifyWebEvent(`history|${canBack ? 1 : 0}|${canForward ? 1 : 0}`, '');
+      host.notifyWebEvent(this.webEventState(slot, `history|${canBack ? 1 : 0}|${canForward ? 1 : 0}`), '');
     });
   }
 
-  // WebView frame: the managed PlatformArrange sends "x\ny\nw\nh". The managed compositor draws
-  // in device pixels (OpenHarmonyWindowHandler.RequestDisplayDensity answers 1), so the frame
-  // values are pixels; the ArkUI overlay places in vp. Convert with px2vp (the display's own
-  // px/vp ratio), so the overlay lands on exactly the frame the managed control was arranged
-  // with. A frame with a non-positive width or height is a control that is not laid out yet
-  // (e.g. a web handler without a desired height): it is ignored and the overlay keeps its
-  // previous placement - full-window until the first valid frame - instead of expanding to the
-  // whole window and hiding the rest of the page.
+  // WebView frame: the managed PlatformArrange sends "s<slot>\nx\ny\nw\nh" (legacy "x\ny\nw\nh",
+  // slot 0). The managed compositor draws in device pixels
+  // (OpenHarmonyWindowHandler.RequestDisplayDensity answers 1), so the frame values are pixels;
+  // the ArkUI overlay places in vp. Convert with px2vp (the display's own px/vp ratio), so the
+  // overlay lands on exactly the frame the managed control was arranged with. A frame with a
+  // non-positive width or height is a control that is not laid out yet (e.g. a web handler
+  // without a desired height): it is ignored and that overlay keeps its previous placement -
+  // full-window until the first valid frame - instead of expanding to the whole window and
+  // hiding the rest of the page.
   private applyWebFrame(arg: string): void {
-    const parts: string[] = arg.split('\n');
+    const slot: number = this.webSlotOf(arg);
+    const payload: string = this.webSlotPayload(arg);
+    const parts: string[] = payload.split('\n');
     if (parts.length !== 4) {
       return;
     }
@@ -2843,11 +2902,11 @@ struct Index {
     if (!(wVp > 0) || !(hVp > 0)) {
       return;
     }
-    this.webFrameX = xVp;
-    this.webFrameY = yVp;
-    this.webFrameW = wVp;
-    this.webFrameH = hVp;
-    this.webVisible = !this.webSuspended;
+    this.webFrameX[slot] = xVp;
+    this.webFrameY[slot] = yVp;
+    this.webFrameW[slot] = wVp;
+    this.webFrameH[slot] = hVp;
+    this.webVisible[slot] = !this.webSuspended;
   }
 
   // Registered proxies appear on the next page load, so the documented window.__ohosDotNet
@@ -2874,7 +2933,7 @@ struct Index {
   // the matching origin only. A managed handler refuses host -> page deliveries when the loaded
   // document no longer carries its id (reload before the stamp, or a navigation by another
   // page), so scripts never land in a foreign document.
-  private injectPageBridge(pageUrl: string): void {
+  private injectPageBridge(slot: number, pageUrl: string): void {
     let markers: string = '';
     if (this.hybridRegistered && this.hybridDocId.length > 0 && pageUrl.startsWith(this.hybridOrigin)) {
       markers += `window.__ohHybridId = ${JSON.stringify(this.hybridDocId)};`;
@@ -2883,7 +2942,7 @@ struct Index {
       markers += `window.__ohBlazorId = ${JSON.stringify(this.blazorDocId)};`;
     }
     try {
-      this.webController.runJavaScript(
+      this.slotController(slot).runJavaScript(
         `(function () {
           ${markers}
           var target = window.dotnetHost || window.__ohosDotNet;
@@ -2947,11 +3006,11 @@ struct Index {
   // injected when the host page does not load it itself. Hybrid pages keep the compatibility
   // shim injected above unchanged. A WASM site registration (blazorWasmMode) is skipped
   // entirely: it ships its own bootstrap and must never receive _framework/blazor.webview.js.
-  private injectBlazorBootstrap(pageUrl: string): void {
-    if (!this.blazorRegistered || this.blazorWasmMode || this.blazorBootstrapped || !this.isBlazorRootDocument(pageUrl)) {
+  private injectBlazorBootstrap(slot: number, pageUrl: string): void {
+    if (!this.blazorRegistered || this.blazorWasmMode || this.blazorBootstrapped[slot] || !this.isBlazorRootDocument(pageUrl)) {
       return;
     }
-    this.blazorBootstrapped = true;
+    this.blazorBootstrapped[slot] = true;
     const scriptUrl: string = `${this.blazorOrigin}_framework/blazor.webview.js`;
     const bootstrap: string = `(function () {
       if (window.__ohosBlazorBootstrapped) { return; }
@@ -3010,11 +3069,11 @@ struct Index {
       document.body.appendChild(script);
     })();`;
     try {
-      this.webController.runJavaScript(bootstrap, () => {
+      this.slotController(slot).runJavaScript(bootstrap, () => {
         // Best effort; an error leaves the page with the hybrid bridge only.
       });
     } catch (bootstrapError) {
-      this.blazorBootstrapped = false;
+      this.blazorBootstrapped[slot] = false;
       this.logError(`[maui] blazor bootstrap injection failed: ${(bootstrapError as Error).message}`);
     }
   }
@@ -3806,52 +3865,62 @@ struct Index {
         this.runOnUiThread(() => {
           try {
             if (op === 'show') {
-              // Historical: show the overlay (a WebView without a Source). A suspended overlay
-              // stays hidden under a presented drawer.
-              this.webVisible = !this.webSuspended;
+              // Historical: show one overlay (a WebView without a Source), tagged with its slot.
+              // A suspended overlay stays hidden under a presented drawer.
+              this.webVisible[this.webSlotOf(arg)] = !this.webSuspended;
             } else if (op === 'hide') {
-              // FIX-WVP tab switch: hide; the hidden page is not arranged, so no stale frame
-              // re-shows it, and the next page's web control re-shows through its own frame.
-              this.webVisible = false;
+              // FIX-WVP tab switch: hide every overlay; the hidden page is not arranged, so no
+              // stale frame re-shows it, and the next page's web control re-shows through its
+              // own frame.
+              this.webVisible = [false, false];
             } else if (op === 'suspend') {
-              // FIX-WVP drawer presented: hide and keep frame/load commands from re-showing the
-              // overlay (the flyout's own arrange cycle re-emits the detail's web frame).
+              // FIX-WVP drawer presented: hide every overlay and keep frame/load commands from
+              // re-showing them (the flyout's own arrange cycle re-emits the detail's web
+              // frames).
               if (!this.webSuspended) {
-                this.webVisibleBeforeSuspend = this.webVisible;
+                this.webVisibleBeforeSuspend = [this.webVisible[0], this.webVisible[1]];
                 this.webSuspended = true;
               }
-              this.webVisible = false;
+              this.webVisible = [false, false];
             } else if (op === 'resume') {
-              // FIX-WVP drawer dismissed: restore the visibility the suspend remember
+              // FIX-WVP drawer dismissed: restore the visibility the suspend remembered.
               this.webSuspended = false;
-              this.webVisible = this.webVisibleBeforeSuspend;
+              this.webVisible = [this.webVisibleBeforeSuspend[0], this.webVisibleBeforeSuspend[1]];
             } else if (op === 'load') {
-              this.webVisible = !this.webSuspended;
+              const loadSlot: number = this.webSlotOf(arg);
+              const loadUrl: string = this.webSlotPayload(arg);
+              this.webVisible[loadSlot] = !this.webSuspended;
               // B6: the app asked for this URL; let this one load through without a round trip.
-              this.navProgrammatic = { url: arg, expires: Date.now() + this.navPendingTtlMs };
-              this.webController.loadUrl(arg);
-              this.logInfo(`[maui] web load: ${arg}`);
+              this.navProgrammatic[loadSlot] = { url: loadUrl, expires: Date.now() + this.navPendingTtlMs };
+              this.slotController(loadSlot).loadUrl(loadUrl);
+              this.logInfo(`[maui] web load (slot ${loadSlot}): ${loadUrl}`);
             } else if (op === 'nav') {
-              // B6: the managed handler's answer to an intercepted navigation.
+              // B6: the managed handler's answer to an intercepted navigation (slot-tagged).
               this.approveNavigation(arg);
             } else if (op === 'data') {
-              this.webVisible = !this.webSuspended;
-              this.webController.loadData(arg, 'text/html', 'UTF-8');
+              const dataSlot: number = this.webSlotOf(arg);
+              this.webVisible[dataSlot] = !this.webSuspended;
+              this.slotController(dataSlot).loadData(this.webSlotPayload(arg), 'text/html', 'UTF-8');
             } else if (op === 'back') {
-              if (this.webController.accessBackward()) {
-                this.webController.backward();
+              const backSlot: number = this.webSlotOf(arg);
+              const backController: web_webview.WebviewController = this.slotController(backSlot);
+              if (backController.accessBackward()) {
+                backController.backward();
               }
-              this.reportWebHistory();
+              this.reportWebHistory(backSlot);
             } else if (op === 'forward') {
-              if (this.webController.accessForward()) {
-                this.webController.forward();
+              const forwardSlot: number = this.webSlotOf(arg);
+              const forwardController: web_webview.WebviewController = this.slotController(forwardSlot);
+              if (forwardController.accessForward()) {
+                forwardController.forward();
               }
-              this.reportWebHistory();
+              this.reportWebHistory(forwardSlot);
             } else if (op === 'refresh') {
-              this.webController.refresh();
-              this.reportWebHistory();
+              const refreshSlot: number = this.webSlotOf(arg);
+              this.slotController(refreshSlot).refresh();
+              this.reportWebHistory(refreshSlot);
             } else if (op === 'frame') {
-              // WebView PlatformArrange: "x\ny\nw\nh" (vp); also shows the overlay.
+              // WebView PlatformArrange: "s<slot>\nx\ny\nw\nh" (vp); also shows that overlay.
               this.applyWebFrame(arg);
             } else if (op === 'cookie') {
               // Minimal cookie surface: "<url>\n<Set-Cookie header>". Only absolute http(s)
@@ -3907,7 +3976,10 @@ struct Index {
       host.registerWebEvalSink((script: string, requestId: number): void => {
         this.runOnUiThread(() => {
           try {
-            this.webController.runJavaScript(script, (err, result) => {
+            // MULTI-OVL: the managed eval is tagged "s<slot>\n<script>"; untagged scripts run
+            // on the first overlay (cookie reads and legacy diagnostics).
+            const evalSlot: number = this.webSlotOf(script);
+            this.slotController(evalSlot).runJavaScript(this.webSlotPayload(script), (err, result) => {
               this.hostCall('notifyWebEvalResult', typeof host !== 'undefined' && typeof host.notifyWebEvalResult === 'function', (): void => {
                 host.notifyWebEvalResult(requestId, result || '', err ? 1 : 0);
               });
@@ -5201,10 +5273,13 @@ struct Index {
       this.hybridRegistered = safeLayout && this.hybridBase.length > 0 && this.hybridRoot.length > 0
         && this.hybridDefaultFile.length > 0;
       if (this.hybridRegistered) {
+        // MULTI-OVL: the registration names the overlay it belongs to; absent/-1 lands on the
+        // first overlay (a legacy handler).
+        const hybridSlot: number = config.slot !== undefined && config.slot === 1 ? 1 : 0;
         this.hybridServeLogs = 0;
-        this.logInfo(`[maui] hybrid assets: origin=${this.hybridOrigin} root=${this.hybridRoot} base=${this.hybridBase}`);
-        this.webVisible = !this.webSuspended;
-        this.webController.loadUrl(this.hybridOrigin);
+        this.logInfo(`[maui] hybrid assets: origin=${this.hybridOrigin} root=${this.hybridRoot} base=${this.hybridBase} slot=${hybridSlot}`);
+        this.webVisible[hybridSlot] = !this.webSuspended;
+        this.slotController(hybridSlot).loadUrl(this.hybridOrigin);
       }
     } catch (hybridError) {
       this.logError(`[maui] hybrid assets registration failed: ${(hybridError as Error).message}`);
@@ -5240,19 +5315,15 @@ struct Index {
       this.blazorRegistered = safeLayout && this.blazorBase.length > 0 && this.blazorRoot.length > 0
         && this.blazorDefaultFile.length > 0;
       if (this.blazorRegistered) {
-        this.logInfo(`[maui] blazor assets: origin=${this.blazorOrigin} root=${this.blazorRoot} base=${this.blazorBase} mode=${this.blazorWasmMode ? 'wasm' : 'hybrid'}`);
-      }
-      if (this.blazorRegistered && !this.blazorWasmMode) {
-        if (this.hybridRegistered) {
-          // Single-overlay arbitration (FIX-WVP): the shell owns one ArkWeb component, and the
-          // hybrid registration is the one whose page is served for the HybridWebView. A later
-          // Blazor registration must not reload the component (that superseded the hybrid's
-          // https://0.0.0.1/ load and left the hybrid area blank): the Blazor origin stays
-          // armed (interception + document id) without stealing the overlay.
-          this.logInfo('[maui] blazor origin armed; the hybrid page keeps the single ArkWeb overlay');
-        } else {
-          this.webVisible = !this.webSuspended;
-          this.webController.loadUrl(this.blazorOrigin);
+        // MULTI-OVL: the registration names the overlay it belongs to; absent/-1 lands on the
+        // first overlay (a WebView-driven WASM site or a legacy handler).
+        const blazorSlot: number = config.slot !== undefined && config.slot === 1 ? 1 : 0;
+        this.logInfo(`[maui] blazor assets: origin=${this.blazorOrigin} root=${this.blazorRoot} base=${this.blazorBase} mode=${this.blazorWasmMode ? 'wasm' : 'hybrid'} slot=${blazorSlot}`);
+        if (!this.blazorWasmMode) {
+          // MULTI-OVL replaces the single-overlay arbitration (FIX-WVP): the Blazor page loads
+          // on its own overlay even while a HybridWebView owns another one.
+          this.webVisible[blazorSlot] = !this.webSuspended;
+          this.slotController(blazorSlot).loadUrl(this.blazorOrigin);
         }
       }
     } catch (blazorError) {
@@ -5591,7 +5662,7 @@ struct Index {
       return this.hybridErrorResponse(400);
     }
     const delivered: boolean = this.hostCall('notifyJsMessage', typeof host !== 'undefined' && typeof host.notifyJsMessage === 'function', (): void => {
-      host.notifyJsMessage(this.originEnvelope(body));
+      host.notifyJsMessage(this.originEnvelope(body, 0));
     });
     // The message could not be handed to the managed side (mismatched host library): answer
     // the page's fetch with a malformed-request status instead of a success it never got.
@@ -5705,9 +5776,226 @@ struct Index {
   }
 
   // build() stays ternary-free (audit ARKTS-S3): the visibility and hit-test decisions live in
-  // named helpers so the declarative tree remains reviewable.
-  private webVisibility(): Visibility {
-    return this.webVisible ? Visibility.Visible : Visibility.None;
+  // named helpers so the declarative tree remains reviewable. MULTI-OVL: visibility is per
+  // overlay slot.
+  private webVisibility(slot: number): Visibility {
+    return this.webVisible[slot] ? Visibility.Visible : Visibility.None;
+  }
+
+  // MULTI-OVL: the ArkWeb overlay declaration, instantiated once per slot (slot 0 first, slot 1
+  // composites above it). Each overlay is hidden until a managed web control claims its slot and
+  // sends a frame. The frame command moves/sizes it (a zero dimension stays full-window); DOM
+  // storage is on by default, matching the MAUI Android handler (DomStorageEnabled=true), so
+  // localStorage works in hybrid/Blazor pages. Declared after the XComponent/ContentSlot: a
+  // Stack composites later children above earlier ones, and the managed app surface is the
+  // earlier child, so the overlays really show over the managed surface (FIX-WVP; declared
+  // first they stayed under the surface and every served web page was invisible).
+  @Builder
+  webOverlay(slot: number): void {
+    Web({ src: '', controller: this.webControllers[slot] })
+      .domStorageAccess(true)
+      .visibility(this.webVisibility(slot))
+      .width(this.webFrameW[slot] > 0 ? `${this.webFrameW[slot]}vp` : '100%')
+      .height(this.webFrameH[slot] > 0 ? `${this.webFrameH[slot]}vp` : '100%')
+      .position({ x: this.webFrameX[slot], y: this.webFrameY[slot] })
+      // The controller is attached here; registering the dotnetHost proxy any earlier fails
+      // with BusinessError 17100001 (controller not associated with a Web component).
+      .onControllerAttached(() => {
+        this.registerDotNetHost(slot);
+      })
+      .onLoadIntercept((event) => {
+        // B6 navigation allow-list: a top-level load the app did not originate is cancelled
+        // and decided by the managed WebView handler's Navigating event. Frames and
+        // subresources (isMainFrame false) and the app's own origin/file/data loads keep
+        // loading unchanged. The shell's own reload passes through the one-shot marker.
+        try {
+          if (!event.data.isMainFrame()) {
+            return false;
+          }
+          const url: string = event.data.getRequestUrl();
+          if (this.isAppNavigation(url)) {
+            return false;
+          }
+          if (this.consumeApprovedNavigation(url, slot)) {
+            return false;
+          }
+          if (url.length === 0 || url.length > this.navMaxUrlLength) {
+            // Nothing to hand over (or too large to copy): the load stays blocked.
+            return true;
+          }
+          this.askManagedAboutNavigation(slot, url);
+          return true;
+        } catch {
+          // An unexpected event shape must not take the page down; allow the load.
+          return false;
+        }
+      })
+      .onInterceptRequest((event) => {
+        try {
+          const url: string = event.request.getRequestUrl();
+          // Blazor origin (https://0.0.0.0/): every app asset, _framework/blazor.webview.js
+          // included, is served from <base>/<root>. The hybrid __hwv* endpoints do not exist
+          // here: blazor.webview.js talks through window.external (the dotnetHost proxy).
+          if (this.blazorRegistered && url.startsWith(this.blazorOrigin)) {
+            if (this.blazorServeLogs < 3) {
+              this.blazorServeLogs++;
+              this.logInfo(`[maui] web serve: ${url} -> ${this.blazorFilePath(url)}`);
+            }
+            return this.serveBlazorFile(url);
+          }
+          // Only the MAUI hybrid origin is intercepted, and only after the managed handler
+          // registered the payload root; everything else is left to the Web engine.
+          if (!this.hybridRegistered || !url.startsWith(this.hybridOrigin)) {
+            return null;
+          }
+          if (this.hybridServeLogs < 3) {
+            this.hybridServeLogs++;
+            this.logInfo(`[maui] web serve: ${url} -> ${this.hybridFilePath(url)}`);
+          }
+          if (url.startsWith(this.hybridOrigin + '__hwvInvokeDotNet')) {
+            return this.hybridInvokeResponse(event);
+          }
+          if (url.startsWith(this.hybridOrigin + '__hwvSendMessage')) {
+            return this.hybridMessageResponse(event);
+          }
+          return this.serveHybridFile(url);
+        } catch {
+          return null;
+        }
+      })
+      .onPageBegin((event) => {
+        // A new main-frame document gets its own Blazor bootstrap.
+        this.blazorBootstrapped[slot] = false;
+        const startedUrl: string = event ? event.url : '';
+        // B6: the approved/app-requested load started; its one-shot marker is used up.
+        this.retireNavigationMarker(startedUrl, slot);
+        this.hostCall('notifyWebEvent', typeof host !== 'undefined' && typeof host.notifyWebEvent === 'function', (): void => {
+          host.notifyWebEvent(this.webEventState(slot, 'started'), startedUrl);
+        });
+      })
+      .onPageEnd((event) => {
+        const pageUrl: string = event ? event.url : '';
+        this.logInfo(`[maui] web page (slot ${slot}): ${pageUrl}`);
+        this.hostCall('notifyWebEvent', typeof host !== 'undefined' && typeof host.notifyWebEvent === 'function', (): void => {
+          host.notifyWebEvent(this.webEventState(slot, 'finished'), pageUrl);
+        });
+        this.injectPageBridge(slot, pageUrl);
+        this.injectBlazorBootstrap(slot, pageUrl);
+        // History availability changed with this document; the managed WebView mirrors it
+        // into IWebView.CanGoBack/CanGoForward.
+        this.reportWebHistory(slot);
+      })
+      // Blazor WebAssembly console markers (B2): the staged site logs BLZ_* diagnostics;
+      // forward them to hilog under the shared BlazorWebHost tag, so a device run has a
+      // machine verdict (`hilog | grep BlazorWebHost`) independent of the managed status
+      // file. Returning false keeps the browser console output as well.
+      .onConsole((event) => {
+        try {
+          const consoleMessage: string = event.message.getMessage();
+          if (consoleMessage.startsWith('BLZ_')) {
+            hilog.info(DOMAIN, BLZ_TAG, 'marker: %{public}s', consoleMessage);
+          }
+        } catch {
+          // A console event the shell cannot read must not take the page down.
+        }
+        return false;
+      })
+      .onErrorReceive((event) => {
+        // A failed main-frame load: tell the managed side so it can raise Navigated(Failure)
+        // and clear the overlay (the managed surface shows through); subresource errors are
+        // not page failures and stay on the page.
+        try {
+          if (event && event.request && !event.request.isMainFrame()) {
+            return;
+          }
+          const errorUrl: string = event && event.request ? event.request.getRequestUrl() : '';
+          this.logError(`[maui] web error (slot ${slot}): ${errorUrl}`);
+          this.hostCall('notifyWebEvent', typeof host !== 'undefined' && typeof host.notifyWebEvent === 'function', (): void => {
+            host.notifyWebEvent(this.webEventState(slot, 'error'), errorUrl);
+          });
+        } catch {
+          // An unexpected event shape must not take the page down.
+        }
+      })
+      // File selection (matrix #11): an <input type=file> in the page reaches
+      // onShowFileSelector; the shell opens the system document picker (multi-select when the
+      // page asked for it) and hands the selection back to ArkWeb. Returning true takes the
+      // selection over; the page's request is always answered (an empty list cancels).
+      .onShowFileSelector((event) => {
+        try {
+          const multiple: boolean = event.fileSelector.getMode() === 1;
+          this.selectWebFileUris(multiple).then((uris: string[]): void => {
+            event.result.handleFileList(uris);
+          }).catch((fileSelectError: Error): void => {
+            this.logError(`[maui] web file selection failed: ${fileSelectError.message}`);
+            event.result.handleFileList([]);
+          });
+        } catch (fileSelectorError) {
+          this.logError(`[maui] web file selection failed: ${(fileSelectorError as Error).message}`);
+          event.result.handleFileList([]);
+        }
+        return true;
+      })
+      // Media permissions (matrix #12): getUserMedia's camera/microphone reaches
+      // onPermissionRequest. The shell prompts for the resources it owns (declared through the
+      // webview-media feature) and grants exactly those; every other resource is denied, so a
+      // page can never self-grant.
+      .onPermissionRequest((event) => {
+        try {
+          const resources: string[] = event.request.getAccessibleResource();
+          const permissions: Permissions[] = [];
+          for (let i = 0; i < resources.length; i++) {
+            const resource: string = resources[i];
+            if (resource === 'ohos.permission.CAMERA' || resource === 'ohos.permission.MICROPHONE') {
+              permissions.push(resource as Permissions);
+            }
+          }
+          if (permissions.length === 0) {
+            event.request.deny();
+            return;
+          }
+          const atManager = abilityAccessCtrl.createAtManager();
+          atManager.requestPermissionsFromUser(this.hostContext(), permissions).then((result) => {
+            const granted: Permissions[] = [];
+            for (let i = 0; i < permissions.length && i < result.authResults.length; i++) {
+              if (result.authResults[i] === 0) {
+                granted.push(permissions[i]);
+              }
+            }
+            if (granted.length > 0) {
+              event.request.grant(granted);
+            } else {
+              event.request.deny();
+            }
+          }).catch((mediaError: Error): void => {
+            this.logError(`[maui] web media permission failed: ${mediaError.message}`);
+            event.request.deny();
+          });
+        } catch (permissionRequestError) {
+          this.logError(`[maui] web media permission failed: ${(permissionRequestError as Error).message}`);
+          try {
+            event.request.deny();
+          } catch {
+          }
+        }
+      })
+      // Multi-window (matrix #13): window.open asks for a new window. This slice is
+      // single-window, so the target loads in this component instead of creating a second
+      // ArkWeb; the programmatic marker lets the load through the navigation gateway, and the
+      // page's controller handler is left unset (no new window is created).
+      .multiWindowAccess(true)
+      .onWindowNew((event) => {
+        try {
+          const targetUrl: string = event.targetUrl;
+          if (targetUrl.length === 0 || targetUrl.length > this.navMaxUrlLength) {
+            return;
+          }
+          this.navProgrammatic[slot] = { url: targetUrl, expires: Date.now() + this.navPendingTtlMs };
+          this.slotController(slot).loadUrl(targetUrl);
+        } catch (windowError) {
+          this.logError(`[maui] window.open fallback failed: ${(windowError as Error).message}`);
+        }
+      })
   }
 
   private shellSearchHitTest(): HitTestMode {
@@ -5784,217 +6072,12 @@ struct Index {
 
       ContentSlot(this.content)
 
-      // ArkWeb: hidden until the managed WebView asks for it. The frame command moves/sizes it
-      // (a zero dimension stays full-window); DOM storage is on by default, matching the MAUI
-      // Android handler (DomStorageEnabled=true), so localStorage works in hybrid/Blazor pages.
-      // Declared after the XComponent/ContentSlot: a Stack composites later children above
-      // earlier ones, and the managed app surface is the earlier child, so the overlay really
-      // shows over the managed surface (FIX-WVP; declared first it stayed under the surface and
-      // every served web page was invisible).
-      Web({ src: '', controller: this.webController })
-        .domStorageAccess(true)
-        .visibility(this.webVisibility())
-        .width(this.webFrameW > 0 ? `${this.webFrameW}vp` : '100%')
-        .height(this.webFrameH > 0 ? `${this.webFrameH}vp` : '100%')
-        .position({ x: this.webFrameX, y: this.webFrameY })
-        // The controller is attached here; registering the dotnetHost proxy any earlier fails
-        // with BusinessError 17100001 (controller not associated with a Web component).
-        .onControllerAttached(() => {
-          this.registerDotNetHost();
-        })
-        .onLoadIntercept((event) => {
-          // B6 navigation allow-list: a top-level load the app did not originate is cancelled
-          // and decided by the managed WebView handler's Navigating event. Frames and
-          // subresources (isMainFrame false) and the app's own origin/file/data loads keep
-          // loading unchanged. The shell's own reload passes through the one-shot marker.
-          try {
-            if (!event.data.isMainFrame()) {
-              return false;
-            }
-            const url: string = event.data.getRequestUrl();
-            if (this.isAppNavigation(url)) {
-              return false;
-            }
-            if (this.consumeApprovedNavigation(url)) {
-              return false;
-            }
-            if (url.length === 0 || url.length > this.navMaxUrlLength) {
-              // Nothing to hand over (or too large to copy): the load stays blocked.
-              return true;
-            }
-            this.askManagedAboutNavigation(url);
-            return true;
-          } catch {
-            // An unexpected event shape must not take the page down; allow the load.
-            return false;
-          }
-        })
-        .onInterceptRequest((event) => {
-          try {
-            const url: string = event.request.getRequestUrl();
-            // Blazor origin (https://0.0.0.0/): every app asset, _framework/blazor.webview.js
-            // included, is served from <base>/<root>. The hybrid __hwv* endpoints do not exist
-            // here: blazor.webview.js talks through window.external (the dotnetHost proxy).
-            if (this.blazorRegistered && url.startsWith(this.blazorOrigin)) {
-              if (this.blazorServeLogs < 3) {
-                this.blazorServeLogs++;
-                this.logInfo(`[maui] web serve: ${url} -> ${this.blazorFilePath(url)}`);
-              }
-              return this.serveBlazorFile(url);
-            }
-            // Only the MAUI hybrid origin is intercepted, and only after the managed handler
-            // registered the payload root; everything else is left to the Web engine.
-            if (!this.hybridRegistered || !url.startsWith(this.hybridOrigin)) {
-              return null;
-            }
-            if (this.hybridServeLogs < 3) {
-              this.hybridServeLogs++;
-              this.logInfo(`[maui] web serve: ${url} -> ${this.hybridFilePath(url)}`);
-            }
-            if (url.startsWith(this.hybridOrigin + '__hwvInvokeDotNet')) {
-              return this.hybridInvokeResponse(event);
-            }
-            if (url.startsWith(this.hybridOrigin + '__hwvSendMessage')) {
-              return this.hybridMessageResponse(event);
-            }
-            return this.serveHybridFile(url);
-          } catch {
-            return null;
-          }
-        })
-        .onPageBegin((event) => {
-          // A new main-frame document gets its own Blazor bootstrap.
-          this.blazorBootstrapped = false;
-          const startedUrl: string = event ? event.url : '';
-          // B6: the approved/app-requested load started; its one-shot marker is used up.
-          this.retireNavigationMarker(startedUrl);
-          this.hostCall('notifyWebEvent', typeof host !== 'undefined' && typeof host.notifyWebEvent === 'function', (): void => {
-            host.notifyWebEvent('started', startedUrl);
-          });
-        })
-        .onPageEnd((event) => {
-          const pageUrl: string = event ? event.url : '';
-          this.logInfo(`[maui] web page: ${pageUrl}`);
-          this.hostCall('notifyWebEvent', typeof host !== 'undefined' && typeof host.notifyWebEvent === 'function', (): void => {
-            host.notifyWebEvent('finished', pageUrl);
-          });
-          this.injectPageBridge(pageUrl);
-          this.injectBlazorBootstrap(pageUrl);
-          // History availability changed with this document; the managed WebView mirrors it
-          // into IWebView.CanGoBack/CanGoForward.
-          this.reportWebHistory();
-        })
-        // Blazor WebAssembly console markers (B2): the staged site logs BLZ_* diagnostics;
-        // forward them to hilog under the shared BlazorWebHost tag, so a device run has a
-        // machine verdict (`hilog | grep BlazorWebHost`) independent of the managed status
-        // file. Returning false keeps the browser console output as well.
-        .onConsole((event) => {
-          try {
-            const consoleMessage: string = event.message.getMessage();
-            if (consoleMessage.startsWith('BLZ_')) {
-              hilog.info(DOMAIN, BLZ_TAG, 'marker: %{public}s', consoleMessage);
-            }
-          } catch {
-            // A console event the shell cannot read must not take the page down.
-          }
-          return false;
-        })
-        .onErrorReceive((event) => {
-          // A failed main-frame load: tell the managed side so it can raise Navigated(Failure)
-          // and clear the overlay (the managed surface shows through); subresource errors are
-          // not page failures and stay on the page.
-          try {
-            if (event && event.request && !event.request.isMainFrame()) {
-              return;
-            }
-            const errorUrl: string = event && event.request ? event.request.getRequestUrl() : '';
-            this.logError(`[maui] web error: ${errorUrl}`);
-            this.hostCall('notifyWebEvent', typeof host !== 'undefined' && typeof host.notifyWebEvent === 'function', (): void => {
-              host.notifyWebEvent('error', errorUrl);
-            });
-          } catch {
-            // An unexpected event shape must not take the page down.
-          }
-        })
-        // File selection (matrix #11): an <input type=file> in the page reaches
-        // onShowFileSelector; the shell opens the system document picker (multi-select when the
-        // page asked for it) and hands the selection back to ArkWeb. Returning true takes the
-        // selection over; the page's request is always answered (an empty list cancels).
-        .onShowFileSelector((event) => {
-          try {
-            const multiple: boolean = event.fileSelector.getMode() === 1;
-            this.selectWebFileUris(multiple).then((uris: string[]): void => {
-              event.result.handleFileList(uris);
-            }).catch((fileSelectError: Error): void => {
-              this.logError(`[maui] web file selection failed: ${fileSelectError.message}`);
-              event.result.handleFileList([]);
-            });
-          } catch (fileSelectorError) {
-            this.logError(`[maui] web file selection failed: ${(fileSelectorError as Error).message}`);
-            event.result.handleFileList([]);
-          }
-          return true;
-        })
-        // Media permissions (matrix #12): getUserMedia's camera/microphone reaches
-        // onPermissionRequest. The shell prompts for the resources it owns (declared through the
-        // webview-media feature) and grants exactly those; every other resource is denied, so a
-        // page can never self-grant.
-        .onPermissionRequest((event) => {
-          try {
-            const resources: string[] = event.request.getAccessibleResource();
-            const permissions: Permissions[] = [];
-            for (let i = 0; i < resources.length; i++) {
-              const resource: string = resources[i];
-              if (resource === 'ohos.permission.CAMERA' || resource === 'ohos.permission.MICROPHONE') {
-                permissions.push(resource as Permissions);
-              }
-            }
-            if (permissions.length === 0) {
-              event.request.deny();
-              return;
-            }
-            const atManager = abilityAccessCtrl.createAtManager();
-            atManager.requestPermissionsFromUser(this.hostContext(), permissions).then((result) => {
-              const granted: Permissions[] = [];
-              for (let i = 0; i < permissions.length && i < result.authResults.length; i++) {
-                if (result.authResults[i] === 0) {
-                  granted.push(permissions[i]);
-                }
-              }
-              if (granted.length > 0) {
-                event.request.grant(granted);
-              } else {
-                event.request.deny();
-              }
-            }).catch((mediaError: Error): void => {
-              this.logError(`[maui] web media permission failed: ${mediaError.message}`);
-              event.request.deny();
-            });
-          } catch (permissionRequestError) {
-            this.logError(`[maui] web media permission failed: ${(permissionRequestError as Error).message}`);
-            try {
-              event.request.deny();
-            } catch {
-            }
-          }
-        })
-        // Multi-window (matrix #13): window.open asks for a new window. This slice is
-        // single-window, so the target loads in this component instead of creating a second
-        // ArkWeb; the programmatic marker lets the load through the navigation gateway, and the
-        // page's controller handler is left unset (no new window is created).
-        .multiWindowAccess(true)
-        .onWindowNew((event) => {
-          try {
-            const targetUrl: string = event.targetUrl;
-            if (targetUrl.length === 0 || targetUrl.length > this.navMaxUrlLength) {
-              return;
-            }
-            this.navProgrammatic = { url: targetUrl, expires: Date.now() + this.navPendingTtlMs };
-            this.webController.loadUrl(targetUrl);
-          } catch (windowError) {
-            this.logError(`[maui] window.open fallback failed: ${(windowError as Error).message}`);
-          }
-        })
+      // MULTI-OVL: two ArkWeb overlays, one per managed web control slot. Slot 0 is declared
+      // first and slot 1 composites above it; both stay hidden until a managed control claims a
+      // slot and sends a frame. Replaces the single shared component of FIX-WVP.
+      this.webOverlay(0)
+      this.webOverlay(1)
+
 
       // Map overlay (R2-3): only mounted while the managed side created the overlay through the
       // Map sink (op 1) and the shell resolved the harmony-flavor overlay module. The

@@ -659,6 +659,19 @@ FIX-BACKSIZE（2026-10-01）：系统 Back 在页面的 `onKeyEvent` 之前被�
 的退化保护忽略（FIX-WVP）；现按 WebView/HybridWebView 的同一形状覆写（宽=约束，高上限 400）并
 尊重显式 `HeightRequest`。新壳 abc 342,160 B（`ffda66da…`），宿主新增 1 个导出（150/150）。
 
+MULTI-OVL（2026-10-02）：多覆盖层共存（上限 N=2）。壳声明两个 ArkWeb 覆盖层，由
+`@Builder webOverlay(0/1)` 在 `ContentSlot` 之后实例化（slot 1 叠在 slot 0 上）；每个 web
+handler 连接时从托管槽池（`Microsoft.OpenHarmony.Hosting.OpenHarmonyOverlays`，Acquire/Release、
+上限 2）领一个 slot，并在命令参数首页携带它（`s<slot>` / `s<slot>\n<arg>`，另见
+`OpenHarmonyOverlays.Tag/TagScript`）。壳按 tag 把 frame/load/data/show/back/forward/refresh
+落到 `webControllers[slot]`，`hybrid`/`blazor` 注册各带 `slot` 字段并加载各自控制器（FIX-WVP 的
+单覆盖层仲裁与其“已注册 hybrid 时 Blazor 只武装不加载”行为被移除）；页事件以 `s<slot>|state`
+回传，`__OHNAV|s<slot>|<url>|<id>` 携带槽位，eval 以 `s<slot>\n<script>` 路由。全局命令
+（hide/suspend/resume/cookie/cookieGet）保持无 tag，作用于全部覆盖层；无 tag 的命令/事件按
+slot 0 处理（旧协议兼容）。宿主签名与导出不变（150/150）。新壳 abc 347,704 B
+（`960c4c9c…`；headless 24,324 B 不变）。契约/断言见 `test/maui-platform-verify`（+4 → 559/539）
+与 runtime-ohos `docs/plans/2026-10-02-ohos-multi-overlay.md`。
+
 ## Toolchain resolution
 
 `_OpenHarmonyDetectToolchain` resolves the packing tool from `OpenHarmonyToolchainDir` or

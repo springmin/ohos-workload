@@ -12,7 +12,7 @@ using Microsoft.Maui.Platform;
 // after the fuzz tail) instead of letting every caller repeat its own threshold constant.
 VerifyLineCountingWriter verifyStdout = new(Console.Out);
 Console.SetOut(verifyStdout);
-const int verifyCheckTotal = 555;                     // documented full [verify] line count (+4 FIX-BACKSIZE Back-press forwarding/drawer drill/ shell drawer/BlazorWebView desired size, +4 FIX-WVP overlay px->vp/degenerate-frame/hybrid-overlay arbitration/suspend-restore (shell+slice), +2 FIX-DISMISS flyout drawer dismiss under the device display conditions, +4 FIX-HOME home page arrange/draw (NavigationPage-in-TabbedPage descent), +4 MS-MODE runtime mode switch, +10 P2c-DEEPLINK, +4 P2b-IMG, +16 P1b-LIST, +10 P1a-ANIM, +2 SEC3 storage/deep-link pins, +5 W-series WebView wiring, +3 T1 InputView mapping, +4 T2 WebView gaps, +4 T3 GraphicsView interaction, +7 T10 modal accessibility, +4 T4 Label formatted text, +4 T5 layout semantics, +6 T7 DatePicker calendar/min-max, +4 T9 window title bar, +4 T11 diagnostics overlay, +1 N2 empty ContentPage arrangement, +6 T8 TableView, +5 T8 uneven rows, +7 T6 RTL flow direction, +5 T22 MainThread bridge, +2 FIX-TABBED tabbed CurrentPage, +4 T13 group footer view/N3 picker IsOpen, +5 T21 system font scale, +3 T21 font scale source wiring, +2 A11Y-TABBED tabbed accessibility, +3 N1 host multi-pointer, +5 T12 CarouselView group slides, +7 T14 rich shell flyout, +10 T14 flyout leftovers (MenuItemTemplate/FlyoutContent/AsMultipleItems), +2 FIX-SHELL shell CurrentPage, +2 A11Y-SHELL shell accessibility, +7 T15 rich Shell.TitleView, +8 T16 structured menus, +3 N4 TitleBar accessibility row, +3 T18 Essentials Map, +4 N5 overlay passthrough suppression, +5 N6 window decorations, +4 T20 media bridge, +3 B2 wasm site in a MAUI WebView, +2 W10 NativeAOT managed entry (host libs-dir resolution + shell AOT payload probe), +1 FIX-JSCALL Blazor IPC enum/struct AOT roots (JSCallResultType/JSCallType/NavigationOptions in the slice context + handler static-ctor touch + stub click-probe removed))
+const int verifyCheckTotal = 559;                     // documented full [verify] line count (+4 MULTI-OVL slot pool/wire codec/two-overlay shell/slice wiring, +4 FIX-BACKSIZE Back-press forwarding/drawer drill/ shell drawer/BlazorWebView desired size, +4 FIX-WVP overlay px->vp/degenerate-frame/hybrid-overlay arbitration/suspend-restore (shell+slice), +2 FIX-DISMISS flyout drawer dismiss under the device display conditions, +4 FIX-HOME home page arrange/draw (NavigationPage-in-TabbedPage descent), +4 MS-MODE runtime mode switch, +10 P2c-DEEPLINK, +4 P2b-IMG, +16 P1b-LIST, +10 P1a-ANIM, +2 SEC3 storage/deep-link pins, +5 W-series WebView wiring, +3 T1 InputView mapping, +4 T2 WebView gaps, +4 T3 GraphicsView interaction, +7 T10 modal accessibility, +4 T4 Label formatted text, +4 T5 layout semantics, +6 T7 DatePicker calendar/min-max, +4 T9 window title bar, +4 T11 diagnostics overlay, +1 N2 empty ContentPage arrangement, +6 T8 TableView, +5 T8 uneven rows, +7 T6 RTL flow direction, +5 T22 MainThread bridge, +2 FIX-TABBED tabbed CurrentPage, +4 T13 group footer view/N3 picker IsOpen, +5 T21 system font scale, +3 T21 font scale source wiring, +2 A11Y-TABBED tabbed accessibility, +3 N1 host multi-pointer, +5 T12 CarouselView group slides, +7 T14 rich shell flyout, +10 T14 flyout leftovers (MenuItemTemplate/FlyoutContent/AsMultipleItems), +2 FIX-SHELL shell CurrentPage, +2 A11Y-SHELL shell accessibility, +7 T15 rich Shell.TitleView, +8 T16 structured menus, +3 N4 TitleBar accessibility row, +3 T18 Essentials Map, +4 N5 overlay passthrough suppression, +5 N6 window decorations, +4 T20 media bridge, +3 B2 wasm site in a MAUI WebView, +2 W10 NativeAOT managed entry (host libs-dir resolution + shell AOT payload probe), +1 FIX-JSCALL Blazor IPC enum/struct AOT roots (JSCallResultType/JSCallType/NavigationOptions in the slice context + handler static-ctor touch + stub click-probe removed))
 const int verifyCheckFloor = verifyCheckTotal - 20;   // documented floor convention (total - 20)
 
 // A small image file for the Image handler.
@@ -4253,21 +4253,21 @@ foreach (string wVersion in wShellVersions)
     string? wShellPath = FindHostSource($"packs/Microsoft.OpenHarmony.Sdk/{wVersion}/templates/ets/pages/Index.ets");
     string wShell = wShellPath is null ? string.Empty : File.ReadAllText(wShellPath);
     wShellHistory &= wShell.Contains("op === 'forward'") && wShell.Contains("op === 'refresh'") &&
-        wShell.Contains("private reportWebHistory(): void {") &&
-        wShell.Contains("this.webController.accessForward()") &&
-        wShell.Contains("host.notifyWebEvent(`history|${canBack ? 1 : 0}|${canForward ? 1 : 0}`, '');") &&
-        wShell.Contains("this.reportWebHistory();");
+        wShell.Contains("private reportWebHistory(slot: number): void {") &&
+        wShell.Contains("this.slotController(slot)") &&
+        wShell.Contains("host.notifyWebEvent(this.webEventState(slot, `history|${canBack ? 1 : 0}|${canForward ? 1 : 0}`), '');") &&
+        wShell.Contains("this.reportWebHistory(slot);");
     wShellFrame &= wShell.Contains("private applyWebFrame(arg: string): void {") &&
         wShell.Contains("op === 'frame'") &&
-        wShell.Contains(".position({ x: this.webFrameX, y: this.webFrameY })") &&
-        wShell.Contains(".width(this.webFrameW > 0 ? `${this.webFrameW}vp` : '100%')") &&
-        wShell.Contains(".height(this.webFrameH > 0 ? `${this.webFrameH}vp` : '100%')");
+        wShell.Contains(".position({ x: this.webFrameX[slot], y: this.webFrameY[slot] })") &&
+        wShell.Contains(".width(this.webFrameW[slot] > 0 ? `${this.webFrameW[slot]}vp` : '100%')") &&
+        wShell.Contains(".height(this.webFrameH[slot] > 0 ? `${this.webFrameH[slot]}vp` : '100%')");
     wShellCookie &= wShell.Contains("web_webview.WebCookieManager.configCookieSync(cookieUrl, cookieValue);") &&
         wShell.Contains("web_webview.WebCookieManager.fetchCookieSync(cookieUrl);") &&
         wShell.Contains("host.notifyWebEvalResult(requestId, cookieValue, cookieFailed);");
     wShellStorage &= wShell.Contains(".domStorageAccess(true)");
     wShellError &= wShell.Contains(".onErrorReceive((event) => {") &&
-        wShell.Contains("host.notifyWebEvent('error', errorUrl);");
+        wShell.Contains("host.notifyWebEvent(this.webEventState(slot, 'error'), errorUrl);");
 }
 bool wShellOk = wShellHistory && wShellFrame && wShellCookie && wShellStorage && wShellError;
 Console.WriteLine($"[verify] w1 shell web wiring packs=22,23,24,28 history={wShellHistory} frame={wShellFrame} cookie={wShellCookie} storage={wShellStorage} error={wShellError} assert={wShellOk}");
@@ -4289,24 +4289,24 @@ string wBlazorHandler = wBlazorHandlerPath is null ? string.Empty : File.ReadAll
 bool wHandlerCommands = wHandler.Contains("case nameof(IWebView.GoBack):") &&
     wHandler.Contains("case nameof(IWebView.GoForward):") &&
     wHandler.Contains("case nameof(IWebView.Reload):") &&
-    wHandler.Contains("SendHistoryCommand(\"forward\", WebNavigationEvent.Forward);") &&
-    wHandler.Contains("SendHistoryCommand(\"refresh\", WebNavigationEvent.Refresh);");
-bool wHandlerEvents = wHandler.Contains("ApplyHistoryState(state);") &&
+    wHandler.Contains("SendHistoryCommand(\"forward\", WebNavigationEvent.Forward") &&
+    wHandler.Contains("SendHistoryCommand(\"refresh\", WebNavigationEvent.Refresh");
+bool wHandlerEvents = wHandler.Contains("ApplyHistoryState(") &&
     wHandler.Contains("webView.CanGoBack = canGoBack;") &&
     wHandler.Contains("webView.CanGoForward = canGoForward;") &&
-    wHandler.Contains("RaiseNavigated(url, WebNavigationResult.Success);") &&
-    wHandler.Contains("RaiseNavigated(url, WebNavigationResult.Failure);") &&
+    wHandler.Contains("RaiseNavigated(url, WebNavigationResult.Success") &&
+    wHandler.Contains("RaiseNavigated(url, WebNavigationResult.Failure") &&
     wHandler.Contains("OpenHarmonyBridge.WebCommand(\"hide\");") &&
     wHandler.Contains("public static void OnPageEvent(string state, string url)") &&
-    wHandler.Contains("state.StartsWith(HistoryStatePrefix, StringComparison.Ordinal)");
-bool wHandlerFrame = wHandler.Contains("internal static void SendPlatformFrame(Rect frame)") &&
-    wHandler.Contains("WebCommand(\"frame\", FormattableString.Invariant(");
+    wHandler.Contains("HistoryStatePrefix, StringComparison.Ordinal)");
+bool wHandlerFrame = wHandler.Contains("internal static void SendPlatformFrame(Rect frame") &&
+    wHandler.Contains("WebCommand(\"frame\"");
 bool wHandlerCookie = wHandler.Contains("public static void SetCookie(string url, string cookie)") &&
     wHandler.Contains("public static async Task<string?> GetCookieAsync(string url)") &&
     wHandler.Contains("OpenHarmonyBridge.WebCommand(\"cookieGet\", requestId + \"\\n\" + url);") &&
     wHandler.Contains("internal static bool IsCookieUrl(string url)");
-bool wHandlerFrameShared = wHybridHandler.Contains("OpenHarmonyWebViewHandler.SendPlatformFrame(frame);") &&
-    wBlazorHandler.Contains("OpenHarmonyWebViewHandler.SendPlatformFrame(frame);") &&
+bool wHandlerFrameShared = wHybridHandler.Contains("OpenHarmonyWebViewHandler.SendPlatformFrame(frame") &&
+    wBlazorHandler.Contains("OpenHarmonyWebViewHandler.SendPlatformFrame(frame") &&
     wBlazorHandler.Contains("public override void PlatformArrange(Rect frame)");
 bool wHandlersOk = wHandlerCommands && wHandlerEvents && wHandlerFrame && wHandlerCookie && wHandlerFrameShared;
 Console.WriteLine($"[verify] w2 handler web wiring commands={wHandlerCommands} events={wHandlerEvents} frame={wHandlerFrame} cookie={wHandlerCookie} frameShared={wHandlerFrameShared} assert={wHandlersOk}");
@@ -4348,6 +4348,104 @@ if (!jscallOk)
         $"staticCtor={jscallRootOk} probeGone={jscallProbeGone}");
 }
 
+// ---- MULTI-OVL: multi-overlay slot pool, wire codec and the two-overlay shell ---------------
+// The shell declares two ArkWeb overlays and the managed web handlers claim a slot, tag their
+// per-overlay commands with it ("s<slot>" / "s<slot>\n<arg>") and receive the page events tagged
+// back ("s<slot>|<state>"). The hosting pool/codec and the shell half are both in this repository,
+// so these pins are strict in CI; the managed slice half is dual-mode (the pinned slice still
+// withholds frames while a hybrid owns the single overlay, the working-tree slice owns slots and
+// is asserted by the FIX-BACKSIZE drill above).
+FieldInfo multiOvlUsedField = typeof(Microsoft.OpenHarmony.Hosting.OpenHarmonyOverlays)
+    .GetField("s_used", BindingFlags.NonPublic | BindingFlags.Static)
+    ?? throw new InvalidOperationException("Microsoft.OpenHarmony.Hosting.OpenHarmonyOverlays.s_used was not found; the MULTI-OVL pool drill needs the slot-table seam");
+bool[]? multiOvlUsedBefore = (bool[]?)multiOvlUsedField.GetValue(null) ?? new bool[Microsoft.OpenHarmony.Hosting.OpenHarmonyOverlays.MaxOverlays];
+bool multiOvlPool = false;
+try
+{
+    multiOvlUsedField.SetValue(null, new bool[Microsoft.OpenHarmony.Hosting.OpenHarmonyOverlays.MaxOverlays]);
+    int multiOvlA = Microsoft.OpenHarmony.Hosting.OpenHarmonyOverlays.Acquire();
+    int multiOvlB = Microsoft.OpenHarmony.Hosting.OpenHarmonyOverlays.Acquire();
+    int multiOvlC = Microsoft.OpenHarmony.Hosting.OpenHarmonyOverlays.Acquire();
+    multiOvlPool = multiOvlA == 0 && multiOvlB == 1 && multiOvlC == -1 &&
+        Microsoft.OpenHarmony.Hosting.OpenHarmonyOverlays.IsClaimed(0) && Microsoft.OpenHarmony.Hosting.OpenHarmonyOverlays.IsClaimed(1) &&
+        !Microsoft.OpenHarmony.Hosting.OpenHarmonyOverlays.IsClaimed(2);
+    // The cap is a hard stop: a released slot is reusable and an out-of-range release is a no-op.
+    Microsoft.OpenHarmony.Hosting.OpenHarmonyOverlays.Release(1);
+    Microsoft.OpenHarmony.Hosting.OpenHarmonyOverlays.Release(99);
+    int multiOvlD = Microsoft.OpenHarmony.Hosting.OpenHarmonyOverlays.Acquire();
+    multiOvlPool = multiOvlPool && multiOvlD == 1 &&
+        Microsoft.OpenHarmony.Hosting.OpenHarmonyOverlays.Tag(0) == "s0" && Microsoft.OpenHarmony.Hosting.OpenHarmonyOverlays.Tag(1, "payload") == "s1\npayload" &&
+        Microsoft.OpenHarmony.Hosting.OpenHarmonyOverlays.Tag(-1, "payload") == "payload";
+    Microsoft.OpenHarmony.Hosting.OpenHarmonyOverlays.Release(0);
+    Microsoft.OpenHarmony.Hosting.OpenHarmonyOverlays.Release(1);
+}
+finally
+{
+    multiOvlUsedField.SetValue(null, multiOvlUsedBefore);
+}
+bool multiOvlCodec =
+    Microsoft.OpenHarmony.Hosting.OpenHarmonyOverlays.TryUntag("s1\n40\n500\n1000\n400", out int multiOvlSlot, out string multiOvlPayload) &&
+    multiOvlSlot == 1 && multiOvlPayload == "40\n500\n1000\n400" &&
+    !Microsoft.OpenHarmony.Hosting.OpenHarmonyOverlays.TryUntag("40\n500\n1000\n400", out _, out _) &&
+    !Microsoft.OpenHarmony.Hosting.OpenHarmonyOverlays.TryUntag("s9\nx", out _, out _) &&
+    Microsoft.OpenHarmony.Hosting.OpenHarmonyOverlays.TagState(1, "finished") == "s1|finished" &&
+    Microsoft.OpenHarmony.Hosting.OpenHarmonyOverlays.TryParseEventState("s0|history|1|0", out int multiOvlEventSlot, out string multiOvlEvent) &&
+    multiOvlEventSlot == 0 && multiOvlEvent == "history|1|0" &&
+    !Microsoft.OpenHarmony.Hosting.OpenHarmonyOverlays.TryParseEventState("finished", out _, out _) &&
+    Microsoft.OpenHarmony.Hosting.OpenHarmonyOverlays.TryParseNavigationRequest("__OHNAV|s1|https://x/y|abc", out int multiOvlNavSlot, out string multiOvlNavUrl, out string multiOvlNavId) &&
+    multiOvlNavSlot == 1 && multiOvlNavUrl == "https://x/y" && multiOvlNavId == "abc" &&
+    Microsoft.OpenHarmony.Hosting.OpenHarmonyOverlays.TryParseNavigationRequest("__OHNAV|https://x/y|abc", out int multiOvlLegacySlot, out string multiOvlLegacyUrl, out string multiOvlLegacyId) &&
+    multiOvlLegacySlot == -1 && multiOvlLegacyUrl == "https://x/y" && multiOvlLegacyId == "abc";
+Console.WriteLine($"[verify] multi-ovl slot pool acquire/release/cap={multiOvlPool} assert={multiOvlPool}");
+if (!multiOvlPool)
+{
+    throw new InvalidOperationException("the MULTI-OVL slot pool drifted (acquire order, cap or release)");
+}
+Console.WriteLine($"[verify] multi-ovl wire codec command/event/nav round-trip={multiOvlCodec} assert={multiOvlCodec}");
+if (!multiOvlCodec)
+{
+    throw new InvalidOperationException("the MULTI-OVL wire codec drifted (Tag/TryUntag/event state/nav request)");
+}
+
+bool multiOvlShell = true;
+foreach (string multiOvlVersion in wShellVersions)
+{
+    string? multiOvlShellPath = FindHostSource($"packs/Microsoft.OpenHarmony.Sdk/{multiOvlVersion}/templates/ets/pages/Index.ets");
+    string multiOvlShellSource = multiOvlShellPath is null ? string.Empty : File.ReadAllText(multiOvlShellPath);
+    multiOvlShell &= multiOvlShellSource.Contains("private webControllers: web_webview.WebviewController[] =") &&
+        multiOvlShellSource.Contains("webOverlay(slot: number): void {") &&
+        multiOvlShellSource.Contains("this.webOverlay(0)") &&
+        multiOvlShellSource.Contains("this.webOverlay(1)") &&
+        multiOvlShellSource.Contains("private webSlotOf(arg: string): number {") &&
+        multiOvlShellSource.Contains("private webEventState(slot: number, state: string): string {") &&
+        multiOvlShellSource.Contains("this.webVisible[hybridSlot] = !this.webSuspended;") &&
+        multiOvlShellSource.Contains("this.webVisible[blazorSlot] = !this.webSuspended;") &&
+        multiOvlShellSource.Contains("this.slotController(evalSlot).runJavaScript(this.webSlotPayload(script)") &&
+        !multiOvlShellSource.Contains("the hybrid page keeps the single ArkWeb overlay");
+}
+Console.WriteLine($"[verify] multi-ovl shell two overlays packs=22,23,24,28 overlays={multiOvlShell} assert={multiOvlShell}");
+if (!multiOvlShell)
+{
+    throw new InvalidOperationException("the MULTI-OVL two-overlay shell wiring is missing or drifted in a synced pack");
+}
+
+// The managed slice half: the working-tree slice claims slots and always sends the tagged
+// frame/registration (the pinned CI slice keeps the legacy withholding, which the FIX-BACKSIZE
+// drill above asserts), so this check documents the contract without pinning the slice revision.
+bool multiOvlSlice = wHandler.Contains("OpenHarmonyOverlays.Acquire()");
+bool multiOvlSliceOk = !multiOvlSlice ||
+    (wHybridHandler.Contains("OpenHarmonyOverlays.Acquire()") &&
+     wHybridHandler.Contains("SendPlatformFrame(frame, _overlaySlot)") &&
+     wBlazorHandler.Contains("OpenHarmonyOverlays.Acquire()") &&
+     wBlazorHandler.Contains("SendPlatformFrame(frame, _overlaySlot)") &&
+     wBlazorHandler.Contains("Slot = _overlaySlot") &&
+     wHybridHandler.Contains("Slot = _overlaySlot"));
+Console.WriteLine($"[verify] multi-ovl slice wiring slots={multiOvlSlice} tagged={multiOvlSliceOk} assert={multiOvlSliceOk}");
+if (!multiOvlSliceOk)
+{
+    throw new InvalidOperationException("the MULTI-OVL slice wiring drifted (slot claim/frame tag/registration slot)");
+}
+
 // FIX-WVP: the shell overlay geometry and origin arbitration. The managed compositor
 // arranges in device pixels (OpenHarmonyWindowHandler.RequestDisplayDensity answers 1) and the
 // shell command carries "x\ny\nw\nh" pixels; the ArkUI overlay places in vp, so applyWebFrame
@@ -4372,32 +4470,38 @@ foreach (string w6Version in new[] { "1.0.0-preview.22", "1.0.0-preview.23", "1.
         w6Shell.Contains("const yVp: number = px2vp(Math.max(0, y));") &&
         w6Shell.Contains("const wVp: number = px2vp(w);") &&
         w6Shell.Contains("const hVp: number = px2vp(h);") &&
-        w6Shell.Contains("this.webFrameX = xVp;") && w6Shell.Contains("this.webFrameW = wVp;") &&
+        w6Shell.Contains("this.webFrameX[slot] = xVp;") && w6Shell.Contains("this.webFrameW[slot] = wVp;") &&
         !w6Shell.Contains("this.webFrameW = w > 0 ? w : 0;");
     w6FrameGuard &= w6Shell.Contains("if (!(wVp > 0) || !(hVp > 0)) {") &&
-        w6Shell.Contains(".width(this.webFrameW > 0 ? `${this.webFrameW}vp` : '100%')");
-    // The ArkWeb overlay must be declared after the managed XComponent/ContentSlot: a Stack
-    // composites later children above earlier ones, and declared first the overlay stayed under
+        w6Shell.Contains(".width(this.webFrameW[slot] > 0 ? `${this.webFrameW[slot]}vp` : '100%')");
+    // The ArkWeb overlays must be declared after the managed XComponent/ContentSlot: a Stack
+    // composites later children above earlier ones, and declared first the overlays stayed under
     // the managed surface (every served web page was invisible - the UI-LOCAL-3 white area).
+    // MULTI-OVL: the overlays are built by webOverlay(0)/webOverlay(1) after the ContentSlot.
     w6ZOrder &= w6Shell.IndexOf("ContentSlot(this.content)", StringComparison.Ordinal) >= 0 &&
         w6Shell.IndexOf("ContentSlot(this.content)", StringComparison.Ordinal) <
-        w6Shell.IndexOf("ArkWeb: hidden until", StringComparison.Ordinal);
+        w6Shell.IndexOf("this.webOverlay(0)", StringComparison.Ordinal) &&
+        w6Shell.IndexOf("this.webOverlay(0)", StringComparison.Ordinal) <
+        w6Shell.IndexOf("this.webOverlay(1)", StringComparison.Ordinal);
     // Overlay suspension: the drawer's suspend blocks frame/load re-shows and resume restores
-    // the pre-suspend visibility; the tab switch's plain hide lets the next page's web control
-    // re-show through its own frame.
+    // the pre-suspend visibility of every overlay; the tab switch's plain hide hides them all.
     w6Suspend &= w6Shell.Contains("private webSuspended: boolean = false;") &&
-        w6Shell.Contains("private webVisibleBeforeSuspend: boolean = false;") &&
+        w6Shell.Contains("private webVisibleBeforeSuspend: boolean[] = [false, false];") &&
         w6Shell.Contains("} else if (op === 'suspend') {") &&
         w6Shell.Contains("} else if (op === 'resume') {") &&
-        w6Shell.Contains("this.webVisible = !this.webSuspended;");
-    w6Origin &= w6Shell.Contains("if (this.hybridRegistered) {") &&
-        w6Shell.Contains("this.logInfo('[maui] blazor origin armed; the hybrid page keeps the single ArkWeb overlay');") &&
-        w6Shell.Contains("this.webController.loadUrl(this.blazorOrigin);") &&
-        w6Shell.Contains("this.webController.loadUrl(this.hybridOrigin);");
+        w6Shell.Contains("this.webVisible = [false, false];") &&
+        w6Shell.Contains("this.webVisible = [this.webVisibleBeforeSuspend[0], this.webVisibleBeforeSuspend[1]];");
+    // MULTI-OVL replaced the FIX-WVP single-overlay arbitration: both registrations load their
+    // own slot's controller (the hybrid origin for the HybridWebView's slot, the Blazor origin
+    // for the BlazorWebView's slot) instead of one registration withholding its load.
+    w6Origin &= w6Shell.Contains("const hybridSlot: number = config.slot !== undefined && config.slot === 1 ? 1 : 0;") &&
+        w6Shell.Contains("this.slotController(hybridSlot).loadUrl(this.hybridOrigin);") &&
+        w6Shell.Contains("const blazorSlot: number = config.slot !== undefined && config.slot === 1 ? 1 : 0;") &&
+        w6Shell.Contains("this.slotController(blazorSlot).loadUrl(this.blazorOrigin);");
     w6ServeLogs &= w6Shell.Contains("private hybridServeLogs: number = 0;") &&
         w6Shell.Contains("if (this.hybridServeLogs < 3) {") &&
         w6Shell.Contains("this.logInfo(`[maui] web serve: ${url} -> ${this.hybridFilePath(url)}`);") &&
-        w6Shell.Contains("this.logInfo(`[maui] hybrid assets: origin=${this.hybridOrigin} root=${this.hybridRoot} base=${this.hybridBase}`);");
+        w6Shell.Contains("this.logInfo(`[maui] hybrid assets: origin=${this.hybridOrigin} root=${this.hybridRoot} base=${this.hybridBase} slot=${hybridSlot}`);");
 }
 bool w6FixConvert = w6FrameConvert;
 Console.WriteLine($"[verify] fix-wvp frame px->vp packs=22,23,24,28 convert={w6FrameConvert} assert={w6FixConvert}");
@@ -4617,19 +4721,29 @@ string blazorHandler = blazorHandlerPath is null ? string.Empty : File.ReadAllTe
 bool blazorDesiredSource = blazorHandler.Contains("public override Size GetDesiredSize(double widthConstraint, double heightConstraint)") &&
     blazorHandler.Contains("Math.Min(400, heightConstraint)") &&
     blazorHandler.Contains("element?.HeightRequest > 0");
-// The frame must follow the shell's single-overlay ownership (FIX-WVP registration
-// arbitration): a registered HybridWebView keeps the overlay, so this handler withholds its
-// frame while OpenHarmonyHybridWebViewHandler.HasRegisteredOverlay holds (on the device the
-// unguarded frame moved the hybrid page onto the BlazorWebView's box and blanked the hybrid
-// area). A BlazorWebView-only page has no hybrid owner and still places the overlay.
-bool blazorOwnershipSource = blazorHandler.Contains("if (!OpenHarmonyHybridWebViewHandler.HasRegisteredOverlay)") &&
-    blazorHandler.Contains("OpenHarmonyWebViewHandler.SendPlatformFrame(frame);");
+// The frame must follow the shell's overlay ownership. The FIX-WVP era had one ArkWeb overlay:
+// a registered HybridWebView kept it, so this handler withheld its frame while
+// OpenHarmonyHybridWebViewHandler.HasRegisteredOverlay held (on the device the unguarded frame
+// moved the hybrid page onto the BlazorWebView's box and blanked the hybrid area). MULTI-OVL
+// replaces that arbitration: every web handler owns a slot and always sends its tagged frame.
+// The checks accept both the pinned slice (single overlay, withholding) and the working-tree
+// slice (slots), so the suite stays green in CI while the local tree asserts the new contract.
+bool multiOverlaySlice = blazorHandler.Contains("OpenHarmonyOverlays") && wHandler.Contains("OpenHarmonyOverlays");
+bool blazorOwnershipSource = multiOverlaySlice
+    ? blazorHandler.Contains("SendPlatformFrame(frame, _overlaySlot)") &&
+        !blazorHandler.Contains("HasRegisteredOverlay")
+    : blazorHandler.Contains("if (!OpenHarmonyHybridWebViewHandler.HasRegisteredOverlay)") &&
+        blazorHandler.Contains("OpenHarmonyWebViewHandler.SendPlatformFrame(frame);");
 string? blazorHybridSourcePath = FindHostSource("OpenHarmonyHybridWebViewHandler.cs");
 string blazorHybridSource = blazorHybridSourcePath is null ? string.Empty : File.ReadAllText(blazorHybridSourcePath);
-bool blazorOwnershipApi = blazorHybridSource.Contains("internal static bool HasRegisteredOverlay") &&
-    blazorHybridSource.Contains("private static int s_registeredOverlayOwners;") &&
-    blazorHybridSource.Contains("s_registeredOverlayOwners++;") &&
-    blazorHybridSource.Contains("s_registeredOverlayOwners--;");
+bool blazorOwnershipApi = multiOverlaySlice
+    ? wHandler.Contains("OpenHarmonyOverlays.Acquire()") && wHandler.Contains("OpenHarmonyOverlays.Release(") &&
+        blazorHybridSource.Contains("_overlaySlot = OpenHarmonyOverlays.Acquire()") &&
+        blazorHandler.Contains("_overlaySlot = OpenHarmonyOverlays.Acquire()")
+    : blazorHybridSource.Contains("internal static bool HasRegisteredOverlay") &&
+        blazorHybridSource.Contains("private static int s_registeredOverlayOwners;") &&
+        blazorHybridSource.Contains("s_registeredOverlayOwners++;") &&
+        blazorHybridSource.Contains("s_registeredOverlayOwners--;");
 var blazorSized = new Microsoft.AspNetCore.Components.WebView.Maui.BlazorWebView { HeightRequest = 400 };
 OpenHarmonyHandlerConnector.ConnectTree(blazorSized);
 blazorSized.Measure(1080, 1920);
@@ -4646,12 +4760,14 @@ void BlazorFrameSent(string op, string? arg)
 }
 Microsoft.OpenHarmony.Hosting.OpenHarmonyBridge.WebCommandSent += BlazorFrameSent;
 bool blazorOwnerWithheld = false;
+bool blazorFrameSlotOk = true;
 try
 {
     blazorSized.Arrange(new Rect(40, 500, 1000, 400));
     int blazorFramesWithoutHybrid = blazorFrameCount;
     // Simulate a connected HybridWebView that registered with the shell (the same counter the
-    // real registration increments): a second arrange must not emit another overlay frame.
+    // real registration increments): a second arrange must not emit another overlay frame in
+    // the pinned single-overlay slice; with MULTI-OVL it must (each slot owns its overlay).
     FieldInfo blazorHybridOwnersField = typeof(OpenHarmonyHybridWebViewHandler)
         .GetField("s_registeredOverlayOwners", BindingFlags.NonPublic | BindingFlags.Static)
         ?? throw new InvalidOperationException("OpenHarmonyHybridWebViewHandler.s_registeredOverlayOwners was not found; the FIX-BACKSIZE overlay-ownership drill needs the counter seam");
@@ -4665,7 +4781,18 @@ try
     {
         blazorHybridOwnersField.SetValue(null, blazorHybridOwnersBefore);
     }
-    blazorOwnerWithheld = blazorFramesWithoutHybrid == 1 && blazorFrameCount == 1;
+    blazorOwnerWithheld = multiOverlaySlice
+        ? blazorFramesWithoutHybrid == 1 && blazorFrameCount == 2
+        : blazorFramesWithoutHybrid == 1 && blazorFrameCount == 1;
+    if (multiOverlaySlice && blazorFrameArg is not null)
+    {
+        // MULTI-OVL: the frame carries this handler's slot ("s<slot>\n<x>\n<y>\n<w>\n<h>").
+        PropertyInfo? slotProperty = typeof(OpenHarmonyBlazorWebViewHandler).GetProperty(
+            "OverlaySlot", BindingFlags.NonPublic | BindingFlags.Instance);
+        int expectedSlot = slotProperty?.GetValue(blazorSized.Handler) is int slot ? slot : -1;
+        blazorFrameSlotOk = Microsoft.OpenHarmony.Hosting.OpenHarmonyOverlays.TryUntag(
+            blazorFrameArg, out int frameSlot, out _) && frameSlot == expectedSlot;
+    }
 }
 finally
 {
@@ -4675,7 +4802,12 @@ double blazorFrameW = 0;
 double blazorFrameH = 0;
 if (blazorFrameArg is not null)
 {
-    string[] blazorFrameParts = blazorFrameArg.Split('\n');
+    string blazorFramePayload = blazorFrameArg;
+    if (Microsoft.OpenHarmony.Hosting.OpenHarmonyOverlays.TryUntag(blazorFrameArg, out _, out string untagged))
+    {
+        blazorFramePayload = untagged;
+    }
+    string[] blazorFrameParts = blazorFramePayload.Split('\n');
     if (blazorFrameParts.Length == 4)
     {
         double.TryParse(blazorFrameParts[2], out blazorFrameW);
@@ -4684,11 +4816,11 @@ if (blazorFrameArg is not null)
 }
 bool blazorDesiredOk = blazorDesired.Width > 0 && Math.Abs(blazorDesired.Height - 400) < 0.5;
 bool blazorFrameOk = blazorFrameW > 0 && blazorFrameH > 0;
-Console.WriteLine($"[verify] fix-backsize blazor desired={blazorDesired.Width:0}x{blazorDesired.Height:0} frame={blazorFrameW:0}x{blazorFrameH:0} frames={blazorFrameCount} source={blazorDesiredSource && blazorOwnershipSource && blazorOwnershipApi} ownerWithheld={blazorOwnerWithheld} assert={blazorDesiredSource && blazorOwnershipSource && blazorOwnershipApi && blazorDesiredOk && blazorFrameOk && blazorOwnerWithheld}");
-if (!(blazorDesiredSource && blazorOwnershipSource && blazorOwnershipApi && blazorDesiredOk && blazorFrameOk && blazorOwnerWithheld))
+Console.WriteLine($"[verify] fix-backsize blazor desired={blazorDesired.Width:0}x{blazorDesired.Height:0} frame={blazorFrameW:0}x{blazorFrameH:0} frames={blazorFrameCount} multiOvl={multiOverlaySlice} slot={blazorFrameSlotOk} desiredSource={blazorDesiredSource} ownershipSource={blazorOwnershipSource} ownershipApi={blazorOwnershipApi} source={blazorDesiredSource && blazorOwnershipSource && blazorOwnershipApi} ownerWithheld={blazorOwnerWithheld} assert={blazorDesiredSource && blazorOwnershipSource && blazorOwnershipApi && blazorDesiredOk && blazorFrameOk && blazorOwnerWithheld && blazorFrameSlotOk}");
+if (!(blazorDesiredSource && blazorOwnershipSource && blazorOwnershipApi && blazorDesiredOk && blazorFrameOk && blazorOwnerWithheld && blazorFrameSlotOk))
 {
     throw new InvalidOperationException(
-        $"the BlazorWebView desired size/overlay ownership drifted: source={blazorDesiredSource && blazorOwnershipSource && blazorOwnershipApi} desired={blazorDesired} frame={blazorFrameW}x{blazorFrameH} ownerWithheld={blazorOwnerWithheld}");
+        $"the BlazorWebView desired size/overlay ownership drifted: source={blazorDesiredSource && blazorOwnershipSource && blazorOwnershipApi} desired={blazorDesired} frame={blazorFrameW}x{blazorFrameH} ownerWithheld={blazorOwnerWithheld} slot={blazorFrameSlotOk}");
 }
 
 // W3: off-device behavior drill on the live probe: the history state mirrors into
@@ -4843,13 +4975,13 @@ foreach (string b2Version in wShellVersions)
     string b2Shell = b2ShellPath is null ? string.Empty : File.ReadAllText(b2ShellPath);
     b2ShellWasm &= b2Shell.Contains("mode?: string;") &&
         b2Shell.Contains("this.blazorWasmMode = config.mode === 'wasm';") &&
-        b2Shell.Contains("if (this.blazorRegistered && !this.blazorWasmMode) {") &&
-        b2Shell.Contains("!this.blazorRegistered || this.blazorWasmMode || this.blazorBootstrapped") &&
+        b2Shell.Contains("if (!this.blazorWasmMode) {") &&
+        b2Shell.Contains("this.blazorBootstrapped[slot]") &&
         b2Shell.Contains("const BLZ_TAG = 'BlazorWebHost';") &&
         b2Shell.Contains(".onConsole((event) => {") &&
         b2Shell.Contains("hilog.info(DOMAIN, BLZ_TAG, 'marker: %{public}s', consoleMessage);") &&
         b2Shell.Contains("this.logInfo(`[maui] blazor assets: origin=${this.blazorOrigin} root=${this.blazorRoot}") &&
-        b2Shell.Contains("this.logInfo(`[maui] web load: ${arg}`);") &&
+        b2Shell.Contains("this.logInfo(`[maui] web load (slot ${loadSlot}): ${loadUrl}`);") &&
         b2Shell.Contains("this.logInfo(`[maui] web serve: ${url} -> ${this.blazorFilePath(url)}`);") &&
         b2Shell.Contains("this.blazorServeLogs = 0;");
 }
@@ -5194,8 +5326,8 @@ foreach (string w6Version in wShellVersions)
         w6Shell.Contains("event.request.grant(granted);") && w6Shell.Contains("event.request.deny();");
     w6ShellWindow &= w6Shell.Contains(".multiWindowAccess(true)") &&
         w6Shell.Contains(".onWindowNew((event) => {") &&
-        w6Shell.Contains("this.navProgrammatic = { url: targetUrl, expires: Date.now() + this.navPendingTtlMs };") &&
-        w6Shell.Contains("this.webController.loadUrl(targetUrl);");
+        w6Shell.Contains("this.navProgrammatic[slot] = { url: targetUrl, expires: Date.now() + this.navPendingTtlMs };") &&
+        w6Shell.Contains("this.slotController(slot).loadUrl(targetUrl);");
 }
 bool w6Ok = w6ShellFiles && w6ShellMedia && w6ShellWindow && w6ShellIdentity;
 Console.WriteLine($"[verify] w6 shell webview gaps packs=22,23,24,28 fileSelect={w6ShellFiles} media={w6ShellMedia} windowOpen={w6ShellWindow} identical={w6ShellIdentity} assert={w6Ok}");
@@ -8161,12 +8293,12 @@ foreach (string b3Version in b3ShellVersions)
 {
     string? b3ShellPath = FindHostSource($"packs/Microsoft.OpenHarmony.Sdk/{b3Version}/templates/ets/pages/Index.ets");
     string b3Shell = b3ShellPath is null ? string.Empty : File.ReadAllText(b3ShellPath);
-    b3ShellMethod &= b3Shell.Contains("private injectPageBridge(pageUrl: string): void {");
+    b3ShellMethod &= b3Shell.Contains("private injectPageBridge(slot: number, pageUrl: string): void {");
     b3ShellHybridStamp &= b3Shell.Contains("markers += `window.__ohHybridId = ${JSON.stringify(this.hybridDocId)};`;");
     b3ShellBlazorStamp &= b3Shell.Contains("markers += `window.__ohBlazorId = ${JSON.stringify(this.blazorDocId)};`;");
     b3ShellOriginGuard &= b3Shell.Contains("if (this.hybridRegistered && this.hybridDocId.length > 0 && pageUrl.startsWith(this.hybridOrigin)) {") &&
         b3Shell.Contains("if (this.blazorRegistered && this.blazorDocId.length > 0 && pageUrl.startsWith(this.blazorOrigin)) {");
-    b3ShellCallSite &= b3Shell.Contains("this.injectPageBridge(pageUrl);");
+    b3ShellCallSite &= b3Shell.Contains("this.injectPageBridge(slot, pageUrl);");
 }
 bool b3ShellOk = b3ShellMethod && b3ShellHybridStamp && b3ShellBlazorStamp && b3ShellOriginGuard && b3ShellCallSite;
 Console.WriteLine($"[verify] b3 shell document markers packs=22,23,24 method={b3ShellMethod} hybridStamp={b3ShellHybridStamp} blazorStamp={b3ShellBlazorStamp} originGuard={b3ShellOriginGuard} onPageEnd={b3ShellCallSite} assert={b3ShellOk}");
@@ -9240,7 +9372,7 @@ foreach (string arktsVersion in new[] { "1.0.0-preview.22", "1.0.0-preview.23", 
     arktsS3Ok &= !arktsUi.Contains("focusControl") &&
         arktsUi.Contains("this.getUIContext().getFocusController().requestFocus(") &&
         arktsUi.Contains("new RegExp('^(.+)\\\\.[0-9a-z]{10}$').exec(stem)") &&
-        arktsUi.Contains("private webVisibility(): Visibility {") &&
+        arktsUi.Contains("private webVisibility(slot: number): Visibility {") &&
         arktsUi.Contains("private shellSearchHitTest(): HitTestMode {") &&
         arktsUi.Contains("private runDisposers(): void {") &&
         arktsUi.Contains("this.runDisposers();") &&
