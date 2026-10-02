@@ -21,7 +21,7 @@ name: interaction-regression
 #     tree (Refresh + Publish render step and Publish-alone pass), skip/republish average/max
 #     ceilings and documented republish/skip ratio floors (render >= 1.25x, publish >= 2x).
 #
-# The check-count floor (530 = 550 - 20, the documented convention) is declared once in
+# The check-count floor (534 = 554 - 20, the documented convention) is declared once in
 # test/maui-platform-verify/Program.cs, next to the constants that count the executed suite's own
 # [verify] lines; this job reads the `[suite]` line the run prints (and cross-checks it against
 # `grep -c`) instead of repeating a literal, exactly like scripts/preflight.sh, so the local gate
@@ -40,7 +40,7 @@ on:
         description: 'maui-ohos commit SHA to compile (defaults to the pinned feature/openharmony tip)'
         required: false
         type: string
-        default: '47d79add0125cdda20b9f2ea7c18db01e8d9c35f'
+        default: 'be09a48817989841b6e156e6a86ae12b03bde422'
   push:
     branches: [ master ]
   pull_request:
@@ -52,7 +52,12 @@ permissions:
 
 # Reproducible cross-repo compile: the MAUI slice is checked out at an exact commit, not the
 # mutable feature/openharmony branch, so a push to the fork cannot change what this gate compiles.
-# The default is the feature/openharmony tip: 47d79add01 (FIX-WVP: the ArkWeb overlay converts
+# The default is the feature/openharmony tip: be09a48817 (FIX-BACKSIZE: the system Back press
+# from the shell/host bridge closes a presented drawer - the flyout/shell handlers subscribe to
+# OpenHarmonyBridge.BackPressed and write IsPresented/FlyoutIsPresented, otherwise report
+# unhandled - and the BlazorWebView handler reports a real desired size (width = the constraint,
+# height = min(400, the constraint) or the explicit HeightRequest; no frame while a hybrid
+# overlay is registered)), on top of 47d79add01 (FIX-WVP: the ArkWeb overlay converts
 # the element frame from device pixels to vp, keeps the hybrid registration when a later Blazor
 # load follows, draws above the managed surface and suspends under a presented drawer/tab
 # switch), on top of 86b439ffc8 (FIX-DISMISS: the flyout page's default layout behavior is
@@ -89,14 +94,15 @@ permissions:
 # spans 043e6468, the T10 modal accessibility overlay c56bf0fa, the T1 InputView mapping dcc7eaac
 # and the T2 CookieContainer sync 8241f1b3, all on top of the W-series webview wiring d6325990,
 # the SEC-SCAN-3 S3-DL3 dot-dot route rejection and the HUKS/deep-link hardening. The suite pins
-# 550 checks / floor 530 (the N1 host multi-pointer and W10 AOT-entry lines live in this
-# repository's harness and hosting bridge, not in the pinned slice) and the full run is green at
-# this compiled tree (local verification: 550/550, floor 530, both perf lines within budget);
+# 554 checks / floor 534 (the N1 host multi-pointer, W10 AOT-entry and FIX-BACKSIZE Back-press
+# lines live in this repository's harness and hosting bridge, not in the pinned slice) and the
+# full run is green at this compiled tree (local verification: 554/554, floor 534, both perf
+# lines within budget);
 # advance the pin deliberately
 # and refresh this comment when the harness pins or the tip move (workflow_dispatch can compile
 # any commit).
 env:
-  MAUI_OHOS_REF: ${{ github.event.inputs.maui_ohos_ref || '47d79add0125cdda20b9f2ea7c18db01e8d9c35f' }}
+  MAUI_OHOS_REF: ${{ github.event.inputs.maui_ohos_ref || 'be09a48817989841b6e156e6a86ae12b03bde422' }}
   # setup-dotnet installs the requested 11.0.x preview into DOTNET_INSTALL_DIR; on Linux that
   # defaults to /usr/share/dotnet, which a per-user cache cannot persist. Point it at ~/.dotnet
   # (the action resolves the ~ prefix against $HOME) so the cache step below actually avoids the

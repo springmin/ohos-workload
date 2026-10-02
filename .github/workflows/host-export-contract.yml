@@ -22,7 +22,7 @@ on:
         description: 'maui-ohos commit SHA to cross-check (defaults to the pinned slice tip)'
         required: false
         type: string
-        default: '47d79add0125cdda20b9f2ea7c18db01e8d9c35f'
+        default: 'be09a48817989841b6e156e6a86ae12b03bde422'
   push:
     branches: [ master ]
   pull_request:
@@ -32,7 +32,10 @@ permissions:
 
 # Reproducible cross-repo check: the slice is checked out at an exact commit, not the mutable
 # feature/openharmony branch, so a push to the fork cannot change what this gate verifies.
-# Current tip: 47d79add01 (FIX-WVP: shell overlay px->vp/hybrid arbitration/z-order/suspend;
+# Current tip: be09a48817 (FIX-BACKSIZE: managed-only for this contract - the system Back press
+# routing and the BlazorWebView desired size are slice-side, and the host-side registration hook
+# `ohos_host_register_back_pressed` is this repository's own addition) on 47d79add01 (FIX-WVP:
+# shell overlay px->vp/hybrid arbitration/z-order/suspend;
 # the only new cross-boundary signal is the managed hosting WebCommandSent event, no new host
 # exports) on 86b439ffc8 (FIX-DISMISS: the flyout page's default layout behavior is stated as
 # Popover at connect - managed-only) on 68ec598037 (FIX-HOME: the NavigationPage handler
@@ -65,11 +68,12 @@ permissions:
 # T9/T11/T7, N2/T8/T6, FIX-TABBED, A11Y-TABBED and the T12/T14/FIX-SHELL batches add no host
 # exports, T13/T21/N3 only extend the managed slice, and T15/N4/T18/N5 are managed-only, so with
 # the T16/N6 bridge additions and the T20 media bridge (ohos_host_media_request /
-# ohos_host_media_register_result / ohos_host_media_register_event) the host export contract is
-# 149/149).
+# ohos_host_media_register_result / ohos_host_media_register_event) and the FIX-BACKSIZE
+# back-press hook (ohos_host_register_back_pressed, consumed by this repository's hosting
+# bridge) the host export contract is 150/150).
 # Advance the pin deliberately, in lockstep with the interaction/pixel gates.
 env:
-  MAUI_OHOS_REF: ${{ github.event.inputs.maui_ohos_ref || '47d79add0125cdda20b9f2ea7c18db01e8d9c35f' }}
+  MAUI_OHOS_REF: ${{ github.event.inputs.maui_ohos_ref || 'be09a48817989841b6e156e6a86ae12b03bde422' }}
 
 jobs:
   contract:
