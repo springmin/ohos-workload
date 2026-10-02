@@ -42,7 +42,7 @@ on:
         description: 'maui-ohos commit SHA to compile (defaults to the pinned feature/openharmony tip)'
         required: false
         type: string
-        default: '52b082a071989841b6e156e6a86ae12b03bde422'
+        default: '52b082a0717e2c8fc6622bf564b49bde4b52415d'
 
 # Least privilege: the job only reads this repository and the public springmin/maui-ohos fork;
 # no step pushes anywhere.
@@ -51,12 +51,16 @@ permissions:
 
 # Reproducible cross-repo compile: the MAUI slice is checked out at an exact commit, not the
 # mutable feature/openharmony branch, so a push to the fork cannot change what this gate compiles.
-# The default is the feature/openharmony tip: 52b082a071 (FIX-BACKSIZE: the system Back press
-# from the shell/host bridge closes a presented drawer - the flyout/shell handlers subscribe to
-# OpenHarmonyBridge.BackPressed and write IsPresented/FlyoutIsPresented, otherwise report
-# unhandled - and the BlazorWebView handler reports a real desired size (width = the constraint,
-# height = min(400, the constraint) or the explicit HeightRequest; no frame while a hybrid
-# overlay is registered)), on top of 47d79add01 (FIX-WVP: the ArkWeb overlay converts
+# The default is the feature/openharmony tip: 52b082a071 (FIX-BWVMount: mount the BlazorWebView
+# page under NativeAOT - the handler's static constructor touches the source-generated
+# JsonElement[] type info so the package's reflection-only ArrayConverter stays in the AOT image,
+# plus start/connect diagnostics and a message-time BLZ_DIAG probe), on top of be09a48817
+# (FIX-BACKSIZE: the system Back press from the shell/host bridge closes a presented drawer -
+# the flyout/shell handlers subscribe to OpenHarmonyBridge.BackPressed and write
+# IsPresented/FlyoutIsPresented, otherwise report unhandled - and the BlazorWebView handler
+# reports a real desired size (width = the constraint, height = min(400, the constraint) or the
+# explicit HeightRequest; no frame while a hybrid overlay is registered)), on top of 47d79add01
+# (FIX-WVP: the ArkWeb overlay converts
 # the element frame from device pixels to vp, keeps the hybrid registration when a later Blazor
 # load follows, draws above the managed surface and suspends under a presented drawer/tab
 # switch), on top of 86b439ffc8 (FIX-DISMISS: the flyout page's default layout behavior is
@@ -91,7 +95,7 @@ permissions:
 # The interaction harness pins 554 checks / floor 534; advance the pin in lockstep with the
 # interaction gate and change it deliberately (workflow_dispatch can compile any other commit SHA).
 env:
-  MAUI_OHOS_REF: ${{ github.event.inputs.maui_ohos_ref || '52b082a071989841b6e156e6a86ae12b03bde422' }}
+  MAUI_OHOS_REF: ${{ github.event.inputs.maui_ohos_ref || '52b082a0717e2c8fc6622bf564b49bde4b52415d' }}
   # Same as the interaction gate: keep the setup-dotnet preview SDK in a cacheable per-user path
   # instead of the runner's /usr/share/dotnet; a newer 11.0.x preview is still downloaded (the
   # action re-resolves the channel), the cache only skips the ~200 MB download when it moved.
