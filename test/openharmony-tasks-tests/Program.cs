@@ -208,9 +208,10 @@ internal static class Program
         Check("payload missing source directory is an error", !missingOk);
         Check("payload missing source directory names the path", engine.HasErrorContaining("does not exist"));
 
-        // Device compat (enforcing images >= 7.0.0.111): the SDK HAP signer never covers an
-        // extension-less libs file in the code-sign block and a file of exactly 4096 bytes fails
-        // the fs-verity enable, so the opt-in rewrite stages <name>.so/.bin and pads 4096 -> 4100.
+        // Device compat for enforcing images >= 7.0.0.111 (default since DEVCOMPAT-DEFAULT): the SDK
+        // HAP signer never covers an extension-less libs file in the code-sign block and a file of
+        // exactly 4096 bytes fails the fs-verity enable, so the rewrite stages <name>.so/.bin and
+        // pads 4096 -> 4100.
         string compatSrc = Harness.TempDir("payload-compat-src");
         Harness.WriteBytes(Path.Combine(compatSrc, "createdump"), Elf(new byte[8]));
         Harness.WriteFile(Path.Combine(compatSrc, "notes"), "no extension, not ELF");
@@ -223,7 +224,7 @@ internal static class Program
             DestinationDirectory = compatDst,
             DeviceCompat = true,
         };
-        var (compatOk, _) = Harness.Run(compat);
+        var (compatOk, compatEngine) = Harness.Run(compat);
         Check("device compat staging succeeds", compatOk);
         CheckEqual("device compat copied count", 4, compat.CopiedCount);
         CheckEqual("device compat rewrite count", 3, compat.CompatRewrites);
@@ -232,6 +233,41 @@ internal static class Program
         Check("device compat stages non-ELF as .bin", File.Exists(Path.Combine(compatDst, "notes.bin")));
         CheckEqual("device compat pads a 4096-byte file", 4100L, new FileInfo(Path.Combine(compatDst, "exact.dll")).Length);
         CheckEqual("device compat keeps other files untouched", "keep", File.ReadAllText(Path.Combine(compatDst, "keep.dll")));
+        // DEVCOMPAT-DEFAULT: the rewrite being the default is stated in the build output.
+        Check("device compat logs the enabled status line", compatEngine.HasMessageContaining("device compat: enabled"));
+        Check("device compat status line promises the original dotnet.zip names/bytes",
+            compatEngine.HasMessageContaining("dotnet.zip keeps the original names/bytes"));
+
+        // The marker written after a normalization keeps its count/identity semantics, and the
+        // dotnet.zip fallback stays byte-identical: entries = real libs count, payloadEntries =
+        // what the staging copied (4, renames/padding do not change the count), the zip sha is
+        // the fallback file's, and the fallback bytes are untouched.
+        string fallbackZip = Path.Combine(Harness.TempDir("payload-compat-zip"), "dotnet.zip");
+        Harness.WriteBytes(fallbackZip, Encoding.ASCII.GetBytes("zip-fallback-original"));
+        string fallbackSha = Sha256Hex(fallbackZip);
+        var normalizedMarker = new OpenHarmonyWritePayloadMarker
+        {
+            DestinationDirectory = compatDst,
+            MarkerFileName = ".dotnet-payload.json",
+            Assembly = "hello.dll",
+            PayloadEntries = compat.CopiedCount,
+            PayloadBytes = compat.CopiedBytes,
+            ZipEntries = 4,
+            ZipFile = fallbackZip,
+        };
+        var (normalizedMarkerOk, _) = Harness.Run(normalizedMarker);
+        Check("device compat marker run succeeds", normalizedMarkerOk);
+        CheckEqual("device compat marker counts the normalized libs entries", 4, normalizedMarker.LibsEntries);
+        using (var doc = JsonDocument.Parse(File.ReadAllText(normalizedMarker.MarkerPath)))
+        {
+            var root = doc.RootElement;
+            CheckEqual("device compat marker entries stay the real libs count", 4, root.GetProperty("entries").GetInt32());
+            CheckEqual("device compat marker payloadEntries stay the copied count", 4, root.GetProperty("payloadEntries").GetInt32());
+            CheckEqual("device compat marker payloadBytes account for the padding", 4137L, root.GetProperty("payloadBytes").GetInt64());
+            CheckEqual("device compat marker zipEntries stay the zip identity", 4, root.GetProperty("zipEntries").GetInt32());
+            CheckEqual("device compat marker zip sha matches the fallback", fallbackSha, root.GetProperty("zipSha256").GetString());
+        }
+        CheckEqual("device compat leaves the dotnet.zip fallback bytes unchanged", fallbackSha, Sha256Hex(fallbackZip));
 
         string plainDst = Harness.TempDir("payload-plain-dst");
         var plain = new OpenHarmonyStagePayloadLibs
@@ -240,12 +276,14 @@ internal static class Program
             DestinationDirectory = plainDst,
         };
         var (plainOk, plainEngine) = Harness.Run(plain);
-        Check("default layout staging succeeds", plainOk);
-        Check("default layout warns about enforcing images", plainEngine.HasWarningContaining("7.0.0.111"));
-        Check("default layout warning names the extension-less file", plainEngine.HasWarningContaining("createdump"));
-        Check("default layout keeps the extension-less name", File.Exists(Path.Combine(plainDst, "createdump")));
-        CheckEqual("default layout keeps the 4096-byte size", 4096L, new FileInfo(Path.Combine(plainDst, "exact.dll")).Length);
-        CheckEqual("default layout does not rewrite", 0, plain.CompatRewrites);
+        Check("escape-hatch layout staging succeeds", plainOk);
+        Check("escape-hatch layout warns about enforcing images", plainEngine.HasWarningContaining("7.0.0.111"));
+        Check("escape-hatch layout warning names the extension-less file", plainEngine.HasWarningContaining("createdump"));
+        Check("escape-hatch layout warning points at the default rewrite", plainEngine.HasWarningContaining("OpenHarmonyHapPayloadInLibsDeviceCompat=true, or unset"));
+        Check("escape-hatch layout keeps the extension-less name", File.Exists(Path.Combine(plainDst, "createdump")));
+        CheckEqual("escape-hatch layout keeps the 4096-byte size", 4096L, new FileInfo(Path.Combine(plainDst, "exact.dll")).Length);
+        CheckEqual("escape-hatch layout does not rewrite", 0, plain.CompatRewrites);
+        Check("escape hatch does not log the enabled status line", !plainEngine.HasMessageContaining("device compat: enabled"));
 
         string collideSrc = Harness.TempDir("payload-collide-src");
         Harness.WriteBytes(Path.Combine(collideSrc, "createdump"), Elf());

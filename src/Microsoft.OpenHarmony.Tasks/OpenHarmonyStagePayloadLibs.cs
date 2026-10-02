@@ -11,8 +11,10 @@
 // installer reports "Libs signature not found"; (2) a file of exactly 4096 bytes fails the
 // fs-verity enable ("enable code signature failed: 8519738"). With DeviceCompat=true the staged
 // copy of such a payload file is renamed (ELF -> .so, otherwise .bin) and a 4096-byte file gets
-// 4 zero padding bytes appended; the dotnet.zip fallback keeps the original names/bytes. The
-// rewrite is opt-in because it changes the in-libs file names/bytes the app sees.
+// 4 zero padding bytes appended; the dotnet.zip fallback keeps the original names/bytes.
+// Since DEVCOMPAT-DEFAULT (2026-10-02) the pack targets default this to true, so a default
+// publish installs on an enforcing image out of the box; DeviceCompat=false is the escape hatch
+// and keeps the previous names/bytes plus the advisory warning naming the incompatible files.
 //
 // #nullable disable: the MSBuild engine assigns every [Required] parameter before Execute(), and
 // the original inline code predates nullable annotations; keeping it verbatim is the point.
@@ -123,9 +125,20 @@
                     CopiedCount++;
                     CopiedBytes += size;
                 }
-                if (!DeviceCompat)
+                if (DeviceCompat)
                 {
-                    // (advisory only for the default layout; DeviceCompat rewrites the files it stages)
+                    // One status line per build (DEVCOMPAT-DEFAULT): the rewrite is the default now,
+                    // so the build output states it is active and how many entries it changed.
+                    Log.LogMessage(MessageImportance.High,
+                                   "OpenHarmony payload-in-libs device compat: enabled for enforcing images " +
+                                   "(>= 7.0.0.111); extension-less names staged as .so/.bin, 4096-byte files " +
+                                   "padded to 4100 bytes ({0} rewrite(s)); dotnet.zip keeps the original names/bytes",
+                                   CompatRewrites);
+                }
+                else
+                {
+                    // Escape hatch: the staged libs copy keeps the previous names/bytes; name the
+                    // files an enforcing image rejects instead of shipping them silently.
                     WarnOnIncompatibleStagedFiles(destinationRoot);
                 }
                 return true;
@@ -147,7 +160,7 @@
                 return path.Substring(root.Length).TrimStart('/', '\\').Replace('\\', '/');
             }
 
-            // Advisory for the default (DeviceCompat=false) layout: name the staged files an
+            // Advisory for the DeviceCompat=false escape hatch: name the staged files an
             // enforcing image (>= 7.0.0.111) rejects and the two properties that fix the build.
             private void WarnOnIncompatibleStagedFiles(string destinationRoot)
             {
@@ -188,8 +201,8 @@
                         .Append(string.Join(", ", oneBlock.GetRange(0, Math.Min(8, oneBlock.Count))))
                         .Append(oneBlock.Count > 8 ? ", ..." : "").Append("); ");
                 }
-                message.Append("rebuild with -p:OpenHarmonyHapPayloadInLibsDeviceCompat=true to rewrite the staged " +
-                    "copies, or -p:OpenHarmonyHapPayloadInLibs=false to ship the payload only in dotnet.zip");
+                message.Append("the default rewrite (OpenHarmonyHapPayloadInLibsDeviceCompat=true, or unset) " +
+                    "fixes this, or -p:OpenHarmonyHapPayloadInLibs=false ships the payload only in dotnet.zip");
                 Log.LogWarning(message.ToString());
             }
         }

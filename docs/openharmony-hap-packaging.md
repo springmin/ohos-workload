@@ -447,13 +447,18 @@ layout can hit and the tester's 7.0.0.105 image does not:
    (4095/4097/8192-byte and `MZ`/ELF/text probes all pass; the reference payload's 4096-byte
    `Microsoft.OpenHarmony.dll` fails).
 
-`-p:OpenHarmonyHapPayloadInLibsDeviceCompat=true` makes the staging rewrite the **staged libs
-copy** of such files: an extension-less ELF is staged as `<name>.so`, any other extension-less
-file as `<name>.bin`, and a 4096-byte file gets 4 zero padding bytes appended (4096 -> 4100). The
-`dotnet.zip` fallback keeps the original names and bytes, the count-based marker stays valid, and
-the rewrite is applied before the `OpenHarmonyCodesign` pass, so a padded ELF is re-signed.
-`false` (default) keeps the previous bytes and the task logs a warning naming the incompatible
-staged files, so a build for an enforcing device cannot ship silently. Validated on the local
+`OpenHarmonyHapPayloadInLibsDeviceCompat` controls the rewrite and **defaults to `true`**
+(DEVCOMPAT-DEFAULT, 2026-10-02): the staging rewrites the **staged libs copy** of such files - an
+extension-less ELF is staged as `<name>.so`, any other extension-less file as `<name>.bin`, and a
+4096-byte file gets 4 zero padding bytes appended (4096 -> 4100) - so a default publish installs
+on an enforcing image out of the box. Every default build states that in one status line
+(`OpenHarmony payload-in-libs device compat: enabled ...`) and reports how many entries it
+rewrote. The `dotnet.zip` fallback keeps the original names and bytes, the count-based marker
+stays valid (the counts do not change on a rename/pad; `payloadBytes` covers the staged bytes),
+and the rewrite is applied before the `OpenHarmonyCodesign` pass, so a padded ELF is re-signed.
+`-p:OpenHarmonyHapPayloadInLibsDeviceCompat=false` is the escape hatch: the staged libs copy
+keeps the previous names/bytes and the task logs a warning naming the incompatible staged files,
+so the opt-out cannot ship silently either. Validated on the local
 HAD-W24: the kit #34 JIT hap with both rewrites (rename + pad) installs, and the
 `-p:OpenHarmonyHapPayloadInLibs=false` layout (payload only in `dotnet.zip`, host symlink bridge)
 installs as well. The full evidence and the device-side probe recipe are recorded in the

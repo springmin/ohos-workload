@@ -64,11 +64,13 @@
          extension-less file name in the HAP code-sign block (the installer then reports "Libs
          signature not found"), and a file of exactly 4096 bytes fails the fs-verity enable
          ("enable code signature failed: 8519738"); both fail the install with 9568393. true
-         stages such a payload file as <name>.so (ELF) / <name>.bin (otherwise) and appends 4
-         padding bytes to an exactly-4096-byte file in the libs copy; the dotnet.zip fallback
-         keeps the original names and bytes. false (default) keeps the previous bytes and logs a
-         warning naming the incompatible staged files (see "Payload in libs" in the packaging doc). -->
-    <OpenHarmonyHapPayloadInLibsDeviceCompat Condition=" '$(OpenHarmonyHapPayloadInLibsDeviceCompat)' == '' ">false</OpenHarmonyHapPayloadInLibsDeviceCompat>
+         (default, DEVCOMPAT-DEFAULT 2026-10-02) stages such a payload file as <name>.so (ELF) /
+         <name>.bin (otherwise) and appends 4 padding bytes to an exactly-4096-byte file in the
+         libs copy, so a default publish installs on an enforcing image out of the box; the
+         dotnet.zip fallback keeps the original names and bytes. false is the escape hatch:
+         the staged libs copy keeps the previous names/bytes and the task logs a warning naming
+         the incompatible staged files (see "Payload in libs" in the packaging doc). -->
+    <OpenHarmonyHapPayloadInLibsDeviceCompat Condition=" '$(OpenHarmonyHapPayloadInLibsDeviceCompat)' == '' ">true</OpenHarmonyHapPayloadInLibsDeviceCompat>
     <!-- Payload zip (see "Payload in libs" in the packaging doc): keep the resources/rawfile/dotnet.zip
          extraction fallback. With payload-in-libs on (default) the zip duplicates the staged
          libs/<abi>/ payload; set OpenHarmonyHapPayloadZip=false to ship the staged copy only

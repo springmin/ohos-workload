@@ -28,6 +28,12 @@
 #                  marker, an interp pack stages libcoreclr.so + libclrinterpreter.so (both the
 #                  <dir>/ and <dir>/native/ layouts) and a pack without the interpreter library
 #                  or outside interp mode fails
+#   T8 payload-in-libs device compat default: the pack default resolves true and the staging
+#                  normalizes the libs copy (extension-less -> .so/.bin, exactly 4096 B -> +4 B)
+#                  with the status line, a marker over the normalized staging (entries/
+#                  payloadEntries/payloadBytes/zipSha256, the fallback zip untouched) and the
+#                  AOT/interp pre-staged natives untouched; -p:...DeviceCompat=false is the
+#                  escape hatch (raw names/bytes + the warning naming the incompatible files)
 #
 # The fixture imports the real pack targets (so the UsingTask under test is the shipped one) and
 # calls the task directly. Needs a dotnet SDK; when dotnet is unavailable the functional half is
@@ -39,7 +45,7 @@
 # Exit: 0 = all checks passed; 1 = at least one check failed (work dir kept for triage).
 set -u
 
-SELFTEST_VERSION="3 (2026-09-28)"
+SELFTEST_VERSION="4 (2026-10-02)"
 
 log()     { printf '[%s] %s\n' "$(date '+%H:%M:%S')" "$*"; }
 section() { printf '\n=== %s ===\n' "$*"; }
@@ -527,8 +533,149 @@ PY
         || fail_ "T7 the pack/mode mismatch error is missing"
 fi
 
-# ---- summary ---------------------------------------------------------------------------
-section "summary"
+# ---- T8: payload-in-libs device compat default (fixture) --------------------------------
+# DEVCOMPAT-DEFAULT: the pack targets default OpenHarmonyHapPayloadInLibsDeviceCompat to true,
+# so a default publish normalizes the staged libs copy (extension-less -> .so/.bin, exactly
+# 4096 B -> +4 B) while the dotnet.zip fallback keeps the original names/bytes and the marker
+# (entries/payloadEntries/zipSha256) keeps its count/identity semantics. false stays the
+# escape hatch: the raw names/bytes plus the warning naming the incompatible files.
+section "T8 payload-in-libs device compat default"
+if ! command -v "$DOTNET" >/dev/null 2>&1; then
+    skip_ "T8 needs dotnet for the payload fixture"
+else
+    PF="$WORK/payloadfix"
+    mkdir -p "$PF/src/wwwroot"
+    python3 - "$PF" <<'PY'
+import hashlib, os, sys
+fix = sys.argv[1]
+src = os.path.join(fix, 'src')
+open(os.path.join(src, 'createdump'), 'wb').write(b'\x7fELF' + b'\x01' * 8)   # extension-less ELF
+open(os.path.join(src, 'notes'), 'wb').write(b'no extension, not ELF')        # extension-less non-ELF
+open(os.path.join(src, 'exact.dll'), 'wb').write(b'\x00' * 4096)              # exactly one fs-verity block
+open(os.path.join(src, 'keep.dll'), 'wb').write(b'keep')                      # untouched
+open(os.path.join(src, 'wwwroot', 'index.html'), 'wb').write(b'<html></html>')  # nested (Blazor-style) payload
+zip_path = os.path.join(fix, 'dotnet.zip')
+open(zip_path, 'wb').write(b'zip-fallback-original')                          # the fallback identity
+open(zip_path + '.sha256', 'w').write(hashlib.sha256(open(zip_path, 'rb').read()).hexdigest())
+print('payload fixture written')
+PY
+    python3 - "$PF" "$REF" <<'PY'
+import os, sys
+fix, targets = sys.argv[1:3]
+proj = f'''<Project>
+  <PropertyGroup>
+    <MicrosoftNETBuildTasksAssembly>$(MSBuildToolsPath)/Microsoft.Build.Tasks.Core.dll</MicrosoftNETBuildTasksAssembly>
+  </PropertyGroup>
+  <Import Project="{targets}" />
+  <Target Name="StagePayload">
+    <Message Importance="high" Text="T8 compat=[$(OpenHarmonyHapPayloadInLibsDeviceCompat)]" />
+    <OpenHarmonyStagePayloadLibs SourceDirectory="$(PayloadSrc)"
+                                 DestinationDirectory="$(PayloadDst)"
+                                 DeviceCompat="$(OpenHarmonyHapPayloadInLibsDeviceCompat)">
+      <Output TaskParameter="CopiedCount" PropertyName="PayloadCopiedCount" />
+      <Output TaskParameter="CopiedBytes" PropertyName="PayloadCopiedBytes" />
+      <Output TaskParameter="CompatRewrites" PropertyName="PayloadCompatRewrites" />
+    </OpenHarmonyStagePayloadLibs>
+    <OpenHarmonyWritePayloadMarker DestinationDirectory="$(PayloadDst)"
+                                   MarkerFileName=".dotnet-payload.json"
+                                   Assembly="probe.dll"
+                                   PayloadEntries="$(PayloadCopiedCount)"
+                                   PayloadBytes="$(PayloadCopiedBytes)"
+                                   ZipEntries="7"
+                                   ZipFile="$(PayloadZip)" />
+    <Message Importance="high" Text="T8 copied=$(PayloadCopiedCount) bytes=$(PayloadCopiedBytes) rewrites=$(PayloadCompatRewrites)" />
+  </Target>
+</Project>
+'''
+open(os.path.join(fix, 'payload.proj'), 'w').write(proj)
+print('payload fixture project written')
+PY
+    run_payload() { # <log name> <destination> <args...>
+        _pl_log="$1"; _pl_dst="$2"
+        shift 2
+        ( cd "$PF" && "$DOTNET" msbuild payload.proj -t:StagePayload -nologo -v:m \
+            -p:OpenHarmonyHapPackage=true -p:TargetPlatformIdentifier=openharmony \
+            -p:PayloadSrc="$PF/src" -p:PayloadDst="$_pl_dst" -p:PayloadZip="$PF/dotnet.zip" "$@" ) \
+            > "$WORK/$_pl_log.log" 2>&1
+    }
+    assert_payload_marker() { # <stage dir> <expected entries> <expected payloadEntries> <expected payloadBytes> <label>
+        if python3 - "$PF/dotnet.zip" "$1" "$2" "$3" "$4" <<'PY'
+import hashlib, json, os, sys
+zip_path, stage, entries, payload_entries, payload_bytes = sys.argv[1:6]
+marker = json.load(open(os.path.join(stage, '.dotnet-payload.json')))
+real = [f for f in os.listdir(stage) if f != '.dotnet-payload.json']
+assert marker['entries'] == int(entries), (marker['entries'], entries)
+assert marker['payloadEntries'] == int(payload_entries), (marker['payloadEntries'], payload_entries)
+assert marker['payloadBytes'] == int(payload_bytes), (marker['payloadBytes'], payload_bytes)
+assert marker['zipEntries'] == 7, marker
+assert marker['zipSha256'] == hashlib.sha256(open(zip_path, 'rb').read()).hexdigest(), marker
+assert marker['assembly'] == 'probe.dll', marker
+assert len(real) == int(entries), (len(real), entries)
+PY
+        then
+            pass_ "$5"
+        else
+            fail_ "$5 (see $1/.dotnet-payload.json)"
+        fi
+    }
+
+    # Default: the property resolves true, the staging rewrites and the status line shows.
+    run_payload T8-default "$PF/stage-default"
+    assert_rc 0 $? "T8 the default fixture stages"
+    grep -qF 'T8 compat=[true]' "$WORK/T8-default.log" && pass_ "T8 the pack default resolves OpenHarmonyHapPayloadInLibsDeviceCompat=true" \
+        || fail_ "T8 the pack default is not true"
+    grep -qF 'device compat: enabled' "$WORK/T8-default.log" && pass_ "T8 the default build logs the device-compat status line" \
+        || fail_ "T8 the device-compat status line is missing"
+    grep -qF 'dotnet.zip keeps the original names/bytes' "$WORK/T8-default.log" && pass_ "T8 the status line promises the zip fallback" \
+        || fail_ "T8 the status line does not mention the zip fallback"
+    [ -f "$PF/stage-default/createdump.so" ] && [ ! -e "$PF/stage-default/createdump" ] \
+        && pass_ "T8 the default stages the extension-less ELF as createdump.so" \
+        || fail_ "T8 the extension-less ELF was not normalized to .so"
+    [ -f "$PF/stage-default/notes.bin" ] && [ ! -e "$PF/stage-default/notes" ] \
+        && pass_ "T8 the default stages the extension-less non-ELF as notes.bin" \
+        || fail_ "T8 the extension-less non-ELF was not normalized to .bin"
+    [ "$(wc -c < "$PF/stage-default/exact.dll")" = 4100 ] && pass_ "T8 the default pads the 4096-byte file to 4100" \
+        || fail_ "T8 the 4096-byte file was not padded"
+    [ "$(cat "$PF/stage-default/keep.dll")" = keep ] && [ -f "$PF/stage-default/wwwroot/index.html" ] \
+        && pass_ "T8 the default keeps other payload entries and the nested layout untouched" \
+        || fail_ "T8 an untouched payload entry changed"
+    assert_payload_marker "$PF/stage-default" 5 5 4150 "the normalized marker counts and the fallback zip identity hold"
+
+    # Escape hatch: false keeps the previous names/bytes and warns instead.
+    run_payload T8-escape "$PF/stage-escape" -p:OpenHarmonyHapPayloadInLibsDeviceCompat=false
+    assert_rc 0 $? "T8 the escape-hatch fixture stages"
+    grep -qF 'T8 compat=[false]' "$WORK/T8-escape.log" && pass_ "T8 -p:OpenHarmonyHapPayloadInLibsDeviceCompat=false reaches the task" \
+        || fail_ "T8 the escape hatch did not reach the task"
+    grep -qF 'device compat: enabled' "$WORK/T8-escape.log" && fail_ "T8 the escape hatch still logs the enabled status line" \
+        || pass_ "T8 the escape hatch does not log the enabled status line"
+    grep -qF 'cannot be installed on enforcing device images' "$WORK/T8-escape.log" \
+        && pass_ "T8 the escape hatch warns about enforcing images" \
+        || fail_ "T8 the escape hatch warning is missing"
+    [ -f "$PF/stage-escape/createdump" ] && [ ! -e "$PF/stage-escape/createdump.so" ] \
+        && [ "$(wc -c < "$PF/stage-escape/exact.dll")" = 4096 ] \
+        && pass_ "T8 the escape hatch keeps the raw names and bytes" \
+        || fail_ "T8 the escape hatch rewrote the staged payload"
+    assert_payload_marker "$PF/stage-escape" 5 5 4146 "the escape-hatch marker keeps the raw byte count"
+
+    # AOT + interp swap shape: runtime natives and the interpreter swap are staged before the
+    # payload, so the payload staging must not touch them and the marker counts them all.
+    mkdir -p "$PF/stage-runtime"
+    printf 'stock-coreclr' > "$PF/stage-runtime/libcoreclr.so"
+    printf 'interp-coreclr' > "$PF/stage-runtime/libclrinterpreter.so"
+    printf 'aot-app-lib' > "$PF/stage-runtime/libhello-maui-app.so"
+    printf 'interp' > "$PF/stage-runtime/runtime-mode.txt"
+    run_payload T8-runtime "$PF/stage-runtime"
+    assert_rc 0 $? "T8 the pre-staged AOT/interp runtime fixture stages"
+    [ "$(cat "$PF/stage-runtime/libcoreclr.so")" = stock-coreclr ] && [ "$(cat "$PF/stage-runtime/libclrinterpreter.so")" = interp-coreclr ] \
+        && [ "$(cat "$PF/stage-runtime/libhello-maui-app.so")" = aot-app-lib ] && [ "$(cat "$PF/stage-runtime/runtime-mode.txt")" = interp ] \
+        && pass_ "T8 the payload staging leaves the pre-staged AOT/interp natives untouched" \
+        || fail_ "T8 the payload staging changed a pre-staged runtime native"
+    [ -f "$PF/stage-runtime/createdump.so" ] && pass_ "T8 the normalization also applies next to AOT/interp natives" \
+        || fail_ "T8 the normalization did not apply next to the runtime natives"
+    assert_payload_marker "$PF/stage-runtime" 9 5 4150 "the AOT/interp marker counts the pre-staged natives plus the payload"
+fi
+
+
 log "checks: $CHECKS, failed: $FAILED, skipped: $SKIP"
 if [ "$FAILED" -gt 0 ]; then
     log "SELFTEST FAILED - work dir kept: $WORK"
