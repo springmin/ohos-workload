@@ -4,15 +4,69 @@
    component builds by hand, so the click exercises the same round trip:
    ArkWeb click -> window.external.sendMessage -> dotnetHost -> OpenHarmonyWebViewHandler.JsMessage
    -> OpenHarmonyWebViewManager.MessageReceived -> event callback -> render batch ->
-   window.__dispatchMessageCallback -> DOM update (the count below the button changes). *@
+   window.__dispatchMessageCallback -> DOM update (the count below the button changes).
+
+   @using Microsoft.AspNetCore.Components.Web (via _Imports.razor) is REQUIRED: without it the
+   Razor compiler silently compiles @onclick to static markup ("<button @onclick=...>"), so the
+   button has no event callback at all (FIX-BWVMount finding). *@
 @namespace HelloMauiRazor
+@inject IJSRuntime JS
 
 <h2>BlazorWebView component (.razor)</h2>
 <p>count: @_count (each click round-trips through the shell)</p>
+<p id="probe">probe: @_probeResult</p>
 <button @onclick="Increment">Blazor click</button>
 
 @code {
     private int _count;
+    private bool _probed;
+    private string _probeResult = "pending";
 
     private void Increment() => _count++;
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (!firstRender || _probed)
+        {
+            return;
+        }
+        _probed = true;
+        // FIX-BWVMount diagnostics: the WebRenderer's own attach interop call (a
+        // DotNetObjectReference argument) is fire-and-forget; reproduce its serialization here
+        // so a failure becomes visible (in the page and in dotnet-status.txt) instead of being
+        // swallowed by the async InvokeVoidAsync.
+        if (JS is null)
+        {
+            _probeResult = "JS null";
+        }
+        else
+        {
+            try
+            {
+                using var reference = DotNetObjectReference.Create(this);
+                using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+                await JS.InvokeVoidAsync("blzProbe", cts.Token, reference);
+                _probeResult = "dotnet-ref ok";
+            }
+            catch (Exception ex)
+            {
+                _probeResult = ex.GetType().Name + ": " + (ex.Message.Length > 160 ? ex.Message.Substring(0, 160) : ex.Message);
+                Microsoft.OpenHarmony.Hosting.OpenHarmonyBridge.WriteStatus($"[probe] {ex}");
+            }
+
+            try
+            {
+                await JS.InvokeVoidAsync("console.log", "BLZ_DIAG app-plain-jsinterop-ok");
+                _probeResult += " | plain ok";
+            }
+            catch (Exception ex)
+            {
+                _probeResult += " | plain " + ex.GetType().Name + ": " + ex.Message;
+                Microsoft.OpenHarmony.Hosting.OpenHarmonyBridge.WriteStatus($"[probe] plain {ex}");
+            }
+        }
+
+        Microsoft.OpenHarmony.Hosting.OpenHarmonyBridge.WriteStatus($"[probe] result: {_probeResult}");
+        await InvokeAsync(StateHasChanged);
+    }
 }

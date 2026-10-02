@@ -5,6 +5,7 @@
 using Microsoft.AspNetCore.Components.WebView.Maui;
 using Microsoft.Maui;
 using Microsoft.Maui.Controls;
+using System.Diagnostics.CodeAnalysis;
 
 namespace HelloMauiRazor;
 
@@ -33,6 +34,14 @@ public sealed class App : Application
     // calls Blazor.start() on page end. The root component attaches to #app in that page and
     // renders BlazorCounter; its button click round-trips through the shell and the count
     // rendered inside the page advances.
+    // NativeAOT root: the WebView renderer creates the root component through
+    // ActivatorUtilities over RootComponent.ComponentType, and that property carries no
+    // DynamicallyAccessedMembers annotation, so a trimmed publish removes the component's
+    // constructor and the attach fails with "A suitable constructor ... could not be located"
+    // (FIX-BWVMount). All: the component's [Inject] properties (their setters and the
+    // attributes the DefaultComponentPropertyActivator reflects over) have no static user
+    // either, so PublicConstructors alone left IJSRuntime null at run time.
+    [DynamicDependency(DynamicallyAccessedMemberTypes.All, typeof(BlazorCounter))]
     private static BlazorWebView BuildBlazorWebView()
     {
         var blazor = new BlazorWebView

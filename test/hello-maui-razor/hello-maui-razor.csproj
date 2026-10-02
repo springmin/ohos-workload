@@ -34,6 +34,14 @@
          BlazorWebView package reference; this project needs both or a BlazorWebView control has no
          OpenHarmony handler and renders nothing. -->
     <DefineConstants>$(DefineConstants);OPENHARMONY_BLAZOR_WEBVIEW</DefineConstants>
+    <!-- BlazorWebView IPC and NativeAOT: Microsoft.AspNetCore.Components.WebView's
+         JsonSerializerOptionsProvider only adds its reflection type-info resolver when
+         JsonSerializer.IsReflectionEnabledByDefault is true, and the .NET SDK turns that switch
+         off as soon as the publish is trimmed (PublishAot). Without the resolver the __bwv
+         messages throw NotSupportedException inside WebViewManager.MessageReceived (the IPC
+         serializes/deserializes with typeof(...)), so the page never attaches and the .razor
+         component never mounts even though the host page renders. Opt back in for this app. -->
+    <JsonSerializerIsReflectionEnabledByDefault>true</JsonSerializerIsReflectionEnabledByDefault>
     <!-- The MAUI platform slice lives in the maui-ohos fork; point this at its sources. -->
     <OpenHarmonyMauiPlatformDir Condition=" '$(OpenHarmonyMauiPlatformDir)' == '' ">$(MSBuildThisFileDirectory)../../../maui-ohos/src/Core/src/Platform/OpenHarmony</OpenHarmonyMauiPlatformDir>
     <OpenHarmonyHostingDir Condition=" '$(OpenHarmonyHostingDir)' == '' ">$(MSBuildThisFileDirectory)../../src</OpenHarmonyHostingDir>
