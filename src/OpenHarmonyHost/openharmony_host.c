@@ -986,6 +986,14 @@ static void OhosHostApplyExecMemoryPolicy(const char* caller, const char* app_di
     }
     if (have_interp) {
         setenv("DOTNET_InterpMode", interp, 1);
+        // Pure interpreter mode (3) never uses the mutable GC write-barrier copy: that copy
+        // is the runtime's first executable page (InitThreadManager), and the HAP domain
+        // refuses the RWX commit so the memcpy into it faults (SEGV_ACCERR). Skipping it
+        // keeps interpreter-only startup free of executable allocations; the JIT modes keep
+        // the default (arm64 defaults the copy on).
+        if (strcmp(interp, "3") == 0) {
+            setenv("DOTNET_UseGCWriteBarrierCopy", "0", 1);
+        }
     }
     const char* interp_value = have_interp ? interp : "0";
     const char* interp_source = interp_from_manifest ? "manifest" : (have_interp ? "file" : "default");
@@ -1817,6 +1825,11 @@ int ohos_host_start_app(const char* app_dir, const char* app_assembly_file,
     pthread_attr_t attr;
     pthread_attr_init(&attr);
     pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_JOINABLE);
+    // CoreCLR's PAL ensures a 1.5 MB stack floor on the thread that calls coreclr_initialize
+    // (ENSURE_PRIMARY_STACK_SIZE). The OHOS musl default pthread stack is 1 MB, so the probe
+    // lands below the mapping and the process dies in coreclr_initialize (SIGSEGV_MAPERR /
+    // SEGV_ACCERR in EnsureStackSize). Give the managed app thread the usual 8 MB rlimit stack.
+    pthread_attr_setstacksize(&attr, 8 * 1024 * 1024);
     const char* run_sync = getenv("OHOS_HOST_RUN_SYNC");
     if (run_sync != NULL && run_sync[0] == '1') {
         fprintf(stderr, "[openharmony-host] start_app: running the app on the calling thread\n");
