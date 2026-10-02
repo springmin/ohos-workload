@@ -12,7 +12,7 @@ using Microsoft.Maui.Platform;
 // after the fuzz tail) instead of letting every caller repeat its own threshold constant.
 VerifyLineCountingWriter verifyStdout = new(Console.Out);
 Console.SetOut(verifyStdout);
-const int verifyCheckTotal = 569;                     // documented full [verify] line count (+6 LEGACY toolbar primary/overflow/icon/events/shell/source, +4 MULTI-OVERLAY-FULL LRU pool/invoke slot codec/per-slot hybrid shell/slice owner wiring, +4 MULTI-OVL slot pool/wire codec/two-overlay shell/slice wiring, +4 FIX-BACKSIZE Back-press forwarding/drawer drill/ shell drawer/BlazorWebView desired size, +4 FIX-WVP overlay px->vp/degenerate-frame/hybrid-overlay arbitration/suspend-restore (shell+slice), +2 FIX-DISMISS flyout drawer dismiss under the device display conditions, +4 FIX-HOME home page arrange/draw (NavigationPage-in-TabbedPage descent), +4 MS-MODE runtime mode switch, +10 P2c-DEEPLINK, +4 P2b-IMG, +16 P1b-LIST, +10 P1a-ANIM, +2 SEC3 storage/deep-link pins, +5 W-series WebView wiring, +3 T1 InputView mapping, +4 T2 WebView gaps, +4 T3 GraphicsView interaction, +7 T10 modal accessibility, +4 T4 Label formatted text, +4 T5 layout semantics, +6 T7 DatePicker calendar/min-max, +4 T9 window title bar, +4 T11 diagnostics overlay, +1 N2 empty ContentPage arrangement, +6 T8 TableView, +5 T8 uneven rows, +7 T6 RTL flow direction, +5 T22 MainThread bridge, +2 FIX-TABBED tabbed CurrentPage, +4 T13 group footer view/N3 picker IsOpen, +5 T21 system font scale, +3 T21 font scale source wiring, +2 A11Y-TABBED tabbed accessibility, +3 N1 host multi-pointer, +5 T12 CarouselView group slides, +7 T14 rich shell flyout, +10 T14 flyout leftovers (MenuItemTemplate/FlyoutContent/AsMultipleItems), +2 FIX-SHELL shell CurrentPage, +2 A11Y-SHELL shell accessibility, +7 T15 rich Shell.TitleView, +8 T16 structured menus, +3 N4 TitleBar accessibility row, +3 T18 Essentials Map, +4 N5 overlay passthrough suppression, +5 N6 window decorations, +4 T20 media bridge, +3 B2 wasm site in a MAUI WebView, +2 W10 NativeAOT managed entry (host libs-dir resolution + shell AOT payload probe), +1 FIX-JSCALL Blazor IPC enum/struct AOT roots (JSCallResultType/JSCallType/NavigationOptions in the slice context + handler static-ctor touch + stub click-probe removed))
+const int verifyCheckTotal = 572;                     // documented full [verify] line count (+6 LEGACY toolbar primary/overflow/icon/events/shell/source, +3 SAMPLE-FIX hybrid bootstrap pack staging / read-only payload handler / stock-script demo, +4 MULTI-OVERLAY-FULL LRU pool/invoke slot codec/per-slot hybrid shell/slice owner wiring, +4 MULTI-OVL slot pool/wire codec/two-overlay shell/slice wiring, +4 FIX-BACKSIZE Back-press forwarding/drawer drill/ shell drawer/BlazorWebView desired size, +4 FIX-WVP overlay px->vp/degenerate-frame/hybrid-overlay arbitration/suspend-restore (shell+slice), +2 FIX-DISMISS flyout drawer dismiss under the device display conditions, +4 FIX-HOME home page arrange/draw (NavigationPage-in-TabbedPage descent), +4 MS-MODE runtime mode switch, +10 P2c-DEEPLINK, +4 P2b-IMG, +16 P1b-LIST, +10 P1a-ANIM, +2 SEC3 storage/deep-link pins, +5 W-series WebView wiring, +3 T1 InputView mapping, +4 T2 WebView gaps, +4 T3 GraphicsView interaction, +7 T10 modal accessibility, +4 T4 Label formatted text, +4 T5 layout semantics, +6 T7 DatePicker calendar/min-max, +4 T9 window title bar, +4 T11 diagnostics overlay, +1 N2 empty ContentPage arrangement, +6 T8 TableView, +5 T8 uneven rows, +7 T6 RTL flow direction, +5 T22 MainThread bridge, +2 FIX-TABBED tabbed CurrentPage, +4 T13 group footer view/N3 picker IsOpen, +5 T21 system font scale, +3 T21 font scale source wiring, +2 A11Y-TABBED tabbed accessibility, +3 N1 host multi-pointer, +5 T12 CarouselView group slides, +7 T14 rich shell flyout, +10 T14 flyout leftovers (MenuItemTemplate/FlyoutContent/AsMultipleItems), +2 FIX-SHELL shell CurrentPage, +2 A11Y-SHELL shell accessibility, +7 T15 rich Shell.TitleView, +8 T16 structured menus, +3 N4 TitleBar accessibility row, +3 T18 Essentials Map, +4 N5 overlay passthrough suppression, +5 N6 window decorations, +4 T20 media bridge, +3 B2 wasm site in a MAUI WebView, +2 W10 NativeAOT managed entry (host libs-dir resolution + shell AOT payload probe), +1 FIX-JSCALL Blazor IPC enum/struct AOT roots (JSCallResultType/JSCallType/NavigationOptions in the slice context + handler static-ctor touch + stub click-probe removed))
 const int verifyCheckFloor = verifyCheckTotal - 20;   // documented floor convention (total - 20)
 
 // A small image file for the Image handler.
@@ -5172,6 +5172,44 @@ if (!wRazorOk)
     throw new InvalidOperationException("the hello-maui-razor B1 sample or the Blazor asset staging target is missing/drifted");
 }
 
+// SAMPLE-FIX (2026-10-03): the HybridWebView bootstrap script (_framework/hybridwebview.js) is
+// an embedded resource of Microsoft.Maui.dll, and the managed handler's runtime extraction
+// cannot write into the payload-in-libs (DEVCOMPAT/NativeAOT) payload root - the read-only
+// bundle libs directory. Every pack therefore stages the resource at pack time from the resolved
+// Microsoft.Maui reference into the publish root (_framework/hybridwebview.js), which travels in
+// both payload copies (dotnet.zip and libs/<abi>/, nested paths preserved); the managed handler
+// treats an already-staged file as success for the read-only root. The hybrid-c demo page is the
+// device probe: it loads the stock script and drives window.HybridWebView.SendRawMessage /
+// InvokeDotNet, with the inline transport kept as the fallback for an older pack.
+bool sfStaging = true;
+foreach (string sfVersion in wShellVersions)
+{
+    string? sfTargetPath = FindHostSource($"packs/Microsoft.OpenHarmony.Sdk/{sfVersion}/targets/OpenHarmony.Hap.targets");
+    string sfTarget = sfTargetPath is null ? string.Empty : File.ReadAllText(sfTargetPath);
+    sfStaging &= sfTarget.Contains("<UsingTask TaskName=\"OpenHarmonyExtractEmbeddedResource\"") &&
+        sfTarget.Contains("<Target Name=\"_OpenHarmonyStageHybridWebViewScript\"") &&
+        sfTarget.Contains("ResourceName=\"_framework/hybridwebview.js\"") &&
+        sfTarget.Contains("_OpenHarmonyHybridScriptPublishDir)_framework/hybridwebview.js") &&
+        sfTarget.Contains("_OpenHarmonyStageBlazorAssets;_OpenHarmonyStageHybridWebViewScript;_OpenHarmonyStageWasmSite;_OpenHarmonyResolvePermissions");
+}
+bool sfHandler = wHybridHandler.Contains("private static void EnsureHybridWebViewScript(string payloadDir)") &&
+    wHybridHandler.Contains("if (File.Exists(destination))") &&
+    wHybridHandler.Contains("_OpenHarmonyStageHybridWebViewScript") &&
+    wHybridHandler.Contains("Writable payloads (the dotnet.zip extraction tree) keep the previous");
+string? sfCHtmlPath = FindHostSource("test/hello-maui-app/wwwroot/hybrid-c.html");
+string sfCHtml = sfCHtmlPath is null ? string.Empty : File.ReadAllText(sfCHtmlPath);
+bool sfSample = sfCHtml.Contains("<script src=\"_framework/hybridwebview.js\"></script>") &&
+    sfCHtml.Contains("window.HybridWebView.SendRawMessage('C-raw-ping')") &&
+    sfCHtml.Contains("window.HybridWebView.InvokeDotNet('Echo'") &&
+    sfCHtml.Contains("'stock script missing (inline fallback)'");
+bool sfStagingOk = sfStaging && sfHandler && sfSample;
+Console.WriteLine($"[verify] sample-fix hybrid bootstrap staging staging={sfStaging} readOnlyHandler={sfHandler} stockSample={sfSample} packs=22,23,24,28 assert={sfStagingOk}");
+if (!sfStagingOk)
+{
+    throw new InvalidOperationException(
+        $"the HybridWebView bootstrap staging is missing or drifted: staging={sfStaging} handler={sfHandler} sample={sfSample}");
+}
+
 // ---- B2: Blazor WebAssembly in a MAUI WebView (registration + shell wasm mode + staging) ------
 // The managed half: OpenHarmonyWebViewHandler.RegisterWasmSite validates a safe payload root,
 // stamps the wire config for the shell ("blazor" + mode "wasm" through the source-generated
@@ -5255,7 +5293,7 @@ foreach (string b2Version in wShellVersions)
     string? b2TargetPath = FindHostSource($"packs/Microsoft.OpenHarmony.Sdk/{b2Version}/targets/OpenHarmony.Hap.targets");
     string b2Target = b2TargetPath is null ? string.Empty : File.ReadAllText(b2TargetPath);
     b2Staging &= b2Target.Contains("<Target Name=\"_OpenHarmonyStageWasmSite\"") &&
-        b2Target.Contains("_OpenHarmonyStageBlazorAssets;_OpenHarmonyStageWasmSite;_OpenHarmonyResolvePermissions") &&
+        b2Target.Contains("_OpenHarmonyStageBlazorAssets;_OpenHarmonyStageHybridWebViewScript;_OpenHarmonyStageWasmSite;_OpenHarmonyResolvePermissions") &&
         b2Target.Contains("OpenHarmonyWasmSiteRoot") &&
         b2Target.Contains("carries no index.html");
 }

@@ -237,8 +237,11 @@ parse.
   `HybridWebView.EvaluateJavaScriptAsync`/`InvokeJavaScriptAsync` without hanging, degrades
   `SendRawMessage` and routes `__RawMessage|...`/plain payloads into `RawMessageReceived`.
   Hybrid asset serving (`HybridRoot`/`DefaultFile`) rides the shell's ArkWeb request interception:
-  the handler extracts the embedded `_framework/hybridwebview.js` bootstrap resource (the exact
-  resource name and the `https://0.0.0.1/` origin are asserted) and registers `<AppDir>` + root +
+  the embedded `_framework/hybridwebview.js` bootstrap resource (the exact resource name and the
+  `https://0.0.0.1/` origin are asserted) is staged into the publish root at pack time by
+  `_OpenHarmonyStageHybridWebViewScript` (SAMPLE-FIX; without that, the payload-in-libs payload
+  root is read-only and the runtime extraction cannot write there), and the handler still
+  extracts it at runtime for writable payloads. The handler registers `<AppDir>` + root +
   default file with the shell, which answers app-origin requests from `<AppDir>/<root>/...`,
   serves the bootstrap script from `<AppDir>/_framework/hybridwebview.js` and forwards the script's
   `__hwvSendMessage` posts into the managed handler. Off-device (no host library) the shell command

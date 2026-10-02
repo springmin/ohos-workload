@@ -1,4 +1,4 @@
-// Unit tests for the six compiled hap-packaging tasks. Every check runs the real task class with a
+// Unit tests for the seven compiled hap-packaging tasks. Every check runs the real task class with a
 // stub IBuildEngine, so the assertions are on the shipped behaviour (deterministic zip bytes, skip
 // names, JSON generation, marker fields, permission resolution and the log/error strings), not on
 // a reimplementation. scripts/selftest-tasks.sh runs this; it exits non-zero on the first failure
@@ -66,6 +66,7 @@ internal static class Program
         WritePayloadMarkerTests();
         ResolvePermissionsTests();
         GenerateModuleJsonTests();
+        ExtractEmbeddedResourceTests();
 
         bool ok = _failed == 0;
         Console.WriteLine($"[tasks-tests] checks={_checks} failed={_failed} assert={(ok ? "True" : "False")}");
@@ -643,5 +644,78 @@ internal static class Program
             Path.Combine(Harness.TempDir("json-notemplate-out"), "module.json"));
         var (noTemplateOk, noTemplateEngine) = Harness.Run(noTemplate);
         Check("module.json missing template fails", !noTemplateOk && noTemplateEngine.HasErrorContaining("template not found"));
+    }
+
+    // ---------------------------------------------------------------- embedded resource
+
+    private static void ExtractEmbeddedResourceTests()
+    {
+        // 1. The extractor reads the test host's own assembly (a stand-in for Microsoft.Maui.dll)
+        //    and writes the embedded resource bytes, creating the destination directory.
+        string fixtureDir = Harness.TempDir("extract");
+        string fixtureAssembly = Path.Combine(fixtureDir, "fixture.dll");
+        File.Copy(typeof(Program).Assembly.Location, fixtureAssembly);
+        string destination = Path.Combine(Harness.TempDir("extract-out"), "nested", "_framework", "hybridwebview.js");
+        var extract = new OpenHarmonyExtractEmbeddedResource
+        {
+            AssemblyPath = fixtureAssembly,
+            ResourceName = "OpenHarmonyTasksTests.fixture-resource.txt",
+            DestinationFile = destination,
+        };
+        var (extractOk, extractEngine) = Harness.Run(extract);
+        Check("extract embedded resource succeeds", extractOk && extract.Extracted && extractEngine.Errors.Count == 0);
+        Check("extract embedded resource creates the destination directory", File.Exists(destination));
+        CheckEqual("extract embedded resource round-trips the bytes",
+            "OpenHarmony task fixture resource.\n", File.ReadAllText(destination));
+
+        // 2. A second run over the same destination is a no-op: the byte comparison keeps the
+        //    publish output (and the deterministic payload zip) stable across builds.
+        var rerun = new OpenHarmonyExtractEmbeddedResource
+        {
+            AssemblyPath = fixtureAssembly,
+            ResourceName = "OpenHarmonyTasksTests.fixture-resource.txt",
+            DestinationFile = destination,
+        };
+        var (rerunOk, _) = Harness.Run(rerun);
+        Check("extract embedded resource is idempotent", rerunOk && !rerun.Extracted);
+
+        // 3. A resource the assembly does not carry warns but succeeds: HybridWebView is
+        //    optional and the runtime extraction remains the fallback.
+        var missing = new OpenHarmonyExtractEmbeddedResource
+        {
+            AssemblyPath = fixtureAssembly,
+            ResourceName = "OpenHarmonyTasksTests.does-not-exist.js",
+            DestinationFile = Path.Combine(fixtureDir, "missing.js"),
+        };
+        var (missingOk, missingEngine) = Harness.Run(missing);
+        Check("extract embedded resource warns for a missing resource",
+            missingOk && !missing.Extracted && missingEngine.Errors.Count == 0 &&
+            missingEngine.HasWarningContaining("no embedded resource"));
+        Check("extract embedded resource does not create a file for a missing resource", !File.Exists(Path.Combine(fixtureDir, "missing.js")));
+
+        // 4. A missing assembly is a build error naming the path (the target only invokes the
+        //    task for an existing reference, so this is a genuine broken input).
+        var badAssembly = new OpenHarmonyExtractEmbeddedResource
+        {
+            AssemblyPath = Path.Combine(fixtureDir, "not-there.dll"),
+            ResourceName = "x",
+            DestinationFile = Path.Combine(fixtureDir, "x.js"),
+        };
+        var (badOk, badEngine) = Harness.Run(badAssembly);
+        Check("extract embedded resource fails for a missing assembly",
+            !badOk && badEngine.HasErrorContaining("assembly not found"));
+
+        // 5. A non-assembly file fails with the load error instead of writing anything.
+        string notAssembly = Path.Combine(fixtureDir, "not-an-assembly.dll");
+        File.WriteAllText(notAssembly, "not a PE file");
+        var badImage = new OpenHarmonyExtractEmbeddedResource
+        {
+            AssemblyPath = notAssembly,
+            ResourceName = "x",
+            DestinationFile = Path.Combine(fixtureDir, "bad.dll"),
+        };
+        var (badImageOk, badImageEngine) = Harness.Run(badImage);
+        Check("extract embedded resource fails for a non-assembly file",
+            !badImageOk && badImageEngine.HasErrorContaining("cannot read") && !File.Exists(Path.Combine(fixtureDir, "bad.dll")));
     }
 }

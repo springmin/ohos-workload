@@ -213,6 +213,11 @@
        template formatting. -->
   <UsingTask TaskName="OpenHarmonyGenerateModuleJson" AssemblyFile="$(MSBuildThisFileDirectory)../tools/Microsoft.OpenHarmony.Tasks.dll" />
 
+  <!-- Extracts one embedded resource of a referenced assembly into the publish payload (SAMPLE-FIX
+       2026-10-03): see the task header. Used for the HybridWebView bootstrap script, which lives
+       inside Microsoft.Maui.dll and therefore cannot be staged from a file glob. -->
+  <UsingTask TaskName="OpenHarmonyExtractEmbeddedResource" AssemblyFile="$(MSBuildThisFileDirectory)../tools/Microsoft.OpenHarmony.Tasks.dll" />
+
   <!-- Toolchain resolution is explicit (audit V5): OpenHarmonyToolchainDir, or
        OpenHarmonySdkRoot (OHOS_SDK_ROOT) + /toolchains/lib. Nothing under $HOME is probed, so a
        stale homebrew Cellar install can never satisfy a build silently, and the error names the
@@ -325,6 +330,45 @@
           DestinationFiles="@(_OpenHarmonyBlazorScript->'$(_OpenHarmonyBlazorPublishDir)wwwroot/_framework/blazor.webview.js')" />
     <Message Importance="high" Condition=" '@(_OpenHarmonyBlazorScript)' != '' "
              Text="OpenHarmony: staged _framework/blazor.webview.js from @(StaticWebAsset) into $(PublishDir)wwwroot (native model; no wasm/dotnet browser assets)" />
+  </Target>
+
+  <!-- HybridWebView bootstrap staging (SAMPLE-FIX, 2026-10-03): see "Hybrid bootstrap script"
+       in the packaging doc. _framework/hybridwebview.js is an embedded resource of
+       Microsoft.Maui.dll, not a file in the package, so there is nothing to copy from a glob.
+       The managed handler used to extract it next to the payload at runtime, which fails in the
+       payload-in-libs launch modes (JIT DEVCOMPAT and NativeAOT: the payload root is the
+       read-only bundle libs directory) and made the stock script 404 on the hybrid origin.
+       Staging it into the publish root puts it in both payload copies (dotnet.zip and
+       libs/<abi>/, nested paths preserved), where EntryAbility extracts it or the shell serves
+       it in place; the managed extraction then finds the file and becomes a no-op.
+       The assembly is picked from the runtime copy-local items first (the ref assembly carries
+       no resources), then the resolved compile references; a project without Microsoft.Maui.dll
+       (or a future package without the resource) is a no-op, with the task warning naming the
+       runtime fallback. -->
+  <Target Name="_OpenHarmonyStageHybridWebViewScript"
+          Condition=" '$(OpenHarmonyHapPackage)' == 'true' and '$(TargetPlatformIdentifier)' == 'openharmony' ">
+    <PropertyGroup>
+      <_OpenHarmonyHybridScriptPublishDir>$([MSBuild]::NormalizeDirectory('$(MSBuildProjectDirectory)', '$(PublishDir)'))</_OpenHarmonyHybridScriptPublishDir>
+    </PropertyGroup>
+    <ItemGroup>
+      <_OpenHarmonyHybridMauiReference Include="@(ReferenceCopyLocalPaths)"
+          Condition=" '%(Filename)%(Extension)' == 'Microsoft.Maui.dll' and Exists('%(FullPath)') " />
+      <_OpenHarmonyHybridMauiReference Include="@(RuntimeCopyLocalItems)"
+          Condition=" '%(Filename)%(Extension)' == 'Microsoft.Maui.dll' and Exists('%(FullPath)') " />
+      <_OpenHarmonyHybridMauiReference Include="@(ReferencePath)"
+          Condition=" '%(Filename)%(Extension)' == 'Microsoft.Maui.dll' and Exists('%(FullPath)') " />
+    </ItemGroup>
+    <!-- Batching by FullPath keeps the scalar AssemblyPath parameter valid: the same Microsoft.Maui.dll
+         is present in more than one of the candidate item lists (reference, copy-local, runtime
+         copy-local), and @(Item) in a string attribute would join the duplicates with ';'. All
+         duplicates share one FullPath, so this executes once; an empty list executes zero batches
+         (a project without Microsoft.Maui.dll skips the staging). -->
+    <OpenHarmonyExtractEmbeddedResource
+        AssemblyPath="%(_OpenHarmonyHybridMauiReference.FullPath)"
+        ResourceName="_framework/hybridwebview.js"
+        DestinationFile="$(_OpenHarmonyHybridScriptPublishDir)_framework/hybridwebview.js">
+      <Output TaskParameter="Extracted" PropertyName="_OpenHarmonyHybridScriptExtracted" />
+    </OpenHarmonyExtractEmbeddedResource>
   </Target>
 
   <!-- Blazor WebAssembly site staging (B2): a published WASM site directory (the wwwroot
@@ -516,7 +560,7 @@
        staging and before the zip, so the .codesign pass always covers the final libs/<abi>/ tree. -->
   <Target Name="_OpenHarmonyStageHap"
           AfterTargets="Publish"
-          DependsOnTargets="$(OpenHarmonyAfterPublishDependsOn);_OpenHarmonyDetectToolchain;_OpenHarmonyResolveHapStageDir;_OpenHarmonyStageBlazorAssets;_OpenHarmonyStageWasmSite;_OpenHarmonyResolvePermissions"
+          DependsOnTargets="$(OpenHarmonyAfterPublishDependsOn);_OpenHarmonyDetectToolchain;_OpenHarmonyResolveHapStageDir;_OpenHarmonyStageBlazorAssets;_OpenHarmonyStageHybridWebViewScript;_OpenHarmonyStageWasmSite;_OpenHarmonyResolvePermissions"
           Condition=" '$(OpenHarmonyHapPackage)' == 'true' and '$(TargetPlatformIdentifier)' == 'openharmony' ">
     <PropertyGroup>
       <_OpenHarmonyTemplatesDir>$(_OpenHarmonySdkPackDir)templates/</_OpenHarmonyTemplatesDir>

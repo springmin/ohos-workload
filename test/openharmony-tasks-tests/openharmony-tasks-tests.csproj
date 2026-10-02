@@ -1,6 +1,6 @@
 <Project Sdk="Microsoft.NET.Sdk">
   <!-- Unit tests for the compiled OpenHarmony hap-packaging tasks (task-assembly migration,
-       audit V8). The project runs the six task classes directly with a stub IBuildEngine, so the
+       audit V8). The project runs the seven task classes directly with a stub IBuildEngine, so the
        determinism / skip-name / JSON / marker contracts are verified without a publish, an SDK or
        a device; scripts/selftest-tasks.sh builds and runs it and also asserts the committed pack
        copies are byte-identical to the freshly built assembly. -->
@@ -23,5 +23,10 @@
     <PackageReference Include="Microsoft.Build.Framework" Version="17.11.48" />
     <PackageReference Include="Microsoft.Build.Utilities.Core" Version="17.11.48" />
     <ProjectReference Include="../../src/Microsoft.OpenHarmony.Tasks/Microsoft.OpenHarmony.Tasks.csproj" />
+  </ItemGroup>
+  <ItemGroup>
+    <!-- OpenHarmonyExtractEmbeddedResource fixture: the extractor reads this test host's own
+         assembly file (copied to a temp path), so the logical name must stay stable. -->
+    <EmbeddedResource Include="fixture-resource.txt" LogicalName="OpenHarmonyTasksTests.fixture-resource.txt" />
   </ItemGroup>
 </Project>

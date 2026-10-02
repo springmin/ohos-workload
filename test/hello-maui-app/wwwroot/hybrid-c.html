@@ -1,12 +1,21 @@
 <!DOCTYPE html>
 <!--
-  MULTI-OVERLAY-FULL hybrid B page (wwwroot/hybrid-c.html, served on its own overlay slot).
+  MULTI-OVERLAY-FULL hybrid C page (wwwroot/hybrid-c.html, served on its own overlay slot).
+
+  SAMPLE-FIX (2026-10-03): this page loads the STOCK _framework/hybridwebview.js that the pack now
+  stages into the payload (publish root -> libs/<abi>/_framework and dotnet.zip). It is the device
+  verification that the stock bootstrap is served on the read-only payload-in-libs/AOT layouts:
+  the status line says "stock hybridwebview.js loaded" and both buttons go through the stock
+  window.HybridWebView API (SendRawMessage -> __hwvSendMessage fetch; InvokeDotNet ->
+  __hwvInvokeDotNet fetch), not the inline transport hybrid-a/b still use. If the script is
+  missing (an app built with an older pack), the page falls back to the inline transport so the
+  LRU/raw-message demo keeps working and the status line records the degradation.
 
   Same document shape as hybrid-a.html, deliberately a different file under the same hybrid
   root: both HybridWebViews load https://0.0.0.1/ (the origin root), so only the per-slot
   default-file registration makes each overlay serve its own page. The "C-echo:" invoke tag
-  proves the invoke request was dispatched to the HybridWebView that owns slot B, and the raw
-  message must update B's managed status label (never A's).
+  proves the invoke request was dispatched to the HybridWebView that owns slot C, and the raw
+  message must update C's managed status label (never A's or B's).
 -->
 <html lang="en">
 <head>
@@ -25,48 +34,64 @@
 <h1>Hybrid C</h1>
 <p id="status">ready</p>
 <p>
-  <button id="raw" type="button">Send raw B</button>
-  <button id="invoke" type="button">Invoke .NET B</button>
+  <button id="raw" type="button">Send raw C</button>
+  <button id="invoke" type="button">Invoke .NET C</button>
 </p>
 <div id="log"></div>
+<script src="_framework/hybridwebview.js"></script>
 <script>
 (function () {
+  var status = document.getElementById('status');
   function log(line) {
     document.getElementById('log').textContent += line + '\n';
   }
+  var stock = window.HybridWebView &&
+    typeof window.HybridWebView.SendRawMessage === 'function' &&
+    typeof window.HybridWebView.InvokeDotNet === 'function';
+  status.textContent = stock
+    ? 'stock hybridwebview.js loaded'
+    : 'stock script missing (inline fallback)';
+  log(stock ? 'stock _framework/hybridwebview.js loaded' : 'fallback: window.external transport');
+
   document.getElementById('raw').addEventListener('click', function () {
     try {
-      window.external.sendMessage('__RawMessage|' + encodeURIComponent('C-raw-ping'));
-      document.getElementById('status').textContent = 'sent raw C-raw-ping';
+      if (stock) {
+        window.HybridWebView.SendRawMessage('C-raw-ping');
+      } else {
+        window.external.sendMessage('__RawMessage|' + encodeURIComponent('C-raw-ping'));
+      }
+      status.textContent = 'sent raw C-raw-ping' + (stock ? ' (stock)' : ' (inline)');
     } catch (e) {
       log('raw error: ' + e.message);
     }
   });
-  // See hybrid-a.html: direct __hwvInvokeDotNet transport, no framework script dependency.
   document.getElementById('invoke').addEventListener('click', async function () {
     try {
-      const body = JSON.stringify({ MethodName: 'Echo', ParamValues: [JSON.stringify('C-payload')] });
-      const response = await fetch(window.location.origin + '/__hwvInvokeDotNet', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Accept': 'application/json',
-          'X-Maui-Invoke-Token': 'HybridWebView',
-          'X-Maui-Request-Body': body
-        },
-        body: body
-      });
-      const result = await response.json();
-      if (result && result.IsError) {
-        document.getElementById('status').textContent = 'invoke error: ' + result.ErrorMessage;
-        log('invoke error: ' + result.ErrorMessage);
+      var value;
+      if (stock) {
+        value = await window.HybridWebView.InvokeDotNet('Echo', ['C-payload']);
       } else {
-        const value = result && result.IsJson ? JSON.parse(result.Result) : (result ? result.Result : null);
-        document.getElementById('status').textContent = 'invoke: ' + JSON.stringify(value);
-        log('invoke result: ' + JSON.stringify(value));
+        var body = JSON.stringify({ MethodName: 'Echo', ParamValues: [JSON.stringify('C-payload')] });
+        var response = await fetch(window.location.origin + '/__hwvInvokeDotNet', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Accept': 'application/json',
+            'X-Maui-Invoke-Token': 'HybridWebView',
+            'X-Maui-Request-Body': body
+          },
+          body: body
+        });
+        var result = await response.json();
+        if (result && result.IsError) {
+          throw new Error(result.ErrorMessage || 'invoke failed');
+        }
+        value = result && result.IsJson ? JSON.parse(result.Result) : (result ? result.Result : null);
       }
+      status.textContent = 'invoke: ' + JSON.stringify(value) + (stock ? ' (stock)' : ' (inline)');
+      log('invoke result: ' + JSON.stringify(value));
     } catch (e) {
-      document.getElementById('status').textContent = 'invoke error: ' + e.message;
+      status.textContent = 'invoke error: ' + e.message;
       log('invoke error: ' + e.message);
     }
   });

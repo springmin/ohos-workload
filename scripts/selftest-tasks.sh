@@ -2,7 +2,7 @@
 # selftest-tasks.sh - unit tests and pack-distribution gate for the compiled hap-packaging tasks
 # (task-assembly migration, audit V8 / RELEASE-25).
 #
-#   S1 static   every OpenHarmony.Hap.targets loads the six tasks from
+#   S1 static   every OpenHarmony.Hap.targets loads the seven tasks from
 #               tools/Microsoft.OpenHarmony.Tasks.dll (no RoslynCodeTaskFactory inline code left),
 #               every one of the three SDK packs ships the assembly and the three copies are
 #               byte-identical
@@ -72,10 +72,11 @@ REF="$W/packs/Microsoft.OpenHarmony.Sdk/1.0.0-preview.24/targets/OpenHarmony.Hap
 TASKS_TARGET='AssemblyFile="$(MSBuildThisFileDirectory)../tools/Microsoft.OpenHarmony.Tasks.dll"'
 missing_using=0
 for task in OpenHarmonyDeterministicZip OpenHarmonyStageRuntimeLibs OpenHarmonyStagePayloadLibs \
-            OpenHarmonyWritePayloadMarker OpenHarmonyResolvePermissions OpenHarmonyGenerateModuleJson; do
+            OpenHarmonyWritePayloadMarker OpenHarmonyResolvePermissions OpenHarmonyGenerateModuleJson \
+            OpenHarmonyExtractEmbeddedResource; do
     grep -qF "<UsingTask TaskName=\"$task\" $TASKS_TARGET />" "$REF" || { missing_using=1; echo "    missing UsingTask: $task" >&2; }
 done
-[ "$missing_using" -eq 0 ] && pass_ "S1 all six UsingTask entries load the pack task assembly" \
+[ "$missing_using" -eq 0 ] && pass_ "S1 all seven UsingTask entries load the pack task assembly" \
                              || fail_ "S1 a UsingTask entry does not point at the pack task assembly"
 if grep -qF 'TaskFactory="RoslynCodeTaskFactory"' "$REF" || grep -qF '<Code Type=' "$REF"; then
     fail_ "S1 the targets still carry inline task code"

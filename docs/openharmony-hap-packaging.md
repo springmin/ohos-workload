@@ -617,6 +617,37 @@ needs `blazor.webview.js` and the message transport, and no
 `dotnet.js`/`dotnet.native.wasm`/`_*.dll` browser assets are staged. A project without `wwwroot`
 is untouched, so its payload stays byte-identical.
 
+### Hybrid bootstrap script staging (SAMPLE-FIX, 2026-10-03)
+
+`_framework/hybridwebview.js` is not a file in the MAUI packages: it is an embedded resource of
+`Microsoft.Maui.dll` (`LogicalName="_framework/hybridwebview.js"` in the slice's Core.csproj).
+The managed `OpenHarmonyHybridWebViewHandler` extracts it next to the payload at runtime, which
+is enough for the writable `dotnet.zip` extraction tree but not for the payload-in-libs layouts
+(JIT DEVCOMPAT and NativeAOT): there the payload root is the read-only bundle `libs/<abi>/`
+directory, `File.Create` fails, and the shell answers the stock script with 404 - the reason the
+demo hybrid pages carried an inline transport instead.
+
+`_OpenHarmonyStageHybridWebViewScript` (a dependency of `_OpenHarmonyStageHap`, after the Blazor
+staging) closes that gap at pack time: the `OpenHarmonyExtractEmbeddedResource` task reads the
+resource out of the resolved `Microsoft.Maui.dll` (`@(ReferenceCopyLocalPaths)`, then
+`@(RuntimeCopyLocalItems)`/`@(ReferencePath)` fallback; the compile-time ref assembly carries no
+resources) and writes it to `<PublishDir>_framework/hybridwebview.js`. The publish root maps to
+the payload root in every launch mode, so the file travels in both payload copies - inside
+`resources/rawfile/dotnet.zip` and under `libs/<abi>/_framework/` (nested paths preserved) - and
+`<AppDir>/_framework/hybridwebview.js` is exactly the path the shell serves for the hybrid
+origin. A project without `Microsoft.Maui.dll` skips the target; a package without the resource
+warns (the runtime extraction remains the fallback), so the staging cannot fail an unrelated
+build. The managed extraction treats an existing file in a read-only payload root as success
+instead of logging an extraction failure, and keeps the previous overwrite semantics for the
+writable extraction tree.
+
+Verification: the `OpenHarmonyExtractEmbeddedResource` unit checks in
+`test/openharmony-tasks-tests` (byte round-trip, idempotence, missing resource/assembly), the
+`[verify] sample-fix` pins over the pack targets, the slice handler and the stock-script demo
+page, and the device round in runtime-ohos
+`docs/plans/2026-10-03-ohos-sample-fix.md` (hybrid C loads the stock script and drives
+`window.HybridWebView.SendRawMessage`/`InvokeDotNet`).
+
 ### Blazor WebAssembly site staging (B2)
 
 `_OpenHarmonyStageWasmSite` hosts a **published** Blazor WebAssembly site (`dotnet publish` of a
