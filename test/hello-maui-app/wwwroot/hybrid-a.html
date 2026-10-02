@@ -1,0 +1,84 @@
+<!DOCTYPE html>
+<!--
+  MULTI-OVERLAY-FULL hybrid A page (wwwroot/hybrid-a.html, served on its own overlay slot).
+
+  Loads the stock _framework/hybridwebview.js that the managed HybridWebView handler extracts
+  next to the payload. The two buttons exercise the two JS -> .NET channels that are slot-scoped
+  in this round: the raw message endpoint (__hwvSendMessage) and the invoke endpoint
+  (__hwvInvokeDotNet). The managed handler's status label under the control shows raw messages;
+  the invoke result is shown here, and its "A-echo:" tag proves the request reached the
+  HybridWebView that owns slot A (a mis-routed request would show B's tag).
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Hybrid A</title>
+<style>
+  body { font-family: system-ui, sans-serif; margin: 12px; font-size: 16px; }
+  h1 { font-size: 22px; margin: 0 0 6px; }
+  button { font-size: 17px; padding: 12px 16px; margin: 4px 8px 4px 0; }
+  #status { font-family: ui-monospace, monospace; font-size: 14px; font-weight: bold; }
+  #log { font-family: ui-monospace, monospace; font-size: 12px; white-space: pre-wrap; min-height: 3em; }
+</style>
+</head>
+<body>
+<h1>Hybrid A</h1>
+<p id="status">ready</p>
+<p>
+  <button id="raw" type="button">Send raw A</button>
+  <button id="invoke" type="button">Invoke .NET A</button>
+</p>
+<div id="log"></div>
+<script>
+(function () {
+  function log(line) {
+    document.getElementById('log').textContent += line + '\n';
+  }
+  // The shell injects window.external.sendMessage (dotnetHost proxy) on every page end; a
+  // __RawMessage|<payload> post is the stock hybrid raw-message record. No framework script is
+  // needed for this demo (the AOT payload does not stage _framework/hybridwebview.js).
+  document.getElementById('raw').addEventListener('click', function () {
+    try {
+      window.external.sendMessage('__RawMessage|' + encodeURIComponent('A-raw-ping'));
+      document.getElementById('status').textContent = 'sent raw A-raw-ping';
+    } catch (e) {
+      log('raw error: ' + e.message);
+    }
+  });
+  // JS -> .NET invoke: the stock hybridwebview.js POSTs { MethodName, ParamValues } to
+  // <origin>/__hwvInvokeDotNet with the transport headers; the shell's per-slot intercept
+  // forwards it to host.notifyHybridInvoke and holds the response open until the managed
+  // handler answers. Kept inline so the page does not depend on the framework script.
+  document.getElementById('invoke').addEventListener('click', async function () {
+    try {
+      const body = JSON.stringify({ MethodName: 'Echo', ParamValues: [JSON.stringify('A-payload')] });
+      const response = await fetch(window.location.origin + '/__hwvInvokeDotNet', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Accept': 'application/json',
+          'X-Maui-Invoke-Token': 'HybridWebView',
+          'X-Maui-Request-Body': body
+        },
+        body: body
+      });
+      const result = await response.json();
+      if (result && result.IsError) {
+        document.getElementById('status').textContent = 'invoke error: ' + result.ErrorMessage;
+        log('invoke error: ' + result.ErrorMessage);
+      } else {
+        const value = result && result.IsJson ? JSON.parse(result.Result) : (result ? result.Result : null);
+        document.getElementById('status').textContent = 'invoke: ' + JSON.stringify(value);
+        log('invoke result: ' + JSON.stringify(value));
+      }
+    } catch (e) {
+      document.getElementById('status').textContent = 'invoke error: ' + e.message;
+      log('invoke error: ' + e.message);
+    }
+  });
+  log('hybrid A page ready (origin ' + window.location.origin + ')');
+})();
+</script>
+</body>
+</html>

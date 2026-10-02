@@ -1,0 +1,77 @@
+<!DOCTYPE html>
+<!--
+  MULTI-OVERLAY-FULL hybrid B page (wwwroot/hybrid-b.html, served on its own overlay slot).
+
+  Same document shape as hybrid-a.html, deliberately a different file under the same hybrid
+  root: both HybridWebViews load https://0.0.0.1/ (the origin root), so only the per-slot
+  default-file registration makes each overlay serve its own page. The "B-echo:" invoke tag
+  proves the invoke request was dispatched to the HybridWebView that owns slot B, and the raw
+  message must update B's managed status label (never A's).
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Hybrid B</title>
+<style>
+  body { font-family: system-ui, sans-serif; margin: 12px; font-size: 16px; }
+  h1 { font-size: 22px; margin: 0 0 6px; }
+  button { font-size: 17px; padding: 12px 16px; margin: 4px 8px 4px 0; }
+  #status { font-family: ui-monospace, monospace; font-size: 14px; font-weight: bold; }
+  #log { font-family: ui-monospace, monospace; font-size: 12px; white-space: pre-wrap; min-height: 3em; }
+</style>
+</head>
+<body>
+<h1>Hybrid B</h1>
+<p id="status">ready</p>
+<p>
+  <button id="raw" type="button">Send raw B</button>
+  <button id="invoke" type="button">Invoke .NET B</button>
+</p>
+<div id="log"></div>
+<script>
+(function () {
+  function log(line) {
+    document.getElementById('log').textContent += line + '\n';
+  }
+  document.getElementById('raw').addEventListener('click', function () {
+    try {
+      window.external.sendMessage('__RawMessage|' + encodeURIComponent('B-raw-ping'));
+      document.getElementById('status').textContent = 'sent raw B-raw-ping';
+    } catch (e) {
+      log('raw error: ' + e.message);
+    }
+  });
+  // See hybrid-a.html: direct __hwvInvokeDotNet transport, no framework script dependency.
+  document.getElementById('invoke').addEventListener('click', async function () {
+    try {
+      const body = JSON.stringify({ MethodName: 'Echo', ParamValues: [JSON.stringify('B-payload')] });
+      const response = await fetch(window.location.origin + '/__hwvInvokeDotNet', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Accept': 'application/json',
+          'X-Maui-Invoke-Token': 'HybridWebView',
+          'X-Maui-Request-Body': body
+        },
+        body: body
+      });
+      const result = await response.json();
+      if (result && result.IsError) {
+        document.getElementById('status').textContent = 'invoke error: ' + result.ErrorMessage;
+        log('invoke error: ' + result.ErrorMessage);
+      } else {
+        const value = result && result.IsJson ? JSON.parse(result.Result) : (result ? result.Result : null);
+        document.getElementById('status').textContent = 'invoke: ' + JSON.stringify(value);
+        log('invoke result: ' + JSON.stringify(value));
+      }
+    } catch (e) {
+      document.getElementById('status').textContent = 'invoke error: ' + e.message;
+      log('invoke error: ' + e.message);
+    }
+  });
+  log('hybrid B page ready (origin ' + window.location.origin + ')');
+})();
+</script>
+</body>
+</html>

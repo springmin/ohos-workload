@@ -672,6 +672,28 @@ slot 0 处理（旧协议兼容）。宿主签名与导出不变（150/150）。
 （`960c4c9c…`；headless 24,324 B 不变）。契约/断言见 `test/maui-platform-verify`（+4 → 559/539）
 与 runtime-ohos `docs/plans/2026-10-02-ohos-multi-overlay.md`。
 
+MULTI-OVERLAY-FULL（2026-10-02，彻底方案①）：N=2 槽池上的无限制退化与全通道正确。
+托管槽池改为 owner 感知 LRU（`IOpenHarmonyOverlaySlotOwner`）：第三及以后并发的 web
+控件不再拿 -1 退回旧协议，而是抢占“未 engaged 优先、其后最久未用”的槽，被抢 handler 收到
+`OnOverlaySlotPreempted` 进入 suspend，恢复时按 owner 校验重新 `Acquire`、把 slot 计入注册键并
+重放 load/attach（WebView 重发 Source，Hybrid 重注册并重载 `0.0.0.1`，Blazor 重注册并重载
+`0.0.0.0`）；slot 只在 owner 匹配时可 Release/Touch（`Acquire(owner)/Release(slot,owner)/
+Touch(slot,owner)`）。hybrid 桥状态改为按槽：`hybridBase/Root/DefaultFile/Registered/DocId[]`
+与每槽 `hybridFilePath(url, slot)`/serve 日志，同页两个 HybridWebView 各自按槽注册默认文件与
+文档 id，消息经 `__OHORIGIN|<url>|<该槽 id>` 路由到正确 handler。invoke 通道全链带槽且不改
+宿主签名：壳发 `((slot+1)<<24)|seq` 作为 `notifyHybridInvoke` 的 requestId（与
+`OpenHarmonyOverlays.EncodeInvokeRequestId` 一致），托管解码后派发到持有该槽的 handler，
+`ohos_host_hwv_invoke_result` 以同一 id 回到该槽挂起的响应；未带槽的旧 id 仍走“最后注册
+hybrid”回退。z-order 不再固定 slot1 在上：每槽激活序（用户 `onTouch` 或程序 show/load/注册）
+经 `.zIndex(this.webZOrder[slot])` 生效，并用 `s<slot>|activate` 事件刷新托管 LRU；错误事件
+的 hide 也按槽生效（`webSlotTagged`）。另修两处全通道缺口：hybrid `__hwv*` 端点接受
+`Origin: <hybridOrigin>` + `Sec-Fetch-Site: same-origin` 的 fetch（CEF 把页内 fetch 报成非
+main-frame，旧的 isMainFrame 门把合法 invoke 打成 400），并把 `publishAppContext` 的 appDir
+解析换成与 EntryAbility 相同的 payload-in-libs 探测（此前无条件下发 `filesDir/dotnet`，让后注册
+的 handler 从过期的提取树服务）。宿主签名与导出不变（150/150）。新壳 abc 356,140 B
+（`2a90f0d7…`；headless 24,324 B 不变）。契约/断言见 `test/maui-platform-verify`（+4 → 563/543）
+与 runtime-ohos `docs/plans/2026-10-02-ohos-multi-overlay.md`（§FULL）。
+
 ## Toolchain resolution
 
 `_OpenHarmonyDetectToolchain` resolves the packing tool from `OpenHarmonyToolchainDir` or

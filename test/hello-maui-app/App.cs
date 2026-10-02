@@ -22,6 +22,38 @@ public sealed class App : Application
     private static void BindSelfPath(BindableObject target, BindableProperty property)
         => target.SetBinding(property, ".");
 
+    /// <summary>
+    /// MULTI-OVERLAY-FULL demo invoker: answers a JS-&gt;.NET invocation with a JSON string that
+    /// carries the hybrid's identity, so the device run can prove the invoke channel routed the
+    /// request through the right overlay slot (A's page receives "A-echo:...", B's "B-echo:...").
+    /// </summary>
+    private sealed class EchoInvoker : HybridWebViewInvoker
+    {
+        private readonly string _tag;
+
+        public EchoInvoker(string tag) : base(null, null) => _tag = tag;
+
+        public override Task<string?> InvokeMethodAsync(string methodName, string[]? paramJsonValues)
+        {
+            string safeMethod = methodName.Replace('"', '\'');
+            string result = $"\"{_tag}-echo:{safeMethod}:{paramJsonValues?.Length ?? 0}\"";
+            return Task.FromResult<string?>(result);
+        }
+    }
+
+    /// <summary>Updates a status label from the (possibly off-dispatcher) web callback thread.</summary>
+    private static void SetStatus(Microsoft.Maui.Controls.VisualElement element, Label label, string text)
+    {
+        if (element.Dispatcher is { } dispatcher)
+        {
+            dispatcher.Dispatch(() => label.Text = text);
+        }
+        else
+        {
+            label.Text = text;
+        }
+    }
+
     protected override Window CreateWindow(IActivationState? activationState)
     {
         // The window hosts a flyout page (drawer) whose detail is a tabbed page; the main page
@@ -188,58 +220,79 @@ public sealed class App : Application
         var title = new Label { Text = "MAUI on OpenHarmony", FontSize = 44 };
         var subtitle = new Label { Text = "Microsoft.Maui.Controls through the platform slice", FontSize = 24 };
 
-        // T5: the staged hybrid test page (wwwroot/index.html) rendered through HybridWebView,
-        // near the top of the page so a device run sees it immediately. No handler registration
-        // is needed here: UseOpenHarmony maps IHybridWebView to OpenHarmonyHybridWebViewHandler in
-        // its SliceHandlers dictionary, and on connect that handler registers AppDir +
-        // HybridRoot/DefaultFile with the ArkTS shell, which serves the staged wwwroot tree from
-        // the MAUI hybrid origin (https://0.0.0.1/). The page probes the message channel (its
-        // "Send ping" prefers window.external.sendMessage, which reaches RawMessageReceived
-        // through the shell's dotnetHost proxy; the hybrid fallback is
-        // window.HybridWebView.SendRawMessage), so the last raw message is mirrored below the
-        // control; it can arrive off the dispatcher thread.
-        var hybridStatus = new Label { Text = "hybrid page: loading wwwroot/index.html", FontSize = 22 };
-        var hybrid = new HybridWebView
+        // MULTI-OVERLAY-FULL demo (one page, three web controls, shell slot pool of two):
+        //   * hybrid A and hybrid B are two HybridWebViews on this page, each with its own
+        //     staged document (wwwroot/hybrid-a.html / hybrid-b.html) served on its own overlay
+        //     slot; both are interactive (raw messages and JS->.NET invokes);
+        //   * the BlazorWebView (web C) is added by the "Add web C" button; its owner-aware LRU
+        //     claim preempts the least-recently-used hybrid slot, and "Activate hybrid A/B"
+        //     restores a preempted hybrid (the managed handler replays its registration, so the
+        //     shell reloads that hybrid's page on the re-acquired slot).
+        // The pages load _framework/hybridwebview.js (the handler extracts it next to the
+        // payload), so the visible buttons exercise the stock raw-message and invoke endpoints.
+        var hybridA = new HybridWebView
         {
             HybridRoot = "wwwroot",
-            DefaultFile = "index.html",
-            HeightRequest = 400,
+            DefaultFile = "hybrid-a.html",
+            HeightRequest = 180,
         };
-        hybrid.RawMessageReceived += (_, e) =>
+        hybridA.Invoker = new EchoInvoker("A");
+        var hybridAStatus = new Label { Text = "hybrid A: loading hybrid-a.html", FontSize = 20 };
+        hybridA.RawMessageReceived += (_, e) => SetStatus(hybridA, hybridAStatus, $"A raw: {e.Message}");
+
+        var hybridB = new HybridWebView
         {
-            string received = $"hybrid raw message: {e.Message}";
-            if (hybrid.Dispatcher is { } dispatcher)
-            {
-                dispatcher.Dispatch(() => hybridStatus.Text = received);
-            }
-            else
-            {
-                hybridStatus.Text = received;
-            }
+            HybridRoot = "wwwroot",
+            DefaultFile = "hybrid-b.html",
+            HeightRequest = 180,
+        };
+        hybridB.Invoker = new EchoInvoker("B");
+        var hybridBStatus = new Label { Text = "hybrid B: loading hybrid-b.html", FontSize = 20 };
+        hybridB.RawMessageReceived += (_, e) => SetStatus(hybridB, hybridBStatus, $"B raw: {e.Message}");
+
+        var webStatus = new Label { Text = "MULTI-OVERLAY-FULL: 2 hybrids live, add web C for LRU", FontSize = 20 };
+        var activateA = new Button { Text = "Activate hybrid A (LRU restore)", FontSize = 24 };
+        activateA.Clicked += async (_, _) =>
+        {
+            webStatus.Text = "activating hybrid A...";
+            string? result = await hybridA.EvaluateJavaScriptAsync("document.title");
+            webStatus.Text = $"hybrid A activated (eval: {result ?? "null"})";
+        };
+        var activateB = new Button { Text = "Activate hybrid B (LRU restore)", FontSize = 24 };
+        activateB.Clicked += async (_, _) =>
+        {
+            webStatus.Text = "activating hybrid B...";
+            string? result = await hybridB.EvaluateJavaScriptAsync("document.title");
+            webStatus.Text = $"hybrid B activated (eval: {result ?? "null"})";
         };
 
-        // S1: the BlazorWebView half, below the hybrid control. HostPage wwwroot/index.html is
-        // served from the Blazor origin (https://0.0.0.0/) by the ArkTS shell: the handler
-        // registers the app content root over the shell "blazor" command, the shell injects
-        // _framework/blazor.webview.js and calls Blazor.start() on page end. The root component
-        // attaches to #app in that page (the mount point in wwwroot/index.html) and renders
-        // BlazorCounter; its button click round-trips (ArkWeb -> dotnetHost -> WebViewManager ->
-        // event callback -> render batch -> window.__dispatchMessageCallback -> DOM update), so
-        // the count rendered inside the page advances. The component is inline (no Razor SDK in
-        // this project); see BlazorCounter.cs. Registration lives in Program.cs
-        // (AddMauiBlazorWebView + UsePlatformHandler), and UseOpenHarmony's SliceHandlers carries
-        // the IBlazorWebView entry because the csproj defines OPENHARMONY_BLAZOR_WEBVIEW.
-        var blazorHint = new Label { Text = "BlazorWebView (root #app in wwwroot/index.html)", FontSize = 22 };
-        var blazor = new BlazorWebView
+        // web C is a third HybridWebView, added to the page on demand so the two hybrids are the
+        // first two slot owners. It serves the same payload root as A/B (the context base the
+        // three handlers share) and gives the LRU pool a third owner whose claim preempts the
+        // least-recently-used slot. The BlazorWebView demonstration stays available to apps and
+        // the suite (Program.cs registration and the slice handler are unchanged); it is not in
+        // this page's slot demo because its origin is served from the app content root, which the
+        // payload-in-libs/zip launch modes resolve differently.
+        var hybridC = new HybridWebView
         {
-            HostPage = "wwwroot/index.html",
-            HeightRequest = 400,
+            HybridRoot = "wwwroot",
+            DefaultFile = "hybrid-c.html",
+            HeightRequest = 240,
         };
-        blazor.RootComponents.Add(new RootComponent
+        hybridC.Invoker = new EchoInvoker("C");
+        var hybridCStatus = new Label { Text = "hybrid C: not added yet", FontSize = 20 };
+        hybridC.RawMessageReceived += (_, e) => SetStatus(hybridC, hybridCStatus, $"C raw: {e.Message}");
+        var webCHost = new Grid { HeightRequest = 280, BackgroundColor = Colors.Gainsboro };
+        var addC = new Button { Text = "Add web C (3rd hybrid) - LRU preempts the oldest slot", FontSize = 22 };
+        addC.Clicked += (_, _) =>
         {
-            Selector = "#app",
-            ComponentType = typeof(BlazorCounter),
-        });
+            if (webCHost.Children.Count == 0)
+            {
+                webCHost.Children.Add(hybridC);
+                addC.Text = "web C added (3 web controls, 2 slots)";
+                hybridCStatus.Text = "hybrid C: loading hybrid-c.html";
+            }
+        };
 
         var status = new Label { Text = "Tap the counter", FontSize = 28 };
         var counter = new Button { Text = $"Count: {clicks}", FontSize = 40 };
@@ -354,10 +407,18 @@ public sealed class App : Application
 
         layout.Add(title);
         layout.Add(subtitle);
-        layout.Add(hybrid);
-        layout.Add(hybridStatus);
-        layout.Add(blazorHint);
-        layout.Add(blazor);
+        layout.Add(webStatus);
+        var webControls = new HorizontalStackLayout { Spacing = 8 };
+        webControls.Add(activateA);
+        webControls.Add(activateB);
+        webControls.Add(addC);
+        layout.Add(webControls);
+        layout.Add(hybridA);
+        layout.Add(hybridAStatus);
+        layout.Add(hybridB);
+        layout.Add(hybridBStatus);
+        layout.Add(webCHost);
+        layout.Add(hybridCStatus);
         layout.Add(counter);
         layout.Add(entry);
         layout.Add(valueControls);

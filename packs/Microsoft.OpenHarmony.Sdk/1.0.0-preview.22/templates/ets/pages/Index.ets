@@ -596,6 +596,13 @@ struct Index {
   // the same way. Global commands (hide/suspend/resume/cookie) stay untagged and apply to both
   // overlays, and an untagged per-overlay command still lands on slot 0 (a legacy handler).
   @State webVisible: boolean[] = [false, false];
+  // MULTI-OVERLAY-FULL z-order: the shell no longer keeps slot 1 permanently above slot 0. Each
+  // overlay's activation order (a user touch or a programmatic show/load on that slot) is
+  // tracked and applied as its zIndex, so the most recently activated overlay composites on top
+  // (U5: overlapping web controls). `.zIndex` is an ArkUI universal attribute inside the same
+  // Stack; the declaration order below only decides the initial state.
+  @State webZOrder: number[] = [0, 0];
+  private webZOrderSeq: number = 0;
   // FIX-WVP overlay suspension: a managed drawer renders in the managed surface below the
   // overlays, so while it is presented (`suspend`) every overlay hides and frame/load commands
   // only update its geometry instead of re-showing it; `resume` restores the pre-suspend
@@ -616,14 +623,17 @@ struct Index {
     [new web_webview.WebviewController(), new web_webview.WebviewController()];
   @State menuItems: HostMenuItem[] = [];
   // HybridWebView asset bridge state (registered by the managed handler; empty -> no
-  // interception, so the regular WebView flows are never touched).
-  private hybridBase: string = '';
-  private hybridRoot: string = '';
-  private hybridDefaultFile: string = '';
-  private hybridRegistered: boolean = false;
+  // interception, so the regular WebView flows are never touched). MULTI-OVERLAY-FULL: the
+  // registration state is per overlay slot, because two HybridWebViews on the same page each
+  // register their own layout on their own slot and the shell must serve each document from its
+  // own registration (same origin, different default file/root, different document id).
+  private hybridBase: string[] = ['', ''];
+  private hybridRoot: string[] = ['', ''];
+  private hybridDefaultFile: string[] = ['', ''];
+  private hybridRegistered: boolean[] = [false, false];
   // Per-registration document id (HybridAssetsConfig.id): stamped into matching documents and
   // echoed in the message envelope; '' means the page was not served for a registration.
-  private hybridDocId: string = '';
+  private hybridDocId: string[] = ['', ''];
   // MAUI's hybrid origin: HybridWebViewHandler.AppOrigin (https://0.0.0.1/).
   private hybridOrigin: string = 'https://0.0.0.1/';
   // Blazor asset bridge state (registered by the managed handler; empty -> no interception of
@@ -644,8 +654,8 @@ struct Index {
   // shows that the origin is armed and being served (the full 600+ request stream would spam).
   private blazorServeLogs: number = 0;
   // The same bounded diagnostics for the hybrid origin (https://0.0.0.1/): its served requests
-  // are the device evidence that the HybridWebView page really loaded.
-  private hybridServeLogs: number = 0;
+  // are the device evidence that the HybridWebView page really loaded (one counter per slot).
+  private hybridServeLogs: number[] = [0, 0];
   // Managed status-file polling (device diagnostics): bounded reads of <filesDir>/dotnet-status.txt
   // while the app starts; see pollManagedStatus.
   private statusReads: number = 0;
@@ -658,6 +668,9 @@ struct Index {
   // the managed handler answers through host.registerHybridInvokeResultSink.
   private hybridInvokeSeq: number = 0;
   private hybridInvokes: Map<number, HybridPendingInvoke> = new Map();
+  // Bounded diagnostics for the hybrid endpoint frame gate: the first rejected requests log
+  // their main-frame/header view, so a device run can explain a 400 without a rebuild.
+  private hybridEndpointLogs: number = 0;
   // Last-resort timeout so a lost invocation rejects the fetch instead of hanging it; the
   // managed handler answers with its own error payload after 10 s.
   private hybridInvokeTimeoutMs: number = 15000;
@@ -2676,8 +2689,8 @@ struct Index {
       url = '';
     }
     let documentId: string = '';
-    if (this.hybridRegistered && this.hybridDocId.length > 0 && url.startsWith(this.hybridOrigin)) {
-      documentId = this.hybridDocId;
+    if (this.hybridRegistered[slot] && this.hybridDocId[slot].length > 0 && url.startsWith(this.hybridOrigin)) {
+      documentId = this.hybridDocId[slot];
     } else if (this.blazorRegistered && this.blazorDocId.length > 0 && url.startsWith(this.blazorOrigin)) {
       documentId = this.blazorDocId;
     }
@@ -2721,8 +2734,10 @@ struct Index {
         url.startsWith('javascript:') || url.startsWith('file:')) {
       return true;
     }
-    if (this.hybridRegistered && url.startsWith(this.hybridOrigin)) {
-      return true;
+    if (this.hybridRegistered[0] || this.hybridRegistered[1]) {
+      if (url.startsWith(this.hybridOrigin)) {
+        return true;
+      }
     }
     if (this.blazorRegistered && url.startsWith(this.blazorOrigin)) {
       return true;
@@ -2742,6 +2757,30 @@ struct Index {
       }
     }
     return 0;
+  }
+
+  // True when the argument carries an explicit slot tag. `webSlotOf` answers 0 for an untagged
+  // argument as the legacy default, so operations whose untagged form means "every overlay"
+  // (hide) need this stronger test to tell "s0" from no tag at all.
+  private webSlotTagged(arg: string): boolean {
+    if (arg.length >= 2 && arg.charAt(0) === 's') {
+      const slot: number = arg.charCodeAt(1) - 48;
+      return (slot === 0 || slot === 1) && (arg.length === 2 || arg.charAt(2) === '\n');
+    }
+    return false;
+  }
+
+  // MULTI-OVERLAY-FULL z-order: marks the overlay as most recently activated and forwards the
+  // user-touch form to the managed side, where the LRU pool refreshes that slot's owner.
+  private noteWebActivation(slot: number): void {
+    this.webZOrderSeq++;
+    this.webZOrder[slot] = this.webZOrderSeq;
+  }
+
+  private forwardWebActivation(slot: number): void {
+    this.hostCall('notifyWebEvent', typeof host !== 'undefined' && typeof host.notifyWebEvent === 'function', (): void => {
+      host.notifyWebEvent(this.webEventState(slot, 'activate'), '');
+    });
   }
 
   private webSlotPayload(arg: string): string {
@@ -2935,8 +2974,8 @@ struct Index {
   // page), so scripts never land in a foreign document.
   private injectPageBridge(slot: number, pageUrl: string): void {
     let markers: string = '';
-    if (this.hybridRegistered && this.hybridDocId.length > 0 && pageUrl.startsWith(this.hybridOrigin)) {
-      markers += `window.__ohHybridId = ${JSON.stringify(this.hybridDocId)};`;
+    if (this.hybridRegistered[slot] && this.hybridDocId[slot].length > 0 && pageUrl.startsWith(this.hybridOrigin)) {
+      markers += `window.__ohHybridId = ${JSON.stringify(this.hybridDocId[slot])};`;
     }
     if (this.blazorRegistered && this.blazorDocId.length > 0 && pageUrl.startsWith(this.blazorOrigin)) {
       markers += `window.__ohBlazorId = ${JSON.stringify(this.blazorDocId)};`;
@@ -3867,12 +3906,19 @@ struct Index {
             if (op === 'show') {
               // Historical: show one overlay (a WebView without a Source), tagged with its slot.
               // A suspended overlay stays hidden under a presented drawer.
-              this.webVisible[this.webSlotOf(arg)] = !this.webSuspended;
+              const showSlot: number = this.webSlotOf(arg);
+              this.webVisible[showSlot] = !this.webSuspended;
+              this.noteWebActivation(showSlot);
             } else if (op === 'hide') {
               // FIX-WVP tab switch: hide every overlay; the hidden page is not arranged, so no
               // stale frame re-shows it, and the next page's web control re-shows through its
-              // own frame.
-              this.webVisible = [false, false];
+              // own frame. MULTI-OVERLAY-FULL: a slot-tagged hide clears only that overlay (the
+              // managed error handler), an untagged one keeps the global meaning.
+              if (this.webSlotTagged(arg)) {
+                this.webVisible[this.webSlotOf(arg)] = false;
+              } else {
+                this.webVisible = [false, false];
+              }
             } else if (op === 'suspend') {
               // FIX-WVP drawer presented: hide every overlay and keep frame/load commands from
               // re-showing them (the flyout's own arrange cycle re-emits the detail's web
@@ -3890,6 +3936,7 @@ struct Index {
               const loadSlot: number = this.webSlotOf(arg);
               const loadUrl: string = this.webSlotPayload(arg);
               this.webVisible[loadSlot] = !this.webSuspended;
+              this.noteWebActivation(loadSlot);
               // B6: the app asked for this URL; let this one load through without a round trip.
               this.navProgrammatic[loadSlot] = { url: loadUrl, expires: Date.now() + this.navPendingTtlMs };
               this.slotController(loadSlot).loadUrl(loadUrl);
@@ -3900,6 +3947,7 @@ struct Index {
             } else if (op === 'data') {
               const dataSlot: number = this.webSlotOf(arg);
               this.webVisible[dataSlot] = !this.webSuspended;
+              this.noteWebActivation(dataSlot);
               this.slotController(dataSlot).loadData(this.webSlotPayload(arg), 'text/html', 'UTF-8');
             } else if (op === 'back') {
               const backSlot: number = this.webSlotOf(arg);
@@ -5092,9 +5140,8 @@ struct Index {
         return;
       }
       const context = this.hostContext();
-      const payloadDir = `${context.filesDir}/dotnet`;
       const json = JSON.stringify({
-        appDir: payloadDir,
+        appDir: this.resolvePayloadDir(context),
         filesDir: context.filesDir,
         cacheDir: context.cacheDir,
         bundleName: context.abilityInfo.bundleName,
@@ -5108,6 +5155,43 @@ struct Index {
     } catch (contextError) {
       this.logError(`[maui] app context publish failed: ${(contextError as Error).message}`);
     }
+  }
+
+  // The payload directory the managed app was started from. EntryAbility prefers the staged
+  // bundle payload (payload-in-libs: `libs/<abi>/.dotnet-payload.json` next to the app or its
+  // AOT library) and only falls back to the extracted `<filesDir>/dotnet` tree. Publishing
+  // `<filesDir>/dotnet` unconditionally (the pre-MULTI-OVERLAY-FULL behaviour) replaced a
+  // valid in-libs context after the surface came up, so a web handler that registered later
+  // served from the extracted tree: on an AOT hap that tree may not exist or may be stale, and
+  // the third web control (or a restored handler) showed "Not Found" instead of its page.
+  private resolvePayloadDir(context: common.UIAbilityContext): string {
+    const fallback: string = `${context.filesDir}/dotnet`;
+    try {
+      const bundleCodeDir: string = context.bundleCodeDir;
+      if (bundleCodeDir.length === 0) {
+        return fallback;
+      }
+      const moduleName: string = context.abilityInfo.moduleName;
+      const roots: string[] = moduleName.length > 0
+        ? [`${bundleCodeDir}/${moduleName}/libs`, `${bundleCodeDir}/libs`]
+        : [`${bundleCodeDir}/libs`];
+      const abis: string[] = ['arm64-v8a', 'arm64'];
+      for (const root of roots) {
+        for (const abi of abis) {
+          const dir: string = `${root}/${abi}`;
+          try {
+            if (fs.accessSync(dir) && fs.accessSync(`${dir}/.dotnet-payload.json`)) {
+              return dir;
+            }
+          } catch {
+            // An unreadable candidate is not a staged payload; keep probing.
+          }
+        }
+      }
+    } catch {
+      // Fall through to the extracted payload.
+    }
+    return fallback;
   }
 
   // Accessibility: host.setNodeContent hands this.content to the native host, which creates
@@ -5257,33 +5341,36 @@ struct Index {
 
   // HybridWebView: the managed handler registers the payload directory and the hybrid layout
   // through the existing web command channel (op "hybrid"); a successful registration loads
-  // the MAUI hybrid origin, whose requests onInterceptRequest answers from the payload.
+  // the MAUI hybrid origin, whose requests onInterceptRequest answers from the payload. The
+  // registration state is per overlay slot (MULTI-OVERLAY-FULL): two HybridWebViews on the same
+  // page each keep their own base/root/defaultFile/document id, so the same origin URL serves
+  // each one's document on its own overlay.
   private registerHybridAssets(arg: string): void {
     try {
       const config = JSON.parse(arg) as HybridAssetsConfig;
-      this.hybridBase = config.base;
-      this.hybridRoot = config.root;
-      this.hybridDefaultFile = config.defaultFile;
-      this.hybridDocId = config.id !== undefined && config.id.length > 0 ? config.id : '';
-      const safeLayout: boolean = this.isSafeLayoutPart(this.hybridRoot)
-        && this.isSafeLayoutPart(this.hybridDefaultFile);
+      const hybridSlot: number = config.slot !== undefined && config.slot === 1 ? 1 : 0;
+      this.hybridBase[hybridSlot] = config.base;
+      this.hybridRoot[hybridSlot] = config.root;
+      this.hybridDefaultFile[hybridSlot] = config.defaultFile;
+      this.hybridDocId[hybridSlot] = config.id !== undefined && config.id.length > 0 ? config.id : '';
+      const safeLayout: boolean = this.isSafeLayoutPart(this.hybridRoot[hybridSlot])
+        && this.isSafeLayoutPart(this.hybridDefaultFile[hybridSlot]);
       if (!safeLayout) {
         this.logError('[maui] hybrid assets registration rejected: root/defaultFile are not safe relative paths');
       }
-      this.hybridRegistered = safeLayout && this.hybridBase.length > 0 && this.hybridRoot.length > 0
-        && this.hybridDefaultFile.length > 0;
-      if (this.hybridRegistered) {
-        // MULTI-OVL: the registration names the overlay it belongs to; absent/-1 lands on the
-        // first overlay (a legacy handler).
-        const hybridSlot: number = config.slot !== undefined && config.slot === 1 ? 1 : 0;
-        this.hybridServeLogs = 0;
-        this.logInfo(`[maui] hybrid assets: origin=${this.hybridOrigin} root=${this.hybridRoot} base=${this.hybridBase} slot=${hybridSlot}`);
+      this.hybridRegistered[hybridSlot] = safeLayout && this.hybridBase[hybridSlot].length > 0
+        && this.hybridRoot[hybridSlot].length > 0 && this.hybridDefaultFile[hybridSlot].length > 0;
+      if (this.hybridRegistered[hybridSlot]) {
+        this.hybridServeLogs[hybridSlot] = 0;
+        this.logInfo(`[maui] hybrid assets: origin=${this.hybridOrigin} root=${this.hybridRoot[hybridSlot]} base=${this.hybridBase[hybridSlot]} slot=${hybridSlot}`);
         this.webVisible[hybridSlot] = !this.webSuspended;
+        this.noteWebActivation(hybridSlot);
         this.slotController(hybridSlot).loadUrl(this.hybridOrigin);
       }
     } catch (hybridError) {
       this.logError(`[maui] hybrid assets registration failed: ${(hybridError as Error).message}`);
-      this.hybridRegistered = false;
+      this.hybridRegistered[0] = false;
+      this.hybridRegistered[1] = false;
     }
   }
 
@@ -5321,8 +5408,10 @@ struct Index {
         this.logInfo(`[maui] blazor assets: origin=${this.blazorOrigin} root=${this.blazorRoot} base=${this.blazorBase} mode=${this.blazorWasmMode ? 'wasm' : 'hybrid'} slot=${blazorSlot}`);
         if (!this.blazorWasmMode) {
           // MULTI-OVL replaces the single-overlay arbitration (FIX-WVP): the Blazor page loads
-          // on its own overlay even while a HybridWebView owns another one.
+          // on its own overlay even while a HybridWebView owns another one. Activation order
+          // (z-order) follows the newly loaded page.
           this.webVisible[blazorSlot] = !this.webSuspended;
+          this.noteWebActivation(blazorSlot);
           this.slotController(blazorSlot).loadUrl(this.blazorOrigin);
         }
       }
@@ -5334,7 +5423,9 @@ struct Index {
 
   // Resolves an app-origin URL to an absolute file below the payload directory. Unknown and
   // malformed paths (including traversal attempts) resolve to '' and are answered with 404.
-  private hybridFilePath(url: string): string {
+  // MULTI-OVERLAY-FULL: the layout (base/root/defaultFile) is read from the requesting overlay's
+  // own registration, so two HybridWebViews on the same origin serve their own documents.
+  private hybridFilePath(url: string, slot: number): string {
     let path: string = url;
     const scheme: number = path.indexOf('://');
     if (scheme >= 0) {
@@ -5361,12 +5452,12 @@ struct Index {
       return '';
     }
     if (path.length === 0) {
-      path = this.hybridDefaultFile;
+      path = this.hybridDefaultFile[slot];
     }
     if (path === '_framework/hybridwebview.js') {
-      return `${this.hybridBase}/${path}`;
+      return `${this.hybridBase[slot]}/${path}`;
     }
-    return `${this.hybridBase}/${this.hybridRoot}/${path}`;
+    return `${this.hybridBase[slot]}/${this.hybridRoot[slot]}/${path}`;
   }
 
   // Resolves a Blazor app-origin URL (https://0.0.0.0/...) to an absolute file below
@@ -5626,9 +5717,9 @@ struct Index {
     return this.hybridErrorResponse(404);
   }
 
-  // HybridWebView assets live under <base>/<root> (plus the framework script next to the base).
-  private serveHybridFile(url: string): WebResourceResponse {
-    return this.servePayloadFile(this.hybridFilePath(url));
+  // HybridWebView assets live under the requesting slot's own <base>/<root> registration.
+  private serveHybridFile(url: string, slot: number): WebResourceResponse {
+    return this.servePayloadFile(this.hybridFilePath(url, slot));
   }
 
   // BlazorWebView assets live under <base>/<root> only.
@@ -5636,15 +5727,81 @@ struct Index {
     return this.servePayloadFile(this.blazorFilePath(url));
   }
 
+  // MULTI-OVERLAY-FULL: the hybrid __hwv endpoints are POSTed with fetch by the served
+  // document (the stock hybridwebview.js transport). CEF reports such a fetch as a non-main-
+  // frame resource request, so the old isMainFrame() guard rejected the legitimate transport
+  // with 400. Device evidence: the fetch carries "Origin: <hybridOrigin>" and
+  // "Sec-Fetch-Site: same-origin" (no Referer). The request is accepted when it is the main
+  // frame itself, when its Origin is this hybrid origin (cross-site iframes carry their own
+  // Origin and stay refused) or when a Referer on this hybrid origin identifies the document.
+  private hybridEndpointAllowed(event: OnInterceptRequestEvent): boolean {
+    if (!event.request || typeof event.request.isMainFrame !== 'function') {
+      return true;
+    }
+    try {
+      if (event.request.isMainFrame()) {
+        return true;
+      }
+      let origin: string = '';
+      let referer: string = '';
+      let fetchSite: string = '';
+      const headers = event.request.getRequestHeader();
+      for (let i = 0; i < headers.length; i++) {
+        const name: string = headers[i].headerKey.toLowerCase();
+        if (name === 'origin') {
+          origin = headers[i].headerValue;
+        } else if (name === 'referer') {
+          referer = headers[i].headerValue;
+        } else if (name === 'sec-fetch-site') {
+          fetchSite = headers[i].headerValue;
+        }
+      }
+      const originName: string = this.hybridOrigin.endsWith('/')
+        ? this.hybridOrigin.substring(0, this.hybridOrigin.length - 1)
+        : this.hybridOrigin;
+      if (origin === originName && (fetchSite.length === 0 || fetchSite === 'same-origin')) {
+        return true;
+      }
+      return referer.startsWith(this.hybridOrigin);
+    } catch {
+      return false;
+    }
+  }
+
+  // Bounded diagnostic for a refused hybrid endpoint request (the first few only).
+  private logHybridEndpointRejection(endpoint: string, event: OnInterceptRequestEvent): void {
+    if (this.hybridEndpointLogs >= 3) {
+      return;
+    }
+    this.hybridEndpointLogs++;
+    let mainFrame: boolean = false;
+    let headerNames: string = '';
+    try {
+      mainFrame = typeof event.request.isMainFrame === 'function' ? event.request.isMainFrame() : false;
+      const headers = event.request.getRequestHeader();
+      for (let i = 0; i < headers.length; i++) {
+        headerNames += `${headers[i].headerKey}=${headers[i].headerValue.substring(0, 64)};`;
+      }
+    } catch {
+      headerNames = '<unreadable>';
+    }
+    this.logError(`[maui] hybrid ${endpoint} request refused: mainFrame=${mainFrame} headers=${headerNames}`);
+  }
+
   // JS -> .NET channel of the served hybridwebview.js: the script POSTs its payload in the
   // X-Maui-Request-Body header (the same transport Android uses). The body is handed to the
   // existing JS message sink, so __RawMessage / __InvokeJavaScript* records reach the managed
-  // HybridWebView handler. The matching __hwvInvokeDotNet endpoint is hybridInvokeResponse.
-  private hybridMessageResponse(event: OnInterceptRequestEvent): WebResourceResponse {
-    // The endpoint belongs to the served hybrid document; a request from any other frame
+  // HybridWebView handler. MULTI-OVERLAY-FULL: the intercept runs inside the requesting
+  // overlay's webOverlay(slot) builder, so the slot stamps the envelope and the message reaches
+  // that overlay's own document registration. The matching __hwvInvokeDotNet endpoint is
+  // hybridInvokeResponse.
+  private hybridMessageResponse(event: OnInterceptRequestEvent, slot: number): WebResourceResponse {
+    // The endpoint belongs to the served hybrid document; a request from another frame
     // (ArkWeb intercepts iframe requests too) is refused like a malformed one (400), so the
-    // page's fetch rejects cleanly instead of waiting.
-    if (event.request && typeof event.request.isMainFrame === 'function' && !event.request.isMainFrame()) {
+    // page's fetch rejects cleanly instead of waiting. A same-origin fetch is the document's
+    // own transport (see hybridEndpointAllowed).
+    if (!this.hybridEndpointAllowed(event)) {
+      this.logHybridEndpointRejection('message', event);
       return this.hybridErrorResponse(400);
     }
     let body: string = '';
@@ -5662,7 +5819,7 @@ struct Index {
       return this.hybridErrorResponse(400);
     }
     const delivered: boolean = this.hostCall('notifyJsMessage', typeof host !== 'undefined' && typeof host.notifyJsMessage === 'function', (): void => {
-      host.notifyJsMessage(this.originEnvelope(body, 0));
+      host.notifyJsMessage(this.originEnvelope(body, slot));
     });
     // The message could not be handed to the managed side (mismatched host library): answer
     // the page's fetch with a malformed-request status instead of a success it never got.
@@ -5708,10 +5865,17 @@ struct Index {
   // handler through host.notifyHybridInvoke, and completeHybridInvoke answers it. Every
   // failure path (bad request, missing host export, managed error, timeout) completes the
   // response with an error payload, so the page's promise rejects instead of hanging.
-  private hybridInvokeResponse(event: OnInterceptRequestEvent): WebResourceResponse {
-    // Same frame check as hybridMessageResponse: only the main document may use the invoke
-    // endpoint, everything else gets the malformed-request response.
-    if (event.request && typeof event.request.isMainFrame === 'function' && !event.request.isMainFrame()) {
+  // MULTI-OVERLAY-FULL: the request id carries the requesting overlay's slot
+  // (((slot + 1) << 24) | sequence, mirroring OpenHarmonyOverlays.EncodeInvokeRequestId), so
+  // the managed side dispatches to the HybridWebView that owns that slot and the shell completes
+  // the held-open response of that same overlay; a request from another overlay can never be
+  // answered into this one. The intercept runs inside webOverlay(slot), so no native signature
+  // or host-export change is needed.
+  private hybridInvokeResponse(event: OnInterceptRequestEvent, slot: number): WebResourceResponse {
+    // Same frame check as hybridMessageResponse: only the served document's own request may
+    // use the invoke endpoint, everything else gets the malformed-request response.
+    if (!this.hybridEndpointAllowed(event)) {
+      this.logHybridEndpointRejection('invoke', event);
       return this.hybridErrorResponse(400);
     }
     let body: string = '';
@@ -5749,7 +5913,10 @@ struct Index {
     response.setResponseMimeType('application/json');
     response.setResponseEncoding('utf-8');
     response.setResponseIsReady(false);
-    const requestId: number = ++this.hybridInvokeSeq;
+    // Tagged request id: ((slot + 1) << 24) | (sequence & 0xFFFFFF). The 24-bit sequence wraps
+    // (the map holds only in-flight responses, so a wrapped id is unique among them).
+    this.hybridInvokeSeq = (this.hybridInvokeSeq + 1) & 0xFFFFFF;
+    const requestId: number = ((slot + 1) << 24) | this.hybridInvokeSeq;
     const timer: number = setTimeout(() => {
       this.completeHybridInvoke(requestId,
         this.hybridInvokeErrorPayload('the .NET invocation timed out'));
@@ -5782,19 +5949,30 @@ struct Index {
     return this.webVisible[slot] ? Visibility.Visible : Visibility.None;
   }
 
-  // MULTI-OVL: the ArkWeb overlay declaration, instantiated once per slot (slot 0 first, slot 1
-  // composites above it). Each overlay is hidden until a managed web control claims its slot and
-  // sends a frame. The frame command moves/sizes it (a zero dimension stays full-window); DOM
-  // storage is on by default, matching the MAUI Android handler (DomStorageEnabled=true), so
-  // localStorage works in hybrid/Blazor pages. Declared after the XComponent/ContentSlot: a
-  // Stack composites later children above earlier ones, and the managed app surface is the
-  // earlier child, so the overlays really show over the managed surface (FIX-WVP; declared
-  // first they stayed under the surface and every served web page was invisible).
+  // MULTI-OVL: the ArkWeb overlay declaration, instantiated once per slot. Each overlay starts
+  // hidden until a managed web control claims its slot and sends a frame. The frame command
+  // moves/sizes it (a zero dimension stays full-window); DOM storage is on by default, matching
+  // the MAUI Android handler (DomStorageEnabled=true), so localStorage works in hybrid/Blazor
+  // pages. Declared after the XComponent/ContentSlot: a Stack composites later children above
+  // earlier ones, and the managed app surface is the earlier child, so the overlays really show
+  // over the managed surface (FIX-WVP; declared first they stayed under the surface and every
+  // served web page was invisible). MULTI-OVERLAY-FULL: the fixed slot-1-on-top order is gone;
+  // .zIndex applies the activation order (a touch or a programmatic show/load) so the most
+  // recently activated overlay composites on top of an overlapping one.
   @Builder
   webOverlay(slot: number): void {
     Web({ src: '', controller: this.webControllers[slot] })
       .domStorageAccess(true)
       .visibility(this.webVisibility(slot))
+      .zIndex(this.webZOrder[slot])
+      .onTouch((event: TouchEvent) => {
+        // A user touch activates the overlay (z-order) and refreshes its LRU slot on the
+        // managed side; the event is not consumed, so the page keeps receiving it.
+        if (event.type === TouchType.Down) {
+          this.noteWebActivation(slot);
+          this.forwardWebActivation(slot);
+        }
+      })
       .width(this.webFrameW[slot] > 0 ? `${this.webFrameW[slot]}vp` : '100%')
       .height(this.webFrameH[slot] > 0 ? `${this.webFrameH[slot]}vp` : '100%')
       .position({ x: this.webFrameX[slot], y: this.webFrameY[slot] })
@@ -5843,22 +6021,25 @@ struct Index {
             }
             return this.serveBlazorFile(url);
           }
-          // Only the MAUI hybrid origin is intercepted, and only after the managed handler
-          // registered the payload root; everything else is left to the Web engine.
-          if (!this.hybridRegistered || !url.startsWith(this.hybridOrigin)) {
+          // Only the MAUI hybrid origin is intercepted, and only after that overlay's managed
+          // handler registered the payload root; everything else is left to the Web engine.
+          // MULTI-OVERLAY-FULL: the registration, serving and invoke/message endpoints are all
+          // scoped to this builder's slot, so two HybridWebViews on the same page each serve
+          // their own document even though they share the origin.
+          if (!this.hybridRegistered[slot] || !url.startsWith(this.hybridOrigin)) {
             return null;
           }
-          if (this.hybridServeLogs < 3) {
-            this.hybridServeLogs++;
-            this.logInfo(`[maui] web serve: ${url} -> ${this.hybridFilePath(url)}`);
+          if (this.hybridServeLogs[slot] < 3) {
+            this.hybridServeLogs[slot]++;
+            this.logInfo(`[maui] web serve (slot ${slot}): ${url} -> ${this.hybridFilePath(url, slot)}`);
           }
           if (url.startsWith(this.hybridOrigin + '__hwvInvokeDotNet')) {
-            return this.hybridInvokeResponse(event);
+            return this.hybridInvokeResponse(event, slot);
           }
           if (url.startsWith(this.hybridOrigin + '__hwvSendMessage')) {
-            return this.hybridMessageResponse(event);
+            return this.hybridMessageResponse(event, slot);
           }
-          return this.serveHybridFile(url);
+          return this.serveHybridFile(url, slot);
         } catch {
           return null;
         }
