@@ -12,7 +12,7 @@ using Microsoft.Maui.Platform;
 // after the fuzz tail) instead of letting every caller repeat its own threshold constant.
 VerifyLineCountingWriter verifyStdout = new(Console.Out);
 Console.SetOut(verifyStdout);
-const int verifyCheckTotal = 563;                     // documented full [verify] line count (+4 MULTI-OVERLAY-FULL LRU pool/invoke slot codec/per-slot hybrid shell/slice owner wiring, +4 MULTI-OVL slot pool/wire codec/two-overlay shell/slice wiring, +4 FIX-BACKSIZE Back-press forwarding/drawer drill/ shell drawer/BlazorWebView desired size, +4 FIX-WVP overlay px->vp/degenerate-frame/hybrid-overlay arbitration/suspend-restore (shell+slice), +2 FIX-DISMISS flyout drawer dismiss under the device display conditions, +4 FIX-HOME home page arrange/draw (NavigationPage-in-TabbedPage descent), +4 MS-MODE runtime mode switch, +10 P2c-DEEPLINK, +4 P2b-IMG, +16 P1b-LIST, +10 P1a-ANIM, +2 SEC3 storage/deep-link pins, +5 W-series WebView wiring, +3 T1 InputView mapping, +4 T2 WebView gaps, +4 T3 GraphicsView interaction, +7 T10 modal accessibility, +4 T4 Label formatted text, +4 T5 layout semantics, +6 T7 DatePicker calendar/min-max, +4 T9 window title bar, +4 T11 diagnostics overlay, +1 N2 empty ContentPage arrangement, +6 T8 TableView, +5 T8 uneven rows, +7 T6 RTL flow direction, +5 T22 MainThread bridge, +2 FIX-TABBED tabbed CurrentPage, +4 T13 group footer view/N3 picker IsOpen, +5 T21 system font scale, +3 T21 font scale source wiring, +2 A11Y-TABBED tabbed accessibility, +3 N1 host multi-pointer, +5 T12 CarouselView group slides, +7 T14 rich shell flyout, +10 T14 flyout leftovers (MenuItemTemplate/FlyoutContent/AsMultipleItems), +2 FIX-SHELL shell CurrentPage, +2 A11Y-SHELL shell accessibility, +7 T15 rich Shell.TitleView, +8 T16 structured menus, +3 N4 TitleBar accessibility row, +3 T18 Essentials Map, +4 N5 overlay passthrough suppression, +5 N6 window decorations, +4 T20 media bridge, +3 B2 wasm site in a MAUI WebView, +2 W10 NativeAOT managed entry (host libs-dir resolution + shell AOT payload probe), +1 FIX-JSCALL Blazor IPC enum/struct AOT roots (JSCallResultType/JSCallType/NavigationOptions in the slice context + handler static-ctor touch + stub click-probe removed))
+const int verifyCheckTotal = 569;                     // documented full [verify] line count (+6 LEGACY toolbar primary/overflow/icon/events/shell/source, +4 MULTI-OVERLAY-FULL LRU pool/invoke slot codec/per-slot hybrid shell/slice owner wiring, +4 MULTI-OVL slot pool/wire codec/two-overlay shell/slice wiring, +4 FIX-BACKSIZE Back-press forwarding/drawer drill/ shell drawer/BlazorWebView desired size, +4 FIX-WVP overlay px->vp/degenerate-frame/hybrid-overlay arbitration/suspend-restore (shell+slice), +2 FIX-DISMISS flyout drawer dismiss under the device display conditions, +4 FIX-HOME home page arrange/draw (NavigationPage-in-TabbedPage descent), +4 MS-MODE runtime mode switch, +10 P2c-DEEPLINK, +4 P2b-IMG, +16 P1b-LIST, +10 P1a-ANIM, +2 SEC3 storage/deep-link pins, +5 W-series WebView wiring, +3 T1 InputView mapping, +4 T2 WebView gaps, +4 T3 GraphicsView interaction, +7 T10 modal accessibility, +4 T4 Label formatted text, +4 T5 layout semantics, +6 T7 DatePicker calendar/min-max, +4 T9 window title bar, +4 T11 diagnostics overlay, +1 N2 empty ContentPage arrangement, +6 T8 TableView, +5 T8 uneven rows, +7 T6 RTL flow direction, +5 T22 MainThread bridge, +2 FIX-TABBED tabbed CurrentPage, +4 T13 group footer view/N3 picker IsOpen, +5 T21 system font scale, +3 T21 font scale source wiring, +2 A11Y-TABBED tabbed accessibility, +3 N1 host multi-pointer, +5 T12 CarouselView group slides, +7 T14 rich shell flyout, +10 T14 flyout leftovers (MenuItemTemplate/FlyoutContent/AsMultipleItems), +2 FIX-SHELL shell CurrentPage, +2 A11Y-SHELL shell accessibility, +7 T15 rich Shell.TitleView, +8 T16 structured menus, +3 N4 TitleBar accessibility row, +3 T18 Essentials Map, +4 N5 overlay passthrough suppression, +5 N6 window decorations, +4 T20 media bridge, +3 B2 wasm site in a MAUI WebView, +2 W10 NativeAOT managed entry (host libs-dir resolution + shell AOT payload probe), +1 FIX-JSCALL Blazor IPC enum/struct AOT roots (JSCallResultType/JSCallType/NavigationOptions in the slice context + handler static-ctor touch + stub click-probe removed))
 const int verifyCheckFloor = verifyCheckTotal - 20;   // documented floor convention (total - 20)
 
 // A small image file for the Image handler.
@@ -2199,7 +2199,7 @@ t6Nav.Arrange(new Rect(0, 0, 300, 200));
 t6Renderer.Render(t6Nav, 300, 200);
 var t6NavPlatform = (OpenHarmonyView)t6Nav.Handler!.PlatformView!;
 t6NavPlatform.CanGoBack = true;
-t6NavPlatform.ToolbarItems.Add(("item", () => { }));
+t6NavPlatform.ToolbarItems.Add(new OpenHarmonyToolbarItem { Text = "item", Activate = () => { } });
 bool t6NavBackOk = t6NavPlatform.InBackRegion(290, 10) && !t6NavPlatform.InBackRegion(10, 10);
 RectF t6ToolbarRect = t6NavPlatform.ToolbarItemRect(0);
 bool t6NavToolbarOk = Math.Abs(t6ToolbarRect.X - t6NavPlatform.CanvasFrame.X) < 0.01
@@ -3864,6 +3864,118 @@ Console.WriteLine($"[verify] toolbar items={toolbarNav.ToolbarItems.Count} rect=
 host.HandleTouch(true, false, syncRect.Center.X, syncRect.Center.Y);
 host.HandleTouch(false, true, syncRect.Center.X, syncRect.Center.Y);
 Console.WriteLine($"[verify] toolbar clicks={toolbarClicks} pressed={toolbarNav.Pressed}");
+
+// L-LEGACY: the Core Toolbar surface beyond plain text. The current page's ToolbarItems mirror
+// text, icon (FontImageSource glyph / file bytes), Order/Priority (Default+Primary docked by
+// Priority, Secondary behind the overflow affordance) and IsEnabled; a tap activates through the
+// Clicked/Command contract, for both the navigation bar and the shell title bar.
+int legacyToolbarClicks = 0;
+var legacyToolbarPage = new ContentPage { Title = "legacy", Content = new Label { Text = "legacy" } };
+legacyToolbarPage.ToolbarItems.Add(new ToolbarItem { Text = "late", Order = ToolbarItemOrder.Primary, Priority = 9, Command = new Command(() => legacyToolbarClicks += 1) });
+legacyToolbarPage.ToolbarItems.Add(new ToolbarItem { Text = "early", Order = ToolbarItemOrder.Primary, Priority = -5, Command = new Command(() => legacyToolbarClicks += 10) });
+legacyToolbarPage.ToolbarItems.Add(new ToolbarItem { Text = "default" });
+legacyToolbarPage.ToolbarItems.Add(new ToolbarItem { Text = "off", IsEnabled = false, Command = new Command(() => legacyToolbarClicks += 100) });
+legacyToolbarPage.ToolbarItems.Add(new ToolbarItem { Text = "overflow", Order = ToolbarItemOrder.Secondary, Command = new Command(() => legacyToolbarClicks += 1000) });
+var legacyEventItem = new ToolbarItem { Text = "event", Priority = 1 };
+legacyEventItem.Clicked += (_, _) => legacyToolbarClicks += 10000;
+legacyToolbarPage.ToolbarItems.Add(legacyEventItem);
+legacyToolbarPage.ToolbarItems.Add(new ToolbarItem { Text = "star", IconImageSource = new FontImageSource { Glyph = "\ue838", Size = 22, Color = Colors.Orange } });
+var legacyToolbarNav = new NavigationPage(legacyToolbarPage);
+OpenHarmonyHandlerConnector.ConnectTree(legacyToolbarNav);
+legacyToolbarNav.Measure(500, 400);
+legacyToolbarNav.Arrange(new Rect(0, 0, 500, 400));
+t6Renderer.Render(legacyToolbarNav, 500, 400);
+var legacyToolbarPlatform = (OpenHarmonyView)legacyToolbarNav.Handler!.PlatformView!;
+string legacyToolbarOrder = string.Join(",", legacyToolbarPlatform.ToolbarItems.Select(item => item.Text));
+bool legacyToolbarMirrorOk = legacyToolbarOrder == "early,default,off,star,event,late,overflow" &&
+    legacyToolbarPlatform.ToolbarItems.Count == 7 &&
+    !legacyToolbarPlatform.ToolbarItems[2].IsEnabled &&
+    legacyToolbarPlatform.ToolbarItems[6].IsSecondary &&
+    legacyToolbarPlatform.HasToolbarOverflow &&
+    legacyToolbarPlatform.ToolbarItemAt(legacyToolbarPlatform.ToolbarMoreRect().Center.X, legacyToolbarPlatform.ToolbarMoreRect().Center.Y) < 0;
+Console.WriteLine($"[verify] legacy toolbar mirror order={legacyToolbarOrder} overflow={legacyToolbarPlatform.HasToolbarOverflow} assert={legacyToolbarMirrorOk}");
+if (!legacyToolbarMirrorOk)
+{
+    throw new InvalidOperationException("the LEGACY toolbar order/enabled/secondary mirror is missing or drifted");
+}
+
+var legacyStar = legacyToolbarPlatform.ToolbarItems[3];
+bool legacyToolbarIconOk = legacyStar.Glyph == "\ue838" && Math.Abs(legacyStar.GlyphFontSize - 22) < 0.01 &&
+    legacyStar.GlyphColor.Equals(Colors.Orange) && legacyStar.Text == "star" && legacyStar.Activate is not null;
+Console.WriteLine($"[verify] legacy toolbar icon glyph={legacyStar.Glyph is not null} size={legacyStar.GlyphFontSize:0.#} assert={legacyToolbarIconOk}");
+if (!legacyToolbarIconOk)
+{
+    throw new InvalidOperationException("the LEGACY toolbar FontImageSource glyph mirror is missing or drifted");
+}
+
+RectF legacyEventRect = legacyToolbarPlatform.ToolbarItemRect(4);
+t6Renderer.HandleTouch(legacyToolbarNav, true, false, legacyEventRect.Center.X, legacyEventRect.Center.Y);
+t6Renderer.HandleTouch(legacyToolbarNav, false, true, legacyEventRect.Center.X, legacyEventRect.Center.Y);
+RectF legacyEarlyRect = legacyToolbarPlatform.ToolbarItemRect(0);
+t6Renderer.HandleTouch(legacyToolbarNav, true, false, legacyEarlyRect.Center.X, legacyEarlyRect.Center.Y);
+t6Renderer.HandleTouch(legacyToolbarNav, false, true, legacyEarlyRect.Center.X, legacyEarlyRect.Center.Y);
+RectF legacyOffRect = legacyToolbarPlatform.ToolbarItemRect(2);
+t6Renderer.HandleTouch(legacyToolbarNav, true, false, legacyOffRect.Center.X, legacyOffRect.Center.Y);
+t6Renderer.HandleTouch(legacyToolbarNav, false, true, legacyOffRect.Center.X, legacyOffRect.Center.Y);
+bool legacyToolbarEventsOk = legacyToolbarClicks == 10010;
+Console.WriteLine($"[verify] legacy toolbar events clicks={legacyToolbarClicks} assert={legacyToolbarEventsOk}");
+if (!legacyToolbarEventsOk)
+{
+    throw new InvalidOperationException("the LEGACY toolbar Clicked/Command/disabled activation is missing or drifted");
+}
+
+RectF legacyMoreRect = legacyToolbarPlatform.ToolbarMoreRect();
+t6Renderer.HandleTouch(legacyToolbarNav, true, false, legacyMoreRect.Center.X, legacyMoreRect.Center.Y);
+t6Renderer.HandleTouch(legacyToolbarNav, false, true, legacyMoreRect.Center.X, legacyMoreRect.Center.Y);
+bool legacyOverflowOpened = legacyToolbarPlatform.ToolbarOverflowOpen;
+RectF legacyOverflowRow = legacyToolbarPlatform.ToolbarOverflowRect(0);
+t6Renderer.HandleTouch(legacyToolbarNav, true, false, legacyOverflowRow.Center.X, legacyOverflowRow.Center.Y);
+t6Renderer.HandleTouch(legacyToolbarNav, false, true, legacyOverflowRow.Center.X, legacyOverflowRow.Center.Y);
+bool legacyToolbarOverflowOk = legacyOverflowOpened && legacyToolbarClicks == 11010 && !legacyToolbarPlatform.ToolbarOverflowOpen;
+Console.WriteLine($"[verify] legacy toolbar overflow opened={legacyOverflowOpened} clicks={legacyToolbarClicks} open={legacyToolbarPlatform.ToolbarOverflowOpen} assert={legacyToolbarOverflowOk}");
+if (!legacyToolbarOverflowOk)
+{
+    throw new InvalidOperationException("the LEGACY toolbar overflow dropdown is missing or drifted");
+}
+
+int legacyShellClicks = 0;
+var legacyShellPage = new ContentPage { Title = "shellbar", Content = new Label { Text = "shellbar" } };
+legacyShellPage.ToolbarItems.Add(new ToolbarItem { Text = "ShellSync", Command = new Command(() => legacyShellClicks++) });
+var legacyToolbarShell = new Shell();
+legacyToolbarShell.Items.Add(new ShellContent { Title = "bar", ContentTemplate = new DataTemplate(() => legacyShellPage) });
+OpenHarmonyHandlerConnector.ConnectTree(legacyToolbarShell);
+legacyToolbarShell.Measure(500, 400);
+legacyToolbarShell.Arrange(new Rect(0, 0, 500, 400));
+t6Renderer.Render(legacyToolbarShell, 500, 400);
+var legacyShellPlatform = (OpenHarmonyView)legacyToolbarShell.Handler!.PlatformView!;
+RectF legacyShellItem = legacyShellPlatform.ToolbarItemRect(0);
+t6Renderer.HandleTouch(legacyToolbarShell, true, false, legacyShellItem.Center.X, legacyShellItem.Center.Y);
+t6Renderer.HandleTouch(legacyToolbarShell, false, true, legacyShellItem.Center.X, legacyShellItem.Center.Y);
+bool legacyToolbarShellOk = legacyShellPlatform.ShowsToolbar && legacyShellPlatform.ToolbarItems.Count == 1 &&
+    legacyShellPlatform.ToolbarItems[0].Text == "ShellSync" && legacyShellClicks == 1;
+Console.WriteLine($"[verify] legacy toolbar shell items={legacyShellPlatform.ToolbarItems.Count} shows={legacyShellPlatform.ShowsToolbar} rect={legacyShellItem} clicks={legacyShellClicks} assert={legacyToolbarShellOk}");
+if (!legacyToolbarShellOk)
+{
+    throw new InvalidOperationException("the LEGACY shell toolbar mirror or hit-test is missing or drifted");
+}
+
+string? legacyMirrorPath = FindHostSource("OpenHarmonyToolbarMirror.cs");
+string legacyMirror = legacyMirrorPath is null ? string.Empty : File.ReadAllText(legacyMirrorPath);
+string legacyViewSource = File.ReadAllText(FindHostSource("OpenHarmonyView.cs")!);
+string legacyRendererSource = File.ReadAllText(FindHostSource("OpenHarmonyWindowRenderer.cs")!);
+bool legacyToolbarSourceOk = legacyMirror.Contains("item.Order == ToolbarItemOrder.Secondary ? 1 : 0") &&
+    legacyMirror.Contains("case FontImageSource font when") &&
+    legacyMirror.Contains("IMenuItemController") &&
+    legacyViewSource.Contains("private void DrawToolbarItems(") &&
+    legacyViewSource.Contains("public void DrawToolbarOverflow(") &&
+    legacyViewSource.Contains("public float ToolbarBarHeight =>") &&
+    legacyRendererSource.Contains("_toolbarOverflowView") &&
+    legacyRendererSource.Contains("toolbarOverflow.DrawToolbarOverflow(_canvas);");
+Console.WriteLine($"[verify] legacy toolbar source mirror={legacyMirror.Length > 0} assert={legacyToolbarSourceOk}");
+if (!legacyToolbarSourceOk)
+{
+    throw new InvalidOperationException("the LEGACY toolbar source contract is missing or drifted");
+}
 
 // Value controls: tap the check box / switch, drag the slider.
 void TapView(View view)
@@ -9966,8 +10078,8 @@ bool n17TitleOk = n17Chrome.Contains("internal sealed class OpenHarmonyShellChro
     n17Chrome.Contains("internal sealed class OpenHarmonyShellTitleViewRow");
 bool n17ToolbarOk = n17Chrome.Contains("UpdateToolbar(shell.CurrentPage);") &&
     n17Chrome.Contains("private void UpdateToolbar(Page? page)") &&
-    n17Chrome.Contains("_view.ToolbarItems.Add((captured.Text ?? string.Empty, () => ActivateToolbarItem(captured)));") &&
-    n17Chrome.Contains("private static void ActivateToolbarItem(ToolbarItem item)");
+    n17Chrome.Contains("OpenHarmonyToolbarMirror.Fill(_view.ToolbarItems, _toolbarPage?.ToolbarItems);") &&
+    n17Chrome.Contains("item.PropertyChanged += OnToolbarItemChanged;");
 bool n17WiringOk = n17ShellHandler.Contains("private OpenHarmonyShellChrome Chrome =>") &&
     n17ShellHandler.Contains("_chrome ??= new OpenHarmonyShellChrome(PlatformView, () => OpenHarmonyBridge.RequestRedraw());") &&
     n17ShellHandler.Contains("handler.Chrome.Apply(shell);");

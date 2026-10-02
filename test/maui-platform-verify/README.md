@@ -1078,3 +1078,19 @@ parse.
   managed round trip when the kit is present. That is 4 lines: 531 + 4 = 535 = 522 interaction
   checks + 4 fuzz + 1 frame perf + 8 a11y perf; the workflow floor follows the printed line
   (535 - 20 = 515).
+
+- L-LEGACY Core Toolbar (2026-10-03): six lines cover the toolbar surface beyond plain text.
+  `legacy toolbar mirror` requires a page's mixed ToolbarItems in mirror order
+  `early,default,off,star,event,late,overflow` (Default+Primary by Priority, Secondary behind
+  the overflow), `off` mirrored disabled and `HasToolbarOverflow` true; `legacy toolbar icon`
+  requires the FontImageSource glyph (`\ue838`, size 22, colour) to materialise on the row;
+  `legacy toolbar events` requires a primary tap to fire Clicked once, a Command once and a
+  disabled item nothing; `legacy toolbar overflow` requires the "more" affordance to open the
+  dropdown, a row tap to activate the secondary item and close it; `legacy toolbar shell`
+  requires the Shell title bar to mirror the current page's item and activate it through the
+  renderer hit-test (the chrome previously mirrored without drawing); `legacy toolbar source`
+  pins `OpenHarmonyToolbarMirror`, `OpenHarmonyView.DrawToolbarItems`/`DrawToolbarOverflow` and
+  the renderer's deferred `_toolbarOverflowView`. The slice half adds
+  `OpenHarmonyToolbarItem` + `OpenHarmonyToolbarMirror` and the primary/overflow draw/hit-test
+  paths to both bars. That is 6 lines; the suite total moves 566 -> 572 (floor 552), measured
+  `checks=570 total=572 floor=552 assert=True` with the in-flight SAMPLE-FIX batch in the tree.
