@@ -28,6 +28,14 @@
          BlazorWebView package reference; the demo needs both or a BlazorWebView control has no
          OpenHarmony handler and renders nothing. -->
     <DefineConstants>$(DefineConstants);OPENHARMONY_BLAZOR_WEBVIEW</DefineConstants>
+    <!-- S1/#app mount (SAMPLE-FIX): the same opt-in as hello-maui-razor. Microsoft.AspNetCore.
+         Components.WebView's JsonSerializerOptionsProvider only adds its reflection type-info
+         resolver when JsonSerializer.IsReflectionEnabledByDefault is true, and the .NET SDK turns
+         that switch off as soon as the AOT publish is trimmed. The slice's static-ctor touches
+         root the value types the IPC serializes (FIX-BWVMount/FIX-JSCALL), but keeping the
+         resolver on is what the device-verified razor sample runs with; mirror it so the restored
+         BlazorWebView demo mounts under the same conditions. -->
+    <JsonSerializerIsReflectionEnabledByDefault>true</JsonSerializerIsReflectionEnabledByDefault>
     <!-- The MAUI platform slice lives in the maui-ohos fork; point this at its sources. -->
     <OpenHarmonyMauiPlatformDir Condition=" '$(OpenHarmonyMauiPlatformDir)' == '' ">$(MSBuildThisFileDirectory)../../../maui-ohos/src/Core/src/Platform/OpenHarmony</OpenHarmonyMauiPlatformDir>
     <OpenHarmonyHostingDir Condition=" '$(OpenHarmonyHostingDir)' == '' ">$(MSBuildThisFileDirectory)../../src</OpenHarmonyHostingDir>

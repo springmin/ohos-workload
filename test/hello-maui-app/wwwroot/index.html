@@ -20,14 +20,18 @@
     4. https://0.0.0.0/_framework/blazor.webview.js and Blazor.start() on this
        document (the page does not load the framework script itself).
 
-  FRAMEWORK FILE (why _framework/blazor.modules.json exists)
+  FRAMEWORK FILES (_framework/blazor.modules.json + blazor.webview.js)
   Blazor.start() in blazor.webview.js first fetches _framework/blazor.modules.json (the
   JS initializer list) and only then registers its IPC callback through
-  window.external.receiveMessage and sends the AttachPage message. The SDK staging
-  target stages blazor.webview.js but no modules.json (this app is not a Razor/static
-  web assets project), so wwwroot/_framework/blazor.modules.json carries the empty
-  initializer list. Without it the fetch 404s, Blazor.start() rejects and no __bwv:
-  traffic runs; the probes and the ping below still work because they only need the
+  window.external.receiveMessage and sends the AttachPage message. This project is a
+  Microsoft.NET.Sdk.Razor project (since the 2fee278 fix), so the static-web-assets
+  publish pipeline produces both files as package assets and the SDK staging target copies
+  them into the payload: _framework/blazor.webview.js is copied explicitly and
+  _framework/blazor.modules.json travels with the @(MauiAsset) set. An app-local
+  wwwroot/_framework/blazor.modules.json must NOT be added - it conflicts with the
+  package's canonical asset (W1 evaluation section 3.1, "Conflicting assets with the same
+  target path"). Without modules.json the fetch 404s, Blazor.start() rejects and no
+  __bwv: traffic runs; the probes and the ping below still work because they only need the
   shell shim, which is installed independently.
 
   EXPECT LINES (probe table, Blazor root document https://0.0.0.0/):

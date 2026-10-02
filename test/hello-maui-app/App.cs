@@ -213,6 +213,38 @@ public sealed class App : Application
         return new VerticalStackLayout { Spacing = 8, Children = { caption, play, stop, status } };
     }
 
+    /// <summary>
+    /// S1/#app mount demo. The BlazorWebView was dropped from this page when MULTI-OVERLAY-FULL
+    /// replaced it with the third hybrid (0e0129e); the mount itself was never re-verified on the
+    /// demo after the Blazor IPC fixes, and the kit notes recorded it as an open "Blazor #app not
+    /// mounted" item. It is restored on demand here: the fixed-height host exists from the start,
+    /// so adding the control does not move the hybrids, and the LRU pool preempts a hybrid slot
+    /// for it. The root component is BlazorCounter (see BlazorCounter.cs), mounted at #app in
+    /// wwwroot/index.html.
+    ///
+    /// NativeAOT root: the WebView renderer creates the root component through
+    /// ActivatorUtilities over <see cref="RootComponent.ComponentType"/>, and that property
+    /// carries no DynamicallyAccessedMembers annotation, so a trimmed publish would remove the
+    /// component's constructor and the attach fails ("A suitable constructor ... could not be
+    /// located", FIX-BWVMount). PublicConstructors alone is not enough: the renderer also
+    /// reflects over the component's members (activation/parameters), so All is the safe root.
+    /// </summary>
+    [DynamicDependency(DynamicallyAccessedMemberTypes.All, typeof(BlazorCounter))]
+    private static BlazorWebView BuildBlazorWebView()
+    {
+        var blazor = new BlazorWebView
+        {
+            HostPage = "wwwroot/index.html",
+            HeightRequest = 280,
+        };
+        blazor.RootComponents.Add(new RootComponent
+        {
+            Selector = "#app",
+            ComponentType = typeof(BlazorCounter),
+        });
+        return blazor;
+    }
+
     private static ContentPage BuildPage()
     {
         // W22-13: Essentials - the counter survives restarts through Preferences.
@@ -250,7 +282,7 @@ public sealed class App : Application
         var hybridBStatus = new Label { Text = "hybrid B: loading hybrid-b.html", FontSize = 20 };
         hybridB.RawMessageReceived += (_, e) => SetStatus(hybridB, hybridBStatus, $"B raw: {e.Message}");
 
-        var webStatus = new Label { Text = "MULTI-OVERLAY-FULL: 2 hybrids live, add web C for LRU", FontSize = 20 };
+        var webStatus = new Label { Text = "MULTI-OVERLAY-FULL: 2 hybrids live, add web C / Blazor for LRU", FontSize = 20 };
         var activateA = new Button { Text = "Activate hybrid A (LRU restore)", FontSize = 24 };
         activateA.Clicked += async (_, _) =>
         {
@@ -266,13 +298,17 @@ public sealed class App : Application
             webStatus.Text = $"hybrid B activated (eval: {result ?? "null"})";
         };
 
-        // web C is a third HybridWebView, added to the page on demand so the two hybrids are the
+        // web C is a third web control, added to the page on demand so the two hybrids are the
         // first two slot owners. It serves the same payload root as A/B (the context base the
-        // three handlers share) and gives the LRU pool a third owner whose claim preempts the
-        // least-recently-used slot. The BlazorWebView demonstration stays available to apps and
-        // the suite (Program.cs registration and the slice handler are unchanged); it is not in
-        // this page's slot demo because its origin is served from the app content root, which the
-        // payload-in-libs/zip launch modes resolve differently.
+        // handlers share) and gives the LRU pool a third owner whose claim preempts the
+        // least-recently-used slot.
+        //
+        // S1/#app mount demo (SAMPLE-FIX): the same host carries the restored BlazorWebView, so
+        // the limit-2 pool always contains A, B and exactly one on-demand third control - the
+        // hybrid C LRU demo and the Blazor #app mount demo each get the visible host without
+        // moving the other controls. Requesting one swaps out the other; re-adding a swapped-out
+        // control connects its handler again (the Blazor origin, the mount and the counter work
+        // under both payload modes, see BuildBlazorWebView).
         var hybridC = new HybridWebView
         {
             HybridRoot = "wwwroot",
@@ -282,16 +318,30 @@ public sealed class App : Application
         hybridC.Invoker = new EchoInvoker("C");
         var hybridCStatus = new Label { Text = "hybrid C: not added yet", FontSize = 20 };
         hybridC.RawMessageReceived += (_, e) => SetStatus(hybridC, hybridCStatus, $"C raw: {e.Message}");
-        var webCHost = new Grid { HeightRequest = 280, BackgroundColor = Colors.Gainsboro };
+
+        var blazor = BuildBlazorWebView();
+        var blazorStatus = new Label { Text = "Blazor #app: not added yet", FontSize = 20 };
+
+        var extraHost = new Grid { HeightRequest = 280, BackgroundColor = Colors.Gainsboro };
         var addC = new Button { Text = "Add web C (3rd hybrid) - LRU preempts the oldest slot", FontSize = 22 };
+        var addBlazor = new Button { Text = "Add Blazor (#app mount)", FontSize = 22 };
         addC.Clicked += (_, _) =>
         {
-            if (webCHost.Children.Count == 0)
-            {
-                webCHost.Children.Add(hybridC);
-                addC.Text = "web C added (3 web controls, 2 slots)";
-                hybridCStatus.Text = "hybrid C: loading hybrid-c.html";
-            }
+            extraHost.Children.Clear();
+            extraHost.Children.Add(hybridC);
+            addC.Text = "web C added (3 web controls, 2 slots)";
+            addBlazor.Text = "Add Blazor (#app mount)";
+            hybridCStatus.Text = "hybrid C: loading hybrid-c.html";
+            blazorStatus.Text = "Blazor #app: swapped out";
+        };
+        addBlazor.Clicked += (_, _) =>
+        {
+            extraHost.Children.Clear();
+            extraHost.Children.Add(blazor);
+            addBlazor.Text = "Blazor added (#app mount)";
+            addC.Text = "Add web C (3rd hybrid) - LRU preempts the oldest slot";
+            blazorStatus.Text = "Blazor #app: loading wwwroot/index.html";
+            hybridCStatus.Text = "hybrid C: swapped out";
         };
 
         var status = new Label { Text = "Tap the counter", FontSize = 28 };
