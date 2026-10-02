@@ -40,7 +40,7 @@ on:
         description: 'maui-ohos commit SHA to compile (defaults to the pinned feature/openharmony tip)'
         required: false
         type: string
-        default: 'be09a48817989841b6e156e6a86ae12b03bde422'
+        default: '52b082a071989841b6e156e6a86ae12b03bde422'
   push:
     branches: [ master ]
   pull_request:
@@ -52,7 +52,7 @@ permissions:
 
 # Reproducible cross-repo compile: the MAUI slice is checked out at an exact commit, not the
 # mutable feature/openharmony branch, so a push to the fork cannot change what this gate compiles.
-# The default is the feature/openharmony tip: be09a48817 (FIX-BACKSIZE: the system Back press
+# The default is the feature/openharmony tip: 52b082a071 (FIX-BACKSIZE: the system Back press
 # from the shell/host bridge closes a presented drawer - the flyout/shell handlers subscribe to
 # OpenHarmonyBridge.BackPressed and write IsPresented/FlyoutIsPresented, otherwise report
 # unhandled - and the BlazorWebView handler reports a real desired size (width = the constraint,
@@ -102,7 +102,7 @@ permissions:
 # and refresh this comment when the harness pins or the tip move (workflow_dispatch can compile
 # any commit).
 env:
-  MAUI_OHOS_REF: ${{ github.event.inputs.maui_ohos_ref || 'be09a48817989841b6e156e6a86ae12b03bde422' }}
+  MAUI_OHOS_REF: ${{ github.event.inputs.maui_ohos_ref || '52b082a071989841b6e156e6a86ae12b03bde422' }}
   # setup-dotnet installs the requested 11.0.x preview into DOTNET_INSTALL_DIR; on Linux that
   # defaults to /usr/share/dotnet, which a per-user cache cannot persist. Point it at ~/.dotnet
   # (the action resolves the ~ prefix against $HOME) so the cache step below actually avoids the

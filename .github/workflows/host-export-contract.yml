@@ -22,7 +22,7 @@ on:
         description: 'maui-ohos commit SHA to cross-check (defaults to the pinned slice tip)'
         required: false
         type: string
-        default: 'be09a48817989841b6e156e6a86ae12b03bde422'
+        default: '52b082a071989841b6e156e6a86ae12b03bde422'
   push:
     branches: [ master ]
   pull_request:
@@ -32,7 +32,7 @@ permissions:
 
 # Reproducible cross-repo check: the slice is checked out at an exact commit, not the mutable
 # feature/openharmony branch, so a push to the fork cannot change what this gate verifies.
-# Current tip: be09a48817 (FIX-BACKSIZE: managed-only for this contract - the system Back press
+# Current tip: 52b082a071 (FIX-BACKSIZE: managed-only for this contract - the system Back press
 # routing and the BlazorWebView desired size are slice-side, and the host-side registration hook
 # `ohos_host_register_back_pressed` is this repository's own addition) on 47d79add01 (FIX-WVP:
 # shell overlay px->vp/hybrid arbitration/z-order/suspend;
@@ -73,7 +73,7 @@ permissions:
 # bridge) the host export contract is 150/150).
 # Advance the pin deliberately, in lockstep with the interaction/pixel gates.
 env:
-  MAUI_OHOS_REF: ${{ github.event.inputs.maui_ohos_ref || 'be09a48817989841b6e156e6a86ae12b03bde422' }}
+  MAUI_OHOS_REF: ${{ github.event.inputs.maui_ohos_ref || '52b082a071989841b6e156e6a86ae12b03bde422' }}
 
 jobs:
   contract:
