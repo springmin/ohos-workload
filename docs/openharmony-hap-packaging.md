@@ -23,8 +23,10 @@ resources/base/..., resources/rawfile/{app.json, dotnet.zip}
 file) from `templates/module.json.template`: the task reads the whole template, substitutes the
 `@NAME@` tokens in their JSON context (a token inside a string is escaped as a JSON string, a bare
 token must be a JSON literal such as `60000020` or `true`), inserts `compileSdkVersion`/
-`compileSdkType` after `app.apiReleaseType` and the opt-in `requestPermissions` member, and
-validates the result as JSON before writing it (only when the bytes changed). A template with an
+`compileSdkType` after `app.apiReleaseType`, the opt-in `requestPermissions` member and - when
+`OpenHarmonyAppLinkHosts` is set - the app-link skill element into `module.abilities[0].skills`
+(see "Deep links / activation"), and validates the result as JSON before writing it (only when the
+bytes changed). A template with an
 unknown token, a non-literal bare token or otherwise invalid JSON fails the build instead of
 packing a broken manifest. The previous implementation read the template line-by-line and joined
 the lines, so a template with any other formatting silently produced invalid JSON.
@@ -1234,12 +1236,27 @@ four decision points:
   stays queued and is retried when the app host reports the window ready. Without a Shell, a
   route registered with `Routing.RegisterRoute` is pushed onto the live `NavigationPage`; an
   unresolved route is ignored with a status line. No path throws into the shell callback.
-- **Host manifest**: `OpenHarmonyAppLinkHosts` (`;`-separated, for example
-  `example.com;www.example.com`) is written into `resources/rawfile/app.json` as `linkHosts`;
-  unset keeps the previous app.json bytes. The managed side enforces the allow-list even though
-  the system delivers an https link only when `module.json` declares the matching skill uri - the
-  manifest-side app-linking declaration is a device-side step that is not part of this template
-  yet, so the off-device contract is the app.json list plus the managed check.
+- **Host manifest / app-link declaration**: `OpenHarmonyAppLinkHosts` (`;`-separated, for example
+  `example.com;www.example.com`) is one property feeding both declaration sides of the contract,
+  so they cannot drift:
+  - `resources/rawfile/app.json` `linkHosts` - the list the ArkTS shell forwards with every
+    activation and the managed side enforces (`OpenHarmonyAppLinks.AllowedHttpsHosts` is seeded
+    from it and is extendable at run time);
+  - `module.json` `abilities[0].skills[].uris` - the app-link skill element
+    `OpenHarmonyGenerateModuleJson` appends:
+    `{"entities":["entity.system.browsable"],"actions":["ohos.want.action.viewData"],
+    "uris":[{"scheme":"https","host":"example.com"},{"scheme":"https","host":"www.example.com"}],
+    "domainVerify":true}`. The first (home) skill element stays untouched; hosts are trimmed and
+    de-duplicated, and an invalid host (letters/digits/`.`/`-` only, at least one dot) fails the
+    build. `domainVerify` comes from `OpenHarmonyAppLinkDomainVerify` (default `true`: the AGC
+    App Linking domain gate, expected once the hosts are registered; pass `false` to declare the
+    uris before registration). Unset `OpenHarmonyAppLinkHosts` keeps both files at their previous
+    bytes - the generated `module.json` stays byte-identical.
+  The system delivers an `https://` link only when the signature matches the AGC registration, so
+  a self-signed/debug hap still needs an explicit want (`aa start -U`) for the managed route; the
+  declaration is locally verifiable (`scripts/selftest-tasks.sh` unit checks +
+  `scripts/selftest-hap-targets.sh` T1/T2/T3 fixtures assert the skill bytes and the invalid-host
+  rejection).
 
 Gates: the interaction suite's ten P2c checks pin the shell sources (all three packs
 byte-identical), the NAPI method and both C exports, the bounded host queue, the hosting
@@ -1249,7 +1266,8 @@ sequence de-duplication, cold-start pending, Shell approval);
 and the provenance gate pins the current abc (UI 281,052 B / `5c06143a...`, headless 20,916 B /
 `54a1a201...`); the nm export gate covers
 `ohos_host_notify_activation`/`ohos_host_register_activation` in the 143-name contract. On-device
-`onNewWant`/app-link delivery and the manifest skills still need device verification.
+`onNewWant`/app-link delivery still needs device verification (the manifest declaration is now
+generated and locally asserted).
 
 ### ArkTS shell conformance (COMP-ARKTS)
 
@@ -1464,15 +1482,17 @@ defined inline with `RoslynCodeTaskFactory` (task-assembly migration, audit V8):
   The DLL is committed into all three preview packs (the pack targets must stay byte-identical), and
   `scripts/lint-packs.sh` fails the pack lint when a `UsingTask` reference does not resolve to a file
   the pack actually ships.
-- **Tests**: `test/openharmony-tasks-tests/` runs the six classes with a stub `IBuildEngine` (95
+- **Tests**: `test/openharmony-tasks-tests/` runs the six classes with a stub `IBuildEngine` (138
   checks: zip determinism/ordinal order/fixed timestamp/skip names, runtime-ELF staging, payload
   staging layout, payload-marker schema + escaping, feature-permission matrix/request-point/strict
-  mode, module.json substitution/escaping/insertions/negatives). `scripts/selftest-tasks.sh` builds
+  mode, module.json substitution/escaping/insertions/negatives and the app-link skill insertion
+  (`OpenHarmonyAppLinkHosts` -> `skills[].uris` + `domainVerify`, invalid/empty host and missing
+  anchor negatives)). `scripts/selftest-tasks.sh` builds
   the assembly and the test host, runs the suite, and fails when the committed pack copies drift from
   the freshly built Release assembly (re-run `scripts/prepare-packs.sh`); it is part of the
   `scripts/preflight.sh` repository gates. `scripts/selftest-hap-targets.sh` T1 additionally pins
-  the six `UsingTask` entries and the absence of inline code, and its T2/T3/T5 fixtures run the
-  compiled tasks through the real pack targets.
+  the six `UsingTask` entries, the app-link parameter wiring and the absence of inline code, and its
+  T2/T3/T5 fixtures run the compiled tasks through the real pack targets.
 
 ## Development loop: devloop.sh
 

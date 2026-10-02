@@ -102,6 +102,20 @@
          the ArkUI pages), and set OpenHarmonyUIPage to the page record (e.g. pages/Index).
          The headless shell (this pack's template) is used when the property is empty. -->
     <OpenHarmonyUIPage Condition=" '$(OpenHarmonyUIPage)' == '' "></OpenHarmonyUIPage>
+    <!-- Deep links / app links (see "Deep links / activation" in the packaging doc):
+         OpenHarmonyAppLinkHosts is the ';'-separated https host allow-list (for example
+         "example.com;www.example.com"). One property feeds both declaration sides of the P2c
+         contract, so they cannot drift: the hosts become module.json
+         abilities[0].skills[].uris (the system app-link dispatch) and resources/rawfile/app.json
+         linkHosts (the managed OpenHarmonyAppLinks allow-list). Empty keeps both files at their
+         previous bytes. -->
+    <OpenHarmonyAppLinkHosts Condition=" '$(OpenHarmonyAppLinkHosts)' == '' "></OpenHarmonyAppLinkHosts>
+    <!-- domainVerify on the generated app-link skill: true (default) emits
+         "domainVerify":true, the system then dispatches an https link only after the host
+         passed the AGC App Linking domain verification. Pass false before the hosts are
+         registered (the uris stay declared, the gate stays off) - see "Deep links /
+         activation" in the packaging doc. -->
+    <OpenHarmonyAppLinkDomainVerify Condition=" '$(OpenHarmonyAppLinkDomainVerify)' == '' ">true</OpenHarmonyAppLinkDomainVerify>
     <!-- Default ArkTS shell: the prebuilt UI shell (official toolchain, ability + page) when a
          page is requested, otherwise the headless shell compiled from the same sources. -->
     <OpenHarmonyArktsModulesAbc Condition=" '$(OpenHarmonyArktsModulesAbc)' == '' and '$(OpenHarmonyUIPage)' != '' ">$(MSBuildThisFileDirectory)../templates/ets/modules.ui.abc</OpenHarmonyArktsModulesAbc>
@@ -518,8 +532,11 @@
     <!-- module.json: see the OpenHarmonyGenerateModuleJson UsingTask. The task reads the whole
          template, substitutes the @NAME@ tokens in their JSON context (string values are escaped,
          bare values must be JSON literals), inserts compileSdkVersion/compileSdkType after
-         app.apiReleaseType and requestPermissions as a module member, and validates the result.
-         The bytes are unchanged for the previous single-line template and API-band values. -->
+         app.apiReleaseType, requestPermissions as a module member, and - when
+         OpenHarmonyAppLinkHosts is set - the app-link skill element (browsable/viewData + one
+         https uri per host + domainVerify per OpenHarmonyAppLinkDomainVerify) into
+         module.abilities[0].skills, then validates the result. The bytes are unchanged for the
+         previous single-line template and API-band values. -->
     <ItemGroup>
       <_OpenHarmonyModuleJsonReplacement Include="BUNDLE_NAME"><Value>$(OpenHarmonyBundleName)</Value></_OpenHarmonyModuleJsonReplacement>
       <_OpenHarmonyModuleJsonReplacement Include="VENDOR"><Value>$(OpenHarmonyVendor)</Value></_OpenHarmonyModuleJsonReplacement>
@@ -540,10 +557,12 @@
                                    Replacements="@(_OpenHarmonyModuleJsonReplacement)"
                                    CompileSdkVersion="$(OpenHarmonyCompileSdkVersion)"
                                    CompileSdkType="$(OpenHarmonyCompileSdkType)"
-                                   ExtraPermissions="@(_OpenHarmonyModuleJsonPermission)">
+                                   ExtraPermissions="@(_OpenHarmonyModuleJsonPermission)"
+                                   AppLinkHosts="$(OpenHarmonyAppLinkHosts)"
+                                   AppLinkDomainVerify="$(OpenHarmonyAppLinkDomainVerify)">
       <Output TaskParameter="Changed" PropertyName="_OpenHarmonyModuleJsonChanged" />
     </OpenHarmonyGenerateModuleJson>
-    <Message Importance="high" Text="OpenHarmony: wrote $(_OpenHarmonyHapStageDir)module.json (changed=$(_OpenHarmonyModuleJsonChanged), compileSdk=$(OpenHarmonyCompileSdkType)/$(OpenHarmonyCompileSdkVersion), permissions=@(_OpenHarmonyModuleJsonPermission->Count()))" />
+    <Message Importance="high" Text="OpenHarmony: wrote $(_OpenHarmonyHapStageDir)module.json (changed=$(_OpenHarmonyModuleJsonChanged), compileSdk=$(OpenHarmonyCompileSdkType)/$(OpenHarmonyCompileSdkVersion), permissions=@(_OpenHarmonyModuleJsonPermission->Count()), appLinkHosts='$(OpenHarmonyAppLinkHosts)')" />
 
     <!-- ArkTS shell (compiled), resources and the native host -->
     <Error Condition=" !Exists('$(OpenHarmonyArktsModulesAbc)') " Text="OpenHarmonyArktsModulesAbc does not exist: $(OpenHarmonyArktsModulesAbc)" />
@@ -663,8 +682,10 @@
       <!-- Deep links: OpenHarmonyAppLinkHosts is the semicolon-separated https app-link host
            allow-list (for example "example.com;www.example.com"). It is written into app.json,
            which the ArkTS shell reads and forwards with every activation; the managed side only
-           accepts an https:// link whose host is on the list. Unset keeps the previous app.json
-           bytes exactly ({"assembly":"..."} plus args when given). -->
+           accepts an https:// link whose host is on the list. The same property also declares
+           module.json abilities[0].skills[].uris (the system dispatch side, generated above), so
+           the manifest declaration and the managed allow-list cannot drift. Unset keeps the
+           previous app.json bytes exactly ({"assembly":"..."} plus args when given). -->
       <_OpenHarmonyAppJson>{&quot;assembly&quot;:&quot;$(TargetFileName)&quot;</_OpenHarmonyAppJson>
       <_OpenHarmonyAppJson Condition=" '$(OpenHarmonyAppArgs)' != '' ">$(_OpenHarmonyAppJson),&quot;args&quot;:[&quot;$(OpenHarmonyAppArgs)&quot;]</_OpenHarmonyAppJson>
       <_OpenHarmonyAppLinkHostsJson Condition=" '$(OpenHarmonyAppLinkHosts)' != '' ">$(OpenHarmonyAppLinkHosts.Replace(';', '&quot;,&quot;'))</_OpenHarmonyAppLinkHostsJson>

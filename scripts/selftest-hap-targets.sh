@@ -7,9 +7,12 @@
 #                  RoslynCodeTaskFactory inline code, the DLL shipped byte-identically in all
 #                  three packs) and the ReadLinesFromFile template read stays gone
 #   T2 golden      the task reproduces the documented module.json bytes for the API 20 band, the
-#                  device band with compileSdk+permissions, and a multi-line template
-#   T3 negatives   an unknown template placeholder, a bare non-literal value and a malformed
-#                  template all fail the build instead of packing a broken manifest
+#                  device band with compileSdk+permissions, a multi-line template, and the
+#                  app-link skill insertion (OpenHarmonyAppLinkHosts -> skills[].uris with
+#                  domainVerify; the home skill element stays first)
+#   T3 negatives   an unknown template placeholder, a bare non-literal value, a malformed
+#                  template and an invalid app-link host all fail the build instead of packing a
+#                  broken manifest
 #   T4 toolchain   the strict toolchain resolution fails without a root / with a root that has no
 #                  toolchains/lib, naming the property or the missing file (no $HOME probe)
 #   T5 features    the feature -> permission matrix resolves to module.json entries with
@@ -45,7 +48,7 @@
 # Exit: 0 = all checks passed; 1 = at least one check failed (work dir kept for triage).
 set -u
 
-SELFTEST_VERSION="4 (2026-10-02)"
+SELFTEST_VERSION="5 (2026-10-03)"
 
 log()     { printf '[%s] %s\n' "$(date '+%H:%M:%S')" "$*"; }
 section() { printf '\n=== %s ===\n' "$*"; }
@@ -135,6 +138,16 @@ if ! grep -qF '<ReadLinesFromFile File="$(_OpenHarmonyTemplatesDir)module.json.t
 else
     fail_ "T1 the ReadLinesFromFile template read came back"
 fi
+# App links (P2c): one property feeds module.json skills[].uris and app.json linkHosts. The
+# targets must pass both task parameters and keep the domainVerify default.
+if grep -qF 'AppLinkHosts="$(OpenHarmonyAppLinkHosts)"' "$REF" \
+    && grep -qF 'AppLinkDomainVerify="$(OpenHarmonyAppLinkDomainVerify)"' "$REF" \
+    && grep -qF '<OpenHarmonyAppLinkDomainVerify Condition=' "$REF" \
+    && grep -qF '<OpenHarmonyAppLinkHosts Condition=' "$REF"; then
+    pass_ "T1 the targets declare the app-link hosts/domainVerify contract"
+else
+    fail_ "T1 the app-link hosts/domainVerify contract is missing from the targets"
+fi
 
 # ---- T2/T3: the functional fixture -------------------------------------------------------
 section "T2/T3 module.json fixture"
@@ -219,6 +232,14 @@ proj = f'''<Project>
   <Target Name="BadJson">
     <OpenHarmonyGenerateModuleJson TemplateFile="$(TplBad)" OutputFile="out-bad-json.json" Replacements="@(_R)" />
   </Target>
+  <Target Name="Link">
+    <OpenHarmonyGenerateModuleJson TemplateFile="$(TplA)" OutputFile="out-link.json" Replacements="@(_R)"
+                                   AppLinkHosts="example.com;www.example.com" AppLinkDomainVerify="true" />
+  </Target>
+  <Target Name="BadAppLinkHost">
+    <OpenHarmonyGenerateModuleJson TemplateFile="$(TplA)" OutputFile="out-bad-link.json" Replacements="@(_R)"
+                                   AppLinkHosts="exa mple.com" />
+  </Target>
   <Target Name="DetectNoRoot">
     <CallTarget Targets="_OpenHarmonyDetectToolchain" />
   </Target>
@@ -262,6 +283,32 @@ PY
         || fail_ "T3 BadRaw does not name the JSON-literal requirement"
     grep -qF 'not valid JSON' "$WORK/BadJson.log" && pass_ "T3 BadJson reports the JSON validation failure" \
         || fail_ "T3 BadJson does not report the JSON validation failure"
+
+    # T2 app links: the hosts become module.json abilities[0].skills[1] (uris + domainVerify)
+    # while the home skill element stays first; T3: an invalid host fails the build.
+    run_fixture Link
+    assert_rc 0 $? "T2 the app-link fixture runs"
+    python3 - "$FIX/out-link.json" <<'PY' && pass_ "T2 the app-link skill carries the https uris and domainVerify" || fail_ "T2 the app-link skill is incomplete"
+import json, sys
+module = json.load(open(sys.argv[1]))['module']
+skills = module['abilities'][0]['skills']
+assert len(skills) == 2, skills
+assert skills[0]['entities'] == ['entity.system.home'], skills[0]
+link = skills[1]
+assert link['entities'] == ['entity.system.browsable'], link
+assert link['actions'] == ['ohos.want.action.viewData'], link
+assert link['uris'] == [{'scheme': 'https', 'host': 'example.com'}, {'scheme': 'https', 'host': 'www.example.com'}], link
+assert link['domainVerify'] is True, link
+PY
+    run_fixture BadAppLinkHost
+    rc=$?
+    if [ "$rc" -ne 0 ]; then
+        pass_ "T3 BadAppLinkHost fails the build (exit $rc)"
+    else
+        fail_ "T3 BadAppLinkHost was accepted (expected a failure)"
+    fi
+    grep -qF 'is not a host name' "$WORK/BadAppLinkHost.log" && pass_ "T3 BadAppLinkHost names the invalid host" \
+        || fail_ "T3 BadAppLinkHost does not name the invalid host"
 
     # T4: the strict toolchain resolution (no $HOME probe): with neither root set the target
     # fails naming the property, with a bad root it names the missing toolchains/lib.

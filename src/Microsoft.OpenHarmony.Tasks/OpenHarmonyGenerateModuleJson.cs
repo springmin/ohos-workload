@@ -24,6 +24,15 @@ public class OpenHarmonyGenerateModuleJson : Task
     public string CompileSdkVersion { get; set; }
     public string CompileSdkType { get; set; }
     public ITaskItem[] ExtraPermissions { get; set; }
+    // Deep links: the same ';'-separated https host list the targets write into app.json
+    // linkHosts. Non-empty appends the app-link skill (browsable/viewData + one https uri per
+    // host) to module.abilities[0].skills, so the system can dispatch the app link the managed
+    // allow-list accepts. Empty leaves the template bytes untouched.
+    public string AppLinkHosts { get; set; }
+    // 'true' (the targets default) adds "domainVerify":true to the app-link skill: the system
+    // then dispatches an https link only after the host passed the AGC App Linking domain
+    // verification. Any other value omits the member (the conservative pre-registration form).
+    public string AppLinkDomainVerify { get; set; }
     [Output] public bool Changed { get; set; }
 
     private sealed class JsonNode
@@ -31,6 +40,7 @@ public class OpenHarmonyGenerateModuleJson : Task
         public int Start;
         public int End;
         public List<JsonMember> Members;   // objects only
+        public List<JsonNode> Elements;    // arrays only
     }
 
     private sealed class JsonMember
@@ -260,6 +270,84 @@ public class OpenHarmonyGenerateModuleJson : Task
             edits.Add(new Edit { Start = at, End = at, Text = fragment.ToString() });
         }
 
+        // Deep links: append the app-link skill element to module.abilities[0].skills so the
+        // manifest declares the same https hosts the managed side accepts through app.json
+        // linkHosts. The home skill element stays untouched; unset AppLinkHosts adds no edit.
+        if (!string.IsNullOrEmpty(AppLinkHosts))
+        {
+            var hosts = new List<string>();
+            foreach (string raw in AppLinkHosts.Split(';'))
+            {
+                string host = (raw ?? "").Trim();
+                if (host.Length == 0)
+                {
+                    continue;
+                }
+                bool valid = host.IndexOf('.') > 0 && host.IndexOf('.') < host.Length - 1 && host.IndexOf("..", StringComparison.Ordinal) < 0;
+                foreach (char c in host)
+                {
+                    if (!char.IsLetterOrDigit(c) && c != '.' && c != '-')
+                    {
+                        valid = false;
+                        break;
+                    }
+                }
+                if (!valid || host[0] == '-' || host[host.Length - 1] == '-')
+                {
+                    Log.LogError("OpenHarmony module.json: OpenHarmonyAppLinkHosts value '{0}' is not a host name (letters, digits, '.' and '-' only, at least one dot); pass a ';'-separated list like -p:OpenHarmonyAppLinkHosts=\"example.com;www.example.com\".", host);
+                    return false;
+                }
+                bool known = false;
+                foreach (string seen in hosts)
+                {
+                    if (string.Equals(seen, host, StringComparison.OrdinalIgnoreCase))
+                    {
+                        known = true;
+                        break;
+                    }
+                }
+                if (!known)
+                {
+                    hosts.Add(host);
+                }
+            }
+            if (hosts.Count == 0)
+            {
+                Log.LogError("OpenHarmony module.json: OpenHarmonyAppLinkHosts carries no host after splitting '{0}' on ';'.", AppLinkHosts);
+                return false;
+            }
+            var abilities = FindMember(module, "abilities");
+            JsonNode ability = abilities != null && abilities.Elements != null && abilities.Elements.Count > 0 ? abilities.Elements[0] : null;
+            var skills = ability == null ? null : FindMember(ability, "skills");
+            if (skills == null || skills.Elements == null)
+            {
+                Log.LogError("OpenHarmony module.json: OpenHarmonyAppLinkHosts needs a module.abilities[0].skills array to append the app-link skill to.");
+                return false;
+            }
+            var fragment = new StringBuilder();
+            if (skills.Elements.Count > 0)
+            {
+                fragment.Append(',');
+            }
+            fragment.Append("{\"entities\":[\"entity.system.browsable\"],\"actions\":[\"ohos.want.action.viewData\"],\"uris\":[");
+            for (int n = 0; n < hosts.Count; n++)
+            {
+                if (n > 0)
+                {
+                    fragment.Append(',');
+                }
+                fragment.Append("{\"scheme\":\"https\",\"host\":\"").Append(EscapeJsonString(hosts[n])).Append("\"}");
+            }
+            fragment.Append(']');
+            if (string.Equals(AppLinkDomainVerify, "true", StringComparison.OrdinalIgnoreCase))
+            {
+                fragment.Append(",\"domainVerify\":true");
+            }
+            fragment.Append('}');
+            int at = skills.End - 1;   // before the skills array's closing bracket
+            edits.Add(new Edit { Start = at, End = at, Text = fragment.ToString() });
+        }
+
         if (edits.Count > 0)
         {
             edits.Sort(delegate (Edit a, Edit b) { return b.Start.CompareTo(a.Start); });
@@ -476,6 +564,7 @@ public class OpenHarmonyGenerateModuleJson : Task
         }
         if (c == '[')
         {
+            node.Elements = new List<JsonNode>();
             pos++;
             SkipWhitespace(text, ref pos);
             if (pos < text.Length && text[pos] == ']')
@@ -486,7 +575,7 @@ public class OpenHarmonyGenerateModuleJson : Task
             }
             while (true)
             {
-                ParseValue(text, ref pos);
+                node.Elements.Add(ParseValue(text, ref pos));
                 SkipWhitespace(text, ref pos);
                 if (pos < text.Length && text[pos] == ',')
                 {
