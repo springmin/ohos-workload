@@ -6,23 +6,78 @@
    -> OpenHarmonyWebViewManager.MessageReceived -> event callback -> render batch ->
    window.__dispatchMessageCallback -> DOM update (the count below the button changes).
 
+   ZORDER-NAV adds a REAL NavigationManager navigation: the "Go to second view" button calls
+   Nav.NavigateTo("/second"), which lands in WebViewNavigationManager.NavigateToCore ->
+   IpcSender.Navigate(uri, options) -> IpcCommon.Serialize(OutgoingMessageType.Navigate, uri,
+   NavigationOptions) through the WebView package's reflection-only options. That is the exact
+   serialization the FIX-JSCALL AOT root covers; with the root missing the call dies with
+   "missing native code" and the JS side never receives a Navigate message. On success the JS
+   navigateTo performs the client-side navigation and reports OnLocationChanged back, which
+   flips this component to the second view (DOM evidence in the device dump/screenshot).
+
    @using Microsoft.AspNetCore.Components.Web (via _Imports.razor) is REQUIRED: without it the
    Razor compiler silently compiles @onclick to static markup ("<button @onclick=...>"), so the
    button has no event callback at all (FIX-BWVMount finding). *@
 @namespace HelloMauiRazor
+@using Microsoft.AspNetCore.Components.Routing
 @inject IJSRuntime JS
+@inject NavigationManager Nav
+@implements IDisposable
 
 <h2>BlazorWebView component (.razor)</h2>
-<p>count: @_count (each click round-trips through the shell)</p>
-<p id="probe">probe: @_probeResult</p>
-<button @onclick="Increment">Blazor click</button>
+@if (_navigated)
+{
+    <h2 id="second">second view (Navigate OK)</h2>
+    <p id="loc">location: @_location</p>
+    <button @onclick="GoHome">back to counter</button>
+}
+else
+{
+    <p>count: @_count (each click round-trips through the shell)</p>
+    <p id="probe">probe: @_probeResult</p>
+    <p id="loc">location: @_location</p>
+    <button @onclick="Increment">Blazor click</button>
+    <button @onclick="GoSecond">Go to second view</button>
+}
 
 @code {
     private int _count;
     private bool _probed;
     private string _probeResult = "pending";
+    private string _location = string.Empty;
+    private bool _navigated;
+
+    protected override void OnInitialized()
+    {
+        _location = Nav.Uri;
+        Nav.LocationChanged += OnLocationChanged;
+    }
+
+    public void Dispose() => Nav.LocationChanged -= OnLocationChanged;
+
+    private void OnLocationChanged(object? sender, LocationChangedEventArgs e)
+    {
+        // Fired when the JS navigateTo reported the new location back over the IPC
+        // (IncomingMessageType.OnLocationChanged -> WebViewNavigationManager.LocationUpdated).
+        _location = e.Location;
+        _navigated = new Uri(e.Location).AbsolutePath.TrimEnd('/').EndsWith("/second", StringComparison.Ordinal);
+        Microsoft.OpenHarmony.Hosting.OpenHarmonyBridge.WriteStatus(
+            $"[probe] location changed: {e.Location} navigated={_navigated}");
+        InvokeAsync(StateHasChanged);
+    }
 
     private void Increment() => _count++;
+
+    private void GoSecond()
+    {
+        // ZORDER-NAV: the managed NavigationManager path. If the NavigationOptions AOT root is
+        // missing this throws "missing native code" inside IpcSender.Navigate and the location
+        // never changes; otherwise the LocationChanged handler above flips the view.
+        Microsoft.OpenHarmony.Hosting.OpenHarmonyBridge.WriteStatus("[probe] navigate requested: /second");
+        Nav.NavigateTo("/second");
+    }
+
+    private void GoHome() => Nav.NavigateTo("/");
 
     protected override async Task OnAfterRenderAsync(bool firstRender)
     {
@@ -31,10 +86,12 @@
             return;
         }
         _probed = true;
-        // FIX-BWVMount diagnostics: the WebRenderer's own attach interop call (a
+        // FIX-BWVMount/FIX-JSCALL diagnostics: the WebRenderer's own attach interop call (a
         // DotNetObjectReference argument) is fire-and-forget; reproduce its serialization here
         // so a failure becomes visible (in the page and in dotnet-status.txt) instead of being
-        // swallowed by the async InvokeVoidAsync.
+        // swallowed by the async InvokeVoidAsync. blzProbe is defined by the sample's app.js
+        // (FIX-JSCALL gap): it checks the marshalled reference and returns a string, so the
+        // InvokeAsync<string> result also proves the JS -> .NET result half.
         if (JS is null)
         {
             _probeResult = "JS null";
@@ -45,8 +102,8 @@
             {
                 using var reference = DotNetObjectReference.Create(this);
                 using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(5));
-                await JS.InvokeVoidAsync("blzProbe", cts.Token, reference);
-                _probeResult = "dotnet-ref ok";
+                string? probe = await JS.InvokeAsync<string?>("blzProbe", cts.Token, reference);
+                _probeResult = string.IsNullOrEmpty(probe) ? "blzProbe empty" : probe;
             }
             catch (Exception ex)
             {

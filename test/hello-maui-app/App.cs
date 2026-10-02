@@ -413,12 +413,37 @@ public sealed class App : Application
         webControls.Add(activateB);
         webControls.Add(addC);
         layout.Add(webControls);
-        layout.Add(hybridA);
+        // SAMPLE-FIX: the Blazor toggle is its own row so the existing web-control row keeps its
+        // device-verified width (the three buttons already use most of the window).
+        layout.Add(addBlazor);
+        // ZORDER-NAV: hybrids A and B share one 270-DIP zone and offset by (80,90) DIP instead
+        // of two stacked full rows. The rows are fixed (180 + 90) because the web handler's
+        // GetDesiredSize reports the cell constraint (HeightRequest is not honoured): A fills
+        // row 0 (y 0-180), B spans both rows with a top margin of 90 (y 90-270). A keeps an
+        // exposed strip at the top (y 0-90) and in its left column (x 0-80), B one at the bottom
+        // (y 180-270, x 80-end); the contested band is y 90-180 x 80-end. A touch on an exposed
+        // strip raises that page through the shell's activation z-index, which the device round
+        // verifies with a pixel diff of the contested band. The zone is shorter than the old
+        // stacked rows, so web C's host keeps its place in the window and the LRU demo still runs.
+        var webZone = new Grid
+        {
+            HeightRequest = 270,
+            RowDefinitions =
+            {
+                new RowDefinition { Height = new GridLength(180) },
+                new RowDefinition { Height = new GridLength(90) },
+            },
+        };
+        hybridB.Margin = new Thickness(80, 90, 0, 0);
+        webZone.Add(hybridA, 0, 0);
+        webZone.Add(hybridB, 0, 0);
+        Grid.SetRowSpan(hybridB, 2);
+        layout.Add(webZone);
         layout.Add(hybridAStatus);
-        layout.Add(hybridB);
         layout.Add(hybridBStatus);
-        layout.Add(webCHost);
+        layout.Add(extraHost);
         layout.Add(hybridCStatus);
+        layout.Add(blazorStatus);
         layout.Add(counter);
         layout.Add(entry);
         layout.Add(valueControls);

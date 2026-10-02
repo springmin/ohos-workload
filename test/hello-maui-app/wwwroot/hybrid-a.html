@@ -15,7 +15,12 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Hybrid A</title>
 <style>
-  body { font-family: system-ui, sans-serif; margin: 12px; font-size: 16px; }
+  /* ZORDER-NAV: the tint makes the owner of the contested overlap band obvious in a device
+     screenshot/pixel diff (A = blue, B = orange), independent of the text content; min-height
+     keeps the body filled to the frame edge so the device-side tint analysis sees the full
+     overlay rectangle even where the page content is short. */
+  html, body { min-height: 100%; }
+  body { font-family: system-ui, sans-serif; margin: 12px; font-size: 16px; background: #dbe7ff; box-sizing: border-box; min-height: 100vh; }
   h1 { font-size: 22px; margin: 0 0 6px; }
   button { font-size: 17px; padding: 12px 16px; margin: 4px 8px 4px 0; }
   #status { font-family: ui-monospace, monospace; font-size: 14px; font-weight: bold; }
