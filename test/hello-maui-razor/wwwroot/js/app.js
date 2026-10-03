@@ -15,11 +15,20 @@
   // serialization. The probe was left undefined in kit #40, so the call crossed the wire
   // and then threw a JSException ("blzProbe is not defined"), which made the sample's own
   // probe line useless. Defining it here makes the whole round trip land: .NET serializes
-  // the reference, JS sees the marshalled {"__dotNetObject": id} shape, and the returned
-  // string travels back to the component (probe: dotnet-ref ok).
+  // the reference ({"__dotNetObject": id} on the wire), the interop reviver materializes the
+  // DotNetObject instance for the function, and the returned string travels back to the
+  // component (probe: dotnet-ref ok).
   window.blzProbe = function (reference) {
-    var id = reference && reference.__dotNetObject;
-    return id ? 'dotnet-ref ok' : 'dotnet-ref missing';
+    if (!reference) { return 'dotnet-ref missing'; }
+    // The interop reviver replaces the wire form {"__dotNetObject": id} with the DotNetObject
+    // instance before the JS function runs, so the instance API is the reliable check; the raw
+    // property is kept as a fallback for a different runtime version.
+    if (typeof reference.invokeMethodAsync === 'function' || typeof reference.invokeMethod === 'function') {
+      return 'dotnet-ref ok';
+    }
+    if (reference.__dotNetObject) { return 'dotnet-ref ok'; }
+    var keys = Object.keys(reference).join(',');
+    return keys ? 'dotnet-ref unknown:' + keys : 'dotnet-ref missing';
   };
 
   var status = document.getElementById('status');
