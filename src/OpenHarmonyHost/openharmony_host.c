@@ -57,6 +57,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
+#include <time.h>
 #include <unistd.h>
 
 #include "host_optional.h"  // after the NDK headers: it redirects optional API call sites
@@ -4832,6 +4833,74 @@ int ohos_host_draw_image_bytes_sized(const void* data, int length, float x, floa
                               decode_height > 0 ? (uint32_t)decode_height : 0);
 }
 
+// ---- present telemetry: aggregate, not one status line per frame --------------------------
+// OhosHostRedirectStderr appends fd 2 to <filesDir>/dotnet-status.txt, the only diagnostic
+// channel the ArkTS shell mirrors to hilog; one line per present therefore floods that channel
+// (measured: the shell's 60-line poll tail became 59 canvas lines per poll, and a frame-count
+// harness mis-read it as ~17.7 fps while the compositor was in fact vsync-locked at 60 fps) and
+// grows the status file without bound while an animation presents (~13 MB/h at 60 fps). Keep the
+// exact first-frame/size-change line the device docs' first-frame check greps for, then fold the
+// following presents into one line every 5 s carrying the frame count and the window's
+// average/max interval - the pacing numbers a harness actually needs, at 1/300th the I/O.
+static int g_present_log_w = -1;
+static int g_present_log_h = -1;
+static int g_present_window_frames = 0;      // presents since the window's first line
+static long g_present_window_start_ms = 0;
+static long g_present_last_ms = 0;           // previous present (0 before the first)
+static long g_present_window_max_gap_ms = 0;
+static long g_present_window_gap_sum_ms = 0;
+static long g_present_window_gap_count = 0;
+
+static long OhosHostMonotonicMs(void) {
+    struct timespec ts;
+    if (clock_gettime(CLOCK_MONOTONIC, &ts) != 0) {
+        return 0;
+    }
+    return (long)ts.tv_sec * 1000 + ts.tv_nsec / 1000000;
+}
+
+static void OhosHostLogPresent(int width, int height) {
+    long now = OhosHostMonotonicMs();
+    if (now == 0) {
+        return;  // no monotonic clock: drop telemetry, never the frame itself
+    }
+    if (g_present_last_ms != 0) {
+        long gap = now - g_present_last_ms;
+        if (gap > 0) {
+            if (gap > g_present_window_max_gap_ms) {
+                g_present_window_max_gap_ms = gap;
+            }
+            g_present_window_gap_sum_ms += gap;
+            g_present_window_gap_count++;
+        }
+    }
+    g_present_last_ms = now;
+    g_present_window_frames++;
+    if (width != g_present_log_w || height != g_present_log_h) {
+        // First present, or the surface changed: the exact line the packaging docs quote.
+        fprintf(stderr, "[openharmony-host] canvas presented (%dx%d)\n", width, height);
+        g_present_log_w = width;
+        g_present_log_h = height;
+        g_present_window_start_ms = now;
+        g_present_window_frames = 1;
+        g_present_window_max_gap_ms = 0;
+        g_present_window_gap_sum_ms = 0;
+        g_present_window_gap_count = 0;
+        return;
+    }
+    if (now - g_present_window_start_ms >= 5000 && g_present_window_gap_count > 0) {
+        long avg = g_present_window_gap_sum_ms / g_present_window_gap_count;
+        fprintf(stderr,
+                "[openharmony-host] canvas presented (%dx%d) n=%d avg=%ldms max=%ldms\n",
+                width, height, g_present_window_frames, avg, g_present_window_max_gap_ms);
+        g_present_window_start_ms = now;
+        g_present_window_frames = 1;  // this present opens the next window
+        g_present_window_max_gap_ms = 0;
+        g_present_window_gap_sum_ms = 0;
+        g_present_window_gap_count = 0;
+    }
+}
+
 int ohos_host_draw_present(void) {
     if (g_canvas == NULL || !g_surface_valid || g_surface_state == (int)OHOS_SURFACE_DESTROYED) {
         return -1;
@@ -4862,7 +4931,7 @@ int ohos_host_draw_present(void) {
         }
     }
     // frame's destructor flushes the requested buffer exactly once.
-    fprintf(stderr, "[openharmony-host] canvas presented (%dx%d)\n", width, height);
+    OhosHostLogPresent(width, height);
     return 0;
 }
 

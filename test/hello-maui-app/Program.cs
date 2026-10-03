@@ -34,6 +34,11 @@ public static class Program
         builder.Services.AddMauiBlazorWebView().UsePlatformHandler<OpenHarmonyBlazorWebViewHandler>();
 
         var mauiApp = builder.Build();
+#if FRAMEPACING_PROBE
+        // Opt-in telemetry: subscribes to the frame callback before the host (whose ctor
+        // subscribes) so a callback can be timed through to its present. See FramePacingProbe.cs.
+        FramePacingProbe.Install();
+#endif
         var host = mauiApp.Services.GetRequiredService<OpenHarmonyMauiAppHost>();
 
         OpenHarmonyBridge.WriteStatus("[hello-maui-app] starting MAUI application");

@@ -55,6 +55,9 @@
     <OpenHarmonyAotApp Condition=" '$(OpenHarmonyAotApp)' == '' and '$(PublishAot)' == 'true' ">true</OpenHarmonyAotApp>
     <PublishAot Condition=" '$(OpenHarmonyAotApp)' == 'true' ">true</PublishAot>
     <NativeLib Condition=" '$(OpenHarmonyAotApp)' == 'true' and '$(NativeLib)' == '' ">Shared</NativeLib>
+    <!-- FRAMEPACING: -p:FramepacingProbe=true compiles the per-frame telemetry in
+         (FramePacingProbe.cs). Off by default; the shipped sample is unaffected. -->
+    <DefineConstants Condition=" '$(FramepacingProbe)' == 'true' ">$(DefineConstants);FRAMEPACING_PROBE</DefineConstants>
   </PropertyGroup>
   <PropertyGroup Condition=" '$(OpenHarmonyAotApp)' == 'true' ">
     <DefineConstants>$(DefineConstants);OPENHARMONY_AOT</DefineConstants>
