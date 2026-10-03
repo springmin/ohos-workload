@@ -12,7 +12,7 @@ using Microsoft.Maui.Platform;
 // after the fuzz tail) instead of letting every caller repeat its own threshold constant.
 VerifyLineCountingWriter verifyStdout = new(Console.Out);
 Console.SetOut(verifyStdout);
-const int verifyCheckTotal = 577;                     // documented full [verify] line count (+5 L6 screenshot Jpeg format/quality capture/fallback/helper + title heartbeat behavior/source, +6 LEGACY toolbar primary/overflow/icon/events/shell/source, +3 SAMPLE-FIX hybrid bootstrap pack staging / read-only payload handler / stock-script demo, +4 MULTI-OVERLAY-FULL LRU pool/invoke slot codec/per-slot hybrid shell/slice owner wiring, +4 MULTI-OVL slot pool/wire codec/two-overlay shell/slice wiring, +4 FIX-BACKSIZE Back-press forwarding/drawer drill/ shell drawer/BlazorWebView desired size, +4 FIX-WVP overlay px->vp/degenerate-frame/hybrid-overlay arbitration/suspend-restore (shell+slice), +2 FIX-DISMISS flyout drawer dismiss under the device display conditions, +4 FIX-HOME home page arrange/draw (NavigationPage-in-TabbedPage descent), +4 MS-MODE runtime mode switch, +10 P2c-DEEPLINK, +4 P2b-IMG, +16 P1b-LIST, +10 P1a-ANIM, +2 SEC3 storage/deep-link pins, +5 W-series WebView wiring, +3 T1 InputView mapping, +4 T2 WebView gaps, +4 T3 GraphicsView interaction, +7 T10 modal accessibility, +4 T4 Label formatted text, +4 T5 layout semantics, +6 T7 DatePicker calendar/min-max, +4 T9 window title bar, +4 T11 diagnostics overlay, +1 N2 empty ContentPage arrangement, +6 T8 TableView, +5 T8 uneven rows, +7 T6 RTL flow direction, +5 T22 MainThread bridge, +2 FIX-TABBED tabbed CurrentPage, +4 T13 group footer view/N3 picker IsOpen, +5 T21 system font scale, +3 T21 font scale source wiring, +2 A11Y-TABBED tabbed accessibility, +3 N1 host multi-pointer, +5 T12 CarouselView group slides, +7 T14 rich shell flyout, +10 T14 flyout leftovers (MenuItemTemplate/FlyoutContent/AsMultipleItems), +2 FIX-SHELL shell CurrentPage, +2 A11Y-SHELL shell accessibility, +7 T15 rich Shell.TitleView, +8 T16 structured menus, +3 N4 TitleBar accessibility row, +3 T18 Essentials Map, +4 N5 overlay passthrough suppression, +5 N6 window decorations, +4 T20 media bridge, +3 B2 wasm site in a MAUI WebView, +2 W10 NativeAOT managed entry (host libs-dir resolution + shell AOT payload probe), +1 FIX-JSCALL Blazor IPC enum/struct AOT roots (JSCallResultType/JSCallType/NavigationOptions in the slice context + handler static-ctor touch + stub click-probe removed))
+const int verifyCheckTotal = 580;                     // documented full [verify] line count (+3 FIX-SLICERACE concurrent connect/host storm/ pins, +5 L6 screenshot Jpeg format/quality capture/fallback/helper + title heartbeat behavior/source, +6 LEGACY toolbar primary/overflow/icon/events/shell/source, +3 SAMPLE-FIX hybrid bootstrap pack staging / read-only payload handler / stock-script demo, +4 MULTI-OVERLAY-FULL LRU pool/invoke slot codec/per-slot hybrid shell/slice owner wiring, +4 MULTI-OVL slot pool/wire codec/two-overlay shell/slice wiring, +4 FIX-BACKSIZE Back-press forwarding/drawer drill/ shell drawer/BlazorWebView desired size, +4 FIX-WVP overlay px->vp/degenerate-frame/hybrid-overlay arbitration/suspend-restore (shell+slice), +2 FIX-DISMISS flyout drawer dismiss under the device display conditions, +4 FIX-HOME home page arrange/draw (NavigationPage-in-TabbedPage descent), +4 MS-MODE runtime mode switch, +10 P2c-DEEPLINK, +4 P2b-IMG, +16 P1b-LIST, +10 P1a-ANIM, +2 SEC3 storage/deep-link pins, +5 W-series WebView wiring, +3 T1 InputView mapping, +4 T2 WebView gaps, +4 T3 GraphicsView interaction, +7 T10 modal accessibility, +4 T4 Label formatted text, +4 T5 layout semantics, +6 T7 DatePicker calendar/min-max, +4 T9 window title bar, +4 T11 diagnostics overlay, +1 N2 empty ContentPage arrangement, +6 T8 TableView, +5 T8 uneven rows, +7 T6 RTL flow direction, +5 T22 MainThread bridge, +2 FIX-TABBED tabbed CurrentPage, +4 T13 group footer view/N3 picker IsOpen, +5 T21 system font scale, +3 T21 font scale source wiring, +2 A11Y-TABBED tabbed accessibility, +3 N1 host multi-pointer, +5 T12 CarouselView group slides, +7 T14 rich shell flyout, +10 T14 flyout leftovers (MenuItemTemplate/FlyoutContent/AsMultipleItems), +2 FIX-SHELL shell CurrentPage, +2 A11Y-SHELL shell accessibility, +7 T15 rich Shell.TitleView, +8 T16 structured menus, +3 N4 TitleBar accessibility row, +3 T18 Essentials Map, +4 N5 overlay passthrough suppression, +5 N6 window decorations, +4 T20 media bridge, +3 B2 wasm site in a MAUI WebView, +2 W10 NativeAOT managed entry (host libs-dir resolution + shell AOT payload probe), +1 FIX-JSCALL Blazor IPC enum/struct AOT roots (JSCallResultType/JSCallType/NavigationOptions in the slice context + handler static-ctor touch + stub click-probe removed))
 const int verifyCheckFloor = verifyCheckTotal - 20;   // documented floor convention (total - 20)
 
 // A small image file for the Image handler.
@@ -6791,6 +6791,86 @@ if (!(dismissClosed && dismissOpened && dismissPopover))
 // flags/actions were delivered shifted on device (flags=3/actions=0x10 arrived as
 // flags=68151328/actions=3). The check below reflects the managed signature and parses the C
 // definition plus the shared header, so any arity/type/name drift fails off-device.
+// FIX-SLICERACE helpers: the device startup shape (flyout detail is a tabbed page whose first
+// tab is a navigation page) and the connector's own eligibility walk.
+static FlyoutPage BuildSliceRaceTree()
+{
+    var sliceRaceRows = new VerticalStackLayout { Padding = 20, Spacing = 8 };
+    for (int r = 0; r < 24; r++)
+    {
+        sliceRaceRows.Add(new Label { Text = "race row " + r, FontSize = 20 });
+    }
+    return new FlyoutPage
+    {
+        Flyout = new ContentPage { Title = "Menu", Content = new VerticalStackLayout { Children = { new Label { Text = "race drawer" } } } },
+        Detail = new TabbedPage
+        {
+            Children =
+            {
+                new NavigationPage(new ContentPage { Title = "Home", Content = sliceRaceRows }) { Title = "Home" },
+                new ContentPage { Title = "Second", Content = new Label { Text = "race second" } },
+            },
+        },
+    };
+}
+
+static int SliceRaceCount(IElement root)
+{
+    int count = 0;
+    void Walk(IElement element)
+    {
+        count++;
+        foreach (IElement child in SliceRaceChildren(element)) Walk(child);
+    }
+    Walk(root);
+    return count;
+}
+
+static int SliceRaceUnconnected(IElement root)
+{
+    int missing = 0;
+    void Walk(IElement element)
+    {
+        if (element.Handler is null && OpenHarmonyHandlerConnector.FindSliceHandler(element.GetType()) is not null)
+        {
+            missing++;
+        }
+        foreach (IElement child in SliceRaceChildren(element)) Walk(child);
+    }
+    Walk(root);
+    return missing;
+}
+
+// The reachability the device startup actually connects: the connector's own branches (layout
+// children, navigation content, content-view presented content) plus what the flyout/tabbed
+// handlers connect (flyout/detail, the tabbed current page). A non-current tab is connected on
+// demand, so it is deliberately not part of the expected set.
+static IEnumerable<IElement> SliceRaceChildren(IElement element)
+{
+    switch (element)
+    {
+        case Microsoft.Maui.ILayout layout:
+            foreach (IView child in layout)
+            {
+                if (child is IElement childElement) yield return childElement;
+            }
+            break;
+        case NavigationPage navigation:
+            if (navigation.CurrentPage is IElement current) yield return current;
+            break;
+        case TabbedPage tabbed:
+            if (tabbed.CurrentPage is IElement tabCurrent) yield return tabCurrent;
+            break;
+        case FlyoutPage flyout:
+            if (flyout.Flyout is IElement flyoutPart) yield return flyoutPart;
+            if (flyout.Detail is IElement detailPart) yield return detailPart;
+            break;
+        case IContentView contentView:
+            if (contentView.PresentedContent is IElement presented) yield return presented;
+            break;
+    }
+}
+
 static string? FindHostSource(string relativePath)
 {
     var roots = new List<string?>
@@ -13382,6 +13462,125 @@ Console.WriteLine($"[verify] t20 media status parse state={OpenHarmonyMediaPlaye
 if (!t20StatusParseOk)
 {
     throw new InvalidOperationException("the T20 media status parser drifted");
+}
+
+// ---- FIX-SLICERACE: handler wiring must be serialized ----------------------------------------
+// The device JIT startup crashed with "Handler is already being set elsewhere": the managed app
+// runs on the host's launch thread while the ArkTS shell delivers surface/frame callbacks on the
+// shell thread, and both paths call OpenHarmonyHandlerConnector.ConnectTree (Run vs
+// Arrange). MAUI's Element.SetHandler is not re-entrant, so the race also surfaced as
+// "PlatformView cannot be null here" and non-concurrent collection corruption (WX-HOST-PRCTL
+// JIT logs). The fix serializes the connector and the app host. These checks reduce the race to
+// its primitive: many threads racing ConnectTree over one fresh device-shaped tree (FlyoutPage ->
+// TabbedPage -> NavigationPage -> ContentPage) and a host Arrange/Render storm; the pins keep a
+// future refactor from dropping the locks.
+var sliceRaceTrees = 60;
+var sliceRaceThreads = 4;
+int sliceRaceErrors = 0;
+int sliceRaceUnconnected = 0;
+int sliceRaceNodes = 0;
+string sliceRaceFirstError = string.Empty;
+for (int i = 0; i < sliceRaceTrees; i++)
+{
+    FlyoutPage sliceRaceRoot = BuildSliceRaceTree();
+    sliceRaceNodes = SliceRaceCount(sliceRaceRoot);
+    var sliceRaceFailures = new System.Collections.Concurrent.ConcurrentQueue<Exception>();
+    var sliceRaceWorkers = new System.Threading.Thread[sliceRaceThreads];
+    var sliceRaceGo = new ManualResetEventSlim(false);
+    for (int w = 0; w < sliceRaceThreads; w++)
+    {
+        sliceRaceWorkers[w] = new System.Threading.Thread(() =>
+        {
+            sliceRaceGo.Wait();
+            try
+            {
+                // Every entry point the device startup uses concurrently: the host connects the
+                // whole tree, its handlers' mappers connect flyout/detail, and the tabbed/flyout
+                // arrange paths connect the current page.
+                for (int k = 0; k < 3; k++)
+                {
+                    OpenHarmonyHandlerConnector.ConnectTree(sliceRaceRoot);
+                    OpenHarmonyHandlerConnector.ConnectTree(sliceRaceRoot.Flyout);
+                    OpenHarmonyHandlerConnector.ConnectTree(sliceRaceRoot.Detail);
+                    if (sliceRaceRoot.Detail is TabbedPage raceTabbed && raceTabbed.CurrentPage is IElement raceTab)
+                    {
+                        OpenHarmonyHandlerConnector.ConnectTree(raceTab);
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                sliceRaceFailures.Enqueue(ex);
+            }
+        }) { IsBackground = true };
+    }
+    foreach (System.Threading.Thread worker in sliceRaceWorkers) worker.Start();
+    sliceRaceGo.Set();
+    foreach (System.Threading.Thread worker in sliceRaceWorkers) worker.Join();
+    foreach (Exception ex in sliceRaceFailures)
+    {
+        sliceRaceErrors++;
+        if (sliceRaceFirstError.Length == 0) sliceRaceFirstError = $"{ex.GetType().Name}: {ex.Message}";
+    }
+    sliceRaceUnconnected += SliceRaceUnconnected(sliceRaceRoot);
+}
+bool sliceRaceConnectorOk = sliceRaceErrors == 0 && sliceRaceUnconnected == 0;
+Console.WriteLine($"[verify] slicerace connect storm trees={sliceRaceTrees} threads={sliceRaceThreads} nodes={sliceRaceNodes} errors={sliceRaceErrors} unconnected={sliceRaceUnconnected} assert={sliceRaceConnectorOk}");
+if (!sliceRaceConnectorOk)
+{
+    throw new InvalidOperationException($"concurrent ConnectTree failed: {sliceRaceFirstError} (errors={sliceRaceErrors} unconnected={sliceRaceUnconnected})");
+}
+
+int sliceRaceHostErrors = 0;
+string sliceRaceHostFirstError = string.Empty;
+var sliceRaceHostWorkers = new System.Threading.Thread[6];
+var sliceRaceHostGo = new ManualResetEventSlim(false);
+for (int w = 0; w < sliceRaceHostWorkers.Length; w++)
+{
+    sliceRaceHostWorkers[w] = new System.Threading.Thread(() =>
+    {
+        sliceRaceHostGo.Wait();
+        try
+        {
+            for (int k = 0; k < 80; k++)
+            {
+                host.Arrange(1080, 1920);
+                _ = host.Render();
+                _ = host.Describe();
+            }
+        }
+        catch (Exception ex)
+        {
+            Interlocked.Increment(ref sliceRaceHostErrors);
+            if (sliceRaceHostFirstError.Length == 0) sliceRaceHostFirstError = $"{ex.GetType().Name}: {ex.Message}";
+        }
+    }) { IsBackground = true };
+}
+foreach (System.Threading.Thread worker in sliceRaceHostWorkers) worker.Start();
+sliceRaceHostGo.Set();
+foreach (System.Threading.Thread worker in sliceRaceHostWorkers) worker.Join();
+bool sliceRaceHostOk = sliceRaceHostErrors == 0;
+Console.WriteLine($"[verify] slicerace host storm threads={sliceRaceHostWorkers.Length} rounds=80 errors={sliceRaceHostErrors} assert={sliceRaceHostOk}");
+if (!sliceRaceHostOk)
+{
+    throw new InvalidOperationException($"concurrent host Arrange/Render failed: {sliceRaceHostFirstError}");
+}
+
+string? sliceRaceConnectorPath = FindHostSource("OpenHarmonyHandlerConnector.cs");
+string? sliceRaceHostPath = FindHostSource("OpenHarmonyMauiAppHost.cs");
+string sliceRaceConnectorSource = sliceRaceConnectorPath is null ? string.Empty : File.ReadAllText(sliceRaceConnectorPath);
+string sliceRaceHostSource = sliceRaceHostPath is null ? string.Empty : File.ReadAllText(sliceRaceHostPath);
+bool sliceRaceConnectorPin = sliceRaceConnectorSource.Contains("private static readonly object s_connectSync = new();", StringComparison.Ordinal)
+    && sliceRaceConnectorSource.Contains("lock (s_connectSync)", StringComparison.Ordinal);
+bool sliceRaceHostPin = sliceRaceHostSource.Contains("private readonly object _sync = new();", StringComparison.Ordinal)
+    && sliceRaceHostSource.Contains("private bool _ready;", StringComparison.Ordinal)
+    && sliceRaceHostSource.Contains("if (!_ready)", StringComparison.Ordinal)
+    && sliceRaceHostSource.Contains("lock (_sync)", StringComparison.Ordinal);
+bool sliceRacePinsOk = sliceRaceConnectorPin && sliceRaceHostPin;
+Console.WriteLine($"[verify] slicerace pins connector={sliceRaceConnectorPin} host={sliceRaceHostPin} source='OpenHarmonyHandlerConnector.cs' assert={sliceRacePinsOk}");
+if (!sliceRacePinsOk)
+{
+    throw new InvalidOperationException("the FIX-SLICERACE serialization (connector lock / host ready gate) is missing from the slice source");
 }
 
 // The suite's own check-count contract: report what was actually emitted and fail when it is
