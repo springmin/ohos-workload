@@ -12,7 +12,7 @@ using Microsoft.Maui.Platform;
 // after the fuzz tail) instead of letting every caller repeat its own threshold constant.
 VerifyLineCountingWriter verifyStdout = new(Console.Out);
 Console.SetOut(verifyStdout);
-const int verifyCheckTotal = 580;                     // documented full [verify] line count (+3 FIX-SLICERACE concurrent connect/host storm/ pins, +5 L6 screenshot Jpeg format/quality capture/fallback/helper + title heartbeat behavior/source, +6 LEGACY toolbar primary/overflow/icon/events/shell/source, +3 SAMPLE-FIX hybrid bootstrap pack staging / read-only payload handler / stock-script demo, +4 MULTI-OVERLAY-FULL LRU pool/invoke slot codec/per-slot hybrid shell/slice owner wiring, +4 MULTI-OVL slot pool/wire codec/two-overlay shell/slice wiring, +4 FIX-BACKSIZE Back-press forwarding/drawer drill/ shell drawer/BlazorWebView desired size, +4 FIX-WVP overlay px->vp/degenerate-frame/hybrid-overlay arbitration/suspend-restore (shell+slice), +2 FIX-DISMISS flyout drawer dismiss under the device display conditions, +4 FIX-HOME home page arrange/draw (NavigationPage-in-TabbedPage descent), +4 MS-MODE runtime mode switch, +10 P2c-DEEPLINK, +4 P2b-IMG, +16 P1b-LIST, +10 P1a-ANIM, +2 SEC3 storage/deep-link pins, +5 W-series WebView wiring, +3 T1 InputView mapping, +4 T2 WebView gaps, +4 T3 GraphicsView interaction, +7 T10 modal accessibility, +4 T4 Label formatted text, +4 T5 layout semantics, +6 T7 DatePicker calendar/min-max, +4 T9 window title bar, +4 T11 diagnostics overlay, +1 N2 empty ContentPage arrangement, +6 T8 TableView, +5 T8 uneven rows, +7 T6 RTL flow direction, +5 T22 MainThread bridge, +2 FIX-TABBED tabbed CurrentPage, +4 T13 group footer view/N3 picker IsOpen, +5 T21 system font scale, +3 T21 font scale source wiring, +2 A11Y-TABBED tabbed accessibility, +3 N1 host multi-pointer, +5 T12 CarouselView group slides, +7 T14 rich shell flyout, +10 T14 flyout leftovers (MenuItemTemplate/FlyoutContent/AsMultipleItems), +2 FIX-SHELL shell CurrentPage, +2 A11Y-SHELL shell accessibility, +7 T15 rich Shell.TitleView, +8 T16 structured menus, +3 N4 TitleBar accessibility row, +3 T18 Essentials Map, +4 N5 overlay passthrough suppression, +5 N6 window decorations, +4 T20 media bridge, +3 B2 wasm site in a MAUI WebView, +2 W10 NativeAOT managed entry (host libs-dir resolution + shell AOT payload probe), +1 FIX-JSCALL Blazor IPC enum/struct AOT roots (JSCallResultType/JSCallType/NavigationOptions in the slice context + handler static-ctor touch + stub click-probe removed))
+const int verifyCheckTotal = 586;                     // +6 SLOTS-DYNAMIC dynamic slot growth (ensure/destroy commands), capacity downgrade/event, configurable 2/4 limits, shell lazy/defer pins, 3rd-overlay sample                     // documented full [verify] line count (+3 FIX-SLICERACE concurrent connect/host storm/ pins, +5 L6 screenshot Jpeg format/quality capture/fallback/helper + title heartbeat behavior/source, +6 LEGACY toolbar primary/overflow/icon/events/shell/source, +3 SAMPLE-FIX hybrid bootstrap pack staging / read-only payload handler / stock-script demo, +4 MULTI-OVERLAY-FULL LRU pool/invoke slot codec/per-slot hybrid shell/slice owner wiring, +4 MULTI-OVL slot pool/wire codec/two-overlay shell/slice wiring, +4 FIX-BACKSIZE Back-press forwarding/drawer drill/ shell drawer/BlazorWebView desired size, +4 FIX-WVP overlay px->vp/degenerate-frame/hybrid-overlay arbitration/suspend-restore (shell+slice), +2 FIX-DISMISS flyout drawer dismiss under the device display conditions, +4 FIX-HOME home page arrange/draw (NavigationPage-in-TabbedPage descent), +4 MS-MODE runtime mode switch, +10 P2c-DEEPLINK, +4 P2b-IMG, +16 P1b-LIST, +10 P1a-ANIM, +2 SEC3 storage/deep-link pins, +5 W-series WebView wiring, +3 T1 InputView mapping, +4 T2 WebView gaps, +4 T3 GraphicsView interaction, +7 T10 modal accessibility, +4 T4 Label formatted text, +4 T5 layout semantics, +6 T7 DatePicker calendar/min-max, +4 T9 window title bar, +4 T11 diagnostics overlay, +1 N2 empty ContentPage arrangement, +6 T8 TableView, +5 T8 uneven rows, +7 T6 RTL flow direction, +5 T22 MainThread bridge, +2 FIX-TABBED tabbed CurrentPage, +4 T13 group footer view/N3 picker IsOpen, +5 T21 system font scale, +3 T21 font scale source wiring, +2 A11Y-TABBED tabbed accessibility, +3 N1 host multi-pointer, +5 T12 CarouselView group slides, +7 T14 rich shell flyout, +10 T14 flyout leftovers (MenuItemTemplate/FlyoutContent/AsMultipleItems), +2 FIX-SHELL shell CurrentPage, +2 A11Y-SHELL shell accessibility, +7 T15 rich Shell.TitleView, +8 T16 structured menus, +3 N4 TitleBar accessibility row, +3 T18 Essentials Map, +4 N5 overlay passthrough suppression, +5 N6 window decorations, +4 T20 media bridge, +3 B2 wasm site in a MAUI WebView, +2 W10 NativeAOT managed entry (host libs-dir resolution + shell AOT payload probe), +1 FIX-JSCALL Blazor IPC enum/struct AOT roots (JSCallResultType/JSCallType/NavigationOptions in the slice context + handler static-ctor touch + stub click-probe removed))
 const int verifyCheckFloor = verifyCheckTotal - 20;   // documented floor convention (total - 20)
 
 // A small image file for the Image handler.
@@ -4461,54 +4461,77 @@ if (!jscallOk)
         $"staticCtor={jscallRootOk} probeGone={jscallProbeGone}");
 }
 
-// ---- MULTI-OVL: multi-overlay slot pool, wire codec and the two-overlay shell ---------------
-// The shell declares two ArkWeb overlays and the managed web handlers claim a slot, tag their
-// per-overlay commands with it ("s<slot>" / "s<slot>\n<arg>") and receive the page events tagged
-// back ("s<slot>|<state>"). The hosting pool/codec and the shell half are both in this repository,
-// so these pins are strict in CI; the managed slice half is dual-mode (the pinned slice still
-// withholds frames while a hybrid owns the single overlay, the working-tree slice owns slots and
-// is asserted by the FIX-BACKSIZE drill above).
+// ---- MULTI-OVL / SLOTS-DYNAMIC: overlay slot pool, wire codec and the dynamic shell ---------
+// The shell declares the hot pair [0, 1] and grows the overlay set on demand up to WEB_SLOT_MAX
+// (4); the managed web handlers claim a slot, tag their per-overlay commands with it
+// ("s<slot>" / "s<slot>\n<arg>") and receive the page events tagged back ("s<slot>|<state>").
+// The hosting pool/codec and the shell half are both in this repository, so these pins are
+// strict in CI; the managed slice half is dual-mode (the pinned slice still withholds frames
+// while a hybrid owns the single overlay, the working-tree slice owns slots and is asserted by
+// the FIX-BACKSIZE drill above).
 FieldInfo multiOvlUsedField = typeof(Microsoft.OpenHarmony.Hosting.OpenHarmonyOverlays)
     .GetField("s_used", BindingFlags.NonPublic | BindingFlags.Static)
     ?? throw new InvalidOperationException("Microsoft.OpenHarmony.Hosting.OpenHarmonyOverlays.s_used was not found; the MULTI-OVL pool drill needs the slot-table seam");
+FieldInfo multiOvlCreatedField = typeof(Microsoft.OpenHarmony.Hosting.OpenHarmonyOverlays)
+    .GetField("s_created", BindingFlags.NonPublic | BindingFlags.Static)
+    ?? throw new InvalidOperationException("Microsoft.OpenHarmony.Hosting.OpenHarmonyOverlays.s_created was not found; the SLOTS-DYNAMIC pool drill needs the created-table seam");
 bool[]? multiOvlUsedBefore = (bool[]?)multiOvlUsedField.GetValue(null) ?? new bool[Microsoft.OpenHarmony.Hosting.OpenHarmonyOverlays.MaxOverlays];
+bool[]? multiOvlCreatedBefore = (bool[]?)multiOvlCreatedField.GetValue(null) ?? new bool[Microsoft.OpenHarmony.Hosting.OpenHarmonyOverlays.MaxOverlays];
 bool multiOvlPool = false;
 try
 {
     multiOvlUsedField.SetValue(null, new bool[Microsoft.OpenHarmony.Hosting.OpenHarmonyOverlays.MaxOverlays]);
+    multiOvlCreatedField.SetValue(null, new bool[Microsoft.OpenHarmony.Hosting.OpenHarmonyOverlays.MaxOverlays]);
     int multiOvlA = Microsoft.OpenHarmony.Hosting.OpenHarmonyOverlays.Acquire();
     int multiOvlB = Microsoft.OpenHarmony.Hosting.OpenHarmonyOverlays.Acquire();
     int multiOvlC = Microsoft.OpenHarmony.Hosting.OpenHarmonyOverlays.Acquire();
-    multiOvlPool = multiOvlA == 0 && multiOvlB == 1 && multiOvlC == -1 &&
+    int multiOvlD = Microsoft.OpenHarmony.Hosting.OpenHarmonyOverlays.Acquire();
+    int multiOvlE = Microsoft.OpenHarmony.Hosting.OpenHarmonyOverlays.Acquire();
+    multiOvlPool = multiOvlA == 0 && multiOvlB == 1 && multiOvlC == 2 && multiOvlD == 3 && multiOvlE == -1 &&
         Microsoft.OpenHarmony.Hosting.OpenHarmonyOverlays.IsClaimed(0) && Microsoft.OpenHarmony.Hosting.OpenHarmonyOverlays.IsClaimed(1) &&
-        !Microsoft.OpenHarmony.Hosting.OpenHarmonyOverlays.IsClaimed(2);
+        Microsoft.OpenHarmony.Hosting.OpenHarmonyOverlays.IsClaimed(2) && Microsoft.OpenHarmony.Hosting.OpenHarmonyOverlays.IsClaimed(3) &&
+        !Microsoft.OpenHarmony.Hosting.OpenHarmonyOverlays.IsClaimed(4);
     // The cap is a hard stop: a released slot is reusable and an out-of-range release is a no-op.
     Microsoft.OpenHarmony.Hosting.OpenHarmonyOverlays.Release(1);
     Microsoft.OpenHarmony.Hosting.OpenHarmonyOverlays.Release(99);
-    int multiOvlD = Microsoft.OpenHarmony.Hosting.OpenHarmonyOverlays.Acquire();
-    multiOvlPool = multiOvlPool && multiOvlD == 1 &&
+    int multiOvlF = Microsoft.OpenHarmony.Hosting.OpenHarmonyOverlays.Acquire();
+    multiOvlPool = multiOvlPool && multiOvlF == 1 &&
         Microsoft.OpenHarmony.Hosting.OpenHarmonyOverlays.Tag(0) == "s0" && Microsoft.OpenHarmony.Hosting.OpenHarmonyOverlays.Tag(1, "payload") == "s1\npayload" &&
         Microsoft.OpenHarmony.Hosting.OpenHarmonyOverlays.Tag(-1, "payload") == "payload";
     Microsoft.OpenHarmony.Hosting.OpenHarmonyOverlays.Release(0);
     Microsoft.OpenHarmony.Hosting.OpenHarmonyOverlays.Release(1);
+    Microsoft.OpenHarmony.Hosting.OpenHarmonyOverlays.Release(2);
+    Microsoft.OpenHarmony.Hosting.OpenHarmonyOverlays.Release(3);
 }
 finally
 {
     multiOvlUsedField.SetValue(null, multiOvlUsedBefore);
+    multiOvlCreatedField.SetValue(null, multiOvlCreatedBefore);
 }
 bool multiOvlCodec =
     Microsoft.OpenHarmony.Hosting.OpenHarmonyOverlays.TryUntag("s1\n40\n500\n1000\n400", out int multiOvlSlot, out string multiOvlPayload) &&
     multiOvlSlot == 1 && multiOvlPayload == "40\n500\n1000\n400" &&
+    Microsoft.OpenHarmony.Hosting.OpenHarmonyOverlays.TryUntag("s3\npayload", out int multiOvlSlot3, out string multiOvlPayload3) &&
+    multiOvlSlot3 == 3 && multiOvlPayload3 == "payload" &&
+    Microsoft.OpenHarmony.Hosting.OpenHarmonyOverlays.Tag(3, "payload") == "s3\npayload" &&
     !Microsoft.OpenHarmony.Hosting.OpenHarmonyOverlays.TryUntag("40\n500\n1000\n400", out _, out _) &&
+    !Microsoft.OpenHarmony.Hosting.OpenHarmonyOverlays.TryUntag("s4\nx", out _, out _) &&
     !Microsoft.OpenHarmony.Hosting.OpenHarmonyOverlays.TryUntag("s9\nx", out _, out _) &&
+    Microsoft.OpenHarmony.Hosting.OpenHarmonyOverlays.TagState(3, "finished") == "s3|finished" &&
     Microsoft.OpenHarmony.Hosting.OpenHarmonyOverlays.TagState(1, "finished") == "s1|finished" &&
     Microsoft.OpenHarmony.Hosting.OpenHarmonyOverlays.TryParseEventState("s0|history|1|0", out int multiOvlEventSlot, out string multiOvlEvent) &&
     multiOvlEventSlot == 0 && multiOvlEvent == "history|1|0" &&
+    Microsoft.OpenHarmony.Hosting.OpenHarmonyOverlays.TryParseEventState("s3|finished", out int multiOvlEventSlot3, out string multiOvlEvent3) &&
+    multiOvlEventSlot3 == 3 && multiOvlEvent3 == "finished" &&
     !Microsoft.OpenHarmony.Hosting.OpenHarmonyOverlays.TryParseEventState("finished", out _, out _) &&
+    !Microsoft.OpenHarmony.Hosting.OpenHarmonyOverlays.TryParseEventState("s4|finished", out _, out _) &&
     Microsoft.OpenHarmony.Hosting.OpenHarmonyOverlays.TryParseNavigationRequest("__OHNAV|s1|https://x/y|abc", out int multiOvlNavSlot, out string multiOvlNavUrl, out string multiOvlNavId) &&
     multiOvlNavSlot == 1 && multiOvlNavUrl == "https://x/y" && multiOvlNavId == "abc" &&
     Microsoft.OpenHarmony.Hosting.OpenHarmonyOverlays.TryParseNavigationRequest("__OHNAV|https://x/y|abc", out int multiOvlLegacySlot, out string multiOvlLegacyUrl, out string multiOvlLegacyId) &&
-    multiOvlLegacySlot == -1 && multiOvlLegacyUrl == "https://x/y" && multiOvlLegacyId == "abc";
+    multiOvlLegacySlot == -1 && multiOvlLegacyUrl == "https://x/y" && multiOvlLegacyId == "abc" &&
+    Microsoft.OpenHarmony.Hosting.OpenHarmonyOverlays.EncodeInvokeRequestId(3, 9) == 0x04000009 &&
+    Microsoft.OpenHarmony.Hosting.OpenHarmonyOverlays.TryDecodeInvokeRequestId(0x04000009, out int multiOvlInvoke3, out int multiOvlInvokeSeq3) &&
+    multiOvlInvoke3 == 3 && multiOvlInvokeSeq3 == 9;
 Console.WriteLine($"[verify] multi-ovl slot pool acquire/release/cap={multiOvlPool} assert={multiOvlPool}");
 if (!multiOvlPool)
 {
@@ -4532,12 +4555,17 @@ FieldInfo multiOvlLastUsedField = typeof(Microsoft.OpenHarmony.Hosting.OpenHarmo
     ?? throw new InvalidOperationException("Microsoft.OpenHarmony.Hosting.OpenHarmonyOverlays.s_lastUsed was not found; the MULTI-OVERLAY-FULL pool drill needs the LRU-table seam");
 object?[]? multiOvlOwnersBefore = (object?[]?)multiOvlOwnersField.GetValue(null) ?? new object?[Microsoft.OpenHarmony.Hosting.OpenHarmonyOverlays.MaxOverlays];
 long[]? multiOvlLastUsedBefore = (long[]?)multiOvlLastUsedField.GetValue(null) ?? new long[Microsoft.OpenHarmony.Hosting.OpenHarmonyOverlays.MaxOverlays];
+// SLOTS-DYNAMIC: this drill pins the over-limit behavior of an N=2 pool (the legacy shell
+// capacity), so the pool is clamped to two slots first; the dynamic 4-slot growth has its own
+// drill below. The advertised capacity is restored afterwards.
+int multiOvlCapacityBefore = Microsoft.OpenHarmony.Hosting.OpenHarmonyOverlays.ShellCapacity;
 bool multiOvlLru = false;
 try
 {
     multiOvlUsedField.SetValue(null, new bool[Microsoft.OpenHarmony.Hosting.OpenHarmonyOverlays.MaxOverlays]);
     multiOvlOwnersField.SetValue(null, new object?[Microsoft.OpenHarmony.Hosting.OpenHarmonyOverlays.MaxOverlays]);
     multiOvlLastUsedField.SetValue(null, new long[Microsoft.OpenHarmony.Hosting.OpenHarmonyOverlays.MaxOverlays]);
+    Microsoft.OpenHarmony.Hosting.OpenHarmonyOverlays.SetShellCapacity(2);
     var multiOvlOwnerA = new MultiOverlayFakeOwner("A");
     var multiOvlOwnerB = new MultiOverlayFakeOwner("B", engaged: true);
     var multiOvlOwnerC = new MultiOverlayFakeOwner("C");
@@ -4565,6 +4593,7 @@ finally
     multiOvlUsedField.SetValue(null, multiOvlUsedBefore);
     multiOvlOwnersField.SetValue(null, multiOvlOwnersBefore);
     multiOvlLastUsedField.SetValue(null, multiOvlLastUsedBefore);
+    Microsoft.OpenHarmony.Hosting.OpenHarmonyOverlays.SetShellCapacity(multiOvlCapacityBefore);
 }
 Console.WriteLine($"[verify] multi-ovl-full lru preemption/engaged-preference/owner-release={multiOvlLru} assert={multiOvlLru}");
 if (!multiOvlLru)
@@ -4572,8 +4601,175 @@ if (!multiOvlLru)
     throw new InvalidOperationException("the MULTI-OVERLAY-FULL LRU preemption/owner-release pool drifted");
 }
 
-// MULTI-OVERLAY-FULL (b): the hybrid invoke channel carries its overlay slot inside the request
-// id (the shell composes ((slot + 1) << 24) | sequence), so host.notifyHybridInvoke and
+// SLOTS-DYNAMIC (a): claiming a free slot at/above the hot pair sends the shell's
+// "slot ensure\n<slot>" command, and releasing it sends "slot destroy\n<slot>" so the dynamic
+// ArkWeb is torn down; the always-declared hot pair is never destroyed, and a re-claim of the
+// destroyed slot ensures it again.
+bool multiDynCommands = false;
+List<string> multiDynSlotCommands = new();
+Action<string, string?> multiDynCommandListener = (op, arg) =>
+{
+    if (op == "slot")
+    {
+        multiDynSlotCommands.Add(arg ?? string.Empty);
+    }
+};
+Microsoft.OpenHarmony.Hosting.OpenHarmonyBridge.WebCommandSent += multiDynCommandListener;
+try
+{
+    multiOvlUsedField.SetValue(null, new bool[Microsoft.OpenHarmony.Hosting.OpenHarmonyOverlays.MaxOverlays]);
+    bool[] multiDynCreated = new bool[Microsoft.OpenHarmony.Hosting.OpenHarmonyOverlays.MaxOverlays];
+    multiDynCreated[0] = true;
+    multiDynCreated[1] = true;
+    multiOvlCreatedField.SetValue(null, multiDynCreated);
+    Microsoft.OpenHarmony.Hosting.OpenHarmonyOverlays.SetShellCapacity(Microsoft.OpenHarmony.Hosting.OpenHarmonyOverlays.MaxOverlays);
+    int multiDynHot0 = Microsoft.OpenHarmony.Hosting.OpenHarmonyOverlays.Acquire();
+    int multiDynHot1 = Microsoft.OpenHarmony.Hosting.OpenHarmonyOverlays.Acquire();
+    var multiDynOwnerC = new MultiOverlayFakeOwner("C");
+    var multiDynOwnerD = new MultiOverlayFakeOwner("D");
+    var multiDynOwnerE = new MultiOverlayFakeOwner("E");
+    int multiDynSlot2 = Microsoft.OpenHarmony.Hosting.OpenHarmonyOverlays.Acquire(multiDynOwnerC);
+    int multiDynSlot3 = Microsoft.OpenHarmony.Hosting.OpenHarmonyOverlays.Acquire(multiDynOwnerD);
+    bool multiDynEnsured = multiDynHot0 == 0 && multiDynHot1 == 1 && multiDynSlot2 == 2 && multiDynSlot3 == 3 &&
+        multiDynSlotCommands.Contains("ensure\n2") && multiDynSlotCommands.Contains("ensure\n3") &&
+        Microsoft.OpenHarmony.Hosting.OpenHarmonyOverlays.IsCreated(2) &&
+        Microsoft.OpenHarmony.Hosting.OpenHarmonyOverlays.IsCreated(3);
+    Microsoft.OpenHarmony.Hosting.OpenHarmonyOverlays.Release(2, multiDynOwnerC);
+    bool multiDynDestroyed = multiDynSlotCommands.Contains("destroy\n2") &&
+        !Microsoft.OpenHarmony.Hosting.OpenHarmonyOverlays.IsCreated(2);
+    int multiDynSlot2Again = Microsoft.OpenHarmony.Hosting.OpenHarmonyOverlays.Acquire(multiDynOwnerE);
+    int multiDynEnsureCount = multiDynSlotCommands.FindAll(command => command == "ensure\n2").Count;
+    multiDynCommands = multiDynEnsured && multiDynDestroyed && multiDynSlot2Again == 2 && multiDynEnsureCount == 2 &&
+        !multiDynSlotCommands.Contains("destroy\n0") && !multiDynSlotCommands.Contains("destroy\n1") &&
+        Microsoft.OpenHarmony.Hosting.OpenHarmonyOverlays.IsCreated(2);
+    Microsoft.OpenHarmony.Hosting.OpenHarmonyOverlays.Release(0);
+    Microsoft.OpenHarmony.Hosting.OpenHarmonyOverlays.Release(1);
+    Microsoft.OpenHarmony.Hosting.OpenHarmonyOverlays.Release(2, multiDynOwnerE);
+    Microsoft.OpenHarmony.Hosting.OpenHarmonyOverlays.Release(3, multiDynOwnerD);
+}
+finally
+{
+    Microsoft.OpenHarmony.Hosting.OpenHarmonyBridge.WebCommandSent -= multiDynCommandListener;
+    multiOvlUsedField.SetValue(null, multiOvlUsedBefore);
+    multiOvlCreatedField.SetValue(null, multiOvlCreatedBefore);
+}
+Console.WriteLine($"[verify] slots-dynamic ensure/destroy commands={multiDynCommands} assert={multiDynCommands}");
+if (!multiDynCommands)
+{
+    throw new InvalidOperationException("the SLOTS-DYNAMIC slot ensure/destroy command contract drifted");
+}
+
+// SLOTS-DYNAMIC (b): a shell capacity downgrade (a legacy shell advertising two overlays)
+// preempts every claim beyond the advertised count through the same suspend path as an LRU
+// preemption, while the claims inside the capacity stay untouched.
+bool multiDynCapacity = false;
+try
+{
+    multiOvlUsedField.SetValue(null, new bool[Microsoft.OpenHarmony.Hosting.OpenHarmonyOverlays.MaxOverlays]);
+    bool[] multiDynCapCreated = new bool[Microsoft.OpenHarmony.Hosting.OpenHarmonyOverlays.MaxOverlays];
+    multiDynCapCreated[0] = true;
+    multiDynCapCreated[1] = true;
+    multiOvlCreatedField.SetValue(null, multiDynCapCreated);
+    multiOvlOwnersField.SetValue(null, new object?[Microsoft.OpenHarmony.Hosting.OpenHarmonyOverlays.MaxOverlays]);
+    multiOvlLastUsedField.SetValue(null, new long[Microsoft.OpenHarmony.Hosting.OpenHarmonyOverlays.MaxOverlays]);
+    Microsoft.OpenHarmony.Hosting.OpenHarmonyOverlays.SetShellCapacity(Microsoft.OpenHarmony.Hosting.OpenHarmonyOverlays.MaxOverlays);
+    var multiDynCapA = new MultiOverlayFakeOwner("A");
+    var multiDynCapB = new MultiOverlayFakeOwner("B");
+    var multiDynCapC = new MultiOverlayFakeOwner("C");
+    var multiDynCapD = new MultiOverlayFakeOwner("D");
+    bool multiDynCapGrew = Microsoft.OpenHarmony.Hosting.OpenHarmonyOverlays.Acquire(multiDynCapA) == 0 &&
+        Microsoft.OpenHarmony.Hosting.OpenHarmonyOverlays.Acquire(multiDynCapB) == 1 &&
+        Microsoft.OpenHarmony.Hosting.OpenHarmonyOverlays.Acquire(multiDynCapC) == 2 &&
+        Microsoft.OpenHarmony.Hosting.OpenHarmonyOverlays.Acquire(multiDynCapD) == 3 &&
+        multiDynCapC.Preemptions == 0 && multiDynCapD.Preemptions == 0;
+    Microsoft.OpenHarmony.Hosting.OpenHarmonyOverlays.SetShellCapacity(2);
+    multiDynCapacity = multiDynCapGrew &&
+        multiDynCapC.Preemptions == 1 && multiDynCapC.PreemptedSlot == 2 &&
+        multiDynCapD.Preemptions == 1 && multiDynCapD.PreemptedSlot == 3 &&
+        Microsoft.OpenHarmony.Hosting.OpenHarmonyOverlays.IsClaimedBy(0, multiDynCapA) &&
+        Microsoft.OpenHarmony.Hosting.OpenHarmonyOverlays.IsClaimedBy(1, multiDynCapB) &&
+        !Microsoft.OpenHarmony.Hosting.OpenHarmonyOverlays.IsClaimed(2) &&
+        !Microsoft.OpenHarmony.Hosting.OpenHarmonyOverlays.IsClaimed(3);
+    Microsoft.OpenHarmony.Hosting.OpenHarmonyOverlays.SetShellCapacity(2);
+    int multiDynCapNew = Microsoft.OpenHarmony.Hosting.OpenHarmonyOverlays.Acquire(multiDynCapC);
+    multiDynCapacity = multiDynCapacity && multiDynCapNew == 0 && multiDynCapA.Preemptions == 1;
+}
+finally
+{
+    multiOvlUsedField.SetValue(null, multiOvlUsedBefore);
+    multiOvlCreatedField.SetValue(null, multiOvlCreatedBefore);
+    multiOvlOwnersField.SetValue(null, multiOvlOwnersBefore);
+    multiOvlLastUsedField.SetValue(null, multiOvlLastUsedBefore);
+    Microsoft.OpenHarmony.Hosting.OpenHarmonyOverlays.SetShellCapacity(multiOvlCapacityBefore);
+}
+Console.WriteLine($"[verify] slots-dynamic capacity downgrade preemption={multiDynCapacity} assert={multiDynCapacity}");
+if (!multiDynCapacity)
+{
+    throw new InvalidOperationException("the SLOTS-DYNAMIC shell capacity downgrade preemption drifted");
+}
+
+// SLOTS-DYNAMIC (c): the pool limits are configurable (OHOS_OVERLAY_MAX/OHOS_OVERLAY_HOT,
+// default 4/2). A two-overlay configuration reproduces the legacy behavior exactly: the third
+// claim answers -1 through the legacy overload and the wire codec rejects its slot.
+FieldInfo multiDynMaxField = typeof(Microsoft.OpenHarmony.Hosting.OpenHarmonyOverlays)
+    .GetField("s_maxOverlays", BindingFlags.NonPublic | BindingFlags.Static)
+    ?? throw new InvalidOperationException("OpenHarmonyOverlays.s_maxOverlays was not found; the SLOTS-DYNAMIC limits drill needs the limit seam");
+FieldInfo multiDynHotField = typeof(Microsoft.OpenHarmony.Hosting.OpenHarmonyOverlays)
+    .GetField("s_hotOverlays", BindingFlags.NonPublic | BindingFlags.Static)
+    ?? throw new InvalidOperationException("OpenHarmonyOverlays.s_hotOverlays was not found; the SLOTS-DYNAMIC limits drill needs the hot seam");
+int multiDynMaxBefore = (int)(multiDynMaxField.GetValue(null) ?? 4);
+int multiDynHotBefore = (int)(multiDynHotField.GetValue(null) ?? 2);
+bool multiDynLimits = false;
+try
+{
+    multiDynMaxField.SetValue(null, 2);
+    multiDynHotField.SetValue(null, 2);
+    multiOvlUsedField.SetValue(null, new bool[2]);
+    multiOvlCreatedField.SetValue(null, new bool[2] { true, true });
+    Microsoft.OpenHarmony.Hosting.OpenHarmonyOverlays.SetShellCapacity(2);
+    multiDynLimits = Microsoft.OpenHarmony.Hosting.OpenHarmonyOverlays.MaxOverlays == 2 &&
+        Microsoft.OpenHarmony.Hosting.OpenHarmonyOverlays.HotOverlays == 2 &&
+        Microsoft.OpenHarmony.Hosting.OpenHarmonyOverlays.Acquire() == 0 &&
+        Microsoft.OpenHarmony.Hosting.OpenHarmonyOverlays.Acquire() == 1 &&
+        Microsoft.OpenHarmony.Hosting.OpenHarmonyOverlays.Acquire() == -1 &&
+        !Microsoft.OpenHarmony.Hosting.OpenHarmonyOverlays.IsValid(2) &&
+        Microsoft.OpenHarmony.Hosting.OpenHarmonyOverlays.Tag(2, "payload") == "payload" &&
+        !Microsoft.OpenHarmony.Hosting.OpenHarmonyOverlays.TryUntag("s2\npayload", out _, out _);
+    Microsoft.OpenHarmony.Hosting.OpenHarmonyOverlays.Release(0);
+    Microsoft.OpenHarmony.Hosting.OpenHarmonyOverlays.Release(1);
+}
+finally
+{
+    multiDynMaxField.SetValue(null, multiDynMaxBefore);
+    multiDynHotField.SetValue(null, multiDynHotBefore);
+    multiOvlUsedField.SetValue(null, multiOvlUsedBefore);
+    multiOvlCreatedField.SetValue(null, multiOvlCreatedBefore);
+    Microsoft.OpenHarmony.Hosting.OpenHarmonyOverlays.SetShellCapacity(Microsoft.OpenHarmony.Hosting.OpenHarmonyOverlays.MaxOverlays);
+}
+Console.WriteLine($"[verify] slots-dynamic limits max={multiDynMaxBefore} hot={multiDynHotBefore} two-overlay-cap={multiDynLimits} assert={multiDynLimits}");
+if (!multiDynLimits)
+{
+    throw new InvalidOperationException("the SLOTS-DYNAMIC configurable two-overlay limits drifted");
+}
+
+// SLOTS-DYNAMIC (d): the shell advertises its overlay capacity as the untagged "capacity" page
+// event; the slice routes it into the pool (and ignores a malformed count).
+int multiDynCapEventBefore = Microsoft.OpenHarmony.Hosting.OpenHarmonyOverlays.ShellCapacity;
+OpenHarmonyWebViewHandler.OnPageEvent("capacity", "4");
+bool multiDynCapEvent4 = Microsoft.OpenHarmony.Hosting.OpenHarmonyOverlays.ShellCapacity == 4;
+OpenHarmonyWebViewHandler.OnPageEvent("capacity", "2");
+bool multiDynCapEvent2 = Microsoft.OpenHarmony.Hosting.OpenHarmonyOverlays.ShellCapacity == 2;
+OpenHarmonyWebViewHandler.OnPageEvent("capacity", "not-a-number");
+bool multiDynCapEventStable = Microsoft.OpenHarmony.Hosting.OpenHarmonyOverlays.ShellCapacity == 2;
+Microsoft.OpenHarmony.Hosting.OpenHarmonyOverlays.SetShellCapacity(multiDynCapEventBefore);
+bool multiDynCapEvent = multiDynCapEvent4 && multiDynCapEvent2 && multiDynCapEventStable;
+Console.WriteLine($"[verify] slots-dynamic shell capacity event four={multiDynCapEvent4} two={multiDynCapEvent2} stable={multiDynCapEventStable} assert={multiDynCapEvent}");
+if (!multiDynCapEvent)
+{
+    throw new InvalidOperationException("the SLOTS-DYNAMIC shell capacity event routing drifted");
+}
+
+
 // ohos_host_hwv_invoke_result stay signature-compatible while the invocation is dispatched to
 // the handler that owns the slot; an untagged legacy id never decodes and keeps the fallback.
 bool multiOvlInvokeId =
@@ -4596,21 +4792,21 @@ foreach (string multiOvlVersion in wShellVersions)
 {
     string? multiOvlShellPath = FindHostSource($"packs/Microsoft.OpenHarmony.Sdk/{multiOvlVersion}/templates/ets/pages/Index.ets");
     string multiOvlShellSource = multiOvlShellPath is null ? string.Empty : File.ReadAllText(multiOvlShellPath);
-    multiOvlShell &= multiOvlShellSource.Contains("private webControllers: web_webview.WebviewController[] =") &&
+    multiOvlShell &= multiOvlShellSource.Contains("private webControllers: (web_webview.WebviewController | null)[] =") &&
         multiOvlShellSource.Contains("webOverlay(slot: number): void {") &&
-        multiOvlShellSource.Contains("this.webOverlay(0)") &&
-        multiOvlShellSource.Contains("this.webOverlay(1)") &&
+        multiOvlShellSource.Contains("ForEach(this.webSlots, (slot: number) => {") &&
+        multiOvlShellSource.Contains("this.webOverlay(slot)") &&
         multiOvlShellSource.Contains("private webSlotOf(arg: string): number {") &&
         multiOvlShellSource.Contains("private webEventState(slot: number, state: string): string {") &&
         multiOvlShellSource.Contains("this.webVisible[hybridSlot] = !this.webSuspended;") &&
         multiOvlShellSource.Contains("this.webVisible[blazorSlot] = !this.webSuspended;") &&
-        multiOvlShellSource.Contains("this.slotController(evalSlot).runJavaScript(this.webSlotPayload(script)") &&
+        multiOvlShellSource.Contains("this.runWebEval(script, requestId);") &&
         !multiOvlShellSource.Contains("the hybrid page keeps the single ArkWeb overlay") &&
         // MULTI-OVERLAY-FULL: per-slot hybrid registration/serving/document id, the invoke
         // request id carrying the slot, the per-slot error hide and the activation z-order.
-        multiOvlShellSource.Contains("private hybridBase: string[] = ['', ''];") &&
-        multiOvlShellSource.Contains("private hybridRegistered: boolean[] = [false, false];") &&
-        multiOvlShellSource.Contains("private hybridDocId: string[] = ['', ''];") &&
+        multiOvlShellSource.Contains("private hybridBase: string[] = ['', '', '', ''];") &&
+        multiOvlShellSource.Contains("private hybridRegistered: boolean[] = [false, false, false, false];") &&
+        multiOvlShellSource.Contains("private hybridDocId: string[] = ['', '', '', ''];") &&
         multiOvlShellSource.Contains("private hybridFilePath(url: string, slot: number): string {") &&
         multiOvlShellSource.Contains("this.hybridRegistered[hybridSlot] = safeLayout") &&
         multiOvlShellSource.Contains("this.slotController(hybridSlot).loadUrl(this.hybridOrigin);") &&
@@ -4618,7 +4814,7 @@ foreach (string multiOvlVersion in wShellVersions)
         multiOvlShellSource.Contains("return this.hybridMessageResponse(event, slot);") &&
         multiOvlShellSource.Contains("const requestId: number = ((slot + 1) << 24) | this.hybridInvokeSeq;") &&
         multiOvlShellSource.Contains("private webSlotTagged(arg: string): boolean {") &&
-        multiOvlShellSource.Contains("@State webZOrder: number[] = [0, 0];") &&
+        multiOvlShellSource.Contains("@State webZOrder: number[] = [0, 0, 0, 0];") &&
         multiOvlShellSource.Contains(".zIndex(this.webZOrder[slot])") &&
         multiOvlShellSource.Contains("this.noteWebActivation(slot);") &&
         multiOvlShellSource.Contains("this.forwardWebActivation(slot);");
@@ -4638,8 +4834,8 @@ foreach (string multiOvlVersion in wShellVersions)
     string? multiOvlShellPath = FindHostSource($"packs/Microsoft.OpenHarmony.Sdk/{multiOvlVersion}/templates/ets/pages/Index.ets");
     string multiOvlShellSource = multiOvlShellPath is null ? string.Empty : File.ReadAllText(multiOvlShellPath);
     multiOvlShellFull &= multiOvlShellSource.Contains("private webSlotTagged(arg: string): boolean {") &&
-        multiOvlShellSource.Contains("if (this.webSlotTagged(arg)) {") &&
-        multiOvlShellSource.Contains("this.webVisible[this.webSlotOf(arg)] = false;") &&
+        multiOvlShellSource.Contains("!this.webSlotTagged(arg)) {") &&
+        multiOvlShellSource.Contains("this.webVisible[commandSlot] = false;") &&
         multiOvlShellSource.Contains("this.forwardWebActivation(slot);") &&
         multiOvlShellSource.Contains("host.notifyWebEvent(this.webEventState(slot, 'activate'), '');") &&
         multiOvlShellSource.Contains(".onTouch((event: TouchEvent) => {") &&
@@ -4658,6 +4854,60 @@ if (!multiOvlShellFull)
     throw new InvalidOperationException("the MULTI-OVERLAY-FULL shell per-slot hide/activation/z-order wiring is missing or drifted in a synced pack");
 }
 
+// SLOTS-DYNAMIC: the shell declares the hot pair [0, 1], grows/removes overlays on demand
+// (ensure/destroy), defers commands until the new ArkWeb attaches, and advertises its capacity
+// to the managed pool. Every preview pack must carry all of it.
+bool slotsDynamicShell = true;
+foreach (string slotsDynVersion in wShellVersions)
+{
+    string? slotsDynShellPath = FindHostSource($"packs/Microsoft.OpenHarmony.Sdk/{slotsDynVersion}/templates/ets/pages/Index.ets");
+    string slotsDynShellSource = slotsDynShellPath is null ? string.Empty : File.ReadAllText(slotsDynShellPath);
+    slotsDynamicShell &= slotsDynShellSource.Contains("const WEB_SLOT_MAX: number = 4;") &&
+        slotsDynShellSource.Contains("const WEB_SLOT_HOT: number = 2;") &&
+        slotsDynShellSource.Contains("const WEB_SLOT_PENDING_MAX: number = 32;") &&
+        slotsDynShellSource.Contains("@State webSlots: number[] = [0, 1];") &&
+        slotsDynShellSource.Contains("private webSlotCreated: boolean[] = [true, true, false, false];") &&
+        slotsDynShellSource.Contains("private webSlotAttached: boolean[] = [false, false, false, false];") &&
+        slotsDynShellSource.Contains("private pendingWebOps: Map<number, WebPendingOp[]> = new Map();") &&
+        slotsDynShellSource.Contains("private ensureWebSlot(slot: number): void {") &&
+        slotsDynShellSource.Contains("private destroyWebSlot(slot: number): void {") &&
+        slotsDynShellSource.Contains("private rebuildWebSlots(addSlot: number, removeSlot: number): void {") &&
+        slotsDynShellSource.Contains("private webSlotReady(slot: number): boolean {") &&
+        slotsDynShellSource.Contains("private deferWebOp(slot: number, op: string, arg: string, requestId: number = -1): void {") &&
+        slotsDynShellSource.Contains("private flushWebOps(slot: number): void {") &&
+        slotsDynShellSource.Contains("private applySlotCommand(arg: string): void {") &&
+        slotsDynShellSource.Contains("if (action === 'ensure') {") &&
+        slotsDynShellSource.Contains("} else if (action === 'destroy') {") &&
+        slotsDynShellSource.Contains("private runWebCommand(op: string, arg: string): void {") &&
+        slotsDynShellSource.Contains("this.applySlotCommand(arg);") &&
+        slotsDynShellSource.Contains("this.webSlotAttached[slot] = true;") &&
+        slotsDynShellSource.Contains("this.flushWebOps(slot);") &&
+        slotsDynShellSource.Contains("this.deferWebOp(evalSlot, 'eval', script, requestId);") &&
+        slotsDynShellSource.Contains("private advertiseWebCapacity(): void {") &&
+        slotsDynShellSource.Contains("host.notifyWebEvent('capacity', `${WEB_SLOT_MAX}`);") &&
+        slotsDynShellSource.Contains("this.logInfo(`[maui] web slot create: ${slot}`);") &&
+        slotsDynShellSource.Contains("this.logInfo(`[maui] web slot destroy: ${slot}`);");
+}
+Console.WriteLine($"[verify] slots-dynamic shell lazy create/destroy/capacity packs=22,23,24,28 lazy={slotsDynamicShell} assert={slotsDynamicShell}");
+if (!slotsDynamicShell)
+{
+    throw new InvalidOperationException("the SLOTS-DYNAMIC shell lazy create/destroy/defer/capacity wiring is missing or drifted in a synced pack");
+}
+
+// SLOTS-DYNAMIC sample: the demo grows a third live overlay and can remove it again (slot
+// destroy) for the device recycle/rebuild round.
+string? slotsDynSamplePath = FindHostSource("test/hello-maui-app/App.cs");
+string slotsDynSample = slotsDynSamplePath is null ? string.Empty : File.ReadAllText(slotsDynSamplePath);
+bool slotsDynamicSample = slotsDynSample.Contains("Add web C (3rd hybrid, dynamic slot)") &&
+    slotsDynSample.Contains("Remove web C (slot destroy)") &&
+    slotsDynSample.Contains("Add Blazor (#app mount)") &&
+    slotsDynSample.Contains("SLOTS-DYNAMIC: 2 hybrids live; add web C for a 3rd live overlay");
+Console.WriteLine($"[verify] slots-dynamic sample 3rd-overlay/recycle={slotsDynamicSample} assert={slotsDynamicSample}");
+if (!slotsDynamicSample)
+{
+    throw new InvalidOperationException("the SLOTS-DYNAMIC 3rd-overlay/recycle demo is missing or drifted in the hello-maui-app sample");
+}
+
 // The managed slice half: the working-tree slice claims slots through the owner-aware LRU
 // acquire, replays a preempted handler on restore and carries the slot in its registrations
 // (the pinned CI slice keeps the legacy withholding, which the FIX-BACKSIZE drill above
@@ -4671,6 +4921,9 @@ bool multiOvlSliceOk = !multiOvlSlice ||
      wHandler.Contains("if (!_overlayPreempted)") &&
      wHandler.Contains("void IOpenHarmonyOverlaySlotOwner.OnOverlaySlotPreempted(int slot)") &&
      wHandler.Contains("OpenHarmonyOverlays.Release(_overlaySlot, this)") &&
+     // SLOTS-DYNAMIC: the shell capacity event is routed into the pool.
+     wHandler.Contains("if (effectiveState == \"capacity\")") &&
+     wHandler.Contains("OpenHarmonyOverlays.SetShellCapacity(shellCapacity);") &&
      wHybridHandler.Contains("OpenHarmonyOverlays.Acquire(this)") &&
      wHybridHandler.Contains("|s\" + _overlaySlot") &&
      wHybridHandler.Contains("SendPlatformFrame(frame, _overlaySlot)") &&
@@ -4729,28 +4982,29 @@ foreach (string w6Version in new[] { "1.0.0-preview.22", "1.0.0-preview.23", "1.
     // The ArkWeb overlays must be declared after the managed XComponent/ContentSlot: a Stack
     // composites later children above earlier ones, and declared first the overlays stayed under
     // the managed surface (every served web page was invisible - the UI-LOCAL-3 white area).
-    // MULTI-OVL: the overlays are built by webOverlay(0)/webOverlay(1) after the ContentSlot.
+    // MULTI-OVL / SLOTS-DYNAMIC: the overlays are instantiated by the ForEach over the declared
+    // slot list after the ContentSlot; the builder call is the only webOverlay call site.
     w6ZOrder &= w6Shell.IndexOf("ContentSlot(this.content)", StringComparison.Ordinal) >= 0 &&
         w6Shell.IndexOf("ContentSlot(this.content)", StringComparison.Ordinal) <
-        w6Shell.IndexOf("this.webOverlay(0)", StringComparison.Ordinal) &&
-        w6Shell.IndexOf("this.webOverlay(0)", StringComparison.Ordinal) <
-        w6Shell.IndexOf("this.webOverlay(1)", StringComparison.Ordinal);
+        w6Shell.IndexOf("ForEach(this.webSlots,", StringComparison.Ordinal) &&
+        w6Shell.IndexOf("ForEach(this.webSlots,", StringComparison.Ordinal) <
+        w6Shell.IndexOf("this.webOverlay(slot)", StringComparison.Ordinal);
     // Overlay suspension: the drawer's suspend blocks frame/load re-shows and resume restores
     // the pre-suspend visibility of every overlay; the tab switch's plain hide hides them all.
     w6Suspend &= w6Shell.Contains("private webSuspended: boolean = false;") &&
-        w6Shell.Contains("private webVisibleBeforeSuspend: boolean[] = [false, false];") &&
-        w6Shell.Contains("} else if (op === 'suspend') {") &&
-        w6Shell.Contains("} else if (op === 'resume') {") &&
-        w6Shell.Contains("this.webVisible = [false, false];") &&
-        w6Shell.Contains("this.webVisible = [this.webVisibleBeforeSuspend[0], this.webVisibleBeforeSuspend[1]];");
+        w6Shell.Contains("private webVisibleBeforeSuspend: boolean[] = [false, false, false, false];") &&
+        w6Shell.Contains("if (op === 'suspend') {") &&
+        w6Shell.Contains("if (op === 'resume') {") &&
+        w6Shell.Contains("this.webVisible = [false, false, false, false];") &&
+        w6Shell.Contains("this.webVisibleBeforeSuspend[3]];");
     // MULTI-OVL replaced the FIX-WVP single-overlay arbitration: both registrations load their
     // own slot's controller (the hybrid origin for the HybridWebView's slot, the Blazor origin
     // for the BlazorWebView's slot) instead of one registration withholding its load.
-    w6Origin &= w6Shell.Contains("const hybridSlot: number = config.slot !== undefined && config.slot === 1 ? 1 : 0;") &&
+    w6Origin &= w6Shell.Contains("const hybridSlot: number = config.slot !== undefined && config.slot >= 0 && config.slot < WEB_SLOT_MAX ? config.slot : 0;") &&
         w6Shell.Contains("this.slotController(hybridSlot).loadUrl(this.hybridOrigin);") &&
-        w6Shell.Contains("const blazorSlot: number = config.slot !== undefined && config.slot === 1 ? 1 : 0;") &&
+        w6Shell.Contains("const blazorSlot: number = config.slot !== undefined && config.slot >= 0 && config.slot < WEB_SLOT_MAX ? config.slot : 0;") &&
         w6Shell.Contains("this.slotController(blazorSlot).loadUrl(this.blazorOrigin);");
-    w6ServeLogs &= w6Shell.Contains("private hybridServeLogs: number[] = [0, 0];") &&
+    w6ServeLogs &= w6Shell.Contains("private hybridServeLogs: number[] = [0, 0, 0, 0];") &&
         w6Shell.Contains("if (this.hybridServeLogs[slot] < 3) {") &&
         w6Shell.Contains("this.logInfo(`[maui] web serve (slot ${slot}): ${url} -> ${this.hybridFilePath(url, slot)}`);") &&
         w6Shell.Contains("this.logInfo(`[maui] hybrid assets: origin=${this.hybridOrigin} root=${this.hybridRoot[hybridSlot]} base=${this.hybridBase[hybridSlot]} slot=${hybridSlot}`);");
@@ -5271,7 +5525,7 @@ foreach (string b2Version in wShellVersions)
         b2Shell.Contains(".onConsole((event) => {") &&
         b2Shell.Contains("hilog.info(DOMAIN, BLZ_TAG, 'marker: %{public}s', consoleMessage);") &&
         b2Shell.Contains("this.logInfo(`[maui] blazor assets: origin=${this.blazorOrigin} root=${this.blazorRoot}") &&
-        b2Shell.Contains("this.logInfo(`[maui] web load (slot ${loadSlot}): ${loadUrl}`);") &&
+        b2Shell.Contains("this.logInfo(`[maui] web load (slot ${commandSlot}): ${loadUrl}`);") &&
         b2Shell.Contains("this.logInfo(`[maui] web serve: ${url} -> ${this.blazorFilePath(url)}`);") &&
         b2Shell.Contains("this.blazorServeLogs = 0;");
 }

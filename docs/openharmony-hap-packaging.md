@@ -812,6 +812,18 @@ main-frame，旧的 isMainFrame 门把合法 invoke 打成 400），并把 `publ
 （`2a90f0d7…`；headless 24,324 B 不变）。契约/断言见 `test/maui-platform-verify`（+4 → 563/543）
 与 runtime-ohos `docs/plans/2026-10-02-ohos-multi-overlay.md`（§FULL）。
 
+SLOTS-DYNAMIC（2026-10-03，彻底方案②）：N_max=4 的动态槽池。托管 `OpenHarmonyOverlays` 的
+上限可配（`OHOS_OVERLAY_MAX`/`OHOS_OVERLAY_HOT`，默认 4/2，下限 2/上限 8）并接收壳的容量事件
+（页面事件 `capacity`/`4`，切片 `OnPageEvent` 路由；容量下调会按 suspend 语义抢占超出容量的
+claim）。壳不再固定声明两个覆盖层：`@State webSlots` + `ForEach` 按需实例化，热对 [0,1] 常驻；
+动态槽（>=2）由托管池的 `slot ensure\n<k>` 或首个带 `s<k>` 的命令惰性创建，池 `Release` 时以
+`slot destroy\n<k>` 立即销毁（省掉空闲 ArkWeb 的引擎/文档内存，重建只付一次组件+加载）；尚未
+attached 的命令（frame/load/eval/注册）按槽排队，在 `onControllerAttached` 按序重放。达 N_max
+仍无空槽时保持 MULTI-OVERLAY-FULL 的 owner 感知 LRU 抢占，被抢占槽的恢复重放语义不变。宿主
+签名与导出不变（151/151）。新壳 abc 368,812 B（`1076a700…`；Index.ets 325,055 B /
+`c29640dd…`；headless 24,324 B / `798b2477…` 不变），provenance `ee41386e…`。契约/断言见
+`test/maui-platform-verify`（+6 → 584/566）与 runtime-ohos 同一计划的 §DYNAMIC。
+
 ## Toolchain resolution
 
 `_OpenHarmonyDetectToolchain` resolves the packing tool from `OpenHarmonyToolchainDir` or

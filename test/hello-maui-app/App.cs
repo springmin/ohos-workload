@@ -252,14 +252,17 @@ public sealed class App : Application
         var title = new Label { Text = "MAUI on OpenHarmony", FontSize = 44 };
         var subtitle = new Label { Text = "Microsoft.Maui.Controls through the platform slice", FontSize = 24 };
 
-        // MULTI-OVERLAY-FULL demo (one page, three web controls, shell slot pool of two):
+        // MULTI-OVERLAY-FULL demo (one page, three+ web controls, dynamic shell slot pool):
         //   * hybrid A and hybrid B are two HybridWebViews on this page, each with its own
         //     staged document (wwwroot/hybrid-a.html / hybrid-b.html) served on its own overlay
         //     slot; both are interactive (raw messages and JS->.NET invokes);
-        //   * the BlazorWebView (web C) is added by the "Add web C" button; its owner-aware LRU
-        //     claim preempts the least-recently-used hybrid slot, and "Activate hybrid A/B"
-        //     restores a preempted hybrid (the managed handler replays its registration, so the
-        //     shell reloads that hybrid's page on the re-acquired slot).
+        //   * the "Add web C" button creates a third hybrid on demand (SLOTS-DYNAMIC: the pool
+        //     grows the shell's overlay set, so A, B and C render and stay interactive
+        //     concurrently - the previous N=2 pool preempted A), and removes it again ("slot
+        //     destroy") so the recycle/rebuild path can be exercised on the device;
+        //   * the "Add Blazor" button swaps the third control for the BlazorWebView (#app
+        //     mount), which claims the freed dynamic slot; "Activate hybrid A/B" restores a
+        //     preempted hybrid if the shell capacity is ever exhausted (LRU replay).
         // The pages load _framework/hybridwebview.js (the handler extracts it next to the
         // payload), so the visible buttons exercise the stock raw-message and invoke endpoints.
         var hybridA = new HybridWebView
@@ -282,7 +285,7 @@ public sealed class App : Application
         var hybridBStatus = new Label { Text = "hybrid B: loading hybrid-b.html", FontSize = 20 };
         hybridB.RawMessageReceived += (_, e) => SetStatus(hybridB, hybridBStatus, $"B raw: {e.Message}");
 
-        var webStatus = new Label { Text = "MULTI-OVERLAY-FULL: 2 hybrids live, add web C / Blazor for LRU", FontSize = 20 };
+        var webStatus = new Label { Text = "SLOTS-DYNAMIC: 2 hybrids live; add web C for a 3rd live overlay", FontSize = 20 };
         var activateA = new Button { Text = "Activate hybrid A (LRU restore)", FontSize = 24 };
         activateA.Clicked += async (_, _) =>
         {
@@ -299,16 +302,15 @@ public sealed class App : Application
         };
 
         // web C is a third web control, added to the page on demand so the two hybrids are the
-        // first two slot owners. It serves the same payload root as A/B (the context base the
-        // handlers share) and gives the LRU pool a third owner whose claim preempts the
-        // least-recently-used slot.
+        // first two slot owners. SLOTS-DYNAMIC: the pool grows the shell's overlay set for it
+        // (slot 2, created by "slot ensure"), so A, B and C are live at the same time; removing
+        // it sends "slot destroy" and re-adding it recreates the slot (the recycle evidence).
         //
         // S1/#app mount demo (SAMPLE-FIX): the same host carries the restored BlazorWebView, so
-        // the limit-2 pool always contains A, B and exactly one on-demand third control - the
-        // hybrid C LRU demo and the Blazor #app mount demo each get the visible host without
-        // moving the other controls. Requesting one swaps out the other; re-adding a swapped-out
-        // control connects its handler again (the Blazor origin, the mount and the counter work
-        // under both payload modes, see BuildBlazorWebView).
+        // requesting it swaps out hybrid C - its disconnect releases the slot, which the Blazor
+        // handler then claims (registration + load replay). Requesting one swaps the other;
+        // re-adding a swapped-out control connects its handler again (the Blazor origin, the
+        // mount and the counter work under both payload modes, see BuildBlazorWebView).
         var hybridC = new HybridWebView
         {
             HybridRoot = "wwwroot",
@@ -323,25 +325,51 @@ public sealed class App : Application
         var blazorStatus = new Label { Text = "Blazor #app: not added yet", FontSize = 20 };
 
         var extraHost = new Grid { HeightRequest = 280, BackgroundColor = Colors.Gainsboro };
-        var addC = new Button { Text = "Add web C (3rd hybrid) - LRU preempts the oldest slot", FontSize = 22 };
+        bool webCAdded = false;
+        bool blazorAdded = false;
+        var addC = new Button { Text = "Add web C (3rd hybrid, dynamic slot)", FontSize = 22 };
         var addBlazor = new Button { Text = "Add Blazor (#app mount)", FontSize = 22 };
         addC.Clicked += (_, _) =>
         {
-            extraHost.Children.Clear();
-            extraHost.Children.Add(hybridC);
-            addC.Text = "web C added (3 web controls, 2 slots)";
-            addBlazor.Text = "Add Blazor (#app mount)";
-            hybridCStatus.Text = "hybrid C: loading hybrid-c.html";
-            blazorStatus.Text = "Blazor #app: swapped out";
+            if (!webCAdded)
+            {
+                extraHost.Children.Clear();
+                extraHost.Children.Add(hybridC);
+                webCAdded = true;
+                blazorAdded = false;
+                addC.Text = "Remove web C (slot destroy)";
+                addBlazor.Text = "Add Blazor (#app mount)";
+                hybridCStatus.Text = "hybrid C: loading hybrid-c.html (dynamic slot)";
+                blazorStatus.Text = "Blazor #app: not added";
+            }
+            else
+            {
+                extraHost.Children.Clear();
+                webCAdded = false;
+                addC.Text = "Add web C (3rd hybrid, dynamic slot)";
+                hybridCStatus.Text = "hybrid C: removed (slot destroy)";
+            }
         };
         addBlazor.Clicked += (_, _) =>
         {
-            extraHost.Children.Clear();
-            extraHost.Children.Add(blazor);
-            addBlazor.Text = "Blazor added (#app mount)";
-            addC.Text = "Add web C (3rd hybrid) - LRU preempts the oldest slot";
-            blazorStatus.Text = "Blazor #app: loading wwwroot/index.html";
-            hybridCStatus.Text = "hybrid C: swapped out";
+            if (!blazorAdded)
+            {
+                extraHost.Children.Clear();
+                extraHost.Children.Add(blazor);
+                blazorAdded = true;
+                webCAdded = false;
+                addC.Text = "Add web C (3rd hybrid, dynamic slot)";
+                addBlazor.Text = "Remove Blazor (#app mount)";
+                blazorStatus.Text = "Blazor #app: loading wwwroot/index.html";
+                hybridCStatus.Text = "hybrid C: swapped out";
+            }
+            else
+            {
+                extraHost.Children.Clear();
+                blazorAdded = false;
+                addBlazor.Text = "Add Blazor (#app mount)";
+                blazorStatus.Text = "Blazor #app: removed";
+            }
         };
 
         var status = new Label { Text = "Tap the counter", FontSize = 28 };

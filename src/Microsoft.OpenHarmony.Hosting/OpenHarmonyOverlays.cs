@@ -1,33 +1,50 @@
-// MULTI-OVL/MULTI-OVERLAY-FULL: multi-overlay arbitration for the shell's ArkWeb components.
+// MULTI-OVL/MULTI-OVERLAY-FULL/SLOTS-DYNAMIC: multi-overlay arbitration for the shell's ArkWeb
+// components.
 //
 // The ArkTS shell used to own a single hidden ArkWeb overlay, so the HybridWebView, the
 // BlazorWebView and every plain WebView shared one component: the first registration kept it
 // and every later web control only "armed" itself without rendering (FIX-WVP arbitration; a
 // BlazorWebView frame even moved the hybrid page onto its own box, FIX-BACKSIZE). The shell now
-// declares two ArkWeb overlays and this class is the managed half of that contract:
+// declares ArkWeb overlays per slot and this class is the managed half of that contract:
 //
-//   * slot pool: a connected web handler claims one of the <see cref="MaxOverlays"/> slots and
-//     releases it on disconnect. The legacy <see cref="Acquire()"/> overload keeps the hard cap
-//     (a third simultaneous control gets -1); the owner-aware
-//     <see cref="Acquire(IOpenHarmonyOverlaySlotOwner)"/> overload instead reuses the pool with
-//     LRU semantics (MULTI-OVERLAY-FULL): when every slot is claimed, the least-recently-used
-//     slot whose owner is not engaged is preempted - its owner's
-//     <see cref="IOpenHarmonyOverlaySlotOwner.OnOverlaySlotPreempted"/> runs, the owner then
-//     follows suspend semantics and replays its load/attach when it later re-acquires. The
-//     claim order is still the use order (the HybridWebView is created before the
-//     BlazorWebView on the sample page, so hybrid -> slot 0, Blazor -> slot 1).
+//   * dynamic slot pool: a connected web handler claims a slot through the owner-aware
+//     <see cref="Acquire(IOpenHarmonyOverlaySlotOwner)"/> overload. The pool sizes itself from
+//     the shell's declared capacity (<see cref="SetShellCapacity"/>; the shell advertises
+//     WEB_SLOT_MAX, and the managed limits are <see cref="MaxOverlays"/> /
+//     <see cref="HotOverlays"/>, default 4/2, overridable through the OHOS_OVERLAY_MAX and
+//     OHOS_OVERLAY_HOT environment variables). A free slot is claimed directly; a slot the
+//     shell has not created yet is created on demand with the shell's "slot ensure" command
+//     (the shell also lazily creates a slot when the first tagged command for it arrives, so a
+//     lost ensure command self-heals). Slots 0..<see cref="HotOverlays"/> are the shell's
+//     always-declared hot pair; a slot at or above that floor is destroyed again when it is
+//     released ("slot destroy"), balancing memory (an idle ArkWeb engine keeps its renderer and
+//     a loaded document) against the re-create cost (one ArkWeb + one page load, paid only by a
+//     later dynamic claim). The immediate-destroy choice is deliberate: there is no timer and
+//     the common case (two concurrent web controls) never leaves the hot pair.
+//   * over-limit: when every slot the shell declared is claimed, the least-recently-used slot
+//     whose owner is not engaged is preempted (MULTI-OVERLAY-FULL semantics kept): its owner's
+//     <see cref="IOpenHarmonyOverlaySlotOwner.OnOverlaySlotPreempted"/> runs, the owner follows
+//     suspend semantics and replays its load/attach when it later re-acquires. A shell that
+//     advertises fewer slots than <see cref="MaxOverlays"/> (or a capacity downgrade after a
+//     page reload) preempts the claims beyond the advertised capacity, so the managed pool
+//     never tags a slot the shell cannot serve.
 //   * wire codec: per-overlay commands carry the slot as the first argument line ("s<slot>" or
 //     "s<slot>\n<payload>"); global commands (hide/suspend/resume/cookie/cookieGet) stay
 //     untagged and keep their single-overlay meaning (all overlays). The shell echoes the slot
 //     on its page events ("s<slot>|<state>"), on the navigation-decision envelope
 //     ("__OHNAV|s<slot>|<url>|<id>") and routes the hybrid invoke endpoint per slot
 //     (<see cref="EncodeInvokeRequestId"/>). An untagged state stays a fan-out for a shell that
-//     predates the second overlay.
+//     predates the second overlay. The shell advertises its overlay capacity as the page event
+//     ("capacity", "4"); the pool defaults to <see cref="MaxOverlays"/> so the shipped
+//     shell+slice pairing renders 3+ concurrent controls even when the notification beats the
+//     managed subscription, and a legacy 2-overlay shell would downgrade the pool through the
+//     same event (mismatched shell/slice pairings beyond the advertised capacity are not
+//     supported - the kit ships the shell and the slice in lockstep).
 //
 // The encoding is deliberately textual and prefix-based: the command path is
 // OpenHarmonyBridge.WebCommand -> ohos_host_web_command -> NAPI -> the shell's registerWebSink
 // callback, which receives exactly one (op, arg) pair, so the slot has to travel inside those
-// strings (no native signature or host-export change: the contract stays 150/150).
+// strings (no native signature or host-export change: the contract stays 151/151).
 using System;
 using System.Globalization;
 
@@ -35,7 +52,7 @@ namespace Microsoft.OpenHarmony.Hosting;
 
 /// <summary>
 /// Owner contract of one shell overlay slot (MULTI-OVERLAY-FULL). A handler implements it so the
-/// pool can preempt the least-recently-used slot instead of turning a third web control away:
+/// pool can preempt the least-recently-used slot instead of turning a web control away:
 /// the pool calls <see cref="OnOverlaySlotPreempted"/> when the slot is reassigned (the owner
 /// then suspends and replays its page when it re-acquires), and reads
 /// <see cref="IsOverlaySlotEngaged"/> to prefer idle owners as victims.
@@ -44,9 +61,9 @@ public interface IOpenHarmonyOverlaySlotOwner
 {
     /// <summary>
     /// Called (outside the pool lock) when the slot this owner held was reassigned by an
-    /// owner-aware <see cref="OpenHarmonyOverlays.Acquire(IOpenHarmonyOverlaySlotOwner)"/>.
-    /// The owner must drop its claim: a later <c>Release</c> for this slot is refused by the
-    /// pool once the new owner holds it.
+    /// owner-aware <see cref="OpenHarmonyOverlays.Acquire(IOpenHarmonyOverlaySlotOwner)"/> or
+    /// dropped by a shell capacity downgrade. The owner must drop its claim: a later
+    /// <c>Release</c> for this slot is refused by the pool once the new owner holds it.
     /// </summary>
     void OnOverlaySlotPreempted(int slot);
 
@@ -59,14 +76,27 @@ public interface IOpenHarmonyOverlaySlotOwner
 
 /// <summary>
 /// Slot pool and wire codec for the shell's multi-overlay ArkWeb support (MULTI-OVL /
-/// MULTI-OVERLAY-FULL). The pool is process-wide and lock-protected; acquire/release are cheap
-/// and never throw. Every slot table is swappable by the off-device suite (the same reflective
-/// seam pattern the interaction tests use for native state).
+/// MULTI-OVERLAY-FULL / SLOTS-DYNAMIC). The pool is process-wide and lock-protected;
+/// acquire/release are cheap and never throw. Every slot table is swappable by the off-device
+/// suite (the same reflective seam pattern the interaction tests use for native state).
 /// </summary>
 public static class OpenHarmonyOverlays
 {
-    /// <summary>Number of ArkWeb overlays the shell declares (MULTI-OVL cap N=2).</summary>
-    public const int MaxOverlays = 2;
+    /// <summary>Default overlay slots the pool may use (SLOTS-DYNAMIC; env OHOS_OVERLAY_MAX).</summary>
+    public const int DefaultMaxOverlays = 4;
+
+    /// <summary>Default always-declared hot slots kept across a release (env OHOS_OVERLAY_HOT).</summary>
+    public const int DefaultHotOverlays = 2;
+
+    /// <summary>Lowest meaningful capacity: below two overlays the pool is not a pool.</summary>
+    public const int MinMaxOverlays = 2;
+
+    /// <summary>
+    /// Highest supported slot count. The wire tag is the single digit after 's' ("s0".."s7") and
+    /// the hybrid invoke id stores slot+1 in one byte, so the ceiling is a resource policy, not
+    /// a protocol limit; 8 keeps an accidental environment value from exhausting device memory.
+    /// </summary>
+    public const int MaxSupportedOverlays = 8;
 
     /// <summary>First line prefix a tagged argument carries ("s0", "s1", ...).</summary>
     public const char SlotPrefix = 's';
@@ -84,67 +114,189 @@ public static class OpenHarmonyOverlays
     public const int InvokeSequenceMask = (1 << InvokeSlotShift) - 1;
 
     private static readonly object s_sync = new();
+
+    // The pool limits are read once from the environment (SLOTS-DYNAMIC) and stay writable so
+    // the off-device suite can drill other limits through the reflective seam.
+    private static int s_maxOverlays = ReadLimit("OHOS_OVERLAY_MAX", DefaultMaxOverlays, MinMaxOverlays, MaxSupportedOverlays);
+    private static int s_hotOverlays = ReadLimit("OHOS_OVERLAY_HOT", DefaultHotOverlays, MinMaxOverlays, s_maxOverlays);
+
     // The slot tables are swappable for the off-device suite's pool drill (the same reflective
-    // seam pattern the interaction tests use for native state).
-    private static bool[] s_used = new bool[MaxOverlays];
-    private static object?[] s_owners = new object?[MaxOverlays];
-    private static long[] s_lastUsed = new long[MaxOverlays];
+    // seam pattern the interaction tests use for native state). s_created tracks which slots the
+    // shell has declared (hot slots at startup, dynamic slots after "slot ensure"); a released
+    // slot at/above the hot floor is destroyed and s_created drops back to false.
+    private static bool[] s_used = new bool[s_maxOverlays];
+    private static object?[] s_owners = new object?[s_maxOverlays];
+    private static long[] s_lastUsed = new long[s_maxOverlays];
+    private static bool[] s_created = NewCreatedTable(s_maxOverlays, s_hotOverlays);
     private static long s_clock;
 
+    // Overlay count the shell last advertised (0 = not advertised yet). The optimistic default
+    // is MaxOverlays: the kit ships the shell and the slice together, and the shell's
+    // notification can arrive after the first handlers connected. SetShellCapacity lowers it
+    // (a legacy 2-overlay shell) and preempts any claim the shell cannot serve.
+    private static int s_shellCapacity;
+
+    /// <summary>Overlay slots the pool may use (SLOTS-DYNAMIC; env OHOS_OVERLAY_MAX, default 4).</summary>
+    public static int MaxOverlays => s_maxOverlays;
+
     /// <summary>
-    /// Claims the first free overlay slot (0, then 1, ...) with the legacy hard cap. Returns -1
-    /// when the cap is reached; callers that pass no owner cannot be told about a preemption, so
-    /// this overload must not silently hand an owner's overlay to someone else (that would
-    /// render the wrong document for at least one control).
+    /// Hot slots the shell always declares and a release never destroys (env
+    /// OHOS_OVERLAY_HOT, default 2, clamped to [2, <see cref="MaxOverlays"/>]).
     /// </summary>
-    public static int Acquire()
+    public static int HotOverlays => s_hotOverlays;
+
+    /// <summary>
+    /// Overlay capacity the shell last advertised through its "capacity" page event. Until the
+    /// event arrives the pool assumes <see cref="MaxOverlays"/> (the lockstep shell declares
+    /// that many); a smaller advertised value clamps every later claim.
+    /// </summary>
+    public static int ShellCapacity
     {
-        lock (s_sync)
+        get
         {
-            for (int slot = 0; slot < s_used.Length; slot++)
+            lock (s_sync)
             {
-                if (!s_used[slot])
-                {
-                    s_used[slot] = true;
-                    s_owners[slot] = null;
-                    s_lastUsed[slot] = ++s_clock;
-                    return slot;
-                }
+                return EffectiveCapacityLocked();
             }
         }
-        return -1;
+    }
+
+    private static int ReadLimit(string name, int fallback, int minimum, int maximum)
+    {
+        try
+        {
+            string? raw = Environment.GetEnvironmentVariable(name);
+            if (!string.IsNullOrEmpty(raw) &&
+                int.TryParse(raw, NumberStyles.Integer, CultureInfo.InvariantCulture, out int value))
+            {
+                return Math.Clamp(value, minimum, maximum);
+            }
+        }
+        catch
+        {
+            // A hostile/unreadable environment falls back to the default.
+        }
+        return fallback;
+    }
+
+    private static bool[] NewCreatedTable(int maxOverlays, int hotOverlays)
+    {
+        bool[] created = new bool[maxOverlays];
+        for (int slot = 0; slot < Math.Min(hotOverlays, maxOverlays); slot++)
+        {
+            created[slot] = true;
+        }
+        return created;
     }
 
     /// <summary>
-    /// Owner-aware claim (MULTI-OVERLAY-FULL). A free slot is claimed directly; when the pool is
-    /// full the least-recently-used slot whose owner is not engaged is preempted: its owner's
-    /// <see cref="IOpenHarmonyOverlaySlotOwner.OnOverlaySlotPreempted"/> runs outside the lock
-    /// and the claim transfers to <paramref name="owner"/>. Never returns -1 (the pool always
-    /// has a victim), so a third simultaneous web control gets an overlay instead of falling
-    /// back to the legacy untagged protocol.
+    /// Effective capacity: the shell's advertised count clamped to the managed maximum, with the
+    /// optimistic default (the shell has not answered yet). Caller holds <see cref="s_sync"/>.
+    /// </summary>
+    private static int EffectiveCapacityLocked()
+    {
+        int capacity = s_shellCapacity == 0 ? s_maxOverlays : s_shellCapacity;
+        return Math.Clamp(capacity, MinMaxOverlays, s_maxOverlays);
+    }
+
+    /// <summary>
+    /// Records the overlay count the shell can declare (SLOTS-DYNAMIC; the shell's "capacity"
+    /// page event). Claims at or above the new capacity are preempted outside the lock: the
+    /// handlers suspend and replay on their next use, exactly like an LRU preemption, so a
+    /// capacity downgrade cannot leave a control bound to a slot the shell does not serve.
+    /// </summary>
+    public static void SetShellCapacity(int capacity)
+    {
+        if (capacity <= 0)
+        {
+            return;
+        }
+        int clamped = Math.Clamp(capacity, MinMaxOverlays, s_maxOverlays);
+        int[] preemptedSlots;
+        IOpenHarmonyOverlaySlotOwner?[] preemptedOwners;
+        int preemptedCount = 0;
+        lock (s_sync)
+        {
+            s_shellCapacity = clamped;
+            preemptedSlots = new int[s_maxOverlays];
+            preemptedOwners = new IOpenHarmonyOverlaySlotOwner?[s_maxOverlays];
+            for (int slot = clamped; slot < s_maxOverlays; slot++)
+            {
+                if (s_used[slot])
+                {
+                    preemptedSlots[preemptedCount] = slot;
+                    preemptedOwners[preemptedCount] = s_owners[slot] as IOpenHarmonyOverlaySlotOwner;
+                    preemptedCount++;
+                    s_used[slot] = false;
+                    s_owners[slot] = null;
+                    s_created[slot] = false;
+                }
+            }
+        }
+        for (int i = 0; i < preemptedCount; i++)
+        {
+            preemptedOwners[i]?.OnOverlaySlotPreempted(preemptedSlots[i]);
+        }
+    }
+
+    /// <summary>
+    /// Claims the first free overlay slot (0, then 1, ...) with the legacy hard cap. Returns -1
+    /// when the effective cap is reached; callers that pass no owner cannot be told about a
+    /// preemption, so this overload must not silently hand an owner's overlay to someone else
+    /// (that would render the wrong document for at least one control). A free dynamic slot that
+    /// the shell has not declared yet is ensured first, so the returned slot is always servable.
+    /// </summary>
+    public static int Acquire()
+    {
+        int claimed;
+        bool ensure;
+        lock (s_sync)
+        {
+            claimed = ClaimFreeSlotLocked(null, out ensure);
+        }
+        if (claimed >= 0 && ensure)
+        {
+            SendSlotCommand("ensure", claimed);
+        }
+        return claimed;
+    }
+
+    /// <summary>
+    /// Owner-aware claim (MULTI-OVERLAY-FULL / SLOTS-DYNAMIC). A free slot is claimed directly
+    /// (creating it on demand when the shell has not declared it yet); when the effective
+    /// capacity is full the least-recently-used slot whose owner is not engaged is preempted:
+    /// its owner's <see cref="IOpenHarmonyOverlaySlotOwner.OnOverlaySlotPreempted"/> runs outside
+    /// the lock and the claim transfers to <paramref name="owner"/>. Never returns -1 (the pool
+    /// always has a victim), so a web control beyond the hot pair gets an overlay instead of
+    /// falling back to the legacy untagged protocol.
     /// </summary>
     public static int Acquire(IOpenHarmonyOverlaySlotOwner owner)
     {
         ArgumentNullException.ThrowIfNull(owner);
         IOpenHarmonyOverlaySlotOwner? victim = null;
         int victimSlot = -1;
+        int claimed;
+        bool ensure;
         lock (s_sync)
         {
-            for (int slot = 0; slot < s_used.Length; slot++)
+            claimed = ClaimFreeSlotLocked(owner, out ensure);
+            if (claimed < 0)
             {
-                if (!s_used[slot])
-                {
-                    s_used[slot] = true;
-                    s_owners[slot] = owner;
-                    s_lastUsed[slot] = ++s_clock;
-                    return slot;
-                }
+                victimSlot = SelectPreemptionVictim(EffectiveCapacityLocked());
+                victim = s_owners[victimSlot] as IOpenHarmonyOverlaySlotOwner;
+                s_used[victimSlot] = true;
+                s_owners[victimSlot] = owner;
+                s_lastUsed[victimSlot] = ++s_clock;
+                s_created[victimSlot] = true;
             }
-            victimSlot = SelectPreemptionVictim();
-            victim = s_owners[victimSlot] as IOpenHarmonyOverlaySlotOwner;
-            s_used[victimSlot] = true;
-            s_owners[victimSlot] = owner;
-            s_lastUsed[victimSlot] = ++s_clock;
+        }
+        if (claimed >= 0)
+        {
+            if (ensure)
+            {
+                SendSlotCommand("ensure", claimed);
+            }
+            return claimed;
         }
         if (victim is not null && !ReferenceEquals(victim, owner))
         {
@@ -154,15 +306,39 @@ public static class OpenHarmonyOverlays
     }
 
     /// <summary>
+    /// Claims the first free slot below the effective capacity; reports through
+    /// <paramref name="ensure"/> whether the shell still has to declare it. Caller holds
+    /// <see cref="s_sync"/>.
+    /// </summary>
+    private static int ClaimFreeSlotLocked(object? owner, out bool ensure)
+    {
+        ensure = false;
+        int capacity = EffectiveCapacityLocked();
+        for (int slot = 0; slot < capacity; slot++)
+        {
+            if (!s_used[slot])
+            {
+                s_used[slot] = true;
+                s_owners[slot] = owner;
+                s_lastUsed[slot] = ++s_clock;
+                ensure = !s_created[slot];
+                s_created[slot] = true;
+                return slot;
+            }
+        }
+        return -1;
+    }
+
+    /// <summary>
     /// Picks the slot an owner-aware acquire preempts: the least-recently-used slot whose owner
     /// is not engaged (an owner-less legacy claim counts as not engaged). The caller holds
     /// <see cref="s_sync"/>.
     /// </summary>
-    private static int SelectPreemptionVictim()
+    private static int SelectPreemptionVictim(int capacity)
     {
         int best = 0;
         bool bestEngaged = IsEngaged(0);
-        for (int slot = 1; slot < s_used.Length; slot++)
+        for (int slot = 1; slot < capacity; slot++)
         {
             bool engaged = IsEngaged(slot);
             if (bestEngaged && !engaged)
@@ -222,18 +398,14 @@ public static class OpenHarmonyOverlays
         }
     }
 
-    /// <summary>Returns one claimed slot to the pool; -1 and out-of-range values are ignored.</summary>
+    /// <summary>
+    /// Returns one claimed slot to the pool; -1 and out-of-range values are ignored. A released
+    /// slot at or above <see cref="HotOverlays"/> is destroyed in the shell (SLOTS-DYNAMIC), so
+    /// an idle dynamic ArkWeb cannot keep its engine and document alive; the hot pair survives.
+    /// </summary>
     public static void Release(int slot)
     {
-        if (slot < 0 || slot >= MaxOverlays)
-        {
-            return;
-        }
-        lock (s_sync)
-        {
-            s_used[slot] = false;
-            s_owners[slot] = null;
-        }
+        ReleaseCore(slot, null);
     }
 
     /// <summary>
@@ -244,24 +416,48 @@ public static class OpenHarmonyOverlays
     public static bool Release(int slot, IOpenHarmonyOverlaySlotOwner owner)
     {
         ArgumentNullException.ThrowIfNull(owner);
-        if (slot < 0 || slot >= MaxOverlays)
+        return ReleaseCore(slot, owner);
+    }
+
+    private static bool ReleaseCore(int slot, object? owner)
+    {
+        if (!IsValid(slot))
         {
             return false;
         }
+        bool destroy = false;
         lock (s_sync)
         {
-            if (!ReferenceEquals(s_owners[slot], owner))
+            if (owner is not null && !ReferenceEquals(s_owners[slot], owner))
             {
                 return false;
             }
             s_used[slot] = false;
             s_owners[slot] = null;
-            return true;
+            if (slot >= s_hotOverlays && s_created[slot])
+            {
+                s_created[slot] = false;
+                destroy = true;
+            }
         }
+        if (destroy)
+        {
+            SendSlotCommand("destroy", slot);
+        }
+        return true;
     }
 
-    /// <summary>True for a slot index the shell owns.</summary>
-    public static bool IsValid(int slot) => slot >= 0 && slot < MaxOverlays;
+    /// <summary>
+    /// Sends one shell slot-lifecycle command (SLOTS-DYNAMIC): op "slot", argument
+    /// "ensure\n&lt;slot&gt;" or "destroy\n&lt;slot&gt;". The shell answers ensure by declaring
+    /// the ArkWeb on demand and destroy by removing it; both are no-ops on a shell that
+    /// predates the command (the hot pair still works).
+    /// </summary>
+    private static void SendSlotCommand(string action, int slot)
+        => OpenHarmonyBridge.WebCommand("slot", action + "\n" + slot.ToString(CultureInfo.InvariantCulture));
+
+    /// <summary>True for a slot index the pool can use.</summary>
+    public static bool IsValid(int slot) => slot >= 0 && slot < s_maxOverlays;
 
     /// <summary>True while a slot is claimed (diagnostics/tests).</summary>
     public static bool IsClaimed(int slot)
@@ -291,6 +487,23 @@ public static class OpenHarmonyOverlays
     }
 
     /// <summary>
+    /// True while the shell has declared <paramref name="slot"/> (diagnostics/tests): the
+    /// always-declared hot pair, or a dynamic slot after its "ensure" command (or the shell's
+    /// own lazy create).
+    /// </summary>
+    public static bool IsCreated(int slot)
+    {
+        if (!IsValid(slot))
+        {
+            return false;
+        }
+        lock (s_sync)
+        {
+            return s_created[slot];
+        }
+    }
+
+    /// <summary>
     /// Tags a per-overlay command argument: "s&lt;slot&gt;" for an empty payload (show/hide
     /// style ops) or "s&lt;slot&gt;\n&lt;payload&gt;" for frame/load/data. A negative slot is
     /// returned untagged, so a handler without an overlay still speaks the legacy
@@ -315,12 +528,28 @@ public static class OpenHarmonyOverlays
     {
         slot = 0;
         payload = argument ?? string.Empty;
+        if (!TryParseSlotTag(argument, out int taggedSlot))
+        {
+            return false;
+        }
+        slot = taggedSlot;
+        payload = argument!.Length > 2 ? argument.Substring(3) : string.Empty;
+        return true;
+    }
+
+    /// <summary>
+    /// Parses the "s&lt;slot&gt;" first line of a tagged argument (optionally followed by
+    /// '\n' and the payload). False for an untagged argument or a slot beyond the pool.
+    /// </summary>
+    private static bool TryParseSlotTag(string? argument, out int slot)
+    {
+        slot = -1;
         if (argument is null || argument.Length < 2 || argument[0] != SlotPrefix)
         {
             return false;
         }
         int digit = argument[1] - '0';
-        if (digit < 0 || digit >= MaxOverlays)
+        if (digit < 0 || digit >= s_maxOverlays)
         {
             return false;
         }
@@ -329,7 +558,6 @@ public static class OpenHarmonyOverlays
             return false;
         }
         slot = digit;
-        payload = argument.Length > 2 ? argument.Substring(3) : string.Empty;
         return true;
     }
 
@@ -356,7 +584,7 @@ public static class OpenHarmonyOverlays
             return false;
         }
         int digit = state[1] - '0';
-        if (digit < 0 || digit >= MaxOverlays || state[2] != '|')
+        if (digit < 0 || digit >= s_maxOverlays || state[2] != '|')
         {
             return false;
         }
@@ -425,7 +653,7 @@ public static class OpenHarmonyOverlays
     /// completes the held-open response of the same overlay. No native signature/export change.
     /// </summary>
     public static int EncodeInvokeRequestId(int slot, int sequence)
-        => slot < 0 || slot >= MaxOverlays
+        => slot < 0 || slot >= s_maxOverlays
             ? sequence & InvokeSequenceMask
             : ((slot + 1) << InvokeSlotShift) | (sequence & InvokeSequenceMask);
 
@@ -439,7 +667,7 @@ public static class OpenHarmonyOverlays
         slot = -1;
         sequence = requestId & InvokeSequenceMask;
         int tag = (requestId >> InvokeSlotShift) & 0xFF;
-        if (tag <= 0 || tag > MaxOverlays)
+        if (tag <= 0 || tag > s_maxOverlays)
         {
             return false;
         }

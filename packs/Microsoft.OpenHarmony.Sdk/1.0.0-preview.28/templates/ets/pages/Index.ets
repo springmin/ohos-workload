@@ -583,6 +583,25 @@ const TAG = 'OHOS_MAUI';
 // verdict is `hilog | grep BlazorWebHost` for both hosts (`marker: BLZ_BOOT` / `BLZ_RENDERED`).
 const BLZ_TAG = 'BlazorWebHost';
 
+// SLOTS-DYNAMIC overlay pool: the shell declares the hot pair (slots 0/1) at startup and grows
+// the overlay set on demand up to WEB_SLOT_MAX. Slots at or above WEB_SLOT_HOT are removed
+// again when the managed pool releases them ("slot destroy"), so an idle dynamic ArkWeb cannot
+// keep its engine and document alive; the managed pool mirrors both numbers (OHOS_OVERLAY_MAX /
+// OHOS_OVERLAY_HOT, defaults 4/2) and learns this ceiling from the "capacity" page event.
+const WEB_SLOT_MAX: number = 4;
+const WEB_SLOT_HOT: number = 2;
+// Bound on the per-slot deferral queue (see pendingWebOps).
+const WEB_SLOT_PENDING_MAX: number = 32;
+
+// One per-overlay command a slot had to defer because its ArkWeb was still being created
+// (SLOTS-DYNAMIC): replayed in arrival order from the new component's onControllerAttached.
+// requestId is only used by the eval channel (registerWebEvalSink).
+interface WebPendingOp {
+  op: string;
+  arg: string;
+  requestId: number;
+}
+
 @Entry
 @Component
 struct Index {
@@ -595,13 +614,13 @@ struct Index {
   // commands with it ("s<slot>" / "s<slot>\n<arg>") and receive the shell's page events tagged
   // the same way. Global commands (hide/suspend/resume/cookie) stay untagged and apply to both
   // overlays, and an untagged per-overlay command still lands on slot 0 (a legacy handler).
-  @State webVisible: boolean[] = [false, false];
+  @State webVisible: boolean[] = [false, false, false, false];
   // MULTI-OVERLAY-FULL z-order: the shell no longer keeps slot 1 permanently above slot 0. Each
   // overlay's activation order (a user touch or a programmatic show/load on that slot) is
   // tracked and applied as its zIndex, so the most recently activated overlay composites on top
   // (U5: overlapping web controls). `.zIndex` is an ArkUI universal attribute inside the same
   // Stack; the declaration order below only decides the initial state.
-  @State webZOrder: number[] = [0, 0];
+  @State webZOrder: number[] = [0, 0, 0, 0];
   private webZOrderSeq: number = 0;
   // FIX-WVP overlay suspension: a managed drawer renders in the managed surface below the
   // overlays, so while it is presented (`suspend`) every overlay hides and frame/load commands
@@ -610,30 +629,45 @@ struct Index {
   // switch uses the plain `hide`: the hidden page is not arranged, so no stale frame follows,
   // and the next page's web control re-shows through its own frame.
   private webSuspended: boolean = false;
-  private webVisibleBeforeSuspend: boolean[] = [false, false];
+  private webVisibleBeforeSuspend: boolean[] = [false, false, false, false];
   // ArkWeb overlay frames (managed WebView PlatformArrange -> WebCommand "frame"): each overlay
   // starts full-window; the frame arrives in device pixels and is converted to vp with px2vp,
   // and a frame with a non-positive width/height (control not arranged yet) is ignored.
-  @State webFrameX: number[] = [0, 0];
-  @State webFrameY: number[] = [0, 0];
-  @State webFrameW: number[] = [0, 0];
-  @State webFrameH: number[] = [0, 0];
-  // One controller per overlay; the Web components below bind them in slot order.
-  private webControllers: web_webview.WebviewController[] =
-    [new web_webview.WebviewController(), new web_webview.WebviewController()];
+  @State webFrameX: number[] = [0, 0, 0, 0];
+  @State webFrameY: number[] = [0, 0, 0, 0];
+  @State webFrameW: number[] = [0, 0, 0, 0];
+  @State webFrameH: number[] = [0, 0, 0, 0];
+  // SLOTS-DYNAMIC: the overlays actually declared in build(). The hot pair [0, 1] always exists;
+  // a dynamic slot (>= WEB_SLOT_HOT) is appended on demand - the managed pool's "slot ensure"
+  // command, or any tagged command for a slot the shell has not declared yet - and removed by
+  // "slot destroy" once the pool releases it. The per-slot tables below are preallocated to
+  // WEB_SLOT_MAX, so an index stays valid while a slot is created/destroyed.
+  @State webSlots: number[] = [0, 1];
+  // Whether a slot's ArkWeb is declared (hot: always; dynamic: after ensure/lazy create) and
+  // whether its controller has attached (commands arriving in between are deferred).
+  private webSlotCreated: boolean[] = [true, true, false, false];
+  private webSlotAttached: boolean[] = [false, false, false, false];
+  // Per-overlay commands whose slot was still being created; replayed from onControllerAttached
+  // in arrival order and bounded per slot so a burst cannot grow without limit.
+  private pendingWebOps: Map<number, WebPendingOp[]> = new Map();
+  // One controller per overlay; the Web components below bind them in slot order. The hot pair
+  // is created eagerly (the previous single-overlay behavior); a dynamic controller is created
+  // by ensureWebSlot and dropped by destroyWebSlot.
+  private webControllers: (web_webview.WebviewController | null)[] =
+    [new web_webview.WebviewController(), new web_webview.WebviewController(), null, null];
   @State menuItems: HostMenuItem[] = [];
   // HybridWebView asset bridge state (registered by the managed handler; empty -> no
   // interception, so the regular WebView flows are never touched). MULTI-OVERLAY-FULL: the
   // registration state is per overlay slot, because two HybridWebViews on the same page each
   // register their own layout on their own slot and the shell must serve each document from its
   // own registration (same origin, different default file/root, different document id).
-  private hybridBase: string[] = ['', ''];
-  private hybridRoot: string[] = ['', ''];
-  private hybridDefaultFile: string[] = ['', ''];
-  private hybridRegistered: boolean[] = [false, false];
+  private hybridBase: string[] = ['', '', '', ''];
+  private hybridRoot: string[] = ['', '', '', ''];
+  private hybridDefaultFile: string[] = ['', '', '', ''];
+  private hybridRegistered: boolean[] = [false, false, false, false];
   // Per-registration document id (HybridAssetsConfig.id): stamped into matching documents and
   // echoed in the message envelope; '' means the page was not served for a registration.
-  private hybridDocId: string[] = ['', ''];
+  private hybridDocId: string[] = ['', '', '', ''];
   // MAUI's hybrid origin: HybridWebViewHandler.AppOrigin (https://0.0.0.1/).
   private hybridOrigin: string = 'https://0.0.0.1/';
   // Blazor asset bridge state (registered by the managed handler; empty -> no interception of
@@ -655,7 +689,7 @@ struct Index {
   private blazorServeLogs: number = 0;
   // The same bounded diagnostics for the hybrid origin (https://0.0.0.1/): its served requests
   // are the device evidence that the HybridWebView page really loaded (one counter per slot).
-  private hybridServeLogs: number[] = [0, 0];
+  private hybridServeLogs: number[] = [0, 0, 0, 0];
   // Managed status-file polling (device diagnostics): bounded reads of <filesDir>/dotnet-status.txt
   // while the app starts; see pollManagedStatus.
   private statusReads: number = 0;
@@ -663,7 +697,7 @@ struct Index {
   // One bootstrap per loaded document: reset in onPageBegin, so a navigation/reload runs the
   // sequence again while repeated onPageEnd callbacks for the same document do not. Indexed by
   // slot (MULTI-OVL): a slot-0 page begin must not reset the Blazor overlay's bootstrap.
-  private blazorBootstrapped: boolean[] = [false, false];
+  private blazorBootstrapped: boolean[] = [false, false, false, false];
   // JS -> .NET invocation state: the intercepted __hwvInvokeDotNet responses held open until
   // the managed handler answers through host.registerHybridInvokeResultSink.
   private hybridInvokeSeq: number = 0;
@@ -676,7 +710,7 @@ struct Index {
   private hybridInvokeTimeoutMs: number = 15000;
   // JavaScript bridge: set once the dotnetHost proxy was registered on the attached controller,
   // per overlay slot (the proxy is registered on each Web component's controller).
-  private dotNetHostRegistered: boolean[] = [false, false];
+  private dotNetHostRegistered: boolean[] = [false, false, false, false];
   // App theme: 'colorMode' is an ArkUI environment property that the framework keeps in
   // AppStorage and refreshes when the device switches between light and dark. The watch
   // forwards every change to the managed side through host.notifyTheme(isDark).
@@ -833,8 +867,8 @@ struct Index {
   // markers that let the shell's own reloads pass, indexed by overlay slot (MULTI-OVL). All
   // entries are time-bounded and dropped when they expire.
   private navPending: Map<string, PendingNavigation> = new Map();
-  private navApproved: (ApprovedNavigation | null)[] = [null, null];
-  private navProgrammatic: (ApprovedNavigation | null)[] = [null, null];
+  private navApproved: (ApprovedNavigation | null)[] = [null, null, null, null];
+  private navProgrammatic: (ApprovedNavigation | null)[] = [null, null, null, null];
   private navPendingLimit: number = 8;
   private navPendingTtlMs: number = 5000;
   private navMaxUrlLength: number = 8192;
@@ -2739,7 +2773,7 @@ struct Index {
         url.startsWith('javascript:') || url.startsWith('file:')) {
       return true;
     }
-    if (this.hybridRegistered[0] || this.hybridRegistered[1]) {
+    if (this.anyHybridRegistered()) {
       if (url.startsWith(this.hybridOrigin)) {
         return true;
       }
@@ -2754,25 +2788,28 @@ struct Index {
   // followed by '\n' and the payload; an untagged argument lands on slot 0 (legacy handler or
   // a global command). The tag is the wire contract the managed handlers build in
   // OpenHarmonyOverlays.Tag/TagScript and parse back from the event states.
-  private webSlotOf(arg: string): number {
+  // SLOTS-DYNAMIC: a tag is valid for any declared slot below WEB_SLOT_MAX ("s0".."s3"); the
+  // digit-only form keeps the wire protocol unchanged.
+  private webSlotDigit(arg: string): number {
     if (arg.length >= 2 && arg.charAt(0) === 's') {
       const slot: number = arg.charCodeAt(1) - 48;
-      if ((slot === 0 || slot === 1) && (arg.length === 2 || arg.charAt(2) === '\n')) {
+      if (slot >= 0 && slot < WEB_SLOT_MAX && (arg.length === 2 || arg.charAt(2) === '\n')) {
         return slot;
       }
     }
-    return 0;
+    return -1;
+  }
+
+  private webSlotOf(arg: string): number {
+    const slot: number = this.webSlotDigit(arg);
+    return slot >= 0 ? slot : 0;
   }
 
   // True when the argument carries an explicit slot tag. `webSlotOf` answers 0 for an untagged
   // argument as the legacy default, so operations whose untagged form means "every overlay"
   // (hide) need this stronger test to tell "s0" from no tag at all.
   private webSlotTagged(arg: string): boolean {
-    if (arg.length >= 2 && arg.charAt(0) === 's') {
-      const slot: number = arg.charCodeAt(1) - 48;
-      return (slot === 0 || slot === 1) && (arg.length === 2 || arg.charAt(2) === '\n');
-    }
-    return false;
+    return this.webSlotDigit(arg) >= 0;
   }
 
   // MULTI-OVERLAY-FULL z-order: marks the overlay as most recently activated and forwards the
@@ -2789,11 +2826,8 @@ struct Index {
   }
 
   private webSlotPayload(arg: string): string {
-    if (arg.length >= 3 && arg.charAt(0) === 's' && (arg.charAt(1) === '0' || arg.charAt(1) === '1') &&
-        arg.charAt(2) === '\n') {
-      return arg.substring(3);
-    }
-    return arg;
+    const slot: number = this.webSlotDigit(arg);
+    return slot >= 0 && arg.length > 2 ? arg.substring(3) : arg;
   }
 
   // MULTI-OVL: the page-event state carries the slot ("s0|finished"), so the managed side routes
@@ -2803,7 +2837,347 @@ struct Index {
   }
 
   private slotController(slot: number): web_webview.WebviewController {
-    return this.webControllers[slot === 1 ? 1 : 0];
+    let controller: web_webview.WebviewController | null = this.webControllers[slot];
+    if (controller === null) {
+      // A dynamic controller is normally created by ensureWebSlot; this is the defensive path
+      // for a caller that reached the controller first.
+      controller = new web_webview.WebviewController();
+      this.webControllers[slot] = controller;
+    }
+    return controller;
+  }
+
+  // ---------------------------------------------------------------------------------------------
+  // SLOTS-DYNAMIC: overlay slot lifecycle. Slots 0..WEB_SLOT_HOT-1 are the always-declared hot
+  // pair; a slot at/above the floor is declared on demand (the managed pool's "slot ensure"
+  // command, or the first tagged command for the slot) and removed by "slot destroy" when the
+  // pool releases it. Commands for a slot whose Web component has not attached yet are queued
+  // and replayed from onControllerAttached, so the asynchronous ArkUI create cannot lose them.
+  // ---------------------------------------------------------------------------------------------
+
+  // Sends the shell's overlay capacity to the managed pool ("capacity" page event). The page can
+  // load before the managed WebEvent subscription exists, so aboutToAppear sends it with a
+  // couple of bounded retries; a lost notification only delays the pool's clamp (its default is
+  // the same WEB_SLOT_MAX).
+  private advertiseWebCapacity(): void {
+    this.hostCall('notifyWebEvent', typeof host !== 'undefined' && typeof host.notifyWebEvent === 'function', (): void => {
+      host.notifyWebEvent('capacity', `${WEB_SLOT_MAX}`);
+    });
+  }
+
+  private ensureWebSlot(slot: number): void {
+    if (slot < 0 || slot >= WEB_SLOT_MAX) {
+      this.logError(`[maui] web slot ensure rejected: ${slot}`);
+      return;
+    }
+    if (this.webSlotCreated[slot]) {
+      return;
+    }
+    this.webSlotCreated[slot] = true;
+    if (this.webControllers[slot] === null) {
+      this.webControllers[slot] = new web_webview.WebviewController();
+    }
+    this.rebuildWebSlots(slot, -1);
+    this.logInfo(`[maui] web slot create: ${slot}`);
+  }
+
+  private destroyWebSlot(slot: number): void {
+    if (slot < WEB_SLOT_HOT || slot >= WEB_SLOT_MAX) {
+      // The hot pair is never destroyed (the pool's HotOverlays floor), and an out-of-range
+      // request is a protocol error.
+      this.logError(`[maui] web slot destroy rejected: ${slot}`);
+      return;
+    }
+    if (!this.webSlotCreated[slot]) {
+      return;
+    }
+    this.webSlotCreated[slot] = false;
+    this.webSlotAttached[slot] = false;
+    try {
+      const controller: web_webview.WebviewController | null = this.webControllers[slot];
+      if (controller !== null) {
+        controller.stop();
+      }
+    } catch {
+      // Stopping a controller that has no active load must not fail the removal.
+    }
+    this.webControllers[slot] = null;
+    this.rebuildWebSlots(-1, slot);
+    this.resetWebSlotState(slot);
+    this.pendingWebOps.delete(slot);
+    this.logInfo(`[maui] web slot destroy: ${slot}`);
+  }
+
+  // Rebuilds the declared-slot list (a fresh array so @State reacts): removes `removeSlot` when
+  // it is >= 0 and appends `addSlot` when it is >= 0, keeping the ascending order the hot pair
+  // starts with (the ArkUI declaration order is cosmetic; z-order decides overlap).
+  private rebuildWebSlots(addSlot: number, removeSlot: number): void {
+    const next: number[] = [];
+    for (let i = 0; i < this.webSlots.length; i++) {
+      const current: number = this.webSlots[i];
+      if (current !== removeSlot) {
+        next.push(current);
+      }
+    }
+    if (addSlot >= 0) {
+      let inserted: boolean = false;
+      for (let i = 0; i < next.length; i++) {
+        if (next[i] > addSlot) {
+          next.splice(i, 0, addSlot);
+          inserted = true;
+          break;
+        }
+      }
+      if (!inserted) {
+        next.push(addSlot);
+      }
+    }
+    this.webSlots = next;
+  }
+
+  // Clears every per-slot table entry so a re-created slot cannot inherit the previous owner's
+  // registration/visibility/history state.
+  private resetWebSlotState(slot: number): void {
+    this.webVisible[slot] = false;
+    this.webZOrder[slot] = 0;
+    this.webVisibleBeforeSuspend[slot] = false;
+    this.webFrameX[slot] = 0;
+    this.webFrameY[slot] = 0;
+    this.webFrameW[slot] = 0;
+    this.webFrameH[slot] = 0;
+    this.hybridBase[slot] = '';
+    this.hybridRoot[slot] = '';
+    this.hybridDefaultFile[slot] = '';
+    this.hybridRegistered[slot] = false;
+    this.hybridDocId[slot] = '';
+    this.hybridServeLogs[slot] = 0;
+    this.blazorBootstrapped[slot] = false;
+    this.dotNetHostRegistered[slot] = false;
+    this.navProgrammatic[slot] = null;
+    this.navApproved[slot] = null;
+  }
+
+  // True when the slot's ArkWeb exists and its controller is attached, i.e. a controller call
+  // cannot fail with BusinessError 17100001.
+  private webSlotReady(slot: number): boolean {
+    return slot >= 0 && slot < WEB_SLOT_MAX && this.webSlotCreated[slot] && this.webSlotAttached[slot];
+  }
+
+  private deferWebOp(slot: number, op: string, arg: string, requestId: number = -1): void {
+    if (slot < 0 || slot >= WEB_SLOT_MAX) {
+      this.logError(`[maui] web slot defer rejected: ${slot} ${op}`);
+      return;
+    }
+    let pending: WebPendingOp[] | undefined = this.pendingWebOps.get(slot);
+    if (pending === undefined) {
+      pending = [];
+      this.pendingWebOps.set(slot, pending);
+    }
+    if (pending.length >= WEB_SLOT_PENDING_MAX) {
+      this.logError(`[maui] web slot defer overflow: ${slot} ${op}`);
+      return;
+    }
+    pending.push({ op: op, arg: arg, requestId: requestId });
+    this.logInfo(`[maui] web slot defer: ${slot} ${op}`);
+    this.ensureWebSlot(slot);
+  }
+
+  private flushWebOps(slot: number): void {
+    const pending: WebPendingOp[] | undefined = this.pendingWebOps.get(slot);
+    if (pending === undefined || pending.length === 0) {
+      return;
+    }
+    this.pendingWebOps.delete(slot);
+    for (const item of pending) {
+      if (item.op === 'eval') {
+        this.runWebEval(item.arg, item.requestId);
+      } else {
+        this.runWebCommand(item.op, item.arg);
+      }
+    }
+  }
+
+  // True when any hybrid slot is registered; the navigation fast path needs this instead of the
+  // fixed slot-0/slot-1 tests of the two-overlay shell.
+  private anyHybridRegistered(): boolean {
+    for (let slot = 0; slot < WEB_SLOT_MAX; slot++) {
+      if (this.hybridRegistered[slot]) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  // Slot named by a hybrid/blazor registration JSON ("slot"); absent or out of range keeps the
+  // legacy first overlay.
+  private registrationSlot(arg: string): number {
+    try {
+      const config = JSON.parse(arg) as HybridAssetsConfig;
+      if (config.slot !== undefined && config.slot >= 0 && config.slot < WEB_SLOT_MAX) {
+        return config.slot;
+      }
+    } catch {
+      // A malformed registration falls back to slot 0 and is rejected by its own parser.
+    }
+    return 0;
+  }
+
+  // SLOTS-DYNAMIC: applies one shell web command. Per-overlay commands whose slot's ArkWeb has
+  // not attached yet are deferred (deferWebOp) and replayed from onControllerAttached; the
+  // untagged global commands keep their all-overlays/untagged meaning.
+  private runWebCommand(op: string, arg: string): void {
+    if (op === 'slot') {
+      // SLOTS-DYNAMIC slot lifecycle from the managed pool: "ensure\n<slot>" declares the
+      // ArkWeb, "destroy\n<slot>" removes it (only slots >= WEB_SLOT_HOT).
+      this.applySlotCommand(arg);
+      return;
+    }
+    if (op === 'hide' && !this.webSlotTagged(arg)) {
+      // FIX-WVP tab switch: hide every overlay; the hidden page is not arranged, so no stale
+      // frame re-shows it, and the next page's web control re-shows through its own frame. A
+      // slot-tagged hide (below) clears only that overlay (the managed error handler).
+      this.webVisible = [false, false, false, false];
+      return;
+    }
+    if (op === 'suspend') {
+      // FIX-WVP drawer presented: hide every overlay and keep frame/load commands from
+      // re-showing them (the flyout's own arrange cycle re-emits the detail's web frames).
+      if (!this.webSuspended) {
+        this.webVisibleBeforeSuspend = [this.webVisible[0], this.webVisible[1], this.webVisible[2], this.webVisible[3]];
+        this.webSuspended = true;
+      }
+      this.webVisible = [false, false, false, false];
+      return;
+    }
+    if (op === 'resume') {
+      // FIX-WVP drawer dismissed: restore the visibility the suspend remembered.
+      this.webSuspended = false;
+      this.webVisible = [this.webVisibleBeforeSuspend[0], this.webVisibleBeforeSuspend[1],
+        this.webVisibleBeforeSuspend[2], this.webVisibleBeforeSuspend[3]];
+      return;
+    }
+    if (op === 'cookie') {
+      // Minimal cookie surface: "<url>\n<Set-Cookie header>". Only absolute http(s) URLs are
+      // accepted; the managed side validates its half too.
+      const cookieSeparator: number = arg.indexOf('\n');
+      if (cookieSeparator > 0) {
+        const cookieUrl: string = arg.substring(0, cookieSeparator);
+        const cookieValue: string = arg.substring(cookieSeparator + 1);
+        if ((cookieUrl.startsWith('http://') || cookieUrl.startsWith('https://')) &&
+            cookieValue.length > 0 && cookieValue.length <= 8192) {
+          web_webview.WebCookieManager.configCookieSync(cookieUrl, cookieValue);
+        }
+      }
+      return;
+    }
+    if (op === 'cookieGet') {
+      // Minimal cookie read: "<requestId>\n<url>"; the value travels back through the
+      // eval-result channel (host.notifyWebEvalResult) keyed by the request id.
+      const getSeparator: number = arg.indexOf('\n');
+      const requestId: number = getSeparator > 0 ? Number.parseInt(arg.substring(0, getSeparator), 10) : -1;
+      const cookieUrl: string = getSeparator > 0 ? arg.substring(getSeparator + 1) : '';
+      let cookieValue: string = '';
+      let cookieFailed: number = 0;
+      try {
+        if ((!cookieUrl.startsWith('http://') && !cookieUrl.startsWith('https://')) ||
+            !Number.isFinite(requestId) || requestId < 0 || Math.floor(requestId) !== requestId) {
+          cookieFailed = 1;
+        } else {
+          cookieValue = web_webview.WebCookieManager.fetchCookieSync(cookieUrl);
+        }
+      } catch {
+        cookieFailed = 1;
+      }
+      this.hostCall('notifyWebEvalResult', typeof host !== 'undefined' && typeof host.notifyWebEvalResult === 'function', (): void => {
+        host.notifyWebEvalResult(requestId, cookieValue, cookieFailed);
+      });
+      return;
+    }
+    // Per-overlay command: the slot comes from the registration JSON for hybrid/blazor and from
+    // the "s<slot>" first line otherwise. A command for a not-yet-attached overlay is deferred
+    // and replayed when its Web component attaches.
+    const commandSlot: number = op === 'hybrid' || op === 'blazor' ? this.registrationSlot(arg) : this.webSlotOf(arg);
+    if (!this.webSlotReady(commandSlot)) {
+      this.deferWebOp(commandSlot, op, arg);
+      return;
+    }
+    if (op === 'show') {
+      // Historical: show one overlay (a WebView without a Source), tagged with its slot. A
+      // suspended overlay stays hidden under a presented drawer.
+      this.webVisible[commandSlot] = !this.webSuspended;
+      this.noteWebActivation(commandSlot);
+    } else if (op === 'hide') {
+      this.webVisible[commandSlot] = false;
+    } else if (op === 'load') {
+      const loadUrl: string = this.webSlotPayload(arg);
+      this.webVisible[commandSlot] = !this.webSuspended;
+      this.noteWebActivation(commandSlot);
+      // B6: the app asked for this URL; let this one load through without a round trip.
+      this.navProgrammatic[commandSlot] = { url: loadUrl, expires: Date.now() + this.navPendingTtlMs };
+      this.slotController(commandSlot).loadUrl(loadUrl);
+      this.logInfo(`[maui] web load (slot ${commandSlot}): ${loadUrl}`);
+    } else if (op === 'nav') {
+      // B6: the managed handler's answer to an intercepted navigation (slot-tagged).
+      this.approveNavigation(arg);
+    } else if (op === 'data') {
+      this.webVisible[commandSlot] = !this.webSuspended;
+      this.noteWebActivation(commandSlot);
+      this.slotController(commandSlot).loadData(this.webSlotPayload(arg), 'text/html', 'UTF-8');
+    } else if (op === 'back') {
+      const backController: web_webview.WebviewController = this.slotController(commandSlot);
+      if (backController.accessBackward()) {
+        backController.backward();
+      }
+      this.reportWebHistory(commandSlot);
+    } else if (op === 'forward') {
+      const forwardController: web_webview.WebviewController = this.slotController(commandSlot);
+      if (forwardController.accessForward()) {
+        forwardController.forward();
+      }
+      this.reportWebHistory(commandSlot);
+    } else if (op === 'refresh') {
+      this.slotController(commandSlot).refresh();
+      this.reportWebHistory(commandSlot);
+    } else if (op === 'frame') {
+      // WebView PlatformArrange: "s<slot>\nx\ny\nw\nh" (vp); also shows that overlay.
+      this.applyWebFrame(arg);
+    } else if (op === 'hybrid') {
+      // HybridWebView asset root registration from the managed handler.
+      this.registerHybridAssets(arg);
+    } else if (op === 'blazor') {
+      // BlazorWebView asset root registration from the managed handler (milestone 3).
+      this.registerBlazorAssets(arg);
+    }
+  }
+
+  // SLOTS-DYNAMIC: "ensure\n<slot>" / "destroy\n<slot>" from the managed pool. A malformed or
+  // out-of-range request is rejected with one bounded log instead of touching the tables.
+  private applySlotCommand(arg: string): void {
+    const separator: number = arg.indexOf('\n');
+    const action: string = separator > 0 ? arg.substring(0, separator) : arg;
+    const slot: number = separator > 0 ? Number.parseInt(arg.substring(separator + 1), 10) : -1;
+    if (!Number.isFinite(slot) || Math.floor(slot) !== slot || slot < 0 || slot >= WEB_SLOT_MAX) {
+      this.logError(`[maui] web slot command rejected: ${action}`);
+      return;
+    }
+    if (action === 'ensure') {
+      this.ensureWebSlot(slot);
+    } else if (action === 'destroy') {
+      this.destroyWebSlot(slot);
+    } else {
+      this.logError(`[maui] web slot command unknown: ${action}`);
+    }
+  }
+
+  // Runs one registerWebEvalSink script on its slot's controller and answers the request id.
+  // Shared by the inline sink and the SLOTS-DYNAMIC deferral replay.
+  private runWebEval(script: string, requestId: number): void {
+    const slot: number = this.webSlotOf(script);
+    this.slotController(slot).runJavaScript(this.webSlotPayload(script), (err, result) => {
+      this.hostCall('notifyWebEvalResult', typeof host !== 'undefined' && typeof host.notifyWebEvalResult === 'function', (): void => {
+        host.notifyWebEvalResult(requestId, result || '', err ? 1 : 0);
+      });
+    });
   }
 
   // B6: consumes a one-shot marker for a load the shell itself requested (WebCommand "load")
@@ -3909,113 +4283,7 @@ struct Index {
         }
         this.runOnUiThread(() => {
           try {
-            if (op === 'show') {
-              // Historical: show one overlay (a WebView without a Source), tagged with its slot.
-              // A suspended overlay stays hidden under a presented drawer.
-              const showSlot: number = this.webSlotOf(arg);
-              this.webVisible[showSlot] = !this.webSuspended;
-              this.noteWebActivation(showSlot);
-            } else if (op === 'hide') {
-              // FIX-WVP tab switch: hide every overlay; the hidden page is not arranged, so no
-              // stale frame re-shows it, and the next page's web control re-shows through its
-              // own frame. MULTI-OVERLAY-FULL: a slot-tagged hide clears only that overlay (the
-              // managed error handler), an untagged one keeps the global meaning.
-              if (this.webSlotTagged(arg)) {
-                this.webVisible[this.webSlotOf(arg)] = false;
-              } else {
-                this.webVisible = [false, false];
-              }
-            } else if (op === 'suspend') {
-              // FIX-WVP drawer presented: hide every overlay and keep frame/load commands from
-              // re-showing them (the flyout's own arrange cycle re-emits the detail's web
-              // frames).
-              if (!this.webSuspended) {
-                this.webVisibleBeforeSuspend = [this.webVisible[0], this.webVisible[1]];
-                this.webSuspended = true;
-              }
-              this.webVisible = [false, false];
-            } else if (op === 'resume') {
-              // FIX-WVP drawer dismissed: restore the visibility the suspend remembered.
-              this.webSuspended = false;
-              this.webVisible = [this.webVisibleBeforeSuspend[0], this.webVisibleBeforeSuspend[1]];
-            } else if (op === 'load') {
-              const loadSlot: number = this.webSlotOf(arg);
-              const loadUrl: string = this.webSlotPayload(arg);
-              this.webVisible[loadSlot] = !this.webSuspended;
-              this.noteWebActivation(loadSlot);
-              // B6: the app asked for this URL; let this one load through without a round trip.
-              this.navProgrammatic[loadSlot] = { url: loadUrl, expires: Date.now() + this.navPendingTtlMs };
-              this.slotController(loadSlot).loadUrl(loadUrl);
-              this.logInfo(`[maui] web load (slot ${loadSlot}): ${loadUrl}`);
-            } else if (op === 'nav') {
-              // B6: the managed handler's answer to an intercepted navigation (slot-tagged).
-              this.approveNavigation(arg);
-            } else if (op === 'data') {
-              const dataSlot: number = this.webSlotOf(arg);
-              this.webVisible[dataSlot] = !this.webSuspended;
-              this.noteWebActivation(dataSlot);
-              this.slotController(dataSlot).loadData(this.webSlotPayload(arg), 'text/html', 'UTF-8');
-            } else if (op === 'back') {
-              const backSlot: number = this.webSlotOf(arg);
-              const backController: web_webview.WebviewController = this.slotController(backSlot);
-              if (backController.accessBackward()) {
-                backController.backward();
-              }
-              this.reportWebHistory(backSlot);
-            } else if (op === 'forward') {
-              const forwardSlot: number = this.webSlotOf(arg);
-              const forwardController: web_webview.WebviewController = this.slotController(forwardSlot);
-              if (forwardController.accessForward()) {
-                forwardController.forward();
-              }
-              this.reportWebHistory(forwardSlot);
-            } else if (op === 'refresh') {
-              const refreshSlot: number = this.webSlotOf(arg);
-              this.slotController(refreshSlot).refresh();
-              this.reportWebHistory(refreshSlot);
-            } else if (op === 'frame') {
-              // WebView PlatformArrange: "s<slot>\nx\ny\nw\nh" (vp); also shows that overlay.
-              this.applyWebFrame(arg);
-            } else if (op === 'cookie') {
-              // Minimal cookie surface: "<url>\n<Set-Cookie header>". Only absolute http(s)
-              // URLs are accepted; the managed side validates its half too.
-              const cookieSeparator: number = arg.indexOf('\n');
-              if (cookieSeparator > 0) {
-                const cookieUrl: string = arg.substring(0, cookieSeparator);
-                const cookieValue: string = arg.substring(cookieSeparator + 1);
-                if ((cookieUrl.startsWith('http://') || cookieUrl.startsWith('https://')) &&
-                    cookieValue.length > 0 && cookieValue.length <= 8192) {
-                  web_webview.WebCookieManager.configCookieSync(cookieUrl, cookieValue);
-                }
-              }
-            } else if (op === 'cookieGet') {
-              // Minimal cookie read: "<requestId>\n<url>"; the value travels back through the
-              // eval-result channel (host.notifyWebEvalResult) keyed by the request id.
-              const getSeparator: number = arg.indexOf('\n');
-              const requestId: number = getSeparator > 0 ? Number.parseInt(arg.substring(0, getSeparator), 10) : -1;
-              const cookieUrl: string = getSeparator > 0 ? arg.substring(getSeparator + 1) : '';
-              let cookieValue: string = '';
-              let cookieFailed: number = 0;
-              try {
-                if ((!cookieUrl.startsWith('http://') && !cookieUrl.startsWith('https://')) ||
-                    !Number.isFinite(requestId) || requestId < 0 || Math.floor(requestId) !== requestId) {
-                  cookieFailed = 1;
-                } else {
-                  cookieValue = web_webview.WebCookieManager.fetchCookieSync(cookieUrl);
-                }
-              } catch {
-                cookieFailed = 1;
-              }
-              this.hostCall('notifyWebEvalResult', typeof host !== 'undefined' && typeof host.notifyWebEvalResult === 'function', (): void => {
-                host.notifyWebEvalResult(requestId, cookieValue, cookieFailed);
-              });
-            } else if (op === 'hybrid') {
-              // HybridWebView asset root registration from the managed handler.
-              this.registerHybridAssets(arg);
-            } else if (op === 'blazor') {
-              // BlazorWebView asset root registration from the managed handler (milestone 3).
-              this.registerBlazorAssets(arg);
-            }
+            this.runWebCommand(op, arg);
           } catch {
             // Web errors never take the app down.
           }
@@ -4031,13 +4299,15 @@ struct Index {
         this.runOnUiThread(() => {
           try {
             // MULTI-OVL: the managed eval is tagged "s<slot>\n<script>"; untagged scripts run
-            // on the first overlay (cookie reads and legacy diagnostics).
+            // on the first overlay (cookie reads and legacy diagnostics). SLOTS-DYNAMIC: a
+            // script for a slot whose ArkWeb has not attached yet is deferred and replayed from
+            // onControllerAttached (with its request id, so the await still completes).
             const evalSlot: number = this.webSlotOf(script);
-            this.slotController(evalSlot).runJavaScript(this.webSlotPayload(script), (err, result) => {
-              this.hostCall('notifyWebEvalResult', typeof host !== 'undefined' && typeof host.notifyWebEvalResult === 'function', (): void => {
-                host.notifyWebEvalResult(requestId, result || '', err ? 1 : 0);
-              });
-            });
+            if (!this.webSlotReady(evalSlot)) {
+              this.deferWebOp(evalSlot, 'eval', script, requestId);
+              return;
+            }
+            this.runWebEval(script, requestId);
           } catch (evalError) {
             this.hostCall('notifyWebEvalResult', typeof host !== 'undefined' && typeof host.notifyWebEvalResult === 'function', (): void => {
               host.notifyWebEvalResult(requestId, '', 1);
@@ -4047,6 +4317,17 @@ struct Index {
       });
     });
     this.logInfo(`[maui] web sink: ${webSinkRegistered}`);
+    // SLOTS-DYNAMIC: tell the managed pool how many overlays this shell can declare. The page
+    // can load before the managed WebEvent subscription exists, so the notification is sent
+    // with two bounded retries (the pool's default is the same WEB_SLOT_MAX, so a lost event
+    // only delays a downgrade on a legacy shell).
+    this.advertiseWebCapacity();
+    setTimeout((): void => {
+      this.advertiseWebCapacity();
+    }, 1500);
+    setTimeout((): void => {
+      this.advertiseWebCapacity();
+    }, 4000);
     // Managed status file (device diagnostics): the managed bridge appends one line per event
     // to <filesDir>/dotnet-status.txt, but this image does not route managed stderr to hilog,
     // so a few bounded reads surface the managed side's own view (window created, web commands
@@ -5354,7 +5635,7 @@ struct Index {
   private registerHybridAssets(arg: string): void {
     try {
       const config = JSON.parse(arg) as HybridAssetsConfig;
-      const hybridSlot: number = config.slot !== undefined && config.slot === 1 ? 1 : 0;
+      const hybridSlot: number = config.slot !== undefined && config.slot >= 0 && config.slot < WEB_SLOT_MAX ? config.slot : 0;
       this.hybridBase[hybridSlot] = config.base;
       this.hybridRoot[hybridSlot] = config.root;
       this.hybridDefaultFile[hybridSlot] = config.defaultFile;
@@ -5375,8 +5656,9 @@ struct Index {
       }
     } catch (hybridError) {
       this.logError(`[maui] hybrid assets registration failed: ${(hybridError as Error).message}`);
-      this.hybridRegistered[0] = false;
-      this.hybridRegistered[1] = false;
+      for (let hybridResetSlot = 0; hybridResetSlot < WEB_SLOT_MAX; hybridResetSlot++) {
+        this.hybridRegistered[hybridResetSlot] = false;
+      }
     }
   }
 
@@ -5410,7 +5692,7 @@ struct Index {
       if (this.blazorRegistered) {
         // MULTI-OVL: the registration names the overlay it belongs to; absent/-1 lands on the
         // first overlay (a WebView-driven WASM site or a legacy handler).
-        const blazorSlot: number = config.slot !== undefined && config.slot === 1 ? 1 : 0;
+        const blazorSlot: number = config.slot !== undefined && config.slot >= 0 && config.slot < WEB_SLOT_MAX ? config.slot : 0;
         this.logInfo(`[maui] blazor assets: origin=${this.blazorOrigin} root=${this.blazorRoot} base=${this.blazorBase} mode=${this.blazorWasmMode ? 'wasm' : 'hybrid'} slot=${blazorSlot}`);
         if (!this.blazorWasmMode) {
           // MULTI-OVL replaces the single-overlay arbitration (FIX-WVP): the Blazor page loads
@@ -5955,19 +6237,21 @@ struct Index {
     return this.webVisible[slot] ? Visibility.Visible : Visibility.None;
   }
 
-  // MULTI-OVL: the ArkWeb overlay declaration, instantiated once per slot. Each overlay starts
-  // hidden until a managed web control claims its slot and sends a frame. The frame command
-  // moves/sizes it (a zero dimension stays full-window); DOM storage is on by default, matching
-  // the MAUI Android handler (DomStorageEnabled=true), so localStorage works in hybrid/Blazor
-  // pages. Declared after the XComponent/ContentSlot: a Stack composites later children above
-  // earlier ones, and the managed app surface is the earlier child, so the overlays really show
-  // over the managed surface (FIX-WVP; declared first they stayed under the surface and every
-  // served web page was invisible). MULTI-OVERLAY-FULL: the fixed slot-1-on-top order is gone;
-  // .zIndex applies the activation order (a touch or a programmatic show/load) so the most
-  // recently activated overlay composites on top of an overlapping one.
+  // MULTI-OVL: the ArkWeb overlay declaration, instantiated once per declared slot. Each overlay
+  // starts hidden until a managed web control claims its slot and sends a frame. The frame
+  // command moves/sizes it (a zero dimension stays full-window); DOM storage is on by default,
+  // matching the MAUI Android handler (DomStorageEnabled=true), so localStorage works in
+  // hybrid/Blazor pages. Declared after the XComponent/ContentSlot: a Stack composites later
+  // children above earlier ones, and the managed app surface is the earlier child, so the
+  // overlays really show over the managed surface (FIX-WVP; declared first they stayed under
+  // the surface and every served web page was invisible). MULTI-OVERLAY-FULL: the fixed
+  // slot-1-on-top order is gone; .zIndex applies the activation order (a touch or a programmatic
+  // show/load) so the most recently activated overlay composites on top of an overlapping one.
+  // SLOTS-DYNAMIC: the builder is instantiated from the @State webSlots list, so adding a slot
+  // creates its ArkWeb on demand and removing it (slot destroy) tears the component down.
   @Builder
   webOverlay(slot: number): void {
-    Web({ src: '', controller: this.webControllers[slot] })
+    Web({ src: '', controller: this.slotController(slot) })
       .domStorageAccess(true)
       .visibility(this.webVisibility(slot))
       .zIndex(this.webZOrder[slot])
@@ -5983,9 +6267,13 @@ struct Index {
       .height(this.webFrameH[slot] > 0 ? `${this.webFrameH[slot]}vp` : '100%')
       .position({ x: this.webFrameX[slot], y: this.webFrameY[slot] })
       // The controller is attached here; registering the dotnetHost proxy any earlier fails
-      // with BusinessError 17100001 (controller not associated with a Web component).
+      // with BusinessError 17100001 (controller not associated with a Web component). The
+      // dynamic slot marks itself attached and replays the commands that were deferred while
+      // the component was being created.
       .onControllerAttached(() => {
+        this.webSlotAttached[slot] = true;
         this.registerDotNetHost(slot);
+        this.flushWebOps(slot);
       })
       .onLoadIntercept((event) => {
         // B6 navigation allow-list: a top-level load the app did not originate is cancelled
@@ -6259,11 +6547,15 @@ struct Index {
 
       ContentSlot(this.content)
 
-      // MULTI-OVL: two ArkWeb overlays, one per managed web control slot. Slot 0 is declared
-      // first and slot 1 composites above it; both stay hidden until a managed control claims a
-      // slot and sends a frame. Replaces the single shared component of FIX-WVP.
-      this.webOverlay(0)
-      this.webOverlay(1)
+      // MULTI-OVL / SLOTS-DYNAMIC: the ArkWeb overlays, one per declared slot. The hot pair
+      // [0, 1] is always declared (it composites bottom-up in declaration order until the
+      // activation z-index moves one on top); dynamic slots are appended on demand up to
+      // WEB_SLOT_MAX and removed again by "slot destroy". Every overlay stays hidden until a
+      // managed control claims its slot and sends a frame. Replaces the single shared component
+      // of FIX-WVP.
+      ForEach(this.webSlots, (slot: number) => {
+        this.webOverlay(slot)
+      }, (slot: number): string => `web-slot-${slot}`)
 
 
       // Map overlay (R2-3): only mounted while the managed side created the overlay through the
