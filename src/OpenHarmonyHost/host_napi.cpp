@@ -88,6 +88,10 @@ constexpr size_t kMaxControlBytes = 64 * 1024;
 constexpr size_t kMaxResultBytes = 1024 * 1024;
 // A screenshot output path is a filesystem path, not a payload: keep it well below PATH_MAX.
 constexpr size_t kMaxScreenshotPathBytes = 4096;
+// ohos_host_screenshot_format's format values (mirroring Microsoft.Maui.Media.ScreenshotFormat
+// and OpenHarmonyScreenshotBridge.FormatPng/FormatJpeg on the managed side).
+constexpr int kScreenshotFormatPng = 0;
+constexpr int kScreenshotFormatJpeg = 1;
 // The connectivity capability encoding is a short comma-separated bearer-type list (the shell
 // caps it at 8 entries / 32 characters); NotifyNetworkAccess drops a bigger payload.
 constexpr size_t kMaxNetworkCapabilityBytes = 64;
@@ -2902,6 +2906,41 @@ extern "C" int ohos_host_screenshot(const char* out_path) {
 // ArkTS calls host.registerScreenshotSink(fn) to receive screenshot requests.
 napi_value RegisterScreenshotSink(napi_env env, napi_callback_info info) {
     return HostSinkRegisterFromArgs(env, info, g_screenshot_sink);
+}
+
+// Format-aware variant of ohos_host_screenshot: same sink, same one-way request, plus the
+// image format (0 = PNG, 1 = JPEG) and the JPEG quality (0-100). The shell callback receives
+// (path, format, quality); a shell that only declares (path) ignores the extra arguments and
+// stays on the PNG path.
+extern "C" int ohos_host_screenshot_format(const char* out_path, int format, int quality) {
+    return HostCxxBoundary("screenshot_format", [&] {
+        if (out_path == nullptr || out_path[0] == '\0') {
+            OH_LOG_WARN(LOG_APP, "[openharmony-host] screenshot_format: empty output path");
+            return -1;
+        }
+        if (format != kScreenshotFormatPng && format != kScreenshotFormatJpeg) {
+            OH_LOG_WARN(LOG_APP, "[openharmony-host] screenshot_format: unknown format %{public}d", format);
+            return -1;
+        }
+        if (quality < 0 || quality > 100) {
+            OH_LOG_WARN(LOG_APP, "[openharmony-host] screenshot_format: quality %{public}d outside [0, 100]", quality);
+            return -1;
+        }
+        if (strlen(out_path) > kMaxScreenshotPathBytes) {
+            OH_LOG_WARN(LOG_APP, "[openharmony-host] screenshot_format: output path dropped: %{public}d bytes over the %{public}d cap",
+                        (int)strlen(out_path), (int)kMaxScreenshotPathBytes);
+            return -1;
+        }
+        SinkCall* call = new SinkCall();
+        call->AddString(out_path, kMaxScreenshotPathBytes);
+        call->AddInt(format);
+        call->AddInt(quality);
+        if (!HostSinkPost(g_screenshot_sink, call)) {
+            OH_LOG_WARN(LOG_APP, "[openharmony-host] screenshot_format: no shell screenshot sink");
+            return -1;
+        }
+        return 0;
+    });
 }
 
 // ---------------------------------------------------------------------------

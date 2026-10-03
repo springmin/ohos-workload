@@ -134,6 +134,7 @@ ohos_host_scan_available
 ohos_host_scan_register_result
 ohos_host_scan_request
 ohos_host_screenshot
+ohos_host_screenshot_format
 ohos_host_sensor_is_supported
 ohos_host_sensor_set_listener
 ohos_host_sensor_start

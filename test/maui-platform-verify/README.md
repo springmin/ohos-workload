@@ -347,15 +347,19 @@ parse.
   attachment logs the documented drop (one viewData Want cannot carry a file), `CaptureAsync`
   answers null without leaving a temp PNG, and both geocoding calls answer empty. The screenshot
   helpers are checked against the harness's 1x1 PNG (IHDR width/height, complete vs truncated
-  IEND, `OpenReadAsync`/`CopyToAsync` round trip, and the documented PNG fallback for a Jpeg
-  request). The geocoding parser is driven with a realistic `@ohos.geoLocationManager` GeoAddress
+  IEND, `OpenReadAsync`/`CopyToAsync` round trip, and the L6 Jpeg capture: a Jpeg read goes
+  through `OpenHarmonyScreenshot.JpegCaptureOverride` (the host/shell stand-in) at the requested
+  quality, caches per quality, the completeness helper accepts SOI/EOI and rejects truncated/PNG
+  bytes, and a null capture falls back to the PNG). The geocoding parser is driven with a realistic `@ohos.geoLocationManager` GeoAddress
   array (placeName -> FeatureName, administrativeArea -> AdminArea, subAdministrativeArea ->
   SubAdminArea, streetNumber -> SubThoroughfare, ...) and with nested-coordinate/numeric-string
   locations; malformed payloads answer empty. The source pins parse the managed P/Invokes
-  (`ohos_host_screenshot`, `ohos_host_geocode_request` with its int queued/dropped return,
+  (`ohos_host_screenshot`, `ohos_host_screenshot_format` with its format/quality args,
+  `ohos_host_geocode_request` with its int queued/dropped return,
   `ohos_host_register_geocode_result`), the C definitions and shared-header declarations, the
   NAPI sinks/answers (`registerScreenshotSink`, `registerGeocodeSink`/`geocodeResult`), the
-  shell's `window.snapshot` + `packToFile` screenshot sink and the `JSON.parse(arg)` /
+  shell's `window.snapshot` + `packToFile` screenshot sink (format 1 -> `image/jpeg` at the
+  requested quality) and the `JSON.parse(arg)` /
   `getAddressesFromLocationName` / `getAddressesFromLocation` / `host.geocodeResult(...)` call
   sites in all three byte-identical templates. The registration pass pins the ImageButton handler
   table entry plus a real `ImageButton` through the connector, the self-installing
@@ -509,7 +513,10 @@ parse.
   host's Created-before-Activated ordering for the Create event (once-guards plus the
   Created-from-Run path), the hosting enum numbering (Create=0/Destroy=1/Foreground=2/
   Background=3) and the templates' Foreground send; the Create=0 shell send (PI1) is reported as
-  `createSend` but not required yet because it is not in the templates at this pin.
+  `createSend` but not required yet because it is not in the templates at this pin. The L6 title
+  heartbeat behaves through the same path: setting `Window.Title` publishes once and a Foreground
+  lifecycle event (the native thunk) re-publishes the recorded title, with the app-host
+  `RepublishWindowChrome` wiring pinned in source.
   `audit2 listextras` pins the CollectionView EmptyView/header-footer/SelectedItems/SelectionMode/
   RemainingItemsThreshold mappings and the ScrollToRequested wiring plus the shared materializer's
   header/footer/EmptyView factories, group ScrollTo rows, total/empty height and last-visible

@@ -12,7 +12,7 @@ using Microsoft.Maui.Platform;
 // after the fuzz tail) instead of letting every caller repeat its own threshold constant.
 VerifyLineCountingWriter verifyStdout = new(Console.Out);
 Console.SetOut(verifyStdout);
-const int verifyCheckTotal = 572;                     // documented full [verify] line count (+6 LEGACY toolbar primary/overflow/icon/events/shell/source, +3 SAMPLE-FIX hybrid bootstrap pack staging / read-only payload handler / stock-script demo, +4 MULTI-OVERLAY-FULL LRU pool/invoke slot codec/per-slot hybrid shell/slice owner wiring, +4 MULTI-OVL slot pool/wire codec/two-overlay shell/slice wiring, +4 FIX-BACKSIZE Back-press forwarding/drawer drill/ shell drawer/BlazorWebView desired size, +4 FIX-WVP overlay px->vp/degenerate-frame/hybrid-overlay arbitration/suspend-restore (shell+slice), +2 FIX-DISMISS flyout drawer dismiss under the device display conditions, +4 FIX-HOME home page arrange/draw (NavigationPage-in-TabbedPage descent), +4 MS-MODE runtime mode switch, +10 P2c-DEEPLINK, +4 P2b-IMG, +16 P1b-LIST, +10 P1a-ANIM, +2 SEC3 storage/deep-link pins, +5 W-series WebView wiring, +3 T1 InputView mapping, +4 T2 WebView gaps, +4 T3 GraphicsView interaction, +7 T10 modal accessibility, +4 T4 Label formatted text, +4 T5 layout semantics, +6 T7 DatePicker calendar/min-max, +4 T9 window title bar, +4 T11 diagnostics overlay, +1 N2 empty ContentPage arrangement, +6 T8 TableView, +5 T8 uneven rows, +7 T6 RTL flow direction, +5 T22 MainThread bridge, +2 FIX-TABBED tabbed CurrentPage, +4 T13 group footer view/N3 picker IsOpen, +5 T21 system font scale, +3 T21 font scale source wiring, +2 A11Y-TABBED tabbed accessibility, +3 N1 host multi-pointer, +5 T12 CarouselView group slides, +7 T14 rich shell flyout, +10 T14 flyout leftovers (MenuItemTemplate/FlyoutContent/AsMultipleItems), +2 FIX-SHELL shell CurrentPage, +2 A11Y-SHELL shell accessibility, +7 T15 rich Shell.TitleView, +8 T16 structured menus, +3 N4 TitleBar accessibility row, +3 T18 Essentials Map, +4 N5 overlay passthrough suppression, +5 N6 window decorations, +4 T20 media bridge, +3 B2 wasm site in a MAUI WebView, +2 W10 NativeAOT managed entry (host libs-dir resolution + shell AOT payload probe), +1 FIX-JSCALL Blazor IPC enum/struct AOT roots (JSCallResultType/JSCallType/NavigationOptions in the slice context + handler static-ctor touch + stub click-probe removed))
+const int verifyCheckTotal = 577;                     // documented full [verify] line count (+5 L6 screenshot Jpeg format/quality capture/fallback/helper + title heartbeat behavior/source, +6 LEGACY toolbar primary/overflow/icon/events/shell/source, +3 SAMPLE-FIX hybrid bootstrap pack staging / read-only payload handler / stock-script demo, +4 MULTI-OVERLAY-FULL LRU pool/invoke slot codec/per-slot hybrid shell/slice owner wiring, +4 MULTI-OVL slot pool/wire codec/two-overlay shell/slice wiring, +4 FIX-BACKSIZE Back-press forwarding/drawer drill/ shell drawer/BlazorWebView desired size, +4 FIX-WVP overlay px->vp/degenerate-frame/hybrid-overlay arbitration/suspend-restore (shell+slice), +2 FIX-DISMISS flyout drawer dismiss under the device display conditions, +4 FIX-HOME home page arrange/draw (NavigationPage-in-TabbedPage descent), +4 MS-MODE runtime mode switch, +10 P2c-DEEPLINK, +4 P2b-IMG, +16 P1b-LIST, +10 P1a-ANIM, +2 SEC3 storage/deep-link pins, +5 W-series WebView wiring, +3 T1 InputView mapping, +4 T2 WebView gaps, +4 T3 GraphicsView interaction, +7 T10 modal accessibility, +4 T4 Label formatted text, +4 T5 layout semantics, +6 T7 DatePicker calendar/min-max, +4 T9 window title bar, +4 T11 diagnostics overlay, +1 N2 empty ContentPage arrangement, +6 T8 TableView, +5 T8 uneven rows, +7 T6 RTL flow direction, +5 T22 MainThread bridge, +2 FIX-TABBED tabbed CurrentPage, +4 T13 group footer view/N3 picker IsOpen, +5 T21 system font scale, +3 T21 font scale source wiring, +2 A11Y-TABBED tabbed accessibility, +3 N1 host multi-pointer, +5 T12 CarouselView group slides, +7 T14 rich shell flyout, +10 T14 flyout leftovers (MenuItemTemplate/FlyoutContent/AsMultipleItems), +2 FIX-SHELL shell CurrentPage, +2 A11Y-SHELL shell accessibility, +7 T15 rich Shell.TitleView, +8 T16 structured menus, +3 N4 TitleBar accessibility row, +3 T18 Essentials Map, +4 N5 overlay passthrough suppression, +5 N6 window decorations, +4 T20 media bridge, +3 B2 wasm site in a MAUI WebView, +2 W10 NativeAOT managed entry (host libs-dir resolution + shell AOT payload probe), +1 FIX-JSCALL Blazor IPC enum/struct AOT roots (JSCallResultType/JSCallType/NavigationOptions in the slice context + handler static-ctor touch + stub click-probe removed))
 const int verifyCheckFloor = verifyCheckTotal - 20;   // documented floor convention (total - 20)
 
 // A small image file for the Image handler.
@@ -9254,23 +9254,43 @@ if (!d1AllOk)
         $"wouldAnnounce={d1Would} sentOk={d1SentOk} routed={d1Routed} blank={d1BlankOk}");
 }
 
-// BATCH2i: the screenshot bridge contract (managed P/Invoke + C definition + header + NAPI sink
-// + the shell's sink registration/packer call sites).
+// BATCH2i: the screenshot bridge contract (managed P/Invoke pair + C definitions + header + NAPI
+// sink + the shell's sink registration/packer call sites). L6 adds the format-aware
+// ohos_host_screenshot_format (0 = PNG, 1 = JPEG, quality 0-100) next to the frozen PNG entry.
 MethodInfo? b2ScreenshotPinvoke = typeof(OpenHarmonyScreenshotBridge).GetMethod(
     "ScreenshotNative", BindingFlags.NonPublic | BindingFlags.Static);
+MethodInfo? b2ScreenshotFormatPinvoke = typeof(OpenHarmonyScreenshotBridge).GetMethod(
+    "ScreenshotFormatNative", BindingFlags.NonPublic | BindingFlags.Static);
 LibraryImportAttribute? b2ScreenshotImport = b2ScreenshotPinvoke?.GetCustomAttribute<LibraryImportAttribute>();
+LibraryImportAttribute? b2ScreenshotFormatImport = b2ScreenshotFormatPinvoke?.GetCustomAttribute<LibraryImportAttribute>();
 bool b2ScreenshotManaged = b2ScreenshotImport is not null &&
     b2ScreenshotImport.EntryPoint == "ohos_host_screenshot" &&
     b2ScreenshotImport.LibraryName == "libopenharmonyhost.so" &&
     b2ScreenshotPinvoke?.GetParameters() is { Length: 1 } b2ScreenshotParams &&
-    b2ScreenshotParams[0].ParameterType == typeof(string);
+    b2ScreenshotParams[0].ParameterType == typeof(string) &&
+    b2ScreenshotFormatImport is not null &&
+    b2ScreenshotFormatImport.EntryPoint == "ohos_host_screenshot_format" &&
+    b2ScreenshotFormatImport.LibraryName == "libopenharmonyhost.so" &&
+    b2ScreenshotFormatPinvoke?.ReturnType == typeof(int) &&
+    b2ScreenshotFormatPinvoke.GetParameters() is { Length: 3 } b2ScreenshotFormatParams &&
+    b2ScreenshotFormatParams[0].ParameterType == typeof(string) &&
+    b2ScreenshotFormatParams[1].ParameterType == typeof(int) &&
+    b2ScreenshotFormatParams[2].ParameterType == typeof(int);
 bool b2ScreenshotNative = s2Napi.Contains("extern \"C\" int ohos_host_screenshot(const char* out_path)") &&
+    s2Napi.Contains("constexpr int kScreenshotFormatPng = 0;") &&
+    s2Napi.Contains("constexpr int kScreenshotFormatJpeg = 1;") &&
+    s2Napi.Contains("extern \"C\" int ohos_host_screenshot_format(const char* out_path, int format, int quality)") &&
+    s2Napi.Contains("call->AddInt(format);") &&
+    s2Napi.Contains("call->AddInt(quality);") &&
     s2Napi.Contains("HostSink screenshot{\"screenshot\", false};") &&
-    hSource?.Contains("int ohos_host_screenshot(const char* out_path);") == true;
+    hSource?.Contains("int ohos_host_screenshot(const char* out_path);") == true &&
+    hSource.Contains("int ohos_host_screenshot_format(const char* out_path, int format, int quality);") &&
+    ReadHostSource("src/OpenHarmonyHost/host-exports.txt").Contains("ohos_host_screenshot_format");
 bool b2ScreenshotShell = b1Shell.Contains("this.hostCall('registerScreenshotSink', typeof host !== 'undefined' && typeof host.registerScreenshotSink === 'function'") &&
-    b1Shell.Contains("host.registerScreenshotSink(async (outPath: string): Promise<void>") &&
+    b1Shell.Contains("host.registerScreenshotSink(async (outPath: string, format?: number, quality?: number): Promise<void>") &&
     b1Shell.Contains("const pixelMap = await win.snapshot();") &&
-    b1Shell.Contains("await packer.packToFile(pixelMap, file.fd, { format: 'image/png', quality: 100 });");
+    b1Shell.Contains("const imageFormat: string = format === 1 ? 'image/jpeg' : 'image/png';") &&
+    b1Shell.Contains("await packer.packToFile(pixelMap, file.fd, { format: imageFormat, quality: imageQuality });");
 bool b2ScreenshotContract = b2ScreenshotManaged && b2ScreenshotNative && b2ScreenshotShell;
 Console.WriteLine($"[verify] batch2 screenshot contract managed={b2ScreenshotManaged} native={b2ScreenshotNative} shell={b2ScreenshotShell} source='{s2NapiPath ?? "<missing>"}' assert={b2ScreenshotContract}");
 if (!b2ScreenshotContract)
@@ -9861,6 +9881,118 @@ if (!n11LifecycleOk)
 {
     throw new InvalidOperationException(
         $"the IApplication/lifecycle contract drifted: handler={n11HandlerOk} order={n11OrderOk} enum={n11HostingOk} shell={n11ShellOk}");
+}
+
+// ---- L6: Screenshot Jpeg format/quality + the Window.Title lifecycle heartbeat -----------------
+// The host capture is PNG (the frozen ohos_host_screenshot contract); a Jpeg read now asks the
+// shell for a JPEG through ohos_host_screenshot_format (format 1 + quality) and caches the bytes
+// per quality, falling back to the captured PNG when the export is missing or the write fails.
+// The harness has no signed host/shell, so the capture is replaced with JpegCaptureOverride; the
+// bridge contract itself is pinned by BATCH2i above. The title heartbeat re-publishes the
+// recorded Window.Title when the ability reaches Foreground (W9D §3: OnStart/Foreground was not
+// wired), observed through OpenHarmonyWindowHandler.TitlePublishCount.
+byte[] l6Jpeg = new byte[]
+{
+    0xFF, 0xD8, 0xFF, 0xE0, 0x00, 0x10, 0x4A, 0x46, 0x49, 0x46, 0x00, 0x01,
+    0x01, 0x00, 0x00, 0x01, 0x00, 0x01, 0x00, 0x00, 0xFF, 0xD9,
+};
+bool l6ScreenshotOk;
+try
+{
+    int l6JpegCalls = 0;
+    int l6JpegQuality = -1;
+    OpenHarmonyScreenshot.JpegCaptureOverride = quality =>
+    {
+        l6JpegCalls++;
+        l6JpegQuality = quality;
+        return Task.FromResult<byte[]?>(l6Jpeg);
+    };
+    var l6Shot = new OpenHarmonyScreenshotResult(b2Png, b2PngWidth, b2PngHeight);
+    using Stream l6PngStream = await l6Shot.OpenReadAsync(Microsoft.Maui.Media.ScreenshotFormat.Png);
+    byte[] l6PngBytes = new byte[l6PngStream.Length];
+    await l6PngStream.ReadAsync(l6PngBytes);
+    using Stream l6JpegStream = await l6Shot.OpenReadAsync(Microsoft.Maui.Media.ScreenshotFormat.Jpeg, 42);
+    byte[] l6JpegBytes = new byte[l6JpegStream.Length];
+    await l6JpegStream.ReadAsync(l6JpegBytes);
+    using Stream l6JpegAgain = await l6Shot.OpenReadAsync(Microsoft.Maui.Media.ScreenshotFormat.Jpeg, 42);
+    byte[] l6JpegAgainBytes = new byte[l6JpegAgain.Length];
+    await l6JpegAgain.ReadAsync(l6JpegAgainBytes);
+    bool l6JpegCaptureOk = l6PngBytes.SequenceEqual(b2Png) &&
+        l6JpegBytes.SequenceEqual(l6Jpeg) &&
+        l6JpegAgainBytes.SequenceEqual(l6Jpeg) &&
+        l6JpegQuality == 42 && l6JpegCalls == 1 &&
+        l6Shot.Width == 1 && l6Shot.Height == 1;
+    Console.WriteLine($"[verify] l6 screenshot jpeg capture png={l6PngBytes.SequenceEqual(b2Png)} jpeg={l6JpegBytes.SequenceEqual(l6Jpeg)} quality={l6JpegQuality} captures={l6JpegCalls} cache={l6JpegAgainBytes.SequenceEqual(l6Jpeg)} assert={l6JpegCaptureOk}");
+    if (!l6JpegCaptureOk)
+    {
+        throw new InvalidOperationException("the L6 Jpeg capture/cache path drifted");
+    }
+
+    OpenHarmonyScreenshot.JpegCaptureOverride = _ => Task.FromResult<byte[]?>(null);
+    var l6FallbackShot = new OpenHarmonyScreenshotResult(b2Png, b2PngWidth, b2PngHeight);
+    using var l6Copy = new MemoryStream();
+    await l6FallbackShot.CopyToAsync(l6Copy, Microsoft.Maui.Media.ScreenshotFormat.Jpeg, 100);
+    bool l6JpegFallbackOk = l6Copy.ToArray().SequenceEqual(b2Png);
+    Console.WriteLine($"[verify] l6 screenshot jpeg fallback png={l6JpegFallbackOk} assert={l6JpegFallbackOk}");
+    if (!l6JpegFallbackOk)
+    {
+        throw new InvalidOperationException("the L6 Jpeg fallback did not return the captured PNG");
+    }
+
+    string l6JpegPath = Path.Combine(Path.GetTempPath(), "verify-l6-shot.jpg");
+    File.WriteAllBytes(l6JpegPath, l6Jpeg);
+    byte[]? l6CompleteJpeg = OpenHarmonyScreenshot.TryReadCompleteJpeg(l6JpegPath);
+    File.WriteAllBytes(l6JpegPath, l6Jpeg[..^2]);
+    byte[]? l6TruncatedJpeg = OpenHarmonyScreenshot.TryReadCompleteJpeg(l6JpegPath);
+    File.WriteAllBytes(l6JpegPath, b2Png);
+    byte[]? l6PngAsJpeg = OpenHarmonyScreenshot.TryReadCompleteJpeg(l6JpegPath);
+    File.Delete(l6JpegPath);
+    bool l6JpegHelperOk = OpenHarmonyScreenshotBridge.FormatPng == 0 &&
+        OpenHarmonyScreenshotBridge.FormatJpeg == 1 &&
+        l6CompleteJpeg is not null && l6CompleteJpeg.SequenceEqual(l6Jpeg) &&
+        l6TruncatedJpeg is null && l6PngAsJpeg is null;
+    Console.WriteLine($"[verify] l6 screenshot jpeg helper complete={l6CompleteJpeg is not null} truncatedRejected={l6TruncatedJpeg is null} pngRejected={l6PngAsJpeg is null} formats={OpenHarmonyScreenshotBridge.FormatPng}/{OpenHarmonyScreenshotBridge.FormatJpeg} assert={l6JpegHelperOk}");
+    if (!l6JpegHelperOk)
+    {
+        throw new InvalidOperationException("the L6 Jpeg completeness helper/format values drifted");
+    }
+}
+finally
+{
+    OpenHarmonyScreenshot.JpegCaptureOverride = null;
+}
+l6ScreenshotOk = true;
+
+int l6TitleBefore = OpenHarmonyWindowHandler.TitlePublishCount;
+var l6ControlsWindow = (Microsoft.Maui.Controls.Window)window;
+string l6TitleOld = l6ControlsWindow.Title ?? string.Empty;
+l6ControlsWindow.Title = "l6-heartbeat";
+int l6TitleMapped = OpenHarmonyWindowHandler.TitlePublishCount;
+NativeThunks.Invoker<NativeThunks.IntCallback>(
+    NativeThunks.Pointer(typeof(Microsoft.OpenHarmony.Hosting.OpenHarmonyBridge), "s_lifecycleThunk"))(2);
+int l6TitleHeartbeat = OpenHarmonyWindowHandler.TitlePublishCount;
+bool l6TitleRecorded = window.Handler is OpenHarmonyWindowHandler l6WindowHandler &&
+    l6WindowHandler.Title == "l6-heartbeat";
+bool l6TitleHeartbeatOk = l6ScreenshotOk && l6TitleRecorded &&
+    l6TitleMapped == l6TitleBefore + 1 && l6TitleHeartbeat == l6TitleMapped + 1;
+Console.WriteLine($"[verify] l6 title heartbeat mapped={l6TitleMapped - l6TitleBefore} foreground={l6TitleHeartbeat - l6TitleMapped} recorded={l6TitleRecorded} assert={l6TitleHeartbeatOk}");
+if (!l6TitleHeartbeatOk)
+{
+    throw new InvalidOperationException(
+        $"the L6 title heartbeat drifted: mapped={l6TitleMapped - l6TitleBefore} foreground={l6TitleHeartbeat - l6TitleMapped} recorded={l6TitleRecorded}");
+}
+l6ControlsWindow.Title = l6TitleOld;
+
+bool l6TitleSourceOk = n11AppHost.Contains("OpenHarmonyWindowHandler.RepublishWindowChrome(_window);") &&
+    n11AppHost.Contains("case OpenHarmonyLifecycleEvent.Foreground:") &&
+    n11AppHost.IndexOf("RepublishWindowChrome(_window);", StringComparison.Ordinal) <
+        n11AppHost.IndexOf("_window?.Resumed();", n11AppHost.IndexOf("case OpenHarmonyLifecycleEvent.Foreground:", StringComparison.Ordinal), StringComparison.Ordinal) &&
+    window.Handler is OpenHarmonyWindowHandler &&
+    OpenHarmonyWindowHandler.TitlePublishCount > 0;
+Console.WriteLine($"[verify] l6 title heartbeat source republish={n11AppHost.Contains("RepublishWindowChrome(_window);")} handler='{n11AppHostPath ?? "<missing>"}' assert={l6TitleSourceOk}");
+if (!l6TitleSourceOk)
+{
+    throw new InvalidOperationException("the L6 title heartbeat app-host wiring drifted");
 }
 
 // Audit2-3: CollectionView extras. The handler maps EmptyView/EmptyViewTemplate, Header/Footer,

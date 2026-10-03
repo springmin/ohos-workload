@@ -512,6 +512,13 @@ int ohos_host_shell_flyout_footer(const char* text);
 /// asynchronous: the shell logs its own failure and the caller reads the file when ready.
 int ohos_host_screenshot(const char* out_path);
 
+/// Format-aware screenshot: same request as ohos_host_screenshot, but the shell's image packer
+/// writes the requested format (0 = PNG, 1 = JPEG) at quality 0-100 (clamped; only JPEG applies
+/// it). A host that predates this export lets the managed side fall back to the PNG capture.
+/// Returns 0 when the request reached the shell sink, -1 when there is none or an argument is
+/// invalid (NULL/empty path, format outside {0,1}, quality outside [0,100]).
+int ohos_host_screenshot_format(const char* out_path, int format, int quality);
+
 /// Geocoding request/response (same shape as the clipboard bridge): the managed side asks
 /// through ohos_host_geocode_request (op 0 = address -> location, arg is a JSON object of one
 /// address; op 1 = location -> address, arg is "lat,lon"); the shell answers through

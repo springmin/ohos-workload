@@ -2347,11 +2347,13 @@ struct Index {
   }
 
   // Screenshot: the managed side passes an app-owned output path through
-  // ohos_host_screenshot; the shell snapshots the main window and writes it as a PNG. The
-  // output path must resolve under the app temp/cache dirs (see canonicalScreenshotPath). The
-  // image packer is imported lazily (device-compat), and the packer, the file descriptor and
-  // the pixel map are released on every path. Returns 0 when the PNG was written, -1 otherwise.
-  private async captureScreenshot(outPath: string): Promise<number> {
+  // ohos_host_screenshot (PNG) or ohos_host_screenshot_format (format 0 = PNG, 1 = JPEG, plus
+  // the JPEG quality); the shell snapshots the main window and writes the requested format with
+  // the image packer. The output path must resolve under the app temp/cache dirs (see
+  // canonicalScreenshotPath). The image packer is imported lazily (device-compat), and the
+  // packer, the file descriptor and the pixel map are released on every path. Returns 0 when the
+  // image was written, -1 otherwise.
+  private async captureScreenshot(outPath: string, format?: number, quality?: number): Promise<number> {
     let safePath: string | null = null;
     try {
       safePath = this.canonicalScreenshotPath(outPath);
@@ -2366,6 +2368,9 @@ struct Index {
     if (this.lazyUnavailable('imagePacker')) {
       return -1;
     }
+    const imageFormat: string = format === 1 ? 'image/jpeg' : 'image/png';
+    const imageQuality: number = typeof quality === 'number' && quality >= 0 && quality <= 100
+      ? quality : 100;
     try {
       const image = await import('@kit.ImageKit');
       try {
@@ -2375,7 +2380,7 @@ struct Index {
         const file = fs.openSync(safePath, fs.OpenMode.READ_WRITE | fs.OpenMode.CREATE
           | fs.OpenMode.TRUNC);
         try {
-          await packer.packToFile(pixelMap, file.fd, { format: 'image/png', quality: 100 });
+          await packer.packToFile(pixelMap, file.fd, { format: imageFormat, quality: imageQuality });
           return 0;
         } finally {
           fs.closeSync(file);
@@ -3825,10 +3830,11 @@ struct Index {
         this.logError(`[maui] window decor window unavailable: ${decorWindowError.message}`);
       });
     }
-    // Screenshot (Window handler): a one-way request carrying an app-owned output path.
+    // Screenshot (Window handler): a one-way request carrying an app-owned output path (and,
+    // for ohos_host_screenshot_format, the format/quality).
     this.hostCall('registerScreenshotSink', typeof host !== 'undefined' && typeof host.registerScreenshotSink === 'function', (): void => {
-      host.registerScreenshotSink(async (outPath: string): Promise<void> => {
-        await this.captureScreenshot(outPath);
+      host.registerScreenshotSink(async (outPath: string, format?: number, quality?: number): Promise<void> => {
+        await this.captureScreenshot(outPath, format, quality);
       });
     });
     // Shell search/flyout (Shell handler): the managed SearchHandler state and the flyout
