@@ -273,7 +273,9 @@ for the interpreter round - and `scripts/tester-run.sh --mode-matrix` records th
 (`hilog/hilog-execmem.txt`, the `aot_route`/`interp_mode` summary keys). The build switch is what
 turns the AOT/interp *variants* into one publish property instead of a manual repack; the JIT /
 AOT / interpreter determination card is
-`runtime-ohos/docs/plans/2026-09-27-ohos-runtime-mode-determination.md`.
+`runtime-ohos/docs/plans/2026-09-27-ohos-runtime-mode-determination.md`. The delivery kit's
+whole-kit default is `aot` since AOT-DEFAULT (`scripts/make-device-test-kit.sh --runtime-mode`;
+see "Distribution default: AOT" below).
 
 Off-device gates: `scripts/selftest-hap-targets.sh` T7 drives the staging target with a fixture
 (default marker, invalid value, aot without/with the app library, interpreter pack in both
@@ -323,6 +325,48 @@ dotnet (no SDK, no real publish): dry-run command shapes for all three modes, th
 with their marker/library assertions, the negative gates (aot/interp missing libraries,
 mismatching marker, failed and empty publish, incomplete pack, stale hap) and the signing
 passthrough (no password on the generated argv, the original hap survives a failed sign).
+
+## Distribution default: AOT (AOT-DEFAULT, 2026-10-03)
+
+`scripts/make-device-test-kit.sh --runtime-mode aot|jit|interp` (env
+`DEVICE_TEST_KIT_RUNTIME_MODE`) is the whole-kit MS-MODE switch; **the default is `aot`**. The
+decision and its device evidence are
+`runtime-ohos/docs/plans/2026-09-27-ohos-runtime-mode-determination.md` §4 and
+`2026-10-03-ohos-three-path-baseline.md`: all three paths reach the first frame at the same
+frame rhythm, AOT keeps the lowest memory (~255-287 MB vs ~330 MB, flat over 31 min), allocates
+no executable memory and needs no hidden `prctl` unlock; JIT is the performance shape whose
+release/production domain requires the AGC ACL
+(`ohos.permission.kernel.ALLOW_WRITABLE_CODE_MEMORY`) or a vendor exemption (the debug/inner
+test signing domain gets the host JITFORT unlock by default), and the interpreter is an
+experimental independent pack.
+
+| `--runtime-mode` | what the kit carries | default kit dir / out |
+|---|---|---|
+| `aot` (default) | the 5 MAUI haps published with the NativeAOT recipe (`-p:PublishAot=true -p:PublishAotUsingRuntimePack=true -p:NativeLib=Shared -p:OpenHarmonyRuntimeMode=aot -p:InvariantGlobalization=true` + `OpenHarmonyUIPage`; DEVCOMPAT payload staging and static-web-asset/hybrid staging stay at their defaults). Every hap carries `libs/<abi>/lib<stem>.so` and the marker `libs/<abi>/runtime-mode.txt=aot` | `device-test-kit` / `device-test-kit.tar.gz` |
+| `jit` | the previous JIT publish (marker `jit`), kept for the debug/ACL domain | `device-test-kit-jit` / `device-test-kit-jit.tar.gz` |
+| `interp` | refused by the kit builder: the interpreter is an independent pack (`ohos-interpreter-pack-*.tar.gz` release asset, or `scripts/make-mode-kit.sh --mode interp --interp-pack <dir>` for a standalone variant) and never rides the main delivery kit | - |
+
+The assembled kit carries a root-level `runtime-mode.txt` (covered by `SHA256SUMS`) whose value
+is cross-checked by the shipped verifier against every MAUI hap marker, and `签名说明.txt`
+states the shape, the signing-domain boundaries and the JIT ACL requirement. The hap names stay
+unchanged (`hello-maui-app*.hap`) so `tester-run.sh` and the shipped docs keep working; the AOT
+shape is a payload fact (`lib<stem>.so`, no `libcoreclr.so`, a 9-entry static-web-asset
+`dotnet.zip`), not a rename.
+
+`scripts/verify-kit.sh` is mode-aware: it reads each hap's marker (absent = a pre-MS-MODE
+JIT kit, judged by the historical JIT contract) and applies the matching expectations - jit
+15 `.so` / 258 zip entries, aot >= 3 `.so` with the `app.json`-named `lib<stem>.so` required
+and `libcoreclr.so` rejected, interp the jit set plus `libclrinterpreter.so`; the payload
+marker's entry-assembly check follows the shape (the aot marker names the `.dll` while the
+staged artifact is `lib<stem>.so`). `scripts/selftest-verify-kit.sh` S16 covers the good AOT
+kit and its mutants (missing app library, aot marker on a CoreCLR payload, unknown marker,
+kit/hap mode disagreement, stripped marker falling back to JIT).
+
+Build-time gates for the AOT switch: `--dry-run` prints the four publish commands of the
+selected mode (no dotnet/SDK needed), every published hap is checked for its marker (and the
+AOT app library) before it enters the kit, and the verifier's tree digest covers the
+`runtime-mode.txt` annotation. The AOT publish keeps the `test/hello-maui-app/publish-aot.sh`
+environment contract: `OHOS_AOT_HOOKS` (the rc.2 Exec workaround) is plumbed through when set.
 
 ## Blazor WASM ArkWeb kit component (`--with-blazor`)
 
@@ -1491,8 +1535,9 @@ dotnet publish test/hello-maui-app/hello-maui-app.csproj \
   .NET threads and its `start_app` call all look healthy. That is the aot-haps v1/v2 defect,
   fixed by the v3 rebuild (`test/hello-maui-app/AOT.md`; evidence in
   `runtime-ohos/docs/plans/2026-09-29-ohos-local-device-test-runbook.md` §5).
-  `scripts/make-device-test-kit.sh` (JIT) carries the property; `scripts/make-mode-kit.sh --mode
-  aot` defaults it unless `--property OpenHarmonyUIPage=<page>` overrides it.
+  `scripts/make-device-test-kit.sh` carries the property for every mode (the kit is AOT by
+  default since AOT-DEFAULT; `--runtime-mode jit` keeps the JIT kit); `scripts/make-mode-kit.sh
+  --mode aot` defaults it unless `--property OpenHarmonyUIPage=<page>` overrides it.
 
 - `PublishAotUsingRuntimePack=true` is required: it is what makes the SDK's framework-reference
   processing pick the AOT `KnownRuntimePack` (widened to openharmony-arm64 in the pack, see

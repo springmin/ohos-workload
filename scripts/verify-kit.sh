@@ -17,6 +17,14 @@
 # (9568257/9568344 -> re-sign hello-maui-app-unsigned.hap or use a pre-signed kit), plus the
 # install options and the self-sign pointer; (4) list the log lines to send back.
 #
+# Runtime mode (AOT-DEFAULT, 2026-10-03): every MAUI hap carries libs/<abi>/runtime-mode.txt
+# (aot|jit|interp; absent = a pre-MS-MODE JIT kit). The 2b expectations are per mode: jit keeps
+# the 15-.so / 258-zip JIT contract; aot expects the NativeAOT shape (the app library
+# lib<stem>.so named by resources/rawfile/app.json, host + libc++_shared.so, no libcoreclr.so,
+# a 9-entry dotnet.zip); interp additionally requires libclrinterpreter.so. The kit-root
+# runtime-mode.txt, when present, is cross-checked against every MAUI hap marker. An unknown
+# marker value is a FAIL (the packaging already rejects it, so it means drift).
+#
 # 2b assertions (per hap; FAIL -> exit 1, WARN -> printed but still KIT OK):
 #   resources.index  present and non-empty (FAIL when missing/empty, pointing at FIX-DEV3
 #                    0f26b74: dotnet publish must pack it with --index-path, or the device
@@ -30,10 +38,14 @@
 #                    (--expected-abc <bytes[,bytes]> / KIT_EXPECTED_ABC pins the set; a size
 #                    outside it then FAILs instead of warning, so a historical kit's old abc
 #                    does not kill the run).
-#   libs             libs/arm64-v8a/ exists with exactly 15 .so files (fewer = a runtime ELF is
-#                    missing and the device loader will refuse the hap -> FAIL; more = WARN,
-#                    update the expectation when the runtime file set really changed; kit #41
-#                    added createdump.so via the DEVCOMPAT-DEFAULT `.so` rewrite).
+#   libs             libs/arm64-v8a/: mode-aware. jit expects exactly 15 .so files (fewer = a
+#                    runtime ELF is missing and the device loader will refuse the hap -> FAIL;
+#                    more = WARN, update the expectation when the runtime file set really
+#                    changed; kit #41 added createdump.so via the DEVCOMPAT-DEFAULT `.so`
+#                    rewrite). aot expects >= 3 (host + libc++_shared.so + the NativeAOT app
+#                    library lib<stem>.so) and FAILs when lib<stem>.so is missing; a hap marked
+#                    aot must not carry libcoreclr.so. interp adds libclrinterpreter.so to the
+#                    JIT set.
 #   payload-in-libs  libs/arm64-v8a/.dotnet-payload.json exists and is self-consistent: the
 #                    entry assembly it names is staged in the libs directory, its file count
 #                    equals the real libs file count (marker excluded), payloadEntries equals
@@ -46,8 +58,8 @@
 #                    check by design.
 #   dotnet.zip       readable -> must carry no .so (an unsigned duplicate would be dlopen'd from
 #                    the extracted app dir and rejected by an enforcing device -> FAIL) and its
-#                    entry count is expected to stay 258 (drift = WARN; kit #41 added the
-#                    MULTI-OVERLAY-FULL hybrid-a/b/c.html demo assets).
+#                    entry count is expected to stay 258 on a jit hap / 9 on an aot hap (drift =
+#                    WARN; kit #41 added the MULTI-OVERLAY-FULL hybrid-a/b/c.html demo assets).
 #   host ELF         libs/arm64-v8a/libopenharmonyhost.so: DT_NEEDED (readelf -d equivalent)
 #                    must be a subset of the host-deps.conf [needed] whitelist, must not name
 #                    libhostfxr.so (resolved through the dlopen handle, never at load time), and
@@ -265,10 +277,11 @@ usage: $0 [--anchor <sha256-of-tar.gz>] [--anchor-file <path-to.tar.gz>]
 
 Verifies SHA256SUMS, summarizes the five haps of an extracted device-test kit, and
 asserts the payload facts that failed on a real device before: resources.index present
-and non-empty, abc PANDA header version 13.0.1.0 + current size, libs/arm64-v8a .so
-count, the payload-in-libs marker (entry assembly + staged file count + zip fallback
-identity), dotnet.zip composition, and the host ELF dependency discipline (DT_NEEDED
-subset of the embedded host-deps.conf, no nm -D -u denylist hit).
+and non-empty, abc PANDA header version 13.0.1.0 + current size, the per-mode libs contract
+(jit: 15 .so; aot: the NativeAOT lib<stem>.so + host + libc++_shared.so, no libcoreclr.so),
+the payload-in-libs marker (entry assembly + staged file count + zip fallback identity),
+dotnet.zip composition, and the host ELF dependency discipline (DT_NEEDED subset of the
+embedded host-deps.conf, no nm -D -u denylist hit).
 Without an argument the current directory is used (it must contain SHA256SUMS).
 
   --anchor <hex>        also check the .tar.gz on disk against this sha256 (fail closed when
@@ -491,6 +504,18 @@ fi
 
 cd "$KIT"
 
+# Kit-root runtime-mode annotation (AOT-DEFAULT): when present it must name a known mode, and
+# every MAUI hap marker must match it (the python block cross-checks). Absent on kits built
+# before the switch: no cross-check then, and each hap falls back to its own marker.
+KIT_MODE_EXPECT=""
+if [ -f runtime-mode.txt ]; then
+    KIT_MODE_EXPECT="$(head -n1 runtime-mode.txt 2>/dev/null | tr -d ' \r\n')"
+    case "$KIT_MODE_EXPECT" in
+        aot|jit|interp) log "   kit 运行时形态：runtime-mode.txt=$KIT_MODE_EXPECT" ;;
+        *) warn "kit 根 runtime-mode.txt 值无法识别: '$KIT_MODE_EXPECT'（期望 aot|jit|interp）"; FAIL=1; KIT_MODE_EXPECT="" ;;
+    esac
+fi
+
 log "== 1/4 SHA256SUMS 校验（sha256sum -c）"
 ENTRIES="$(wc -l < SHA256SUMS | tr -d ' ')"
 : > "$TMP/verified.map"
@@ -584,7 +609,7 @@ DEEP_FAILS=0
 DEEP_WARNS=0
 if command -v python3 >/dev/null 2>&1; then
     python3 - "$KIT" "$BUNDLE_EXPECT" "$TMP/kit-bundle" "$POLICY" "$TMP/deep-status" \
-        "$EXPECT_ABC" "$EXPECT_ABC_PINNED" <<'PY' || FAIL=1
+        "$EXPECT_ABC" "$EXPECT_ABC_PINNED" "$KIT_MODE_EXPECT" <<'PY' || FAIL=1
 import hashlib, io, json, os, struct, sys, zipfile
 
 kit = sys.argv[1]
@@ -594,17 +619,24 @@ policy_file = sys.argv[4]
 status_file = sys.argv[5]
 expected_abc = [int(v) for v in sys.argv[6].split()]
 abc_pinned = sys.argv[7] == "1"
+kit_mode_expect = sys.argv[8] if len(sys.argv) > 8 else ""
 
-# Current-generation expectations; the abc sizes come from the shell (--expected-abc).
-EXPECT_LIBS = 15            # host + libc++ + 12 runtime ELF + createdump.so under libs/arm64-v8a/
-EXPECT_ZIP_ENTRIES = 258    # dotnet.zip entries (deterministic writer with the ELF names excluded)
+# Current-generation expectations; the abc sizes come from the shell (--expected-abc). The
+# libs/zip numbers are per runtime mode (AOT-DEFAULT): jit = the JIT payload contract, aot =
+# the NativeAOT shape, interp = jit + the interpreter library.
+JIT_LIBS = 15               # host + libc++ + 12 runtime ELF + createdump.so under libs/arm64-v8a/
+AOT_LIBS_MIN = 3            # host + libc++_shared.so + the NativeAOT app library lib<stem>.so
+JIT_ZIP_ENTRIES = 258       # dotnet.zip entries (deterministic writer with the ELF names excluded)
+AOT_ZIP_ENTRIES = 9         # AOT dotnet.zip: the static-web-asset/hybrid payload only
 INDEX_SANE_MAX = 2560       # resources.index measured 1894 B (API 26) / 2102 B (API 20) on the rc.2 line
                             # (the WebView media-permission reason strings add ~320 B)
 ABC_VERSION = "13.0.1.0"    # 4-byte PANDA version field at offset 0x0c
 LIBS_DIR = "libs/arm64-v8a/"
+RUNTIME_MARKER = LIBS_DIR + "runtime-mode.txt"
 HOST_SO = LIBS_DIR + "libopenharmonyhost.so"
 DOTNET_ZIP = "resources/rawfile/dotnet.zip"
 PAYLOAD_MARKER = LIBS_DIR + ".dotnet-payload.json"
+APP_JSON = "resources/rawfile/app.json"
 
 haps = [
     ("hello-maui-app.hap",
@@ -755,6 +787,21 @@ except Exception as exc:
     needed_allow, undefined_deny, policy_ok = [], [], False
     grade("FAIL", "无法读取宿主依赖策略 %s (%s) — 宿主依赖纪律无法校验，拒绝放行" % (policy_file, exc))
 
+
+def aot_stem(names, z):
+    """The AOT application-library stem: resources/rawfile/app.json names the entry assembly
+    (hello-maui-app.dll) and the packaging stages lib<stem>.so, the host's probe target."""
+    if APP_JSON not in names:
+        return None
+    try:
+        asm = str(json.loads(z.read(APP_JSON)).get("assembly", ""))
+    except Exception:
+        return None
+    if asm.endswith(".dll"):
+        asm = asm[:-4]
+    return asm or None
+
+
 fail = 0
 bundles = []
 for name, purpose in haps:
@@ -796,6 +843,20 @@ for name, purpose in haps:
             print("      权限   requestPermissions=%d [%s]" % (len(perms), short))
         else:
             print("      权限   requestPermissions=0")
+
+        # --- runtime mode: the MS-MODE marker decides the libs/zip expectations ---------------
+        mode = "jit"
+        has_marker = RUNTIME_MARKER in names
+        if has_marker:
+            mode = z.read(RUNTIME_MARKER).decode("utf-8", "replace").strip()
+        if mode not in ("jit", "aot", "interp"):
+            grade("FAIL", "%s: %s 值 %r 非法（jit|aot|interp）— 打包期即拒绝该值，出现即漂移/手工编辑"
+                          % (name, RUNTIME_MARKER, mode))
+            mode = "jit"
+        print("      mode   runtime-mode=%s%s" % (mode, "" if has_marker else "（无 marker：按历史 JIT 包判读）"))
+        if kit_mode_expect and mode != kit_mode_expect:
+            grade("FAIL", "%s: hap runtime-mode=%s 与 kit 根 runtime-mode.txt=%s 不一致（包内形态混杂/标注失真）"
+                          % (name, mode, kit_mode_expect))
 
         # --- resources.index: the device ResourceManager needs it for the rawfile payload -----
         if "resources.index" not in names:
@@ -844,6 +905,8 @@ for name, purpose in haps:
                                   "或用 --expected-abc %d 固定" % (name, len(abc), sizes, len(abc)))
 
         # --- libs/arm64-v8a: every runtime ELF must ship in the signed libs dir ----------------
+        # The mode decides the contract: jit/interp carry the CoreCLR natives, aot carries the
+        # NativeAOT application library instead (lib<stem>.so, named by app.json).
         libs = [n for n in names if n.startswith(LIBS_DIR) and n.endswith(".so")]
         if not libs:
             print("      libs   <缺 %s>" % LIBS_DIR)
@@ -851,12 +914,43 @@ for name, purpose in haps:
                           "否则设备加载器拒绝" % (name, LIBS_DIR))
         else:
             print("      libs   %s: %d 个 .so" % (LIBS_DIR, len(libs)))
-            if len(libs) < EXPECT_LIBS:
-                grade("FAIL", "%s: %s 只有 %d 个 .so（期望 %d）— 少了运行时 ELF，设备上会缺依赖"
-                              % (name, LIBS_DIR, len(libs), EXPECT_LIBS))
-            elif len(libs) > EXPECT_LIBS:
-                grade("WARN", "%s: %s 有 %d 个 .so（期望 %d）— 运行时文件集变化时正常，确认后更新期望"
-                              % (name, LIBS_DIR, len(libs), EXPECT_LIBS))
+            if mode == "aot":
+                if len(libs) < AOT_LIBS_MIN:
+                    grade("FAIL", "%s: AOT hap 的 %s 只有 %d 个 .so（期望 ≥%d：宿主 + libc++_shared.so + "
+                                  "NativeAOT 应用库）；用 -p:PublishAot=true -p:PublishAotUsingRuntimePack=true "
+                                  "-p:NativeLib=Shared 重新发布" % (name, LIBS_DIR, len(libs), AOT_LIBS_MIN))
+                elif len(libs) > AOT_LIBS_MIN:
+                    grade("WARN", "%s: AOT hap 的 %s 有 %d 个 .so（期望 %d）— 运行时文件集变化时正常，确认后更新期望"
+                                  % (name, LIBS_DIR, len(libs), AOT_LIBS_MIN))
+            else:
+                want = JIT_LIBS + 1 if mode == "interp" else JIT_LIBS
+                if len(libs) < want:
+                    grade("FAIL", "%s: %s 只有 %d 个 .so（期望 %d）— 少了运行时 ELF，设备上会缺依赖"
+                                  % (name, LIBS_DIR, len(libs), want))
+                elif len(libs) > want:
+                    grade("WARN", "%s: %s 有 %d 个 .so（期望 %d）— 运行时文件集变化时正常，确认后更新期望"
+                                  % (name, LIBS_DIR, len(libs), want))
+            if mode == "aot":
+                stem = aot_stem(names, z)
+                if stem is None:
+                    grade("FAIL", "%s: AOT hap 缺 %s（宿主据此推导 lib<stem>.so；缺了无法路由到 AOT 入口）"
+                                  % (name, APP_JSON))
+                else:
+                    entry = LIBS_DIR + "lib%s.so" % stem
+                    if entry not in names:
+                        grade("FAIL", "%s: AOT hap 缺 %s（NativeAOT 应用库；用 -p:PublishAot=true "
+                                      "-p:PublishAotUsingRuntimePack=true -p:NativeLib=Shared 重新发布）" % (name, entry))
+                    else:
+                        esize = z.getinfo(entry).file_size
+                        print("      aot    %s %d B" % (entry, esize))
+                        if esize <= 0:
+                            grade("FAIL", "%s: %s 是 0 B 空文件 — AOT 应用库不完整，宿主探测会失败" % (name, entry))
+                if (LIBS_DIR + "libcoreclr.so") in names:
+                    grade("FAIL", "%s: runtime-mode=aot 却带 libcoreclr.so — 包内形态混杂；AOT hap 不得携带 JIT "
+                                  "运行时原生库（重新发布/打包，别把 AOT 标记打到 JIT payload 上）" % name)
+            if mode == "interp" and (LIBS_DIR + "libclrinterpreter.so") not in names:
+                grade("FAIL", "%s: runtime-mode=interp 但缺 %s — 解释器库没被换入（用 OpenHarmonyInterpreterPack 指向"
+                              "解包目录）" % (name, LIBS_DIR + "libclrinterpreter.so"))
 
         # --- host ELF dependency discipline ---------------------------------------------------
         if HOST_SO not in names:
@@ -907,9 +1001,10 @@ for name, purpose in haps:
                     grade("FAIL", "%s: dotnet.zip 含 %d 个 .so: %s — 解包到 app 目录的未签名副本会被 enforcing 设备拒绝"
                                   " dlopen；同名 ELF 必须只出现在 libs/<abi>/（targets 的 OpenHarmonyDeterministicZip 排除名单）"
                                   % (name, len(sos), shown))
-                if dotnet_entries != EXPECT_ZIP_ENTRIES:
+                expected_zip = AOT_ZIP_ENTRIES if mode == "aot" else JIT_ZIP_ENTRIES
+                if dotnet_entries != expected_zip:
                     grade("WARN", "%s: dotnet.zip 条目 %d != 期望 %d — 运行时文件集变化时正常，确认后更新期望"
-                                  % (name, dotnet_entries, EXPECT_ZIP_ENTRIES))
+                                  % (name, dotnet_entries, expected_zip))
             except Exception as exc:
                 print("      zip    dotnet.zip 读取失败（%s）" % exc)
                 grade("WARN", "%s: 无法读取 dotnet.zip（%s）— 跳过 zip 组成检查（若 zip 可读才断言）" % (name, exc))
@@ -950,7 +1045,16 @@ for name, purpose in haps:
                 print("      libs   payload-in-libs: assembly=%s，条目=%s（实测 %d），payload=%s，zip=%s/%s"
                       % (assembly, declared, actual_entries, payload_entries, zip_entries,
                          (zip_sha[:12] + "...") if zip_sha else "<空>"))
-                if assembly == "?" or (LIBS_DIR + assembly) not in names:
+                # The named entry must be staged: jit/interp stage the managed assembly itself;
+                # aot stages the NativeAOT application library lib<stem>.so instead (the marker
+                # still names the .dll the host derives the stem from).
+                if mode == "aot":
+                    stem = aot_stem(names, z)
+                    staged = (LIBS_DIR + "lib%s.so" % stem) if stem else None
+                    if assembly == "?" or staged is None or staged not in names:
+                        grade("FAIL", "%s: payload marker 的入口程序集 '%s' 对应的 AOT 应用库 %s 不在 %s — payload 不完整"
+                                      % (name, assembly, staged or "lib<stem>.so", LIBS_DIR))
+                elif assembly == "?" or (LIBS_DIR + assembly) not in names:
                     grade("FAIL", "%s: payload marker 的入口程序集 '%s' 不在 %s（%s 缺失）— payload 不完整"
                                   % (name, assembly, LIBS_DIR, LIBS_DIR + assembly))
                 if declared != actual_entries:

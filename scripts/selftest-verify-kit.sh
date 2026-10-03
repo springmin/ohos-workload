@@ -37,6 +37,12 @@
 #                 behave as documented, a kit without the hap logs one line and stays OK, and
 #                 a pre-removal INTERNET permission set is recorded + WARNed (never fatal;
 #                 --blazor-perms ohos.permission.INTERNET makes the same kit WARN-free)
+#   S16 aot       the AOT-DEFAULT shape (MS-MODE marker aot + NativeAOT lib<stem>.so + 9-entry
+#                 dotnet.zip + kit-root runtime-mode.txt): the good AOT kit passes with the
+#                 mode-aware expectations; mutants fail with the right message (missing app
+#                 library, aot marker on a libcoreclr-carrying payload, unknown marker value,
+#                 kit-root mode disagreeing with the hap markers, stripped marker -> JIT
+#                 fallback refuses the 3-lib shape)
 #
 # The kit fixture mirrors the real one: five haps (module.json / ets/modules.abc /
 # resources.index / resources/rawfile/dotnet.zip / libs/arm64-v8a/*.so + the payload-in-libs
@@ -185,6 +191,14 @@ PAYLOAD_FILES = [
     "wwwroot/index.html",
 ]
 
+# The NativeAOT shape (AOT-DEFAULT, MS-MODE marker aot): host + libc++_shared.so + the
+# application library named by resources/rawfile/app.json; no CoreCLR natives; the payload is
+# the static-web-asset set (a small dotnet.zip), not managed assemblies.
+AOT_LIBS = ["libopenharmonyhost.so", "libc++_shared.so", "libhello-maui-app.so"]
+AOT_APP_JSON = {"assembly": PAYLOAD_ASSEMBLY}
+AOT_ZIP_ENTRIES = 9
+AOT_PAYLOAD_FILES = ["_framework/hybridwebview.js", "wwwroot/index.html"]
+
 
 def payload_entries(libs):
     return len(libs) + len(PAYLOAD_FILES)
@@ -309,6 +323,39 @@ def write_haps(kit, abc=None, index=INDEX_SIZE, host=None, dotnet=None, libs=Non
             z.writestr(PAYLOAD_MARKER, good_payload_marker(dotnet, payload_entries(libs)))
 
 
+def aot_marker(dotnet):
+    return json.dumps({
+        "schema": 1,
+        "assembly": PAYLOAD_ASSEMBLY,
+        "entries": len(AOT_LIBS) + 1 + len(AOT_PAYLOAD_FILES),  # .so + runtime-mode.txt + web payload
+        "payloadEntries": AOT_ZIP_ENTRIES,
+        "payloadBytes": 8 * 1024 * 1024,
+        "zipEntries": AOT_ZIP_ENTRIES,
+        "zipSha256": hashlib.sha256(dotnet).hexdigest(),
+    }).encode()
+
+
+def write_aot_haps(kit, host=None, dotnet=None):
+    """The AOT-DEFAULT shape of the five MAUI haps: no managed assemblies, the NativeAOT app
+    library instead, the aot marker and the small static-web-asset dotnet.zip."""
+    host = build_host_so() if host is None else host
+    dotnet = good_dotnet(AOT_ZIP_ENTRIES) if dotnet is None else dotnet
+    for hap in HAPS:
+        with zipfile.ZipFile(os.path.join(kit, hap), "w", zipfile.ZIP_DEFLATED) as z:
+            z.writestr("module.json", json.dumps(MODULE))
+            z.writestr("ets/modules.abc", good_abc())
+            z.writestr("resources.index", good_index(INDEX_SIZE))
+            z.writestr("resources/rawfile/app.json", json.dumps(AOT_APP_JSON))
+            z.writestr("resources/rawfile/dotnet.zip", dotnet)
+            z.writestr("libs/arm64-v8a/libopenharmonyhost.so", host)
+            z.writestr("libs/arm64-v8a/libc++_shared.so", b"\0" * 64)
+            z.writestr("libs/arm64-v8a/libhello-maui-app.so", b"\x7fELF" + b"\0" * 4096)
+            z.writestr("libs/arm64-v8a/runtime-mode.txt", b"aot\n")
+            for name in AOT_PAYLOAD_FILES:
+                z.writestr("libs/arm64-v8a/" + name, b"fixture payload")
+            z.writestr(PAYLOAD_MARKER, aot_marker(dotnet))
+
+
 def write_blazor_hap(kit):
     """The optional Blazor WASM component in its good (slim-packed) shape: ArkTS-only hap with
     the embedded site, its own PANDA shell abc, bundle com.example.opendotnet and no
@@ -335,6 +382,9 @@ def write_blazor_hap(kit):
 
 def rebuild_sums(kit):
     names = HAPS + ([BLAZOR_HAP] if os.path.exists(os.path.join(kit, BLAZOR_HAP)) else [])
+def rebuild_sums(kit):
+    names = HAPS + ([BLAZOR_HAP] if os.path.exists(os.path.join(kit, BLAZOR_HAP)) else [])
+    names = names + [n for n in ("runtime-mode.txt",) if os.path.exists(os.path.join(kit, n))]
     names = sorted(names + ["自签说明.md", "签名说明.txt", "verify-kit.sh"])
     lines = []
     for name in names:
@@ -355,6 +405,20 @@ def build_good(kit, verify_script):
     rebuild_sums(kit)
 
 
+def build_good_aot(kit, verify_script):
+    """AOT-DEFAULT kit shape: five AOT haps + the kit-root runtime-mode.txt (no Blazor hap, so
+    the scenario stays scoped to the mode-aware 2b assertions)."""
+    os.makedirs(kit, exist_ok=True)
+    write_aot_haps(kit)
+    for doc in ("自签说明.md", "签名说明.txt"):
+        with open(os.path.join(kit, doc), "w") as f:
+            f.write("fixture\n")
+    with open(os.path.join(kit, "runtime-mode.txt"), "w") as f:
+        f.write("aot\n")
+    shutil.copyfile(verify_script, os.path.join(kit, "verify-kit.sh"))
+    rebuild_sums(kit)
+
+
 def read_hap(path):
     with zipfile.ZipFile(path) as z:
         infos = z.infolist()
@@ -369,6 +433,12 @@ def write_hap(path, items):
 
 
 def patch(kit, op, arg=None):
+    if op == "kit-mode":
+        # The kit-root mode annotation (AOT-DEFAULT) disagreeing with the hap markers.
+        with open(os.path.join(kit, "runtime-mode.txt"), "w") as f:
+            f.write((arg or "jit") + "\n")
+        rebuild_sums(kit)
+        return
     if op.startswith("blazor-"):
         # The optional Blazor component mutants: operate on BLAZOR_HAP alone (the five MAUI
         # haps stay valid), then refresh SHA256SUMS so only the 2c assertion under test fires.
@@ -464,6 +534,23 @@ def patch(kit, op, arg=None):
                 host = f.read()
             items = [(n, host if n == "libs/arm64-v8a/libopenharmonyhost.so" else d)
                      for n, d in items]
+        elif op == "aot-drop-applib":
+            # The NativeAOT application library is the AOT entry point: dropping it must FAIL.
+            items = [(n, d) for n, d in items
+                     if n != "libs/arm64-v8a/libhello-maui-app.so"]
+            items = refresh_marker(items)
+        elif op == "aot-add-coreclr":
+            # An aot marker on a payload that still carries the JIT runtime is a mixed shape.
+            items = list(items) + [("libs/arm64-v8a/libcoreclr.so", b"\0" * 64)]
+            items = refresh_marker(items)
+        elif op == "mode-bad":
+            items = [(n, b"weird\n" if n == "libs/arm64-v8a/runtime-mode.txt" else d)
+                     for n, d in items]
+        elif op == "mode-drop":
+            # Stripping the marker falls back to the historical JIT contract, which the 3-lib
+            # AOT shape cannot satisfy: the run must FAIL, not silently pass.
+            items = [(n, d) for n, d in items if n != "libs/arm64-v8a/runtime-mode.txt"]
+            items = refresh_marker(items)
         elif op in ("payload-drop-marker", "payload-entries", "payload-zipsha",
                     "payload-assembly", "payload-drop-assembly"):
             # Marker mutants: the payload-in-libs assertion under test, so the marker is NOT
@@ -496,6 +583,8 @@ def main():
     cmd = sys.argv[1]
     if cmd == "good":
         build_good(sys.argv[2], sys.argv[3])
+    elif cmd == "good-aot":
+        build_good_aot(sys.argv[2], sys.argv[3])
     elif cmd == "hostso":
         extra = sys.argv[3:]
         needed = [a[len("needed:"):] for a in extra if a.startswith("needed:")]
@@ -850,6 +939,57 @@ assert_rc 0 "$RC" "S15 --blazor-perms accepts the packed set"
 assert_contains "S15 still records the packed permission set" "权限   requestPermissions=1 [INTERNET]" "$LOG_FILE"
 assert_not_contains "S15 override clears the mismatch WARN" "与源侧期望" "$LOG_FILE"
 assert_contains "S15 override run is WARN-free" "KIT OK —" "$LOG_FILE"
+
+# ---- S16: the AOT-DEFAULT shape (MS-MODE aot) ----------------------------------------
+section "S16 AOT kit: mode-aware expectations (AOT-DEFAULT)"
+AOT_KIT="$WORK/kit-aot-good"
+python3 "$WORK/fixture.py" good-aot "$AOT_KIT" "$VERIFY_SCRIPT"
+new_aot_kit() {
+    cp -r "$AOT_KIT" "$WORK/$1" || { printf 'FATAL: cannot copy the AOT fixture kit\n' >&2; exit 1; }
+    printf '%s' "$WORK/$1"
+}
+run_verify "$AOT_KIT"
+assert_rc 0 "$RC" "S16 good AOT kit"
+assert_contains "S16 kit-root mode annotation read" "kit 运行时形态：runtime-mode.txt=aot" "$LOG_FILE"
+assert_contains "S16 per-hap marker detected" "runtime-mode=aot" "$LOG_FILE"
+assert_contains "S16 AOT app library asserted" "aot    libs/arm64-v8a/libhello-maui-app.so" "$LOG_FILE"
+assert_contains "S16 AOT libs count = 3" "libs/arm64-v8a/: 3 个 .so" "$LOG_FILE"
+assert_contains "S16 AOT dotnet.zip expectation = 9" "dotnet.zip entries=9" "$LOG_FILE"
+assert_contains "S16 payload marker names the entry assembly" "payload-in-libs: assembly=hello-maui-app.dll" "$LOG_FILE"
+assert_contains "S16 all 2b assertions pass" "全部关键断言通过" "$LOG_FILE"
+assert_contains "S16 KIT OK" "KIT OK" "$LOG_FILE"
+assert_not_contains "S16 no JIT 15-so expectation on an AOT kit" "期望 15" "$LOG_FILE"
+
+K="$(new_aot_kit kit-aot-noapplib)"
+python3 "$WORK/fixture.py" patch "$K" aot-drop-applib
+run_verify "$K"
+assert_rc 1 "$RC" "S16 missing NativeAOT app library fails"
+assert_contains "S16 names the missing app library" "缺 libs/arm64-v8a/libhello-maui-app.so" "$LOG_FILE"
+assert_contains "S16 points at the AOT publish flags" "PublishAotUsingRuntimePack" "$LOG_FILE"
+
+K="$(new_aot_kit kit-aot-coreclr)"
+python3 "$WORK/fixture.py" patch "$K" aot-add-coreclr
+run_verify "$K"
+assert_rc 1 "$RC" "S16 aot marker on a libcoreclr payload fails"
+assert_contains "S16 names the mixed shape" "runtime-mode=aot 却带 libcoreclr.so" "$LOG_FILE"
+
+K="$(new_aot_kit kit-aot-modeweird)"
+python3 "$WORK/fixture.py" patch "$K" mode-bad
+run_verify "$K"
+assert_rc 1 "$RC" "S16 unknown runtime-mode marker fails"
+assert_contains "S16 names the illegal marker value" "值 'weird' 非法" "$LOG_FILE"
+
+K="$(new_aot_kit kit-aot-kitmode)"
+python3 "$WORK/fixture.py" patch "$K" kit-mode jit
+run_verify "$K"
+assert_rc 1 "$RC" "S16 kit-root mode disagreeing with the hap markers fails"
+assert_contains "S16 names the kit/hap mismatch" "与 kit 根 runtime-mode.txt=jit 不一致" "$LOG_FILE"
+
+K="$(new_aot_kit kit-aot-nomarker)"
+python3 "$WORK/fixture.py" patch "$K" mode-drop
+run_verify "$K"
+assert_rc 1 "$RC" "S16 stripped marker falls back to JIT and refuses the 3-lib shape"
+assert_contains "S16 sees the JIT fallback expectation" "只有 3 个 .so（期望 15）" "$LOG_FILE"
 
 # ---- summary -------------------------------------------------------------------------
 section "summary"

@@ -15,6 +15,7 @@
 #                       自签说明.md 最终状态.md README-交付说明.md + 签名说明.txt (generated here
 #                       from the heredoc, so it always matches the kit's actual hap names)
 #   0/1 meta           目标设备.txt only with --sign-external (UDID + profile sha256 + method)
+#   runtime-mode.txt (kit root; the whole-kit MS-MODE annotation, see --runtime-mode below)
 #   verify-kit.sh + SHA256SUMS (every hap/doc/script) + <out>.tar.gz (kit root, packed flat)
 # The haps are (re)published from test/hello-maui-app for both API bands with and without
 # OpenHarmonyExtraPermissions, using <dist-dir>/ets/modules.abc as the ArkTS shell (the 20.0
@@ -22,11 +23,23 @@
 # publish lands in test/hello-maui-app/bin/Release/<tfm>/openharmony-arm64/ and is copied into
 # the kit right away. Signing embeds a timestamp, so SHA256SUMS is always regenerated, never
 # carried over.
-# Usage: scripts/make-device-test-kit.sh [--kit-dir <dir>] [--dist-dir <dir>] [--out <tar.gz>]
-#          [--skip-tar] [--publish] [--with-blazor] [--blazor-bundle <name>]
+# Usage: scripts/make-device-test-kit.sh [--runtime-mode aot|jit|interp] [--kit-dir <dir>]
+#          [--dist-dir <dir>] [--out <tar.gz>] [--skip-tar] [--publish] [--dry-run]
+#          [--with-blazor] [--blazor-bundle <name>]
 #          [--sign-external <profile> <key> <alias> <expect-udid>]
 #   see usage() for defaults (kit dir $DEVICE_TEST_KIT_DIR or the approved opencode tmp dir,
 #   dist dir <repo>/dist, out <kit-dir>.tar.gz) and the full option text.
+#   --runtime-mode is the MS-MODE switch for the whole kit (AOT-DEFAULT, 2026-10-03):
+#   aot (the default) publishes the 5 MAUI haps with the NativeAOT recipe
+#   (-p:PublishAot=true -p:PublishAotUsingRuntimePack=true -p:NativeLib=Shared +
+#   -p:OpenHarmonyRuntimeMode=aot + OpenHarmonyUIPage; the DEVCOMPAT payload staging and the
+#   static-web-asset/hybrid staging stay at their defaults) and writes runtime-mode.txt=aot;
+#   jit keeps the previous JIT publish and gets the -jit suffix on the default kit dir/out so
+#   both shapes can sit next to each other; interp is refused here because the interpreter is
+#   an independent pack (ohos-interpreter-pack-*.tar.gz asset + scripts/make-mode-kit.sh
+#   --mode interp) and never rides the main delivery kit.
+#   --dry-run prints the publish commands (including the mode-specific properties) without
+#   requiring a dotnet/SDK/device; the actual kit assembly is never reached.
 #   --with-blazor adds the optional Blazor WASM ArkWeb host hap: the recipe gate is a
 #   `run-smoke.sh --require --slim` publish (x64 only, no device/SDK needed) whose output the
 #   host packer embeds; it needs the hvigor toolchain from scripts/build-arkts-shell.sh
@@ -36,7 +49,10 @@
 #   profile/key for one UDID via sign-for-device.sh --external: the p7b must list the UDID
 #   (fail closed), the app cert chain (*.cer next to the p7b, or OHOS_EXT_CERT) is required,
 #   and the password comes from the terminal or OHOS_KEY_PWD_FILE / stdin.
-# Env: DOTNET, RUNTIME_OHOS_PLANS (runtime-ohos docs/plans), OHOS_EXT_CERT, OHOS_KEY_PWD_FILE.
+# Env: DOTNET, RUNTIME_OHOS_PLANS (runtime-ohos docs/plans), OHOS_EXT_CERT, OHOS_KEY_PWD_FILE,
+#      DEVICE_TEST_KIT_RUNTIME_MODE (same as --runtime-mode, default aot), OHOS_AOT_HOOKS
+#      (optional CustomAfterMicrosoftCommonTargets hook for the rc.2 Exec workaround on
+#      HarmonyOS hosts; see test/hello-maui-app/publish-aot.sh).
 # The kit dir is rebuilt from scratch in a staging dir and swapped in, so stale files cannot
 # leak into SHA256SUMS. verify-kit.sh always comes from the repo; 自签说明.md and
 # README-交付说明.md come from runtime-ohos docs/plans (2026-09-21-ohos-tester-selfsign.md,
@@ -70,9 +86,12 @@ KIT_DIR="${DEVICE_TEST_KIT_DIR:-$DEFAULT_KIT_DIR}"
 DIST_DIR="$W/dist"
 RUNTIME_PLANS="${RUNTIME_OHOS_PLANS:-$(dirname "$W")/runtime-ohos/docs/plans}"
 VERIFY_KIT_SRC="$W/scripts/verify-kit.sh"
+RUNTIME_MODE="${DEVICE_TEST_KIT_RUNTIME_MODE:-aot}"
 OUT=""
 SKIP_TAR=0
 PUBLISH=0
+DRY=0
+KIT_DIR_SET=0
 WITH_BLAZOR=0
 BLAZOR_BUNDLE=""
 SIGN_EXTERNAL=0
@@ -86,13 +105,25 @@ PERMS="ohos.permission.ACCESS_BLUETOOTH;ohos.permission.PRINT;ohos.permission.RE
 
 usage() {
     cat <<EOF
-usage: $0 [--kit-dir <dir>] [--dist-dir <dir>] [--out <tar.gz>] [--skip-tar] [--publish]
+usage: $0 [--runtime-mode aot|jit|interp] [--kit-dir <dir>] [--dist-dir <dir>]
+          [--out <tar.gz>] [--skip-tar] [--publish] [--dry-run]
           [--with-blazor] [--blazor-bundle <name>]
           [--sign-external <profile> <key> <alias> <expect-udid>]
 
 Builds the 4 self-signed + 1 unsigned demo haps, copies the acceptance/signing/operator docs,
 the self-signed status page (签名说明.txt) and the tester self-check script, writes SHA256SUMS
 and packs the kit tarball.
+
+--runtime-mode (default aot; env DEVICE_TEST_KIT_RUNTIME_MODE) selects the MS-MODE shape of the
+whole kit: aot publishes the 5 MAUI haps with the NativeAOT recipe (lib<stem>.so in the hap,
+marker libs/<abi>/runtime-mode.txt=aot, JIT runtime natives absent) and keeps the canonical kit
+name; jit keeps the JIT publish and appends -jit to the default kit dir/out. interp is refused
+here: the interpreter ships as an independent pack (ohos-interpreter-pack-*.tar.gz + scripts/
+make-mode-kit.sh --mode interp --interp-pack <dir>), never inside the main delivery kit. The kit
+root carries runtime-mode.txt so a tester can tell the two shapes apart.
+
+--dry-run prints the four publish commands of the selected mode (mode-specific properties
+included) and exits without needing dotnet, an SDK or the project tree.
 
 The 4 default haps are self-signed with our own debug material, so a real device rejects them
 (9568257 / 9568344): only the re-signed hello-maui-app-unsigned.hap (or a --sign-external kit)
@@ -112,7 +143,11 @@ EOF
 
 while [ $# -gt 0 ]; do
     case "$1" in
-        --kit-dir)  shift; KIT_DIR="$1" ;;
+        --runtime-mode)
+            shift
+            [ $# -ge 1 ] || { warn "--runtime-mode needs aot|jit|interp"; usage >&2; exit 2; }
+            RUNTIME_MODE="$1" ;;
+        --kit-dir)  shift; KIT_DIR="$1"; KIT_DIR_SET=1 ;;
         --dist-dir) shift; DIST_DIR="$1" ;;
         --out)      shift; OUT="$1" ;;
         --sign-external)
@@ -122,6 +157,7 @@ while [ $# -gt 0 ]; do
             shift 4 ;;
         --skip-tar) SKIP_TAR=1 ;;
         --publish)  PUBLISH=1 ;;
+        --dry-run)  DRY=1 ;;
         --with-blazor) WITH_BLAZOR=1 ;;
         --blazor-bundle)
             shift
@@ -133,6 +169,30 @@ while [ $# -gt 0 ]; do
     shift
 done
 
+# The MS-MODE switch: aot is the distribution default (AOT-DEFAULT, 2026-10-03); the JIT shape
+# stays available for the debug/ACL domain; the interpreter shape is an independent pack and is
+# refused here so it can never leak into the main kit.
+case "$RUNTIME_MODE" in
+    aot|jit|interp) ;;
+    *) warn "unknown --runtime-mode: $RUNTIME_MODE (use aot, jit or interp)"; exit 2 ;;
+esac
+if [ "$RUNTIME_MODE" = interp ]; then
+    warn "--runtime-mode interp 不随主交付包：解释器以独立 pack 分发"
+    warn "  资产: ohos-interpreter-pack-*.tar.gz（release 并列件）；独立变体:"
+    warn "    sh scripts/make-mode-kit.sh --project test/hello-maui-app/hello-maui-app.csproj \\"
+    warn "        --tfm <tfm> --out-dir <dir> --mode interp --interp-pack <解包目录>"
+    warn "  主 kit 只出 aot|jit（见 docs/openharmony-hap-packaging.md「Runtime mode kits」）"
+    exit 2
+fi
+MODE_SUFFIX=""
+[ "$RUNTIME_MODE" = jit ] && MODE_SUFFIX="-jit"
+# The default kit dir/out get the -jit suffix so an AOT (default) kit and a JIT variant kit can
+# coexist; an explicit --kit-dir/--out always wins verbatim.
+if [ "$KIT_DIR_SET" = 0 ] && [ -z "${DEVICE_TEST_KIT_DIR:-}" ]; then
+    DEFAULT_KIT_DIR="$DEFAULT_KIT_DIR$MODE_SUFFIX"
+    KIT_DIR="$DEFAULT_KIT_DIR"
+fi
+
 case "$KIT_DIR" in
     ""|"/"|"."|"..") warn "invalid kit dir: '$KIT_DIR'"; exit 2 ;;
 esac
@@ -141,25 +201,29 @@ if [ "$SKIP_TAR" = 1 ] && [ "$PUBLISH" = 1 ]; then
     warn "--publish needs a tarball (drop --skip-tar)"; exit 2
 fi
 
-command -v "$DOTNET" >/dev/null 2>&1 || { warn "dotnet not found: $DOTNET (set DOTNET=)"; exit 1; }
-[ -d "$PROJ" ] || { warn "demo project not found: $PROJ"; exit 1; }
-[ -f "$DIST_DIR/ets/modules.abc" ] || {
-    warn "ArkTS shell not found: $DIST_DIR/ets/modules.abc (run scripts/build-arkts-shell.sh or set --dist-dir)"
-    exit 1
-}
-[ -f "$VERIFY_KIT_SRC" ] || {
-    warn "kit verifier not found: $VERIFY_KIT_SRC (expected in a full checkout)"
-    exit 1
-}
+if [ "$DRY" != 1 ]; then
+    command -v "$DOTNET" >/dev/null 2>&1 || { warn "dotnet not found: $DOTNET (set DOTNET=)"; exit 1; }
+    [ -d "$PROJ" ] || { warn "demo project not found: $PROJ"; exit 1; }
+    [ -f "$DIST_DIR/ets/modules.abc" ] || {
+        warn "ArkTS shell not found: $DIST_DIR/ets/modules.abc (run scripts/build-arkts-shell.sh or set --dist-dir)"
+        exit 1
+    }
+    [ -f "$VERIFY_KIT_SRC" ] || {
+        warn "kit verifier not found: $VERIFY_KIT_SRC (expected in a full checkout)"
+        exit 1
+    }
+fi
 
 if [ "$SIGN_EXTERNAL" = 1 ]; then
     [ -f "$W/scripts/sign-for-device.sh" ] || { warn "sign-for-device.sh not found under $W/scripts"; exit 1; }
-    [ -f "$EXT_PROFILE" ] || { warn "--sign-external profile not found: $EXT_PROFILE"; exit 1; }
-    [ -f "$EXT_KEY" ] || { warn "--sign-external key not found: $EXT_KEY"; exit 1; }
+    if [ "$DRY" != 1 ]; then
+        [ -f "$EXT_PROFILE" ] || { warn "--sign-external profile not found: $EXT_PROFILE"; exit 1; }
+        [ -f "$EXT_KEY" ] || { warn "--sign-external key not found: $EXT_KEY"; exit 1; }
+        [ -z "${OHOS_EXT_CERT:-}" ] || [ -f "$OHOS_EXT_CERT" ] || { warn "OHOS_EXT_CERT not found: $OHOS_EXT_CERT"; exit 1; }
+        [ -z "${OHOS_KEY_PWD_FILE:-}" ] || [ -f "$OHOS_KEY_PWD_FILE" ] || { warn "OHOS_KEY_PWD_FILE not found: $OHOS_KEY_PWD_FILE"; exit 1; }
+    fi
     [ -n "$EXT_ALIAS" ] || { warn "--sign-external alias is empty"; exit 1; }
     [ -n "$EXT_UDID" ] || { warn "--sign-external expect-udid is empty"; exit 1; }
-    [ -z "${OHOS_EXT_CERT:-}" ] || [ -f "$OHOS_EXT_CERT" ] || { warn "OHOS_EXT_CERT not found: $OHOS_EXT_CERT"; exit 1; }
-    [ -z "${OHOS_KEY_PWD_FILE:-}" ] || [ -f "$OHOS_KEY_PWD_FILE" ] || { warn "OHOS_KEY_PWD_FILE not found: $OHOS_KEY_PWD_FILE"; exit 1; }
 fi
 
 # --with-blazor wiring: the recipe gate is the publish itself (run-smoke.sh --require --slim),
@@ -183,7 +247,7 @@ if [ "$WITH_BLAZOR" = 1 ]; then
         warn "hvigor toolchain not found: $BLAZOR_HVIGOR"
         warn "  run scripts/build-arkts-shell.sh once on this build host (installs .arkts-build),"
         warn "  or point HVIGOR_JS at an existing hvigor.js entry point"
-        exit 1
+        [ "$DRY" = 1 ] || exit 1
     fi
 fi
 
@@ -226,13 +290,37 @@ resolve_ohos_sdk_root() {
     export OHOS_NDK="${OHOS_NDK:-$_candidate/native}"
     log "OpenHarmony SDK root: $OpenHarmonySdkRoot"
 }
-resolve_ohos_sdk_root
+if [ "$DRY" != 1 ]; then
+    resolve_ohos_sdk_root
+fi
+
+# rc.2 Exec workaround (same plumb as test/hello-maui-app/publish-aot.sh): on HarmonyOS hosts the
+# built-in Exec task becomes a Windows batch wrapper; an optional hook replaces it. Only needed
+# for AOT publishes here, and only when the caller points OHOS_AOT_HOOKS at the targets file.
+if [ "$RUNTIME_MODE" = aot ] && [ -n "${OHOS_AOT_HOOKS:-}" ]; then
+    [ -f "$OHOS_AOT_HOOKS" ] || { warn "OHOS_AOT_HOOKS file not found: $OHOS_AOT_HOOKS"; exit 1; }
+    export CustomAfterMicrosoftCommonTargets="$OHOS_AOT_HOOKS"
+    export OhosTaskHostOverride=true
+    log "AOT Exec hook: $OHOS_AOT_HOOKS"
+fi
 
 STAGE="$KIT_DIR.stage.$$"
 LOG_DIR="$STAGE/.logs"
 trap 'rm -rf "$STAGE"' 0 1 2 15
 rm -rf "$STAGE"
 mkdir -p "$STAGE" "$LOG_DIR"
+
+print_cmd() {
+    _line=""
+    for _a in "$@"; do
+        case "$_a" in
+            *[!A-Za-z0-9_./:=+-]*) _q="'$(printf '%s' "$_a" | sed "s/'/'\\\\''/g")'" ;;
+            *) _q="$_a" ;;
+        esac
+        _line="$_line $_q"
+    done
+    printf '+%s\n' "$_line"
+}
 
 # publish one band/permissions combination; output stays in the bin dir for copy_hap.
 publish_variant() {
@@ -258,12 +346,52 @@ publish_variant() {
     if [ -n "$_perms" ]; then
         set -- "$@" "-p:OpenHarmonyExtraPermissions=\"$_perms\""
     fi
+    # MS-MODE: the mode switch goes last so it always wins over an inherited property. AOT uses
+    # the verified publish-aot.sh/make-mode-kit recipe; the payload staging (payload-in-libs +
+    # DEVCOMPAT rewrite + static-web-asset/hybrid staging) stays at its defaults.
+    if [ "$RUNTIME_MODE" = aot ]; then
+        set -- "$@" -p:PublishAot=true -p:PublishAotUsingRuntimePack=true -p:NativeLib=Shared \
+            -p:CopyOutputSymbolsToPublishDirectory=false -p:CompressSymbols=false \
+            -p:InvariantGlobalization=true -p:OpenHarmonyRuntimeMode=aot
+    else
+        set -- "$@" -p:OpenHarmonyRuntimeMode=jit
+    fi
+    if [ "$DRY" = 1 ]; then
+        print_cmd "$DOTNET" publish "$@"
+        return 0
+    fi
     _log="$LOG_DIR/publish-$_tfm${_perms:+_permissions}.log"
     if ! "$DOTNET" publish "$@" > "$_log" 2>&1; then
         warn "publish failed: $_tfm (log: $_log)"
         tail -20 "$_log" >&2
         exit 1
     fi
+}
+
+# The MS-MODE marker must be in the hap and the AOT shape must carry the NativeAOT application
+# library (same contract scripts/make-mode-kit.sh asserts for a single mode kit).
+check_mode_hap() { # <hap> <label>
+    python3 - "$1" "$RUNTIME_MODE" <<'PY' || { warn "runtime-mode check failed: $1"; exit 1; }
+import json, sys, zipfile
+hap, mode = sys.argv[1], sys.argv[2]
+with zipfile.ZipFile(hap) as z:
+    marker = z.read('libs/arm64-v8a/runtime-mode.txt').decode('utf-8', 'replace').strip()
+    if marker != mode:
+        print("runtime-mode.txt=%r, expected %r" % (marker, mode), file=sys.stderr)
+        sys.exit(1)
+    if mode == 'aot':
+        app = json.loads(z.read('resources/rawfile/app.json'))
+        asm = str(app.get('assembly', ''))
+        stem = asm[:-4] if asm.endswith('.dll') else asm
+        entry = 'libs/arm64-v8a/lib%s.so' % stem
+        size = z.getinfo(entry).file_size
+        if size <= 0:
+            print("empty AOT application library: %s" % entry, file=sys.stderr)
+            sys.exit(1)
+        print("mode: %s (%s %d B)" % (mode, entry, size))
+    else:
+        print("mode: %s" % mode)
+PY
 }
 
 # make sure the generated module.json really carries the requested permissions
@@ -298,24 +426,40 @@ copy_tool() {
     log "script  $2  <- $1"
 }
 
+if [ "$DRY" = 1 ]; then
+    log "dry run: runtime-mode=$RUNTIME_MODE kit-dir=$KIT_DIR out=$OUT"
+    publish_variant net11.0-openharmony26.0 ""
+    publish_variant net11.0-openharmony26.0 "$PERMS"
+    publish_variant net11.0-openharmony20.0 ""
+    publish_variant net11.0-openharmony20.0 "$PERMS"
+    log "dry run: nothing published, nothing assembled (drop --dry-run for the real kit)"
+    exit 0
+fi
+
 BIN26="$PROJ/bin/Release/net11.0-openharmony26.0/openharmony-arm64"
 BIN20="$PROJ/bin/Release/net11.0-openharmony20.0/openharmony-arm64"
+log "runtime-mode: $RUNTIME_MODE (kit-root runtime-mode.txt; haps carry libs/<abi>/runtime-mode.txt)"
 
 # 26.0 default: also supplies the unsigned 26.0 default hap.
 publish_variant net11.0-openharmony26.0 ""
 copy_hap "$BIN26/hello-maui-app.hap" "hello-maui-app.hap"
+check_mode_hap "$BIN26/hello-maui-app.hap"
 copy_hap "$BIN26/hello-maui-app-unsigned.hap" "hello-maui-app-unsigned.hap"
+check_mode_hap "$BIN26/hello-maui-app-unsigned.hap"
 
 publish_variant net11.0-openharmony26.0 "$PERMS"
 check_permissions "$BIN26/hello-maui-app.hap"
 copy_hap "$BIN26/hello-maui-app.hap" "hello-maui-app-permissions.hap"
+check_mode_hap "$BIN26/hello-maui-app.hap"
 
 publish_variant net11.0-openharmony20.0 ""
 copy_hap "$BIN20/hello-maui-app.hap" "hello-maui-app-api20.hap"
+check_mode_hap "$BIN20/hello-maui-app.hap"
 
 publish_variant net11.0-openharmony20.0 "$PERMS"
 check_permissions "$BIN20/hello-maui-app.hap"
 copy_hap "$BIN20/hello-maui-app.hap" "hello-maui-app-api20-permissions.hap"
+check_mode_hap "$BIN20/hello-maui-app.hap"
 
 # Optional Blazor WASM ArkWeb host (--with-blazor): the smoke publish doubles as the offline
 # recipe gate (--require: a restore-level SKIP becomes a failure) and its wwwroot is what the
@@ -458,10 +602,29 @@ OpenHarmony MAUI 设备测试包 — 签名说明（务必先读）
    （或 .tar.gz.sha256 sidecar）。哈希以发布说明为准，重签/重新打包后必然变化。
 SIGNNOTE
 
+# AOT-DEFAULT: the kit-root runtime-mode.txt is the whole-kit annotation (the per-hap marker
+# stays libs/<abi>/runtime-mode.txt inside every hap). Covered by SHA256SUMS; verify-kit.sh
+# cross-checks the kit value against every MAUI hap marker when the file is present.
+printf '%s\n' "$RUNTIME_MODE" > "$STAGE/runtime-mode.txt"
+{
+    printf '\n五、运行时形态（%s 分发形态）\n' "$RUNTIME_MODE"
+    printf '   本包 kit 根 runtime-mode.txt = %s；每个 hap 的 libs/arm64-v8a/runtime-mode.txt 同值。\n' "$RUNTIME_MODE"
+    if [ "$RUNTIME_MODE" = aot ]; then
+        printf '   AOT 为分发默认（NativeAOT：无动态码/JITFORT 依赖，坚盾模式与无 ACL 设备可用）；\n'
+        printf '   启动日志应为 aot=1 且无 libcoreclr/libclrjit 加载。JIT 升级形态需 AGC ACL\n'
+        printf '   （ohos.permission.kernel.ALLOW_WRITABLE_CODE_MEMORY）或厂商豁免，仅 debug/内测域免 ACL。\n'
+    else
+        printf '   JIT 形态：release/生产域需 AGC ACL（ALLOW_WRITABLE_CODE_MEMORY）或厂商豁免；\n'
+        printf '   AOT 为分发默认，JIT 仅作性能/调试变体。\n'
+    fi
+    printf '   解释器（interp）不随主包分发，以独立 ohos-interpreter-pack 资产提供。\n'
+} >> "$STAGE/签名说明.txt"
+log "note    runtime-mode.txt ($RUNTIME_MODE)"
+
 if [ "$SIGN_EXTERNAL" = 1 ]; then
     cat >> "$STAGE/签名说明.txt" <<'SIGNNOTE_EXT'
 
-五、本包为预签包（--sign-external）
+六、本包为预签包（--sign-external）
    全部 hap（含原 unsigned 变体）已按 目标设备.txt 中的 UDID 预签，可直接安装；
    其他设备仍会被拒（9568344）。本文件与 目标设备.txt 均不含密钥、证书或密码。
 SIGNNOTE_EXT
@@ -476,7 +639,7 @@ rm -rf "$LOG_DIR"
     cd "$STAGE"
     LC_ALL=C
     export LC_ALL
-    sha256sum *.hap *.md verify-kit.sh 签名说明.txt > SHA256SUMS
+    sha256sum *.hap *.md verify-kit.sh 签名说明.txt runtime-mode.txt > SHA256SUMS
     if [ -f 目标设备.txt ]; then
         sha256sum 目标设备.txt >> SHA256SUMS
     fi
