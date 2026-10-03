@@ -26,7 +26,7 @@
 #                    expectation).
 #   abc header       ets/modules.abc must be a PANDA file whose 4-byte version field at 0x0c is
 #                    13.0.1.0 (FAIL otherwise), and its size must be one of the current
-#                    expectations - 356140 for the ui/shell shell, 24324 for the headless shell
+#                    expectations - 356468 for the ui/shell shell, 24324 for the headless shell
 #                    (--expected-abc <bytes[,bytes]> / KIT_EXPECTED_ABC pins the set; a size
 #                    outside it then FAILs instead of warning, so a historical kit's old abc
 #                    does not kill the run).
@@ -46,7 +46,7 @@
 #                    check by design.
 #   dotnet.zip       readable -> must carry no .so (an unsigned duplicate would be dlopen'd from
 #                    the extracted app dir and rejected by an enforcing device -> FAIL) and its
-#                    entry count is expected to stay 257 (drift = WARN; kit #41 added the
+#                    entry count is expected to stay 258 (drift = WARN; kit #41 added the
 #                    MULTI-OVERLAY-FULL hybrid-a/b/c.html demo assets).
 #   host ELF         libs/arm64-v8a/libopenharmonyhost.so: DT_NEEDED (readelf -d equivalent)
 #                    must be a subset of the host-deps.conf [needed] whitelist, must not name
@@ -182,10 +182,10 @@ OH_LOG_
 HOST_DEPS_EOF
 )"
 
-# Current abc size expectations: the ui/shell ArkTS shell (356140 B) and the headless shell
+# Current abc size expectations: the ui/shell ArkTS shell (356468 B) and the headless shell
 # (24324 B). --expected-abc <bytes[,bytes]> / KIT_EXPECTED_ABC replaces the set and turns a
 # mismatch from a historical-kit WARN into a FAIL (the kit builder uses that strict form).
-EXPECT_ABC="${KIT_EXPECTED_ABC:-356140,24324}"
+EXPECT_ABC="${KIT_EXPECTED_ABC:-356468,24324}"
 EXPECT_ABC_PINNED="${KIT_EXPECTED_ABC:+1}"
 HOST_DEPS_FILE="${KIT_HOST_DEPS:-}"
 
@@ -283,7 +283,7 @@ Without an argument the current directory is used (it must contain SHA256SUMS).
                         fail unless the extracted tree matches this digest (the value comes
                         with the delivery, e.g. the release notes)
   --expected-abc <bytes[,bytes]>
-                        abc size expectation (default: 356140,24324 = the ui/shell and the
+                        abc size expectation (default: 356468,24324 = the ui/shell and the
                         headless ArkTS shell); a size outside the set warns by default and
                         fails when this option pins the set
   --host-deps <path>    read the host dependency policy from this file instead of the
@@ -352,7 +352,7 @@ while [ $# -gt 0 ]; do
             ;;
         --expected-abc)
             shift
-            [ $# -gt 0 ] || { warn "--expected-abc 需要逗号分隔的字节数（如 356140,24324）"; usage >&2; exit 2; }
+            [ $# -gt 0 ] || { warn "--expected-abc 需要逗号分隔的字节数（如 356468,24324）"; usage >&2; exit 2; }
             EXPECT_ABC="$1"
             EXPECT_ABC_PINNED=1
             ;;
@@ -395,7 +395,7 @@ KIT="$(cd "$KIT" && pwd)"
 EXPECT_ABC="$(printf '%s' "$EXPECT_ABC" | tr ',' ' ')"
 for _abc in $EXPECT_ABC; do
     case "$_abc" in
-        ''|*[!0-9]*) warn "--expected-abc 需要逗号/空格分隔的字节数（如 356140,24324），得到: $EXPECT_ABC"; usage >&2; exit 2 ;;
+        ''|*[!0-9]*) warn "--expected-abc 需要逗号/空格分隔的字节数（如 356468,24324），得到: $EXPECT_ABC"; usage >&2; exit 2 ;;
     esac
 done
 [ -n "$EXPECT_ABC" ] || { warn "--expected-abc 不能为空"; usage >&2; exit 2; }
@@ -597,7 +597,7 @@ abc_pinned = sys.argv[7] == "1"
 
 # Current-generation expectations; the abc sizes come from the shell (--expected-abc).
 EXPECT_LIBS = 15            # host + libc++ + 12 runtime ELF + createdump.so under libs/arm64-v8a/
-EXPECT_ZIP_ENTRIES = 257    # dotnet.zip entries (deterministic writer with the ELF names excluded)
+EXPECT_ZIP_ENTRIES = 258    # dotnet.zip entries (deterministic writer with the ELF names excluded)
 INDEX_SANE_MAX = 2560       # resources.index measured 1894 B (API 26) / 2102 B (API 20) on the rc.2 line
                             # (the WebView media-permission reason strings add ~320 B)
 ABC_VERSION = "13.0.1.0"    # 4-byte PANDA version field at offset 0x0c
