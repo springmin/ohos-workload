@@ -21,7 +21,7 @@ name: interaction-regression
 #     tree (Refresh + Publish render step and Publish-alone pass), skip/republish average/max
 #     ceilings and documented republish/skip ratio floors (render >= 1.25x, publish >= 2x).
 #
-# The check-count floor (535 = 555 - 20, the documented convention) is declared once in
+# The check-count floor (560 = 580 - 20, the documented convention) is declared once in
 # test/maui-platform-verify/Program.cs, next to the constants that count the executed suite's own
 # [verify] lines; this job reads the `[suite]` line the run prints (and cross-checks it against
 # `grep -c`) instead of repeating a literal, exactly like scripts/preflight.sh, so the local gate
@@ -40,7 +40,7 @@ on:
         description: 'maui-ohos commit SHA to compile (defaults to the pinned feature/openharmony tip)'
         required: false
         type: string
-        default: '07423dfe93007708bd280ca331347d4ffee5216c'
+        default: '549967f2f041c42cbd8bcb0acd22f802665dd74e'
   push:
     branches: [ master ]
   pull_request:
@@ -52,7 +52,13 @@ permissions:
 
 # Reproducible cross-repo compile: the MAUI slice is checked out at an exact commit, not the
 # mutable feature/openharmony branch, so a push to the fork cannot change what this gate compiles.
-# The default is the feature/openharmony tip: 07423dfe93 (MULTI-OVERLAY-FULL: LRU overlay-slot
+# The default is the feature/openharmony tip: 549967f2f0 (FIX-SLICERACE: a re-entrant connect
+# lock serializes Connect/ConnectTree against the shell-thread surface/frame callbacks and the
+# app host serializes every tree-touching entry behind a ready latch; L6 96034e2acf adds the
+# Jpeg screenshot format/quality host export and the Window.Title foreground heartbeat;
+# SAMPLE-FIX 1926cf68b6 accepts the pack-staged HybridWebView bootstrap script; LEGACY
+# 7064bb8c1c mirrors the Core Toolbar icons/order/priority and draws/hit-tests the shell bar),
+# on top of 07423dfe93 (MULTI-OVERLAY-FULL: LRU overlay-slot
 # reuse behind the IOpenHarmonyOverlaySlotOwner preempt/restore contract, per-slot hybrid serve/
 # message/invoke channels with slot-tagged request ids, activation-ordered z-order and the
 # payload-in-libs appDir probe; MULTI-OVL 75c410e798 below adds one ArkWeb overlay slot per web
@@ -106,15 +112,14 @@ permissions:
 # spans 043e6468, the T10 modal accessibility overlay c56bf0fa, the T1 InputView mapping dcc7eaac
 # and the T2 CookieContainer sync 8241f1b3, all on top of the W-series webview wiring d6325990,
 # the SEC-SCAN-3 S3-DL3 dot-dot route rejection and the HUKS/deep-link hardening. The suite pins
-# 563 checks / floor 543 (the N1 host multi-pointer, W10 AOT-entry and FIX-BACKSIZE Back-press
-# lines live in this repository's harness and hosting bridge, not in the pinned slice) and the
-# full run is green at this compiled tree (local verification: 563/563, floor 543, both perf
-# lines within budget);
-# advance the pin deliberately
-# and refresh this comment when the harness pins or the tip move (workflow_dispatch can compile
-# any commit).
+# 578 checks / total 580 / floor 560 (the N1 host multi-pointer, W10 AOT-entry, FIX-BACKSIZE
+# Back-press, MULTI-OVERLAY-FULL, L6/LEGACY and FIX-SLICERACE lines live in this repository's
+# harness and hosting bridge, not in the pinned slice) and the full run is green at this compiled
+# tree (local verification: 578/580, floor 560, both perf lines within budget); advance the pin
+# deliberately and refresh this comment when the harness pins or the tip move (workflow_dispatch
+# can compile any commit).
 env:
-  MAUI_OHOS_REF: ${{ github.event.inputs.maui_ohos_ref || '07423dfe93007708bd280ca331347d4ffee5216c' }}
+  MAUI_OHOS_REF: ${{ github.event.inputs.maui_ohos_ref || '549967f2f041c42cbd8bcb0acd22f802665dd74e' }}
   # setup-dotnet installs the requested 11.0.x preview into DOTNET_INSTALL_DIR; on Linux that
   # defaults to /usr/share/dotnet, which a per-user cache cannot persist. Point it at ~/.dotnet
   # (the action resolves the ~ prefix against $HOME) so the cache step below actually avoids the

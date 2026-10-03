@@ -42,7 +42,7 @@ on:
         description: 'maui-ohos commit SHA to compile (defaults to the pinned feature/openharmony tip)'
         required: false
         type: string
-        default: '07423dfe93007708bd280ca331347d4ffee5216c'
+        default: '549967f2f041c42cbd8bcb0acd22f802665dd74e'
 
 # Least privilege: the job only reads this repository and the public springmin/maui-ohos fork;
 # no step pushes anywhere.
@@ -51,7 +51,13 @@ permissions:
 
 # Reproducible cross-repo compile: the MAUI slice is checked out at an exact commit, not the
 # mutable feature/openharmony branch, so a push to the fork cannot change what this gate compiles.
-# The default is the feature/openharmony tip: 07423dfe93 (MULTI-OVERLAY-FULL: LRU overlay-slot
+# The default is the feature/openharmony tip: 549967f2f0 (FIX-SLICERACE: a re-entrant connect
+# lock serializes Connect/ConnectTree against the shell-thread surface/frame callbacks and the
+# app host serializes every tree-touching entry behind a ready latch; L6 96034e2acf adds the
+# Jpeg screenshot format/quality host export and the Window.Title foreground heartbeat;
+# SAMPLE-FIX 1926cf68b6 accepts the pack-staged HybridWebView bootstrap script; LEGACY
+# 7064bb8c1c mirrors the Core Toolbar icons/order/priority and draws/hit-tests the shell bar),
+# on top of 07423dfe93 (MULTI-OVERLAY-FULL: LRU overlay-slot
 # reuse behind the IOpenHarmonyOverlaySlotOwner preempt/restore contract, per-slot hybrid
 # channels and slot-tagged invoke ids, activation-ordered z-order and the payload-in-libs appDir
 # probe; MULTI-OVL 75c410e798 below adds one ArkWeb overlay slot per web handler), on top of
@@ -100,10 +106,11 @@ permissions:
 # + T2 WebView CookieContainer sync 8241f1b3, on top of the W-series webview wiring d6325990 and
 # the SEC-SCAN-3 S3-DL3 dot-dot deep-link rejection, on top of the P2c deep-link routing, P2b-IMG,
 # P1b-LIST and P1a-ANIM batches).
-# The interaction harness pins 563 checks / floor 543; advance the pin in lockstep with the
-# interaction gate and change it deliberately (workflow_dispatch can compile any other commit SHA).
+# The interaction harness pins 578 checks / total 580 / floor 560; advance the pin in lockstep
+# with the interaction gate and change it deliberately (workflow_dispatch can compile any other
+# commit SHA).
 env:
-  MAUI_OHOS_REF: ${{ github.event.inputs.maui_ohos_ref || '07423dfe93007708bd280ca331347d4ffee5216c' }}
+  MAUI_OHOS_REF: ${{ github.event.inputs.maui_ohos_ref || '549967f2f041c42cbd8bcb0acd22f802665dd74e' }}
   # Same as the interaction gate: keep the setup-dotnet preview SDK in a cacheable per-user path
   # instead of the runner's /usr/share/dotnet; a newer 11.0.x preview is still downloaded (the
   # action re-resolves the channel), the cache only skips the ~200 MB download when it moved.

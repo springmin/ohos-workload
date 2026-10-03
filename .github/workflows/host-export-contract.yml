@@ -22,7 +22,7 @@ on:
         description: 'maui-ohos commit SHA to cross-check (defaults to the pinned slice tip)'
         required: false
         type: string
-        default: '07423dfe93007708bd280ca331347d4ffee5216c'
+        default: '549967f2f041c42cbd8bcb0acd22f802665dd74e'
   push:
     branches: [ master ]
   pull_request:
@@ -32,7 +32,12 @@ permissions:
 
 # Reproducible cross-repo check: the slice is checked out at an exact commit, not the mutable
 # feature/openharmony branch, so a push to the fork cannot change what this gate verifies.
-# Current tip: 07423dfe93 (MULTI-OVERLAY-FULL/MULTI-OVL: the LRU overlay slots, per-slot hybrid
+# Current tip: 549967f2f0 (FIX-SLICERACE/L6/SAMPLE-FIX/LEGACY: only L6 96034e2acf moves the
+# contract - it adds the Jpeg screenshot format/quality entry `ohos_host_screenshot_format` (host
+# definition + header, host-exports.txt 151 entries, the shell image packer call and the managed
+# DllImport); the race serialization, the pack-staged HybridWebView bootstrap and the Core
+# Toolbar mirror are managed/shell-side, so the export set is 151/151) on 07423dfe93
+# (MULTI-OVERLAY-FULL/MULTI-OVL: the LRU overlay slots, per-slot hybrid
 # channels/invoke ids, activation z-order and payload-in-libs appDir changes are all
 # managed/shell-side, so the export set does not move; 150/150) on 15d81f31b1 (FIX-JSCALL: root
 # the BlazorWebView IPC's JSCallResultType/JSCallType/
@@ -79,11 +84,14 @@ permissions:
 # the T16/N6 bridge additions and the T20 media bridge (ohos_host_media_request /
 # ohos_host_media_register_result / ohos_host_media_register_event) and the FIX-BACKSIZE
 # back-press hook (ohos_host_register_back_pressed, consumed by this repository's hosting
-# bridge) and the FIX-JSCALL AOT-roots fix plus the MULTI-OVERLAY-FULL/MULTI-OVL slice changes
-# (managed/shell-only; no new DllImport) the host export contract stays 150/150).
+# bridge), the FIX-JSCALL AOT-roots fix, the MULTI-OVERLAY-FULL/MULTI-OVL slice changes, the
+# FIX-SLICERACE serialization and the SAMPLE-FIX pack-staged bootstrap (managed/shell-only; no
+# new DllImport) keep the contract at 150/150 until L6 adds `ohos_host_screenshot_format` (the
+# screenshot sink's format/quality request) as the 151st entry, so the host export contract is
+# 151/151).
 # Advance the pin deliberately, in lockstep with the interaction/pixel gates.
 env:
-  MAUI_OHOS_REF: ${{ github.event.inputs.maui_ohos_ref || '07423dfe93007708bd280ca331347d4ffee5216c' }}
+  MAUI_OHOS_REF: ${{ github.event.inputs.maui_ohos_ref || '549967f2f041c42cbd8bcb0acd22f802665dd74e' }}
 
 jobs:
   contract:
