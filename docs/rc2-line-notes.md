@@ -45,6 +45,8 @@ RID `openharmony-arm64`；workload `openharmony 1.0.0-preview.28/11.0.100-rc.2`�
    纯应用 publish 不再需要 `-p:DisableTransitiveFrameworkReferenceDownloads=true`。
 4. **设备侧下载**：直连 GitHub release 资产在部分网络会限速/挂起；优先用
    `https://gh-proxy.com/<url>`（安装器与 CI env 已内置镜像回退）。
+   （通用约定（核验用 API/`gh release download`、CDN/proxy 按原 URL 缓存 ✗）见 sdk
+   `documentation/ohos-install/README.md` 的"下载提速 / 核验约定"块 ✓。）
 5. **构建参数**：rc.2 线派发 CI 时 buildid 会自动取上游 flight revision
    （`20260901.112`；workflow 已按 `runtime_ref` 判定，可省略显式输入）。
 6. **设备上 MSBuild 的平台探测缺陷（影响设备本地 AOT/selfsign/打包）**：设备上
