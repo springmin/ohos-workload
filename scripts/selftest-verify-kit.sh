@@ -10,9 +10,9 @@
 #   S0b blazorperms the embedded BLAZOR_SOURCE_PERMS (the 2c source-side permission
 #                 expectation) matches test/hello-blazorwasm/arkts-host module.json5
 #   S1 good       a kit that satisfies the current contract -> exit 0, KIT OK, every 2b
-#                 assertion passes (index 1588 B, abc 356140 B / PANDA 13.0.1.0, 14 .so,
-#                 payload-in-libs marker (assembly + 19 entries + zip sha), DT_NEEDED=5,
-#                 denylist 0, dotnet.zip 254 entries / 0 .so); S1b reruns the same kit to
+#                 assertion passes (index 1588 B, abc 356140 B / PANDA 13.0.1.0, 15 .so,
+#                 payload-in-libs marker (assembly + 20 entries + zip sha), DT_NEEDED=5,
+#                 denylist 0, dotnet.zip 257 entries / 0 .so); S1b reruns the same kit to
 #                 prove the check leaves no state behind
 #   S2 noindex    one hap loses resources.index -> exit 1, FAIL names it and FIX-DEV3 0f26b74
 #   S3 emptyindex resources.index is 0 B -> exit 1 ("0 B 空文件")
@@ -21,7 +21,7 @@
 #                 abc 24324 B (the headless shell) stays accepted without a warning
 #   S6 abcver     abc PANDA version 12.9.9.9 -> exit 1
 #   S7 libs       13 .so -> exit 1 (a runtime ELF is missing); 15 .so -> WARN only
-#   S8 dotnetzip  dotnet.zip carrying a .so -> exit 1; 254 entries -> WARN only
+#   S8 dotnetzip  dotnet.zip carrying a .so -> exit 1; 257 entries -> WARN only
 #   S9 needed     host DT_NEEDED with libhilog_ndk.z.so -> exit 1 (whitelist)
 #   S10 denylist  host with an undefined OH_LOG_Print -> exit 1 (nm -D -u denylist)
 #   S11 hostfxr   host DT_NEEDED with libhostfxr.so -> exit 1 (dedicated message)
@@ -150,7 +150,8 @@ BLAZOR_MODULE = {
             "minAPIVersion": 50002014, "targetAPIVersion": 60101024, "apiReleaseType": "Release"},
     "module": {"name": "entry", "type": "entry", "requestPermissions": []},
 }
-# The 14 libs of a shipped hap: host + libc++ + the 12 runtime ELF.
+# The 15 libs of a shipped hap: host + libc++ + the 12 runtime ELF + createdump.so
+# (the DEVCOMPAT-DEFAULT `.so` rewrite of the extensionless createdump).
 LIBS = [
     "libopenharmonyhost.so",
     "libcoreclr.so", "libclrgc.so", "libclrgcexp.so", "libclrjit.so",
@@ -158,6 +159,7 @@ LIBS = [
     "libSystem.Native.so", "libSystem.Globalization.Native.so",
     "libSystem.IO.Compression.Native.so", "libSystem.Security.Cryptography.Native.OpenSsl.so",
     "libc++_shared.so",
+    "createdump.so",
 ]
 NEEDED = ["libace_napi.z.so", "libace_ndk.z.so", "libnative_drawing.so",
           "libc++_shared.so", "libc.so"]
@@ -169,10 +171,10 @@ MODULE = {
 ABC_SIZE = 356140
 ABC_VERSION = (13, 0, 1, 0)
 INDEX_SIZE = 1588
-DOTNET_ENTRIES = 254
+DOTNET_ENTRIES = 257
 # Payload-in-libs fixture: the marker plus the small synthetic payload the selftest stages in
 # libs/arm64-v8a/. The marker's entry count describes the real libs file count (marker
-# excluded): the 14 .so plus the payload files below.
+# excluded): the 15 .so plus the payload files below.
 PAYLOAD_MARKER = "libs/arm64-v8a/.dotnet-payload.json"
 PAYLOAD_ASSEMBLY = "hello-maui-app.dll"
 PAYLOAD_FILES = [
@@ -579,12 +581,12 @@ assert_contains "S1 KIT OK" "KIT OK" "$LOG_FILE"
 assert_contains "S1 all 2b assertions pass" "全部关键断言通过" "$LOG_FILE"
 assert_contains "S1 index 1588 B listed" "resources.index 1588 B（≤2560 B 合理范围）" "$LOG_FILE"
 assert_contains "S1 abc 356140 / PANDA 13.0.1.0" "ets/modules.abc 356140 B，PANDA 头版本 13.0.1.0" "$LOG_FILE"
-assert_contains "S1 libs .so=14" "libs/arm64-v8a/: 14 个 .so" "$LOG_FILE"
-assert_contains "S1 payload-in-libs marker staged + counted" "payload-in-libs: assembly=hello-maui-app.dll，条目=19（实测 19）" "$LOG_FILE"
-assert_contains "S1 payload-in-libs marker zip bound" "zip=254/" "$LOG_FILE"
+assert_contains "S1 libs .so=15" "libs/arm64-v8a/: 15 个 .so" "$LOG_FILE"
+assert_contains "S1 payload-in-libs marker staged + counted" "payload-in-libs: assembly=hello-maui-app.dll，条目=20（实测 20）" "$LOG_FILE"
+assert_contains "S1 payload-in-libs marker zip bound" "zip=257/" "$LOG_FILE"
 assert_contains "S1 host DT_NEEDED=5" "DT_NEEDED=5" "$LOG_FILE"
 assert_contains "S1 host denylist 0" "denylist 命中=0" "$LOG_FILE"
-assert_contains "S1 dotnet.zip 254 entries / 0 .so" "dotnet.zip entries=254，.so=0" "$LOG_FILE"
+assert_contains "S1 dotnet.zip 257 entries / 0 .so" "dotnet.zip entries=257，.so=0" "$LOG_FILE"
 assert_contains "S1 Blazor component section asserts the extra hap" "2c/4 Blazor WASM 组件断言（hello-blazorwasm-host-unsigned.hap）" "$LOG_FILE"
 assert_contains "S1 Blazor component assertions pass" "Blazor 组件断言通过" "$LOG_FILE"
 assert_contains "S1 dotnet.js is byte-equal to the fingerprinted asset" "dotnet.js == dotnet.vqrq26m922.js" "$LOG_FILE"
@@ -670,12 +672,12 @@ K="$(new_kit kit-libs13)"
 python3 "$WORK/fixture.py" patch "$K" libs-count 13
 run_verify "$K"
 assert_rc 1 "$RC" "S7 13 libs fail (a runtime ELF is missing)"
-assert_contains "S7 names the missing count" "只有 13 个 .so（期望 14）" "$LOG_FILE"
-K="$(new_kit kit-libs15)"
-python3 "$WORK/fixture.py" patch "$K" libs-count 15
+assert_contains "S7 names the missing count" "只有 13 个 .so（期望 15）" "$LOG_FILE"
+K="$(new_kit kit-libs16)"
+python3 "$WORK/fixture.py" patch "$K" libs-count 16
 run_verify "$K"
-assert_rc 0 "$RC" "S7 15 libs still KIT OK"
-assert_contains "S7 warns about the extra lib" "有 15 个 .so（期望 14）" "$LOG_FILE"
+assert_rc 0 "$RC" "S7 16 libs still KIT OK"
+assert_contains "S7 warns about the extra lib" "有 16 个 .so（期望 15）" "$LOG_FILE"
 
 # ---- S8: dotnet.zip must not carry unsigned ELF copies -------------------------------
 section "S8 dotnet.zip: a .so FAILs, an entry-count drift WARNs"
@@ -688,7 +690,7 @@ K="$(new_kit kit-zip255)"
 python3 "$WORK/fixture.py" patch "$K" zip-entries 255
 run_verify "$K"
 assert_rc 0 "$RC" "S8 entry-count drift still KIT OK"
-assert_contains "S8 warns about the entry count" "dotnet.zip 条目 255 != 期望 254" "$LOG_FILE"
+assert_contains "S8 warns about the entry count" "dotnet.zip 条目 255 != 期望 257" "$LOG_FILE"
 
 # ---- S9/S10/S11: the host dependency discipline --------------------------------------
 section "S9 host DT_NEEDED outside the whitelist -> FAIL"
