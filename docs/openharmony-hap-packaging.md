@@ -192,6 +192,47 @@ Failures never fail the launch; the tokens are collected by `scripts/tester-run.
 probe runs once per process, so a bridged launch that adopts a later context cannot append a
 second line.
 
+### JITFORT unlock and the JIT globalization fallback (WX-HOST-PRCTL, 2026-10-03)
+
+The app domain starts with XPM/JITFORT fortification on: anonymous `mmap(RWX)` and anonymous
+`mmap(RW)->mprotect(RX)` are refused with `EINVAL`, so CoreCLR cannot allocate executable memory
+and CoreLib load fails with `0x800701E7` on both the JIT and the interpreter routes. The host
+issues `prctl(0x6a6974, 0, 0)` ("JITFORT off"; the NDK `sys/prctl.h` has no `PR_SET_JITFORT`, so
+the literal is defined in `openharmony_host.c`) inside `OhosHostApplyExecMemoryPolicy`, before
+hostfxr/coreclr can initialize on either launch path:
+
+- Default on; `DOTNET_OHOS_NO_JITFORT=1` skips it and a failure is never fatal - the launch falls
+  through to the existing `xwe=0` route. The one-shot status line
+  `OHOS_DOTNET jitfort: rc=<rc> errno=<errno> state=<off|fortified>` goes to hilog/stderr and
+  `<filesDir>/dotnet-status.txt`. The exec-memory probe runs after it, so `1=OK 2=OK` witnesses
+  the unlocked sandbox.
+- An explicit `runtime-mode=aot` payload skips the call (`jitfort: skipped runtime-mode=aot`):
+  the NativeAOT route allocates no executable memory and the platform state stays untouched.
+
+The platform contract and the A/B (`jitfort(0,1)` -> `1=22` + CoreLib failure; `jitfort(0,0)` ->
+`1=OK` + CoreLib pass) are recorded in `runtime-ohos/docs/plans/2026-10-03-ohos-wx-probe-matrix.md`;
+the unlock needs no platform change or ACL. It also complements the W^X selection above: with
+JITFORT off, `EnableWriteXorExecute=0` (anonymous RWX) is the working allocator shape.
+
+JIT/interp additionally need globalization: this image ships no system ICU and CoreCLR fail-fasts
+in `GlobalizationMode+Settings..cctor` ("Couldn't find a valid ICU package") right after managed
+startup, before the first frame. The host's one-shot globalization policy (same call site, same
+launch paths) probes `dlopen("libicuuc.so")` and, when it is absent, exports
+`DOTNET_SYSTEM_GLOBALIZATION_INVARIANT=1` for the runtime that starts next; a device that ships
+ICU keeps full globalization. `DOTNET_OHOS_ICU=0|1` overrides the probe.
+`OHOS_DOTNET globalization: invariant=<0|1> icu=<0|1> source=<probe|env>` records the decision.
+The interpreter's existing `DOTNET_UseGCWriteBarrierCopy=0` selection for `InterpMode=3` stays as
+is; the JIT keeps the arm64 default (the unlock removes the RWX refusal that motivated the
+workaround).
+
+Device round (host built from this tree, kit HAPs repacked and self-signed): the JIT HAP logs
+`jitfort rc=0`, probe `1=OK 2=OK`, passes CoreLib, starts MAUI and presents (`canvas presented`,
+UI visible); a pre-existing MAUI slice handler race (`Handler is already being set elsewhere`)
+still fail-fasts some JIT instances. The interpreter HAP no longer fails with `0x800701E7`; it
+now SIGSEGVs (NULL) inside `coreclr_initialize` and has not reached a first frame. The AOT HAP
+logs `jitfort: skipped runtime-mode=aot` and presents as before. Evidence: the `wx-prctl/`
+device scratch and `runtime-ohos/docs/plans/2026-10-03-ohos-jitfort-enable.md`.
+
 ## Runtime mode switch
 
 `-p:OpenHarmonyRuntimeMode=jit|aot|interp` (default `jit`) is the single packaging switch that

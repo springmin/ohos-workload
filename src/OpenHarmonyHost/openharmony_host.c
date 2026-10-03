@@ -52,6 +52,7 @@
 #include <hilog/log.h>
 #include <pthread.h>
 #include <sys/mman.h>
+#include <sys/prctl.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -939,8 +940,127 @@ static void OhosHostProbeExecMemoryOnce(const char* status_dir) {
     OhosHostAppendStatusLine(status_dir, line);
 }
 
-// Applies the W^X decision and runs the probe. Called before hostfxr can start coreclr on both
-// launch paths; the probe itself is one-shot, so a second call only re-reads xwe.txt (the
+// ---------------------------------------------------------------------------
+// JITFORT unlock (WX-HOST-PRCTL, 2026-10-03)
+// ---------------------------------------------------------------------------
+// The OpenHarmony app domain starts with XPM/JITFORT fortification on: anonymous
+// writable+executable pages are refused with EINVAL, so CoreCLR cannot allocate the executable
+// memory its JIT, its interpreter or the mutable GC write-barrier copy needs, and CoreLib load
+// fails with 0x800701E7. prctl(PR_SET_JITFORT=0x6a6974, 0, 0) turns the fortification off for
+// the calling process (and, measured on the HAD-W32 image, for the app's later processes);
+// arg3=1 turns it back on. The WX-PROBE matrix (runtime-ohos
+// docs/plans/2026-10-03-ohos-wx-probe-matrix.md) established the A/B: fortified -> EINVAL and
+// CoreLib failure; off -> anonymous RWX/RX works and CoreLib passes. The call has to happen
+// before coreclr is initialized; both launch paths reach it through
+// OhosHostApplyExecMemoryPolicy below, ahead of hostfxr.
+//
+// Default on. DOTNET_OHOS_NO_JITFORT=1 skips it (escape hatch for an image with a different
+// prctl contract or a denial list). Failure is not fatal by design: the launch falls through to
+// the existing xwe=0 route unchanged and the one status line records the return value and errno,
+// so the device round can tell "unlock worked" from "platform refused". An explicit
+// runtime-mode=aot payload skips the call entirely: the NativeAOT route allocates no executable
+// memory and must not depend on (or alter) the platform state.
+#define OHOS_PR_SET_JITFORT 0x6a6974  // literal: the NDK sys/prctl.h has no PR_SET_JITFORT
+#define OHOS_JITFORT_LINE_MAX 160
+
+static int g_jitfort_done = 0;
+
+// One-shot: emits the status line (hilog + stderr + the polled status file) and returns 1 when
+// the process now runs with JITFORT off, 0 when the caller must assume the fortified state
+// (aot skip, escape hatch, failed prctl). `status_dir` may be NULL / `have_status_dir` 0 when no
+// writable sandbox directory was resolved; the log line still goes out.
+static int OhosHostDisableJitFort(const char* caller, const char* status_dir, int have_status_dir,
+                                  int aot_route) {
+    if (g_jitfort_done) {
+        return 0;
+    }
+    g_jitfort_done = 1;
+    const char* name = caller != NULL ? caller : "(null)";
+    char line[OHOS_JITFORT_LINE_MAX];
+    if (aot_route) {
+        snprintf(line, sizeof(line), "OHOS_DOTNET jitfort: skipped runtime-mode=aot");
+        OH_LOG_INFO(LOG_APP, "[openharmony-host] %{public}s: %{public}s", name, line);
+        fprintf(stderr, "[openharmony-host] %s: %s\n", name, line);
+        if (have_status_dir) {
+            OhosHostAppendStatusLine(status_dir, line);
+        }
+        return 0;
+    }
+    const char* skip = getenv("DOTNET_OHOS_NO_JITFORT");
+    if (skip != NULL && skip[0] == '1') {
+        snprintf(line, sizeof(line), "OHOS_DOTNET jitfort: skipped DOTNET_OHOS_NO_JITFORT=1");
+        OH_LOG_INFO(LOG_APP, "[openharmony-host] %{public}s: %{public}s", name, line);
+        fprintf(stderr, "[openharmony-host] %s: %s\n", name, line);
+        if (have_status_dir) {
+            OhosHostAppendStatusLine(status_dir, line);
+        }
+        return 0;
+    }
+    errno = 0;
+    int rc = prctl(OHOS_PR_SET_JITFORT, 0, 0);
+    int error = rc == 0 ? 0 : errno;
+    snprintf(line, sizeof(line), "OHOS_DOTNET jitfort: rc=%d errno=%d state=%s", rc, error,
+             rc == 0 ? "off" : "fortified");
+    OH_LOG_INFO(LOG_APP, "[openharmony-host] %{public}s: jitfort rc=%{public}d errno=%{public}d",
+                name, rc, error);
+    fprintf(stderr, "[openharmony-host] %s: jitfort rc=%d errno=%d\n", name, rc, error);
+    if (have_status_dir) {
+        OhosHostAppendStatusLine(status_dir, line);
+    }
+    return rc == 0;
+}
+
+// One-shot globalization policy for the JIT/interp route. This image ships no system ICU and
+// the CoreCLR runtime fail-fasts in GlobalizationMode..cctor ("Couldn't find a valid ICU
+// package installed on the system") right after managed startup, before the first frame; the
+// NativeAOT route is built invariant and never probes ICU. Probe for a loadable libicuuc.so and,
+// when absent, set DOTNET_SYSTEM_GLOBALIZATION_INVARIANT=1 for the runtime that starts next; a
+// device that ships ICU keeps full globalization. DOTNET_OHOS_ICU=0 forces invariant, =1 forces
+// the ICU path (escape hatches for the device round). Never fatal; logs one line (hilog + stderr
+// + status file): "OHOS_DOTNET globalization: invariant=<0|1> icu=<0|1> source=<probe|env>".
+static int g_globalization_done = 0;
+
+static void OhosHostApplyGlobalizationPolicy(const char* caller, const char* status_dir,
+                                             int have_status_dir) {
+    if (g_globalization_done) {
+        return;
+    }
+    g_globalization_done = 1;
+    const char* name = caller != NULL ? caller : "(null)";
+    const char* source = "probe";
+    int have_icu;
+    const char* override_value = getenv("DOTNET_OHOS_ICU");
+    if (override_value != NULL && override_value[0] == '1') {
+        have_icu = 1;
+        source = "env";
+    } else if (override_value != NULL && override_value[0] == '0') {
+        have_icu = 0;
+        source = "env";
+    } else {
+        void* icu = dlopen("libicuuc.so", RTLD_NOW | RTLD_LOCAL);
+        have_icu = icu != NULL;
+        if (icu != NULL) {
+            dlclose(icu);
+        }
+    }
+    if (!have_icu) {
+        setenv("DOTNET_SYSTEM_GLOBALIZATION_INVARIANT", "1", 1);
+    }
+    char line[OHOS_JITFORT_LINE_MAX];
+    snprintf(line, sizeof(line), "OHOS_DOTNET globalization: invariant=%d icu=%d source=%s",
+             have_icu ? 0 : 1, have_icu, source);
+    OH_LOG_INFO(LOG_APP, "[openharmony-host] %{public}s: globalization invariant=%{public}d icu=%{public}d source=%{public}s",
+                name, have_icu ? 0 : 1, have_icu, source);
+    fprintf(stderr, "[openharmony-host] %s: globalization invariant=%d icu=%d source=%s\n", name,
+            have_icu ? 0 : 1, have_icu, source);
+    if (have_status_dir) {
+        OhosHostAppendStatusLine(status_dir, line);
+    }
+}
+
+// Applies the JITFORT unlock, the xwe decision and the exec-memory probe. Called before hostfxr
+// can start coreclr on both launch paths; the probe and the unlock are one-shot, so a second
+// call only re-reads xwe.txt (the
 // pending context adopted during start_app can be the first source of filesDir). The same
 // directory's interp.txt (leading digit) selects DOTNET_InterpMode for the runtime that starts
 // next: 3 = the pure interpreter of the published ohos-interpreter-pack. No file leaves the
@@ -1010,6 +1130,17 @@ static void OhosHostApplyExecMemoryPolicy(const char* caller, const char* app_di
     OH_LOG_INFO(LOG_APP, "[openharmony-host] %{public}s: runtime-mode=%{public}s source=%{public}s",
                 name, effective_mode, mode_source);
     fprintf(stderr, "[openharmony-host] %s: runtime-mode=%s source=%s\n", name, effective_mode, mode_source);
+
+    // JITFORT unlock (WX-HOST-PRCTL): before coreclr can initialize and before the probe below,
+    // so the probe line witnesses the unlocked sandbox (1/2 = OK). An explicit aot marker keeps
+    // the platform state untouched; see the block comment above OhosHostDisableJitFort.
+    int aot_route = strcmp(effective_mode, "aot") == 0;
+    (void)OhosHostDisableJitFort(name, have_dir ? dir : NULL, have_dir, aot_route);
+    // ICU fallback for the same JIT/interp routes (see the helper above); an explicit aot marker
+    // has nothing to configure.
+    if (!aot_route) {
+        OhosHostApplyGlobalizationPolicy(name, have_dir ? dir : NULL, have_dir);
+    }
 
     OhosHostProbeExecMemoryOnce(have_dir ? dir : NULL);
 }
