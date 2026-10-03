@@ -22,7 +22,7 @@ on:
         description: 'maui-ohos commit SHA to cross-check (defaults to the pinned slice tip)'
         required: false
         type: string
-        default: '549967f2f041c42cbd8bcb0acd22f802665dd74e'
+        default: '3feb347414f612aa399abe767c06df4d6d431a56'
   push:
     branches: [ master ]
   pull_request:
@@ -32,7 +32,10 @@ permissions:
 
 # Reproducible cross-repo check: the slice is checked out at an exact commit, not the mutable
 # feature/openharmony branch, so a push to the fork cannot change what this gate verifies.
-# Current tip: 549967f2f0 (FIX-SLICERACE/L6/SAMPLE-FIX/LEGACY: only L6 96034e2acf moves the
+# Current tip: 3feb347414 (SLOTS-DYNAMIC: the dynamic overlay slot pool, the shell
+# ensure/destroy slot lifecycle and the overlay-capacity event routing are managed/shell-side and
+# add no DllImport, so the export set stays 151/151) on 549967f2f0 (FIX-SLICERACE/L6/SAMPLE-FIX/
+# LEGACY: only L6 96034e2acf moves the
 # contract - it adds the Jpeg screenshot format/quality entry `ohos_host_screenshot_format` (host
 # definition + header, host-exports.txt 151 entries, the shell image packer call and the managed
 # DllImport); the race serialization, the pack-staged HybridWebView bootstrap and the Core
@@ -91,7 +94,7 @@ permissions:
 # 151/151).
 # Advance the pin deliberately, in lockstep with the interaction/pixel gates.
 env:
-  MAUI_OHOS_REF: ${{ github.event.inputs.maui_ohos_ref || '549967f2f041c42cbd8bcb0acd22f802665dd74e' }}
+  MAUI_OHOS_REF: ${{ github.event.inputs.maui_ohos_ref || '3feb347414f612aa399abe767c06df4d6d431a56' }}
 
 jobs:
   contract:
