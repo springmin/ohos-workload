@@ -12,7 +12,7 @@ using Microsoft.Maui.Platform;
 // after the fuzz tail) instead of letting every caller repeat its own threshold constant.
 VerifyLineCountingWriter verifyStdout = new(Console.Out);
 Console.SetOut(verifyStdout);
-const int verifyCheckTotal = 586;                     // +6 SLOTS-DYNAMIC dynamic slot growth (ensure/destroy commands), capacity downgrade/event, configurable 2/4 limits, shell lazy/defer pins, 3rd-overlay sample                     // documented full [verify] line count (+3 FIX-SLICERACE concurrent connect/host storm/ pins, +5 L6 screenshot Jpeg format/quality capture/fallback/helper + title heartbeat behavior/source, +6 LEGACY toolbar primary/overflow/icon/events/shell/source, +3 SAMPLE-FIX hybrid bootstrap pack staging / read-only payload handler / stock-script demo, +4 MULTI-OVERLAY-FULL LRU pool/invoke slot codec/per-slot hybrid shell/slice owner wiring, +4 MULTI-OVL slot pool/wire codec/two-overlay shell/slice wiring, +4 FIX-BACKSIZE Back-press forwarding/drawer drill/ shell drawer/BlazorWebView desired size, +4 FIX-WVP overlay px->vp/degenerate-frame/hybrid-overlay arbitration/suspend-restore (shell+slice), +2 FIX-DISMISS flyout drawer dismiss under the device display conditions, +4 FIX-HOME home page arrange/draw (NavigationPage-in-TabbedPage descent), +4 MS-MODE runtime mode switch, +10 P2c-DEEPLINK, +4 P2b-IMG, +16 P1b-LIST, +10 P1a-ANIM, +2 SEC3 storage/deep-link pins, +5 W-series WebView wiring, +3 T1 InputView mapping, +4 T2 WebView gaps, +4 T3 GraphicsView interaction, +7 T10 modal accessibility, +4 T4 Label formatted text, +4 T5 layout semantics, +6 T7 DatePicker calendar/min-max, +4 T9 window title bar, +4 T11 diagnostics overlay, +1 N2 empty ContentPage arrangement, +6 T8 TableView, +5 T8 uneven rows, +7 T6 RTL flow direction, +5 T22 MainThread bridge, +2 FIX-TABBED tabbed CurrentPage, +4 T13 group footer view/N3 picker IsOpen, +5 T21 system font scale, +3 T21 font scale source wiring, +2 A11Y-TABBED tabbed accessibility, +3 N1 host multi-pointer, +5 T12 CarouselView group slides, +7 T14 rich shell flyout, +10 T14 flyout leftovers (MenuItemTemplate/FlyoutContent/AsMultipleItems), +2 FIX-SHELL shell CurrentPage, +2 A11Y-SHELL shell accessibility, +7 T15 rich Shell.TitleView, +8 T16 structured menus, +3 N4 TitleBar accessibility row, +3 T18 Essentials Map, +4 N5 overlay passthrough suppression, +5 N6 window decorations, +4 T20 media bridge, +3 B2 wasm site in a MAUI WebView, +2 W10 NativeAOT managed entry (host libs-dir resolution + shell AOT payload probe), +1 FIX-JSCALL Blazor IPC enum/struct AOT roots (JSCallResultType/JSCallType/NavigationOptions in the slice context + handler static-ctor touch + stub click-probe removed))
+const int verifyCheckTotal = 589;                     // +3 AUTODISCONNECT layout-removal detach (dynamic slot destroy + claim release + handler kept) / re-add rebuild (ensure + registration replay on the reclaimed slot) / slice watcher-and-owner wiring pins                     // +6 SLOTS-DYNAMIC dynamic slot growth (ensure/destroy commands), capacity downgrade/event, configurable 2/4 limits, shell lazy/defer pins, 3rd-overlay sample                     // documented full [verify] line count (+3 FIX-SLICERACE concurrent connect/host storm/ pins, +5 L6 screenshot Jpeg format/quality capture/fallback/helper + title heartbeat behavior/source, +6 LEGACY toolbar primary/overflow/icon/events/shell/source, +3 SAMPLE-FIX hybrid bootstrap pack staging / read-only payload handler / stock-script demo, +4 MULTI-OVERLAY-FULL LRU pool/invoke slot codec/per-slot hybrid shell/slice owner wiring, +4 MULTI-OVL slot pool/wire codec/two-overlay shell/slice wiring, +4 FIX-BACKSIZE Back-press forwarding/drawer drill/ shell drawer/BlazorWebView desired size, +4 FIX-WVP overlay px->vp/degenerate-frame/hybrid-overlay arbitration/suspend-restore (shell+slice), +2 FIX-DISMISS flyout drawer dismiss under the device display conditions, +4 FIX-HOME home page arrange/draw (NavigationPage-in-TabbedPage descent), +4 MS-MODE runtime mode switch, +10 P2c-DEEPLINK, +4 P2b-IMG, +16 P1b-LIST, +10 P1a-ANIM, +2 SEC3 storage/deep-link pins, +5 W-series WebView wiring, +3 T1 InputView mapping, +4 T2 WebView gaps, +4 T3 GraphicsView interaction, +7 T10 modal accessibility, +4 T4 Label formatted text, +4 T5 layout semantics, +6 T7 DatePicker calendar/min-max, +4 T9 window title bar, +4 T11 diagnostics overlay, +1 N2 empty ContentPage arrangement, +6 T8 TableView, +5 T8 uneven rows, +7 T6 RTL flow direction, +5 T22 MainThread bridge, +2 FIX-TABBED tabbed CurrentPage, +4 T13 group footer view/N3 picker IsOpen, +5 T21 system font scale, +3 T21 font scale source wiring, +2 A11Y-TABBED tabbed accessibility, +3 N1 host multi-pointer, +5 T12 CarouselView group slides, +7 T14 rich shell flyout, +10 T14 flyout leftovers (MenuItemTemplate/FlyoutContent/AsMultipleItems), +2 FIX-SHELL shell CurrentPage, +2 A11Y-SHELL shell accessibility, +7 T15 rich Shell.TitleView, +8 T16 structured menus, +3 N4 TitleBar accessibility row, +3 T18 Essentials Map, +4 N5 overlay passthrough suppression, +5 N6 window decorations, +4 T20 media bridge, +3 B2 wasm site in a MAUI WebView, +2 W10 NativeAOT managed entry (host libs-dir resolution + shell AOT payload probe), +1 FIX-JSCALL Blazor IPC enum/struct AOT roots (JSCallResultType/JSCallType/NavigationOptions in the slice context + handler static-ctor touch + stub click-probe removed))
 const int verifyCheckFloor = verifyCheckTotal - 20;   // documented floor convention (total - 20)
 
 // A small image file for the Image handler.
@@ -4769,6 +4769,113 @@ if (!multiDynCapEvent)
     throw new InvalidOperationException("the SLOTS-DYNAMIC shell capacity event routing drifted");
 }
 
+// AUTODISCONNECT: MAUI keeps a removed element's handler connected, so a layout removal used to
+// leak the ArkWeb overlay (kit #44 self-check: removing web C only flipped the label, no "slot
+// destroy"). The slice watches the element tree's descendant add/remove events and drives the
+// owner detach/attach contract. Drill: a page + layout + hybrid claims a dynamic slot (2) behind
+// two fake hot owners; Clear() must release it through the shell ("destroy\n2"), re-Add() must
+// re-ensure it and replay the registration (a second "ensure\n2" plus a "hybrid" command carrying
+// slot 2), while the Element handler stays the same instance (MAUI semantics: a re-add reuses it).
+// Dual-mode: the CI pins the pre-AUTODISCONNECT slice, whose handlers do not have the
+// `_overlayDetached` seam; the drill then reports the legacy slice instead of failing (the pin is
+// advanced separately, and the working tree is the compiled slice under test here).
+FieldInfo? autoDisconnectDetachedField = typeof(OpenHarmonyHybridWebViewHandler)
+    .GetField("_overlayDetached", BindingFlags.NonPublic | BindingFlags.Instance);
+bool autoDisconnectSlice = autoDisconnectDetachedField is not null;
+bool autoDisconnectDetach = !autoDisconnectSlice;
+bool autoDisconnectRebuild = !autoDisconnectSlice;
+List<(string Op, string Arg)> autoDisconnectCommands = new();
+if (autoDisconnectSlice)
+{
+    FieldInfo autoDisconnectContextField = typeof(Microsoft.OpenHarmony.Hosting.OpenHarmonyBridge)
+        .GetField("s_context", BindingFlags.NonPublic | BindingFlags.Static)
+        ?? throw new InvalidOperationException("OpenHarmonyBridge.s_context was not found; the AUTODISCONNECT drill publishes an app dir for the replay");
+    Microsoft.OpenHarmony.Hosting.OpenHarmonyAppContext? autoDisconnectContextBefore =
+        (Microsoft.OpenHarmony.Hosting.OpenHarmonyAppContext?)autoDisconnectContextField.GetValue(null);
+    int autoDisconnectCapacityBefore = Microsoft.OpenHarmony.Hosting.OpenHarmonyOverlays.ShellCapacity;
+    Action<string, string?> autoDisconnectListener = (op, arg) => autoDisconnectCommands.Add((op, arg ?? string.Empty));
+    Microsoft.OpenHarmony.Hosting.OpenHarmonyBridge.WebCommandSent += autoDisconnectListener;
+    try
+    {
+        autoDisconnectContextField.SetValue(null, new Microsoft.OpenHarmony.Hosting.OpenHarmonyAppContext
+        {
+            AppDir = Directory.CreateDirectory(Path.Combine(Path.GetTempPath(), "verify-autodisconnect")).FullName,
+        });
+        multiOvlUsedField.SetValue(null, new bool[Microsoft.OpenHarmony.Hosting.OpenHarmonyOverlays.MaxOverlays]);
+        multiOvlOwnersField.SetValue(null, new object?[Microsoft.OpenHarmony.Hosting.OpenHarmonyOverlays.MaxOverlays]);
+        multiOvlLastUsedField.SetValue(null, new long[Microsoft.OpenHarmony.Hosting.OpenHarmonyOverlays.MaxOverlays]);
+        bool[] autoDisconnectCreated = new bool[Microsoft.OpenHarmony.Hosting.OpenHarmonyOverlays.MaxOverlays];
+        autoDisconnectCreated[0] = true;
+        autoDisconnectCreated[1] = true;
+        multiOvlCreatedField.SetValue(null, autoDisconnectCreated);
+        Microsoft.OpenHarmony.Hosting.OpenHarmonyOverlays.SetShellCapacity(Microsoft.OpenHarmony.Hosting.OpenHarmonyOverlays.MaxOverlays);
+        // The hot pair belongs to two background owners, so the hybrid (web C) lands on the
+        // dynamic slot 2 and its release must send the shell's "slot destroy".
+        _ = Microsoft.OpenHarmony.Hosting.OpenHarmonyOverlays.Acquire(new MultiOverlayFakeOwner("hotA"));
+        _ = Microsoft.OpenHarmony.Hosting.OpenHarmonyOverlays.Acquire(new MultiOverlayFakeOwner("hotB"));
+        var autoDisconnectLayout = new VerticalStackLayout();
+        var autoDisconnectHybrid = new HybridWebView { HeightRequest = 180, HybridRoot = "wwwroot", DefaultFile = "hybrid-c.html" };
+        autoDisconnectLayout.Add(autoDisconnectHybrid);
+        var autoDisconnectPage = new ContentPage { Content = autoDisconnectLayout };
+        OpenHarmonyHandlerConnector.ConnectTree(autoDisconnectPage);
+        var autoDisconnectHandler = (OpenHarmonyHybridWebViewHandler)autoDisconnectHybrid.Handler!;
+        bool autoDisconnectClaimed = autoDisconnectHandler.OverlaySlot == 2 &&
+            Microsoft.OpenHarmony.Hosting.OpenHarmonyOverlays.IsClaimedBy(2, autoDisconnectHandler) &&
+            autoDisconnectCommands.Contains(("slot", "ensure\n2")) &&
+            autoDisconnectCommands.Exists(command => command.Op == "hybrid" && command.Arg.Contains("\"slot\":2", StringComparison.Ordinal));
+        // Remove web C: release the claim, destroy the dynamic shell slot, keep the Element handler.
+        autoDisconnectLayout.Children.Clear();
+        autoDisconnectDetach = autoDisconnectClaimed &&
+            autoDisconnectHandler.OverlaySlot == -1 &&
+            !Microsoft.OpenHarmony.Hosting.OpenHarmonyOverlays.IsClaimed(2) &&
+            !Microsoft.OpenHarmony.Hosting.OpenHarmonyOverlays.IsCreated(2) &&
+            autoDisconnectCommands.Contains(("hide", "s2")) &&
+            autoDisconnectCommands.Contains(("slot", "destroy\n2")) &&
+            (bool)autoDisconnectDetachedField!.GetValue(autoDisconnectHandler)! &&
+            ReferenceEquals(autoDisconnectHybrid.Handler, autoDisconnectHandler);
+        // A detached control's late registration/property pass must not resurrect the overlay.
+        int autoDisconnectLateStart = autoDisconnectCommands.Count;
+        OpenHarmonyHybridWebViewHandler.MapHybridAssets(autoDisconnectHandler, autoDisconnectHybrid);
+        autoDisconnectDetach = autoDisconnectDetach &&
+            autoDisconnectCommands.Count == autoDisconnectLateStart &&
+            autoDisconnectHandler.OverlaySlot == -1 &&
+            !Microsoft.OpenHarmony.Hosting.OpenHarmonyOverlays.IsClaimed(2);
+        // Re-add web C: re-claim the destroyed dynamic slot and replay the registration there.
+        int autoDisconnectReplayStart = autoDisconnectCommands.Count;
+        autoDisconnectLayout.Add(autoDisconnectHybrid);
+        List<(string Op, string Arg)> autoDisconnectReplayCommands = autoDisconnectCommands.GetRange(
+            autoDisconnectReplayStart, autoDisconnectCommands.Count - autoDisconnectReplayStart);
+        autoDisconnectRebuild = autoDisconnectDetach &&
+            autoDisconnectHandler.OverlaySlot == 2 &&
+            Microsoft.OpenHarmony.Hosting.OpenHarmonyOverlays.IsClaimedBy(2, autoDisconnectHandler) &&
+            Microsoft.OpenHarmony.Hosting.OpenHarmonyOverlays.IsCreated(2) &&
+            !(bool)autoDisconnectDetachedField.GetValue(autoDisconnectHandler)! &&
+            autoDisconnectReplayCommands.Contains(("slot", "ensure\n2")) &&
+            autoDisconnectReplayCommands.Exists(command => command.Op == "hybrid" && command.Arg.Contains("\"slot\":2", StringComparison.Ordinal));
+        ((IView)autoDisconnectPage).DisconnectHandlers();
+    }
+    finally
+    {
+        Microsoft.OpenHarmony.Hosting.OpenHarmonyBridge.WebCommandSent -= autoDisconnectListener;
+        autoDisconnectContextField.SetValue(null, autoDisconnectContextBefore);
+        Microsoft.OpenHarmony.Hosting.OpenHarmonyOverlays.SetShellCapacity(autoDisconnectCapacityBefore);
+        multiOvlUsedField.SetValue(null, multiOvlUsedBefore);
+        multiOvlCreatedField.SetValue(null, multiOvlCreatedBefore);
+        multiOvlOwnersField.SetValue(null, multiOvlOwnersBefore);
+        multiOvlLastUsedField.SetValue(null, multiOvlLastUsedBefore);
+    }
+}
+Console.WriteLine($"[verify] autodisconnect slice={(autoDisconnectSlice ? "worktree" : "pinned")} detach slot-destroy/claim-release/handler-kept={autoDisconnectDetach} assert={autoDisconnectDetach}");
+if (!autoDisconnectDetach)
+{
+    throw new InvalidOperationException("the AUTODISCONNECT detach path drifted (layout removal did not release the dynamic slot)");
+}
+Console.WriteLine($"[verify] autodisconnect rebuild ensure/replay-slot/claim={autoDisconnectRebuild} assert={autoDisconnectRebuild}");
+if (!autoDisconnectRebuild)
+{
+    throw new InvalidOperationException("the AUTODISCONNECT rebuild path drifted (re-add did not re-claim and replay)");
+}
+
 
 // ohos_host_hwv_invoke_result stay signature-compatible while the invocation is dispatched to
 // the handler that owns the slot; an untagged legacy id never decodes and keeps the fallback.
@@ -4949,6 +5056,58 @@ Console.WriteLine($"[verify] multi-ovl-full slice activate-event lru-touch={mult
 if (!multiOvlSliceActivate)
 {
     throw new InvalidOperationException("the MULTI-OVERLAY-FULL slice activate-event LRU touch wiring drifted");
+}
+
+// AUTODISCONNECT wiring: the slice watcher subscribes the element tree and the three web
+// handlers implement the owner detach/attach contract (release + replay on re-attach, arrange
+// as the safety net). The behavioral drill above is the primary assertion; these pins keep the
+// wiring from silently drifting. Dual-mode: a pinned pre-AUTODISCONNECT slice has no watcher
+// file, so the pins only apply to the working-tree slice (the same pattern as the pins above).
+string? autoDisconnectWatchPath = FindHostSource("OpenHarmonyOverlaySlotWatch.cs");
+string autoDisconnectWatch = autoDisconnectWatchPath is null ? string.Empty : File.ReadAllText(autoDisconnectWatchPath);
+string? autoDisconnectLayoutPath = FindHostSource("OpenHarmonyLayoutHandler.cs");
+string autoDisconnectLayoutSource = autoDisconnectLayoutPath is null ? string.Empty : File.ReadAllText(autoDisconnectLayoutPath);
+string? autoDisconnectPagePath = FindHostSource("OpenHarmonyPageHandler.cs");
+string autoDisconnectPageSource = autoDisconnectPagePath is null ? string.Empty : File.ReadAllText(autoDisconnectPagePath);
+string? autoDisconnectContentPath = FindHostSource("OpenHarmonyContentViewHandler.cs");
+string autoDisconnectContentSource = autoDisconnectContentPath is null ? string.Empty : File.ReadAllText(autoDisconnectContentPath);
+bool autoDisconnectWiring = autoDisconnectWatchPath is null ||
+    (autoDisconnectWatch.Contains("internal interface IOpenHarmonyOverlaySlotLifetime") &&
+     autoDisconnectWatch.Contains("root.DescendantRemoved += OnDescendantRemoved;") &&
+     autoDisconnectWatch.Contains("root.DescendantAdded += OnDescendantAdded;") &&
+     autoDisconnectWatch.Contains("(e.Element?.Handler as IOpenHarmonyOverlaySlotLifetime)?.OnOverlaySlotDetached();") &&
+     autoDisconnectWatch.Contains("(e.Element?.Handler as IOpenHarmonyOverlaySlotLifetime)?.OnOverlaySlotAttached();") &&
+     autoDisconnectLayoutSource.Contains("OpenHarmonyOverlaySlotWatch.Watch(") &&
+     autoDisconnectLayoutSource.Contains("OpenHarmonyOverlaySlotWatch.Unwatch(") &&
+     autoDisconnectPageSource.Contains("OpenHarmonyOverlaySlotWatch.Watch(") &&
+     autoDisconnectPageSource.Contains("OpenHarmonyOverlaySlotWatch.Unwatch(") &&
+     autoDisconnectContentSource.Contains("OpenHarmonyOverlaySlotWatch.Watch(") &&
+     autoDisconnectContentSource.Contains("OpenHarmonyOverlaySlotWatch.Unwatch(") &&
+     wHandler.Contains("IOpenHarmonyOverlaySlotLifetime") &&
+     wHandler.Contains("void IOpenHarmonyOverlaySlotLifetime.OnOverlaySlotDetached()") &&
+     wHandler.Contains("void IOpenHarmonyOverlaySlotLifetime.OnOverlaySlotAttached()") &&
+     wHandler.Contains("OpenHarmonyBridge.WebCommand(\"hide\", OpenHarmonyOverlays.Tag(slot));") &&
+     wHandler.Contains("bool replay = _overlayPreempted || _overlayDetached;") &&
+     wHybridHandler.Contains("IOpenHarmonyOverlaySlotLifetime") &&
+     wHybridHandler.Contains("void IOpenHarmonyOverlaySlotLifetime.OnOverlaySlotDetached()") &&
+     wHybridHandler.Contains("void IOpenHarmonyOverlaySlotLifetime.OnOverlaySlotAttached()") &&
+     wHybridHandler.Contains("OpenHarmonyBridge.WebCommand(\"hide\", OpenHarmonyOverlays.Tag(slot));") &&
+     wHybridHandler.Contains("bool replay = _overlayPreempted || _overlayDetached;") &&
+     wBlazorHandler.Contains("IOpenHarmonyOverlaySlotLifetime") &&
+     wBlazorHandler.Contains("void IOpenHarmonyOverlaySlotLifetime.OnOverlaySlotDetached()") &&
+     wBlazorHandler.Contains("void IOpenHarmonyOverlaySlotLifetime.OnOverlaySlotAttached()") &&
+     wBlazorHandler.Contains("OpenHarmonyBridge.WebCommand(\"hide\", OpenHarmonyOverlays.Tag(slot));") &&
+     wBlazorHandler.Contains("bool replay = _overlayPreempted || _overlayDetached;") &&
+     wHandler.Contains("if (_overlayDetached)") &&
+     wHandler.Contains("if (handler._overlayDetached)") &&
+     wHybridHandler.Contains("if (_overlayDetached)") &&
+     wHybridHandler.Contains("// AUTODISCONNECT: a detached hybrid must not re-claim/register") &&
+     wBlazorHandler.Contains("if (_overlayDetached)") &&
+     wBlazorHandler.Contains("// AUTODISCONNECT: a detached BlazorWebView must not re-claim/register"));
+Console.WriteLine($"[verify] autodisconnect slice wiring watcher/subscriptions/handlers/arrange={autoDisconnectWiring} assert={autoDisconnectWiring}");
+if (!autoDisconnectWiring)
+{
+    throw new InvalidOperationException("the AUTODISCONNECT slice wiring drifted (watcher subscriptions or handler detach/attach/replay)");
 }
 
 // FIX-WVP: the shell overlay geometry and origin arbitration. The managed compositor

@@ -824,6 +824,22 @@ attached 的命令（frame/load/eval/注册）按槽排队，在 `onControllerAt
 `c29640dd…`；headless 24,324 B / `798b2477…` 不变），provenance `ee41386e…`。契约/断言见
 `test/maui-platform-verify`（+6 → 584/566）与 runtime-ohos 同一计划的 §DYNAMIC。
 
+AUTODISCONNECT（2026-10-04，KIT44 自验缺口）：**移除 web 控件自动释放槽**。MAUI 在
+`Layout.Clear/Remove` 移除了项时不会 `DisconnectHandler`（Element handler 保持连接、平台子视图表
+才变化，移除+重挂的状态语义由此保留），kit #44 因此复现「Remove web C 只翻标签、0 条
+`web slot destroy`、C 覆盖层仍出画」。切片侧新增 `OpenHarmonyOverlaySlotWatch`（页/ContentView/
+Layout handler 在 connect 时订阅元素树的 `DescendantRemoved/DescendantAdded`，断开时退订），把
+失联/回归的 web 控件配对到切片本地契约 `IOpenHarmonyOverlaySlotLifetime`
+（`OnOverlaySlotDetached`/`OnOverlaySlotAttached`；不放进 hosting 的
+`IOpenHarmonyOverlaySlotOwner`，因为设备构建从 workload ref pack 解析该接口，新增成员需先重打
+packs）：三个 web handler 在 detach 时 `Release(slot, owner)`（动态槽即 `slot destroy`）并置
+`_overlayDetached`，在 attach 或重新 arrange 时按既有 restore 路径重领槽并重放
+（WebView 重发 Source / Hybrid 重注册 `0.0.1` / Blazor 重注册 `0.0.0.0`），handler 本身不断开、
+再次添加即重建；多级 watcher 重复回调幂等，LRU 抢占语义与槽释放顺序不变。宿主签名与导出不变
+（151/151）。无需改壳（abc 仍为 SLOTS-DYNAMIC 的 368,812 B / `1076a700…`）。契约/断言见
+`test/maui-platform-verify`（+3 → 587/569：动态槽 detach destroy/claim release/handler kept、
+re-add ensure+注册重放、watcher/owner wiring 源钉）。
+
 ## Toolchain resolution
 
 `_OpenHarmonyDetectToolchain` resolves the packing tool from `OpenHarmonyToolchainDir` or
