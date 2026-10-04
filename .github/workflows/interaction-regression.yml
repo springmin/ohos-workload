@@ -40,7 +40,7 @@ on:
         description: 'maui-ohos commit SHA to compile (defaults to the pinned feature/openharmony tip)'
         required: false
         type: string
-        default: '189b87ca8aa00e1b0707ab2b7819b83a2c57c01d'
+        default: '6652017ca59332c53c960cd862dd91c0ad7bb10d'
   push:
     branches: [ master ]
   pull_request:
@@ -52,7 +52,13 @@ permissions:
 
 # Reproducible cross-repo compile: the MAUI slice is checked out at an exact commit, not the
 # mutable feature/openharmony branch, so a push to the fork cannot change what this gate compiles.
-# The default is the feature/openharmony tip: 189b87ca8a (AUTODISCONNECT: the page, ContentView
+# The default is the feature/openharmony tip: 6652017ca5 (INTERP-DRAW2: the compositor skips a
+# node's own drawing when its canvas rectangle lies outside the render surface and no canvas
+# shift - translation/scale/rotation/scroll - can move its pixels back in, while the subtree is
+# still walked so an off-parent-frame child keeps painting; the per-node transform inputs are
+# read once, and the DrawCostTick/DrawKind* seam reports the draw kind for the draw-cost split;
+# managed-only, no new host export, and the suite count below moves to 591/593 floor 573), on top
+# of 189b87ca8a (AUTODISCONNECT: the page, ContentView
 # and Layout handlers watch their element subtree's DescendantRemoved/DescendantAdded events and
 # drive the slice-local overlay-slot lifetime contract - a detached control sends a tagged hide,
 # drops its claim (a dynamic slot is destroyed in the shell) and is marked for a replay, while a
@@ -126,17 +132,16 @@ permissions:
 # spans 043e6468, the T10 modal accessibility overlay c56bf0fa, the T1 InputView mapping dcc7eaac
 # and the T2 CookieContainer sync 8241f1b3, all on top of the W-series webview wiring d6325990,
 # the SEC-SCAN-3 S3-DL3 dot-dot route rejection and the HUKS/deep-link hardening. The suite pins
-# 587 checks / total 589 / floor 569 (the N1 host multi-pointer, W10 AOT-entry, FIX-BACKSIZE
-# Back-press, MULTI-OVERLAY-FULL, SLOTS-DYNAMIC, L6/LEGACY, FIX-SLICERACE and the AUTODISCONNECT
-# detach/rebuild drill lines live in this repository's harness and hosting bridge, not in the
-# pinned slice; dual-mode - compiled against the older 3feb347414 pin the suite still runs at
-# 584/586, so the pin advances independently of the harness) and the full run is green at this
-# compiled tree (local verification: 587/589, floor 569, both perf lines within budget);
-# advance the pin
-# deliberately and refresh this comment when the harness pins or the tip move (workflow_dispatch
-# can compile any commit).
+# 591 checks / total 593 / floor 573 (the N1 host multi-pointer, W10 AOT-entry, FIX-BACKSIZE
+# Back-press, MULTI-OVERLAY-FULL, SLOTS-DYNAMIC, L6/LEGACY, FIX-SLICERACE, the AUTODISCONNECT
+# detach/rebuild drill and the FIX-A11YBUTTON shell self-check lines live in this repository's
+# harness and hosting bridge, not in the pinned slice; the harness references the slice's
+# DrawCostTick/DrawKind* seam directly, so this pin must not lag the harness) and the full run is
+# green at this compiled tree (local verification: 591/593, floor 573, both perf lines within
+# budget); advance the pin deliberately and refresh this comment when the harness pins or the
+# tip move (workflow_dispatch can compile any commit).
 env:
-  MAUI_OHOS_REF: ${{ github.event.inputs.maui_ohos_ref || '189b87ca8aa00e1b0707ab2b7819b83a2c57c01d' }}
+  MAUI_OHOS_REF: ${{ github.event.inputs.maui_ohos_ref || '6652017ca59332c53c960cd862dd91c0ad7bb10d' }}
   # setup-dotnet installs the requested 11.0.x preview into DOTNET_INSTALL_DIR; on Linux that
   # defaults to /usr/share/dotnet, which a per-user cache cannot persist. Point it at ~/.dotnet
   # (the action resolves the ~ prefix against $HOME) so the cache step below actually avoids the
