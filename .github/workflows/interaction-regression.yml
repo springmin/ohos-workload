@@ -40,7 +40,7 @@ on:
         description: 'maui-ohos commit SHA to compile (defaults to the pinned feature/openharmony tip)'
         required: false
         type: string
-        default: '6652017ca59332c53c960cd862dd91c0ad7bb10d'
+        default: 'd5384d6cc383ce4814bd3df83e502f444ceb0e16'
   push:
     branches: [ master ]
   pull_request:
@@ -52,12 +52,16 @@ permissions:
 
 # Reproducible cross-repo compile: the MAUI slice is checked out at an exact commit, not the
 # mutable feature/openharmony branch, so a push to the fork cannot change what this gate compiles.
-# The default is the feature/openharmony tip: 6652017ca5 (INTERP-DRAW2: the compositor skips a
-# node's own drawing when its canvas rectangle lies outside the render surface and no canvas
-# shift - translation/scale/rotation/scroll - can move its pixels back in, while the subtree is
-# still walked so an off-parent-frame child keeps painting; the per-node transform inputs are
+# The default is the feature/openharmony tip: d5384d6cc3 (FIX-A11YFLYOUT: OpenHarmonyAccessibility.
+# PushChildren publishes a FlyoutPage's Detail pane always and its Flyout pane only while
+# IsPresented, mirroring the compositor's ChildEnumerator - before the branch the a11y walk only
+# reached the flyout page's root and published nodeCount=1; managed-only, no new host export, and
+# the suite count below moves to 593/595 floor 575), on top of 6652017ca5 (INTERP-DRAW2: the
+# compositor skips a node's own drawing when its canvas rectangle lies outside the render surface
+# and no canvas shift - translation/scale/rotation/scroll - can move its pixels back in, while the
+# subtree is still walked so an off-parent-frame child keeps painting; the per-node transform inputs are
 # read once, and the DrawCostTick/DrawKind* seam reports the draw kind for the draw-cost split;
-# managed-only, no new host export, and the suite count below moves to 591/593 floor 573), on top
+# managed-only, no new host export, and the suite count moved to 591/593 floor 573), on top
 # of 189b87ca8a (AUTODISCONNECT: the page, ContentView
 # and Layout handlers watch their element subtree's DescendantRemoved/DescendantAdded events and
 # drive the slice-local overlay-slot lifetime contract - a detached control sends a tagged hide,
@@ -132,16 +136,17 @@ permissions:
 # spans 043e6468, the T10 modal accessibility overlay c56bf0fa, the T1 InputView mapping dcc7eaac
 # and the T2 CookieContainer sync 8241f1b3, all on top of the W-series webview wiring d6325990,
 # the SEC-SCAN-3 S3-DL3 dot-dot route rejection and the HUKS/deep-link hardening. The suite pins
-# 591 checks / total 593 / floor 573 (the N1 host multi-pointer, W10 AOT-entry, FIX-BACKSIZE
+# 593 checks / total 595 / floor 575 (the N1 host multi-pointer, W10 AOT-entry, FIX-BACKSIZE
 # Back-press, MULTI-OVERLAY-FULL, SLOTS-DYNAMIC, L6/LEGACY, FIX-SLICERACE, the AUTODISCONNECT
-# detach/rebuild drill and the FIX-A11YBUTTON shell self-check lines live in this repository's
-# harness and hosting bridge, not in the pinned slice; the harness references the slice's
+# detach/rebuild drill, the FIX-A11YBUTTON shell self-check and the FIX-A11YFLYOUT a11y-walk /
+# FIX-PREEMPT-RAW capacity-export lines live in this repository's harness and hosting bridge, not
+# in the pinned slice; the harness references the slice's PushChildren FlyoutPage branch and
 # DrawCostTick/DrawKind* seam directly, so this pin must not lag the harness) and the full run is
-# green at this compiled tree (local verification: 591/593, floor 573, both perf lines within
+# green at this compiled tree (local verification: 593/595, floor 575, both perf lines within
 # budget); advance the pin deliberately and refresh this comment when the harness pins or the
 # tip move (workflow_dispatch can compile any commit).
 env:
-  MAUI_OHOS_REF: ${{ github.event.inputs.maui_ohos_ref || '6652017ca59332c53c960cd862dd91c0ad7bb10d' }}
+  MAUI_OHOS_REF: ${{ github.event.inputs.maui_ohos_ref || 'd5384d6cc383ce4814bd3df83e502f444ceb0e16' }}
   # setup-dotnet installs the requested 11.0.x preview into DOTNET_INSTALL_DIR; on Linux that
   # defaults to /usr/share/dotnet, which a per-user cache cannot persist. Point it at ~/.dotnet
   # (the action resolves the ~ prefix against $HOME) so the cache step below actually avoids the

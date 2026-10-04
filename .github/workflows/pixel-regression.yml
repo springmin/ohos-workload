@@ -42,7 +42,7 @@ on:
         description: 'maui-ohos commit SHA to compile (defaults to the pinned feature/openharmony tip)'
         required: false
         type: string
-        default: '6652017ca59332c53c960cd862dd91c0ad7bb10d'
+        default: 'd5384d6cc383ce4814bd3df83e502f444ceb0e16'
 
 # Least privilege: the job only reads this repository and the public springmin/maui-ohos fork;
 # no step pushes anywhere.
@@ -51,9 +51,12 @@ permissions:
 
 # Reproducible cross-repo compile: the MAUI slice is checked out at an exact commit, not the
 # mutable feature/openharmony branch, so a push to the fork cannot change what this gate compiles.
-# The default is the feature/openharmony tip: 6652017ca5 (INTERP-DRAW2: the off-surface cull and
-# the DrawCostTick/DrawKind* seam are managed-only; the rasterizer output does not move and the
-# interaction harness moves to 591/593 floor 573), on top of 189b87ca8a (AUTODISCONNECT: a web
+# The default is the feature/openharmony tip: d5384d6cc3 (FIX-A11YFLYOUT: the FlyoutPage
+# accessibility walk publishes the Detail pane always and the presented Flyout only, mirroring the
+# compositor's ChildEnumerator; managed-only, the rasterizer output does not move and the
+# interaction harness moves to 593/595 floor 575), on top of 6652017ca5 (INTERP-DRAW2: the
+# off-surface cull and the DrawCostTick/DrawKind* seam are managed-only; the rasterizer output did
+# not move and the interaction harness moved to 591/593 floor 573), on top of 189b87ca8a (AUTODISCONNECT: a web
 # control that leaves the layout drops its overlay claim and its dynamic slot is destroyed; a
 # re-added one re-claims and replays - managed-only, the rasterizer expectations did not move and
 # the interaction harness moved to 587/589 floor 569), on top of 7c731a7ca3 (INTERP-RENDER: the
@@ -116,11 +119,11 @@ permissions:
 # + T2 WebView CookieContainer sync 8241f1b3, on top of the W-series webview wiring d6325990 and
 # the SEC-SCAN-3 S3-DL3 dot-dot deep-link rejection, on top of the P2c deep-link routing, P2b-IMG,
 # P1b-LIST and P1a-ANIM batches).
-# The interaction harness pins 591 checks / total 593 / floor 573; advance the pin in lockstep
+# The interaction harness pins 593 checks / total 595 / floor 575; advance the pin in lockstep
 # with the interaction gate and change it deliberately (workflow_dispatch can compile any other
 # commit SHA).
 env:
-  MAUI_OHOS_REF: ${{ github.event.inputs.maui_ohos_ref || '6652017ca59332c53c960cd862dd91c0ad7bb10d' }}
+  MAUI_OHOS_REF: ${{ github.event.inputs.maui_ohos_ref || 'd5384d6cc383ce4814bd3df83e502f444ceb0e16' }}
   # Same as the interaction gate: keep the setup-dotnet preview SDK in a cacheable per-user path
   # instead of the runner's /usr/share/dotnet; a newer 11.0.x preview is still downloaded (the
   # action re-resolves the channel), the cache only skips the ~200 MB download when it moved.
