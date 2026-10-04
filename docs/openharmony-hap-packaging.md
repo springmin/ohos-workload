@@ -840,6 +840,25 @@ packs）：三个 web handler 在 detach 时 `Release(slot, owner)`（动态槽�
 `test/maui-platform-verify`（+3 → 587/569：动态槽 detach destroy/claim release/handler kept、
 re-add ensure+注册重放、watcher/owner wiring 源钉）。
 
+FIX-A11YBUTTON（2026-10-05，DEV-A11Y 缺口）：**壳 A11Y 自检按钮可达（有/无 web 控件两态）**。
+DEV-A11Y 轮发现按钮渲染在窗口正中且被激活的 ArkWeb 覆盖层遮住（dump 中心 bounds
+`[1522,987][1606,1033]`），只能经抽屉（suspend）或切 tab（hide）后点击。两个根因：①ArkUI 里
+Stack 子组件的 `.align()` 只对齐组件自身内容，子组件位置由 Stack 的 `alignContent` 决定 - 按钮的
+`.align(Alignment.BottomStart)` 因此不产生定位效果，落在 Stack 默认的居中位；②Web 覆盖层按激活序
+取正 `zIndex`（`@State webZOrder`），而按钮 zIndex 为 0，激活后覆盖层在绘制与命中测试上都盖住按钮。
+修复（壳内，两行语义）：按钮改 Edges 绝对定位
+`.position({ bottom: 4 + overlayBottomInset(), left: 4 + avoidLeft })`（左下角、含避让区），并
+`.zIndex(webZOrderSeq + 1)`；`webZOrderSeq` 由普通字段改为 `@State`，按钮的 zIndex 在每次 web 激活
+时刷新、始终比最新覆盖层高 1。宿主/托管不变（无需改壳外代码）。四包
+`preview.22/23/24/28` 同步 + provenance；新壳 abc 369,472 B（`a0dbad04…`；Index.ets 325,846 B /
+`7d971a5e…`；headless 24,324 B / `798b2477…` 不变），provenance `446f9215…`，源哈希
+`483af84a…`。真机（HAD-W32 / OpenHarmony-7.0.0.109）：有 web 控件（Home，`rootWebArea=2`）与
+无 web 控件（no-web 变体 hap，web zone 不挂载，`rootWebArea=0`）两态 `uitest` 点按均出自我检
+对话框，`accessibilityStatus: 1 (attached - expected)`、`nodeCount=1`，按钮 bounds 左下角
+（重签 hap `da48f5c1…` / 变体 `dea55136…`，证据 `fix-a11ybtn/device/`）。契约/断言见
+`test/maui-platform-verify`（+1：self-check 绝对定位 + zIndex 源钉，随 INTERP-DRAW2 提交并入
+`c31d077`，合流 591/593 floor 573；`verify-kit.sh` 的 ui abc 期望同步为 369472）。
+
 ## Toolchain resolution
 
 `_OpenHarmonyDetectToolchain` resolves the packing tool from `OpenHarmonyToolchainDir` or

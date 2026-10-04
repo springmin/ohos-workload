@@ -621,7 +621,11 @@ struct Index {
   // (U5: overlapping web controls). `.zIndex` is an ArkUI universal attribute inside the same
   // Stack; the declaration order below only decides the initial state.
   @State webZOrder: number[] = [0, 0, 0, 0];
-  private webZOrderSeq: number = 0;
+  // The activation counter behind webZOrder. @State (not a plain field) so the A11Y self-check
+  // button's zIndex (counter + 1) is refreshed on every web activation: the self-check can
+  // never be composited under an activated overlay no matter how many times a web control is
+  // touched (FIX-A11YBUTTON).
+  @State webZOrderSeq: number = 0;
   // FIX-WVP overlay suspension: a managed drawer renders in the managed surface below the
   // overlays, so while it is presented (`suspend`) every overlay hides and frame/load commands
   // only update its geometry instead of re-showing it; `resume` restores the pre-suspend
@@ -6664,12 +6668,17 @@ struct Index {
           .bindMenu(this.buildMenuElements())
       }
 
-      // Accessibility self-check: a tiny overlay in the opposite corner. The Stack overlays
-      // it, so it never takes layout space from the managed surface (the XComponent and the
-      // ContentSlot keep their full size); tapping it shows the provider state.
+      // Accessibility self-check (FIX-A11YBUTTON): a tiny overlay in the bottom-left corner.
+      // The Stack overlays it, so it never takes layout space from the managed surface (the
+      // XComponent and the ContentSlot keep their full size); tapping it shows the provider
+      // state. A Stack child's .align() only aligns the component's own content - the Stack's
+      // alignContent decides the child position - so the button is placed absolutely with an
+      // Edges position instead. Its zIndex tracks the web overlays' activation counter + 1, so
+      // an activated ArkWeb (which composites at its own positive zIndex) can never cover the
+      // self-check: the button stays tappable with or without a live web control.
       Button('A11Y')
-        .align(Alignment.BottomStart)
-        .margin({ bottom: 4 + this.overlayBottomInset(), left: 4 + this.avoidLeft })
+        .position({ bottom: 4 + this.overlayBottomInset(), left: 4 + this.avoidLeft })
+        .zIndex(this.webZOrderSeq + 1)
         .width(44)
         .height(24)
         .fontSize(10)
