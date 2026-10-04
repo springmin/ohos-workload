@@ -95,3 +95,6 @@ RID `openharmony-arm64`；workload `openharmony 1.0.0-preview.28/11.0.100-rc.2`�
   三 workflow pin 指向 `eec30c01cd`（套件 **538/floor 518**、导出 **149/149**、切片 0 error/0 IL）；
   合并壳 abc **336148/22900**（sources `388db42b`），四包 `preview.22/23/24/28` 同步 + provenance；
   遗留：B2 托管入口缺口、T19 `delivered=0`、本机媒体镜像无 Media Kit。
+- **rc.2 官方包监测（2026-10-04）**：`docs/rc2-official-watch.md` + `scripts/rc2-official-watch.sh`
+  （CI 每周一 + 手动；2026-10-04 复核 nuget 仅 rc.1 → **WAIT**；官方 rc.2 一到，退出码 10 触发
+  `2026-09-30-rc2-mainline-adoption.md` §8 换 pin 批次）。

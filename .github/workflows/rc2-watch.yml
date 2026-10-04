@@ -1,0 +1,46 @@
+name: rc2-watch
+
+# RC2-WATCH: polls nuget.org and the dotnet/maui releases for the official MAUI rc.2+ packages
+# that unblock the pin-switch batch in
+# runtime-ohos/docs/plans/2026-09-30-rc2-mainline-adoption.md section 8.
+#
+#   exit 0  -> still rc.1 only: green, nothing to do
+#   exit 10 -> official rc.2+ found: red, with a warning annotation naming the pin-switch batch
+#              (the scheduled failure is the prompt)
+#   exit 1  -> every poll source failed (network): red, no trigger
+#
+# Record and run instructions: docs/rc2-official-watch.md
+# (2026-10-04: nuget.org rc.1 only, keep waiting).
+on:
+  schedule:
+    - cron: '17 3 * * 1' # Mondays 03:17 UTC
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  watch:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out the workload (this repository)
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      # The offline fixtures pin the exit-code contract; a green selftest keeps a parser
+      # regression from silently reporting "no rc.2" forever.
+      - name: Selftest the watcher (offline fixtures)
+        run: sh scripts/selftest-rc2-official-watch.sh
+      - name: Poll nuget.org / dotnet/maui for official rc.2+
+        run: |
+          set +e
+          sh scripts/rc2-official-watch.sh > rc2-watch.log 2>&1
+          rc=$?
+          set -e
+          cat rc2-watch.log
+          case "$rc" in
+            0)  echo "RC2-WATCH: official rc.2+ not published yet - keep waiting" ;;
+            10) echo "::warning title=RC2-WATCH trigger::official MAUI rc.2+ found; run the pin-switch batch (runtime-ohos docs/plans/2026-09-30-rc2-mainline-adoption.md section 8)" ;;
+            *)  echo "::error title=RC2-WATCH poll failed::every poll source failed; the watch result is unknown" ;;
+          esac
+          exit "$rc"
