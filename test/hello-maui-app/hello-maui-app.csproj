@@ -58,6 +58,9 @@
     <!-- FRAMEPACING: -p:FramepacingProbe=true compiles the per-frame telemetry in
          (FramePacingProbe.cs). Off by default; the shipped sample is unaffected. -->
     <DefineConstants Condition=" '$(FramepacingProbe)' == 'true' ">$(DefineConstants);FRAMEPACING_PROBE</DefineConstants>
+    <!-- FRAMEPHASE: -p:FramePhaseProbe=true compiles the per-phase aggregate telemetry in
+         (FramePhaseProbe.cs). Off by default; the shipped sample is unaffected. -->
+    <DefineConstants Condition=" '$(FramePhaseProbe)' == 'true' ">$(DefineConstants);FRAMEPHASE_PROBE</DefineConstants>
   </PropertyGroup>
   <PropertyGroup Condition=" '$(OpenHarmonyAotApp)' == 'true' ">
     <DefineConstants>$(DefineConstants);OPENHARMONY_AOT</DefineConstants>

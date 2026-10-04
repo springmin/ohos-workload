@@ -39,6 +39,11 @@ public static class Program
         // subscribes) so a callback can be timed through to its present. See FramePacingProbe.cs.
         FramePacingProbe.Install();
 #endif
+#if FRAMEPHASE_PROBE
+        // Opt-in phase telemetry: same pre-host subscription, but aggregates the compositor's
+        // measure/arrange/draw/accessibility/present phases and emits one line per 5 s.
+        FramePhaseProbe.Install();
+#endif
         var host = mauiApp.Services.GetRequiredService<OpenHarmonyMauiAppHost>();
 
         OpenHarmonyBridge.WriteStatus("[hello-maui-app] starting MAUI application");

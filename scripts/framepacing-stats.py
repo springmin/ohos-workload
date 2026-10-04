@@ -11,6 +11,9 @@ device-test log:
     FramePacingProbe.cs) - one FPF line per platform frame callback and one FPP line per
     present, carrying the callback-to-callback gap (us) and the callback-to-present
     latency (ms).
+  * the opt-in phase probe (`-p:FramePhaseProbe=true`, test/hello-maui-app/
+    FramePhaseProbe.cs) - one aggregated FPH line per ~5 s breaking a rendered frame into
+    pre/measure+arrange/surface/draw/chrome/a11y/present/wait averages (and window maxes).
 
 The script accepts any mix, dedupes the lines the shell's 3-second tail poll repeats, and
 reports fps plus the gap/latency distribution. With --min-fps/--max-gap-ms it exits 1 when
@@ -28,6 +31,12 @@ import sys
 HOST_LINE = re.compile(r'canvas presented \((\d+)x(\d+)\)(?: n=(\d+) avg=(\d+)ms max=(\d+)ms)?')
 FPF = re.compile(r'FPF t=(\d+) ts=(\d+) gap=(\d+) tgt=(\d+) idle=(\d+) n=(\d+) p=(\d+)')
 FPP = re.compile(r'FPP t=(\d+) lat=(\d+) p=(\d+)')
+FPH = re.compile(
+    r'FPH n=(\d+) inc=(\d+) fps=([\d.]+)'
+    r' pre=([\d.]+)/([\d.]+) meas=([\d.]+)/([\d.]+) surf=([\d.]+)/([\d.]+)'
+    r' draw=([\d.]+)/([\d.]+) chr=([\d.]+)/([\d.]+) a11y=([\d.]+)/([\d.]+)'
+    r' pres=([\d.]+)/([\d.]+) wait=([\d.]+)/([\d.]+)')
+PHASES = ['pre', 'meas', 'surf', 'draw', 'chr', 'a11y', 'pres', 'wait']
 
 
 def percentile(values, q):
@@ -55,8 +64,20 @@ def parse(path):
     first = []      # bare first-frame / size-change lines
     frames = []     # FPF dicts, deduped by timestamp
     presents = []   # FPP dicts
+    phases = []     # FPH dicts (n, inc, fps, per-phase (avg, max))
     seen = set()
     for raw in open(path, encoding='utf-8', errors='replace'):
+        m = FPH.search(raw)
+        if m:
+            line = m.group(0)
+            if line in seen:
+                continue
+            seen.add(line)
+            g = m.groups()
+            phases.append(dict(
+                n=int(g[0]), inc=int(g[1]), fps=float(g[2]),
+                vals={p: (float(g[3 + 2 * i]), float(g[4 + 2 * i])) for i, p in enumerate(PHASES)}))
+            continue
         m = FPF.search(raw)
         if m:
             line = m.group(0)
@@ -87,11 +108,11 @@ def parse(path):
             else:
                 host.append((int(width), int(height), int(n), int(avg), int(mx)))
     frames.sort(key=lambda f: f['ts'])
-    return host, first, frames, presents
+    return host, first, frames, presents, phases
 
 
 def report(path, min_fps, max_gap_ms):
-    host, first, frames, presents = parse(path)
+    host, first, frames, presents, phases = parse(path)
     ok = True
     print(f"== {path}")
     if host:
@@ -127,8 +148,20 @@ def report(path, min_fps, max_gap_ms):
         if max(gaps) / 1000.0 > max_gap_ms:
             print(f"  FAIL: max gap {max(gaps) / 1000.0:.1f}ms > {max_gap_ms}ms")
             ok = False
-    if not host and not frames:
-        print("no frame-pacing lines found (host aggregate or FPF/FPP)")
+    if phases:
+        window_frames = sum(p['n'] for p in phases)
+        fps = sum(p['fps'] * p['n'] for p in phases) / window_frames if window_frames else 0.0
+        print(f"phase probe: windows={len(phases)} frames={window_frames} -> {fps:.2f} fps"
+              f" incomplete={sum(p['inc'] for p in phases)}")
+        for phase in PHASES:
+            avg = sum(p['vals'][phase][0] * p['n'] for p in phases) / window_frames if window_frames else 0.0
+            mx = max(p['vals'][phase][1] for p in phases)
+            print(f"  {phase:>5}: avg={avg:.1f}ms max={mx:.1f}ms")
+        if fps < min_fps:
+            print(f"  FAIL: {fps:.2f} fps < {min_fps}")
+            ok = False
+    if not host and not frames and not phases:
+        print("no frame-pacing lines found (host aggregate, FPF/FPP or FPH)")
         ok = False
     return ok
 
