@@ -1842,12 +1842,29 @@ struct Index {
       const statusPath: string = `${this.hostContext().filesDir}/dotnet-status.txt`;
       const text: string = fs.readTextSync(statusPath);
       if (text !== this.statusSeen) {
+        // FIX-PREEMPT-RAW: the overlay pool's preempted/restored/replay lines are the forensic
+        // record of the slot LRU, but CEF stderr shares dotnet-status.txt and pushes them out of
+        // the 60-line tail window below. Scan the segment written since the last poll (the whole
+        // file when the managed side trimmed and rewrote it) and export every capacity line to
+        // hilog under its own marker, so a low-noise window can always grep the original text.
+        // Duplicates after a rewrite are harmless; a missed preempt line is not.
+        const fresh: string = this.statusSeen.length > 0 && text.startsWith(this.statusSeen)
+          ? text.substring(this.statusSeen.length)
+          : text;
         this.statusSeen = text;
         const lines: string[] = text.split('\n');
         const start: number = lines.length > 60 ? lines.length - 60 : 0;
         for (let i = start; i < lines.length; i++) {
           if (lines[i].length > 0) {
             this.logInfo(`[maui] status: ${lines[i]}`);
+          }
+        }
+        const freshLines: string[] = fresh.split('\n');
+        for (let i = 0; i < freshLines.length; i++) {
+          const line: string = freshLines[i];
+          if (line.indexOf('overlay preempted') >= 0 || line.indexOf('overlay restored') >= 0 ||
+            line.indexOf('overlay replay') >= 0) {
+            this.logInfo(`[maui-capacity] ${line}`);
           }
         }
       }

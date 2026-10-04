@@ -12,7 +12,7 @@ using Microsoft.Maui.Platform;
 // after the fuzz tail) instead of letting every caller repeat its own threshold constant.
 VerifyLineCountingWriter verifyStdout = new(Console.Out);
 Console.SetOut(verifyStdout);
-const int verifyCheckTotal = 593;                     // +1 FIX-A11YBUTTON shell self-check absolute position + z-order-above-overlays pin (button reachable with/without a live web control)                     // +3 AUTODISCONNECT layout-removal detach (dynamic slot destroy + claim release + handler kept) / re-add rebuild (ensure + registration replay on the reclaimed slot) / slice watcher-and-owner wiring pins                     // +6 SLOTS-DYNAMIC dynamic slot growth (ensure/destroy commands), capacity downgrade/event, configurable 2/4 limits, shell lazy/defer pins, 3rd-overlay sample                     // documented full [verify] line count (+3 FIX-SLICERACE concurrent connect/host storm/ pins, +5 L6 screenshot Jpeg format/quality capture/fallback/helper + title heartbeat behavior/source, +6 LEGACY toolbar primary/overflow/icon/events/shell/source, +3 SAMPLE-FIX hybrid bootstrap pack staging / read-only payload handler / stock-script demo, +4 MULTI-OVERLAY-FULL LRU pool/invoke slot codec/per-slot hybrid shell/slice owner wiring, +4 MULTI-OVL slot pool/wire codec/two-overlay shell/slice wiring, +4 FIX-BACKSIZE Back-press forwarding/drawer drill/ shell drawer/BlazorWebView desired size, +4 FIX-WVP overlay px->vp/degenerate-frame/hybrid-overlay arbitration/suspend-restore (shell+slice), +2 FIX-DISMISS flyout drawer dismiss under the device display conditions, +4 FIX-HOME home page arrange/draw (NavigationPage-in-TabbedPage descent), +4 MS-MODE runtime mode switch, +10 P2c-DEEPLINK, +4 P2b-IMG, +16 P1b-LIST, +10 P1a-ANIM, +2 SEC3 storage/deep-link pins, +5 W-series WebView wiring, +3 T1 InputView mapping, +4 T2 WebView gaps, +4 T3 GraphicsView interaction, +7 T10 modal accessibility, +4 T4 Label formatted text, +4 T5 layout semantics, +6 T7 DatePicker calendar/min-max, +4 T9 window title bar, +4 T11 diagnostics overlay, +1 N2 empty ContentPage arrangement, +6 T8 TableView, +5 T8 uneven rows, +7 T6 RTL flow direction, +5 T22 MainThread bridge, +2 FIX-TABBED tabbed CurrentPage, +4 T13 group footer view/N3 picker IsOpen, +5 T21 system font scale, +3 T21 font scale source wiring, +2 A11Y-TABBED tabbed accessibility, +3 N1 host multi-pointer, +5 T12 CarouselView group slides, +7 T14 rich shell flyout, +10 T14 flyout leftovers (MenuItemTemplate/FlyoutContent/AsMultipleItems), +2 FIX-SHELL shell CurrentPage, +2 A11Y-SHELL shell accessibility, +7 T15 rich Shell.TitleView, +8 T16 structured menus, +3 N4 TitleBar accessibility row, +3 T18 Essentials Map, +4 N5 overlay passthrough suppression, +5 N6 window decorations, +4 T20 media bridge, +3 B2 wasm site in a MAUI WebView, +2 W10 NativeAOT managed entry (host libs-dir resolution + shell AOT payload probe), +1 FIX-JSCALL Blazor IPC enum/struct AOT roots (JSCallResultType/JSCallType/NavigationOptions in the slice context + handler static-ctor touch + stub click-probe removed), +3 INTERP-DRAW2 draw-cost seam kinds / off-surface cull / translated-node rescue))
+const int verifyCheckTotal = 595;                     // +2 FIX-A11YFLYOUT a11y walk FlyoutPage Detail/presented-Flyout subtree pins (device nodeCount=1 root cause)                     // +1 FIX-A11YBUTTON shell self-check absolute position + z-order-above-overlays pin (button reachable with/without a live web control)                     // +3 AUTODISCONNECT layout-removal detach (dynamic slot destroy + claim release + handler kept) / re-add rebuild (ensure + registration replay on the reclaimed slot) / slice watcher-and-owner wiring pins                     // +6 SLOTS-DYNAMIC dynamic slot growth (ensure/destroy commands), capacity downgrade/event, configurable 2/4 limits, shell lazy/defer pins, 3rd-overlay sample                     // documented full [verify] line count (+3 FIX-SLICERACE concurrent connect/host storm/ pins, +5 L6 screenshot Jpeg format/quality capture/fallback/helper + title heartbeat behavior/source, +6 LEGACY toolbar primary/overflow/icon/events/shell/source, +3 SAMPLE-FIX hybrid bootstrap pack staging / read-only payload handler / stock-script demo, +4 MULTI-OVERLAY-FULL LRU pool/invoke slot codec/per-slot hybrid shell/slice owner wiring, +4 MULTI-OVL slot pool/wire codec/two-overlay shell/slice wiring, +4 FIX-BACKSIZE Back-press forwarding/drawer drill/ shell drawer/BlazorWebView desired size, +4 FIX-WVP overlay px->vp/degenerate-frame/hybrid-overlay arbitration/suspend-restore (shell+slice), +2 FIX-DISMISS flyout drawer dismiss under the device display conditions, +4 FIX-HOME home page arrange/draw (NavigationPage-in-TabbedPage descent), +4 MS-MODE runtime mode switch, +10 P2c-DEEPLINK, +4 P2b-IMG, +16 P1b-LIST, +10 P1a-ANIM, +2 SEC3 storage/deep-link pins, +5 W-series WebView wiring, +3 T1 InputView mapping, +4 T2 WebView gaps, +4 T3 GraphicsView interaction, +7 T10 modal accessibility, +4 T4 Label formatted text, +4 T5 layout semantics, +6 T7 DatePicker calendar/min-max, +4 T9 window title bar, +4 T11 diagnostics overlay, +1 N2 empty ContentPage arrangement, +6 T8 TableView, +5 T8 uneven rows, +7 T6 RTL flow direction, +5 T22 MainThread bridge, +2 FIX-TABBED tabbed CurrentPage, +4 T13 group footer view/N3 picker IsOpen, +5 T21 system font scale, +3 T21 font scale source wiring, +2 A11Y-TABBED tabbed accessibility, +3 N1 host multi-pointer, +5 T12 CarouselView group slides, +7 T14 rich shell flyout, +10 T14 flyout leftovers (MenuItemTemplate/FlyoutContent/AsMultipleItems), +2 FIX-SHELL shell CurrentPage, +2 A11Y-SHELL shell accessibility, +7 T15 rich Shell.TitleView, +8 T16 structured menus, +3 N4 TitleBar accessibility row, +3 T18 Essentials Map, +4 N5 overlay passthrough suppression, +5 N6 window decorations, +4 T20 media bridge, +3 B2 wasm site in a MAUI WebView, +2 W10 NativeAOT managed entry (host libs-dir resolution + shell AOT payload probe), +1 FIX-JSCALL Blazor IPC enum/struct AOT roots (JSCallResultType/JSCallType/NavigationOptions in the slice context + handler static-ctor touch + stub click-probe removed), +3 INTERP-DRAW2 draw-cost seam kinds / off-surface cull / translated-node rescue))
 const int verifyCheckFloor = verifyCheckTotal - 20;   // documented floor convention (total - 20)
 
 // A small image file for the Image handler.
@@ -3611,6 +3611,41 @@ if (!fixHomeRedrawn)
 {
     throw new InvalidOperationException("switching back to the Home tab did not re-arrange/draw the NavigationPage's current page");
 }
+
+// FIX-A11YFLYOUT: the device accessibility walk starts at IWindow.Content and the
+// hello-maui-app sample's content is a FlyoutPage; PushChildren had no FlyoutPage branch, so the
+// shadow tree published only the root and --a11y-probe read nodeCount=1. The branch mirrors the
+// compositor's ChildEnumerator: the detail page is always a child, the flyout panel only while
+// presented. Without it the detail label never enters the tree (this check is the red control).
+var a11yFlyoutMenu = new ContentPage { Title = "menu", Content = new Label { Text = "a11y-flyout menu" } };
+var a11yFlyoutDetail = new ContentPage { Title = "detail", Content = new Label { Text = "a11y-flyout detail" } };
+var a11yFlyout = new FlyoutPage { Flyout = a11yFlyoutMenu, Detail = a11yFlyoutDetail, IsPresented = false };
+OpenHarmonyHandlerConnector.ConnectTree(a11yFlyout);
+a11yFlyout.Measure(1080, 1920);
+a11yFlyout.Arrange(new Rect(0, 0, 1080, 1920));
+OpenHarmonyAccessibility.Refresh(a11yFlyout);
+var a11yFlyoutDetailNode = OpenHarmonyAccessibility.Nodes.FirstOrDefault(n => n.Text == "a11y-flyout detail");
+bool a11yFlyoutDetailOk = a11yFlyoutDetailNode is not null && a11yFlyoutDetailNode.Role == "text" &&
+    a11yFlyoutDetailNode.ParentId != 0 && OpenHarmonyAccessibility.Nodes.Count > 1;
+bool a11yFlyoutMenuHidden = !OpenHarmonyAccessibility.Nodes.Any(n => n.Text == "a11y-flyout menu");
+Console.WriteLine($"[verify] a11y-flyout detail published={a11yFlyoutDetailNode is not null} role={a11yFlyoutDetailNode?.Role} menuHidden={a11yFlyoutMenuHidden} nodes={OpenHarmonyAccessibility.Nodes.Count} assert={a11yFlyoutDetailOk && a11yFlyoutMenuHidden}");
+if (!(a11yFlyoutDetailOk && a11yFlyoutMenuHidden))
+{
+    throw new InvalidOperationException("the accessibility tree did not contain the FlyoutPage detail subtree (PushChildren missed Detail)");
+}
+
+a11yFlyout.IsPresented = true;
+OpenHarmonyAccessibility.Refresh(a11yFlyout);
+var a11yFlyoutMenuNode = OpenHarmonyAccessibility.Nodes.FirstOrDefault(n => n.Text == "a11y-flyout menu");
+bool a11yFlyoutPanelOk = a11yFlyoutMenuNode is not null && a11yFlyoutMenuNode.Role == "text" &&
+    a11yFlyoutMenuNode.ParentId != 0 &&
+    OpenHarmonyAccessibility.Nodes.Any(n => n.Text == "a11y-flyout detail");
+Console.WriteLine($"[verify] a11y-flyout panel presented published={a11yFlyoutMenuNode is not null} detailKept={OpenHarmonyAccessibility.Nodes.Any(n => n.Text == "a11y-flyout detail")} nodes={OpenHarmonyAccessibility.Nodes.Count} assert={a11yFlyoutPanelOk}");
+if (!a11yFlyoutPanelOk)
+{
+    throw new InvalidOperationException("the accessibility tree did not contain the presented FlyoutPage panel subtree (PushChildren missed presented Flyout)");
+}
+a11yFlyout.IsPresented = false;
 
 // W22-6: gestures, selection, transforms.
 var tapCtl = root.Children.OfType<Label>().FirstOrDefault(l => l.Text == "tap me");

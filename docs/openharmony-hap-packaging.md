@@ -859,6 +859,20 @@ Stack 子组件的 `.align()` 只对齐组件自身内容，子组件位置由 S
 `test/maui-platform-verify`（+1：self-check 绝对定位 + zIndex 源钉，随 INTERP-DRAW2 提交并入
 `c31d077`，合流 591/593 floor 573；`verify-kit.sh` 的 ui abc 期望同步为 369472）。
 
+FIX-A11YFLYOUT + FIX-PREEMPT-RAW（2026-10-05）：①**a11y FlyoutPage 分支**（切片，maui-ohos
+`OpenHarmonyAccessibility.PushChildren`）：补 `FlyoutPage.Detail`（恒入树）与 `FlyoutPage.Flyout`
+（仅 `IsPresented`）两分支，镜像合成器 `ChildEnumerator`；SOAK-JI 的 `nodeCount=1` 定因即
+走查止于 FlyoutPage 根（rc.1 的 FlyoutPage 非 `IContentView`）。headless 负控制（移除分支）红线；
+真机 probe5 自检对话框 **nodeCount=70**（Home 内容页节点）。②**抢占原文定向导出**（壳
+`pollManagedStatus`）：对 `dotnet-status.txt` 自上次轮询的新增段扫描，把
+`overlay preempted/restored/replay` 行以 `[maui-capacity]` 前缀直写 hilog（文件 trim 重写时整
+文件回退），CEF stderr 挤掉 60 行镜像窗不再丢行。真机低噪声复放「加 C/D/E（第 5 控件抢 A 槽）→
+Activate A」取到原文：`preempted: slot 0` →（LRU 级联）`preempted: slot 1` + `restored: slot 1` +
+`replay: slot 1`（`fix-a11yflyout/device2/marker-lines.txt`）。四包 preview.22/23/24/28 +
+provenance 同步；新壳 abc **370,240 B（`4b439e83…`；Index.ets 326,953 B / `69dc09e0…`；
+headless 24,324 B / `798b2477…` 不变）**，provenance `bb5a1758…`；`verify-kit.sh` 的 ui abc
+期望同步为 370240。契约/断言见 `test/maui-platform-verify`（+2 → 593/595 floor 575）。
+
 ## Toolchain resolution
 
 `_OpenHarmonyDetectToolchain` resolves the packing tool from `OpenHarmonyToolchainDir` or
