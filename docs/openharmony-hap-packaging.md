@@ -1400,7 +1400,9 @@ four decision points:
   a self-signed/debug hap still needs an explicit want (`aa start -U`) for the managed route; the
   declaration is locally verifiable (`scripts/selftest-tasks.sh` unit checks +
   `scripts/selftest-hap-targets.sh` T1/T2/T3 fixtures assert the skill bytes and the invalid-host
-  rejection).
+  rejection, and the T9 fixture stages + packs a real hap offline and asserts the packed
+  `module.json` uris/`domainVerify` and `resources/rawfile/app.json` `linkHosts` against the
+  `OpenHarmonyAppLinkHosts` property).
 
 Gates: the interaction suite's ten P2c checks pin the shell sources (all three packs
 byte-identical), the NAPI method and both C exports, the bounded host queue, the hosting

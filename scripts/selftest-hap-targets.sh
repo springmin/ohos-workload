@@ -37,6 +37,17 @@
 #                  payloadEntries/payloadBytes/zipSha256, the fallback zip untouched) and the
 #                  AOT/interp pre-staged natives untouched; -p:...DeviceCompat=false is the
 #                  escape hatch (raw names/bytes + the warning naming the incompatible files)
+#   T9 app links   end-to-end: a fixture project imports the real pack targets and packs an
+#                  unsigned hap offline with the SDK toolchain (restool + ohos_packing_tool).
+#                  The packed module.json must carry the home skill plus the browsable/viewData
+#                  skill whose https uris and domainVerify match the OpenHarmonyAppLinkHosts
+#                  property, and resources/rawfile/app.json must list the same hosts in the same
+#                  order; OpenHarmonyAppLinkDomainVerify=false keeps the uris and drops the
+#                  gate; an invalid host fails the build and leaves no hap. Requires
+#                  OHOS_SDK_ROOT (toolchains/lib/ohos_packing_tool + toolchains/restool) and an
+#                  OpenHarmony-enabled dotnet; SKIPs otherwise. On hosts whose built-in Exec task
+#                  writes a Windows batch wrapper (the OpenHarmony sandbox), the fixture
+#                  substitutes an in-process sh Exec; the shipped command strings stay as-is.
 #
 # The fixture imports the real pack targets (so the UsingTask under test is the shipped one) and
 # calls the task directly. Needs a dotnet SDK; when dotnet is unavailable the functional half is
@@ -44,11 +55,12 @@
 #
 # Env: SELFTEST_TMPDIR=<dir>  work dir base (default: the approved opencode tmp dir)
 #      DOTNET=<dotnet>       SDK used for the fixture
+#      OHOS_SDK_ROOT=<dir>   SDK root for T9 (T9 SKIPs when unset or missing the toolchain)
 #      SELFTEST_KEEP=1       keep the work dir even when all checks pass
 # Exit: 0 = all checks passed; 1 = at least one check failed (work dir kept for triage).
 set -u
 
-SELFTEST_VERSION="5 (2026-10-03)"
+SELFTEST_VERSION="6 (2026-10-04)"
 
 log()     { printf '[%s] %s\n' "$(date '+%H:%M:%S')" "$*"; }
 section() { printf '\n=== %s ===\n' "$*"; }
@@ -720,6 +732,161 @@ PY
     [ -f "$PF/stage-runtime/createdump.so" ] && pass_ "T8 the normalization also applies next to AOT/interp natives" \
         || fail_ "T8 the normalization did not apply next to the runtime natives"
     assert_payload_marker "$PF/stage-runtime" 9 5 4150 "the AOT/interp marker counts the pre-staged natives plus the payload"
+fi
+
+# ---- T9: OpenHarmonyAppLinkHosts -> packed hap (fixture) --------------------------------
+# The end-to-end half of the P2c contract that T2 checks at task level: the real targets stage and
+# pack a fixture hap, and the packed manifest must agree with the property. Offline: the local
+# OpenHarmony SDK toolchain only (no device, no network).
+section "T9 app-link property -> packed hap (fixture)"
+SDK_ROOT="${OHOS_SDK_ROOT:-${OpenHarmonySdkRoot:-}}"
+if ! command -v "$DOTNET" >/dev/null 2>&1; then
+    skip_ "T9 needs dotnet for the fixture hap"
+elif [ -z "$SDK_ROOT" ] || [ ! -f "$SDK_ROOT/toolchains/lib/ohos_packing_tool" ] || [ ! -f "$SDK_ROOT/toolchains/restool" ]; then
+    skip_ "T9 needs OHOS_SDK_ROOT with toolchains/lib/ohos_packing_tool and toolchains/restool (set OHOS_SDK_ROOT to run)"
+else
+    DOTNET_REAL="$(readlink -f "$(command -v "$DOTNET")" 2>/dev/null || command -v "$DOTNET")"
+    TASKS_DLL="$(dirname "$DOTNET_REAL")/sdk/$("$DOTNET" --version 2>/dev/null)/Sdks/Microsoft.NET.Sdk/tools/net11.0/Microsoft.NET.Build.Tasks.dll"
+    if [ ! -f "$TASKS_DLL" ] || ! tr -d '\0' < "$TASKS_DLL" | grep -aq "OpenHarmonyCodesign"; then
+        skip_ "T9 needs an OpenHarmony-enabled dotnet (Microsoft.NET.Build.Tasks.dll with the ElfSigner task)"
+    else
+        LINKFIX="$WORK/linkfix"
+        rm -rf "$LINKFIX"
+        mkdir -p "$LINKFIX/publish"
+        printf 'probe payload' > "$LINKFIX/publish/probe.dll"
+        cp "$W/packs/Microsoft.OpenHarmony.Sdk/1.0.0-preview.24/hosts/arm64-v8a/libopenharmonyhost.so" "$LINKFIX/publish/libprobe.so"
+        PACKDIR="$W/packs/Microsoft.OpenHarmony.Sdk/1.0.0-preview.24/"
+        python3 - "$LINKFIX" "$REF" "$PACKDIR" <<'PY'
+import os, sys
+fix, targets, packdir = sys.argv[1:4]
+proj = f'''<Project>
+  <PropertyGroup>
+    <AssemblyName>linkprobe</AssemblyName>
+    <OutputPath>bin/e2e/</OutputPath>
+    <RuntimeIdentifier>openharmony-arm64</RuntimeIdentifier>
+    <TargetFileName>probe.dll</TargetFileName>
+    <PublishDir>publish/</PublishDir>
+    <OpenHarmonyHapPackage>true</OpenHarmonyHapPackage>
+    <TargetPlatformIdentifier>openharmony</TargetPlatformIdentifier>
+    <OpenHarmonyHapSigning>false</OpenHarmonyHapSigning>
+    <OpenHarmonyBundleName>com.example.linkprobe</OpenHarmonyBundleName>
+    <OpenHarmonyHapStageDir>stage/</OpenHarmonyHapStageDir>
+    <_OpenHarmonySdkPackDir>{packdir}</_OpenHarmonySdkPackDir>
+  </PropertyGroup>
+  <Import Project="{targets}" />
+  <!-- T9 fixture-only: the Microsoft.Maui.dll embedded-resource staging is unrelated to app
+       links and would need a MAUI reference; replace it with an empty target. -->
+  <Target Name="_OpenHarmonyStageHybridWebViewScript" />
+  <!-- Optional host Exec workaround (see the probe below); absent on healthy hosts. -->
+  <Import Project="$(ExecHook)" Condition=" '$(ExecHook)' != '' and Exists('$(ExecHook)') " />
+</Project>
+'''
+open(os.path.join(fix, 'linkfix.proj'), 'w').write(proj)
+PY
+        # Hosts whose built-in Exec task writes a Windows batch wrapper (the OpenHarmony sandbox):
+        # probe once and substitute an in-process sh Exec, so the shipped target bodies and command
+        # strings are exercised unmodified.
+        EXEC_HOOK=""
+        cat > "$WORK/t9-execprobe.proj" <<'EOF'
+<Project>
+  <Target Name="P"><Exec Command="true" /></Target>
+</Project>
+EOF
+        if ! ( cd "$WORK" && "$DOTNET" msbuild t9-execprobe.proj -t:P -nologo -v:q ) >/dev/null 2>&1; then
+            EXEC_HOOK="$WORK/t9-exec-hook.targets"
+            cat > "$EXEC_HOOK" <<'EOF'
+<Project>
+  <!-- T9 fallback: override the built-in Exec with an in-process /bin/sh runner for hosts whose
+       Exec task writes a Windows batch wrapper (verified on the OpenHarmony sandbox). -->
+  <UsingTask TaskName="Exec" TaskFactory="RoslynCodeTaskFactory" AssemblyFile="$(MSBuildToolsPath)/Microsoft.Build.Tasks.Core.dll">
+    <ParameterGroup>
+      <Command ParameterType="System.String" Required="true" />
+      <WorkingDirectory ParameterType="System.String" Required="false" />
+      <IgnoreExitCode ParameterType="System.Boolean" Required="false" />
+    </ParameterGroup>
+    <Task>
+      <Code Type="Fragment" Language="cs"><![CDATA[
+        var script = System.IO.Path.Combine(System.IO.Path.GetTempPath(), "msbuild-exec-" + System.Guid.NewGuid().ToString("N") + ".sh");
+        System.IO.File.WriteAllText(script, "#!/bin/sh\n" + Command + "\n");
+        var psi = new System.Diagnostics.ProcessStartInfo("/bin/sh", script) { UseShellExecute = false };
+        if (!string.IsNullOrEmpty(WorkingDirectory)) { psi.WorkingDirectory = WorkingDirectory; }
+        var process = System.Diagnostics.Process.Start(psi);
+        process.WaitForExit();
+        System.IO.File.Delete(script);
+        if (process.ExitCode != 0 && !IgnoreExitCode) { Log.LogError("Command exited with code " + process.ExitCode + ": " + Command); }
+      ]]></Code>
+    </Task>
+  </UsingTask>
+</Project>
+EOF
+            log "  T9 note: the built-in Exec task is broken on this host; the fixture uses the in-process sh Exec"
+        fi
+        run_link() { # <log label> <extra msbuild args...>
+            _link_log="$1"; shift
+            ( cd "$LINKFIX" && "$DOTNET" msbuild linkfix.proj -t:_OpenHarmonyPackHap -nologo -v:m \
+                -p:OpenHarmonySdkRoot="$SDK_ROOT" -p:MicrosoftNETBuildTasksAssembly="$TASKS_DLL" \
+                -p:ExecHook="$EXEC_HOOK" "$@" ) > "$WORK/$_link_log.log" 2>&1
+        }
+        HAP="$LINKFIX/bin/e2e/openharmony-arm64/linkprobe-unsigned.hap"
+        check_link_hap() { # <hap> <expected hosts> <true|false> <staged module.json>
+            python3 - "$1" "$2" "$3" "$4" <<'PY'
+import json, os, sys, zipfile
+hap, expected, gate, staged = sys.argv[1:5]
+hosts = [h for h in expected.split(';') if h]
+z = zipfile.ZipFile(hap)
+module = json.loads(z.read('module.json'))
+abilities = module['module']['abilities']
+assert len(abilities) == 1, abilities
+skills = abilities[0]['skills']
+assert len(skills) == 2, skills
+assert skills[0]['entities'] == ['entity.system.home'], skills[0]
+assert skills[0]['actions'] == ['action.system.home'], skills[0]
+link = skills[1]
+assert link['entities'] == ['entity.system.browsable'], link
+assert link['actions'] == ['ohos.want.action.viewData'], link
+assert link['uris'] == [{'scheme': 'https', 'host': h} for h in hosts], link
+if gate == 'true':
+    assert link.get('domainVerify') is True, link
+else:
+    assert 'domainVerify' not in link, link
+app = json.loads(z.read('resources/rawfile/app.json'))
+assert app.get('linkHosts') == hosts, app
+assert app.get('assembly') == 'probe.dll', app
+# The packed manifest must be the staged one (JSON-equal; the packer only strips the final \n).
+if os.path.exists(staged):
+    assert module == json.load(open(staged)), 'packed module.json differs from the staged manifest'
+PY
+        }
+        rm -rf "$LINKFIX/bin" "$LINKFIX/stage"
+        run_link T9-badhost -p:OpenHarmonyAppLinkHosts='exa mple.com'
+        rc=$?
+        [ "$rc" -ne 0 ] && pass_ "T9 an invalid app-link host fails the staged hap build (exit $rc)" \
+                        || fail_ "T9 an invalid app-link host was accepted"
+        grep -qF 'is not a host name' "$WORK/T9-badhost.log" \
+            && pass_ "T9 the invalid-host error names the host rule" \
+            || fail_ "T9 the invalid-host error does not name the host rule"
+        [ ! -e "$HAP" ] && pass_ "T9 the failed build leaves no hap behind" \
+                        || fail_ "T9 the failed build left a hap behind"
+        rm -rf "$LINKFIX/bin" "$LINKFIX/stage"
+        run_link T9-default -p:OpenHarmonyAppLinkHosts='example.com%3Bwww.example.com'
+        rc=$?
+        [ "$rc" -eq 0 ] && [ -f "$HAP" ] && pass_ "T9 the fixture packs a hap with two app-link hosts (exit 0)" \
+                                          || fail_ "T9 the fixture hap build failed (exit $rc; see $WORK/T9-default.log)"
+        if [ -f "$HAP" ]; then
+            check_link_hap "$HAP" 'example.com;www.example.com' true "$LINKFIX/stage/module.json" \
+                && pass_ "T9 the packed module.json uris + domainVerify and app.json linkHosts match OpenHarmonyAppLinkHosts" \
+                || fail_ "T9 the packed hap disagrees with OpenHarmonyAppLinkHosts (see $HAP)"
+        fi
+        rm -rf "$LINKFIX/bin" "$LINKFIX/stage"
+        run_link T9-noverify -p:OpenHarmonyAppLinkHosts='example.com%3Bwww.example.com' -p:OpenHarmonyAppLinkDomainVerify=false
+        rc=$?
+        [ "$rc" -eq 0 ] && [ -f "$HAP" ] || fail_ "T9 the domainVerify=false fixture build failed (exit $rc; see $WORK/T9-noverify.log)"
+        if [ -f "$HAP" ]; then
+            check_link_hap "$HAP" 'example.com;www.example.com' false "$LINKFIX/stage/module.json" \
+                && pass_ "T9 OpenHarmonyAppLinkDomainVerify=false keeps the uris and drops the gate in the packed hap" \
+                || fail_ "T9 the domainVerify=false packed hap is wrong (see $HAP)"
+        fi
+    fi
 fi
 
 
