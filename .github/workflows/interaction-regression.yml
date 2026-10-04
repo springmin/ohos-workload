@@ -40,7 +40,7 @@ on:
         description: 'maui-ohos commit SHA to compile (defaults to the pinned feature/openharmony tip)'
         required: false
         type: string
-        default: '3feb347414f612aa399abe767c06df4d6d431a56'
+        default: '189b87ca8aa00e1b0707ab2b7819b83a2c57c01d'
   push:
     branches: [ master ]
   pull_request:
@@ -52,7 +52,18 @@ permissions:
 
 # Reproducible cross-repo compile: the MAUI slice is checked out at an exact commit, not the
 # mutable feature/openharmony branch, so a push to the fork cannot change what this gate compiles.
-# The default is the feature/openharmony tip: 3feb347414 (SLOTS-DYNAMIC: route the shell
+# The default is the feature/openharmony tip: 189b87ca8a (AUTODISCONNECT: the page, ContentView
+# and Layout handlers watch their element subtree's DescendantRemoved/DescendantAdded events and
+# drive the slice-local overlay-slot lifetime contract - a detached control sends a tagged hide,
+# drops its claim (a dynamic slot is destroyed in the shell) and is marked for a replay, while a
+# re-added/later-arranged control re-claims a slot and replays its load/registration; the handler
+# stays connected, the LRU preempt/restore semantics are unchanged, no new host export, and the
+# suite moves to 587/589 floor 569), on top of 7c731a7ca3 (INTERP-RENDER: gate the per-frame
+# layout pass - Measure/Arrange only runs when the render root/size/safe-area insets/TitleBar row
+# change, the root reports MeasureInvalidated or the slice's layout-invalidation version moves
+# (IView.InvalidateMeasure and ILayoutHandler Add/Remove/Clear/Insert/Update); 22.0 -> 30.1 fps,
+# meas 13.0 -> 0.0 ms, no new host export and the suite stays at 584/586), on top of 3feb347414
+# (SLOTS-DYNAMIC: route the shell
 # overlay-capacity event into the managed pool so the pool can create/destroy dynamic ArkWeb
 # slots on demand; managed/shell-only - no new host export - and the suite count below moves to
 # 584/586), on top of 549967f2f0 (FIX-SLICERACE: a re-entrant connect
@@ -115,15 +126,17 @@ permissions:
 # spans 043e6468, the T10 modal accessibility overlay c56bf0fa, the T1 InputView mapping dcc7eaac
 # and the T2 CookieContainer sync 8241f1b3, all on top of the W-series webview wiring d6325990,
 # the SEC-SCAN-3 S3-DL3 dot-dot route rejection and the HUKS/deep-link hardening. The suite pins
-# 584 checks / total 586 / floor 566 (the N1 host multi-pointer, W10 AOT-entry, FIX-BACKSIZE
-# Back-press, MULTI-OVERLAY-FULL, SLOTS-DYNAMIC, L6/LEGACY and FIX-SLICERACE lines live in this
-# repository's harness and hosting bridge, not in the pinned slice) and the full run is green at
-# this compiled tree (local verification: 584/586, floor 566, both perf lines within budget);
+# 587 checks / total 589 / floor 569 (the N1 host multi-pointer, W10 AOT-entry, FIX-BACKSIZE
+# Back-press, MULTI-OVERLAY-FULL, SLOTS-DYNAMIC, L6/LEGACY, FIX-SLICERACE and the AUTODISCONNECT
+# detach/rebuild drill lines live in this repository's harness and hosting bridge, not in the
+# pinned slice; dual-mode - compiled against the older 3feb347414 pin the suite still runs at
+# 584/586, so the pin advances independently of the harness) and the full run is green at this
+# compiled tree (local verification: 587/589, floor 569, both perf lines within budget);
 # advance the pin
 # deliberately and refresh this comment when the harness pins or the tip move (workflow_dispatch
 # can compile any commit).
 env:
-  MAUI_OHOS_REF: ${{ github.event.inputs.maui_ohos_ref || '3feb347414f612aa399abe767c06df4d6d431a56' }}
+  MAUI_OHOS_REF: ${{ github.event.inputs.maui_ohos_ref || '189b87ca8aa00e1b0707ab2b7819b83a2c57c01d' }}
   # setup-dotnet installs the requested 11.0.x preview into DOTNET_INSTALL_DIR; on Linux that
   # defaults to /usr/share/dotnet, which a per-user cache cannot persist. Point it at ~/.dotnet
   # (the action resolves the ~ prefix against $HOME) so the cache step below actually avoids the
