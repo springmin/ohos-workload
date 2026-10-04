@@ -12,7 +12,7 @@ using Microsoft.Maui.Platform;
 // after the fuzz tail) instead of letting every caller repeat its own threshold constant.
 VerifyLineCountingWriter verifyStdout = new(Console.Out);
 Console.SetOut(verifyStdout);
-const int verifyCheckTotal = 589;                     // +3 AUTODISCONNECT layout-removal detach (dynamic slot destroy + claim release + handler kept) / re-add rebuild (ensure + registration replay on the reclaimed slot) / slice watcher-and-owner wiring pins                     // +6 SLOTS-DYNAMIC dynamic slot growth (ensure/destroy commands), capacity downgrade/event, configurable 2/4 limits, shell lazy/defer pins, 3rd-overlay sample                     // documented full [verify] line count (+3 FIX-SLICERACE concurrent connect/host storm/ pins, +5 L6 screenshot Jpeg format/quality capture/fallback/helper + title heartbeat behavior/source, +6 LEGACY toolbar primary/overflow/icon/events/shell/source, +3 SAMPLE-FIX hybrid bootstrap pack staging / read-only payload handler / stock-script demo, +4 MULTI-OVERLAY-FULL LRU pool/invoke slot codec/per-slot hybrid shell/slice owner wiring, +4 MULTI-OVL slot pool/wire codec/two-overlay shell/slice wiring, +4 FIX-BACKSIZE Back-press forwarding/drawer drill/ shell drawer/BlazorWebView desired size, +4 FIX-WVP overlay px->vp/degenerate-frame/hybrid-overlay arbitration/suspend-restore (shell+slice), +2 FIX-DISMISS flyout drawer dismiss under the device display conditions, +4 FIX-HOME home page arrange/draw (NavigationPage-in-TabbedPage descent), +4 MS-MODE runtime mode switch, +10 P2c-DEEPLINK, +4 P2b-IMG, +16 P1b-LIST, +10 P1a-ANIM, +2 SEC3 storage/deep-link pins, +5 W-series WebView wiring, +3 T1 InputView mapping, +4 T2 WebView gaps, +4 T3 GraphicsView interaction, +7 T10 modal accessibility, +4 T4 Label formatted text, +4 T5 layout semantics, +6 T7 DatePicker calendar/min-max, +4 T9 window title bar, +4 T11 diagnostics overlay, +1 N2 empty ContentPage arrangement, +6 T8 TableView, +5 T8 uneven rows, +7 T6 RTL flow direction, +5 T22 MainThread bridge, +2 FIX-TABBED tabbed CurrentPage, +4 T13 group footer view/N3 picker IsOpen, +5 T21 system font scale, +3 T21 font scale source wiring, +2 A11Y-TABBED tabbed accessibility, +3 N1 host multi-pointer, +5 T12 CarouselView group slides, +7 T14 rich shell flyout, +10 T14 flyout leftovers (MenuItemTemplate/FlyoutContent/AsMultipleItems), +2 FIX-SHELL shell CurrentPage, +2 A11Y-SHELL shell accessibility, +7 T15 rich Shell.TitleView, +8 T16 structured menus, +3 N4 TitleBar accessibility row, +3 T18 Essentials Map, +4 N5 overlay passthrough suppression, +5 N6 window decorations, +4 T20 media bridge, +3 B2 wasm site in a MAUI WebView, +2 W10 NativeAOT managed entry (host libs-dir resolution + shell AOT payload probe), +1 FIX-JSCALL Blazor IPC enum/struct AOT roots (JSCallResultType/JSCallType/NavigationOptions in the slice context + handler static-ctor touch + stub click-probe removed))
+const int verifyCheckTotal = 593;                     // +1 FIX-A11YBUTTON shell self-check absolute position + z-order-above-overlays pin (button reachable with/without a live web control)                     // +3 AUTODISCONNECT layout-removal detach (dynamic slot destroy + claim release + handler kept) / re-add rebuild (ensure + registration replay on the reclaimed slot) / slice watcher-and-owner wiring pins                     // +6 SLOTS-DYNAMIC dynamic slot growth (ensure/destroy commands), capacity downgrade/event, configurable 2/4 limits, shell lazy/defer pins, 3rd-overlay sample                     // documented full [verify] line count (+3 FIX-SLICERACE concurrent connect/host storm/ pins, +5 L6 screenshot Jpeg format/quality capture/fallback/helper + title heartbeat behavior/source, +6 LEGACY toolbar primary/overflow/icon/events/shell/source, +3 SAMPLE-FIX hybrid bootstrap pack staging / read-only payload handler / stock-script demo, +4 MULTI-OVERLAY-FULL LRU pool/invoke slot codec/per-slot hybrid shell/slice owner wiring, +4 MULTI-OVL slot pool/wire codec/two-overlay shell/slice wiring, +4 FIX-BACKSIZE Back-press forwarding/drawer drill/ shell drawer/BlazorWebView desired size, +4 FIX-WVP overlay px->vp/degenerate-frame/hybrid-overlay arbitration/suspend-restore (shell+slice), +2 FIX-DISMISS flyout drawer dismiss under the device display conditions, +4 FIX-HOME home page arrange/draw (NavigationPage-in-TabbedPage descent), +4 MS-MODE runtime mode switch, +10 P2c-DEEPLINK, +4 P2b-IMG, +16 P1b-LIST, +10 P1a-ANIM, +2 SEC3 storage/deep-link pins, +5 W-series WebView wiring, +3 T1 InputView mapping, +4 T2 WebView gaps, +4 T3 GraphicsView interaction, +7 T10 modal accessibility, +4 T4 Label formatted text, +4 T5 layout semantics, +6 T7 DatePicker calendar/min-max, +4 T9 window title bar, +4 T11 diagnostics overlay, +1 N2 empty ContentPage arrangement, +6 T8 TableView, +5 T8 uneven rows, +7 T6 RTL flow direction, +5 T22 MainThread bridge, +2 FIX-TABBED tabbed CurrentPage, +4 T13 group footer view/N3 picker IsOpen, +5 T21 system font scale, +3 T21 font scale source wiring, +2 A11Y-TABBED tabbed accessibility, +3 N1 host multi-pointer, +5 T12 CarouselView group slides, +7 T14 rich shell flyout, +10 T14 flyout leftovers (MenuItemTemplate/FlyoutContent/AsMultipleItems), +2 FIX-SHELL shell CurrentPage, +2 A11Y-SHELL shell accessibility, +7 T15 rich Shell.TitleView, +8 T16 structured menus, +3 N4 TitleBar accessibility row, +3 T18 Essentials Map, +4 N5 overlay passthrough suppression, +5 N6 window decorations, +4 T20 media bridge, +3 B2 wasm site in a MAUI WebView, +2 W10 NativeAOT managed entry (host libs-dir resolution + shell AOT payload probe), +1 FIX-JSCALL Blazor IPC enum/struct AOT roots (JSCallResultType/JSCallType/NavigationOptions in the slice context + handler static-ctor touch + stub click-probe removed), +3 INTERP-DRAW2 draw-cost seam kinds / off-surface cull / translated-node rescue))
 const int verifyCheckFloor = verifyCheckTotal - 20;   // documented floor convention (total - 20)
 
 // A small image file for the Image handler.
@@ -4999,6 +4999,31 @@ Console.WriteLine($"[verify] slots-dynamic shell lazy create/destroy/capacity pa
 if (!slotsDynamicShell)
 {
     throw new InvalidOperationException("the SLOTS-DYNAMIC shell lazy create/destroy/defer/capacity wiring is missing or drifted in a synced pack");
+}
+
+// FIX-A11YBUTTON: the A11Y self-check overlay is absolutely placed in the bottom-left corner
+// and z-ordered above the web overlays. A Stack child's .align() only aligns its own content
+// (the Stack's alignContent decides the child position), so the old .align(Alignment.BottomStart)
+// left the button centered - under an activated ArkWeb, whose positive zIndex composites over
+// chrome at zIndex 0 - and the tester could only reach it after suspending/hiding the web
+// control. The button now uses an Edges position ({ bottom, left }, avoid-area aware) and
+// .zIndex(webZOrderSeq + 1); webZOrderSeq is @State so the value is refreshed on every web
+// activation. Every synced pack carries both.
+bool a11yBtnShell = true;
+foreach (string a11yBtnVersion in wShellVersions)
+{
+    string? a11yBtnShellPath = FindHostSource($"packs/Microsoft.OpenHarmony.Sdk/{a11yBtnVersion}/templates/ets/pages/Index.ets");
+    string a11yBtnShellSource = a11yBtnShellPath is null ? string.Empty : File.ReadAllText(a11yBtnShellPath);
+    a11yBtnShell &= a11yBtnShellSource.Contains("@State webZOrderSeq: number = 0;") &&
+        a11yBtnShellSource.Contains(".position({ bottom: 4 + this.overlayBottomInset(), left: 4 + this.avoidLeft })") &&
+        a11yBtnShellSource.Contains(".zIndex(this.webZOrderSeq + 1)") &&
+        a11yBtnShellSource.Contains("Button('A11Y')") &&
+        !a11yBtnShellSource.Contains(".align(Alignment.BottomStart)");
+}
+Console.WriteLine($"[verify] fix-a11ybtn shell self-check pos/z-order packs=22,23,24,28 reachable={a11yBtnShell} assert={a11yBtnShell}");
+if (!a11yBtnShell)
+{
+    throw new InvalidOperationException("the FIX-A11YBUTTON self-check position/z-order wiring is missing or drifted in a synced pack");
 }
 
 // SLOTS-DYNAMIC sample: the demo grows a third live overlay and can remove it again (slot
@@ -13996,6 +14021,66 @@ if (!sliceRacePinsOk)
     throw new InvalidOperationException("the FIX-SLICERACE serialization (connector lock / host ready gate) is missing from the slice source");
 }
 
+// ---- INTERP-DRAW2: compositor off-surface cull + draw-cost seam -------------------------------
+// The off-surface cull skips a node's own drawing when its canvas rectangle lies outside the
+// render surface and no canvas shift (view translation/scale/rotation or scroll) can move its
+// pixels back in; the subtree is still walked, so a child outside its parent's frame keeps
+// painting. The DrawCostTick seam reports the coarse kind of every node that actually draws.
+// These checks pin the seam kinds, the cull and the translated-node rescue.
+var id2Canvas = new CullProbeCanvas();
+var id2SavedFactory = OpenHarmonyWindowRenderer.CanvasFactory;
+var id2Root = new AbsoluteLayout();
+var id2Near = new Label { Text = "near", FontSize = 10 };
+var id2Far = new Label { Text = "far", FontSize = 10 };
+AbsoluteLayout.SetLayoutBounds(id2Near, new Rect(0, 0, 100, 20));
+AbsoluteLayout.SetLayoutBounds(id2Far, new Rect(0, 3000, 100, 20));
+id2Root.Add(id2Near);
+id2Root.Add(id2Far);
+OpenHarmonyHandlerConnector.ConnectTree(id2Root);
+var id2Kinds = new List<int>();
+try
+{
+    OpenHarmonyWindowRenderer.CanvasFactory = () => id2Canvas;
+    OpenHarmonyWindowRenderer.DrawCostTick = id2Kinds.Add;
+    var id2Renderer = new OpenHarmonyWindowRenderer();
+    bool id2Tall = id2Renderer.Render(id2Root, 400, 4000);
+    int id2TextTall = id2Kinds.Count(k => k == OpenHarmonyWindowRenderer.DrawKindText);
+    int id2ContainersTall = id2Kinds.Count(k => k == OpenHarmonyWindowRenderer.DrawKindContainer);
+    bool id2SeamOk = id2Tall && id2Kinds.Count == 3 && id2TextTall == 2 && id2ContainersTall == 1;
+    Console.WriteLine($"[verify] drawcost seam kinds={string.Join(',', id2Kinds)} text={id2TextTall} container={id2ContainersTall} assert={id2SeamOk}");
+    if (!id2SeamOk)
+    {
+        throw new InvalidOperationException("the DrawCostTick seam no longer reports one kind per drawing node");
+    }
+
+    id2Kinds.Clear();
+    _ = id2Renderer.Render(id2Root, 400, 400);
+    int id2TextSmall = id2Kinds.Count(k => k == OpenHarmonyWindowRenderer.DrawKindText);
+    bool id2CullOk = id2TextSmall == 1;
+    Console.WriteLine($"[verify] draw cull surface=400x400 text={id2TextSmall} of 2 assert={id2CullOk}");
+    if (!id2CullOk)
+    {
+        throw new InvalidOperationException("the off-surface draw cull drifted");
+    }
+
+    id2Kinds.Clear();
+    id2Far.TranslationY = -2950;
+    _ = id2Renderer.Render(id2Root, 400, 400);
+    int id2TextShifted = id2Kinds.Count(k => k == OpenHarmonyWindowRenderer.DrawKindText);
+    bool id2ShiftedOk = id2TextShifted == 2;
+    Console.WriteLine($"[verify] draw cull translated text={id2TextShifted} of 2 assert={id2ShiftedOk}");
+    if (!id2ShiftedOk)
+    {
+        throw new InvalidOperationException("the cull skips a node translated back into the surface");
+    }
+    id2Far.TranslationY = 0;
+}
+finally
+{
+    OpenHarmonyWindowRenderer.DrawCostTick = null;
+    OpenHarmonyWindowRenderer.CanvasFactory = id2SavedFactory;
+}
+
 // The suite's own check-count contract: report what was actually emitted and fail when it is
 // below the declared floor. The CI job and scripts/preflight.sh read this line instead of
 // repeating a threshold constant, so the count has a single source of truth (this file) and
@@ -14027,6 +14112,20 @@ sealed class PerfCanvas : Microsoft.OpenHarmony.Maui.Graphics.OpenHarmonyCanvas
     public override void FillRectangle(float x, float y, float width, float height)
     {
     }
+}
+
+/// <summary>
+/// Cull probe canvas (INTERP-DRAW2): records the text the compositor draws without touching the
+/// native host, so a render's surviving node set is visible to the off-device checks.
+/// </summary>
+sealed class CullProbeCanvas : Microsoft.OpenHarmony.Maui.Graphics.OpenHarmonyCanvas
+{
+    public List<string> Texts { get; } = new();
+
+    public override void DrawString(string value, float x, float y, float width, float height,
+        Microsoft.Maui.Graphics.HorizontalAlignment horizontalAlignment,
+        Microsoft.Maui.Graphics.VerticalAlignment verticalAlignment, float lineSpacingAdjustment = 0)
+        => Texts.Add(value);
 }
 
 /// <summary>

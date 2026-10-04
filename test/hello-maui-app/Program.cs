@@ -44,6 +44,12 @@ public static class Program
         // measure/arrange/draw/accessibility/present phases and emits one line per 5 s.
         FramePhaseProbe.Install();
 #endif
+#if DRAWCOST_PROBE
+        // Opt-in draw-cost telemetry: a timing canvas attributes every save/restore/clip/fill/
+        // stroke/text/transform call to the node kind the compositor is drawing, and emits one
+        // DCH line per 5 s. Installed after the phase probe so both present hooks chain.
+        DrawCostProbe.Install();
+#endif
         var host = mauiApp.Services.GetRequiredService<OpenHarmonyMauiAppHost>();
 
         OpenHarmonyBridge.WriteStatus("[hello-maui-app] starting MAUI application");

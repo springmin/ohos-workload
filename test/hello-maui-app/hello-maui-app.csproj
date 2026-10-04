@@ -61,6 +61,9 @@
     <!-- FRAMEPHASE: -p:FramePhaseProbe=true compiles the per-phase aggregate telemetry in
          (FramePhaseProbe.cs). Off by default; the shipped sample is unaffected. -->
     <DefineConstants Condition=" '$(FramePhaseProbe)' == 'true' ">$(DefineConstants);FRAMEPHASE_PROBE</DefineConstants>
+    <!-- DRAWCOST: -p:DrawCostProbe=true compiles the per-node-kind/per-canvas-op draw-cost
+         telemetry in (DrawCostProbe.cs). Off by default; the shipped sample is unaffected. -->
+    <DefineConstants Condition=" '$(DrawCostProbe)' == 'true' ">$(DefineConstants);DRAWCOST_PROBE</DefineConstants>
   </PropertyGroup>
   <PropertyGroup Condition=" '$(OpenHarmonyAotApp)' == 'true' ">
     <DefineConstants>$(DefineConstants);OPENHARMONY_AOT</DefineConstants>
