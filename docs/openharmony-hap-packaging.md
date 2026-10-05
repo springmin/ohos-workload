@@ -417,7 +417,13 @@ returned the boundary spelling, so every read threw and the **kit #32** host ans
 (FIX-BLZ-PATH). `pack-host.sh --no-csp` (or `BLZ_HOST_NO_CSP=1`) additionally builds the
 diagnostic twin without the HTML shell's CSP header (stripped from the staged copy only): a
 rendering no-CSP twin makes the CSP a contributing cause; a still-dead twin leaves the CSP out
-as a blocker and points at the path fix instead.
+as a blocker and points at the path fix instead. `pack-host.sh --bad-mime` (or
+`BLZ_HOST_BAD_MIME=1`) is the WASM-MIME negative control (staged copy only): the twin serves
+`.wasm` as `application/octet-stream`, so the device run must show Emscripten's forwarded
+`wasm fallback:` warnings next to `wasm mime: ... -> application/octet-stream`. The default
+build logs `wasm mime: ... -> application/wasm` with no fallback line — the application/wasm
+contract (C3 in `2026-10-05-ohos-platform-limitations.md`) is therefore a device-verifiable
+marker pair rather than a silent fallback.
 
 `scripts/verify-kit.sh` asserts the component whenever the hap is present (kit #31+; a kit
 without it only logs that fact): `resources/rawfile/blazor/index.html`, at least one

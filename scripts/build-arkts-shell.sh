@@ -806,7 +806,8 @@ ui_only = ['ohos_dotnet_surface', 'ohos_dotnet_input', '__hwvInvokeDotNet', './m
            'registerTtsSink', 'notifyTtsResult', '@kit.CoreSpeechKit',
            'SystemCapability.AI.TextToSpeech', 'notifyTextComposition',
            'notifyAnimationReduce', '@kit.AccessibilityKit',
-           'SystemCapability.BarrierFree.Accessibility.Core']
+           'SystemCapability.BarrierFree.Accessibility.Core',
+           'application/wasm']
 errors = []
 provenance_ref = None
 abc_ref = {}

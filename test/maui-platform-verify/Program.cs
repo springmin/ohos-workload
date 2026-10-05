@@ -12,7 +12,7 @@ using Microsoft.Maui.Platform;
 // after the fuzz tail) instead of letting every caller repeat its own threshold constant.
 VerifyLineCountingWriter verifyStdout = new(Console.Out);
 Console.SetOut(verifyStdout);
-const int verifyCheckTotal = 595;                     // +2 FIX-A11YFLYOUT a11y walk FlyoutPage Detail/presented-Flyout subtree pins (device nodeCount=1 root cause)                     // +1 FIX-A11YBUTTON shell self-check absolute position + z-order-above-overlays pin (button reachable with/without a live web control)                     // +3 AUTODISCONNECT layout-removal detach (dynamic slot destroy + claim release + handler kept) / re-add rebuild (ensure + registration replay on the reclaimed slot) / slice watcher-and-owner wiring pins                     // +6 SLOTS-DYNAMIC dynamic slot growth (ensure/destroy commands), capacity downgrade/event, configurable 2/4 limits, shell lazy/defer pins, 3rd-overlay sample                     // documented full [verify] line count (+3 FIX-SLICERACE concurrent connect/host storm/ pins, +5 L6 screenshot Jpeg format/quality capture/fallback/helper + title heartbeat behavior/source, +6 LEGACY toolbar primary/overflow/icon/events/shell/source, +3 SAMPLE-FIX hybrid bootstrap pack staging / read-only payload handler / stock-script demo, +4 MULTI-OVERLAY-FULL LRU pool/invoke slot codec/per-slot hybrid shell/slice owner wiring, +4 MULTI-OVL slot pool/wire codec/two-overlay shell/slice wiring, +4 FIX-BACKSIZE Back-press forwarding/drawer drill/ shell drawer/BlazorWebView desired size, +4 FIX-WVP overlay px->vp/degenerate-frame/hybrid-overlay arbitration/suspend-restore (shell+slice), +2 FIX-DISMISS flyout drawer dismiss under the device display conditions, +4 FIX-HOME home page arrange/draw (NavigationPage-in-TabbedPage descent), +4 MS-MODE runtime mode switch, +10 P2c-DEEPLINK, +4 P2b-IMG, +16 P1b-LIST, +10 P1a-ANIM, +2 SEC3 storage/deep-link pins, +5 W-series WebView wiring, +3 T1 InputView mapping, +4 T2 WebView gaps, +4 T3 GraphicsView interaction, +7 T10 modal accessibility, +4 T4 Label formatted text, +4 T5 layout semantics, +6 T7 DatePicker calendar/min-max, +4 T9 window title bar, +4 T11 diagnostics overlay, +1 N2 empty ContentPage arrangement, +6 T8 TableView, +5 T8 uneven rows, +7 T6 RTL flow direction, +5 T22 MainThread bridge, +2 FIX-TABBED tabbed CurrentPage, +4 T13 group footer view/N3 picker IsOpen, +5 T21 system font scale, +3 T21 font scale source wiring, +2 A11Y-TABBED tabbed accessibility, +3 N1 host multi-pointer, +5 T12 CarouselView group slides, +7 T14 rich shell flyout, +10 T14 flyout leftovers (MenuItemTemplate/FlyoutContent/AsMultipleItems), +2 FIX-SHELL shell CurrentPage, +2 A11Y-SHELL shell accessibility, +7 T15 rich Shell.TitleView, +8 T16 structured menus, +3 N4 TitleBar accessibility row, +3 T18 Essentials Map, +4 N5 overlay passthrough suppression, +5 N6 window decorations, +4 T20 media bridge, +3 B2 wasm site in a MAUI WebView, +2 W10 NativeAOT managed entry (host libs-dir resolution + shell AOT payload probe), +1 FIX-JSCALL Blazor IPC enum/struct AOT roots (JSCallResultType/JSCallType/NavigationOptions in the slice context + handler static-ctor touch + stub click-probe removed), +3 INTERP-DRAW2 draw-cost seam kinds / off-surface cull / translated-node rescue))
+const int verifyCheckTotal = 597;                     // +2 WASM-MIME .wasm -> application/wasm mapping in every pack shell + the standalone rawfile host / the host's `wasm mime:` + `wasm fallback:` instrumentation and the pack-host.sh --bad-mime negative control                     // +2 FIX-A11YFLYOUT a11y walk FlyoutPage Detail/presented-Flyout subtree pins (device nodeCount=1 root cause)                     // +1 FIX-A11YBUTTON shell self-check absolute position + z-order-above-overlays pin (button reachable with/without a live web control)                     // +3 AUTODISCONNECT layout-removal detach (dynamic slot destroy + claim release + handler kept) / re-add rebuild (ensure + registration replay on the reclaimed slot) / slice watcher-and-owner wiring pins                     // +6 SLOTS-DYNAMIC dynamic slot growth (ensure/destroy commands), capacity downgrade/event, configurable 2/4 limits, shell lazy/defer pins, 3rd-overlay sample                     // documented full [verify] line count (+3 FIX-SLICERACE concurrent connect/host storm/ pins, +5 L6 screenshot Jpeg format/quality capture/fallback/helper + title heartbeat behavior/source, +6 LEGACY toolbar primary/overflow/icon/events/shell/source, +3 SAMPLE-FIX hybrid bootstrap pack staging / read-only payload handler / stock-script demo, +4 MULTI-OVERLAY-FULL LRU pool/invoke slot codec/per-slot hybrid shell/slice owner wiring, +4 MULTI-OVL slot pool/wire codec/two-overlay shell/slice wiring, +4 FIX-BACKSIZE Back-press forwarding/drawer drill/ shell drawer/BlazorWebView desired size, +4 FIX-WVP overlay px->vp/degenerate-frame/hybrid-overlay arbitration/suspend-restore (shell+slice), +2 FIX-DISMISS flyout drawer dismiss under the device display conditions, +4 FIX-HOME home page arrange/draw (NavigationPage-in-TabbedPage descent), +4 MS-MODE runtime mode switch, +10 P2c-DEEPLINK, +4 P2b-IMG, +16 P1b-LIST, +10 P1a-ANIM, +2 SEC3 storage/deep-link pins, +5 W-series WebView wiring, +3 T1 InputView mapping, +4 T2 WebView gaps, +4 T3 GraphicsView interaction, +7 T10 modal accessibility, +4 T4 Label formatted text, +4 T5 layout semantics, +6 T7 DatePicker calendar/min-max, +4 T9 window title bar, +4 T11 diagnostics overlay, +1 N2 empty ContentPage arrangement, +6 T8 TableView, +5 T8 uneven rows, +7 T6 RTL flow direction, +5 T22 MainThread bridge, +2 FIX-TABBED tabbed CurrentPage, +4 T13 group footer view/N3 picker IsOpen, +5 T21 system font scale, +3 T21 font scale source wiring, +2 A11Y-TABBED tabbed accessibility, +3 N1 host multi-pointer, +5 T12 CarouselView group slides, +7 T14 rich shell flyout, +10 T14 flyout leftovers (MenuItemTemplate/FlyoutContent/AsMultipleItems), +2 FIX-SHELL shell CurrentPage, +2 A11Y-SHELL shell accessibility, +7 T15 rich Shell.TitleView, +8 T16 structured menus, +3 N4 TitleBar accessibility row, +3 T18 Essentials Map, +4 N5 overlay passthrough suppression, +5 N6 window decorations, +4 T20 media bridge, +3 B2 wasm site in a MAUI WebView, +2 W10 NativeAOT managed entry (host libs-dir resolution + shell AOT payload probe), +1 FIX-JSCALL Blazor IPC enum/struct AOT roots (JSCallResultType/JSCallType/NavigationOptions in the slice context + handler static-ctor touch + stub click-probe removed), +3 INTERP-DRAW2 draw-cost seam kinds / off-surface cull / translated-node rescue))
 const int verifyCheckFloor = verifyCheckTotal - 20;   // documented floor convention (total - 20)
 
 // A small image file for the Image handler.
@@ -5784,6 +5784,55 @@ if (!b2StagingOk)
 {
     throw new InvalidOperationException(
         $"the wasm site staging target or the hello-maui-wasm demo is missing or drifted: staging={b2Staging} demo={b2Demo}");
+}
+
+// WASM-MIME: a .wasm response must carry application/wasm, or Blazor's instantiateStreaming
+// falls back to an ArrayBuffer load (perf/memory regression, the MONO_WASM warning pair in
+// dotnet.native.js). The contract is pinned in both rawfile servers: every preview pack's shell
+// maps the extension in hybridMimeType (the payload read takes the response MIME from it), and
+// the standalone rawfile host (test/hello-blazorwasm/arkts-host) maps it too plus logs the
+// one-shot `wasm mime:` evidence line and forwards Emscripten's streaming-fallback warnings as
+// `wasm fallback:`; the device run requires the MIME line and no fallback line, and
+// pack-host.sh --bad-mime (BLZ_HOST_BAD_MIME) is the negative-control build that flips it.
+bool b2WasmMimeShell = true;
+foreach (string b2MimeVersion in wShellVersions)
+{
+    string? b2MimeShellPath = FindHostSource($"packs/Microsoft.OpenHarmony.Sdk/{b2MimeVersion}/templates/ets/pages/Index.ets");
+    string b2MimeShell = b2MimeShellPath is null ? string.Empty : File.ReadAllText(b2MimeShellPath);
+    b2WasmMimeShell &= b2MimeShell.Contains("if (lower.endsWith('.wasm')) {") &&
+        b2MimeShell.Contains("return 'application/wasm';");
+}
+string b2HostPath = FindHostSource("test/hello-blazorwasm/arkts-host/project/entry/src/main/ets/pages/Index.ets") is { } b2HostResolved
+    ? File.ReadAllText(b2HostResolved)
+    : string.Empty;
+bool b2WasmMimeHost = b2HostPath.Contains("if (lower.endsWith('.wasm')) {") &&
+    b2HostPath.Contains("return 'application/wasm';");
+bool b2WasmMimeOk = b2WasmMimeShell && b2WasmMimeHost;
+Console.WriteLine($"[verify] b2 wasm mime shell={b2WasmMimeShell} host={b2WasmMimeHost} packs=22,23,24 assert={b2WasmMimeOk}");
+if (!b2WasmMimeOk)
+{
+    throw new InvalidOperationException(
+        $"the .wasm -> application/wasm mapping is missing or drifted: shell={b2WasmMimeShell} host={b2WasmMimeHost}");
+}
+
+// The device-verifiable half of WASM-MIME: the host's one-shot `wasm mime:` evidence line, the
+// forwarded Emscripten fallback warnings, and the pack-host.sh negative-control switch.
+string b2PackHostPath = FindHostSource("test/hello-blazorwasm/arkts-host/pack-host.sh") is { } b2PackHostResolved
+    ? File.ReadAllText(b2PackHostResolved)
+    : string.Empty;
+bool b2WasmFallbackInstrumented = b2HostPath.Contains("const WASM_FALLBACK_COMPILE = 'wasm streaming compile failed';") &&
+    b2HostPath.Contains("const WASM_FALLBACK_ARRAYBUFFER = 'falling back to ArrayBuffer';") &&
+    b2HostPath.Contains("hilog.warn(DOMAIN, TAG, 'wasm fallback: %{public}s [blz:%{public}s]'") &&
+    b2HostPath.Contains("hilog.info(DOMAIN, TAG, 'wasm mime: %{public}s -> %{public}s'") &&
+    b2HostPath.Contains("this.wasmMimeLogged = true;") &&
+    b2PackHostPath.Contains("--bad-mime") &&
+    b2PackHostPath.Contains("BLZ_HOST_BAD_MIME") &&
+    b2PackHostPath.Contains("return 'application/octet-stream';");
+Console.WriteLine($"[verify] b2 wasm fallback hostInstrumentation={b2WasmFallbackInstrumented} assert={b2WasmFallbackInstrumented}");
+if (!b2WasmFallbackInstrumented)
+{
+    throw new InvalidOperationException(
+        "the wasm MIME evidence/fallback instrumentation or the pack-host.sh --bad-mime control is missing or drifted");
 }
 
 // W10 shell: the payload-in-libs probe accepts the NativeAOT form next to the marker and both

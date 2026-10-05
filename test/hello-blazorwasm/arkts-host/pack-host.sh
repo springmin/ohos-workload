@@ -37,11 +37,18 @@
 #                     default does not, the CSP is at least a contributing cause; if neither
 #                     renders, the path fix is not enough / CSP is not the blocker. The default
 #                     output name gains a -nocsp suffix when --out is not given.
+#   --bad-mime        WASM-MIME negative control: serve `.wasm` as application/octet-stream in
+#                     the staged host page (committed source keeps application/wasm). The device
+#                     run then MUST show Emscripten's `wasm fallback:` console warning next to
+#                     the `wasm mime: ... -> application/octet-stream` line; the default build
+#                     shows `-> application/wasm` with no fallback line. The default output
+#                     name gains a -badmime suffix when --out is not given.
 #   --unsigned-only   stop after packing; copy the unsigned hap to --out for external
 #                     signing (the device-test kit consumes this variant)
 #   --help
 # env:
 #   BLZ_HOST_NO_CSP   =1 is equivalent to --no-csp
+#   BLZ_HOST_BAD_MIME =1 is equivalent to --bad-mime
 #   OHOS_SDK_ROOT / OHOS_SDK   OpenHarmony SDK root (default: newest harmonybrew Cellar
 #                              ohos-sdk install; must hold toolchains/lib/{ohos_packing_tool,
 #                              hap-sign-tool,hap-sign-tool material})
@@ -70,6 +77,7 @@ BUNDLE="com.example.opendotnet"
 SLIM=0
 UNSIGNED_ONLY=0
 NO_CSP="${BLZ_HOST_NO_CSP:-0}"
+BAD_MIME="${BLZ_HOST_BAD_MIME:-0}"
 while [ $# -gt 0 ]; do
     case "$1" in
         --out) shift; OUT="${1:-}" ;;
@@ -77,6 +85,7 @@ while [ $# -gt 0 ]; do
         --bundle) shift; BUNDLE="${1:-}" ;;
         --slim) SLIM=1 ;;
         --no-csp) NO_CSP=1 ;;
+        --bad-mime) BAD_MIME=1 ;;
         --unsigned-only) UNSIGNED_ONLY=1 ;;
         --help|-h) sed -n '2,57p' "$0"; exit 0 ;;
         -*) die "unknown option: $1 (see --help)" ;;
@@ -84,7 +93,7 @@ while [ $# -gt 0 ]; do
     esac
     shift
 done
-[ -n "$SITE" ] || die "usage: pack-host.sh <site-dir> [--out <hap>] [--work <dir>] [--bundle <name>] [--slim] [--no-csp] [--unsigned-only]"
+[ -n "$SITE" ] || die "usage: pack-host.sh <site-dir> [--out <hap>] [--work <dir>] [--bundle <name>] [--slim] [--no-csp] [--bad-mime] [--unsigned-only]"
 [ -f "$SITE/index.html" ] || die "$SITE does not look like a Blazor site (no index.html)"
 SITE="$(cd "$SITE" && pwd)"
 if [ -z "$OUT" ]; then
@@ -94,6 +103,7 @@ if [ -z "$OUT" ]; then
         OUT="$SELF/out/hello-blazorwasm-host-signed.hap"
     fi
     [ "$NO_CSP" = 1 ] && OUT="${OUT%.hap}-nocsp.hap"
+    [ "$BAD_MIME" = 1 ] && OUT="${OUT%.hap}-badmime.hap"
 fi
 WORK="${WORK:-$SELF/out/host-work}"
 
@@ -183,6 +193,31 @@ replacement = """    // BLZ_HOST_NO_CSP diagnostic build: no Content-Security-Po
 with open(path, 'w', encoding='utf-8') as f:
     f.write(src.replace(needle, replacement))
 print("   no-csp: removed the HTML Content-Security-Policy header push")
+PY
+fi
+
+# ---- diagnostic bad-MIME variant (WASM-MIME negative control) ----------------
+# The default build maps .wasm to application/wasm (the contract Blazor's instantiateStreaming
+# needs). The --bad-mime twin flips only that mapping in the staged copy (the committed source
+# keeps the correct MIME), so the device run can prove the marker pair: the default logs
+# `wasm mime: ... -> application/wasm` with no `wasm fallback:` line, while this twin MUST log
+# `-> application/octet-stream` next to Emscripten's streaming-fallback warnings.
+if [ "$BAD_MIME" = 1 ]; then
+    info "bad-mime: serving .wasm as application/octet-stream in the staged host page"
+    python3 - "$WORK/project/entry/src/main/ets/pages/Index.ets" <<'PY'
+import sys
+path = sys.argv[1]
+with open(path, encoding='utf-8') as f:
+    src = f.read()
+needle = "    return 'application/wasm';"
+if src.count(needle) != 1:
+    raise SystemExit("--bad-mime: the .wasm MIME return was not found exactly once in " + path)
+replacement = ("    // BLZ_HOST_BAD_MIME diagnostic build: the negative control serves the wasm payload\n"
+               "    // with the wrong content type, so instantiateStreaming falls back to ArrayBuffer.\n"
+               "    return 'application/octet-stream';")
+with open(path, 'w', encoding='utf-8') as f:
+    f.write(src.replace(needle, replacement))
+print("   bad-mime: .wasm now resolves to application/octet-stream")
 PY
 fi
 
@@ -427,6 +462,12 @@ if [ "$NO_CSP" = 1 ]; then
     echo "    csp: disabled (BLZ_HOST_NO_CSP diagnostic A/B twin; the default build serves the CSP)"
 else
     echo "    csp: SEC-SCAN-3 minimal policy on the HTML shell"
+fi
+if [ "$BAD_MIME" = 1 ]; then
+    echo "    wasm mime: application/octet-stream (BLZ_HOST_BAD_MIME negative-control twin;"
+    echo "               the default build serves application/wasm)"
+else
+    echo "    wasm mime: application/wasm (WASM-MIME; the first served .wasm logs 'wasm mime:')"
 fi
 if [ "$UNSIGNED_ONLY" = 1 ]; then
     echo "    unsigned: sign before installing, e.g."

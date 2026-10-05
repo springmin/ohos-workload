@@ -46,6 +46,12 @@ device).
   publish does; `--slim` embeds without them and the plain files are used).
 - `BLZ_*` console messages are forwarded to hilog (`BlazorWebHost ... marker: BLZ_BOOT /
   BLZ_RENDERED / BLZ_ERROR ...`) as machine-readable pass criteria for the tester flow.
+- WASM-MIME evidence: the first `.wasm` response logs
+  `BlazorWebHost ... wasm mime: <path> -> application/wasm`, and Emscripten's streaming
+  fallback console warnings (`wasm streaming compile failed` / `falling back to ArrayBuffer`)
+  are forwarded as `... wasm fallback: ...` lines. A healthy device run therefore shows the
+  `wasm mime:` line with no `wasm fallback:` line (a wrong MIME degrades Blazor's
+  `instantiateStreaming` to an ArrayBuffer load and flips the pair).
 - The pattern is the one the in-product HybridWebView/BlazorWebView asset bridge uses
   (`packs/Microsoft.OpenHarmony.Sdk/<ver>/templates/ets/pages/Index.ets`).
 
@@ -55,7 +61,7 @@ The page deliberately keeps the repository's ArKTS source contract: `@kit.*` imp
 ## Packing
 
 ```sh
-pack-host.sh <site-dir> [--out <hap>] [--work <dir>] [--bundle <name>] [--slim] [--no-csp] [--unsigned-only]
+pack-host.sh <site-dir> [--out <hap>] [--work <dir>] [--bundle <name>] [--slim] [--no-csp] [--bad-mime] [--unsigned-only]
 ```
 
 `<site-dir>` is the directory containing `index.html` (normally `<publish>/wwwroot`; publish
@@ -72,7 +78,15 @@ committed page and its unit tests keep the CSP (SEC-SCAN-3 S3-AW2). Use it on a 
 decide whether the CSP is a cause of an ArkWeb render failure: if the no-CSP twin renders
 where the default does not, the CSP is at least a contributing cause; if neither renders, the
 CSP is not the blocker and the FIX-BLZ-PATH read path is the thing to verify. The default
-output name gains a `-nocsp` suffix when `--out` is not given. The script:
+output name gains a `-nocsp` suffix when `--out` is not given.
+
+`--bad-mime` (or `BLZ_HOST_BAD_MIME=1`) is the WASM-MIME negative control: only the staged
+page's `.wasm` MIME return is changed to `application/octet-stream` (the committed page keeps
+`application/wasm`), so a device run must then log `wasm mime: ... -> application/octet-stream`
+together with Emscripten's forwarded `wasm fallback:` warnings. Running it once proves the
+default build's absence of the fallback line is a real streaming-path signal, not missing
+instrumentation. The default output name gains a `-badmime` suffix when `--out` is not given.
+The script:
 
 1. stages `project/` into the work dir and writes `local.properties` + `build-profile.json5`
    (version-nested SDK symlink root, signing material under the SDK's `toolchains/lib`);

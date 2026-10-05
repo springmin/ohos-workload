@@ -24,7 +24,10 @@
 // Diagnostic markers: the page reports BLZ_* console messages (BLZ_BOOT after window load,
 // BLZ_RENDERED after the first Blazor render, BLZ_ERROR on failures) and they are forwarded
 // to hilog under TAG, so a tester can check `hilog | grep BlazorWebHost` for a machine
-// verdict.
+// verdict. The MIME contract is observable too (WASM-MIME): the first .wasm response logs
+// `wasm mime: ... -> application/wasm`, and Emscripten's streaming fallback warnings
+// (`wasm streaming compile failed` / `falling back to ArrayBuffer`) are forwarded as
+// `wasm fallback:` lines, so a streaming run shows the MIME line and no fallback line.
 import { webview as web_webview } from '@kit.ArkWeb';
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import { common } from '@kit.AbilityKit';
@@ -39,6 +42,13 @@ const ORIGIN = 'https://blazor.local/';
 // another process writing BLZ_BOOT into hilog cannot know. The probe's host-pid binding is the
 // primary anti-forgery check; this token adds a second, independent one.
 const BLZ_NONCE_QUERY = 'blz_nonce';
+// Emscripten's wasm streaming fallback (dotnet.native.js): instantiateStreaming fails when the
+// response does not carry application/wasm (or streaming is unavailable) and the runtime logs
+// these two warnings before re-loading the payload through ArrayBuffer. Forwarding them makes
+// the MIME contract a device-verifiable marker pair: `wasm mime:` present and no
+// `wasm fallback:` line means the payload streamed with the right content type.
+const WASM_FALLBACK_COMPILE = 'wasm streaming compile failed';
+const WASM_FALLBACK_ARRAYBUFFER = 'falling back to ArrayBuffer';
 // Minimal CSP for the served Blazor WASM shell. script-src keeps 'unsafe-inline' because the
 // published index.html registers the BLZ_* window listeners inline and 'wasm-unsafe-eval'
 // because the .NET WASM runtime starts from blazor.webassembly*.js (no 'unsafe-eval'). The
@@ -201,6 +211,9 @@ struct Index {
   private controller: web_webview.WebviewController = new web_webview.WebviewController();
   private rawFiles: resourceManager.ResourceManager | undefined = undefined;
   private sessionNonce: string = '';
+  // One-shot guard for the served-MIME evidence line (WASM-MIME); the first .wasm response logs
+  // what the host declared, so the device run has a positive application/wasm marker.
+  private wasmMimeLogged: boolean = false;
 
   // The token is created once per host page instance: a reload of the same page keeps it, a
   // fresh instance (relaunch) gets a new one. The probe binds the markers it reads in one
@@ -348,9 +361,16 @@ struct Index {
       return this.errorResponse(404);
     }
 
+    const mime: string = mimeTypeOf(resolved);
+    if (mime === 'application/wasm' && !this.wasmMimeLogged) {
+      // WASM-MIME device evidence: one line per page serve proving the host declared
+      // application/wasm for the payload (paired with the absence of `wasm fallback:` lines).
+      this.wasmMimeLogged = true;
+      hilog.info(DOMAIN, TAG, 'wasm mime: %{public}s -> %{public}s', resolved, mime);
+    }
     const response: WebResourceResponse = new WebResourceResponse();
     response.setResponseCode(200);
-    response.setResponseMimeType(mimeTypeOf(resolved));
+    response.setResponseMimeType(mime);
     response.setResponseEncoding('utf-8');
     response.setResponseHeader(this.successHeaders(resolved, served.coding));
     response.setResponseData(served.bytes.buffer as ArrayBuffer);
@@ -390,6 +410,12 @@ struct Index {
             // The marker keeps its BLZ_* prefix and gains the session token; the probe
             // requires both the prefix and the token it read from the announcement.
             hilog.info(DOMAIN, TAG, 'marker: %{public}s [blz:%{public}s]', message, this.sessionNonce);
+          } else if (message.indexOf(WASM_FALLBACK_COMPILE) >= 0
+            || message.indexOf(WASM_FALLBACK_ARRAYBUFFER) >= 0) {
+            // WASM-MIME negative signal: the Emscripten streaming compile failed and the
+            // runtime fell back to ArrayBuffer; the MIME contract is broken (or streaming is
+            // unavailable). A healthy run carries no line here.
+            hilog.warn(DOMAIN, TAG, 'wasm fallback: %{public}s [blz:%{public}s]', message, this.sessionNonce);
           }
           return false;
         })
