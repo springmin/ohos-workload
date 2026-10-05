@@ -56,6 +56,9 @@ public sealed class App : Application
 
     protected override Window CreateWindow(IActivationState? activationState)
     {
+#if STARTUP_PROBE
+        StartupProbe.Mark("create-window");
+#endif
         // The window hosts a flyout page (drawer) whose detail is a tabbed page; the main page
         // itself lives in a navigation page so the slice exercises every page type.
         var window = new Window(new FlyoutPage
@@ -93,6 +96,11 @@ public sealed class App : Application
         // the probe here (cold-start wants are owned by OpenHarmonyAppLinks, the first
         // Activation subscriber, so this handler intentionally serves the warm path).
         OpenHarmonyBridge.Activation += OnActivation;
+#if STARTUP_PROBE
+        window.Created += (_, _) => StartupProbe.Mark("created");
+        window.Activated += (_, _) => StartupProbe.Mark("activated");
+        StartupProbe.Mark("window-built");
+#endif
         return window;
     }
 

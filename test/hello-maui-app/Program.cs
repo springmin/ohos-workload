@@ -21,6 +21,9 @@ public static class Program
 
     public static int Run(string[] args)
     {
+#if STARTUP_PROBE
+        StartupProbe.Install();
+#endif
         var builder = MauiApp.CreateBuilder();
         builder.UseOpenHarmony();
         builder.UseMauiApp<App>();
@@ -34,6 +37,9 @@ public static class Program
         builder.Services.AddMauiBlazorWebView().UsePlatformHandler<OpenHarmonyBlazorWebViewHandler>();
 
         var mauiApp = builder.Build();
+#if STARTUP_PROBE
+        StartupProbe.Mark("built");
+#endif
 #if FRAMEPACING_PROBE
         // Opt-in telemetry: subscribes to the frame callback before the host (whose ctor
         // subscribes) so a callback can be timed through to its present. See FramePacingProbe.cs.
@@ -51,8 +57,14 @@ public static class Program
         DrawCostProbe.Install();
 #endif
         var host = mauiApp.Services.GetRequiredService<OpenHarmonyMauiAppHost>();
+#if STARTUP_PROBE
+        StartupProbe.Mark("services");
+#endif
 
         OpenHarmonyBridge.WriteStatus("[hello-maui-app] starting MAUI application");
+#if STARTUP_PROBE
+        StartupProbe.Mark("run");
+#endif
         host.Run(mauiApp.Services.GetRequiredService<IApplication>());
 
         using var finished = new ManualResetEventSlim(false);
