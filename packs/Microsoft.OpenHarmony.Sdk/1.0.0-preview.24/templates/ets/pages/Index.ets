@@ -730,6 +730,10 @@ struct Index {
   // host.notifyDisplay on display.on('change'). Registered once per page.
   private batteryEventsRegistered: boolean = false;
   private displayChangeRegistered: boolean = false;
+  // MULTIWINDOW-S: the main window's size/free-window observers are registered once per page
+  // (see subscribeWindowShapeChange); the flag keeps a repeated aboutToAppear idempotent and
+  // the disposer unregisters the exact callbacks.
+  private windowShapeRegistered: boolean = false;
   // Bundle metadata (Essentials IAppInfo version/build/name): published to the host once at
   // page load from the bundle manager (see reportBundleInfo), guarded so a page reappearance
   // does not re-read it.
@@ -2051,6 +2055,84 @@ struct Index {
     } catch (displayEventError) {
       this.logError(`[maui] display change events unavailable: ${(displayEventError as Error).message}`);
     }
+  }
+
+  // Safe area: mirrors the window's system avoid area onto the shell's overlay insets (the
+  // A11Y button/menu) and forwards it to the managed SafeArea. Called at startup and on a
+  // window size change (MULTIWINDOW-S), which can move the system bars on 2in1.
+  private reportWindowAvoidArea(win: window.Window): void {
+    const area = win.getWindowAvoidArea(window.AvoidAreaType.TYPE_SYSTEM);
+    this.avoidTop = area.topRect.height;
+    this.avoidBottom = area.bottomRect.height;
+    this.avoidLeft = area.leftRect.width;
+    this.avoidRight = area.rightRect.width;
+    this.hostCall('notifyAvoidArea', typeof host !== 'undefined' && typeof host.notifyAvoidArea === 'function', (): void => {
+      host.notifyAvoidArea(area.topRect.height, area.bottomRect.height,
+                           area.leftRect.width, area.rightRect.width);
+    });
+  }
+
+  // MULTIWINDOW-S (A0 2in1 form adaptation): the ability declares supportWindowModes
+  // (fullscreen/split/floating, see module.json.template), so the 2in1 window can be resized,
+  // split or put into free window mode. The page (and its 100% XComponent) follows the new
+  // size and the native host re-arranges the managed window through the surface callback; this
+  // observer records the shape change and re-reads the avoid area, which can move with the
+  // window. Best effort: a runtime without isInFreeWindowMode only costs the mode read.
+  private subscribeWindowShapeChange(): void {
+    if (this.windowShapeRegistered) {
+      return;
+    }
+    window.getLastWindow(this.hostContext()).then((win) => {
+      if (this.windowShapeRegistered) {
+        return;
+      }
+      const sizeListener = (size: window.Size): void => {
+        let free: string = '?';
+        try {
+          free = win.isInFreeWindowMode() ? 'true' : 'false';
+        } catch {
+          // A runtime without the free-window syscap keeps the unknown marker.
+        }
+        this.logInfo(`[maui] window size change: ${size.width}x${size.height} free=${free}`);
+        try {
+          this.reportWindowAvoidArea(win);
+        } catch (avoidError) {
+          this.logError(`[maui] window avoid area re-read failed: ${(avoidError as Error).message}`);
+        }
+      };
+      const freeListener = (free: boolean): void => {
+        this.logInfo(`[maui] free window mode: ${free}`);
+      };
+      try {
+        win.on('windowSizeChange', sizeListener);
+        win.on('freeWindowModeChange', freeListener);
+        this.trackDisposer((): void => {
+          try {
+            win.off('windowSizeChange', sizeListener);
+          } catch {
+            // A disposed window makes the unregister a no-op.
+          }
+          try {
+            win.off('freeWindowModeChange', freeListener);
+          } catch {
+            // A disposed window makes the unregister a no-op.
+          }
+          this.windowShapeRegistered = false;
+        });
+        this.windowShapeRegistered = true;
+        let freeNow: string = '?';
+        try {
+          freeNow = win.isInFreeWindowMode() ? 'true' : 'false';
+        } catch {
+          // Same syscap guard as the listener above.
+        }
+        this.logInfo(`[maui] window shape baseline: free=${freeNow}`);
+      } catch (shapeError) {
+        this.logError(`[maui] window shape observers unavailable: ${(shapeError as Error).message}`);
+      }
+    }).catch((shapeWindowError: Error): void => {
+      this.logError(`[maui] window shape window unavailable: ${shapeWindowError.message}`);
+    });
   }
 
   // Connectivity (Essentials): the NetworkKit connection observer pushes host.notifyNetworkAccess
@@ -4190,6 +4272,7 @@ struct Index {
     this.reportBundleInfo();
     this.subscribeBatteryEvents();
     this.subscribeDisplayChange();
+    this.subscribeWindowShapeChange();
     this.subscribeNetworkChanges();
     // Device-compat (lazy SDK modules): the camera module is needed by the synchronous
     // flashlight sink and by the picker's camera position, so it is preloaded once here.
@@ -4288,16 +4371,7 @@ struct Index {
     // subscribe to the keyboard's avoid-area change so the soft-input inset reaches the managed
     // SafeArea (SafeAreaEdges.SoftInput/All) through host.notifySoftInputArea.
     window.getLastWindow(this.hostContext()).then((win) => {
-      const area = win.getWindowAvoidArea(window.AvoidAreaType.TYPE_SYSTEM);
-      // Overlay avoid-area: the overlay controls below are inset from the system bars.
-      this.avoidTop = area.topRect.height;
-      this.avoidBottom = area.bottomRect.height;
-      this.avoidLeft = area.leftRect.width;
-      this.avoidRight = area.rightRect.width;
-      this.hostCall('notifyAvoidArea', typeof host !== 'undefined' && typeof host.notifyAvoidArea === 'function', (): void => {
-        host.notifyAvoidArea(area.topRect.height, area.bottomRect.height,
-                             area.leftRect.width, area.rightRect.width);
-      });
+      this.reportWindowAvoidArea(win);
     }).catch(() => {
       // Window information is optional.
     });

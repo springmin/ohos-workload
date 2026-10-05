@@ -12,7 +12,7 @@ using Microsoft.Maui.Platform;
 // after the fuzz tail) instead of letting every caller repeat its own threshold constant.
 VerifyLineCountingWriter verifyStdout = new(Console.Out);
 Console.SetOut(verifyStdout);
-const int verifyCheckTotal = 598;                     // +1 AOT-STARTUP first-use ArkWeb overlay mount gate (state flag + ensureWebSlot flip/log + build gate order) protects the -262 ms AOT startup fix + host identical-context replay skip pin // +2 WASM-MIME .wasm -> application/wasm mapping in every pack shell + the standalone rawfile host / the host's `wasm mime:` + `wasm fallback:` instrumentation and the pack-host.sh --bad-mime negative control                     // +2 FIX-A11YFLYOUT a11y walk FlyoutPage Detail/presented-Flyout subtree pins (device nodeCount=1 root cause)                     // +1 FIX-A11YBUTTON shell self-check absolute position + z-order-above-overlays pin (button reachable with/without a live web control)                     // +3 AUTODISCONNECT layout-removal detach (dynamic slot destroy + claim release + handler kept) / re-add rebuild (ensure + registration replay on the reclaimed slot) / slice watcher-and-owner wiring pins                     // +6 SLOTS-DYNAMIC dynamic slot growth (ensure/destroy commands), capacity downgrade/event, configurable 2/4 limits, shell lazy/defer pins, 3rd-overlay sample                     // documented full [verify] line count (+3 FIX-SLICERACE concurrent connect/host storm/ pins, +5 L6 screenshot Jpeg format/quality capture/fallback/helper + title heartbeat behavior/source, +6 LEGACY toolbar primary/overflow/icon/events/shell/source, +3 SAMPLE-FIX hybrid bootstrap pack staging / read-only payload handler / stock-script demo, +4 MULTI-OVERLAY-FULL LRU pool/invoke slot codec/per-slot hybrid shell/slice owner wiring, +4 MULTI-OVL slot pool/wire codec/two-overlay shell/slice wiring, +4 FIX-BACKSIZE Back-press forwarding/drawer drill/ shell drawer/BlazorWebView desired size, +4 FIX-WVP overlay px->vp/degenerate-frame/hybrid-overlay arbitration/suspend-restore (shell+slice), +2 FIX-DISMISS flyout drawer dismiss under the device display conditions, +4 FIX-HOME home page arrange/draw (NavigationPage-in-TabbedPage descent), +4 MS-MODE runtime mode switch, +10 P2c-DEEPLINK, +4 P2b-IMG, +16 P1b-LIST, +10 P1a-ANIM, +2 SEC3 storage/deep-link pins, +5 W-series WebView wiring, +3 T1 InputView mapping, +4 T2 WebView gaps, +4 T3 GraphicsView interaction, +7 T10 modal accessibility, +4 T4 Label formatted text, +4 T5 layout semantics, +6 T7 DatePicker calendar/min-max, +4 T9 window title bar, +4 T11 diagnostics overlay, +1 N2 empty ContentPage arrangement, +6 T8 TableView, +5 T8 uneven rows, +7 T6 RTL flow direction, +5 T22 MainThread bridge, +2 FIX-TABBED tabbed CurrentPage, +4 T13 group footer view/N3 picker IsOpen, +5 T21 system font scale, +3 T21 font scale source wiring, +2 A11Y-TABBED tabbed accessibility, +3 N1 host multi-pointer, +5 T12 CarouselView group slides, +7 T14 rich shell flyout, +10 T14 flyout leftovers (MenuItemTemplate/FlyoutContent/AsMultipleItems), +2 FIX-SHELL shell CurrentPage, +2 A11Y-SHELL shell accessibility, +7 T15 rich Shell.TitleView, +8 T16 structured menus, +3 N4 TitleBar accessibility row, +3 T18 Essentials Map, +4 N5 overlay passthrough suppression, +5 N6 window decorations, +4 T20 media bridge, +3 B2 wasm site in a MAUI WebView, +2 W10 NativeAOT managed entry (host libs-dir resolution + shell AOT payload probe), +1 FIX-JSCALL Blazor IPC enum/struct AOT roots (JSCallResultType/JSCallType/NavigationOptions in the slice context + handler static-ctor touch + stub click-probe removed), +3 INTERP-DRAW2 draw-cost seam kinds / off-surface cull / translated-node rescue))
+const int verifyCheckTotal = 600;                     // +1 AOT-STARTUP first-use ArkWeb overlay mount gate (state flag + ensureWebSlot flip/log + build gate order) protects the -262 ms AOT startup fix + host identical-context replay skip pin // +2 MULTIWINDOW-S surface resize: the Created/Changed arrange gate (Destroyed/0x0 rejected) + the Changed replay re-arranging the window frame while Destroyed keeps it (A0 form adaptation)                     // +2 WASM-MIME .wasm -> application/wasm mapping in every pack shell + the standalone rawfile host / the host's `wasm mime:` + `wasm fallback:` instrumentation and the pack-host.sh --bad-mime negative control                     // +2 FIX-A11YFLYOUT a11y walk FlyoutPage Detail/presented-Flyout subtree pins (device nodeCount=1 root cause)                     // +1 FIX-A11YBUTTON shell self-check absolute position + z-order-above-overlays pin (button reachable with/without a live web control)                     // +3 AUTODISCONNECT layout-removal detach (dynamic slot destroy + claim release + handler kept) / re-add rebuild (ensure + registration replay on the reclaimed slot) / slice watcher-and-owner wiring pins                     // +6 SLOTS-DYNAMIC dynamic slot growth (ensure/destroy commands), capacity downgrade/event, configurable 2/4 limits, shell lazy/defer pins, 3rd-overlay sample                     // documented full [verify] line count (+3 FIX-SLICERACE concurrent connect/host storm/ pins, +5 L6 screenshot Jpeg format/quality capture/fallback/helper + title heartbeat behavior/source, +6 LEGACY toolbar primary/overflow/icon/events/shell/source, +3 SAMPLE-FIX hybrid bootstrap pack staging / read-only payload handler / stock-script demo, +4 MULTI-OVERLAY-FULL LRU pool/invoke slot codec/per-slot hybrid shell/slice owner wiring, +4 MULTI-OVL slot pool/wire codec/two-overlay shell/slice wiring, +4 FIX-BACKSIZE Back-press forwarding/drawer drill/ shell drawer/BlazorWebView desired size, +4 FIX-WVP overlay px->vp/degenerate-frame/hybrid-overlay arbitration/suspend-restore (shell+slice), +2 FIX-DISMISS flyout drawer dismiss under the device display conditions, +4 FIX-HOME home page arrange/draw (NavigationPage-in-TabbedPage descent), +4 MS-MODE runtime mode switch, +10 P2c-DEEPLINK, +4 P2b-IMG, +16 P1b-LIST, +10 P1a-ANIM, +2 SEC3 storage/deep-link pins, +5 W-series WebView wiring, +3 T1 InputView mapping, +4 T2 WebView gaps, +4 T3 GraphicsView interaction, +7 T10 modal accessibility, +4 T4 Label formatted text, +4 T5 layout semantics, +6 T7 DatePicker calendar/min-max, +4 T9 window title bar, +4 T11 diagnostics overlay, +1 N2 empty ContentPage arrangement, +6 T8 TableView, +5 T8 uneven rows, +7 T6 RTL flow direction, +5 T22 MainThread bridge, +2 FIX-TABBED tabbed CurrentPage, +4 T13 group footer view/N3 picker IsOpen, +5 T21 system font scale, +3 T21 font scale source wiring, +2 A11Y-TABBED tabbed accessibility, +3 N1 host multi-pointer, +5 T12 CarouselView group slides, +7 T14 rich shell flyout, +10 T14 flyout leftovers (MenuItemTemplate/FlyoutContent/AsMultipleItems), +2 FIX-SHELL shell CurrentPage, +2 A11Y-SHELL shell accessibility, +7 T15 rich Shell.TitleView, +8 T16 structured menus, +3 N4 TitleBar accessibility row, +3 T18 Essentials Map, +4 N5 overlay passthrough suppression, +5 N6 window decorations, +4 T20 media bridge, +3 B2 wasm site in a MAUI WebView, +2 W10 NativeAOT managed entry (host libs-dir resolution + shell AOT payload probe), +1 FIX-JSCALL Blazor IPC enum/struct AOT roots (JSCallResultType/JSCallType/NavigationOptions in the slice context + handler static-ctor touch + stub click-probe removed), +3 INTERP-DRAW2 draw-cost seam kinds / off-surface cull / translated-node rescue))
 const int verifyCheckFloor = verifyCheckTotal - 20;   // documented floor convention (total - 20)
 
 // A small image file for the Image handler.
@@ -14196,6 +14196,46 @@ finally
     OpenHarmonyWindowRenderer.DrawCostTick = null;
     OpenHarmonyWindowRenderer.CanvasFactory = id2SavedFactory;
 }
+
+// A0 multi-window form adaptation: the app host must re-arrange on a live surface resize
+// (Changed), not only on the first Created publish, and must keep the last frame for a
+// Destroyed/0x0 report. The gate predicate is checked directly, then a Changed replay drives
+// the real bridge -> host handler and the window frame must follow the new size.
+Microsoft.OpenHarmony.Hosting.OpenHarmonySurfaceInfo resizeCreatedSurface =
+    new(IntPtr.Zero, 1080, 1920, Microsoft.OpenHarmony.Hosting.OpenHarmonySurfaceState.Created);
+Microsoft.OpenHarmony.Hosting.OpenHarmonySurfaceInfo resizeChangedSurface =
+    new(IntPtr.Zero, 800, 1200, Microsoft.OpenHarmony.Hosting.OpenHarmonySurfaceState.Changed);
+Microsoft.OpenHarmony.Hosting.OpenHarmonySurfaceInfo resizeDestroyedSurface =
+    new(IntPtr.Zero, 0, 0, Microsoft.OpenHarmony.Hosting.OpenHarmonySurfaceState.Destroyed);
+Microsoft.OpenHarmony.Hosting.OpenHarmonySurfaceInfo resizeZeroChangedSurface =
+    new(IntPtr.Zero, 0, 0, Microsoft.OpenHarmony.Hosting.OpenHarmonySurfaceState.Changed);
+bool resizeGateCreated = OpenHarmonyMauiAppHost.CanArrangeSurface(resizeCreatedSurface);
+bool resizeGateChanged = OpenHarmonyMauiAppHost.CanArrangeSurface(resizeChangedSurface);
+bool resizeGateDestroyed = OpenHarmonyMauiAppHost.CanArrangeSurface(resizeDestroyedSurface);
+bool resizeGateZero = OpenHarmonyMauiAppHost.CanArrangeSurface(resizeZeroChangedSurface);
+bool resizeGateOk = resizeGateCreated && resizeGateChanged && !resizeGateDestroyed && !resizeGateZero;
+Console.WriteLine($"[verify] surface resize gate created={resizeGateCreated} changed={resizeGateChanged} destroyed={resizeGateDestroyed} zero={resizeGateZero} assert={resizeGateOk}");
+if (!resizeGateOk)
+{
+    throw new InvalidOperationException("the surface arrange gate no longer accepts Created/Changed and rejects Destroyed/0x0");
+}
+FieldInfo resizeSurfaceField = typeof(Microsoft.OpenHarmony.Hosting.OpenHarmonyBridge)
+    .GetField("s_surfaceHandlers", BindingFlags.NonPublic | BindingFlags.Static)
+    ?? throw new InvalidOperationException("OpenHarmonyBridge.s_surfaceHandlers was not found; the surface resize drill replays SurfaceChanged");
+void ReplayResizeSurface(Microsoft.OpenHarmony.Hosting.OpenHarmonySurfaceInfo surface)
+    => ((Action<Microsoft.OpenHarmony.Hosting.OpenHarmonySurfaceInfo>?)resizeSurfaceField.GetValue(null))?.Invoke(surface);
+Microsoft.Maui.Controls.Window resizeWindow = (Microsoft.Maui.Controls.Window)window;
+ReplayResizeSurface(resizeChangedSurface);
+bool resizeArranged = resizeWindow.Width == 800 && resizeWindow.Height == 1200;
+ReplayResizeSurface(resizeDestroyedSurface);
+bool resizeDestroyedKeepsFrame = resizeWindow.Width == 800 && resizeWindow.Height == 1200;
+bool resizeReplayOk = resizeArranged && resizeDestroyedKeepsFrame;
+Console.WriteLine($"[verify] surface resize changed frame={resizeWindow.Width}x{resizeWindow.Height} destroyedKeeps={resizeDestroyedKeepsFrame} assert={resizeReplayOk}");
+if (!resizeReplayOk)
+{
+    throw new InvalidOperationException("a Changed surface did not re-arrange the window frame, or Destroyed moved it");
+}
+host.Arrange(1080, 1920);
 
 // The suite's own check-count contract: report what was actually emitted and fail when it is
 // below the declared floor. The CI job and scripts/preflight.sh read this line instead of
