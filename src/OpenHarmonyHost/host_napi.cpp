@@ -1139,6 +1139,11 @@ void TryRegisterXComponent() {
     }
     OH_NativeXComponent_RegisterMouseEventCallback(binding->xcomponent, &mouseCallback);
     OH_NativeXComponent_RegisterOnFrameCallback(binding->xcomponent, OnFrame);
+    // FPS48: request the frame rate explicitly. Without a vote the RS frame scheduler may
+    // divide the XComponent's onFrame cadence (48/30 fps observed) even while the managed app
+    // draws every callback; the expected rate is the documented XComponent self-draw knob.
+    OH_NativeXComponent_ExpectedRateRange rateRange = {60, 60, 60};
+    OH_NativeXComponent_SetExpectedFrameRateRange(binding->xcomponent, &rateRange);
     char id[128] = {0};
     uint64_t size = sizeof(id);
     if (OH_NativeXComponent_GetXComponentId(binding->xcomponent, id, &size) == 0) {
