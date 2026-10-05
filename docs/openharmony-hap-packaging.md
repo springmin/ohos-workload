@@ -879,6 +879,28 @@ provenance 同步；新壳 abc **370,240 B（`4b439e83…`；Index.ets 326,953 B
 headless 24,324 B / `798b2477…` 不变）**，provenance `bb5a1758…`；`verify-kit.sh` 的 ui abc
 期望同步为 370240。契约/断言见 `test/maui-platform-verify`（+2 → 593/595 floor 575）。
 
+AOT-STARTUP（2026-10-05）：①**根因**（真机 HAD-W32，AOT Main=0 / ms）：Main→Created 31、
+Created→XComponent 挂树（`AceXcomponent AttachToMainTree`）~60-90、**attach→surface 228-248**、
+surface→present 12-21。等待全在 attach 后：页面 build 声明两个（隐藏的）Web 覆盖层，首个 Web 组件
+实例化触发 ArkWeb/CEF 引擎初始化（`WebDelegate::InitWebViewWithSurface`→`CreateNWeb`→
+`CefContext::Initialize`）同步阻塞 UI 线程 ~240 ms，XComponent 的 onLoad/surface 回调被推迟到
+CEF 结束（`Root node request first frame` 后 CreateNWeb 开始，~250 ms 后才 `triggers onLoad and
+OnSurfaceCreated`）。JIT/interp 同样 ~240 ms，但其托管启动更慢（等 surface≈0），只伤 AOT。
+②**修复**（壳）：`@State webOverlaysMounted=false`；`ensureWebSlot`（defer/ensure 的唯一漏斗）首用
+置 true（并记 `[maui] web overlays mounted on first use`）；build() 的覆盖层 `ForEach` 包在
+`if (this.webOverlaysMounted)` 内。声明字面量 `webSlots=[0,1]` / `webSlotCreated=
+[true,true,false,false]` 不变，ArkWeb 实例化延后到首用；未被认领的覆盖层零成本。③**宿主**
+（`ohos_host_set_app_context`）：相同快照跳过 surface 重放（不同仍重放）。否则壳线程在 onLoad 的
+`publishAppContext` 会在 app 线程 `register_bridge` flush 期间重入托管，JIT 死锁（`hidumper -e`
+ThreadBlock6S：UI 线程在 OnSurfaceNative × app 线程在 OhosHostBindAndFlushBridge；提前的 surface
+把这条老竞态从潜在变成必现）。④**真机 A/B**（同载荷换壳/宿主重签，冷启，AOT 3+3）：AMS→首帧
+**796→534（−262 ms）**、Main→首帧 386→149（−237）、attach→surface 239→14；clean 壳复核 534；
+JIT 1118→1098、interp 1331→1278（不回归，JIT 新宿主 0 次 THREAD_BLOCK；首帧后 3-10 ms 挂覆盖层、
+hybrid 注册/装载照常）。⑤四包 preview.22/23/24/28 + provenance 同步：ui abc **371,860 B
+（`88f7c64b…`；Index.ets `2192ab68…`；headless 24,324 B / `798b2477…` 不变）**、provenance
+`33f23c87…`；宿主源码 `openharmony_host.c`（`85a071b8…`，本机重建 297,888 B / `7a4984bd…`，
+导出 151 不变）。契约/断言见 `test/maui-platform-verify`（+1：覆盖层首用挂载门 + 条件顺序钉）。
+
 ## Toolchain resolution
 
 `_OpenHarmonyDetectToolchain` resolves the packing tool from `OpenHarmonyToolchainDir` or

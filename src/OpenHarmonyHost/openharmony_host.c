@@ -2237,6 +2237,19 @@ int ohos_host_set_app_context(const char* json) {
         return 0;
     }
     setenv("OHOS_HOST_APP_CONTEXT", copy, 1);
+    // An identical snapshot is already in the managed bridge (startApp handed it over) and the
+    // surface replay below exists only to make a *changed* context readable. Replaying it for an
+    // unchanged snapshot re-enters managed code from the shell thread while the app thread is
+    // still inside register_bridge's flush; once the XComponent surface arrives before that
+    // flush completes (lazy ArkWeb overlays, AOT-STARTUP) the re-entry deadlocked the JIT app on
+    // the runtime loader lock (hidumper -e ThreadBlock6S: UI thread in OnSurfaceNative vs app
+    // thread in OhosHostBindAndFlushBridge). A changed snapshot still replays.
+    if (g_app->context_json != NULL && strcmp(g_app->context_json, copy) == 0) {
+        pthread_mutex_unlock(&g_context_mutex);
+        free(copy);
+        fprintf(stderr, "[openharmony-host] set_app_context: unchanged snapshot, replay skipped\n");
+        return 0;
+    }
     OhosHostRetireContextSnapshot(g_app, g_app->context_json);
     g_app->context_json = copy;
     pthread_mutex_unlock(&g_context_mutex);

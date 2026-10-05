@@ -641,6 +641,12 @@ struct Index {
   @State webFrameY: number[] = [0, 0, 0, 0];
   @State webFrameW: number[] = [0, 0, 0, 0];
   @State webFrameH: number[] = [0, 0, 0, 0];
+  // AOT-STARTUP: the ArkWeb components of webSlots are declared but not instantiated until the
+  // managed side first uses an overlay (any defer/ensure). Creating a Web component starts the
+  // ArkWeb engine synchronously on the UI thread (~0.25 s on the 2in1), and at page build that
+  // init sat between the XComponent attach and its surface callback, pushing the first managed
+  // frame out by ~0.27 s. An overlay that is never claimed now costs nothing.
+  @State webOverlaysMounted: boolean = false;
   // SLOTS-DYNAMIC: the overlays actually declared in build(). The hot pair [0, 1] always exists;
   // a dynamic slot (>= WEB_SLOT_HOT) is appended on demand - the managed pool's "slot ensure"
   // command, or any tagged command for a slot the shell has not declared yet - and removed by
@@ -2890,6 +2896,10 @@ struct Index {
     if (slot < 0 || slot >= WEB_SLOT_MAX) {
       this.logError(`[maui] web slot ensure rejected: ${slot}`);
       return;
+    }
+    if (!this.webOverlaysMounted) {
+      this.webOverlaysMounted = true;
+      this.logInfo('[maui] web overlays mounted on first use');
     }
     if (this.webSlotCreated[slot]) {
       return;
@@ -6574,9 +6584,11 @@ struct Index {
       // WEB_SLOT_MAX and removed again by "slot destroy". Every overlay stays hidden until a
       // managed control claims its slot and sends a frame. Replaces the single shared component
       // of FIX-WVP.
-      ForEach(this.webSlots, (slot: number) => {
-        this.webOverlay(slot)
-      }, (slot: number): string => `web-slot-${slot}`)
+      if (this.webOverlaysMounted) {
+        ForEach(this.webSlots, (slot: number) => {
+          this.webOverlay(slot)
+        }, (slot: number): string => `web-slot-${slot}`)
+      }
 
 
       // Map overlay (R2-3): only mounted while the managed side created the overlay through the
