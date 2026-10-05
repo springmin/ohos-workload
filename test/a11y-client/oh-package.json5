@@ -1,0 +1,10 @@
+{
+  modelVersion: '6.0.2',
+  name: 'a11yclient',
+  version: '1.0.0',
+  description: 'minimal accessibility client for local read-screen verification',
+  main: '',
+  author: '',
+  license: 'MIT',
+  dependencies: {},
+}

@@ -1,0 +1,39 @@
+{
+  module: {
+    name: 'entry',
+    type: 'entry',
+    description: '$string:module_desc',
+    mainElement: 'EntryAbility',
+    deviceTypes: ['default'],
+    deliveryWithInstall: true,
+    installationFree: false,
+    abilities: [
+      {
+        name: 'EntryAbility',
+        srcEntry: './ets/entryability/EntryAbility.ets',
+        description: '$string:EntryAbility_desc',
+        icon: '$media:app_icon',
+        label: '$string:EntryAbility_label',
+        startWindowIcon: '$media:app_icon',
+        startWindowBackground: '$color:start_window_background',
+        exported: true,
+      },
+    ],
+    extensionAbilities: [
+      {
+        name: 'A11yExtAbility',
+        srcEntry: './ets/a11y/A11yExtAbility.ets',
+        description: '$string:a11y_extension_desc',
+        label: '$string:a11y_extension_label',
+        type: 'accessibility',
+        metadata: [
+          {
+            name: 'ohos.accessibleability',
+            resource: '$profile:accessibility_config',
+          },
+        ],
+      },
+    ],
+    requestPermissions: [],
+  },
+}

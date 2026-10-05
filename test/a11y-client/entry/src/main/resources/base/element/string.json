@@ -1,0 +1,24 @@
+{
+  "string": [
+    {
+      "name": "module_desc",
+      "value": "minimal accessibility client"
+    },
+    {
+      "name": "EntryAbility_desc",
+      "value": "a11y client companion ability"
+    },
+    {
+      "name": "EntryAbility_label",
+      "value": "a11y client"
+    },
+    {
+      "name": "a11y_extension_desc",
+      "value": "dumps the shadow accessibility tree of the target app"
+    },
+    {
+      "name": "a11y_extension_label",
+      "value": "A11y client (dump)"
+    }
+  ]
+}

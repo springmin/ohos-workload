@@ -17,5 +17,6 @@ test/hello-blazorwasm/out/
 test/hello-blazorwasm/arkts-host/out/
 # WIP: managed pixel harness (needs the canvas backend getters, see docs)
 .arkts-build/
+.a11y-build/
 **/obj/
 **/bin/
