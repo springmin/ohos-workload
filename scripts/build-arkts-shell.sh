@@ -691,6 +691,31 @@ check_source_tokens() { # <templates-dir>
     return $_bad
 }
 
+# AOT-STARTUP: the shell must keep the first-use ArkWeb mount gate. Instantiating a Web
+# component starts the ArkWeb engine synchronously on the UI thread (~0.25 s on the device
+# 2in1); at page build that init sat between the XComponent AttachToMainTree and its surface
+# callback and pushed the AOT first frame out by the same amount (measured 796 -> 534 ms). The
+# overlay components (webSlots) stay declared; only their instantiation is gated on
+# webOverlaysMounted, flipped by ensureWebSlot - the single funnel every defer/ensure takes.
+# A pack that drops the gate or the flip would silently regress the startup path, so the
+# source contract fails and names the missing marker instead.
+check_aot_startup_gate() { # <templates-dir>
+    _index="$1/ets/pages/Index.ets"
+    _missing=""
+    for _marker in "@State webOverlaysMounted: boolean = false;" \
+                   "if (!this.webOverlaysMounted) {" \
+                   "this.logInfo('[maui] web overlays mounted on first use');" \
+                   "if (this.webOverlaysMounted) {"; do
+        grep -Fq -- "$_marker" "$_index" 2>/dev/null || _missing="$_missing
+  $_marker"
+    done
+    if [ -n "$_missing" ]; then
+        printf 'ERROR: the AOT-STARTUP first-use overlay mount gate is missing from %s:%s\n' "$_index" "$_missing" >&2
+        return 1
+    fi
+    return 0
+}
+
 # pack_sources_hash <templates-dir>: one hash over the ets/**/*.ets file list and contents, so
 # the three preview packs can be compared without diffing directories.
 pack_sources_hash() { # <templates-dir>
@@ -713,11 +738,13 @@ print(h.hexdigest())
 PY
 }
 
-# check_sources_contract [templates-dir]: the token gate for one pack, plus the cross-pack
-# byte-identity check when no directory is given (the packaging harness pins the sources).
+# check_sources_contract [templates-dir]: the token and AOT-STARTUP gate for one pack, plus the
+# cross-pack byte-identity check when no directory is given (the packaging harness pins the
+# sources).
 check_sources_contract() { # [<templates-dir>]
     if [ -n "${1:-}" ]; then
-        check_source_tokens "$1"
+        check_source_tokens "$1" || return 1
+        check_aot_startup_gate "$1"
         return $?
     fi
     _hash=""
@@ -725,6 +752,7 @@ check_sources_contract() { # [<templates-dir>]
     for _v in 1.0.0-preview.22 1.0.0-preview.23 1.0.0-preview.24; do
         _tpl="$_root/packs/Microsoft.OpenHarmony.Sdk/$_v/templates"
         check_source_tokens "$_tpl" || return 1
+        check_aot_startup_gate "$_tpl" || return 1
         _h="$(pack_sources_hash "$_tpl")" || return 1
         if [ -z "$_hash" ]; then
             _hash="$_h"
@@ -734,7 +762,7 @@ check_sources_contract() { # [<templates-dir>]
             return 1
         fi
     done
-    printf '    shell sources clean (no @ohos import, getContext(), decodeWithStream() or focusControl) and byte-identical across preview.22/23/24 (sources %s)\n' "$_hash"
+    printf '    shell sources clean (no @ohos import, getContext(), decodeWithStream() or focusControl), AOT-STARTUP mount gate present, and byte-identical across preview.22/23/24 (sources %s)\n' "$_hash"
 }
 
 # pack_abc_provenance_json <dist-dir>: prints the provenance document for the two dist

@@ -40,9 +40,12 @@
 #                 (dotnet-payload/bundleCodeDir/payload-in-libs) and the dotnet.zip fallback
 #                 (dotnet.marker); each missing literal fails with its name, an unreadable file
 #                 is exit 2 and a missing argument is refused
-#   T15 sources   `--check-sources` accepts the shipped packs (token gate + cross-pack source
-#                 identity) and rejects an injected @ohos import, getContext() call,
-#                 decodeWithStream() call or focusControl call, naming the pattern
+#   T15 sources   `--check-sources` accepts the shipped packs (token gate + AOT-STARTUP mount
+#                 gate + cross-pack source identity) and rejects an injected @ohos import,
+#                 getContext() call, decodeWithStream() call or focusControl call, naming the
+#                 pattern; a copy with the first-use overlay mount gate stripped (the
+#                 @State webOverlaysMounted flag removed) is also rejected and the missing
+#                 marker is named
 #   T16 provenance `--check-pack-abc` accepts the shipped packs (size/sha/abc-version/literal/
 #                 source-hash provenance) and, on a self-contained pack copy, rejects a corrupted
 #                 abc, a source edit without a rebuild, a missing provenance record and a stale
@@ -435,6 +438,13 @@ for _case in "getContext():|getContext(this)" "kit import:|from '@ohos.file.fs'"
         fail_ "T15 the rejection does not name $_re (see $WORK/T15-case.log)"
     fi
 done
+# AOT-STARTUP: the first-use overlay mount gate is part of the contract; a copy with the flag
+# stripped is rejected and the missing marker is named (the gate pins the -262 ms startup fix).
+grep -v '@State webOverlaysMounted: boolean = false;' "$REAL_SOURCE" > "$SRC_FAKE/ets/pages/Index.ets"
+sh "$BUILD_SCRIPT" --check-sources "$SRC_FAKE" > "$WORK/T15-aot.log" 2>&1 && _rc=0 || _rc=$?
+assert_rc 1 "$_rc" "T15 the gate rejects a stripped AOT-STARTUP mount gate"
+assert_contains "T15 the rejection names the mount gate" "AOT-STARTUP first-use overlay mount gate is missing" "$WORK/T15-aot.log"
+assert_contains "T15 the rejection names the missing marker" "@State webOverlaysMounted: boolean = false;" "$WORK/T15-aot.log"
 cp "$REAL_SOURCE" "$SRC_FAKE/ets/pages/Index.ets"
 
 # ---- T16: the abc provenance gate ---------------------------------------------------------
