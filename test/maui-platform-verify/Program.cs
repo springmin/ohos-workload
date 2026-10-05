@@ -12,7 +12,7 @@ using Microsoft.Maui.Platform;
 // after the fuzz tail) instead of letting every caller repeat its own threshold constant.
 VerifyLineCountingWriter verifyStdout = new(Console.Out);
 Console.SetOut(verifyStdout);
-const int verifyCheckTotal = 601;                     // +1 CG2-R2R host interp R2R opt-out pin (DOTNET_ReadyToRun=0 inside the mode-3 block; the runtime already forces it for InterpMode>=2, the host makes it explicit and the device retest holds IL parity) // +1 AOT-STARTUP first-use ArkWeb overlay mount gate (state flag + ensureWebSlot flip/log + build gate order) protects the -262 ms AOT startup fix + host identical-context replay skip pin // +2 MULTIWINDOW-S surface resize: the Created/Changed arrange gate (Destroyed/0x0 rejected) + the Changed replay re-arranging the window frame while Destroyed keeps it (A0 form adaptation)                     // +2 WASM-MIME .wasm -> application/wasm mapping in every pack shell + the standalone rawfile host / the host's `wasm mime:` + `wasm fallback:` instrumentation and the pack-host.sh --bad-mime negative control                     // +2 FIX-A11YFLYOUT a11y walk FlyoutPage Detail/presented-Flyout subtree pins (device nodeCount=1 root cause)                     // +1 FIX-A11YBUTTON shell self-check absolute position + z-order-above-overlays pin (button reachable with/without a live web control)                     // +3 AUTODISCONNECT layout-removal detach (dynamic slot destroy + claim release + handler kept) / re-add rebuild (ensure + registration replay on the reclaimed slot) / slice watcher-and-owner wiring pins                     // +6 SLOTS-DYNAMIC dynamic slot growth (ensure/destroy commands), capacity downgrade/event, configurable 2/4 limits, shell lazy/defer pins, 3rd-overlay sample                     // documented full [verify] line count (+3 FIX-SLICERACE concurrent connect/host storm/ pins, +5 L6 screenshot Jpeg format/quality capture/fallback/helper + title heartbeat behavior/source, +6 LEGACY toolbar primary/overflow/icon/events/shell/source, +3 SAMPLE-FIX hybrid bootstrap pack staging / read-only payload handler / stock-script demo, +4 MULTI-OVERLAY-FULL LRU pool/invoke slot codec/per-slot hybrid shell/slice owner wiring, +4 MULTI-OVL slot pool/wire codec/two-overlay shell/slice wiring, +4 FIX-BACKSIZE Back-press forwarding/drawer drill/ shell drawer/BlazorWebView desired size, +4 FIX-WVP overlay px->vp/degenerate-frame/hybrid-overlay arbitration/suspend-restore (shell+slice), +2 FIX-DISMISS flyout drawer dismiss under the device display conditions, +4 FIX-HOME home page arrange/draw (NavigationPage-in-TabbedPage descent), +4 MS-MODE runtime mode switch, +10 P2c-DEEPLINK, +4 P2b-IMG, +16 P1b-LIST, +10 P1a-ANIM, +2 SEC3 storage/deep-link pins, +5 W-series WebView wiring, +3 T1 InputView mapping, +4 T2 WebView gaps, +4 T3 GraphicsView interaction, +7 T10 modal accessibility, +4 T4 Label formatted text, +4 T5 layout semantics, +6 T7 DatePicker calendar/min-max, +4 T9 window title bar, +4 T11 diagnostics overlay, +1 N2 empty ContentPage arrangement, +6 T8 TableView, +5 T8 uneven rows, +7 T6 RTL flow direction, +5 T22 MainThread bridge, +2 FIX-TABBED tabbed CurrentPage, +4 T13 group footer view/N3 picker IsOpen, +5 T21 system font scale, +3 T21 font scale source wiring, +2 A11Y-TABBED tabbed accessibility, +3 N1 host multi-pointer, +5 T12 CarouselView group slides, +7 T14 rich shell flyout, +10 T14 flyout leftovers (MenuItemTemplate/FlyoutContent/AsMultipleItems), +2 FIX-SHELL shell CurrentPage, +2 A11Y-SHELL shell accessibility, +7 T15 rich Shell.TitleView, +8 T16 structured menus, +3 N4 TitleBar accessibility row, +3 T18 Essentials Map, +4 N5 overlay passthrough suppression, +5 N6 window decorations, +4 T20 media bridge, +3 B2 wasm site in a MAUI WebView, +2 W10 NativeAOT managed entry (host libs-dir resolution + shell AOT payload probe), +1 FIX-JSCALL Blazor IPC enum/struct AOT roots (JSCallResultType/JSCallType/NavigationOptions in the slice context + handler static-ctor touch + stub click-probe removed), +3 INTERP-DRAW2 draw-cost seam kinds / off-surface cull / translated-node rescue))
+const int verifyCheckTotal = 609;                     // +6 MULTIWINDOW-M in-app subwindow: the create/move/resize/show/close command set and its JSON payloads, the lifecycle/geometry state machine, the routed touch event, malformed/unknown payload robustness, the off-device degradation, and the shell/host/slice source+pack-identity contract // +1 SEC-SCAN-4 a11y password masking (plaintext must not be published to the shadow tree; bullets mirror the drawn text) // +1 SEC-SCAN-4 off-surface cull boundary (zero-size frame draws, shadow extent rescues, off-surface Image keeps the decode pipeline) // +1 CG2-R2R host interp R2R opt-out pin (DOTNET_ReadyToRun=0 inside the mode-3 block; the runtime already forces it for InterpMode>=2, the host makes it explicit and the device retest holds IL parity) // +1 AOT-STARTUP first-use ArkWeb overlay mount gate (state flag + ensureWebSlot flip/log + build gate order) protects the -262 ms AOT startup fix + host identical-context replay skip pin // +2 MULTIWINDOW-S surface resize: the Created/Changed arrange gate (Destroyed/0x0 rejected) + the Changed replay re-arranging the window frame while Destroyed keeps it (A0 form adaptation)                     // +2 WASM-MIME .wasm -> application/wasm mapping in every pack shell + the standalone rawfile host / the host's `wasm mime:` + `wasm fallback:` instrumentation and the pack-host.sh --bad-mime negative control                     // +2 FIX-A11YFLYOUT a11y walk FlyoutPage Detail/presented-Flyout subtree pins (device nodeCount=1 root cause)                     // +1 FIX-A11YBUTTON shell self-check absolute position + z-order-above-overlays pin (button reachable with/without a live web control)                     // +3 AUTODISCONNECT layout-removal detach (dynamic slot destroy + claim release + handler kept) / re-add rebuild (ensure + registration replay on the reclaimed slot) / slice watcher-and-owner wiring pins                     // +6 SLOTS-DYNAMIC dynamic slot growth (ensure/destroy commands), capacity downgrade/event, configurable 2/4 limits, shell lazy/defer pins, 3rd-overlay sample                     // documented full [verify] line count (+3 FIX-SLICERACE concurrent connect/host storm/ pins, +5 L6 screenshot Jpeg format/quality capture/fallback/helper + title heartbeat behavior/source, +6 LEGACY toolbar primary/overflow/icon/events/shell/source, +3 SAMPLE-FIX hybrid bootstrap pack staging / read-only payload handler / stock-script demo, +4 MULTI-OVERLAY-FULL LRU pool/invoke slot codec/per-slot hybrid shell/slice owner wiring, +4 MULTI-OVL slot pool/wire codec/two-overlay shell/slice wiring, +4 FIX-BACKSIZE Back-press forwarding/drawer drill/ shell drawer/BlazorWebView desired size, +4 FIX-WVP overlay px->vp/degenerate-frame/hybrid-overlay arbitration/suspend-restore (shell+slice), +2 FIX-DISMISS flyout drawer dismiss under the device display conditions, +4 FIX-HOME home page arrange/draw (NavigationPage-in-TabbedPage descent), +4 MS-MODE runtime mode switch, +10 P2c-DEEPLINK, +4 P2b-IMG, +16 P1b-LIST, +10 P1a-ANIM, +2 SEC3 storage/deep-link pins, +5 W-series WebView wiring, +3 T1 InputView mapping, +4 T2 WebView gaps, +4 T3 GraphicsView interaction, +7 T10 modal accessibility, +4 T4 Label formatted text, +4 T5 layout semantics, +6 T7 DatePicker calendar/min-max, +4 T9 window title bar, +4 T11 diagnostics overlay, +1 N2 empty ContentPage arrangement, +6 T8 TableView, +5 T8 uneven rows, +7 T6 RTL flow direction, +5 T22 MainThread bridge, +2 FIX-TABBED tabbed CurrentPage, +4 T13 group footer view/N3 picker IsOpen, +5 T21 system font scale, +3 T21 font scale source wiring, +2 A11Y-TABBED tabbed accessibility, +3 N1 host multi-pointer, +5 T12 CarouselView group slides, +7 T14 rich shell flyout, +10 T14 flyout leftovers (MenuItemTemplate/FlyoutContent/AsMultipleItems), +2 FIX-SHELL shell CurrentPage, +2 A11Y-SHELL shell accessibility, +7 T15 rich Shell.TitleView, +8 T16 structured menus, +3 N4 TitleBar accessibility row, +3 T18 Essentials Map, +4 N5 overlay passthrough suppression, +5 N6 window decorations, +4 T20 media bridge, +3 B2 wasm site in a MAUI WebView, +2 W10 NativeAOT managed entry (host libs-dir resolution + shell AOT payload probe), +1 FIX-JSCALL Blazor IPC enum/struct AOT roots (JSCallResultType/JSCallType/NavigationOptions in the slice context + handler static-ctor touch + stub click-probe removed), +3 INTERP-DRAW2 draw-cost seam kinds / off-surface cull / translated-node rescue))
 const int verifyCheckFloor = verifyCheckTotal - 20;   // documented floor convention (total - 20)
 
 // A small image file for the Image handler.
@@ -3646,6 +3646,26 @@ if (!a11yFlyoutPanelOk)
     throw new InvalidOperationException("the accessibility tree did not contain the presented FlyoutPage panel subtree (PushChildren missed presented Flyout)");
 }
 a11yFlyout.IsPresented = false;
+
+// SEC-SCAN-4: a password entry must not publish its plaintext through the accessibility shadow
+// tree (an enabled screen reader can read every published node). The compositor masks the drawn
+// text; the walk must publish the same bullets. The pre-fix slice publishes the raw text, so the
+// plaintext check is the red control.
+var a11yPasswordRows = new VerticalStackLayout();
+a11yPasswordRows.Add(new Entry { IsPassword = true, Text = "sec-scan-4 secret" });
+var a11yPasswordPage = new ContentPage { Content = a11yPasswordRows };
+OpenHarmonyHandlerConnector.ConnectTree(a11yPasswordPage);
+a11yPasswordPage.Measure(1080, 1920);
+a11yPasswordPage.Arrange(new Rect(0, 0, 1080, 1920));
+OpenHarmonyAccessibility.Refresh(a11yPasswordPage);
+bool a11yPasswordPlainHidden = !OpenHarmonyAccessibility.Nodes.Any(n => n.Text == "sec-scan-4 secret");
+bool a11yPasswordMasked = OpenHarmonyAccessibility.Nodes.Any(n =>
+    n.Role == "textInput" && n.Text == new string('\u2022', "sec-scan-4 secret".Length));
+Console.WriteLine($"[verify] a11y-password plainHidden={a11yPasswordPlainHidden} masked={a11yPasswordMasked} nodes={OpenHarmonyAccessibility.Nodes.Count} assert={a11yPasswordPlainHidden && a11yPasswordMasked}");
+if (!(a11yPasswordPlainHidden && a11yPasswordMasked))
+{
+    throw new InvalidOperationException("the accessibility tree published an unmasked password entry text");
+}
 
 // W22-6: gestures, selection, transforms.
 var tapCtl = root.Children.OfType<Label>().FirstOrDefault(l => l.Text == "tap me");
@@ -14211,6 +14231,33 @@ try
         throw new InvalidOperationException("the cull skips a node translated back into the surface");
     }
     id2Far.TranslationY = 0;
+
+    // SEC-SCAN-4 boundary pins: the cull must fail closed on the shapes a bypass would use - a
+    // zero-size frame is never skipped (a degenerate measure cannot make pixels disappear), a
+    // shadow whose extent reaches the surface rescues an off-surface owner (the margin covers
+    // radius + offset), and an off-surface Image keeps drawing so its progressive decode stays
+    // driven. All three would regress silently into missing pixels without these.
+    var id2EdgeRoot = new AbsoluteLayout();
+    var id2Zero = new Label { Text = "zero", FontSize = 10 };
+    var id2Shadowed = new Label { Text = "shadow", FontSize = 10, Shadow = new Shadow { Radius = 100, Opacity = 1 } };
+    var id2Image = new Microsoft.Maui.Controls.Image { Source = ImageSource.FromFile(progressiveImagePath) };
+    AbsoluteLayout.SetLayoutBounds(id2Zero, new Rect(0, 9000, 0, 0));
+    AbsoluteLayout.SetLayoutBounds(id2Shadowed, new Rect(0, 430, 100, 20));
+    AbsoluteLayout.SetLayoutBounds(id2Image, new Rect(0, 9000, 20, 20));
+    id2EdgeRoot.Add(id2Zero);
+    id2EdgeRoot.Add(id2Shadowed);
+    id2EdgeRoot.Add(id2Image);
+    OpenHarmonyHandlerConnector.ConnectTree(id2EdgeRoot);
+    id2Kinds.Clear();
+    _ = id2Renderer.Render(id2EdgeRoot, 400, 400);
+    int id2EdgeText = id2Kinds.Count(k => k == OpenHarmonyWindowRenderer.DrawKindText);
+    bool id2EdgeImage = id2Kinds.Contains(OpenHarmonyWindowRenderer.DrawKindImage);
+    bool id2EdgeOk = id2EdgeText == 2 && id2EdgeImage;
+    Console.WriteLine($"[verify] draw cull edge zeroAndShadowText={id2EdgeText} image={id2EdgeImage} kinds=[{string.Join(',', id2Kinds)}] assert={id2EdgeOk}");
+    if (!id2EdgeOk)
+    {
+        throw new InvalidOperationException("the off-surface cull skipped a zero-size frame, a shadow that reaches the surface, or an image");
+    }
 }
 finally
 {
@@ -14257,6 +14304,191 @@ if (!resizeReplayOk)
     throw new InvalidOperationException("a Changed surface did not re-arrange the window frame, or Destroyed moved it");
 }
 host.Arrange(1080, 1920);
+
+// MULTIWINDOW-M: the in-app subwindow contract. The slice's OpenHarmonySubWindow is a
+// command/event state machine over the native bridge (managed -> shell commands, shell ->
+// managed lifecycle/geometry/touch reports); the shell side is pinned by source. The device
+// run covers create/move/resize/close against the real ArkTS Window API.
+var subWindowCommands = new List<(int Op, string Payload)>();
+OpenHarmonySubWindow.CommandSender = (op, payload) =>
+{
+    subWindowCommands.Add((op, payload));
+    return true;
+};
+bool subWindowCreateSent = OpenHarmonySubWindow.Create("maui-demo", 120, 160, 720, 480, "child");
+bool subWindowMoveSent = OpenHarmonySubWindow.Move(420, 360);
+bool subWindowResizeSent = OpenHarmonySubWindow.Resize(900, 600);
+bool subWindowShowSent = OpenHarmonySubWindow.Show();
+bool subWindowCloseSent = OpenHarmonySubWindow.Close();
+bool subWindowCommandShapeOk = subWindowCommands.Count == 5
+    && subWindowCommands[0].Op == OpenHarmonySubWindow.CreateCommand
+    && subWindowCommands[1].Op == OpenHarmonySubWindow.MoveCommand
+    && subWindowCommands[2].Op == OpenHarmonySubWindow.ResizeCommand
+    && subWindowCommands[3].Op == OpenHarmonySubWindow.ShowCommand
+    && subWindowCommands[4].Op == OpenHarmonySubWindow.CloseCommand;
+bool subWindowPayloadOk = false;
+if (subWindowCommandShapeOk)
+{
+    using JsonDocument createPayload = JsonDocument.Parse(subWindowCommands[0].Payload);
+    using JsonDocument movePayload = JsonDocument.Parse(subWindowCommands[1].Payload);
+    using JsonDocument resizePayload = JsonDocument.Parse(subWindowCommands[2].Payload);
+    subWindowPayloadOk =
+        createPayload.RootElement.GetProperty("name").GetString() == "maui-demo"
+        && createPayload.RootElement.GetProperty("title").GetString() == "child"
+        && createPayload.RootElement.GetProperty("x").GetInt32() == 120
+        && createPayload.RootElement.GetProperty("y").GetInt32() == 160
+        && createPayload.RootElement.GetProperty("w").GetInt32() == 720
+        && createPayload.RootElement.GetProperty("h").GetInt32() == 480
+        && movePayload.RootElement.GetProperty("x").GetInt32() == 420
+        && movePayload.RootElement.GetProperty("y").GetInt32() == 360
+        && resizePayload.RootElement.GetProperty("w").GetInt32() == 900
+        && resizePayload.RootElement.GetProperty("h").GetInt32() == 600;
+}
+bool subWindowCommandOk = subWindowCreateSent && subWindowMoveSent && subWindowResizeSent
+    && subWindowShowSent && subWindowCloseSent && subWindowCommandShapeOk && subWindowPayloadOk;
+Console.WriteLine($"[verify] subwindow commands sent={subWindowCommands.Count} ops=[{string.Join(',', subWindowCommands.Select(c => c.Op))}] payload={subWindowPayloadOk} assert={subWindowCommandOk}");
+if (!subWindowCommandOk)
+{
+    throw new InvalidOperationException("the subwindow command set (create/move/resize/show/close) or its JSON payload drifted");
+}
+
+var subWindowEvents = new List<OpenHarmonySubWindowEventArgs>();
+EventHandler<OpenHarmonySubWindowEventArgs> subWindowChanged = (_, e) => subWindowEvents.Add(e);
+OpenHarmonySubWindow.Changed += subWindowChanged;
+try
+{
+    OpenHarmonySubWindow.HandleNativeEvent((int)OpenHarmonySubWindowEventKind.Created, "{\"id\":42,\"x\":120,\"y\":160,\"w\":720,\"h\":480}");
+    bool subWindowCreatedOk = OpenHarmonySubWindow.IsOpen && OpenHarmonySubWindow.IsVisible
+        && OpenHarmonySubWindow.WindowId == 42 && OpenHarmonySubWindow.Bounds.X == 120
+        && OpenHarmonySubWindow.Bounds.Width == 720;
+    OpenHarmonySubWindow.HandleNativeEvent((int)OpenHarmonySubWindowEventKind.PageReady, "{\"id\":42}");
+    bool subWindowReadyOk = OpenHarmonySubWindow.IsContentReady;
+    OpenHarmonySubWindow.HandleNativeEvent((int)OpenHarmonySubWindowEventKind.Moved, "{\"x\":420,\"y\":360}");
+    OpenHarmonySubWindow.HandleNativeEvent((int)OpenHarmonySubWindowEventKind.Resized, "{\"w\":900,\"h\":600}");
+    bool subWindowGeometryOk = OpenHarmonySubWindow.Bounds.X == 420 && OpenHarmonySubWindow.Bounds.Y == 360
+        && OpenHarmonySubWindow.Bounds.Width == 900 && OpenHarmonySubWindow.Bounds.Height == 600;
+    OpenHarmonySubWindow.HandleNativeEvent((int)OpenHarmonySubWindowEventKind.Suspended, "{}");
+    bool subWindowSuspendedOk = OpenHarmonySubWindow.IsSuspended && !OpenHarmonySubWindow.IsVisible;
+    OpenHarmonySubWindow.HandleNativeEvent((int)OpenHarmonySubWindowEventKind.Resumed, "{}");
+    bool subWindowResumedOk = !OpenHarmonySubWindow.IsSuspended && OpenHarmonySubWindow.IsVisible;
+    OpenHarmonySubWindow.HandleNativeEvent((int)OpenHarmonySubWindowEventKind.Closed, "{}");
+    bool subWindowClosedOk = !OpenHarmonySubWindow.IsOpen && OpenHarmonySubWindow.WindowId == 0
+        && !OpenHarmonySubWindow.IsContentReady;
+    bool subWindowStateOk = subWindowCreatedOk && subWindowReadyOk && subWindowGeometryOk
+        && subWindowSuspendedOk && subWindowResumedOk && subWindowClosedOk
+        && subWindowEvents.Count == 7
+        && subWindowEvents[0].Kind == OpenHarmonySubWindowEventKind.Created
+        && subWindowEvents[4].Kind == OpenHarmonySubWindowEventKind.Suspended
+        && subWindowEvents[6].Kind == OpenHarmonySubWindowEventKind.Closed;
+    Console.WriteLine($"[verify] subwindow state created={subWindowCreatedOk} ready={subWindowReadyOk} geometry={subWindowGeometryOk} suspended={subWindowSuspendedOk} resumed={subWindowResumedOk} closed={subWindowClosedOk} events={subWindowEvents.Count} assert={subWindowStateOk}");
+    if (!subWindowStateOk)
+    {
+        throw new InvalidOperationException("the subwindow lifecycle state machine (created/page-ready/moved/resized/suspended/resumed/closed) drifted");
+    }
+
+    OpenHarmonySubWindowTouchEventArgs? subWindowTouch = null;
+    EventHandler<OpenHarmonySubWindowTouchEventArgs> subWindowTouched = (_, e) => subWindowTouch = e;
+    OpenHarmonySubWindow.Touched += subWindowTouched;
+    try
+    {
+        OpenHarmonySubWindow.HandleNativeEvent((int)OpenHarmonySubWindowEventKind.Touch, "{\"action\":0,\"x\":12.5,\"y\":24.5,\"count\":2}");
+    }
+    finally
+    {
+        OpenHarmonySubWindow.Touched -= subWindowTouched;
+    }
+    bool subWindowTouchOk = subWindowTouch is not null && subWindowTouch.Action == 0
+        && Math.Abs(subWindowTouch.X - 12.5f) < 0.01f && Math.Abs(subWindowTouch.Y - 24.5f) < 0.01f
+        && subWindowTouch.PointerCount == 2
+        && subWindowEvents[^1].Kind == OpenHarmonySubWindowEventKind.Touch;
+    Console.WriteLine($"[verify] subwindow touch action={subWindowTouch?.Action} x={subWindowTouch?.X} y={subWindowTouch?.Y} pointers={subWindowTouch?.PointerCount} assert={subWindowTouchOk}");
+    if (!subWindowTouchOk)
+    {
+        throw new InvalidOperationException("a subwindow touch event did not reach the managed Touched handler with its coordinates");
+    }
+
+    int subWindowEventsBeforeMalformed = subWindowEvents.Count;
+    OpenHarmonySubWindow.HandleNativeEvent((int)OpenHarmonySubWindowEventKind.Moved, "{not-json");
+    bool subWindowMalformedOk = subWindowEvents.Count == subWindowEventsBeforeMalformed + 1
+        && subWindowEvents[^1].Kind == OpenHarmonySubWindowEventKind.Failed
+        && subWindowEvents[^1].Code == -1;
+    OpenHarmonySubWindow.HandleNativeEvent(42, "{}");
+    bool subWindowUnknownOk = subWindowEvents.Count == subWindowEventsBeforeMalformed + 1;
+    bool subWindowRobustnessOk = subWindowMalformedOk && subWindowUnknownOk;
+    Console.WriteLine($"[verify] subwindow malformed={subWindowMalformedOk} unknownIgnored={subWindowUnknownOk} assert={subWindowRobustnessOk}");
+    if (!subWindowRobustnessOk)
+    {
+        throw new InvalidOperationException("a malformed subwindow payload did not become Failed, or an unknown event kind moved the state");
+    }
+}
+finally
+{
+    OpenHarmonySubWindow.Changed -= subWindowChanged;
+}
+
+OpenHarmonySubWindow.CommandSender = null;
+bool subWindowNativeCreate = OpenHarmonySubWindow.Create("off-device", 0, 0, 320, 240);
+bool subWindowUnsupportedOk = !subWindowNativeCreate && !OpenHarmonySubWindow.IsSupported;
+Console.WriteLine($"[verify] subwindow unsupported create={subWindowNativeCreate} supported={OpenHarmonySubWindow.IsSupported} assert={subWindowUnsupportedOk}");
+if (!subWindowUnsupportedOk)
+{
+    throw new InvalidOperationException("the subwindow API did not degrade to false without libopenharmonyhost.so");
+}
+
+// MULTIWINDOW-M shell/host source contract: the four preview packs' Index.ets and SubWindow.ets
+// must stay byte-identical, the main page must wire the sink and drive
+// createSubWindowWithOptions/loadContentByName, the named-route page must keep the window-id
+// drag guard and report touches, and the native host must export the command/listener pair.
+bool subWindowShellPinsOk = true;
+bool subWindowShellIdentical = true;
+string subWindowShellFirst = string.Empty;
+foreach (string subWindowShellVersion in new[] { "1.0.0-preview.22", "1.0.0-preview.23", "1.0.0-preview.24", "1.0.0-preview.28" })
+{
+    string? subWindowIndexPath = FindHostSource($"packs/Microsoft.OpenHarmony.Sdk/{subWindowShellVersion}/templates/ets/pages/Index.ets");
+    string? subWindowPagePath = FindHostSource($"packs/Microsoft.OpenHarmony.Sdk/{subWindowShellVersion}/templates/ets/pages/SubWindow.ets");
+    string subWindowIndex = subWindowIndexPath is null ? string.Empty : File.ReadAllText(subWindowIndexPath);
+    string subWindowPage = subWindowPagePath is null ? string.Empty : File.ReadAllText(subWindowPagePath);
+    string subWindowPair = subWindowIndex + "\n" + subWindowPage;
+    if (subWindowShellFirst.Length == 0)
+    {
+        subWindowShellFirst = subWindowPair;
+    }
+    else if (!string.Equals(subWindowShellFirst, subWindowPair, StringComparison.Ordinal))
+    {
+        subWindowShellIdentical = false;
+    }
+    subWindowShellPinsOk &= subWindowIndex.Contains("registerSubWindowSink") &&
+        subWindowIndex.Contains("createSubWindowWithOptions(SUB_WINDOW_NAME, options)") &&
+        subWindowIndex.Contains("loadContentByName(SUB_WINDOW_ROUTE, storage)") &&
+        subWindowIndex.Contains("handleSubWindowCommand(op, payload)") &&
+        subWindowIndex.Contains("notifySubWindowEvent(SUB_EVENT_SUSPENDED, '{}')") &&
+        subWindowIndex.Contains("SUB_CMD_CLOSE") &&
+        subWindowPage.Contains("routeName: 'ohos_dotnet_subwindow'") &&
+        subWindowPage.Contains("dragEnabled") &&
+        subWindowPage.Contains("PanGesture()") &&
+        subWindowPage.Contains("notifyHost(SUB_EVENT_TOUCH, payload)") &&
+        subWindowPage.Contains("SUB_EVENT_PAGE_READY");
+}
+string subWindowHostSource = FindHostSource("src/OpenHarmonyHost/host_napi.cpp") is { } subWindowHostPath
+    ? File.ReadAllText(subWindowHostPath) : string.Empty;
+string subWindowExportsSource = FindHostSource("src/OpenHarmonyHost/host-exports.txt") is { } subWindowExportsPath
+    ? File.ReadAllText(subWindowExportsPath) : string.Empty;
+string subWindowSliceSource = FindHostSource("OpenHarmonySubWindow.cs") is { } subWindowSlicePath
+    ? File.ReadAllText(subWindowSlicePath) : string.Empty;
+bool subWindowSourceOk = subWindowShellPinsOk && subWindowShellIdentical &&
+    subWindowHostSource.Contains("ohos_host_sub_window_command") &&
+    subWindowHostSource.Contains("registerSubWindowSink") &&
+    subWindowHostSource.Contains("ohos_host_sub_window_event_listener") &&
+    subWindowHostSource.Contains("notifySubWindowEvent") &&
+    subWindowExportsSource.Contains("ohos_host_sub_window_command") &&
+    subWindowExportsSource.Contains("ohos_host_sub_window_event_listener") &&
+    subWindowSliceSource.Contains("EntryPoint = \"ohos_host_sub_window_command\"") &&
+    subWindowSliceSource.Contains("EntryPoint = \"ohos_host_sub_window_event_listener\"");
+Console.WriteLine($"[verify] subwindow source shellPins={subWindowShellPinsOk} identical={subWindowShellIdentical} host={subWindowHostSource.Length > 0} slice={subWindowSliceSource.Length > 0} assert={subWindowSourceOk}");
+if (!subWindowSourceOk)
+{
+    throw new InvalidOperationException("the subwindow shell/host/slice source contract drifted (sink wiring, named route, export pair or pack identity)");
+}
 
 // The suite's own check-count contract: report what was actually emitted and fail when it is
 // below the declared floor. The CI job and scripts/preflight.sh read this line instead of

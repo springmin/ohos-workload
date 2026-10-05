@@ -237,7 +237,9 @@ strings = [{"name": n, "value": "opendotnet"} for n in
 for base in ('entry/src/main/resources/base/element', 'AppScope/resources/base/element'):
     w(f'{base}/string.json', json.dumps({"string": strings}, indent=2))
 if variant == 'ui':
-    w('entry/src/main/resources/base/profile/main_pages.json', json.dumps({"src": ["pages/Index"]}))
+    # MULTIWINDOW-M: pages/SubWindow is the shell-drawn subwindow content loaded through the
+    # named route 'ohos_dotnet_subwindow'; listing it here is what compiles it into the abc.
+    w('entry/src/main/resources/base/profile/main_pages.json', json.dumps({"src": ["pages/Index", "pages/SubWindow"]}))
 w('AppScope/app.json5', f"""{{
   app: {{
     bundleName: '{bundle_name}',
@@ -787,7 +789,7 @@ for name, dist_name, pack_name, sources in (
     ('headless', 'modules.headless.abc', 'modules.abc',
      ['entryability/EntryAbility.ets']),
     ('ui', 'modules.abc', 'modules.ui.abc',
-     ['entryability/EntryAbility.ui.ets', 'pages/Index.ets']),
+     ['entryability/EntryAbility.ui.ets', 'pages/Index.ets', 'pages/SubWindow.ets']),
 ):
     dist_path = os.path.join(dist, dist_name)
     if not os.path.exists(dist_path):
@@ -835,7 +837,8 @@ ui_only = ['ohos_dotnet_surface', 'ohos_dotnet_input', '__hwvInvokeDotNet', './m
            'SystemCapability.AI.TextToSpeech', 'notifyTextComposition',
            'notifyAnimationReduce', '@kit.AccessibilityKit',
            'SystemCapability.BarrierFree.Accessibility.Core',
-           'application/wasm']
+           'application/wasm',
+           'ohos_dotnet_subwindow', 'registerSubWindowSink', 'notifySubWindowEvent']
 errors = []
 provenance_ref = None
 abc_ref = {}
@@ -1204,6 +1207,10 @@ if [ "$VARIANT" = ui ]; then
     mkdir -p "$PROJ/entry/src/main/ets/pages"
     cp "$TPL/ets/entryability/EntryAbility.ui.ets" "$PROJ/entry/src/main/ets/entryability/EntryAbility.ets"
     cp "$TPL/ets/pages/Index.ets" "$PROJ/entry/src/main/ets/pages/Index.ets"
+    # MULTIWINDOW-M: the shell-drawn subwindow page (named route, loaded by Index after
+    # createSubWindowWithOptions). Harmless for the harmony flavor: it only imports @kit.* modules
+    # the default SDK provides.
+    cp "$TPL/ets/pages/SubWindow.ets" "$PROJ/entry/src/main/ets/pages/SubWindow.ets"
     # Map overlay (R2-3 + MAPFIX): ets/map/MapOverlay.ets names the MapComponent ArkUI component,
     # which only the HarmonyOS SDK declares (hms/ets), so only the harmony branch copies it into
     # the project. Copying alone never compiled it (no modules.abc record; HCI-HARMONY-CI

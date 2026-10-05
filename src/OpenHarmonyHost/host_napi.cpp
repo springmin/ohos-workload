@@ -278,6 +278,7 @@ struct HostBinding {
     HostSink window_title{"window title", false};
     HostSink window_rect{"window rect", false};
     HostSink window_decor{"window decor", false};
+    HostSink subwindow{"subwindow", false};
     HostSink screenshot{"screenshot", false};
     HostSink shell_search{"shell search", false};
     HostSink shell_flyout{"shell flyout", false};
@@ -342,6 +343,7 @@ static HostBinding* g_host = &g_binding_slots[0].binding;
 #define g_window_title_sink (g_host->window_title)
 #define g_window_rect_sink (g_host->window_rect)
 #define g_window_decor_sink (g_host->window_decor)
+#define g_subwindow_sink (g_host->subwindow)
 #define g_screenshot_sink (g_host->screenshot)
 #define g_shell_search_sink (g_host->shell_search)
 #define g_shell_flyout_sink (g_host->shell_flyout)
@@ -384,6 +386,7 @@ static void HostForEachSink(HostBinding& binding, F&& visit) {
     visit(binding.window_title);
     visit(binding.window_rect);
     visit(binding.window_decor);
+    visit(binding.subwindow);
     visit(binding.screenshot);
     visit(binding.shell_search);
     visit(binding.shell_flyout);
@@ -2842,6 +2845,87 @@ napi_value RegisterWindowRectSink(napi_env env, napi_callback_info info) {
 }
 
 // ---------------------------------------------------------------------------
+// In-app subwindow (MULTIWINDOW-M): the managed slice's OpenHarmonySubWindow class asks the
+// ArkTS shell to create/show/move/resize/hide/destroy an application subwindow under the main
+// window (window.createSubWindowWithOptions; no ACL, and TYPE_FLOAT stays out of reach), and the
+// shell reports the subwindow's lifecycle, geometry and touch events back through
+// ohos_host_sub_window_event_listener. Commands are one-way: 0 = queued for the shell, -1 = no
+// shell sink registered (an older shell) or an invalid request. Op 99 is the availability probe
+// (1 = the shell registered the sink, -1 = not), so the managed side can distinguish "not on a
+// device" from "the shell has no subwindow support". The payload is JSON and opaque here, so the
+// command set can grow without a host rebuild.
+// ---------------------------------------------------------------------------
+constexpr int kSubWindowProbeOp = 99;
+
+// Called from managed code (P/Invoke): op 0 create, 1 move, 2 resize, 3 show, 4 hide, 5 close.
+extern "C" int ohos_host_sub_window_command(int op, const char* utf8) {
+    return HostCxxBoundary("sub window command", [&] {
+        if (op == kSubWindowProbeOp) {
+            return g_subwindow_sink.tsfn != nullptr ? 1 : -1;
+        }
+        if (op < 0 || op > 5) {
+            OH_LOG_WARN(LOG_APP, "[openharmony-host] sub_window_command: invalid op %{public}d", op);
+            return -1;
+        }
+        const char* payload = utf8 != nullptr ? utf8 : "";
+        if (!ControlStringFits(payload, "sub_window_command")) {
+            return -1;
+        }
+        SinkCall* call = new SinkCall();
+        call->AddInt(op);
+        call->AddString(payload, kMaxControlBytes);
+        if (!HostSinkPost(g_subwindow_sink, call)) {
+            OH_LOG_WARN(LOG_APP, "[openharmony-host] sub_window_command: no shell subwindow sink");
+            return -1;
+        }
+        return 0;
+    });
+}
+
+// ArkTS calls host.registerSubWindowSink(fn) to receive subwindow commands (op, payloadJson).
+napi_value RegisterSubWindowSink(napi_env env, napi_callback_info info) {
+    return HostSinkRegisterFromArgs(env, info, g_subwindow_sink);
+}
+
+// Shell events: host.notifySubWindowEvent(op, payloadJson) invokes the managed listener the slice
+// registers through ohos_host_sub_window_event_listener (module initializer). The listener is a
+// plain function pointer published with the release/acquire pair like the other notify channels;
+// an event delivered before the managed registration is dropped (the shell only reports while the
+// app runs). Ops mirror the slice's OpenHarmonySubWindowEventKind (0 created, 1 shown, 2 hidden,
+// 3 moved, 4 resized, 5 closed, 6 touch, 7 failed, 8 page ready, 9 suspended, 10 resumed).
+static std::atomic<void (*)(int, const char*)> g_subwindow_event_listener{nullptr};
+
+extern "C" void ohos_host_sub_window_event_listener(void* callback) {
+    HostListenerStore(g_subwindow_event_listener, callback);
+}
+
+extern "C" void ohos_host_notify_sub_window_event(int op, const char* utf8) {
+    auto listener = HostListenerLoad(g_subwindow_event_listener);
+    if (listener == nullptr) {
+        return;
+    }
+    listener(op, utf8 != nullptr ? utf8 : "");
+}
+
+napi_value NotifySubWindowEvent(napi_env env, napi_callback_info info) {
+    size_t argc = 2;
+    napi_value argv[2] = {nullptr, nullptr};
+    napi_get_cb_info(env, info, &argc, argv, nullptr, nullptr);
+    int32_t op = 0;
+    if (argc >= 1) {
+        napi_get_value_int32(env, argv[0], &op);
+    }
+    std::string payload;
+    if (argc >= 2) {
+        payload = GetStringArg(env, argv[1]);
+    }
+    ohos_host_notify_sub_window_event((int)op, payload.c_str());
+    napi_value undefined = nullptr;
+    napi_get_undefined(env, &undefined);
+    return undefined;
+}
+
+// ---------------------------------------------------------------------------
 // Window decorations (N6): the managed Window.TitleBar row asks the shell to hand the window's
 // title-bar decor to the app (op 4 request / op 5 release) and dispatches the caption and drag
 // commands (0 minimize, 1 maximize/restore toggle, 2 close, 3 startMoving). Op 6 is the
@@ -4172,6 +4256,8 @@ napi_value Init(napi_env env, napi_value exports) {
         {"registerKeepScreenOnSink", nullptr, RegisterKeepScreenOnSink, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"registerWindowTitleSink", nullptr, RegisterWindowTitleSink, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"registerWindowRectSink", nullptr, RegisterWindowRectSink, nullptr, nullptr, nullptr, napi_default, nullptr},
+        {"registerSubWindowSink", nullptr, RegisterSubWindowSink, nullptr, nullptr, nullptr, napi_default, nullptr},
+        {"notifySubWindowEvent", nullptr, NotifySubWindowEvent, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"registerWindowDecorSink", nullptr, RegisterWindowDecorSink, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"registerScreenshotSink", nullptr, RegisterScreenshotSink, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"registerShellSearchChangedSink", nullptr, RegisterShellSearchChangedSink, nullptr, nullptr, nullptr, napi_default, nullptr},

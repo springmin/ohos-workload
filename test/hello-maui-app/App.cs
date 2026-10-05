@@ -145,6 +145,40 @@ public sealed class App : Application
         {
             MediaProbe.Start(probeWindow);
         }
+        // MULTIWINDOW-M deterministic device triggers (documented in the M plan): "demo" drives
+        // create -> move -> resize -> close with a status line per step, "open" creates and
+        // leaves the child up for the touch/drag checks, "close" destroys it.
+        if (uri.StartsWith("app://subwindow/demo", StringComparison.OrdinalIgnoreCase))
+        {
+            RunSubWindowDemo();
+        }
+        else if (uri.StartsWith("app://subwindow/open", StringComparison.OrdinalIgnoreCase))
+        {
+            OpenHarmonyBridge.WriteStatus($"[hello-maui-app] subwindow open: supported={OpenHarmonySubWindow.IsSupported} create queued={OpenHarmonySubWindow.Create("maui-demo", 120, 160, 720, 480, "MAUI child")}");
+        }
+        else if (uri.StartsWith("app://subwindow/close", StringComparison.OrdinalIgnoreCase))
+        {
+            OpenHarmonyBridge.WriteStatus($"[hello-maui-app] subwindow close: queued={OpenHarmonySubWindow.Close()}");
+        }
+    }
+
+    /// <summary>
+    /// Managed-driven subwindow demo: create -> move -> resize -> close, one status line per
+    /// step. Every shell transition is also logged by the Changed handler in BuildPage, so a
+    /// device round reads the whole sequence out of hilog without touching the page.
+    /// </summary>
+    private static void RunSubWindowDemo()
+    {
+        _ = Task.Run(async () =>
+        {
+            OpenHarmonyBridge.WriteStatus($"[hello-maui-app] subwindow demo: supported={OpenHarmonySubWindow.IsSupported} create queued={OpenHarmonySubWindow.Create("maui-demo", 120, 160, 720, 480, "MAUI child")}");
+            await Task.Delay(3000);
+            OpenHarmonyBridge.WriteStatus($"[hello-maui-app] subwindow demo: move queued={OpenHarmonySubWindow.Move(420, 360)}");
+            await Task.Delay(3000);
+            OpenHarmonyBridge.WriteStatus($"[hello-maui-app] subwindow demo: resize queued={OpenHarmonySubWindow.Resize(900, 600)}");
+            await Task.Delay(3000);
+            OpenHarmonyBridge.WriteStatus($"[hello-maui-app] subwindow demo: close queued={OpenHarmonySubWindow.Close()}");
+        });
     }
 
     private static Window? CurrentWindow()
@@ -467,6 +501,45 @@ public sealed class App : Application
             status.Text = "reset";
         };
 
+        // MULTIWINDOW-M demo: an application subwindow driven by the managed slice
+        // (OpenHarmonySubWindow). "Open" creates the shell-drawn child under the main window,
+        // "Move"/"Resize" drive it, "Close" destroys it; the shell reports lifecycle, rect and
+        // touch events back into this page (the state line below). The child itself is
+        // draggable and its close button destroys it, so both input paths are exercised.
+        var subWindowStatus = new Label { Text = "subwindow: closed", FontSize = 22 };
+        var subWindowOpen = new Button { Text = "Open subwindow", FontSize = 24 };
+        var subWindowMove = new Button { Text = "Move subwindow", FontSize = 24 };
+        var subWindowResize = new Button { Text = "Resize subwindow", FontSize = 24 };
+        var subWindowClose = new Button { Text = "Close subwindow", FontSize = 24 };
+        subWindowOpen.Clicked += (_, _) =>
+        {
+            subWindowStatus.Text = OpenHarmonySubWindow.IsSupported
+                ? "subwindow: create(120,160 720x480) queued"
+                : "subwindow: the shell reports no subwindow sink";
+            OpenHarmonySubWindow.Create("maui-demo", 120, 160, 720, 480, "MAUI child");
+        };
+        subWindowMove.Clicked += (_, _) => OpenHarmonySubWindow.Move(420, 360);
+        subWindowResize.Clicked += (_, _) => OpenHarmonySubWindow.Resize(900, 600);
+        subWindowClose.Clicked += (_, _) => OpenHarmonySubWindow.Close();
+        OpenHarmonySubWindow.Changed += (_, e) =>
+        {
+            // Device evidence: every transition reaches the managed side (and the status file).
+            OpenHarmonyBridge.WriteStatus($"[hello-maui-app] subwindow event {e.Kind}: id={e.WindowId} rect={e.Bounds.X:0},{e.Bounds.Y:0} {e.Bounds.Width:0}x{e.Bounds.Height:0}{(e.Message is null ? "" : " / " + e.Message)}");
+            Microsoft.Maui.ApplicationModel.MainThread.BeginInvokeOnMainThread(() =>
+                subWindowStatus.Text = $"subwindow {e.Kind}: id={e.WindowId} rect={e.Bounds.X:0},{e.Bounds.Y:0} {e.Bounds.Width:0}x{e.Bounds.Height:0}{(e.Message is null ? "" : " / " + e.Message)}");
+        };
+        OpenHarmonySubWindow.Touched += (_, e) =>
+        {
+            OpenHarmonyBridge.WriteStatus($"[hello-maui-app] subwindow touch action={e.Action} ({e.X:0},{e.Y:0}) pointers={e.PointerCount}");
+            Microsoft.Maui.ApplicationModel.MainThread.BeginInvokeOnMainThread(() =>
+                subWindowStatus.Text = $"subwindow touch: action={e.Action} ({e.X:0},{e.Y:0}) pointers={e.PointerCount}");
+        };
+        var subWindowRow = new HorizontalStackLayout { Spacing = 8 };
+        subWindowRow.Add(subWindowOpen);
+        subWindowRow.Add(subWindowMove);
+        subWindowRow.Add(subWindowResize);
+        subWindowRow.Add(subWindowClose);
+
         var layout = new VerticalStackLayout { Padding = 32, Spacing = 20 };        // W22-5: shapes, border, stepper, radio button, search bar.
         var shapeRow = new HorizontalStackLayout { Spacing = 12 };
         shapeRow.Add(new Rectangle { WidthRequest = 48, HeightRequest = 48, Fill = Colors.OrangeRed, Stroke = Colors.White, StrokeThickness = 2 });
@@ -530,6 +603,8 @@ public sealed class App : Application
         layout.Add(extraHost);
         layout.Add(hybridCStatus);
         layout.Add(blazorStatus);
+        layout.Add(subWindowRow);
+        layout.Add(subWindowStatus);
         layout.Add(counter);
         layout.Add(entry);
         layout.Add(valueControls);

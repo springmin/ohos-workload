@@ -48,6 +48,11 @@ import type { geoLocationManager } from '@kit.LocationKit';
 // Raw HAP resources (resources/rawfile/**): names the ResourceManager type the ability context
 // exposes; the type-only import is erased by the compiler.
 import type { resourceManager } from '@kit.LocalizationKit';
+// MULTIWINDOW-M: side-effect import that evaluates pages/SubWindow.ets so its @Entry named
+// route ('ohos_dotnet_subwindow') is registered in this UI instance. Without the import the
+// named route can resolve as an empty content load (the subwindow then shows its background
+// only), because nothing else references the page module.
+import './SubWindow';
 
 // Menu bridge: the managed side publishes the current page's menu bars (MenuBarItem/MenuFlyout)
 // as a structured table through the host. registerMenuChangedSink fires after every commit -
@@ -70,6 +75,43 @@ interface HostMenuItem {
 interface HostMenuRowRef {
   row: HostMenuItem;
   index: number;
+}
+
+// In-app subwindow (MULTIWINDOW-M): the managed slice's OpenHarmonySubWindow sends commands
+// through host.registerSubWindowSink as (op, payloadJson) and the shell reports lifecycle,
+// geometry and touch back through host.notifySubWindowEvent. Both payloads stay JSON, so the
+// command set can grow on either side without a native host rebuild.
+interface SubWindowCommand {
+  name?: string;
+  title?: string;
+  x?: number;
+  y?: number;
+  w?: number;
+  h?: number;
+}
+
+// One subwindow state report: id + rect (window pixels). Only the fields the op uses are read.
+interface SubWindowStatePayload {
+  id: number;
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+}
+
+// One touch inside the shell-drawn subwindow content.
+interface SubWindowTouchPayload {
+  action: number;
+  x: number;
+  y: number;
+  count: number;
+}
+
+// A failed subwindow operation: the shell could not create/drive the child (BusinessError code
+// or 801 when the platform has no such affordance, for example Hide).
+interface SubWindowErrorPayload {
+  code: number;
+  message: string;
 }
 
 // HybridWebView asset bridge: the managed handler registers the extracted app payload
@@ -593,6 +635,32 @@ const WEB_SLOT_HOT: number = 2;
 // Bound on the per-slot deferral queue (see pendingWebOps).
 const WEB_SLOT_PENDING_MAX: number = 32;
 
+// MULTIWINDOW-M subwindow bridge.
+// Commands (managed -> shell; handleSubWindowCommand): 0 create, 1 move, 2 resize, 3 show,
+// 4 hide (not supported by the public subwindow API: answered with a Failed event), 5 close.
+// Events (shell -> managed; mirror the slice's OpenHarmonySubWindowEventKind): 0 created,
+// 1 shown, 2 hidden, 3 moved, 4 resized, 5 closed, 6 touch, 7 failed, 8 page ready,
+// 9 main window suspended, 10 main window resumed.
+const SUB_CMD_CREATE: number = 0;
+const SUB_CMD_MOVE: number = 1;
+const SUB_CMD_RESIZE: number = 2;
+const SUB_CMD_SHOW: number = 3;
+const SUB_CMD_HIDE: number = 4;
+const SUB_CMD_CLOSE: number = 5;
+const SUB_EVENT_CREATED: number = 0;
+const SUB_EVENT_SHOWN: number = 1;
+const SUB_EVENT_HIDDEN: number = 2;
+const SUB_EVENT_MOVED: number = 3;
+const SUB_EVENT_RESIZED: number = 4;
+const SUB_EVENT_CLOSED: number = 5;
+const SUB_EVENT_FAILED: number = 7;
+const SUB_EVENT_SUSPENDED: number = 9;
+const SUB_EVENT_RESUMED: number = 10;
+// The subwindow's named route (pages/SubWindow.ets) and its parent-window name; both are
+// single-instance by design (one application subwindow in this slice).
+const SUB_WINDOW_ROUTE: string = 'ohos_dotnet_subwindow';
+const SUB_WINDOW_NAME: string = 'ohos_dotnet_subwindow';
+
 // One per-overlay command a slot had to defer because its ArkWeb was still being created
 // (SLOTS-DYNAMIC): replayed in arrival order from the new component's onControllerAttached.
 // requestId is only used by the eval channel (registerWebEvalSink).
@@ -734,6 +802,19 @@ struct Index {
   // (see subscribeWindowShapeChange); the flag keeps a repeated aboutToAppear idempotent and
   // the disposer unregisters the exact callbacks.
   private windowShapeRegistered: boolean = false;
+  // MULTIWINDOW-M: the one application subwindow and its bookkeeping. All null/0 until the
+  // managed side creates it; every operation then degrades to a no-op, so an app that never
+  // opens a child pays nothing (no observer, no window, no per-frame work).
+  private subWindow: window.Window | null = null;
+  private subWindowId: number = -1;
+  private subWindowCreating: boolean = false;
+  // The main window resolved before the first child exists (getLastWindow would return the
+  // focused child afterwards), and the once-registered main-window event observer.
+  private subWindowMainWindow: window.Window | null = null;
+  private subWindowMainEventsRegistered: boolean = false;
+  // The main window's HIDDEN/SHOWN state; while suspended, managed show/move/resize commands are
+  // skipped (the system already suspends the child with its parent) and reported as failed.
+  private subWindowSuspended: boolean = false;
   // Bundle metadata (Essentials IAppInfo version/build/name): published to the host once at
   // page load from the bundle manager (see reportBundleInfo), guarded so a page reappearance
   // does not re-read it.
@@ -2133,6 +2214,343 @@ struct Index {
     }).catch((shapeWindowError: Error): void => {
       this.logError(`[maui] window shape window unavailable: ${shapeWindowError.message}`);
     });
+  }
+
+  // MULTIWINDOW-M (in-app subwindow): registers the command sink in aboutToAppear. The managed
+  // side (OpenHarmonySubWindow) sends create/move/resize/show/hide/close; an app that never
+  // opens a child never sends one, and a shell without the host export logs once through
+  // hostCall while the managed side reports the feature unavailable (honest degradation).
+  private subscribeSubWindow(): void {
+    this.hostCall('registerSubWindowSink', typeof host !== 'undefined' && typeof host.registerSubWindowSink === 'function', (): void => {
+      host.registerSubWindowSink((op: number, payload: string): void => {
+        this.handleSubWindowCommand(op, payload);
+      });
+    });
+  }
+
+  // Forwards one subwindow event (op + JSON payload) to the managed side.
+  private notifySubWindowEvent(op: number, payload: string): void {
+    this.hostCall('notifySubWindowEvent', typeof host !== 'undefined' && typeof host.notifySubWindowEvent === 'function', (): void => {
+      host.notifySubWindowEvent(op, payload);
+    });
+  }
+
+  // One JSON state report for the current child rect; an unreadable window degrades to the
+  // cached id with a zero rect (the managed side treats a 0-size rect as unknown).
+  private subWindowStatePayload(win: window.Window): string {
+    let id: number = this.subWindowId;
+    let x: number = 0;
+    let y: number = 0;
+    let w: number = 0;
+    let h: number = 0;
+    try {
+      const props = win.getWindowProperties();
+      id = props.id;
+      x = props.windowRect.left;
+      y = props.windowRect.top;
+      w = props.windowRect.width;
+      h = props.windowRect.height;
+    } catch (stateError) {
+      this.logError(`[maui] subwindow state read failed: ${(stateError as Error).message}`);
+    }
+    const payload: SubWindowStatePayload = { id: id, x: x, y: y, w: w, h: h };
+    return JSON.stringify(payload);
+  }
+
+  private reportSubWindowState(op: number): void {
+    const win = this.subWindow;
+    if (win === null) {
+      return;
+    }
+    this.notifySubWindowEvent(op, this.subWindowStatePayload(win));
+  }
+
+  private reportSubWindowFailure(code: number, message: string): void {
+    const payload: SubWindowErrorPayload = { code: code, message: message };
+    this.notifySubWindowEvent(SUB_EVENT_FAILED, JSON.stringify(payload));
+  }
+
+  // Clamps a managed request into the window-manager's documented bounds; an absent or
+  // non-finite value falls back to the caller's default (the managed side is not trusted to
+  // keep its own rect sane).
+  private subWindowOffset(value: number | undefined, fallback: number): number {
+    if (value === undefined || !Number.isFinite(value)) {
+      return fallback;
+    }
+    const rounded = Math.round(value);
+    if (rounded < -32768) {
+      return -32768;
+    }
+    if (rounded > 32768) {
+      return 32768;
+    }
+    return rounded;
+  }
+
+  private subWindowDimension(value: number | undefined, fallback: number): number {
+    if (value === undefined || !Number.isFinite(value) || value <= 0) {
+      return fallback;
+    }
+    const rounded = Math.round(value);
+    if (rounded < 160) {
+      return 160;
+    }
+    if (rounded > 16384) {
+      return 16384;
+    }
+    return rounded;
+  }
+
+  // Resolves the main window before the first child exists (getLastWindow would return the
+  // focused child afterwards) and subscribes its suspend/resume events once.
+  private async resolveMainWindow(): Promise<window.Window> {
+    if (this.subWindowMainWindow !== null) {
+      return this.subWindowMainWindow;
+    }
+    const main = await window.getLastWindow(this.hostContext());
+    this.subWindowMainWindow = main;
+    this.subscribeMainWindowSuspension(main);
+    return main;
+  }
+
+  // MULTIWINDOW-M suspend/resume coordination: the system already suspends a child window with
+  // its parent, so the shell mirrors the main window's HIDDEN/SHOWN state to the managed side
+  // and suppresses managed commands while suspended (see handleSubWindowCommand).
+  private subscribeMainWindowSuspension(main: window.Window): void {
+    if (this.subWindowMainEventsRegistered) {
+      return;
+    }
+    try {
+      main.on('windowEvent', (evt: window.WindowEventType): void => {
+        if (evt === window.WindowEventType.WINDOW_HIDDEN) {
+          this.subWindowSuspended = true;
+          this.logInfo('[maui] main window hidden: subwindow suspended');
+          this.notifySubWindowEvent(SUB_EVENT_SUSPENDED, '{}');
+        } else if (evt === window.WindowEventType.WINDOW_SHOWN) {
+          this.subWindowSuspended = false;
+          this.logInfo('[maui] main window shown: subwindow resumed');
+          this.notifySubWindowEvent(SUB_EVENT_RESUMED, '{}');
+        }
+      });
+      this.subWindowMainEventsRegistered = true;
+    } catch (eventError) {
+      this.logError(`[maui] main window events unavailable: ${(eventError as Error).message}`);
+    }
+  }
+
+  // Dispatches one managed command. A malformed payload or an unknown op is reported as Failed
+  // instead of silently dropping, so the managed side can record the degradation.
+  private handleSubWindowCommand(op: number, payload: string): void {
+    let cmd: SubWindowCommand = {};
+    try {
+      cmd = JSON.parse(payload) as SubWindowCommand;
+    } catch (parseError) {
+      this.logError(`[maui] subwindow command ${op} has a malformed payload: ${(parseError as Error).message}`);
+      this.reportSubWindowFailure(-1, 'malformed subwindow command payload');
+      return;
+    }
+    // While the main window is hidden, only close/hide are meaningful: the child is suspended
+    // with its parent and a forced show/move would be applied to a hidden window.
+    if (this.subWindowSuspended && op !== SUB_CMD_CLOSE && op !== SUB_CMD_HIDE) {
+      this.logInfo(`[maui] subwindow command ${op} skipped: the main window is suspended`);
+      return;
+    }
+    if (op === SUB_CMD_CREATE) {
+      this.createSubWindow(cmd);
+    } else if (op === SUB_CMD_MOVE) {
+      this.moveSubWindow(cmd);
+    } else if (op === SUB_CMD_RESIZE) {
+      this.resizeSubWindow(cmd);
+    } else if (op === SUB_CMD_SHOW) {
+      this.showSubWindow();
+    } else if (op === SUB_CMD_HIDE) {
+      // The public subwindow API has no hide(): the child hides with its parent and close
+      // destroys it. The request is answered honestly instead of pretending the state moved.
+      this.reportSubWindowFailure(801, 'hiding an application subwindow is not supported; the child hides with the main window and close destroys it');
+    } else if (op === SUB_CMD_CLOSE) {
+      this.closeSubWindow();
+    } else {
+      this.logError(`[maui] subwindow command ${op} is unknown`);
+      this.reportSubWindowFailure(-1, `unknown subwindow command ${op}`);
+    }
+  }
+
+  // Creates the child under the main window and loads the shell-drawn page. Single-instance:
+  // a repeated create reports the live window instead of leaking a second child.
+  private async createSubWindow(cmd: SubWindowCommand): Promise<void> {
+    if (this.subWindow !== null) {
+      this.reportSubWindowState(SUB_EVENT_CREATED);
+      return;
+    }
+    if (this.subWindowCreating) {
+      return;
+    }
+    this.subWindowCreating = true;
+    try {
+      const main = await this.resolveMainWindow();
+      const options: window.SubWindowOptions = {
+        title: cmd.title !== undefined && cmd.title.length > 0 ? cmd.title : 'MAUI',
+        decorEnabled: false,
+        windowRect: {
+          left: this.subWindowOffset(cmd.x, 80),
+          top: this.subWindowOffset(cmd.y, 120),
+          width: this.subWindowDimension(cmd.w, 640),
+          height: this.subWindowDimension(cmd.h, 420),
+        },
+      };
+      const child = await main.createSubWindowWithOptions(SUB_WINDOW_NAME, options);
+      this.subWindow = child;
+      this.subWindowId = child.getWindowProperties().id;
+      // pages/SubWindow.ets is a named route compiled into this shell abc; the storage passes
+      // the window id so the page can refuse to move a window that is not its own. A runtime
+      // without the named-route index falls back to the path form (which also needs the page in
+      // the packaged main_pages.json).
+      const storage: LocalStorage = new LocalStorage();
+      storage.setOrCreate('subWindowId', this.subWindowId);
+      try {
+        await child.loadContentByName(SUB_WINDOW_ROUTE, storage);
+      } catch (namedRouteError) {
+        this.logError(`[maui] subwindow named route failed, falling back to setUIContent: ${(namedRouteError as Error).message}`);
+        await child.setUIContent('pages/SubWindow');
+      }
+      child.on('windowEvent', (evt: window.WindowEventType): void => {
+        this.onSubWindowWindowEvent(evt);
+      });
+      child.on('windowSizeChange', (_size: window.Size): void => {
+        this.reportSubWindowState(SUB_EVENT_RESIZED);
+      });
+      child.on('windowRectChange', (_change: window.RectChangeOptions): void => {
+        this.reportSubWindowState(SUB_EVENT_MOVED);
+      });
+      await child.setWindowBackgroundColor('#FF11161C');
+      await child.showWindow();
+      this.reportSubWindowState(SUB_EVENT_CREATED);
+      this.logInfo(`[maui] subwindow created: ${this.subWindowStatePayload(child)}`);
+    } catch (createError) {
+      const error = createError as BusinessError;
+      this.logError(`[maui] subwindow create failed: code=${error.code} message=${error.message}`);
+      // Clean up a child created before a later step failed, so no empty frame is left behind.
+      const leaked = this.subWindow;
+      this.clearSubWindow();
+      if (leaked !== null) {
+        try {
+          await leaked.destroyWindow();
+        } catch (cleanupError) {
+          this.logError(`[maui] subwindow cleanup failed: ${(cleanupError as Error).message}`);
+        }
+      }
+      this.reportSubWindowFailure(error.code, error.message);
+    } finally {
+      this.subWindowCreating = false;
+    }
+  }
+
+  private moveSubWindow(cmd: SubWindowCommand): void {
+    const child = this.subWindow;
+    if (child === null) {
+      this.reportSubWindowFailure(-1, 'move: no subwindow exists');
+      return;
+    }
+    const x = this.subWindowOffset(cmd.x, 0);
+    const y = this.subWindowOffset(cmd.y, 0);
+    child.moveWindowTo(x, y).then((): void => {
+      this.logInfo(`[maui] subwindow move applied: ${x},${y}`);
+      this.reportSubWindowState(SUB_EVENT_MOVED);
+    }).catch((moveError: Error): void => {
+      this.reportSubWindowFailure(-1, `move failed: ${moveError.message}`);
+    });
+  }
+
+  private resizeSubWindow(cmd: SubWindowCommand): void {
+    const child = this.subWindow;
+    if (child === null) {
+      this.reportSubWindowFailure(-1, 'resize: no subwindow exists');
+      return;
+    }
+    const w = this.subWindowDimension(cmd.w, 640);
+    const h = this.subWindowDimension(cmd.h, 420);
+    child.resize(w, h).then((): void => {
+      this.logInfo(`[maui] subwindow resize applied: ${w}x${h}`);
+      this.reportSubWindowState(SUB_EVENT_RESIZED);
+    }).catch((resizeError: Error): void => {
+      this.reportSubWindowFailure(-1, `resize failed: ${resizeError.message}`);
+    });
+  }
+
+  private showSubWindow(): void {
+    const child = this.subWindow;
+    if (child === null) {
+      this.reportSubWindowFailure(-1, 'show: no subwindow exists');
+      return;
+    }
+    child.showWindow().then((): void => {
+      this.reportSubWindowState(SUB_EVENT_SHOWN);
+    }).catch((showError: Error): void => {
+      this.reportSubWindowFailure(-1, `show failed: ${showError.message}`);
+    });
+  }
+
+  private closeSubWindow(): void {
+    const child = this.subWindow;
+    if (child === null) {
+      // Idempotent close: a second close is a state no-op, not a failure.
+      this.notifySubWindowEvent(SUB_EVENT_CLOSED, '{}');
+      return;
+    }
+    child.destroyWindow().then((): void => {
+      // The windowEvent DESTROYED observer normally finishes the state; this is the belt for a
+      // runtime that does not deliver it.
+      if (this.subWindow === child) {
+        this.finishSubWindowClosed();
+      }
+    }).catch((closeError: Error): void => {
+      this.reportSubWindowFailure(-1, `close failed: ${closeError.message}`);
+    });
+  }
+
+  // The child's own window events: shown/hidden are mirrored, destroyed finishes the state.
+  private onSubWindowWindowEvent(evt: window.WindowEventType): void {
+    if (evt === window.WindowEventType.WINDOW_SHOWN) {
+      this.reportSubWindowState(SUB_EVENT_SHOWN);
+    } else if (evt === window.WindowEventType.WINDOW_HIDDEN) {
+      this.reportSubWindowState(SUB_EVENT_HIDDEN);
+    } else if (evt === window.WindowEventType.WINDOW_DESTROYED) {
+      this.finishSubWindowClosed();
+    }
+  }
+
+  private finishSubWindowClosed(): void {
+    if (this.subWindow === null) {
+      return;
+    }
+    const id = this.subWindowId;
+    this.clearSubWindow();
+    const payload: SubWindowStatePayload = { id: id, x: 0, y: 0, w: 0, h: 0 };
+    this.notifySubWindowEvent(SUB_EVENT_CLOSED, JSON.stringify(payload));
+    this.logInfo('[maui] subwindow closed');
+  }
+
+  private clearSubWindow(): void {
+    this.subWindow = null;
+    this.subWindowId = -1;
+    this.subWindowSuspended = false;
+  }
+
+  // Best-effort teardown when the page disappears; a failure only leaves the child for the
+  // system to reap with the ability.
+  private destroySubWindowForPage(): void {
+    const child = this.subWindow;
+    if (child === null) {
+      return;
+    }
+    this.clearSubWindow();
+    try {
+      child.destroyWindow().catch((destroyError: Error): void => {
+        this.logError(`[maui] subwindow page teardown failed: ${destroyError.message}`);
+      });
+    } catch (destroyError) {
+      this.logError(`[maui] subwindow page teardown failed: ${(destroyError as Error).message}`);
+    }
   }
 
   // Connectivity (Essentials): the NetworkKit connection observer pushes host.notifyNetworkAccess
@@ -4273,6 +4691,9 @@ struct Index {
     this.subscribeBatteryEvents();
     this.subscribeDisplayChange();
     this.subscribeWindowShapeChange();
+    // MULTIWINDOW-M: the managed subwindow commands arrive through this sink (create is the
+    // only entry; nothing is allocated until then, so apps without a child pay nothing).
+    this.subscribeSubWindow();
     this.subscribeNetworkChanges();
     // Device-compat (lazy SDK modules): the camera module is needed by the synchronous
     // flashlight sink and by the picker's camera position, so it is preloaded once here.
@@ -5621,6 +6042,8 @@ struct Index {
     // Map overlay (R2-3): release the MapComponent/BuilderNode with the page so the kit's map
     // view and its listeners do not outlive it (the proxy also drops late callbacks).
     this.destroyMapOverlay();
+    // MULTIWINDOW-M: the child window is page-scoped; destroy it with the page.
+    this.destroySubWindowForPage();
     // Callback deregistration ledger first: the kit listeners (display, battery events,
     // connectivity, bluetooth discovery) must not outlive the page.
     this.runDisposers();
