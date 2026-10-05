@@ -22,7 +22,7 @@ on:
         description: 'maui-ohos commit SHA to cross-check (defaults to the pinned slice tip)'
         required: false
         type: string
-        default: 'ed02203bfdc5517f90faa229568e87c08c53071d'
+        default: 'b093e3382550670936c1c399e3db6c1114cbc302'
   push:
     branches: [ master ]
   pull_request:
@@ -32,7 +32,12 @@ permissions:
 
 # Reproducible cross-repo check: the slice is checked out at an exact commit, not the mutable
 # feature/openharmony branch, so a push to the fork cannot change what this gate verifies.
-# Current tip: ed02203bfd (MULTIWINDOW-S: the managed app host arranges on a live surface
+# Current tip: b093e33825 (MULTIWINDOW-M: the managed slice hosts an application subwindow -
+# OpenHarmonySubWindow drives the shell's named-route SubWindow page through the
+# create/move/resize/show/close command set and the shell->managed event listener; the host adds
+# ohos_host_sub_window_command and ohos_host_sub_window_event_listener, so the export set moves to
+# 153/153; SEC-SCAN-4 5f3efd55e5 masks password Entry text in the accessibility shadow tree and
+# adds no DllImport) on ed02203bfd (MULTIWINDOW-S: the managed app host arranges on a live surface
 # Created/Changed and keeps the last frame on Destroyed/0x0; managed-only, no new host export, so
 # the export set stays 151/151) on d5384d6cc3 (FIX-A11YFLYOUT: OpenHarmonyAccessibility.PushChildren's FlyoutPage
 # Detail / presented-Flyout branch is managed-only and adds no DllImport, so the export set stays
@@ -103,7 +108,7 @@ permissions:
 # 151/151).
 # Advance the pin deliberately, in lockstep with the interaction/pixel gates.
 env:
-  MAUI_OHOS_REF: ${{ github.event.inputs.maui_ohos_ref || 'ed02203bfdc5517f90faa229568e87c08c53071d' }}
+  MAUI_OHOS_REF: ${{ github.event.inputs.maui_ohos_ref || 'b093e3382550670936c1c399e3db6c1114cbc302' }}
 
 jobs:
   contract:
