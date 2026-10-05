@@ -40,10 +40,13 @@ static void LoadHostLibrary(void) {
 
 // The runtime-mode switch policy runs before the runtime starts and may set
 // DOTNET_InterpMode in-process (interp marker / interp.txt); the local smoke reads this line to
-// assert the policy without a device-side runtime.
+// assert the policy without a device-side runtime. Pure interpreter mode also opts out of the
+// R2R loader (CG2-R2R), so the same line reports DOTNET_ReadyToRun.
 static void PrintInterpEnv(void) {
     const char* interp = getenv("DOTNET_InterpMode");
     printf("[test_host] env DOTNET_InterpMode=%s\n", interp != NULL ? interp : "(unset)");
+    const char* r2r = getenv("DOTNET_ReadyToRun");
+    printf("[test_host] env DOTNET_ReadyToRun=%s\n", r2r != NULL ? r2r : "(unset)");
 }
 
 static void* SendEvents(void* arg) {

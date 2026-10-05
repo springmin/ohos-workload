@@ -1111,9 +1111,15 @@ static void OhosHostApplyExecMemoryPolicy(const char* caller, const char* app_di
         // is the runtime's first executable page (InitThreadManager), and the HAP domain
         // refuses the RWX commit so the memcpy into it faults (SEGV_ACCERR). Skipping it
         // keeps interpreter-only startup free of executable allocations; the JIT modes keep
-        // the default (arm64 defaults the copy on).
+        // the default (arm64 defaults the copy on). The same mode also never executes the
+        // native code of an R2R image, so the R2R loader stays off explicitly: the runtime
+        // already forces ReadyToRun off for InterpMode >= 2 (eeconfig.cpp), but the host
+        // states the intent at the same decision point as the other mode-3 switches, and a
+        // runtime without that implicit rule would otherwise map and relocate code the
+        // interpreter cannot use. JIT and mixed modes (1/2) keep the runtime default.
         if (strcmp(interp, "3") == 0) {
             setenv("DOTNET_UseGCWriteBarrierCopy", "0", 1);
+            setenv("DOTNET_ReadyToRun", "0", 1);
         }
     }
     const char* interp_value = have_interp ? interp : "0";

@@ -158,7 +158,11 @@ Interpreter switch (R2-SHELL-EXT companion) - `interp.txt` in the same directory
 `DOTNET_InterpMode` for the runtime that starts next (`3` = the pure interpreter of the
 published `ohos-interpreter-pack.tar.gz`): the first byte must be a digit, the leading digit
 run is the value, and no file leaves the variable as-is (the runtime's own JIT default). The
-host logs the decision on every launch path:
+pure mode 3 also exports `DOTNET_ReadyToRun=0` next to it (CG2-R2R): the interpreter never
+executes an R2R image's native code, and while the runtime already forces ReadyToRun off for
+`DOTNET_InterpMode >= 2` (`eeconfig.cpp`), the host states the intent at the same decision
+point as the other mode-3 switches. The JIT and the mixed modes (1/2) keep the runtime
+default. The host logs the decision on every launch path:
 
 ```text
 [openharmony-host] start_app: interp=3 source=file
@@ -246,7 +250,7 @@ pass, so the marker travels next to the signed payload and is counted by the
 |---|---|---|
 | `jit` (default) | unchanged: hostfxr + the runtime natives staged from the publish | the host keeps its JIT route (`aot=0`) |
 | `aot` | requires `lib<stem>.so` (the NativeAOT application library; `<stem>` is the `app.json` assembly name without `.dll`) in the publish payload; a missing library is a build error naming the aot-haps publish flags (`-p:PublishAot=true -p:PublishAotUsingRuntimePack=true -p:NativeLib=Shared`, see "NativeAOT HAP variant") | the existing `<app_dir>/lib<stem>.so` probe routes to `openharmony_app_main`; when the marked library is missing or unloadable the host logs `runtime-mode=aot but <path> ...; falling back to the JIT route` instead of the silent JIT fall-through |
-| `interp` | optional `-p:OpenHarmonyInterpreterPack=<dir>` stages the extracted `ohos-interpreter-pack` (`<dir>/` or `<dir>/native/`: `libcoreclr.so` + `libclrinterpreter.so`) over the publish natives; both files are re-signed by the same codesign pass. Without a pack the stock natives stay and the device-side overlay route still applies | the host sets `DOTNET_InterpMode=3` before coreclr starts, unless `<filesDir>/interp.txt` carries a value |
+| `interp` | optional `-p:OpenHarmonyInterpreterPack=<dir>` stages the extracted `ohos-interpreter-pack` (`<dir>/` or `<dir>/native/`: `libcoreclr.so` + `libclrinterpreter.so`) over the publish natives; both files are re-signed by the same codesign pass. Without a pack the stock natives stay and the device-side overlay route still applies | the host sets `DOTNET_InterpMode=3` (and the mode-3 `DOTNET_ReadyToRun=0` R2R opt-out) before coreclr starts, unless `<filesDir>/interp.txt` carries a value |
 
 An invalid `OpenHarmonyRuntimeMode` fails the build (`jit`, `aot` and `interp` are the accepted
 values); `OpenHarmonyInterpreterPack` outside `interp` mode fails too.
@@ -254,8 +258,8 @@ values); `OpenHarmonyInterpreterPack` outside `interp` mode fails too.
 Host-side precedence (all applied before hostfxr can start coreclr, the same launch point as
 `xwe.txt`): a writable-sandbox `<filesDir>/interp.txt` wins (`source=file`, its value is applied
 to `DOTNET_InterpMode`), else the packaged marker (`source=manifest`; `interp` selects
-`DOTNET_InterpMode=3`), else the JIT default (`source=default`). The effective mode is logged on
-every launch path (hilog and stderr):
+`DOTNET_InterpMode=3` plus the mode-3 `DOTNET_ReadyToRun=0` opt-out), else the JIT default
+(`source=default`). The effective mode is logged on every launch path (hilog and stderr):
 
 ```text
 [openharmony-host] start_app: runtime-mode=interp source=manifest

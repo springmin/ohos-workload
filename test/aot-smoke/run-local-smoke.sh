@@ -19,7 +19,8 @@
 #     default (no marker)      -> logs runtime-mode=jit source=default, DOTNET_InterpMode unset
 #     aot + libFakeApp.so      -> existing AOT route, logs source=manifest
 #     aot without the library  -> explicit "falling back to the JIT route" line for MissingApp.dll
-#     interp marker            -> logs interp=3 source=manifest and sets DOTNET_InterpMode=3
+#     interp marker            -> logs interp=3 source=manifest, sets DOTNET_InterpMode=3
+#                                 and DOTNET_ReadyToRun=0 (the CG2-R2R R2R opt-out)
 #     interp.txt over the mark -> file wins: interp=<v> source=file, the value is honoured
 #     invalid marker           -> one warning, keeps jit
 #   The host's own effective DOTNET_InterpMode is read back by test_host's "[test_host] env"
@@ -152,8 +153,9 @@ timeout 60 ./test_host "$OUT" FakeApp.dll > mode-interp.out 2>&1
 rc=$?
 if [ "$rc" = "7" ] && grep -q 'runtime-mode=interp source=manifest' mode-interp.out &&
    grep -q 'interp=3 source=manifest' mode-interp.out &&
-   grep -q 'env DOTNET_InterpMode=3' mode-interp.out; then
-    echo "[PASS] the interp marker sets DOTNET_InterpMode=3 (source=manifest)"
+   grep -q 'env DOTNET_InterpMode=3' mode-interp.out &&
+   grep -q 'env DOTNET_ReadyToRun=0' mode-interp.out; then
+    echo "[PASS] the interp marker sets DOTNET_InterpMode=3 (source=manifest) and R2R off"
 else
     echo "[FAIL] interp-marker round rc=$rc; output:" >&2
     sed 's/^/  /' mode-interp.out >&2
@@ -166,8 +168,9 @@ timeout 60 ./test_host "$OUT" FakeApp.dll > mode-interp-file.out 2>&1
 rc=$?
 if [ "$rc" = "7" ] && grep -q 'runtime-mode=interp source=file' mode-interp-file.out &&
    grep -q 'interp=1 source=file' mode-interp-file.out &&
-   grep -q 'env DOTNET_InterpMode=1' mode-interp-file.out; then
-    echo "[PASS] interp.txt wins over the marker (source=file, value honoured)"
+   grep -q 'env DOTNET_InterpMode=1' mode-interp-file.out &&
+   grep -q 'env DOTNET_ReadyToRun=(unset)' mode-interp-file.out; then
+    echo "[PASS] interp.txt wins over the marker (source=file, value honoured; mixed mode keeps R2R)"
 else
     echo "[FAIL] interp.txt override round rc=$rc; output:" >&2
     sed 's/^/  /' mode-interp-file.out >&2
