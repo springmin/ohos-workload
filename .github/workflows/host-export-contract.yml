@@ -22,7 +22,7 @@ on:
         description: 'maui-ohos commit SHA to cross-check (defaults to the pinned slice tip)'
         required: false
         type: string
-        default: 'd5384d6cc383ce4814bd3df83e502f444ceb0e16'
+        default: 'ed02203bfdc5517f90faa229568e87c08c53071d'
   push:
     branches: [ master ]
   pull_request:
@@ -32,7 +32,9 @@ permissions:
 
 # Reproducible cross-repo check: the slice is checked out at an exact commit, not the mutable
 # feature/openharmony branch, so a push to the fork cannot change what this gate verifies.
-# Current tip: d5384d6cc3 (FIX-A11YFLYOUT: OpenHarmonyAccessibility.PushChildren's FlyoutPage
+# Current tip: ed02203bfd (MULTIWINDOW-S: the managed app host arranges on a live surface
+# Created/Changed and keeps the last frame on Destroyed/0x0; managed-only, no new host export, so
+# the export set stays 151/151) on d5384d6cc3 (FIX-A11YFLYOUT: OpenHarmonyAccessibility.PushChildren's FlyoutPage
 # Detail / presented-Flyout branch is managed-only and adds no DllImport, so the export set stays
 # 151/151) on 6652017ca5 (INTERP-DRAW2: the off-surface draw cull and the DrawCostTick/DrawKind*
 # seam are managed-only and add no DllImport, so the export set stayed 151/151) on 189b87ca8a
@@ -101,7 +103,7 @@ permissions:
 # 151/151).
 # Advance the pin deliberately, in lockstep with the interaction/pixel gates.
 env:
-  MAUI_OHOS_REF: ${{ github.event.inputs.maui_ohos_ref || 'd5384d6cc383ce4814bd3df83e502f444ceb0e16' }}
+  MAUI_OHOS_REF: ${{ github.event.inputs.maui_ohos_ref || 'ed02203bfdc5517f90faa229568e87c08c53071d' }}
 
 jobs:
   contract:

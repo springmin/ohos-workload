@@ -40,7 +40,7 @@ on:
         description: 'maui-ohos commit SHA to compile (defaults to the pinned feature/openharmony tip)'
         required: false
         type: string
-        default: 'd5384d6cc383ce4814bd3df83e502f444ceb0e16'
+        default: 'ed02203bfdc5517f90faa229568e87c08c53071d'
   push:
     branches: [ master ]
   pull_request:
@@ -52,7 +52,11 @@ permissions:
 
 # Reproducible cross-repo compile: the MAUI slice is checked out at an exact commit, not the
 # mutable feature/openharmony branch, so a push to the fork cannot change what this gate compiles.
-# The default is the feature/openharmony tip: d5384d6cc3 (FIX-A11YFLYOUT: OpenHarmonyAccessibility.
+# The default is the feature/openharmony tip: ed02203bfd (MULTIWINDOW-S: the managed app host
+# re-arranges and re-renders on a live surface Changed while Destroyed/0x0 keeps the last frame,
+# and the shell/marker declare the 2in1 window modes; managed-only, no new host export, and the
+# suite count below moves to 599/601 floor 581 - 598/600 at that wave plus this repository's
+# CG2-R2R interp R2R opt-out pin), on top of d5384d6cc3 (FIX-A11YFLYOUT: OpenHarmonyAccessibility.
 # PushChildren publishes a FlyoutPage's Detail pane always and its Flyout pane only while
 # IsPresented, mirroring the compositor's ChildEnumerator - before the branch the a11y walk only
 # reached the flyout page's root and published nodeCount=1; managed-only, no new host export, and
@@ -146,7 +150,7 @@ permissions:
 # budget); advance the pin deliberately and refresh this comment when the harness pins or the
 # tip move (workflow_dispatch can compile any commit).
 env:
-  MAUI_OHOS_REF: ${{ github.event.inputs.maui_ohos_ref || 'd5384d6cc383ce4814bd3df83e502f444ceb0e16' }}
+  MAUI_OHOS_REF: ${{ github.event.inputs.maui_ohos_ref || 'ed02203bfdc5517f90faa229568e87c08c53071d' }}
   # setup-dotnet installs the requested 11.0.x preview into DOTNET_INSTALL_DIR; on Linux that
   # defaults to /usr/share/dotnet, which a per-user cache cannot persist. Point it at ~/.dotnet
   # (the action resolves the ~ prefix against $HOME) so the cache step below actually avoids the
