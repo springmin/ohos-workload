@@ -670,11 +670,10 @@ const SUB_EVENT_RESUMED: number = 10;
 // single-instance by design (one application subwindow in this slice).
 const SUB_WINDOW_ROUTE: string = 'ohos_dotnet_subwindow';
 const SUB_WINDOW_NAME: string = 'ohos_dotnet_subwindow';
-// The UI ability publishes these on the UIAbilityContext event hub (EntryAbility.ui.ets); the
-// page mirrors them into the same suspend/resume state, because a Home-key/gesture background
-// does not deliver WINDOW_HIDDEN to the main window (SOAK49 v1).
-const SUB_WINDOW_APP_BACKGROUND_EVENT: string = 'ohos_dotnet_app_background';
-const SUB_WINDOW_APP_FOREGROUND_EVENT: string = 'ohos_dotnet_app_foreground';
+// Grace period after a window WINDOW_INACTIVE before the app counts as left the foreground: an
+// internal focus move (main <-> child) delivers the other window's WINDOW_ACTIVE in the same tick
+// (measured on HAD-W32), while the Home key delivers nothing more.
+const SUB_WINDOW_FOCUS_GRACE_MS: number = 600;
 
 // One per-overlay command a slot had to defer because its ArkWeb was still being created
 // (SLOTS-DYNAMIC): replayed in arrival order from the new component's onControllerAttached.
@@ -830,6 +829,10 @@ struct Index {
   // The main window's HIDDEN/SHOWN state; while suspended, managed show/move/resize commands are
   // skipped (the system already suspends the child with its parent) and reported as failed.
   private subWindowSuspended: boolean = false;
+  // Pending foreground-loss candidate (setTimeout id, -1 none): a window WINDOW_INACTIVE starts
+  // it and a window WINDOW_ACTIVE within the grace period cancels it (see
+  // noteSubWindowWindowInactive).
+  private subWindowForegroundLossTimer: number = -1;
   // Bundle metadata (Essentials IAppInfo version/build/name): published to the host once at
   // page load from the bundle manager (see reportBundleInfo), guarded so a page reappearance
   // does not re-read it.
@@ -2337,11 +2340,7 @@ struct Index {
     }
     try {
       main.on('windowEvent', (evt: window.WindowEventType): void => {
-        if (evt === window.WindowEventType.WINDOW_HIDDEN) {
-          this.setSubWindowSuspended(true, 'window event');
-        } else if (evt === window.WindowEventType.WINDOW_SHOWN) {
-          this.setSubWindowSuspended(false, 'window event');
-        }
+        this.onMainWindowEvent(evt);
       });
       this.subWindowMainEventsRegistered = true;
     } catch (eventError) {
@@ -2349,38 +2348,51 @@ struct Index {
     }
   }
 
-  // Fallback (SOAK49 v1): a Home key or gesture background backgrounds the ability but does not
-  // deliver WINDOW_HIDDEN to the main window, so the child only ever resumed. The UI ability
-  // emits its foreground/background transitions on the context event hub
-  // (EntryAbility.ui.ets); both sources funnel into one deduplicated state, so a title-bar
-  // minimize that fires both reports exactly one transition.
-  private subscribeAppLifecycleSuspension(): void {
-    try {
-      const context: common.UIAbilityContext = this.hostContext();
-      const backgroundListener = (): void => {
-        this.setSubWindowSuspended(true, 'ability background');
-      };
-      const foregroundListener = (): void => {
-        this.setSubWindowSuspended(false, 'ability foreground');
-      };
-      context.eventHub.on(SUB_WINDOW_APP_BACKGROUND_EVENT, backgroundListener);
-      context.eventHub.on(SUB_WINDOW_APP_FOREGROUND_EVENT, foregroundListener);
-      this.trackDisposer((): void => {
-        try {
-          context.eventHub.off(SUB_WINDOW_APP_BACKGROUND_EVENT, backgroundListener);
-          context.eventHub.off(SUB_WINDOW_APP_FOREGROUND_EVENT, foregroundListener);
-        } catch (offError) {
-          this.logWarn(`[maui] app lifecycle event unregister failed: ${(offError as Error).message}`);
-        }
-      });
-    } catch (eventError) {
-      this.logWarn(`[maui] app lifecycle events unavailable: ${(eventError as Error).message}`);
+  // The main window's own events: hidden suspends immediately, shown/active mark the app window
+  // set as foreground again, inactive starts the foreground-loss candidate (see
+  // noteSubWindowWindowInactive).
+  private onMainWindowEvent(evt: window.WindowEventType): void {
+    if (evt === window.WindowEventType.WINDOW_HIDDEN) {
+      this.cancelSubWindowForegroundLossCheck();
+      this.setSubWindowSuspended(true, 'main window hidden');
+    } else if (evt === window.WindowEventType.WINDOW_SHOWN || evt === window.WindowEventType.WINDOW_ACTIVE) {
+      this.noteSubWindowWindowActive();
+    } else if (evt === window.WindowEventType.WINDOW_INACTIVE) {
+      this.noteSubWindowWindowInactive();
     }
   }
 
-  // The one suspend/resume state both the window event and the ability lifecycle write. The log
-  // prefix stays the SOAK49/test-script marker; the suffix names the source so a device log
-  // shows which path caught it.
+  // Focus/visibility chain for the Home key (DEVICE-ROUND-49 / SOAK49 v1): that path hides the
+  // app windows without delivering WINDOW_HIDDEN, calling UIAbility onBackground or firing a
+  // window-stage HIDDEN (all measured on HAD-W32 7.0.0.111 2in1; isWindowShowing() stays true).
+  // The one event it does deliver is WINDOW_INACTIVE on whichever app window had focus, and an
+  // internal focus move (main <-> child) delivers WINDOW_ACTIVE on the other window in the same
+  // tick. So an INACTIVE with no ACTIVE within the grace period means the app left the
+  // foreground and the child is suspended; the later ACTIVE (aa start/click) resumes it. The
+  // HIDDEN/SHOWN paths above still cover the title-bar minimize, and the deduplicated state keeps
+  // a path that fires both from reporting twice.
+  private noteSubWindowWindowActive(): void {
+    this.cancelSubWindowForegroundLossCheck();
+    this.setSubWindowSuspended(false, 'window active');
+  }
+
+  private noteSubWindowWindowInactive(): void {
+    this.cancelSubWindowForegroundLossCheck();
+    this.subWindowForegroundLossTimer = setTimeout((): void => {
+      this.subWindowForegroundLossTimer = -1;
+      this.setSubWindowSuspended(true, 'no active window');
+    }, SUB_WINDOW_FOCUS_GRACE_MS);
+  }
+
+  private cancelSubWindowForegroundLossCheck(): void {
+    if (this.subWindowForegroundLossTimer >= 0) {
+      clearTimeout(this.subWindowForegroundLossTimer);
+      this.subWindowForegroundLossTimer = -1;
+    }
+  }
+
+  // The one suspend/resume state every path writes. The log prefix stays the SOAK49/test-script
+  // marker; the suffix names the source so a device log shows which path caught it.
   private setSubWindowSuspended(suspended: boolean, source: string): void {
     if (this.subWindowSuspended === suspended) {
       return;
@@ -2578,12 +2590,20 @@ struct Index {
     });
   }
 
-  // The child's own window events: shown/hidden are mirrored, destroyed finishes the state.
+  // The child's own window events: shown/hidden are mirrored, active/inactive feed the
+  // foreground chain (noteSubWindowWindowActive/Inactive), destroyed finishes the state.
   private onSubWindowWindowEvent(evt: window.WindowEventType): void {
     if (evt === window.WindowEventType.WINDOW_SHOWN) {
+      this.noteSubWindowWindowActive();
       this.reportSubWindowState(SUB_EVENT_SHOWN);
     } else if (evt === window.WindowEventType.WINDOW_HIDDEN) {
+      this.cancelSubWindowForegroundLossCheck();
+      this.setSubWindowSuspended(true, 'subwindow hidden');
       this.reportSubWindowState(SUB_EVENT_HIDDEN);
+    } else if (evt === window.WindowEventType.WINDOW_ACTIVE) {
+      this.noteSubWindowWindowActive();
+    } else if (evt === window.WindowEventType.WINDOW_INACTIVE) {
+      this.noteSubWindowWindowInactive();
     } else if (evt === window.WindowEventType.WINDOW_DESTROYED) {
       this.finishSubWindowClosed();
     }
@@ -2601,6 +2621,7 @@ struct Index {
   }
 
   private clearSubWindow(): void {
+    this.cancelSubWindowForegroundLossCheck();
     this.subWindow = null;
     this.subWindowId = -1;
     this.subWindowSuspended = false;
@@ -4764,9 +4785,6 @@ struct Index {
     // MULTIWINDOW-M: the managed subwindow commands arrive through this sink (create is the
     // only entry; nothing is allocated until then, so apps without a child pay nothing).
     this.subscribeSubWindow();
-    // MULTIWINDOW-M fallback: Home-key/gesture background does not deliver WINDOW_HIDDEN, so the
-    // ability lifecycle mirrors into the subwindow suspend state (no child -> state only).
-    this.subscribeAppLifecycleSuspension();
     this.subscribeNetworkChanges();
     // Device-compat (lazy SDK modules): the camera module is needed by the synchronous
     // flashlight sink and by the picker's camera position, so it is preloaded once here.
