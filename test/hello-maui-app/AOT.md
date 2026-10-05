@@ -47,6 +47,12 @@ dotnet publish test/hello-maui-app/hello-maui-app.csproj \
   `eng/ohos-install/fetch-nativeaot-packs.sh` verifies the `versions.env` sha256 pins).
   The pack-time host and the UI shell abc are the workload preview.28 ones
   (`libopenharmonyhost.so` 285,600 B / `00ee9c84…`, `modules.ui.abc` 311,424 B / `7c1a3cac…`).
+- ReadyToRun (JIT route, not AOT): the rc.2 crossgen2 pack is mirrored in the `sdk-ohos`
+  `crossgen2-packs-11.0.0-rc.2` release (`Microsoft.NETCore.App.Crossgen2.openharmony-arm64`
+  `11.0.0-rc.2.26451.112`, 43,792,647 B / sha256 `6bb8a375…`); add it as a folder feed and
+  publish with `-p:PublishReadyToRun=true` (JIT cold start −0.32 s; leave it off for `interp`,
+  where `DOTNET_InterpMode=3` loads but does not execute R2R code — measured +0.35 s).
+  See `runtime-ohos docs/plans/2026-10-05-ohos-cg2-r2r.md`.
 
 ## Shape checks (per hap)
 
