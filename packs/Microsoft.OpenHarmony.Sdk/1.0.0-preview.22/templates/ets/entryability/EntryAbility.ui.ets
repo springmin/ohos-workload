@@ -21,6 +21,12 @@ const LIFECYCLE_CREATE = 0;
 const LIFECYCLE_FOREGROUND = 2;
 const LIFECYCLE_BACKGROUND = 3;
 const LIFECYCLE_DESTROY = 1;
+// MULTIWINDOW-M fallback: pages/Index.ets subscribes these on the UIAbilityContext event hub so
+// a Home-key/gesture background still suspends the shell-drawn subwindow. That path backgrounds
+// the ability without delivering WINDOW_HIDDEN to the main window (SOAK49 v1), so the page's
+// window-event observer alone only ever resumed the child.
+const APP_BACKGROUND_EVENT = 'ohos_dotnet_app_background';
+const APP_FOREGROUND_EVENT = 'ohos_dotnet_app_foreground';
 
 interface AppConfig {
   assembly: string;
@@ -389,6 +395,7 @@ export default class EntryAbility extends UIAbility {
         host.notifyLifecycle(LIFECYCLE_FOREGROUND);
       });
     }
+    this.publishAppLifecycle(APP_FOREGROUND_EVENT);
   }
 
   onBackground(): void {
@@ -396,6 +403,18 @@ export default class EntryAbility extends UIAbility {
       this.hostCall('notifyLifecycle', typeof host !== 'undefined' && typeof host.notifyLifecycle === 'function', (): void => {
         host.notifyLifecycle(LIFECYCLE_BACKGROUND);
       });
+    }
+    this.publishAppLifecycle(APP_BACKGROUND_EVENT);
+  }
+
+  // Publishes one app foreground/background transition for the subwindow fallback (see the
+  // constants above). Best effort: a runtime without the context event hub logs once and the
+  // page keeps the WINDOW_HIDDEN/SHOWN path.
+  private publishAppLifecycle(event: string): void {
+    try {
+      this.context.eventHub.emit(event);
+    } catch (eventError) {
+      hilog.warn(DOMAIN, TAG, 'app lifecycle event %{public}s failed: %{public}s', event, (eventError as Error).message);
     }
   }
 

@@ -114,6 +114,16 @@ interface SubWindowErrorPayload {
   message: string;
 }
 
+// window.SubWindowOptions plus the platform parser's undocumented zLevelAboveParentLoosened
+// flag (window_manager js_window_utils.cpp ParseSubWindowOptions reads it and keeps false when
+// absent). Declaring it pins the explicit false this shell passes so creating a child does not
+// log the E "Failed to convert parameter to zLevelAboveParentLoosened"; maximizeSupported and
+// outlineEnabled are the public optional booleans parsed the same way (absent -> E, default
+// false), spelled out for the same reason.
+interface ShellSubWindowOptions extends window.SubWindowOptions {
+  zLevelAboveParentLoosened?: boolean;
+}
+
 // HybridWebView asset bridge: the managed handler registers the extracted app payload
 // directory (base), the hybrid root (HybridRoot, e.g. "wwwroot") and the default file
 // (DefaultFile, e.g. "index.html"). App-origin requests (https://0.0.0.1/ - the MAUI hybrid
@@ -660,6 +670,11 @@ const SUB_EVENT_RESUMED: number = 10;
 // single-instance by design (one application subwindow in this slice).
 const SUB_WINDOW_ROUTE: string = 'ohos_dotnet_subwindow';
 const SUB_WINDOW_NAME: string = 'ohos_dotnet_subwindow';
+// The UI ability publishes these on the UIAbilityContext event hub (EntryAbility.ui.ets); the
+// page mirrors them into the same suspend/resume state, because a Home-key/gesture background
+// does not deliver WINDOW_HIDDEN to the main window (SOAK49 v1).
+const SUB_WINDOW_APP_BACKGROUND_EVENT: string = 'ohos_dotnet_app_background';
+const SUB_WINDOW_APP_FOREGROUND_EVENT: string = 'ohos_dotnet_app_foreground';
 
 // One per-overlay command a slot had to defer because its ArkWeb was still being created
 // (SLOTS-DYNAMIC): replayed in arrival order from the new component's onControllerAttached.
@@ -2323,18 +2338,60 @@ struct Index {
     try {
       main.on('windowEvent', (evt: window.WindowEventType): void => {
         if (evt === window.WindowEventType.WINDOW_HIDDEN) {
-          this.subWindowSuspended = true;
-          this.logInfo('[maui] main window hidden: subwindow suspended');
-          this.notifySubWindowEvent(SUB_EVENT_SUSPENDED, '{}');
+          this.setSubWindowSuspended(true, 'window event');
         } else if (evt === window.WindowEventType.WINDOW_SHOWN) {
-          this.subWindowSuspended = false;
-          this.logInfo('[maui] main window shown: subwindow resumed');
-          this.notifySubWindowEvent(SUB_EVENT_RESUMED, '{}');
+          this.setSubWindowSuspended(false, 'window event');
         }
       });
       this.subWindowMainEventsRegistered = true;
     } catch (eventError) {
       this.logError(`[maui] main window events unavailable: ${(eventError as Error).message}`);
+    }
+  }
+
+  // Fallback (SOAK49 v1): a Home key or gesture background backgrounds the ability but does not
+  // deliver WINDOW_HIDDEN to the main window, so the child only ever resumed. The UI ability
+  // emits its foreground/background transitions on the context event hub
+  // (EntryAbility.ui.ets); both sources funnel into one deduplicated state, so a title-bar
+  // minimize that fires both reports exactly one transition.
+  private subscribeAppLifecycleSuspension(): void {
+    try {
+      const context: common.UIAbilityContext = this.hostContext();
+      const backgroundListener = (): void => {
+        this.setSubWindowSuspended(true, 'ability background');
+      };
+      const foregroundListener = (): void => {
+        this.setSubWindowSuspended(false, 'ability foreground');
+      };
+      context.eventHub.on(SUB_WINDOW_APP_BACKGROUND_EVENT, backgroundListener);
+      context.eventHub.on(SUB_WINDOW_APP_FOREGROUND_EVENT, foregroundListener);
+      this.trackDisposer((): void => {
+        try {
+          context.eventHub.off(SUB_WINDOW_APP_BACKGROUND_EVENT, backgroundListener);
+          context.eventHub.off(SUB_WINDOW_APP_FOREGROUND_EVENT, foregroundListener);
+        } catch (offError) {
+          this.logWarn(`[maui] app lifecycle event unregister failed: ${(offError as Error).message}`);
+        }
+      });
+    } catch (eventError) {
+      this.logWarn(`[maui] app lifecycle events unavailable: ${(eventError as Error).message}`);
+    }
+  }
+
+  // The one suspend/resume state both the window event and the ability lifecycle write. The log
+  // prefix stays the SOAK49/test-script marker; the suffix names the source so a device log
+  // shows which path caught it.
+  private setSubWindowSuspended(suspended: boolean, source: string): void {
+    if (this.subWindowSuspended === suspended) {
+      return;
+    }
+    this.subWindowSuspended = suspended;
+    if (suspended) {
+      this.logInfo(`[maui] main window hidden: subwindow suspended (${source})`);
+      this.notifySubWindowEvent(SUB_EVENT_SUSPENDED, '{}');
+    } else {
+      this.logInfo(`[maui] main window shown: subwindow resumed (${source})`);
+      this.notifySubWindowEvent(SUB_EVENT_RESUMED, '{}');
     }
   }
 
@@ -2388,7 +2445,12 @@ struct Index {
     this.subWindowCreating = true;
     try {
       const main = await this.resolveMainWindow();
-      const options: window.SubWindowOptions = {
+      // ParseSubWindowOptions (window_manager) converts each optional boolean and logs
+      // E "Failed to convert parameter to <name>" when one is absent, keeping its false default.
+      // Spell all three out (zLevelAboveParentLoosened through ShellSubWindowOptions, which the
+      // public SubWindowOptions does not declare) so one create logs no conversion errors and
+      // the defaults are explicit.
+      const options: ShellSubWindowOptions = {
         title: cmd.title !== undefined && cmd.title.length > 0 ? cmd.title : 'MAUI',
         decorEnabled: false,
         windowRect: {
@@ -2397,6 +2459,9 @@ struct Index {
           width: this.subWindowDimension(cmd.w, 640),
           height: this.subWindowDimension(cmd.h, 420),
         },
+        maximizeSupported: false,
+        outlineEnabled: false,
+        zLevelAboveParentLoosened: false,
       };
       const child = await main.createSubWindowWithOptions(SUB_WINDOW_NAME, options);
       this.subWindow = child;
@@ -2497,6 +2562,11 @@ struct Index {
       this.notifySubWindowEvent(SUB_EVENT_CLOSED, '{}');
       return;
     }
+    // A device close logs one platform WARN "AceSubWindow ... Fail to get subwindow in
+    // dialogSubwindowMap_" from AceContainer::DestroyContainer -> SubwindowManager::CloseDialog:
+    // that runs for every destroyed container before the child's own destroy work, and an app
+    // subwindow is never a dialogSubwindowMap_ entry. WMSLife shows a single "Destroy specific
+    // session end" per close, so this is platform noise, not a shell double close.
     child.destroyWindow().then((): void => {
       // The windowEvent DESTROYED observer normally finishes the state; this is the belt for a
       // runtime that does not deliver it.
@@ -4694,6 +4764,9 @@ struct Index {
     // MULTIWINDOW-M: the managed subwindow commands arrive through this sink (create is the
     // only entry; nothing is allocated until then, so apps without a child pay nothing).
     this.subscribeSubWindow();
+    // MULTIWINDOW-M fallback: Home-key/gesture background does not deliver WINDOW_HIDDEN, so the
+    // ability lifecycle mirrors into the subwindow suspend state (no child -> state only).
+    this.subscribeAppLifecycleSuspension();
     this.subscribeNetworkChanges();
     // Device-compat (lazy SDK modules): the camera module is needed by the synchronous
     // flashlight sink and by the picker's camera position, so it is preloaded once here.
