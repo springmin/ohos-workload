@@ -8,10 +8,12 @@
 // degradation for M; per-window surface/renderer state is the L remainder (see the multiwindow
 // plan, docs/plans/2026-10-05-ohos-multiwindow-prestudy.md).
 //
-// The window-id guard matters: window.getLastWindow() returns the top window of the
-// application, which can be the main window while the child is not focused. The page may only
-// move the window whose id pages/Index.ets passed through the LocalStorage, so a wrong lookup
-// degrades to "content still interactive, drag disabled" instead of moving the wrong window.
+// The window guard matters: window.getLastWindow() returns the top window of the application,
+// which can be the main window while the child is not focused. The page may only move the window
+// whose WindowProperties.name matches the name pages/Index.ets passed to
+// createSubWindowWithOptions (the id pages/Index.ets also puts in the LocalStorage is the
+// secondary check, when the runtime propagates it), so a wrong lookup degrades to "content still
+// interactive, drag disabled" instead of moving the wrong window.
 import { common } from '@kit.AbilityKit';
 import { window } from '@kit.ArkUI';
 import { hilog } from '@kit.PerformanceAnalysisKit';
