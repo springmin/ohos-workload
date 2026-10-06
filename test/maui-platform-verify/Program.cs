@@ -12,7 +12,7 @@ using Microsoft.Maui.Platform;
 // after the fuzz tail) instead of letting every caller repeat its own threshold constant.
 VerifyLineCountingWriter verifyStdout = new(Console.Out);
 Console.SetOut(verifyStdout);
-const int verifyCheckTotal = 631;                     // +22 MULTIWINDOW-L M2 per-window renderer: the dual-window headless pin (the mw-l/m2 scratch assertions, driven through the hosting bridge's window-id tagged thunks and the slice's RouteSurface/RouteTouch/RouteFrame adapters, with one CanvasFactory recording canvas per window) plus the bridge id and late-subscriber replay contract // +6 MULTIWINDOW-M in-app subwindow: the create/move/resize/show/close command set and its JSON payloads, the lifecycle/geometry state machine, the routed touch event, malformed/unknown payload robustness, the off-device degradation, and the shell/host/slice source+pack-identity contract // +1 SEC-SCAN-4 a11y password masking (plaintext must not be published to the shadow tree; bullets mirror the drawn text) // +1 SEC-SCAN-4 off-surface cull boundary (zero-size frame draws, shadow extent rescues, off-surface Image keeps the decode pipeline) // +1 CG2-R2R host interp R2R opt-out pin (DOTNET_ReadyToRun=0 inside the mode-3 block; the runtime already forces it for InterpMode>=2, the host makes it explicit and the device retest holds IL parity) // +1 AOT-STARTUP first-use ArkWeb overlay mount gate (state flag + ensureWebSlot flip/log + build gate order) protects the -262 ms AOT startup fix + host identical-context replay skip pin // +2 MULTIWINDOW-S surface resize: the Created/Changed arrange gate (Destroyed/0x0 rejected) + the Changed replay re-arranging the window frame while Destroyed keeps it (A0 form adaptation)                     // +2 WASM-MIME .wasm -> application/wasm mapping in every pack shell + the standalone rawfile host / the host's `wasm mime:` + `wasm fallback:` instrumentation and the pack-host.sh --bad-mime negative control                     // +2 FIX-A11YFLYOUT a11y walk FlyoutPage Detail/presented-Flyout subtree pins (device nodeCount=1 root cause)                     // +1 FIX-A11YBUTTON shell self-check absolute position + z-order-above-overlays pin (button reachable with/without a live web control)                     // +3 AUTODISCONNECT layout-removal detach (dynamic slot destroy + claim release + handler kept) / re-add rebuild (ensure + registration replay on the reclaimed slot) / slice watcher-and-owner wiring pins                     // +6 SLOTS-DYNAMIC dynamic slot growth (ensure/destroy commands), capacity downgrade/event, configurable 2/4 limits, shell lazy/defer pins, 3rd-overlay sample                     // documented full [verify] line count (+3 FIX-SLICERACE concurrent connect/host storm/ pins, +5 L6 screenshot Jpeg format/quality capture/fallback/helper + title heartbeat behavior/source, +6 LEGACY toolbar primary/overflow/icon/events/shell/source, +3 SAMPLE-FIX hybrid bootstrap pack staging / read-only payload handler / stock-script demo, +4 MULTI-OVERLAY-FULL LRU pool/invoke slot codec/per-slot hybrid shell/slice owner wiring, +4 MULTI-OVL slot pool/wire codec/two-overlay shell/slice wiring, +4 FIX-BACKSIZE Back-press forwarding/drawer drill/ shell drawer/BlazorWebView desired size, +4 FIX-WVP overlay px->vp/degenerate-frame/hybrid-overlay arbitration/suspend-restore (shell+slice), +2 FIX-DISMISS flyout drawer dismiss under the device display conditions, +4 FIX-HOME home page arrange/draw (NavigationPage-in-TabbedPage descent), +4 MS-MODE runtime mode switch, +10 P2c-DEEPLINK, +4 P2b-IMG, +16 P1b-LIST, +10 P1a-ANIM, +2 SEC3 storage/deep-link pins, +5 W-series WebView wiring, +3 T1 InputView mapping, +4 T2 WebView gaps, +4 T3 GraphicsView interaction, +7 T10 modal accessibility, +4 T4 Label formatted text, +4 T5 layout semantics, +6 T7 DatePicker calendar/min-max, +4 T9 window title bar, +4 T11 diagnostics overlay, +1 N2 empty ContentPage arrangement, +6 T8 TableView, +5 T8 uneven rows, +7 T6 RTL flow direction, +5 T22 MainThread bridge, +2 FIX-TABBED tabbed CurrentPage, +4 T13 group footer view/N3 picker IsOpen, +5 T21 system font scale, +3 T21 font scale source wiring, +2 A11Y-TABBED tabbed accessibility, +3 N1 host multi-pointer, +5 T12 CarouselView group slides, +7 T14 rich shell flyout, +10 T14 flyout leftovers (MenuItemTemplate/FlyoutContent/AsMultipleItems), +2 FIX-SHELL shell CurrentPage, +2 A11Y-SHELL shell accessibility, +7 T15 rich Shell.TitleView, +8 T16 structured menus, +3 N4 TitleBar accessibility row, +3 T18 Essentials Map, +4 N5 overlay passthrough suppression, +5 N6 window decorations, +4 T20 media bridge, +3 B2 wasm site in a MAUI WebView, +2 W10 NativeAOT managed entry (host libs-dir resolution + shell AOT payload probe), +1 FIX-JSCALL Blazor IPC enum/struct AOT roots (JSCallResultType/JSCallType/NavigationOptions in the slice context + handler static-ctor touch + stub click-probe removed), +3 INTERP-DRAW2 draw-cost seam kinds / off-surface cull / translated-node rescue))
+const int verifyCheckTotal = 645;                     // +14 MULTIWINDOW-L M3 shell subwindow XComponent + production consumption: the app host consumes the tagged channel itself, a deferred OpenWindow asks the shell for the subwindow surface and RouteSurface binds/first-frames/adopts it, its input/frame/close/reopen are window-id routed with no main-window interference, plus the four-pack shell source pins (XComponent id = surface id, register/unregister lifecycle, drawn fallback) and the host/slice per-window draw-target pins // +22 MULTIWINDOW-L M2 per-window renderer: the dual-window headless pin (the mw-l/m2 scratch assertions, driven through the hosting bridge's window-id tagged thunks and the slice's RouteSurface/RouteTouch/RouteFrame adapters, with one CanvasFactory recording canvas per window) plus the bridge id and late-subscriber replay contract // +6 MULTIWINDOW-M in-app subwindow: the create/move/resize/show/close command set and its JSON payloads, the lifecycle/geometry state machine, the routed touch event, malformed/unknown payload robustness, the off-device degradation, and the shell/host/slice source+pack-identity contract // +1 SEC-SCAN-4 a11y password masking (plaintext must not be published to the shadow tree; bullets mirror the drawn text) // +1 SEC-SCAN-4 off-surface cull boundary (zero-size frame draws, shadow extent rescues, off-surface Image keeps the decode pipeline) // +1 CG2-R2R host interp R2R opt-out pin (DOTNET_ReadyToRun=0 inside the mode-3 block; the runtime already forces it for InterpMode>=2, the host makes it explicit and the device retest holds IL parity) // +1 AOT-STARTUP first-use ArkWeb overlay mount gate (state flag + ensureWebSlot flip/log + build gate order) protects the -262 ms AOT startup fix + host identical-context replay skip pin // +2 MULTIWINDOW-S surface resize: the Created/Changed arrange gate (Destroyed/0x0 rejected) + the Changed replay re-arranging the window frame while Destroyed keeps it (A0 form adaptation)                     // +2 WASM-MIME .wasm -> application/wasm mapping in every pack shell + the standalone rawfile host / the host's `wasm mime:` + `wasm fallback:` instrumentation and the pack-host.sh --bad-mime negative control                     // +2 FIX-A11YFLYOUT a11y walk FlyoutPage Detail/presented-Flyout subtree pins (device nodeCount=1 root cause)                     // +1 FIX-A11YBUTTON shell self-check absolute position + z-order-above-overlays pin (button reachable with/without a live web control)                     // +3 AUTODISCONNECT layout-removal detach (dynamic slot destroy + claim release + handler kept) / re-add rebuild (ensure + registration replay on the reclaimed slot) / slice watcher-and-owner wiring pins                     // +6 SLOTS-DYNAMIC dynamic slot growth (ensure/destroy commands), capacity downgrade/event, configurable 2/4 limits, shell lazy/defer pins, 3rd-overlay sample                     // documented full [verify] line count (+3 FIX-SLICERACE concurrent connect/host storm/ pins, +5 L6 screenshot Jpeg format/quality capture/fallback/helper + title heartbeat behavior/source, +6 LEGACY toolbar primary/overflow/icon/events/shell/source, +3 SAMPLE-FIX hybrid bootstrap pack staging / read-only payload handler / stock-script demo, +4 MULTI-OVERLAY-FULL LRU pool/invoke slot codec/per-slot hybrid shell/slice owner wiring, +4 MULTI-OVL slot pool/wire codec/two-overlay shell/slice wiring, +4 FIX-BACKSIZE Back-press forwarding/drawer drill/ shell drawer/BlazorWebView desired size, +4 FIX-WVP overlay px->vp/degenerate-frame/hybrid-overlay arbitration/suspend-restore (shell+slice), +2 FIX-DISMISS flyout drawer dismiss under the device display conditions, +4 FIX-HOME home page arrange/draw (NavigationPage-in-TabbedPage descent), +4 MS-MODE runtime mode switch, +10 P2c-DEEPLINK, +4 P2b-IMG, +16 P1b-LIST, +10 P1a-ANIM, +2 SEC3 storage/deep-link pins, +5 W-series WebView wiring, +3 T1 InputView mapping, +4 T2 WebView gaps, +4 T3 GraphicsView interaction, +7 T10 modal accessibility, +4 T4 Label formatted text, +4 T5 layout semantics, +6 T7 DatePicker calendar/min-max, +4 T9 window title bar, +4 T11 diagnostics overlay, +1 N2 empty ContentPage arrangement, +6 T8 TableView, +5 T8 uneven rows, +7 T6 RTL flow direction, +5 T22 MainThread bridge, +2 FIX-TABBED tabbed CurrentPage, +4 T13 group footer view/N3 picker IsOpen, +5 T21 system font scale, +3 T21 font scale source wiring, +2 A11Y-TABBED tabbed accessibility, +3 N1 host multi-pointer, +5 T12 CarouselView group slides, +7 T14 rich shell flyout, +10 T14 flyout leftovers (MenuItemTemplate/FlyoutContent/AsMultipleItems), +2 FIX-SHELL shell CurrentPage, +2 A11Y-SHELL shell accessibility, +7 T15 rich Shell.TitleView, +8 T16 structured menus, +3 N4 TitleBar accessibility row, +3 T18 Essentials Map, +4 N5 overlay passthrough suppression, +5 N6 window decorations, +4 T20 media bridge, +3 B2 wasm site in a MAUI WebView, +2 W10 NativeAOT managed entry (host libs-dir resolution + shell AOT payload probe), +1 FIX-JSCALL Blazor IPC enum/struct AOT roots (JSCallResultType/JSCallType/NavigationOptions in the slice context + handler static-ctor touch + stub click-probe removed), +3 INTERP-DRAW2 draw-cost seam kinds / off-surface cull / translated-node rescue))
 const int verifyCheckFloor = verifyCheckTotal - 20;   // documented floor convention (total - 20)
 
 // A small image file for the Image handler.
@@ -14458,7 +14458,8 @@ foreach (string subWindowShellVersion in new[] { "1.0.0-preview.22", "1.0.0-prev
         subWindowShellIdentical = false;
     }
     subWindowShellPinsOk &= subWindowIndex.Contains("registerSubWindowSink") &&
-        subWindowIndex.Contains("createSubWindowWithOptions(SUB_WINDOW_NAME, options)") &&
+        subWindowIndex.Contains("createSubWindowWithOptions(childName, options)") &&
+        subWindowIndex.Contains("const childName: string = surfaceId.length > 0") &&
         subWindowIndex.Contains("loadContentByName(SUB_WINDOW_ROUTE, storage)") &&
         subWindowIndex.Contains("handleSubWindowCommand(op, payload)") &&
         subWindowIndex.Contains("notifySubWindowEvent(SUB_EVENT_SUSPENDED, '{}')") &&
@@ -14524,20 +14525,22 @@ var m2Application = (Microsoft.Maui.Controls.Application)m2MauiApp.Services.GetR
 var m2Host = m2MauiApp.Services.GetRequiredService<OpenHarmonyMauiAppHost>();
 List<string> m2BridgeIds = new();
 bool m2LastFrameRouted = false;
+// MULTIWINDOW-L M3: the slice's app host now consumes the tagged channel itself (production
+// wiring, pinned by the m3 checks below). These observers only record what the bridge delivered
+// (and freeze the post-production state), so a routing regression fails the checks instead of
+// being masked by test-side forwarding.
 Action<string, Microsoft.OpenHarmony.Hosting.OpenHarmonySurfaceInfo> m2OnWindowSurface = (id, info) =>
 {
     m2BridgeIds.Add("surface:" + id);
-    m2Host.RouteSurface(id, info);
 };
 Action<string, Microsoft.OpenHarmony.Hosting.OpenHarmonyTouchEventArgs> m2OnWindowTouch = (id, args) =>
 {
     m2BridgeIds.Add("touch:" + id);
-    m2Host.RouteTouch(id, args);
 };
 Action<string, Microsoft.OpenHarmony.Hosting.OpenHarmonyFrameEventArgs> m2OnWindowFrame = (id, args) =>
 {
     m2BridgeIds.Add("frame:" + id);
-    m2LastFrameRouted = m2Host.RouteFrame(id);
+    m2LastFrameRouted = m2Host.FindSecondaryWindow(id) is not null;
 };
 Microsoft.OpenHarmony.Hosting.OpenHarmonyBridge.WindowSurfaceChanged += m2OnWindowSurface;
 Microsoft.OpenHarmony.Hosting.OpenHarmonyBridge.WindowTouch += m2OnWindowTouch;
@@ -14631,7 +14634,7 @@ M2Check("secondary session", m2SubHost is not null && ReferenceEquals(m2SubHost!
 M2Check("secondary size", m2SubWindow.Width == 640 && m2SubWindow.Height == 480);
 
 M2FrameEvent("sub-1");
-M2Check("secondary frame", m2LastFrameRouted && m2Canvases.Count == 2 &&
+M2Check("secondary frame", m2LastFrameRouted && m2SubHost!.FrameTicks == 1 && m2Canvases.Count == 2 &&
     m2Canvases[1].Texts.Contains("sub-label") && !m2Canvases[1].Texts.Contains("main-label"));
 M2Check("secondary frame isolated", m2Canvases[0].Texts.Contains("main-label") && !m2Canvases[0].Texts.Contains("sub-label"));
 
@@ -14684,6 +14687,154 @@ Microsoft.OpenHarmony.Hosting.OpenHarmonyBridge.WindowSurfaceChanged += m2LateSu
 Microsoft.OpenHarmony.Hosting.OpenHarmonyBridge.WindowSurfaceChanged -= m2LateSubscriber;
 bool m2ReplayOk = m2Replayed.Contains("sub-1:Destroyed:800x600") && m2Replayed.Contains("sub-2:Created:720x500");
 M2Check("bridge replay", m2ReplayOk);
+
+// ---------------------------------------------------------------------------------------------
+// MULTIWINDOW-L M3: production tagged-event consumption, deferred OpenWindow -> shell subwindow
+// XComponent, per-window draw target and close/reopen. The slice's app host subscribes to the
+// tagged channel in its constructor; no test-side forwarding happens here any more. Red controls:
+// removing the constructor subscription / the deferred branch / the awaiting bind / the per-window
+// BeginWindow makes the matching check fail (the last by the compiled hosting seam).
+int m3Failures = 0;
+void M3Check(string name, bool ok)
+{
+    Console.WriteLine($"[verify] m3 {name} assert={ok}");
+    if (!ok)
+    {
+        m3Failures++;
+    }
+}
+
+// Start clean: close the M2 sub-2 session so the lowest-free allocation hands out sub-1 again.
+if (m2Host.FindSecondaryWindow("sub-2") is not null)
+{
+    m2Application.CloseWindow(m2RebuiltWindow);
+}
+M3Check("start cleared", m2Host.SecondaryWindows.Count == 0 && m2Host.AwaitingWindowCount == 0
+    && m2Application.Windows.Count == 1);
+
+List<string> m3Requests = new();
+m2Host.SubWindowSurfaceRequester = id =>
+{
+    m3Requests.Add(id);
+    return true;
+};
+
+// Deferred OpenWindow: no surface is reported yet, so the host asks the shell for sub-1 and parks
+// the realized window instead of declining.
+M2Content m3Content = new("m3-label", "m3-button");
+Window m3Window = new(m3Content.Page);
+m2Application.OpenWindow(m3Window);
+M3Check("deferred request", m2Handler.LastOpenWindowResult == OpenHarmonyOpenWindowResult.OpenedWindow
+    && m3Requests.Count == 1 && m3Requests[0] == "sub-1"
+    && m2Host.AwaitingWindowCount == 1 && m2Host.FindSecondaryWindow("sub-1") is null
+    && m2Application.Windows.Count == 2);
+
+// The shell answers with the XComponent surface; RouteSurface (reached by the production
+// subscription through the tagged thunk) binds the parked window and draws its first frame.
+int m3CanvasBase = m2Canvases.Count;
+M2Surface("sub-1", Microsoft.OpenHarmony.Hosting.OpenHarmonySurfaceState.Created, 700, 500);
+OpenHarmonyWindowHost? m3SubHost = m2Host.FindSecondaryWindow("sub-1");
+M3Check("deferred bind", m3SubHost is not null && ReferenceEquals(m3SubHost!.Window, m3Window)
+    && m2Host.AwaitingWindowCount == 0 && m3Window.Width == 700 && m3Window.Height == 500);
+M3Check("deferred first frame", m2Canvases.Count == m3CanvasBase + 1
+    && m2Canvases[^1].Texts.Contains("m3-label") && !m2Canvases[^1].Texts.Contains("main-label"));
+M3Check("primary untouched", m2MainWindow.Width == 1080 && m2MainWindow.Height == 1920
+    && ((M2PerWindowApp)m2Application).Main.Clicks == 0 && ReferenceEquals(m2Host.Window, m2MainWindow));
+
+m3Content.Page.Measure(700, 500);
+m3Content.Page.Arrange(new Rect(0, 0, 700, 500));
+float m3X = (float)(m3Content.Button.Frame.X + m3Content.Button.Frame.Width / 2);
+float m3Y = (float)(m3Content.Button.Frame.Y + m3Content.Button.Frame.Height / 2);
+M2Touch("sub-1", Microsoft.OpenHarmony.Hosting.OpenHarmonyTouchAction.Down, m3X, m3Y);
+M2Touch("sub-1", Microsoft.OpenHarmony.Hosting.OpenHarmonyTouchAction.Up, m3X, m3Y);
+M3Check("deferred input", m3Content.Clicks == 1 && ((M2PerWindowApp)m2Application).Main.Clicks == 0);
+
+int m3FramesBefore = m3SubHost!.FrameTicks;
+M2FrameEvent("sub-1");
+M3Check("deferred frame", m3SubHost.FrameTicks == m3FramesBefore + 1);
+
+// The shell child closes: its XComponent surface is destroyed, the session drops and the managed
+// window leaves the application; no registry residue is left behind.
+M2Surface("sub-1", Microsoft.OpenHarmony.Hosting.OpenHarmonySurfaceState.Destroyed, 700, 500);
+M3Check("deferred close", m2Host.FindSecondaryWindow("sub-1") is null
+    && m2Host.SecondaryWindows.Count == 0 && m2Host.AwaitingWindowCount == 0
+    && m2Application.Windows.Count == 1 && m3Window.Handler is null);
+
+// Re-open after the close reuses the same id (lowest free) and rebinds the same way.
+m3Requests.Clear();
+M2Content m3Content2 = new("m3-reopen", "m3-reopen-button");
+Window m3Window2 = new(m3Content2.Page);
+m2Application.OpenWindow(m3Window2);
+M3Check("reopen same id", m3Requests.Count == 1 && m3Requests[0] == "sub-1"
+    && m2Host.AwaitingWindowCount == 1);
+int m3CanvasBase2 = m2Canvases.Count;
+M2Surface("sub-1", Microsoft.OpenHarmony.Hosting.OpenHarmonySurfaceState.Created, 640, 480);
+OpenHarmonyWindowHost? m3SubHost2 = m2Host.FindSecondaryWindow("sub-1");
+M3Check("reopen bound", m3SubHost2 is not null && ReferenceEquals(m3SubHost2!.Window, m3Window2)
+    && m2Canvases.Count == m3CanvasBase2 + 1 && m2Canvases[^1].Texts.Contains("m3-reopen"));
+m2Application.CloseWindow(m3Window2);
+M3Check("reopen closed clean", m2Host.SecondaryWindows.Count == 0
+    && m2Host.AwaitingWindowCount == 0 && m2Application.Windows.Count == 1);
+m2Host.SubWindowSurfaceRequester = null;
+
+// M3 source pins: the four packs' SubWindow.ets carries the host XComponent with the requested
+// surface id and the register/unregister lifecycle plus the preserved drawn fallback; Index.ets
+// threads cmd.surfaceId into the LocalStorage; the host exports and implements the per-window
+// draw entry points; the slice consumes the tagged channel, opens deferred windows and targets
+// the per-window canvas.
+bool m3ShellPinsOk = true;
+foreach (string m3ShellVersion in new[] { "1.0.0-preview.22", "1.0.0-preview.23", "1.0.0-preview.24", "1.0.0-preview.28" })
+{
+    string m3Index = FindHostSource($"packs/Microsoft.OpenHarmony.Sdk/{m3ShellVersion}/templates/ets/pages/Index.ets") is { } m3IndexPath
+        ? File.ReadAllText(m3IndexPath) : string.Empty;
+    string m3Page = FindHostSource($"packs/Microsoft.OpenHarmony.Sdk/{m3ShellVersion}/templates/ets/pages/SubWindow.ets") is { } m3PagePath
+        ? File.ReadAllText(m3PagePath) : string.Empty;
+    m3ShellPinsOk &= m3Index.Contains("cmd.surfaceId") && m3Index.Contains("subWindowSurfaceId")
+        && m3Index.Contains("storage.setOrCreate('subWindowSurfaceId'")
+        && m3Page.Contains("XComponent(") && m3Page.Contains("id: this.surfaceId")
+        && m3Page.Contains("libraryname: 'openharmonyhost'")
+        && m3Page.Contains("host.registerXComponent(this.surfaceId)")
+        && m3Page.Contains("host.unregisterXComponent(this.surfaceId)")
+        && m3Page.Contains("notifyHost(SUB_EVENT_TOUCH, payload)");
+}
+M3Check("shell source", m3ShellPinsOk);
+
+string m3HostSource = FindHostSource("src/OpenHarmonyHost/openharmony_host.c") is { } m3HostPath
+    ? File.ReadAllText(m3HostPath) : string.Empty;
+string m3HostExports = FindHostSource("src/OpenHarmonyHost/host-exports.txt") is { } m3HostExportsPath
+    ? File.ReadAllText(m3HostExportsPath) : string.Empty;
+string m3HostingSource = FindHostSource("src/Microsoft.OpenHarmony.Hosting/OpenHarmonyApp.cs") is { } m3HostingPath
+    ? File.ReadAllText(m3HostingPath) : string.Empty;
+M3Check("host source", m3HostSource.Contains("ohos_host_draw_begin_window")
+    && m3HostSource.Contains("ohos_host_draw_present_window")
+    && m3HostSource.Contains("OhosHostPresentTarget")
+    && m3HostExports.Contains("ohos_host_draw_begin_window")
+    && m3HostExports.Contains("ohos_host_draw_present_window")
+    && m3HostingSource.Contains("ohos_host_draw_begin_window")
+    && m3HostingSource.Contains("BeginWindowNative"));
+
+string m3SliceHost = FindHostSource("OpenHarmonyMauiAppHost.cs") is { } m3SliceHostPath
+    ? File.ReadAllText(m3SliceHostPath) : string.Empty;
+string m3SliceSurface = FindHostSource("OpenHarmonyWindowSurface.cs") is { } m3SliceSurfacePath
+    ? File.ReadAllText(m3SliceSurfacePath) : string.Empty;
+string m3SliceHandler = FindHostSource("OpenHarmonyApplicationHandler.cs") is { } m3SliceHandlerPath
+    ? File.ReadAllText(m3SliceHandlerPath) : string.Empty;
+string m3SliceSubWindow = FindHostSource("OpenHarmonySubWindow.cs") is { } m3SliceSubWindowPath
+    ? File.ReadAllText(m3SliceSubWindowPath) : string.Empty;
+M3Check("slice source", m3SliceHost.Contains("OpenHarmonyBridge.WindowSurfaceChanged +=")
+    && m3SliceHost.Contains("RouteSurface(id, info)")
+    && m3SliceHost.Contains("TryOpenWindowDeferred")
+    && m3SliceSurface.Contains("OpenHarmonyCanvas.BeginWindow(WindowId")
+    && m3SliceSurface.Contains("OpenHarmonyCanvas.PresentWindow(WindowId)")
+    && m3SliceHandler.Contains("host.TryOpenWindowDeferred(window)")
+    && m3SliceSubWindow.Contains("CreateManagedSurface")
+    && m3SliceSubWindow.Contains("writer.WriteString(\"surfaceId\", surfaceId)"));
+
+if (m3Failures > 0)
+{
+    throw new InvalidOperationException(
+        $"{m3Failures} MULTIWINDOW-L M3 assertion(s) failed (production tagged routing, the deferred OpenWindow path or the per-window draw target regressed)");
+}
 
 Microsoft.OpenHarmony.Hosting.OpenHarmonyBridge.WindowSurfaceChanged -= m2OnWindowSurface;
 Microsoft.OpenHarmony.Hosting.OpenHarmonyBridge.WindowTouch -= m2OnWindowTouch;
