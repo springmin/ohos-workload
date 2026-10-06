@@ -90,6 +90,14 @@ constexpr size_t kMaxControlBytes = 64 * 1024;
 constexpr size_t kMaxResultBytes = 1024 * 1024;
 // A screenshot output path is a filesystem path, not a payload: keep it well below PATH_MAX.
 constexpr size_t kMaxScreenshotPathBytes = 4096;
+// MULTIWINDOW-L2 child web host: the managed second web host (the application subwindow's
+// ArkWeb pool) shares the single web command/eval wire with the primary host; the managed
+// transport prefixes its op/script with this marker and the module routes the stripped payload
+// to the child sink (registered by pages/SubWindow.ets). A host library that predates the
+// child sink never sees the marker, because the managed side only sends child commands once
+// the child shell page advertised its capacity (see OpenHarmonyChildWeb).
+constexpr const char* kChildWebMarker = "child:";
+constexpr size_t kChildWebMarkerLength = 6;
 // ohos_host_screenshot_format's format values (mirroring Microsoft.Maui.Media.ScreenshotFormat
 // and OpenHarmonyScreenshotBridge.FormatPng/FormatJpeg on the managed side).
 constexpr int kScreenshotFormatPng = 0;
@@ -288,6 +296,10 @@ struct HostBinding {
     HostSink menu_changed{"menu", false};
     HostSink picker{"picker", true};
     HostSink web{"web", true};
+    // MULTIWINDOW-L2: the application subwindow's ArkWeb host (pages/SubWindow.ets). Commands
+    // arrive through ohos_host_web_command tagged with kChildWebMarker; eval through
+    // ohos_host_web_eval with the same marker.
+    HostSink web_child{"web child", true};
     HostSink keep_screen_on{"keep screen on", false};
     HostSink window_title{"window title", false};
     HostSink window_rect{"window rect", false};
@@ -297,6 +309,8 @@ struct HostBinding {
     HostSink shell_search{"shell search", false};
     HostSink shell_flyout{"shell flyout", false};
     HostSink web_eval{"web eval", false};
+    // MULTIWINDOW-L2: the child host's eval sink (the child page's own controller set).
+    HostSink web_eval_child{"web eval child", false};
     HostSink hybrid_invoke_result{"hybrid invoke result", false};
     HostSink raw_file{"raw file", false};
     HostSink permission{"permission", false};
@@ -353,6 +367,7 @@ static HostBinding* g_host = &g_binding_slots[0].binding;
 #define g_menu_changed_sink (g_host->menu_changed)
 #define g_picker_sink (g_host->picker)
 #define g_web_sink (g_host->web)
+#define g_web_child_sink (g_host->web_child)
 #define g_keep_screen_on_sink (g_host->keep_screen_on)
 #define g_window_title_sink (g_host->window_title)
 #define g_window_rect_sink (g_host->window_rect)
@@ -362,6 +377,7 @@ static HostBinding* g_host = &g_binding_slots[0].binding;
 #define g_shell_search_sink (g_host->shell_search)
 #define g_shell_flyout_sink (g_host->shell_flyout)
 #define g_web_eval_sink (g_host->web_eval)
+#define g_web_eval_child_sink (g_host->web_eval_child)
 #define g_hybrid_invoke_result_sink (g_host->hybrid_invoke_result)
 #define g_raw_file_sink (g_host->raw_file)
 #define g_permission_sink (g_host->permission)
@@ -396,6 +412,7 @@ static void HostForEachSink(HostBinding& binding, F&& visit) {
     visit(binding.menu_changed);
     visit(binding.picker);
     visit(binding.web);
+    visit(binding.web_child);
     visit(binding.keep_screen_on);
     visit(binding.window_title);
     visit(binding.window_rect);
@@ -405,6 +422,7 @@ static void HostForEachSink(HostBinding& binding, F&& visit) {
     visit(binding.shell_search);
     visit(binding.shell_flyout);
     visit(binding.web_eval);
+    visit(binding.web_eval_child);
     visit(binding.hybrid_invoke_result);
     visit(binding.raw_file);
     visit(binding.permission);
@@ -2767,18 +2785,43 @@ void OnPickerRequest(int requestId, int kind) {
     });
 }
 
+// MULTIWINDOW-L2: the managed transport prefixes child-host commands with kChildWebMarker
+// (OpenHarmonyChildWeb); the module strips it and posts to the subwindow page's sink. An
+// untagged command keeps the historical primary-sink path byte-for-byte.
 void OnWebCommand(const char* op, const char* arg) {
     HostCxxBoundaryVoid("web command", [&] {
+        const char* effective_op = op != nullptr ? op : "";
+        const bool child = strncmp(effective_op, kChildWebMarker, kChildWebMarkerLength) == 0;
         SinkCall* call = new SinkCall();
-        call->AddString(op);
-        call->AddString(arg);
-        HostSinkPost(g_web_sink, call);
+        call->AddString(child ? effective_op + kChildWebMarkerLength : effective_op);
+        call->AddString(arg != nullptr ? arg : "");
+        HostSinkPost(child ? g_web_child_sink : g_web_sink, call);
     });
 }
 
-// ArkTS calls host.registerWebSink(fn) to receive web commands.
+// ArkTS calls host.registerWebSink(fn) to receive web commands. MULTIWINDOW-L2 adds the
+// optional second argument 'child': pages/SubWindow.ets registers its own sink for the
+// subwindow's ArkWeb pool without touching the primary page's sink. The dedicated
+// registerChildWebSink below is the probe the shell uses; a host library without it leaves
+// the child host unregistered and the managed side keeps its honest degradation.
 napi_value RegisterWebSink(napi_env env, napi_callback_info info) {
-    napi_value result = HostSinkRegisterFromArgs(env, info, g_web_sink);
+    size_t argc = 2;
+    napi_value argv[2] = {nullptr, nullptr};
+    napi_get_cb_info(env, info, &argc, argv, nullptr, nullptr);
+    bool child = false;
+    if (argc >= 2 && argv[1] != nullptr) {
+        child = GetStringArg(env, argv[1]) == "child";
+    }
+    napi_value result = HostSinkRegisterFromArgs(env, info, child ? g_web_child_sink : g_web_sink);
+    ohos_host_web_set_listener(OnWebCommand);
+    return result;
+}
+
+// MULTIWINDOW-L2: the subwindow page's registration. A shell that predates the child host
+// has no registerChildWebSink property, the page's typeof probe fails and the child web host
+// stays disabled (single-primary-host degradation).
+napi_value RegisterChildWebSink(napi_env env, napi_callback_info info) {
+    napi_value result = HostSinkRegisterFromArgs(env, info, g_web_child_sink);
     ohos_host_web_set_listener(OnWebCommand);
     return result;
 }
@@ -3554,10 +3597,12 @@ static std::atomic<void (*)(const char*)> g_web_js_message_listener{nullptr};
 // Called from managed code (P/Invoke): forwards a script evaluation request to the ArkTS sink.
 extern "C" int ohos_host_web_eval(const char* script, int request_id) {
     return HostCxxBoundary("web eval", [&] {
+        const char* effective_script = script != nullptr ? script : "";
+        const bool child = strncmp(effective_script, kChildWebMarker, kChildWebMarkerLength) == 0;
         SinkCall* call = new SinkCall();
-        call->AddString(script);
+        call->AddString(child ? effective_script + kChildWebMarkerLength : effective_script);
         call->AddInt(request_id);
-        return HostSinkPost(g_web_eval_sink, call) ? 0 : -1;
+        return HostSinkPost(child ? g_web_eval_child_sink : g_web_eval_sink, call) ? 0 : -1;
     });
 }
 
@@ -3574,6 +3619,12 @@ extern "C" void ohos_host_web_js_register_message(void* callback) {
 // ArkTS calls host.registerWebEvalSink(fn) to receive script evaluation requests.
 napi_value RegisterWebEvalSink(napi_env env, napi_callback_info info) {
     return HostSinkRegisterFromArgs(env, info, g_web_eval_sink);
+}
+
+// MULTIWINDOW-L2: the subwindow page's own eval sink (the child host's controllers), probed
+// by the page with typeof so a host library that predates it keeps the child host disabled.
+napi_value RegisterChildWebEvalSink(napi_env env, napi_callback_info info) {
+    return HostSinkRegisterFromArgs(env, info, g_web_eval_child_sink);
 }
 
 // ArkTS calls host.notifyWebEvalResult(requestId, result, error) when runJavaScript finished.
@@ -4685,8 +4736,10 @@ napi_value Init(napi_env env, napi_value exports) {
 
         {"attachAccessibilityNode", nullptr, AttachAccessibilityNode, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"registerWebSink", nullptr, RegisterWebSink, nullptr, nullptr, nullptr, napi_default, nullptr},
+        {"registerChildWebSink", nullptr, RegisterChildWebSink, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"notifyWebEvent", nullptr, NotifyWebEvent, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"registerWebEvalSink", nullptr, RegisterWebEvalSink, nullptr, nullptr, nullptr, napi_default, nullptr},
+        {"registerChildWebEvalSink", nullptr, RegisterChildWebEvalSink, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"notifyWebEvalResult", nullptr, NotifyWebEvalResult, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"notifyJsMessage", nullptr, NotifyJsMessage, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"notifyHybridInvoke", nullptr, NotifyHybridInvoke, nullptr, nullptr, nullptr, napi_default, nullptr},
