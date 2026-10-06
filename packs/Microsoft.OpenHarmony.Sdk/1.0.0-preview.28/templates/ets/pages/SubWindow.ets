@@ -150,6 +150,7 @@ struct SubWindow {
   private subWebControllers: (web_webview.WebviewController | null)[] = [null, null];
   private subWebPending: SubWebPendingOp[][] = [[], []];
   private subWebHostRegistered: boolean = false;
+  private subWebCmdFrameLogged: boolean[] = [false, false];
   private inputController: TextInputController = new TextInputController();
   private win: window.Window | null = null;
   private startLeft: number = 0;
@@ -403,6 +404,7 @@ struct SubWindow {
         return;
       }
       host.registerChildWebSink((op: string, arg: string): void => {
+        this.logChildWebCommand(op, arg);
         this.onChildWebCommand(op, arg);
       });
       if (typeof host.registerChildWebEvalSink === 'function') {
@@ -429,7 +431,9 @@ struct SubWindow {
       return;
     }
     hilog.info(DOMAIN, TAG, 'child web capacity advertised: max=%{public}d surface=%{public}s', SUB_WEB_SLOT_MAX, this.surfaceId);
-    this.notifyWebHostState('capacity', `${SUB_WEB_SLOT_MAX}`);
+    // The count travels inside the state ("w:<win>|capacity|<n>"), matching the managed
+    // parser; the event URL stays empty.
+    this.notifyWebHostState(`capacity|${SUB_WEB_SLOT_MAX}`, '');
   }
 
   // One host -> managed web event, prefixed with this window; per-slot states carry the slot.
@@ -451,6 +455,20 @@ struct SubWindow {
 
   private childWebEventState(slot: number, state: string): string {
     return `s${slot}|${state}`;
+  }
+
+  // One line per command the managed side sends through the child sink (frames only once per
+  // slot, so an arrange loop cannot flood the log); the device round's command-chain record.
+  private logChildWebCommand(op: string, arg: string): void {
+    if (op === 'frame') {
+      const slot: number = this.childWebSlotDigit(arg);
+      if (slot >= 0 && !this.subWebCmdFrameLogged[slot]) {
+        this.subWebCmdFrameLogged[slot] = true;
+        hilog.info(DOMAIN, TAG, 'child web cmd: frame %{public}s', arg.replace('\n', '/'));
+      }
+      return;
+    }
+    hilog.info(DOMAIN, TAG, 'child web cmd: %{public}s %{public}s', op, arg);
   }
 
   private onChildWebCommand(op: string, arg: string): void {
@@ -838,6 +856,7 @@ struct SubWindow {
       .position({ x: this.subWebFrameX[slot], y: this.subWebFrameY[slot] })
       .onControllerAttached(() => {
         this.subWebAttached[slot] = true;
+        hilog.info(DOMAIN, TAG, 'child web attached: slot %{public}d', slot);
         this.flushChildWebOps(slot);
       })
       .onPageBegin((event) => {

@@ -277,24 +277,34 @@ public sealed class App : Application
                 HeightRequest = 220,
                 Source = new HtmlWebViewSource
                 {
-                    Html = "<html><head><title>CHILD-WEB</title></head><body style=\"margin:0;background:#101820\">" +
-                        "<h1 id=\"h\" style=\"color:#6ec1ff;font-family:sans-serif;font-size:28px\">CHILD WEB OK</h1>" +
+                    // No '#' anywhere: ArkWeb's loadData builds a data: URL and a raw '#' starts
+                    // the URL fragment, which would truncate the document body (the existing
+                    // primary data-load path has the same platform behavior).
+                    Html = "<html><head><title>CHILD-WEB</title></head><body style=\"margin:0;background:rgb(16,24,32)\">" +
+                        "<h1 id=\"h\" style=\"color:rgb(110,193,255);font-family:sans-serif;font-size:28px\">CHILD WEB OK</h1>" +
                         "<script>document.getElementById('h').onclick=function(){this.textContent='CHILD WEB TAP';};</script>" +
                         "</body></html>",
                 },
             };
             web.Navigating += (_, e) => OpenHarmonyBridge.WriteStatus($"[hello-maui-app] child web navigating: {e.Url}");
             web.Navigated += (_, e) => OpenHarmonyBridge.WriteStatus($"[hello-maui-app] child web navigated: {e.Result} {e.Url}");
-            // The eval round proves the child host's eval sink: the script runs on the child
-            // window's own controller, not on the primary page's first overlay.
+            // The eval rounds prove the child host's eval sink: the title read runs on the child
+            // window's own controller, and the click+read mutates the child document's DOM (the
+            // interaction evidence that does not need uitest pointer injection).
             web.Navigated += async (_, _) =>
             {
                 var documentTitle = await web.EvaluateJavaScriptAsync("document.title || 'no-title'");
                 OpenHarmonyBridge.WriteStatus($"[hello-maui-app] child web eval title='{documentTitle}'");
-                webStatus.Text = $"child web: {web.Source} eval='{documentTitle}'";
+                var tapped = await web.EvaluateJavaScriptAsync(
+                    "(function(){var h=document.getElementById('h');h.click();return h.textContent;})()");
+                OpenHarmonyBridge.WriteStatus($"[hello-maui-app] child web tap text='{tapped}'");
+                webStatus.Text = $"child web eval='{documentTitle}' tap='{tapped}'";
             };
-            children.Add(webStatus);
-            children.Add(web);
+            // The web sits at the top of the child page so the 720x480 window shows it without
+            // scrolling (the M4 probing controls follow below).
+            var webFirst = new List<View> { webStatus, web };
+            webFirst.AddRange(children);
+            children = webFirst;
         }
         var childLayout = new VerticalStackLayout { Padding = 32, Spacing = 24 };
         foreach (var element in children)

@@ -167,6 +167,7 @@ public static partial class OpenHarmonyChildWeb
                 {
                     host.Used[slot] = true;
                     host.Owners[slot] = owner;
+                    OpenHarmonyBridge.WriteStatus($"[maui] child web claim: {windowId} slot {slot}");
                     return slot;
                 }
             }
@@ -262,6 +263,12 @@ public static partial class OpenHarmonyChildWeb
         {
             return;
         }
+        if (op != "frame")
+        {
+            // Every per-slot command except a frame is a lifecycle event; one status line each
+            // keeps the send side visible in a device round without flooding on arrange loops.
+            OpenHarmonyBridge.WriteStatus($"[maui] child web cmd: {windowId} {op} {arg}");
+        }
         Send(windowId, op, arg);
     }
 
@@ -330,6 +337,16 @@ public static partial class OpenHarmonyChildWeb
             if (int.TryParse(rest.Substring("capacity|".Length), out int capacity))
             {
                 SetCapacity(windowId, capacity);
+            }
+            return;
+        }
+        if (rest == "capacity")
+        {
+            // The count in the event URL (the primary page's shape) is accepted as well; the
+            // slice's OnPageEvent has the same fallback for the raw native channel.
+            if (int.TryParse(url, out int urlCapacity))
+            {
+                SetCapacity(windowId, urlCapacity);
             }
             return;
         }
