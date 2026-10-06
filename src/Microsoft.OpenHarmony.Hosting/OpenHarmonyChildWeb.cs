@@ -212,6 +212,30 @@ public static partial class OpenHarmonyChildWeb
         return true;
     }
 
+    /// <summary>
+    /// Drops a closed window's pool state (SEC-SCAN-6 C): the shell page is gone with the window,
+    /// so its capacity advertisement and queued pre-ready commands must not survive it. A later
+    /// window reusing the id starts not-ready and re-advertises instead of inheriting a stale
+    /// ready state (which could flush stale commands at a page that no longer exists). The
+    /// primary window is never applicable; it keeps the historical pool lifecycle.
+    /// </summary>
+    public static void ReleaseWindow(string? windowId)
+    {
+        if (!IsApplicable(windowId))
+        {
+            return;
+        }
+        bool dropped;
+        lock (s_sync)
+        {
+            dropped = s_hosts.Remove(windowId!);
+        }
+        if (dropped)
+        {
+            OpenHarmonyBridge.WriteStatus($"[maui] child web release: {windowId} pool state dropped");
+        }
+    }
+
     /// <summary>True while the owner still holds the slot (diagnostics/tests).</summary>
     public static bool IsClaimedBy(string windowId, int slot, object owner)
     {
