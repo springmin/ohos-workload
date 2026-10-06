@@ -40,7 +40,7 @@ on:
         description: 'maui-ohos commit SHA to compile (defaults to the pinned feature/openharmony tip)'
         required: false
         type: string
-        default: 'd4ff7d445e28dd2aa275491255b3488e8ad343c2'
+        default: '23d98a96152de8d83141942dab0df8c28498765d'
   push:
     branches: [ master ]
   pull_request:
@@ -52,7 +52,12 @@ permissions:
 
 # Reproducible cross-repo compile: the MAUI slice is checked out at an exact commit, not the
 # mutable feature/openharmony branch, so a push to the fork cannot change what this gate compiles.
-# The default is the feature/openharmony tip: d4ff7d445e (MULTIWINDOW-L M3: the slice consumes the
+# The default is the MULTIWINDOW-L final slice tip: 23d98a9615 (M4: the per-window focus/suspend
+# state machine, child-tagged IME/key/Back, per-window a11y shadow frames and alert ownership and
+# pinch routing to the owning renderer, plus SEC-SCAN-5c's primary-window gate on the global text
+# path; managed + shell source pins, so the rasterizer output does not move; the suite count below
+# moves to 661/663 floor 643 - the 16 M4 checks on top of M3's 14 on M2's 22; merged into
+# feature/openharmony as 74e0bde5b9) on d4ff7d445e (MULTIWINDOW-L M3: the slice consumes the
 # window-id tagged channel in the app host itself, a deferred OpenWindow asks the shell for the
 # subwindow XComponent and RouteSurface binds/adopts/first-frames it, secondary presents go to
 # the per-window draw target and the shell source carries the surface id; managed-only, so the
@@ -159,7 +164,7 @@ permissions:
 # spans 043e6468, the T10 modal accessibility overlay c56bf0fa, the T1 InputView mapping dcc7eaac
 # and the T2 CookieContainer sync 8241f1b3, all on top of the W-series webview wiring d6325990,
 # the SEC-SCAN-3 S3-DL3 dot-dot route rejection and the HUKS/deep-link hardening. The suite pins
-# 643 checks / total 645 / floor 625 (the N1 host multi-pointer, W10 AOT-entry, FIX-BACKSIZE,
+# 661 checks / total 663 / floor 643 (the N1 host multi-pointer, W10 AOT-entry, FIX-BACKSIZE,
 # Back-press, MULTI-OVERLAY-FULL, SLOTS-DYNAMIC, L6/LEGACY, FIX-SLICERACE, the AUTODISCONNECT
 # detach/rebuild drill, the FIX-A11YBUTTON shell self-check, the FIX-A11YFLYOUT a11y-walk /
 # FIX-PREEMPT-RAW capacity-export lines, the MULTIWINDOW-M subwindow lines and the MULTIWINDOW-L
@@ -169,12 +174,15 @@ permissions:
 # the DrawCostTick/DrawKind* seam directly, so this pin must not lag the harness; the 14 M3
 # checks pin the tagged-channel production subscription, the deferred OpenWindow bind/first
 # frame/input/close/same-id reopen and the four packs' XComponent source plus the per-window
-# draw-target seams) and the full run
-# is green at this compiled tree (local verification: 643/645, floor 625, both perf lines within
+# draw-target seams; the 16 M4 checks pin the per-window focus/suspend-resume machine, the tagged
+# IME/text/Back wire with the SEC-SCAN-5c primary->child isolation pin, the per-window a11y
+# frame/alert partition and the pinch routing (child-tagged only; main/unknown/empty ids rejected),
+# plus the four-pack shell source pins) and the full run
+# is green at this compiled tree (local verification: 661/663, floor 643, both perf lines within
 # budget); advance the pin deliberately and refresh this comment when the harness pins or the
 # tip move (workflow_dispatch can compile any commit).
 env:
-  MAUI_OHOS_REF: ${{ github.event.inputs.maui_ohos_ref || 'd4ff7d445e28dd2aa275491255b3488e8ad343c2' }}
+  MAUI_OHOS_REF: ${{ github.event.inputs.maui_ohos_ref || '23d98a96152de8d83141942dab0df8c28498765d' }}
   # setup-dotnet installs the requested 11.0.x preview into DOTNET_INSTALL_DIR; on Linux that
   # defaults to /usr/share/dotnet, which a per-user cache cannot persist. Point it at ~/.dotnet
   # (the action resolves the ~ prefix against $HOME) so the cache step below actually avoids the
