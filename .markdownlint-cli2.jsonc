@@ -3,8 +3,8 @@
 // against).
 //
 // Scope: every Markdown file this repository owns. Generated/derived trees are ignored so that
-// a local run (which may have .arkts-build/, .feed/, dist/ and .signing/ filled in) lints the
-// same set as a clean CI checkout. `packs/Microsoft.NETCore.App.Runtime.openharmony-arm64/**`
+// a local run (which may have .arkts-build/, .a11y-build/, .feed/, dist/ and .signing/ filled in)
+// lints the same set as a clean CI checkout. `packs/Microsoft.NETCore.App.Runtime.openharmony-arm64/**`
 // is the .gitignore'd layout written by scripts/prepare-packs.sh (it contains the runtime
 // pack's own PACKAGE.md, which starts at `## About` and is not ours to restyle).
 //
@@ -27,6 +27,7 @@
   "ignores": [
     "**/node_modules/**",
     ".arkts-build/**",
+    ".a11y-build/**",
     ".feed/**",
     ".signing/**",
     "dist/**",

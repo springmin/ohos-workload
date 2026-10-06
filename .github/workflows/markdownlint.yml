@@ -12,8 +12,8 @@ name: markdownlint
 #     only enforces what the existing docs satisfy.
 #
 # The config file supplies the globs (all .md/.markdown) and the ignored generated trees
-# (.arkts-build/, .feed/, .signing/, dist/, node_modules and the runtime pack layout), so no
-# arguments are passed here.
+# (.arkts-build/, .a11y-build/, .feed/, .signing/, dist/, node_modules and the runtime pack
+# layout), so no arguments are passed here.
 on:
   push:
     branches: [ master ]
