@@ -31,6 +31,10 @@ internal static class NativeThunks
     [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
     public delegate void WindowFrameCallback(IntPtr windowIdUtf8, long timestamp, long targetTimestamp);
 
+    // MULTIWINDOW-L M4-04: the per-window pinch stream (window id first, then phase/scale/centre).
+    [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+    public delegate void WindowPinchCallback(IntPtr windowIdUtf8, int phase, double scale, float x, float y);
+
     [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
     public delegate void VoidCallback();
 

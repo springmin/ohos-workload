@@ -12,7 +12,7 @@ using Microsoft.Maui.Platform;
 // after the fuzz tail) instead of letting every caller repeat its own threshold constant.
 VerifyLineCountingWriter verifyStdout = new(Console.Out);
 Console.SetOut(verifyStdout);
-const int verifyCheckTotal = 660;                     // +15 MULTIWINDOW-L M4 first wave: the per-window focus/suspend-resume state machine (Activated/Deactivated/Stopped/Resumed, idempotent, primary untouched, the shell-Closed session belt), the per-window keyboard/IME wire (child Entry focus -> op 6 surface-tagged payload, text/composition/submit routed to the child only, window-tagged keys, per-window Back, text ports) and the per-window accessibility frame + alert ownership partition, plus the four-pack shell/slice source pins // +14 MULTIWINDOW-L M3 shell subwindow XComponent + production consumption: the app host consumes the tagged channel itself, a deferred OpenWindow asks the shell for the subwindow surface and RouteSurface binds/first-frames/adopts it, its input/frame/close/reopen are window-id routed with no main-window interference, plus the four-pack shell source pins (XComponent id = surface id, register/unregister lifecycle, drawn fallback) and the host/slice per-window draw-target pins // +22 MULTIWINDOW-L M2 per-window renderer: the dual-window headless pin (the mw-l/m2 scratch assertions, driven through the hosting bridge's window-id tagged thunks and the slice's RouteSurface/RouteTouch/RouteFrame adapters, with one CanvasFactory recording canvas per window) plus the bridge id and late-subscriber replay contract // +6 MULTIWINDOW-M in-app subwindow: the create/move/resize/show/close command set and its JSON payloads, the lifecycle/geometry state machine, the routed touch event, malformed/unknown payload robustness, the off-device degradation, and the shell/host/slice source+pack-identity contract // +1 SEC-SCAN-4 a11y password masking (plaintext must not be published to the shadow tree; bullets mirror the drawn text) // +1 SEC-SCAN-4 off-surface cull boundary (zero-size frame draws, shadow extent rescues, off-surface Image keeps the decode pipeline) // +1 CG2-R2R host interp R2R opt-out pin (DOTNET_ReadyToRun=0 inside the mode-3 block; the runtime already forces it for InterpMode>=2, the host makes it explicit and the device retest holds IL parity) // +1 AOT-STARTUP first-use ArkWeb overlay mount gate (state flag + ensureWebSlot flip/log + build gate order) protects the -262 ms AOT startup fix + host identical-context replay skip pin // +2 MULTIWINDOW-S surface resize: the Created/Changed arrange gate (Destroyed/0x0 rejected) + the Changed replay re-arranging the window frame while Destroyed keeps it (A0 form adaptation)                     // +2 WASM-MIME .wasm -> application/wasm mapping in every pack shell + the standalone rawfile host / the host's `wasm mime:` + `wasm fallback:` instrumentation and the pack-host.sh --bad-mime negative control                     // +2 FIX-A11YFLYOUT a11y walk FlyoutPage Detail/presented-Flyout subtree pins (device nodeCount=1 root cause)                     // +1 FIX-A11YBUTTON shell self-check absolute position + z-order-above-overlays pin (button reachable with/without a live web control)                     // +3 AUTODISCONNECT layout-removal detach (dynamic slot destroy + claim release + handler kept) / re-add rebuild (ensure + registration replay on the reclaimed slot) / slice watcher-and-owner wiring pins                     // +6 SLOTS-DYNAMIC dynamic slot growth (ensure/destroy commands), capacity downgrade/event, configurable 2/4 limits, shell lazy/defer pins, 3rd-overlay sample                     // documented full [verify] line count (+3 FIX-SLICERACE concurrent connect/host storm/ pins, +5 L6 screenshot Jpeg format/quality capture/fallback/helper + title heartbeat behavior/source, +6 LEGACY toolbar primary/overflow/icon/events/shell/source, +3 SAMPLE-FIX hybrid bootstrap pack staging / read-only payload handler / stock-script demo, +4 MULTI-OVERLAY-FULL LRU pool/invoke slot codec/per-slot hybrid shell/slice owner wiring, +4 MULTI-OVL slot pool/wire codec/two-overlay shell/slice wiring, +4 FIX-BACKSIZE Back-press forwarding/drawer drill/ shell drawer/BlazorWebView desired size, +4 FIX-WVP overlay px->vp/degenerate-frame/hybrid-overlay arbitration/suspend-restore (shell+slice), +2 FIX-DISMISS flyout drawer dismiss under the device display conditions, +4 FIX-HOME home page arrange/draw (NavigationPage-in-TabbedPage descent), +4 MS-MODE runtime mode switch, +10 P2c-DEEPLINK, +4 P2b-IMG, +16 P1b-LIST, +10 P1a-ANIM, +2 SEC3 storage/deep-link pins, +5 W-series WebView wiring, +3 T1 InputView mapping, +4 T2 WebView gaps, +4 T3 GraphicsView interaction, +7 T10 modal accessibility, +4 T4 Label formatted text, +4 T5 layout semantics, +6 T7 DatePicker calendar/min-max, +4 T9 window title bar, +4 T11 diagnostics overlay, +1 N2 empty ContentPage arrangement, +6 T8 TableView, +5 T8 uneven rows, +7 T6 RTL flow direction, +5 T22 MainThread bridge, +2 FIX-TABBED tabbed CurrentPage, +4 T13 group footer view/N3 picker IsOpen, +5 T21 system font scale, +3 T21 font scale source wiring, +2 A11Y-TABBED tabbed accessibility, +3 N1 host multi-pointer, +5 T12 CarouselView group slides, +7 T14 rich shell flyout, +10 T14 flyout leftovers (MenuItemTemplate/FlyoutContent/AsMultipleItems), +2 FIX-SHELL shell CurrentPage, +2 A11Y-SHELL shell accessibility, +7 T15 rich Shell.TitleView, +8 T16 structured menus, +3 N4 TitleBar accessibility row, +3 T18 Essentials Map, +4 N5 overlay passthrough suppression, +5 N6 window decorations, +4 T20 media bridge, +3 B2 wasm site in a MAUI WebView, +2 W10 NativeAOT managed entry (host libs-dir resolution + shell AOT payload probe), +1 FIX-JSCALL Blazor IPC enum/struct AOT roots (JSCallResultType/JSCallType/NavigationOptions in the slice context + handler static-ctor touch + stub click-probe removed), +3 INTERP-DRAW2 draw-cost seam kinds / off-surface cull / translated-node rescue))
+const int verifyCheckTotal = 662;                     // +2 MULTIWINDOW-L M4-04: the per-window pinch channel (a child-tagged stream reaches the child renderer only; main/unknown/empty ids never do) // +15 MULTIWINDOW-L M4 first wave: the per-window focus/suspend-resume state machine (Activated/Deactivated/Stopped/Resumed, idempotent, primary untouched, the shell-Closed session belt), the per-window keyboard/IME wire (child Entry focus -> op 6 surface-tagged payload, text/composition/submit routed to the child only, window-tagged keys, per-window Back, text ports) and the per-window accessibility frame + alert ownership partition, plus the four-pack shell/slice source pins // +14 MULTIWINDOW-L M3 shell subwindow XComponent + production consumption: the app host consumes the tagged channel itself, a deferred OpenWindow asks the shell for the subwindow surface and RouteSurface binds/first-frames/adopts it, its input/frame/close/reopen are window-id routed with no main-window interference, plus the four-pack shell source pins (XComponent id = surface id, register/unregister lifecycle, drawn fallback) and the host/slice per-window draw-target pins // +22 MULTIWINDOW-L M2 per-window renderer: the dual-window headless pin (the mw-l/m2 scratch assertions, driven through the hosting bridge's window-id tagged thunks and the slice's RouteSurface/RouteTouch/RouteFrame adapters, with one CanvasFactory recording canvas per window) plus the bridge id and late-subscriber replay contract // +6 MULTIWINDOW-M in-app subwindow: the create/move/resize/show/close command set and its JSON payloads, the lifecycle/geometry state machine, the routed touch event, malformed/unknown payload robustness, the off-device degradation, and the shell/host/slice source+pack-identity contract // +1 SEC-SCAN-4 a11y password masking (plaintext must not be published to the shadow tree; bullets mirror the drawn text) // +1 SEC-SCAN-4 off-surface cull boundary (zero-size frame draws, shadow extent rescues, off-surface Image keeps the decode pipeline) // +1 CG2-R2R host interp R2R opt-out pin (DOTNET_ReadyToRun=0 inside the mode-3 block; the runtime already forces it for InterpMode>=2, the host makes it explicit and the device retest holds IL parity) // +1 AOT-STARTUP first-use ArkWeb overlay mount gate (state flag + ensureWebSlot flip/log + build gate order) protects the -262 ms AOT startup fix + host identical-context replay skip pin // +2 MULTIWINDOW-S surface resize: the Created/Changed arrange gate (Destroyed/0x0 rejected) + the Changed replay re-arranging the window frame while Destroyed keeps it (A0 form adaptation)                     // +2 WASM-MIME .wasm -> application/wasm mapping in every pack shell + the standalone rawfile host / the host's `wasm mime:` + `wasm fallback:` instrumentation and the pack-host.sh --bad-mime negative control                     // +2 FIX-A11YFLYOUT a11y walk FlyoutPage Detail/presented-Flyout subtree pins (device nodeCount=1 root cause)                     // +1 FIX-A11YBUTTON shell self-check absolute position + z-order-above-overlays pin (button reachable with/without a live web control)                     // +3 AUTODISCONNECT layout-removal detach (dynamic slot destroy + claim release + handler kept) / re-add rebuild (ensure + registration replay on the reclaimed slot) / slice watcher-and-owner wiring pins                     // +6 SLOTS-DYNAMIC dynamic slot growth (ensure/destroy commands), capacity downgrade/event, configurable 2/4 limits, shell lazy/defer pins, 3rd-overlay sample                     // documented full [verify] line count (+3 FIX-SLICERACE concurrent connect/host storm/ pins, +5 L6 screenshot Jpeg format/quality capture/fallback/helper + title heartbeat behavior/source, +6 LEGACY toolbar primary/overflow/icon/events/shell/source, +3 SAMPLE-FIX hybrid bootstrap pack staging / read-only payload handler / stock-script demo, +4 MULTI-OVERLAY-FULL LRU pool/invoke slot codec/per-slot hybrid shell/slice owner wiring, +4 MULTI-OVL slot pool/wire codec/two-overlay shell/slice wiring, +4 FIX-BACKSIZE Back-press forwarding/drawer drill/ shell drawer/BlazorWebView desired size, +4 FIX-WVP overlay px->vp/degenerate-frame/hybrid-overlay arbitration/suspend-restore (shell+slice), +2 FIX-DISMISS flyout drawer dismiss under the device display conditions, +4 FIX-HOME home page arrange/draw (NavigationPage-in-TabbedPage descent), +4 MS-MODE runtime mode switch, +10 P2c-DEEPLINK, +4 P2b-IMG, +16 P1b-LIST, +10 P1a-ANIM, +2 SEC3 storage/deep-link pins, +5 W-series WebView wiring, +3 T1 InputView mapping, +4 T2 WebView gaps, +4 T3 GraphicsView interaction, +7 T10 modal accessibility, +4 T4 Label formatted text, +4 T5 layout semantics, +6 T7 DatePicker calendar/min-max, +4 T9 window title bar, +4 T11 diagnostics overlay, +1 N2 empty ContentPage arrangement, +6 T8 TableView, +5 T8 uneven rows, +7 T6 RTL flow direction, +5 T22 MainThread bridge, +2 FIX-TABBED tabbed CurrentPage, +4 T13 group footer view/N3 picker IsOpen, +5 T21 system font scale, +3 T21 font scale source wiring, +2 A11Y-TABBED tabbed accessibility, +3 N1 host multi-pointer, +5 T12 CarouselView group slides, +7 T14 rich shell flyout, +10 T14 flyout leftovers (MenuItemTemplate/FlyoutContent/AsMultipleItems), +2 FIX-SHELL shell CurrentPage, +2 A11Y-SHELL shell accessibility, +7 T15 rich Shell.TitleView, +8 T16 structured menus, +3 N4 TitleBar accessibility row, +3 T18 Essentials Map, +4 N5 overlay passthrough suppression, +5 N6 window decorations, +4 T20 media bridge, +3 B2 wasm site in a MAUI WebView, +2 W10 NativeAOT managed entry (host libs-dir resolution + shell AOT payload probe), +1 FIX-JSCALL Blazor IPC enum/struct AOT roots (JSCallResultType/JSCallType/NavigationOptions in the slice context + handler static-ctor touch + stub click-probe removed), +3 INTERP-DRAW2 draw-cost seam kinds / off-surface cull / translated-node rescue))
 const int verifyCheckFloor = verifyCheckTotal - 20;   // documented floor convention (total - 20)
 
 // A small image file for the Image handler.
@@ -14854,6 +14854,8 @@ if (m2Failures > 0)
 // (M4-03/M4-04 offline half). Everything is driven through the production consumers: the app
 // host's subwindow subscription, the slice's text router/key hook and the shell channel thunks
 // (the exact callbacks the ArkTS shell reaches through host.notifySubWindowEvent).
+// M4-04 (second wave) adds the per-window pinch channel, driven through the registered
+// s_windowPinchThunk exactly like the host's own per-window touch/frame entries.
 int m4Failures = 0;
 void M4Check(string name, bool ok)
 {
@@ -14973,6 +14975,49 @@ M4Check("back routed", m4Backs.Count == 1 && m4Backs[0] == "sub-1");
 M4Check("input ports", OpenHarmonyWindowInputRouter.PortCount("sub-1") >= 1
     && OpenHarmonyWindowInputRouter.PortCount(OpenHarmonyWindowSurface.PrimaryWindowId) >= 1);
 
+// --- M4-04: per-window pinch routing ----------------------------------------------------------
+// The shell computes each window's pinch stream from that window's own touches (host_napi.cpp)
+// and reports it on the tagged bridge; the app host routes it to the owning window's renderer.
+// Driven through the exact registered thunk the host calls.
+var m4PinchThunk = NativeThunks.Invoker<NativeThunks.WindowPinchCallback>(
+    NativeThunks.Pointer(typeof(Microsoft.OpenHarmony.Hosting.OpenHarmonyBridge), "s_windowPinchThunk"));
+List<string> m4Pinches = new();
+Action<string, int, double, float, float> m4PinchRecorder =
+    (id, phase, scale, x, y) => m4Pinches.Add($"{id}:{phase}:{scale:0.0}");
+Microsoft.OpenHarmony.Hosting.OpenHarmonyBridge.WindowPinch += m4PinchRecorder;
+void M4Pinch(string id, int phase, double scale, float x, float y)
+{
+    IntPtr m4IdUtf8 = Marshal.StringToCoTaskMemUTF8(id);
+    try
+    {
+        m4PinchThunk(m4IdUtf8, phase, scale, x, y);
+    }
+    finally
+    {
+        Marshal.FreeCoTaskMem(m4IdUtf8);
+    }
+}
+float m4Px = (float)(m4Input.PinchLabel.Frame.X + m4Input.PinchLabel.Frame.Width / 2);
+float m4Py = (float)(m4Input.PinchLabel.Frame.Y + m4Input.PinchLabel.Frame.Height / 2);
+M4Pinch("sub-1", 0, 1.0, m4Px, m4Py);
+M4Pinch("sub-1", 1, 1.5, m4Px, m4Py);
+M4Pinch("sub-1", 2, 1.0, m4Px, m4Py);
+M4Check("pinch routed", m4InputHost is not null && m4InputHost.PinchCount == 3
+    && m4Input.PinchLog.Contains("Started") && m4Input.PinchLog.Contains("Running")
+    && m4Pinches.Count == 3 && m4Pinches.All(entry => entry.StartsWith("sub-1:")));
+
+// A primary-tagged report belongs to the untagged legacy path; an id with no live window is
+// dropped. Neither may reach the child's recognizer.
+string m4PinchLogBefore = m4Input.PinchLog;
+int m4PinchCountBefore = m4InputHost!.PinchCount;
+M4Pinch("main", 0, 1.0, 10f, 10f);
+M4Pinch("sub-404", 1, 2.0, 10f, 10f);
+M4Pinch(string.Empty, 1, 2.0, 10f, 10f);
+M4Check("pinch main/unknown ignored", m4Input.PinchLog == m4PinchLogBefore
+    && m4InputHost.PinchCount == m4PinchCountBefore
+    && m4Pinches.Count == 5 && m4Pinches[3].StartsWith("main:"));
+Microsoft.OpenHarmony.Hosting.OpenHarmonyBridge.WindowPinch -= m4PinchRecorder;
+
 // --- M4-03/M4-04: per-window accessibility frames + alert ownership ---------------------------
 var m4TreeA = new VerticalStackLayout { Children = { new Label { Text = "m4-a11y-A" } } };
 var m4TreeB = new VerticalStackLayout { Children = { new Label { Text = "m4-a11y-B" } } };
@@ -15046,11 +15091,13 @@ bool m4SlicePinsOk = m4SliceEntry.Contains("OpenHarmonySubWindow.RequestTextFocu
     && m4SliceRouter.Contains("DispatchText") && m4SliceRouter.Contains("DispatchSubmitted")
     && m4SliceHost.Contains("OnSubWindowChanged") && m4SliceHost.Contains("StopSecondaryWindows")
     && m4SliceHost.Contains("CloseSecondaryBySurface") && m4SliceHost.Contains("ResolveWindowId")
+    && m4SliceHost.Contains("WindowPinch") && m4SliceHost.Contains("RoutePinch")
     && m4SliceA11y.Contains("Refresh(string windowId, IView root)")
     && m4SliceA11y.Contains("Publish(string windowId)")
     && m4SliceAlert.Contains("CurrentFor(string windowId)")
     && m4SliceAlert.Contains("SetSurface(string windowId, double width, double height)")
-    && m4SliceWindowHost.Contains("OpenHarmonySystemFontScale.Changed += OnSystemFontScaleChanged");
+    && m4SliceWindowHost.Contains("OpenHarmonySystemFontScale.Changed += OnSystemFontScaleChanged")
+    && m4SliceWindowHost.Contains("public bool HandlePinch(int phase, double scale, float x, float y)");
 M4Check("source pins", m4ShellPinsOk && m4SlicePinsOk);
 
 OpenHarmonySubWindow.CommandSender = null;
@@ -15604,8 +15651,9 @@ sealed class M2PerWindowApp : Microsoft.Maui.Controls.Application
 }
 
 /// <summary>
-/// MULTIWINDOW-L M4 input content: label + entry + button, so the per-window focus/IME checks
-/// can tap a real text view inside a secondary window without changing the M2/M3 content shape.
+/// MULTIWINDOW-L M4 input content: label + entry + pinch label + button, so the per-window
+/// focus/IME and pinch checks can drive a real text view and a real pinch recognizer inside a
+/// secondary window without changing the M2/M3 content shape.
 /// </summary>
 sealed class M4InputContent
 {
@@ -15614,11 +15662,15 @@ sealed class M4InputContent
         Entry = new Entry { Text = entryText };
         Button = new Button { Text = button };
         Button.Clicked += (_, _) => Clicks++;
+        PinchGestureRecognizer pinch = new();
+        pinch.PinchUpdated += (_, e) => PinchLog += $"{e.Status}:{e.Scale:0.0} ";
+        PinchLabel = new Label { Text = label + "-pinch" };
+        PinchLabel.GestureRecognizers.Add(pinch);
         Page = new ContentPage
         {
             Content = new VerticalStackLayout
             {
-                Children = { new Label { Text = label }, Entry, Button },
+                Children = { new Label { Text = label }, Entry, PinchLabel, Button },
             },
         };
     }
@@ -15627,9 +15679,14 @@ sealed class M4InputContent
 
     public Entry Entry { get; }
 
+    public Label PinchLabel { get; }
+
     public Button Button { get; }
 
     public int Clicks { get; private set; }
+
+    /// <summary>One entry per received PinchUpdated (status:scale), the M4-04 routing evidence.</summary>
+    public string PinchLog { get; private set; } = string.Empty;
 }
 
 /// <summary>One label + one button pair the M2 checks can frame and tap.</summary>
