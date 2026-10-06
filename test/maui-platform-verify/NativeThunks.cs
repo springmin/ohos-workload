@@ -35,6 +35,12 @@ internal static class NativeThunks
     [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
     public delegate void WindowPinchCallback(IntPtr windowIdUtf8, int phase, double scale, float x, float y);
 
+    // MULTIWINDOW-L2 a (W1): the per-instance accessibility action listener (window id first,
+    // then the node id and the ArkUI action bit), the exact thunk the WithInstance provider
+    // callbacks invoke for a child-window action.
+    [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+    public delegate void WindowActionCallback(IntPtr windowIdUtf8, int nodeId, int action);
+
     [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
     public delegate void VoidCallback();
 
