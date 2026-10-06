@@ -40,7 +40,7 @@ on:
         description: 'maui-ohos commit SHA to compile (defaults to the pinned feature/openharmony tip)'
         required: false
         type: string
-        default: 'b093e3382550670936c1c399e3db6c1114cbc302'
+        default: '1a15f56b308c4e45889fe425ed384ed7697ee11a'
   push:
     branches: [ master ]
   pull_request:
@@ -52,14 +52,21 @@ permissions:
 
 # Reproducible cross-repo compile: the MAUI slice is checked out at an exact commit, not the
 # mutable feature/openharmony branch, so a push to the fork cannot change what this gate compiles.
-# The default is the feature/openharmony tip: b093e33825 (MULTIWINDOW-M: the managed slice hosts
+# The default is the feature/openharmony tip: 1a15f56b30 (MULTIWINDOW-L M2: the slice's app host
+# is windowed - one OpenHarmonyWindowHost per additional window owns its surface/renderer size
+# and input, OpenWindow adopts a second managed window when a secondary surface is available
+# (otherwise the honest CurrentWindowKept degrade) and the window-id routing entries
+# RouteSurface/RouteTouch/RouteFrame drive exactly one window; managed-only, so the rasterizer
+# output does not move; the suite count below moves to 629/631 floor 611 - the 22 dual-window
+# checks driven through this repository's window-id tagged hosting bridge), on top of b093e33825
+# (MULTIWINDOW-M: the managed slice hosts
 # an application subwindow - OpenHarmonySubWindow drives the shell's named-route SubWindow page
 # through the create/move/resize/show/close command set and the shell->managed event listener,
 # with the host's ohos_host_sub_window_command / ohos_host_sub_window_event_listener exports and
 # the off-device degradation markers; shell/host/managed, so the rasterizer output does not move;
 # SEC-SCAN-4 5f3efd55e5 masks password Entry text in the accessibility shadow tree and pins the
-# off-surface cull boundary; the suite count below moves to 607/609 floor 589 (601/603 after
-# SEC-SCAN-4's +2, then MULTIWINDOW-M's +6 at this tip), on top of ed02203bfd (MULTIWINDOW-S: the
+# off-surface cull boundary; the suite count moved to 607/609 floor 589 (601/603 after
+# SEC-SCAN-4's +2, then MULTIWINDOW-M's +6 at that tip)), on top of ed02203bfd (MULTIWINDOW-S: the
 # managed app host re-arranges and re-renders on a live surface Changed while Destroyed/0x0 keeps
 # the last frame, and the shell/marker declare the 2in1 window modes; managed-only, no new host
 # export, and the suite count below moves to 599/601 floor 581 - 598/600 at that wave plus this
@@ -147,18 +154,19 @@ permissions:
 # spans 043e6468, the T10 modal accessibility overlay c56bf0fa, the T1 InputView mapping dcc7eaac
 # and the T2 CookieContainer sync 8241f1b3, all on top of the W-series webview wiring d6325990,
 # the SEC-SCAN-3 S3-DL3 dot-dot route rejection and the HUKS/deep-link hardening. The suite pins
-# 607 checks / total 609 / floor 589 (the N1 host multi-pointer, W10 AOT-entry, FIX-BACKSIZE
+# 629 checks / total 631 / floor 611 (the N1 host multi-pointer, W10 AOT-entry, FIX-BACKSIZE
 # Back-press, MULTI-OVERLAY-FULL, SLOTS-DYNAMIC, L6/LEGACY, FIX-SLICERACE, the AUTODISCONNECT
 # detach/rebuild drill, the FIX-A11YBUTTON shell self-check, the FIX-A11YFLYOUT a11y-walk /
-# FIX-PREEMPT-RAW capacity-export lines and the MULTIWINDOW-M subwindow lines live in this
-# repository's harness and hosting bridge, not in the pinned slice; the harness references the
-# slice's PushChildren FlyoutPage branch, the OpenHarmonySubWindow command/event machine and the
-# DrawCostTick/DrawKind* seam directly, so this pin must not lag the harness) and the full run is
-# green at this compiled tree (local verification: 607/609, floor 589, both perf lines within
+# FIX-PREEMPT-RAW capacity-export lines, the MULTIWINDOW-M subwindow lines and the MULTIWINDOW-L
+# M2 dual-window pin live in this repository's harness and hosting bridge, not in the pinned
+# slice; the harness references the slice's PushChildren FlyoutPage branch, the OpenHarmonySubWindow
+# command/event machine, the windowed app host's RouteSurface/RouteTouch/RouteFrame entries and
+# the DrawCostTick/DrawKind* seam directly, so this pin must not lag the harness) and the full run
+# is green at this compiled tree (local verification: 629/631, floor 611, both perf lines within
 # budget); advance the pin deliberately and refresh this comment when the harness pins or the
 # tip move (workflow_dispatch can compile any commit).
 env:
-  MAUI_OHOS_REF: ${{ github.event.inputs.maui_ohos_ref || 'b093e3382550670936c1c399e3db6c1114cbc302' }}
+  MAUI_OHOS_REF: ${{ github.event.inputs.maui_ohos_ref || '1a15f56b308c4e45889fe425ed384ed7697ee11a' }}
   # setup-dotnet installs the requested 11.0.x preview into DOTNET_INSTALL_DIR; on Linux that
   # defaults to /usr/share/dotnet, which a per-user cache cannot persist. Point it at ~/.dotnet
   # (the action resolves the ~ prefix against $HOME) so the cache step below actually avoids the
