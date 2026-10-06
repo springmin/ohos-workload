@@ -981,14 +981,17 @@ static napi_value HostNapiEntry(napi_env env, napi_callback_info info) {
 // Routes one surface lifecycle callback to the window registered for the component.
 void HostRouteSurface(OH_NativeXComponent* component, void* window, int width, int height, int state) {
     ohos_host_window_record record;
-    if (ohos_host_window_lookup_component(component, &record) != OHOS_HOST_WINDOW_OK) {
+    // Component-keyed lookup+update in one call: the callback's component is the routing key, so
+    // a concurrent unregister/re-register of the same id can never move this event's surface
+    // state onto another component's record.
+    if (ohos_host_window_surface_component(component, window, width, height, state, &record) !=
+        OHOS_HOST_WINDOW_OK) {
         OH_LOG_WARN(LOG_APP, "[openharmony-host] surface event for an unregistered xcomponent dropped");
         return;
     }
     if (record.primary) {
         ohos_host_set_native_window(window, width, height, static_cast<ohos_surface_state>(state));
     }
-    ohos_host_window_surface(record.id, window, width, height, state);
     if (!record.primary) {
         // Secondary-window evidence lands in the shell status file (native stderr), which the
         // feasibility probes read back; the primary already prints its historical surface line.
@@ -4155,16 +4158,30 @@ napi_value RegisterXComponent(napi_env env, napi_callback_info info) {
 // ArkTS calls host.unregisterXComponent(windowId) from an XComponent's onDestroy; an omitted id
 // releases the primary window. Releases the claim's wrapper reference and drops the registry
 // entry first, so a late surface event is rejected instead of touching a released component.
-// Returns 1 when a window was released, 0 otherwise.
+// Returns 1 when a window was released, 0 otherwise. An invalid argument (a non-string value or
+// an empty id) releases nothing: it must never fall back to the primary window.
 napi_value UnregisterXComponent(napi_env env, napi_callback_info info) {
     size_t argc = 1;
     napi_value argv[1] = {nullptr};
     napi_get_cb_info(env, info, &argc, argv, nullptr, nullptr);
     std::string requested = OHOS_HOST_WINDOW_PRIMARY_ID;
-    napi_valuetype type = napi_undefined;
-    if (argc >= 1 && napi_typeof(env, argv[0], &type) == napi_ok && type == napi_string) {
-        std::string value = GetStringArg(env, argv[0]);
-        if (!value.empty()) {
+    if (argc >= 1) {
+        napi_valuetype type = napi_undefined;
+        napi_status type_status = napi_typeof(env, argv[0], &type);
+        // Only an omitted/undefined id means "the primary window" (the legacy contract).
+        if (!(type_status == napi_ok && type == napi_undefined)) {
+            std::string value;
+            if (type_status == napi_ok && type == napi_string) {
+                value = GetStringArg(env, argv[0]);
+            }
+            if (value.empty()) {
+                OH_LOG_WARN(LOG_APP, "[openharmony-host] unregisterXComponent: invalid id ignored");
+                fprintf(stderr, "[openharmony-host] unregisterXComponent: invalid id ignored\n");
+                fflush(stderr);
+                napi_value zero = nullptr;
+                napi_create_int32(env, 0, &zero);
+                return zero;
+            }
             requested = value;
         }
     }

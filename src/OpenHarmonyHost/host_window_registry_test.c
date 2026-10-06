@@ -154,6 +154,30 @@ int main(void) {
               "re-registered window starts from a clean record");
     }
 
+    // --- component-keyed surface routing (atomic against id reuse) ----------------------
+    // child-a is now owned by component 0x21; a late surface event that still carries the
+    // previous component 0x20 must not be attributed to the re-registered record.
+    Check(ohos_host_window_surface_component((void*)0x20, (void*)0x2200, 1, 1, 0, &record) ==
+              OHOS_HOST_WINDOW_NOT_FOUND,
+          "component surface: late event from the previous owner is dropped");
+    if (Lookup("child-a", &record, "component surface: lookup after the late event")) {
+        Check(record.component == (void*)0x21 && record.surface == NULL && record.surface_events == 0,
+              "component surface: the new owner's record is untouched");
+    }
+    Check(ohos_host_window_surface_component((void*)0x21, (void*)0x2100, 640, 480, 0, &record) ==
+                  OHOS_HOST_WINDOW_OK &&
+              strcmp(record.id, "child-a") == 0 && record.component == (void*)0x21 &&
+              record.surface == (void*)0x2100 && record.width == 640 && record.height == 480 &&
+              record.state == 0 && record.surface_events == 1,
+          "component surface: updates the owner's record and copies it out");
+    Check(ohos_host_window_surface_component(NULL, (void*)0x1, 1, 1, 0, &record) ==
+                  OHOS_HOST_WINDOW_INVALID &&
+              ohos_host_window_surface_component((void*)0x21, (void*)0x1, 1, 1, 0, NULL) ==
+                  OHOS_HOST_WINDOW_INVALID &&
+              ohos_host_window_surface_component((void*)0x99, (void*)0x1, 1, 1, 0, &record) ==
+                  OHOS_HOST_WINDOW_NOT_FOUND,
+          "component surface: NULL component/out and unknown component are rejected");
+
     // --- capacity ------------------------------------------------------------------------
     ohos_host_window_reset();
     Check(ohos_host_window_register("w0", (void*)0x30, NULL, 1) == OHOS_HOST_WINDOW_OK,

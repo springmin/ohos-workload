@@ -80,6 +80,14 @@ int ohos_host_window_register(const char* id, void* component, void* owner, int 
 // event for an unknown id returns NOT_FOUND and changes nothing.
 int ohos_host_window_surface(const char* id, void* surface, int width, int height, int state);
 
+// Records the same surface event keyed by the component pointer the callback received (the
+// routing key), looking the record up and updating it under one lock: unlike the id-keyed
+// variant, an unregister/re-register of the same id between a lookup and an update cannot
+// attribute the event to a different component's record. Copies the updated record to out.
+// Unknown component returns NOT_FOUND; NULL component or NULL out returns INVALID.
+int ohos_host_window_surface_component(void* component, void* surface, int width, int height,
+                                       int state, ohos_host_window_record* out);
+
 // Bumps the routed-event counters (the per-window input/frame lifecycle in M1: recorded, not
 // yet dispatched to a per-window managed bridge). Unknown id returns NOT_FOUND.
 int ohos_host_window_note_touch(const char* id);
