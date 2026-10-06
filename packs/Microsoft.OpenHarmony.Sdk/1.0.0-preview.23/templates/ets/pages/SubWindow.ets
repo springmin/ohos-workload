@@ -1,12 +1,16 @@
-// Shell-drawn content for the application subwindow (MULTIWINDOW-M).
+// Shell content for the application subwindow: MULTIWINDOW-M drawn page + MULTIWINDOW-L M3
+// managed surface.
 //
 // Loaded with Window.loadContentByName('ohos_dotnet_subwindow', storage) by pages/Index.ets
-// after Window.createSubWindowWithOptions. The page is deliberately self-contained: it draws
-// its own content, resolves its own window to drag itself, and reports touches/ready/close to
-// the managed side through host.notifySubWindowEvent. The application still has ONE managed
-// surface/renderer, so this content is ArkUI-drawn, not a second MAUI visual tree - the honest
-// degradation for M; per-window surface/renderer state is the L remainder (see the multiwindow
-// plan, docs/plans/2026-10-05-ohos-multiwindow-prestudy.md).
+// after Window.createSubWindowWithOptions. Two modes:
+//   * managed (M3): pages/Index.ets received a surfaceId from the managed OpenWindow command
+//     and put it into the LocalStorage. The body mounts an XComponent with that id, bound to
+//     libopenharmonyhost, and registers/unregisters it around its lifecycle. The managed side's
+//     per-window renderer draws the second MAUI visual tree into that surface, and its input is
+//     routed by the native host under the same window id.
+//   * drawn (M, the degradation path): without a surfaceId (older managed side, no shell sink,
+//     or a failed claim) the page draws its own content as before, so the subwindow keeps
+//     working with its header, drag and touch counter.
 //
 // The window guard matters: window.getLastWindow() returns the top window of the application,
 // which can be the main window while the child is not focused. The page may only move the window
@@ -37,10 +41,22 @@ struct SubWindow {
   // loadContentByName; -1 when the runtime does not propagate it (the name check then carries
   // the guard).
   @LocalStorageProp('subWindowId') subWindowId: number = -1;
+  // MULTIWINDOW-L M3: the managed surface id (the managed OpenWindow command's window id, used
+  // as the XComponent component id and the host registry id). It travels in the child window's
+  // name (see aboutToAppear) because the loadContentByName LocalStorage is not reliably
+  // propagated; the LocalStorage value stays as a secondary source. Empty selects the drawn M
+  // path.
+  @LocalStorageProp('subWindowSurfaceId') storedSurfaceId: string = '';
+  // State (not a plain field): the id is assigned in aboutToAppear, and the XComponent branch
+  // must mount on the render that follows that assignment.
+  @State surfaceId: string = '';
   @State touches: number = 0;
   @State drags: number = 0;
   @State resolvedId: number = -1;
   @State dragEnabled: boolean = false;
+  // True once the host confirmed the XComponent claim; the drawn fallback stays (and stays
+  // interactive) until then, and hides once the managed surface owns the child.
+  @State surfaceBound: boolean = false;
   private win: window.Window | null = null;
   private startLeft: number = 0;
   private startTop: number = 0;
@@ -52,15 +68,25 @@ struct SubWindow {
       const props = win.getWindowProperties();
       this.resolvedId = props.id;
       const resolvedName: string = props.name !== undefined ? props.name : '';
+      // M3: the managed surface id is stamped into the window name as
+      // '<SUB_WINDOW_NAME>__<surfaceId>' (pages/Index.ets); the LocalStorage prop is a fallback
+      // for a runtime that propagates it. The name check doubles as the drag guard below.
+      const managedPrefix: string = `${SUB_WINDOW_NAME}__`;
+      if (resolvedName.startsWith(managedPrefix)) {
+        this.surfaceId = resolvedName.substring(managedPrefix.length);
+      } else if (this.storedSurfaceId.length > 0) {
+        this.surfaceId = this.storedSurfaceId;
+      }
       // Only the subwindow page may move a window: window.getLastWindow can return the main
       // window while the child is not focused, and moving the main window from here would be
       // wrong. The window name stamped at creation is the primary identity; the LocalStorage id
       // (when the runtime propagates it) is the secondary check. A mismatch disables dragging
       // instead of moving the wrong window; the content stays interactive either way.
-      this.dragEnabled = resolvedName === SUB_WINDOW_NAME || (this.subWindowId >= 0 && props.id === this.subWindowId);
-      hilog.info(DOMAIN, TAG, 'subwindow page ready: expected=%{public}d resolved=%{public}d name=%{public}s drag=%{public}s',
-        this.subWindowId, this.resolvedId, resolvedName, this.dragEnabled ? 'on' : 'off');
-      this.notifyHost(SUB_EVENT_PAGE_READY, `{"id":${this.resolvedId}}`);
+      this.dragEnabled = resolvedName === SUB_WINDOW_NAME || resolvedName.startsWith(managedPrefix) ||
+        (this.subWindowId >= 0 && props.id === this.subWindowId);
+      hilog.info(DOMAIN, TAG, 'subwindow page ready: expected=%{public}d resolved=%{public}d name=%{public}s surface=%{public}s drag=%{public}s',
+        this.subWindowId, this.resolvedId, resolvedName, this.surfaceId, this.dragEnabled ? 'on' : 'off');
+      this.notifyHost(SUB_EVENT_PAGE_READY, this.readyPayload());
     }).catch((readyError: Error): void => {
       hilog.error(DOMAIN, TAG, 'subwindow window lookup failed: %{public}s', readyError.message);
     });
@@ -78,6 +104,50 @@ struct SubWindow {
     } catch (notifyError) {
       hilog.error(DOMAIN, TAG, 'subwindow event %{public}d failed: %{public}s', op, (notifyError as Error).message);
     }
+  }
+
+  private readyPayload(): string {
+    const base = `{"id":${this.resolvedId}`;
+    return this.surfaceId.length > 0 ? `${base},"surfaceId":"${this.surfaceId}"}` : `${base}}`;
+  }
+
+  // MULTIWINDOW-L M3: the surface lifecycle. registerXComponent returns 1 when the host has the
+  // window registered after the call; a 0 keeps the drawn fallback (no managed surface), so a
+  // shell whose host cannot bind the XComponent never shows a black hole.
+  private bindSurface(): void {
+    hilog.info(DOMAIN, TAG, 'subwindow xcomponent onLoad id=%{public}s', this.surfaceId);
+    if (this.surfaceId.length === 0) {
+      return;
+    }
+    try {
+      if (typeof host !== 'undefined' && typeof host.registerXComponent === 'function') {
+        const registered: number = host.registerXComponent(this.surfaceId);
+        this.surfaceBound = registered === 1;
+        hilog.info(DOMAIN, TAG, 'subwindow surface %{public}s registered=%{public}d', this.surfaceId, registered);
+      } else {
+        hilog.warn(DOMAIN, TAG, 'host.registerXComponent unavailable; the drawn fallback stays');
+      }
+    } catch (bindError) {
+      hilog.error(DOMAIN, TAG, 'subwindow surface %{public}s registration failed: %{public}s',
+        this.surfaceId, (bindError as Error).message);
+    }
+  }
+
+  private unbindSurface(): void {
+    hilog.info(DOMAIN, TAG, 'subwindow xcomponent onDestroy id=%{public}s', this.surfaceId);
+    if (this.surfaceId.length === 0) {
+      return;
+    }
+    try {
+      if (typeof host !== 'undefined' && typeof host.unregisterXComponent === 'function') {
+        const released: number = host.unregisterXComponent(this.surfaceId);
+        hilog.info(DOMAIN, TAG, 'subwindow surface %{public}s unregistered=%{public}d', this.surfaceId, released);
+      }
+    } catch (unbindError) {
+      hilog.error(DOMAIN, TAG, 'subwindow surface %{public}s unregistration failed: %{public}s',
+        this.surfaceId, (unbindError as Error).message);
+    }
+    this.surfaceBound = false;
   }
 
   private closeSelf(): void {
@@ -137,66 +207,94 @@ struct SubWindow {
   aboutToDisappear(): void {
     // The child dies with the page; report the state so the managed side does not keep an open
     // subwindow (the main page's windowEvent observer usually reports first).
-    this.notifyHost(SUB_EVENT_CLOSED, `{"id":${this.resolvedId}}`);
+    this.notifyHost(SUB_EVENT_CLOSED, this.readyPayload());
   }
 
   build() {
-    Column() {
-      Row() {
-        Text('MAUI subwindow')
-          .fontSize(14)
-          .fontColor('#FFE8F1FA')
-          .fontWeight(FontWeight.Bold)
-        Blank()
-        Button('x')
-          .width(34)
-          .height(28)
-          .fontSize(14)
-          .backgroundColor('#FF33414D')
-          .onClick((): void => {
-            this.closeSelf();
+    Stack() {
+      // MULTIWINDOW-L M3 managed surface: the XComponent fills the child and the managed second
+      // MAUI tree draws into it; the native host routes its input under the same window id.
+      if (this.surfaceId.length > 0) {
+        XComponent({
+          id: this.surfaceId,
+          type: XComponentType.SURFACE,
+          libraryname: 'openharmonyhost',
+        })
+          .onLoad((): void => {
+            this.bindSurface();
           })
+          .onDestroy((): void => {
+            this.unbindSurface();
+          })
+          .width('100%')
+          .height('100%')
       }
-      .width('100%')
-      .height(44)
-      .padding({ left: 12, right: 8 })
-      .backgroundColor('#FF22303C')
 
-      Column() {
-        Text(`window #${this.resolvedId}`)
-          .fontSize(12)
-          .fontColor('#FF8FA6B8')
-        Text(`touches ${this.touches}`)
-          .fontSize(30)
-          .fontColor('#FF6EC1FF')
-          .margin({ top: 10 })
-        Text(`drags ${this.drags}`)
-          .fontSize(12)
-          .fontColor('#FF8FA6B8')
-          .margin({ top: 6 })
-        Text(this.dragEnabled ? 'drag the body to move the subwindow' : 'drag disabled (window id mismatch)')
-          .fontSize(11)
-          .fontColor('#FF6B7C8C')
-          .margin({ top: 10 })
+      // MULTIWINDOW-M drawn content, kept as the degradation path: shown until the managed
+      // surface is confirmed (or forever without a surface id), and hidden afterwards so the
+      // two content paths never fight for input.
+      if (!this.surfaceBound) {
+        Column() {
+          Row() {
+            Text('MAUI subwindow')
+              .fontSize(14)
+              .fontColor('#FFE8F1FA')
+              .fontWeight(FontWeight.Bold)
+            Blank()
+            Button('x')
+              .width(34)
+              .height(28)
+              .fontSize(14)
+              .backgroundColor('#FF33414D')
+              .onClick((): void => {
+                this.closeSelf();
+              })
+          }
+          .width('100%')
+          .height(44)
+          .padding({ left: 12, right: 8 })
+          .backgroundColor('#FF22303C')
+
+          Column() {
+            Text(`window #${this.resolvedId}`)
+              .fontSize(12)
+              .fontColor('#FF8FA6B8')
+            Text(`touches ${this.touches}`)
+              .fontSize(30)
+              .fontColor('#FF6EC1FF')
+              .margin({ top: 10 })
+            Text(`drags ${this.drags}`)
+              .fontSize(12)
+              .fontColor('#FF8FA6B8')
+              .margin({ top: 6 })
+            Text(this.dragEnabled ? 'drag the body to move the subwindow' : 'drag disabled (window id mismatch)')
+              .fontSize(11)
+              .fontColor('#FF6B7C8C')
+              .margin({ top: 10 })
+          }
+          .layoutWeight(1)
+          .width('100%')
+          .justifyContent(FlexAlign.Center)
+        }
+        .width('100%')
+        .height('100%')
+        .backgroundColor('#FF11161C')
+        .onTouch((event: TouchEvent): void => {
+          this.reportTouch(event);
+        })
+        .gesture(
+          PanGesture()
+            .onActionStart((): void => {
+              this.beginDrag();
+            })
+            .onActionUpdate((event: GestureEvent): void => {
+              this.updateDrag(event.offsetX, event.offsetY);
+            })
+        )
       }
-      .layoutWeight(1)
-      .width('100%')
-      .justifyContent(FlexAlign.Center)
     }
     .width('100%')
     .height('100%')
     .backgroundColor('#FF11161C')
-    .onTouch((event: TouchEvent): void => {
-      this.reportTouch(event);
-    })
-    .gesture(
-      PanGesture()
-        .onActionStart((): void => {
-          this.beginDrag();
-        })
-        .onActionUpdate((event: GestureEvent): void => {
-          this.updateDrag(event.offsetX, event.offsetY);
-        })
-    )
   }
 }
