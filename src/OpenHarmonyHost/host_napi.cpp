@@ -39,6 +39,7 @@ napi_value AccessibilityNodeCount(napi_env env, napi_callback_info info);
 #include <vector>
 
 #include "openharmony_host.h"
+#include "host_window_bridge.h"
 #include "host_window_registry.h"
 
 #define OHOS_HOST_DOMAIN 0x0002
@@ -974,9 +975,12 @@ static napi_value HostNapiEntry(napi_env env, napi_callback_info info) {
 // (host_window_registry.c) and routes each callback to the component's record. The first claim
 // is the primary window (id "main"): it keeps the historical single-surface path
 // (ohos_host_set_native_window/g_surface_* and exactly the same managed bridge callback), so a
-// single-XComponent shell behaves as before. A secondary window only records its surface state
-// in M1 (the per-window managed renderer attaches in M2); its input/frame events are counted
-// instead of entering the single-window bridge, which must never see another window's events.
+// single-XComponent shell behaves as before. Every window (the primary under "main" included)
+// also enters the window-id tagged channel (host_window_bridge.c, MULTIWINDOW-L M2): the
+// managed hosting assembly turns those events into its per-window WindowSurfaceChanged/
+// WindowTouch/WindowFrame stream, and the untagged primary path above stays authoritative for
+// a single-XComponent shell. A secondary window's input/frame events never enter the
+// single-window bridge, which must never see another window's events.
 
 // Routes one surface lifecycle callback to the window registered for the component.
 void HostRouteSurface(OH_NativeXComponent* component, void* window, int width, int height, int state) {
@@ -989,6 +993,11 @@ void HostRouteSurface(OH_NativeXComponent* component, void* window, int width, i
         OH_LOG_WARN(LOG_APP, "[openharmony-host] surface event for an unregistered xcomponent dropped");
         return;
     }
+    // M2-ow: every window reports through the id-tagged bridge (the primary additionally keeps
+    // its untagged legacy call below, so a single-XComponent shell's callback sequence is
+    // unchanged).
+    ohos_host_set_window_native_window(record.id, window, width, height,
+                                       static_cast<ohos_surface_state>(state));
     if (record.primary) {
         ohos_host_set_native_window(window, width, height, static_cast<ohos_surface_state>(state));
     }
@@ -1065,17 +1074,10 @@ void OnTouch(OH_NativeXComponent* component, void* window) {
         OH_LOG_WARN(LOG_APP, "[openharmony-host] touch event for an unregistered xcomponent dropped");
         return;
     }
-    if (!route.primary) {
-        // A secondary window's input stays on its own window: M1 counts it, M3 routes it into
-        // that window's managed input path. It must never enter the single-window bridge.
-        ohos_host_window_note_touch(route.id);
-        return;
-    }
     OH_NativeXComponent_TouchEvent event = {};
     if (OH_NativeXComponent_GetTouchEvent(component, window, &event) != 0) {
         return;
     }
-    MaybeReportPinch(event);
     // Report every active point with its element-relative (surface) coordinates, so the
     // managed side can associate a multi-finger stream by pointer id (the old point-0-only
     // report pinned every finger's position to the first one).
@@ -1120,6 +1122,16 @@ void OnTouch(OH_NativeXComponent* component, void* window) {
         x = points[0].x;
         y = points[0].y;
     }
+    if (!route.primary) {
+        // MULTIWINDOW-L M2: the secondary window's input enters the id-tagged channel; the M1
+        // counter stays as the device probe's evidence. It must never enter the single-window
+        // bridge.
+        ohos_host_window_note_touch(route.id);
+        ohos_host_notify_window_touch(route.id, static_cast<int>(event.type), points, count,
+                                      static_cast<int>(event.id), x, y);
+        return;
+    }
+    MaybeReportPinch(event);
     ohos_host_notify_touch_points(static_cast<int>(event.type), points, count,
                                   static_cast<int>(event.id), x, y);
 }
@@ -1128,10 +1140,6 @@ void OnMouse(OH_NativeXComponent* component, void* window) {
     ohos_host_window_record route;
     if (ohos_host_window_lookup_component(component, &route) != OHOS_HOST_WINDOW_OK) {
         OH_LOG_WARN(LOG_APP, "[openharmony-host] mouse event for an unregistered xcomponent dropped");
-        return;
-    }
-    if (!route.primary) {
-        ohos_host_window_note_touch(route.id);
         return;
     }
     OH_NativeXComponent_MouseEvent event = {};
@@ -1144,6 +1152,13 @@ void OnMouse(OH_NativeXComponent* component, void* window) {
     } else if (event.action == OH_NATIVEXCOMPONENT_MOUSE_RELEASE) {
         type = 1;
     }
+    if (!route.primary) {
+        // MULTIWINDOW-L M2: the secondary window's mouse input enters the id-tagged channel
+        // (one-point payload; the pointless touch form carries the coordinates).
+        ohos_host_window_note_touch(route.id);
+        ohos_host_notify_window_touch(route.id, type, NULL, 0, 0, event.x, event.y);
+        return;
+    }
     ohos_host_notify_touch(type, event.x, event.y, 1, 0);
 }
 
@@ -1154,7 +1169,11 @@ void OnFrame(OH_NativeXComponent* component, uint64_t timestamp, uint64_t target
         return;
     }
     if (!route.primary) {
+        // MULTIWINDOW-L M2: the secondary window's frame tick enters the id-tagged channel;
+        // the M1 counter stays as the device probe's evidence.
         ohos_host_window_note_frame(route.id);
+        ohos_host_notify_window_frame(route.id, static_cast<int64_t>(timestamp),
+                                      static_cast<int64_t>(targetTimestamp));
         return;
     }
     ohos_host_notify_frame(static_cast<int64_t>(timestamp), static_cast<int64_t>(targetTimestamp));

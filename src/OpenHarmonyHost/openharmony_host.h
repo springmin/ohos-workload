@@ -85,6 +85,17 @@ void ohos_host_register_bridge(void* lifecycle, void* node, void* surface);
 /// frame: void (*)(int64_t timestamp, int64_t targetTimestamp). Both may be NULL.
 void ohos_host_register_input(void* touch, void* frame);
 
+/// Per-window bridge callbacks (MULTIWINDOW-L M2, M2-ow; registered by the managed bridge in
+/// addition to the untagged slots above). Every callback takes the M1 host registry's window
+/// id ("main" for the primary XComponent) as its first argument:
+///   surface: void (*)(const char* id, void* window, int width, int height, int state)
+///   touch:   void (*)(const char* id, int type, const OhosTouchPoint* points, int count,
+///                     int pointerId, float x, float y)
+///   frame:   void (*)(const char* id, int64_t timestamp, int64_t targetTimestamp)
+/// Any of them may be NULL; a later call replaces the earlier set. The definitions live in
+/// host_window_bridge.c (pure C, unit-tested by scripts/selftest-host-window-bridge.sh).
+void ohos_host_register_window_bridge(void* surface, void* touch, void* frame);
+
 /// Registers the managed text-input callback (optional; apps without text input skip it).
 void ohos_host_register_text_input(void* callback);
 
