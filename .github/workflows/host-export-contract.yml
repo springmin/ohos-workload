@@ -22,7 +22,7 @@ on:
         description: 'maui-ohos commit SHA to cross-check (defaults to the pinned slice tip)'
         required: false
         type: string
-        default: '1a15f56b308c4e45889fe425ed384ed7697ee11a'
+        default: 'd4ff7d445e28dd2aa275491255b3488e8ad343c2'
   push:
     branches: [ master ]
   pull_request:
@@ -32,7 +32,11 @@ permissions:
 
 # Reproducible cross-repo check: the slice is checked out at an exact commit, not the mutable
 # feature/openharmony branch, so a push to the fork cannot change what this gate verifies.
-# Current tip: 1a15f56b30 (MULTIWINDOW-L M2: the slice's app host is windowed - per-window
+# Current tip: d4ff7d445e (MULTIWINDOW-L M3: the slice's app host consumes the window-id tagged
+# channel itself (ignoring main), OpenWindow defers to the shell subwindow surface and binds it,
+# and the per-window draw target calls this repository's new hosting exports
+# ohos_host_draw_begin_window / ohos_host_draw_present_window, so the export set moves to
+# 156/156) on 1a15f56b30 (MULTIWINDOW-L M2: the slice's app host is windowed - per-window
 # surface/renderer state, window-id routing entries RouteSurface/RouteTouch/RouteFrame and the
 # OpenWindow OpenedWindow/CurrentWindowKept split; the slice is managed-only and adds no
 # DllImport, while this repository's hosting assembly registers the per-window bridge, so the
@@ -112,7 +116,7 @@ permissions:
 # 151/151).
 # Advance the pin deliberately, in lockstep with the interaction/pixel gates.
 env:
-  MAUI_OHOS_REF: ${{ github.event.inputs.maui_ohos_ref || '1a15f56b308c4e45889fe425ed384ed7697ee11a' }}
+  MAUI_OHOS_REF: ${{ github.event.inputs.maui_ohos_ref || 'd4ff7d445e28dd2aa275491255b3488e8ad343c2' }}
 
 jobs:
   contract:
