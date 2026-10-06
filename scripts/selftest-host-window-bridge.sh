@@ -154,22 +154,30 @@ if grep -q '^ohos_host_register_window_bridge$' "$HOST/host-exports.txt"; then
 else
     fail_ "T4 host-exports.txt misses ohos_host_register_window_bridge"
 fi
-if grep -q 'ohos_host_register_window_bridge' "$HOST/openharmony_host.h"; then
-    pass_ "T4 openharmony_host.h declares the register export (C linkage)"
+if grep -q '^ohos_host_register_window_pinch$' "$HOST/host-exports.txt"; then
+    pass_ "T4 host-exports.txt lists the per-window pinch register export (M4-04)"
 else
-    fail_ "T4 openharmony_host.h misses the register export declaration"
+    fail_ "T4 host-exports.txt misses ohos_host_register_window_pinch"
 fi
-if grep -q 'ohos_host_register_window_bridge' "$W/src/Microsoft.OpenHarmony.Hosting/OpenHarmonyApp.cs"; then
-    pass_ "T4 the hosting assembly imports the register export"
+if grep -q 'ohos_host_register_window_bridge' "$HOST/openharmony_host.h" &&
+    grep -q 'ohos_host_register_window_pinch' "$HOST/openharmony_host.h"; then
+    pass_ "T4 openharmony_host.h declares the register exports (C linkage)"
 else
-    fail_ "T4 the hosting assembly does not import the register export"
+    fail_ "T4 openharmony_host.h misses a register export declaration"
+fi
+if grep -q 'ohos_host_register_window_bridge' "$W/src/Microsoft.OpenHarmony.Hosting/OpenHarmonyApp.cs" &&
+    grep -q 'ohos_host_register_window_pinch' "$W/src/Microsoft.OpenHarmony.Hosting/OpenHarmonyApp.cs"; then
+    pass_ "T4 the hosting assembly imports the register exports"
+else
+    fail_ "T4 the hosting assembly does not import a register export"
 fi
 if grep -q 'ohos_host_set_window_native_window' "$HOST/host_napi.cpp" &&
     grep -q 'ohos_host_notify_window_touch' "$HOST/host_napi.cpp" &&
-    grep -q 'ohos_host_notify_window_frame' "$HOST/host_napi.cpp"; then
+    grep -q 'ohos_host_notify_window_frame' "$HOST/host_napi.cpp" &&
+    grep -q 'ohos_host_notify_window_pinch' "$HOST/host_napi.cpp"; then
     pass_ "T4 host_napi.cpp routes every per-window event through the tagged bridge"
 else
-    fail_ "T4 host_napi.cpp does not route all three per-window events"
+    fail_ "T4 host_napi.cpp does not route all four per-window events"
 fi
 
 printf '\nselftest-host-window-bridge: checks: %d, failed: %d\n' "$CHECKS" "$FAILED"

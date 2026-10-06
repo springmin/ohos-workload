@@ -241,9 +241,24 @@ public sealed class App : Application
             entryStatus.Text = $"child entry: {entry.Text}";
             OpenHarmonyBridge.WriteStatus($"[hello-maui-app] child entry text '{entry.Text}'");
         };
+        // MULTIWINDOW-L M4-04 device probe: per-window pinch. The gesture can only fire through
+        // the child window's own routed pinch stream (the shell computes it from the child
+        // XComponent's two-finger touches, tagged with the child surface id).
+        var pinchStatus = new Label { Text = "child pinch: -", FontSize = 22, HorizontalOptions = LayoutOptions.Center };
+        var pinchGesture = new PinchGestureRecognizer();
+        pinchGesture.PinchUpdated += (_, e) =>
+        {
+            pinchStatus.Text = $"child pinch: {e.Status} {e.Scale:0.00}";
+            OpenHarmonyBridge.WriteStatus($"[hello-maui-app] child pinch {e.Status} scale={e.Scale:0.00}");
+        };
+        var pinchLabel = new Label { Text = "pinch the child", FontSize = 26, HorizontalOptions = LayoutOptions.Center };
+        pinchLabel.GestureRecognizers.Add(pinchGesture);
+        // MULTIWINDOW-L M4-01: a continuously running indicator keeps this window rendering every
+        // vsync during the dual-window frame-rate round (the primary page has its own spinner).
+        var childSpinner = new ActivityIndicator { IsRunning = true, HeightRequest = 24 };
         return new ContentPage
         {
-            Content = new VerticalStackLayout { Padding = 32, Spacing = 24, Children = { title, counter, entryStatus, entry, button } },
+            Content = new VerticalStackLayout { Padding = 32, Spacing = 24, Children = { title, counter, entryStatus, entry, pinchStatus, pinchLabel, childSpinner, button } },
         };
     }
 
@@ -645,6 +660,12 @@ public sealed class App : Application
             Microsoft.Maui.ApplicationModel.MainThread.BeginInvokeOnMainThread(() =>
                 subWindowStatus.Text = $"subwindow touch: action={e.Action} ({e.X:0},{e.Y:0}) pointers={e.PointerCount}");
         };
+        // MULTIWINDOW-L M4-04: the per-window pinch stream. A report tagged with a window id is
+        // the device evidence that each window's gesture routing is independent.
+        OpenHarmonyBridge.WindowPinch += (id, phase, scale, x, y) =>
+            OpenHarmonyBridge.WriteStatus($"[hello-maui-app] per-window pinch window={id} phase={phase} scale={scale:0.00} at {x:0},{y:0}");
+        // MULTIWINDOW-L M4-01/M4-06: per-window frame pacing evidence (framestats lines).
+        WindowFrameStats.Install();
         var subWindowRow = new HorizontalStackLayout { Spacing = 8 };
         subWindowRow.Add(subWindowOpen);
         subWindowRow.Add(subWindowMove);

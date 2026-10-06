@@ -205,6 +205,11 @@ public static partial class OpenHarmonyBridge
     [LibraryImport(HostLibrary, EntryPoint = "ohos_host_register_window_bridge")]
     private static partial void RegisterWindowBridgeNative(IntPtr surface, IntPtr touch, IntPtr frame);
 
+    // MULTIWINDOW-L M4-04: the per-window pinch channel registers separately, so the M2
+    // register's arity stays frozen for an older managed assembly.
+    [LibraryImport(HostLibrary, EntryPoint = "ohos_host_register_window_pinch")]
+    private static partial void RegisterWindowPinchNative(IntPtr pinch);
+
     [LibraryImport(HostLibrary, EntryPoint = "ohos_host_register_input")]
     private static partial void RegisterInputNative(IntPtr touch, IntPtr frame);
 
@@ -330,6 +335,9 @@ public static partial class OpenHarmonyBridge
     private delegate void NativeWindowTouchDelegate(IntPtr windowIdUtf8, int type, IntPtr points, int count, int pointerId, float x, float y);
     [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
     private delegate void NativeWindowFrameDelegate(IntPtr windowIdUtf8, long timestamp, long targetTimestamp);
+    // M4-04: the per-window pinch payload (id first, then phase/scale/centre like Pinch).
+    [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+    private delegate void NativeWindowPinchDelegate(IntPtr windowIdUtf8, int phase, double scale, float x, float y);
 
     private static readonly object s_sync = new();
     private static OpenHarmonyAppContext? s_context;
@@ -353,6 +361,7 @@ public static partial class OpenHarmonyBridge
     private static unsafe IntPtr s_windowSurfaceThunk = (IntPtr)(delegate* unmanaged[Cdecl]<IntPtr, IntPtr, int, int, int, void>)&OnWindowSurfaceNative;
     private static unsafe IntPtr s_windowTouchThunk = (IntPtr)(delegate* unmanaged[Cdecl]<IntPtr, int, OpenHarmonyNativeTouchPoint*, int, int, float, float, void>)&OnWindowTouchNative;
     private static unsafe IntPtr s_windowFrameThunk = (IntPtr)(delegate* unmanaged[Cdecl]<IntPtr, long, long, void>)&OnWindowFrameNative;
+    private static unsafe IntPtr s_windowPinchThunk = (IntPtr)(delegate* unmanaged[Cdecl]<IntPtr, int, double, float, float, void>)&OnWindowPinchNative;
     private static readonly List<OpenHarmonyLifecycleEvent> s_pending = new();
     // Activations that arrived before any subscriber: replayed in order by the Activation
     // add accessor. The host can deliver the cold-start want while the application assembly
@@ -377,6 +386,7 @@ public static partial class OpenHarmonyBridge
     private static Action<string, OpenHarmonySurfaceInfo>? s_windowSurfaceHandlers;
     private static Action<string, OpenHarmonyTouchEventArgs>? s_windowTouchHandlers;
     private static Action<string, OpenHarmonyFrameEventArgs>? s_windowFrameHandlers;
+    private static Action<string, int, double, float, float>? s_windowPinchHandlers;
     private static Action<OpenHarmonyAppContext>? s_initializedHandlers;
     private static Action<OpenHarmonyLifecycleEvent>? s_lifecycleHandlers;
     private static Action<OpenHarmonyActivationEventArgs>? s_activationHandlers;
@@ -933,6 +943,53 @@ public static partial class OpenHarmonyBridge
         remove { lock (s_sync) { s_windowFrameHandlers -= value; } }
     }
 
+    /// <summary>
+    /// Raised for every per-window pinch (MULTIWINDOW-L M4-04) with the window id first; the
+    /// payload matches <see cref="Pinch"/>. Transient: no replay for late subscribers. The
+    /// first subscriber registers the native entry (idempotent; off-device the registration is
+    /// a logged no-op).
+    /// </summary>
+    public static event Action<string, int, double, float, float>? WindowPinch
+    {
+        add
+        {
+            RegisterWindowPinchListener();
+            lock (s_sync)
+            {
+                s_windowPinchHandlers += value;
+            }
+        }
+        remove
+        {
+            lock (s_sync)
+            {
+                s_windowPinchHandlers -= value;
+            }
+        }
+    }
+
+    private static bool _windowPinchRegistered;
+    private static unsafe IntPtr _windowPinchCallback =
+        (IntPtr)(delegate* unmanaged[Cdecl]<IntPtr, int, double, float, float, void>)&OnWindowPinchNative;
+
+    /// <summary>Registers the per-window pinch listener with the host (idempotent, device only).</summary>
+    public static void RegisterWindowPinchListener()
+    {
+        if (_windowPinchRegistered)
+        {
+            return;
+        }
+        _windowPinchRegistered = true;
+        try
+        {
+            RegisterWindowPinchNative(_windowPinchCallback);
+        }
+        catch (Exception)
+        {
+            // Not running on a device: per-window pinch reports never arrive.
+        }
+    }
+
     public static event Action<OpenHarmonyLifecycleEvent>? LifecycleChanged
     {
         add
@@ -1235,6 +1292,16 @@ public static partial class OpenHarmonyBridge
                     s_windowSurfaceThunk,
                     s_windowTouchThunk,
                     s_windowFrameThunk);
+                // MULTIWINDOW-L M4-04: the per-window pinch channel; separate registration so
+                // an older host library without the export keeps the M2 channels above.
+                try
+                {
+                    RegisterWindowPinchNative(s_windowPinchThunk);
+                }
+                catch (Exception ex)
+                {
+                    WriteStatus($"window pinch registration skipped: {ex.GetType().Name}");
+                }
             }
             catch (Exception ex)
             {
@@ -1872,6 +1939,29 @@ public static partial class OpenHarmonyBridge
         catch (Exception ex)
         {
             ReportCallbackFailure("window frame", ex);
+        }
+    }
+
+    [UnmanagedCallersOnly(CallConvs = new[] { typeof(CallConvCdecl) })]
+    private static void OnWindowPinchNative(IntPtr windowIdUtf8, int phase, double scale, float x, float y)
+    {
+        try
+        {
+            string windowId = windowIdUtf8 == IntPtr.Zero ? string.Empty : Marshal.PtrToStringUTF8(windowIdUtf8) ?? string.Empty;
+            if (windowId.Length == 0)
+            {
+                return;
+            }
+            Action<string, int, double, float, float>? handlers;
+            lock (s_sync)
+            {
+                handlers = s_windowPinchHandlers;
+            }
+            handlers?.Invoke(windowId, phase, scale, x, y);
+        }
+        catch (Exception ex)
+        {
+            ReportCallbackFailure("window pinch", ex);
         }
     }
 

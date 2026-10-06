@@ -96,6 +96,13 @@ void ohos_host_register_input(void* touch, void* frame);
 /// host_window_bridge.c (pure C, unit-tested by scripts/selftest-host-window-bridge.sh).
 void ohos_host_register_window_bridge(void* surface, void* touch, void* frame);
 
+/// MULTIWINDOW-L M4-04: registers the per-window pinch callback (optional; separate from the
+/// M2 register so its arity stays frozen). The callback is
+/// void (*)(const char* id, int phase, double scale, float x, float y): host_napi.cpp computes
+/// the phase/scale/centre from each window's own touch stream. May be NULL; a later call
+/// replaces the earlier one. Defined in host_window_bridge.c.
+void ohos_host_register_window_pinch(void* callback);
+
 /// Registers the managed text-input callback (optional; apps without text input skip it).
 void ohos_host_register_text_input(void* callback);
 

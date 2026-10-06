@@ -14,6 +14,7 @@ typedef void (*ohos_host_window_frame_fn)(const char*, int64_t, int64_t);
 static ohos_host_window_surface_fn g_window_surface = NULL;
 static ohos_host_window_touch_fn g_window_touch = NULL;
 static ohos_host_window_frame_fn g_window_frame = NULL;
+static ohos_host_window_pinch_fn g_window_pinch = NULL;
 static pthread_mutex_t g_window_bridge_lock = PTHREAD_MUTEX_INITIALIZER;
 
 void ohos_host_register_window_bridge(void* surface, void* touch, void* frame) {
@@ -24,11 +25,18 @@ void ohos_host_register_window_bridge(void* surface, void* touch, void* frame) {
     pthread_mutex_unlock(&g_window_bridge_lock);
 }
 
+void ohos_host_register_window_pinch(void* pinch) {
+    pthread_mutex_lock(&g_window_bridge_lock);
+    g_window_pinch = (ohos_host_window_pinch_fn)pinch;
+    pthread_mutex_unlock(&g_window_bridge_lock);
+}
+
 void ohos_host_window_bridge_reset(void) {
     pthread_mutex_lock(&g_window_bridge_lock);
     g_window_surface = NULL;
     g_window_touch = NULL;
     g_window_frame = NULL;
+    g_window_pinch = NULL;
     pthread_mutex_unlock(&g_window_bridge_lock);
 }
 
@@ -77,5 +85,18 @@ void ohos_host_notify_window_frame(const char* id, int64_t timestamp, int64_t ta
     pthread_mutex_unlock(&g_window_bridge_lock);
     if (callback != NULL) {
         callback(id, timestamp, targetTimestamp);
+    }
+}
+
+void ohos_host_notify_window_pinch(const char* id, int phase, double scale, float x, float y) {
+    if (!WindowIdValid(id)) {
+        return;
+    }
+    ohos_host_window_pinch_fn callback;
+    pthread_mutex_lock(&g_window_bridge_lock);
+    callback = g_window_pinch;
+    pthread_mutex_unlock(&g_window_bridge_lock);
+    if (callback != NULL) {
+        callback(id, phase, scale, x, y);
     }
 }

@@ -1040,8 +1040,12 @@ static double g_pinch_start_distance = 0.0;
 
 // Two-finger pinch straight from the XComponent touch event (the event carries every point).
 // The points' element-relative coordinates (see OnTouch) feed the centre, so the managed
-// pinch hit-test sees the same surface space as every other input path.
-static void MaybeReportPinch(const OH_NativeXComponent_TouchEvent& event) {
+// pinch hit-test sees the same surface space as every other input path. The shared core drives
+// the legacy primary stream and, in M4-04, every registered window's own stream (each window
+// keeps its own active/start-distance pair, so two simultaneous pinches never share state).
+template <typename Report>
+static void ComputePinch(const OH_NativeXComponent_TouchEvent& event, bool* active,
+                         double* startDistance, Report report) {
     if (event.numPoints >= 2) {
         float x0 = event.touchPoints[0].x;
         float y0 = event.touchPoints[0].y;
@@ -1053,19 +1057,83 @@ static void MaybeReportPinch(const OH_NativeXComponent_TouchEvent& event) {
         double distance = squared > 0.0 ? __builtin_sqrt(squared) : 1.0;
         float centerX = static_cast<float>((static_cast<double>(x0) + static_cast<double>(x1)) / 2.0);
         float centerY = static_cast<float>((static_cast<double>(y0) + static_cast<double>(y1)) / 2.0);
-        if (!g_pinch_active) {
-            g_pinch_active = true;
-            g_pinch_start_distance = distance;
-            OhosNotifyPinch(0, 1.0, centerX, centerY);
+        if (!*active) {
+            *active = true;
+            *startDistance = distance;
+            report(0, 1.0, centerX, centerY);
         } else {
-            double scale = g_pinch_start_distance > 0.0 ? distance / g_pinch_start_distance : 1.0;
-            OhosNotifyPinch(1, scale, centerX, centerY);
+            double scale = *startDistance > 0.0 ? distance / *startDistance : 1.0;
+            report(1, scale, centerX, centerY);
         }
-    } else if (g_pinch_active) {
-        g_pinch_active = false;
-        g_pinch_start_distance = 0.0;
-        OhosNotifyPinch(2, 1.0, 0.0f, 0.0f);
+    } else if (*active) {
+        *active = false;
+        *startDistance = 0.0;
+        report(2, 1.0, 0.0f, 0.0f);
     }
+}
+
+static void MaybeReportPinch(const OH_NativeXComponent_TouchEvent& event) {
+    ComputePinch(event, &g_pinch_active, &g_pinch_start_distance,
+                 [](int phase, double scale, float x, float y) {
+                     OhosNotifyPinch(phase, scale, x, y);
+                 });
+}
+
+// MULTIWINDOW-L M4-04: one pinch stream per registered window (the primary keeps the legacy
+// global pair above; a secondary window's stream lives here and reaches the managed per-window
+// renderer through host_window_bridge.c). The table is bounded by the shell's window count; a
+// window id is released with its XComponent, so re-opening a window starts a fresh gesture.
+static const int kHostPinchWindowMax = 8;
+
+struct HostPinchWindowState {
+    std::string id;
+    bool active = false;
+    double startDistance = 0.0;
+};
+
+static HostPinchWindowState g_pinch_windows[kHostPinchWindowMax];
+
+static HostPinchWindowState* PinchStateFor(const char* id) {
+    if (id == nullptr || id[0] == '\0') {
+        return nullptr;
+    }
+    for (int i = 0; i < kHostPinchWindowMax; i++) {
+        if (g_pinch_windows[i].id == id) {
+            return &g_pinch_windows[i];
+        }
+    }
+    for (int i = 0; i < kHostPinchWindowMax; i++) {
+        if (g_pinch_windows[i].id.empty()) {
+            g_pinch_windows[i].id = id;
+            g_pinch_windows[i].active = false;
+            g_pinch_windows[i].startDistance = 0.0;
+            return &g_pinch_windows[i];
+        }
+    }
+    return nullptr;  // table full: drop rather than mixing two windows' gesture state
+}
+
+static void HostPinchStateRelease(const char* id) {
+    if (id == nullptr) {
+        return;
+    }
+    for (int i = 0; i < kHostPinchWindowMax; i++) {
+        if (g_pinch_windows[i].id == id) {
+            g_pinch_windows[i] = HostPinchWindowState{};
+            return;
+        }
+    }
+}
+
+static void MaybeReportWindowPinch(const char* id, const OH_NativeXComponent_TouchEvent& event) {
+    HostPinchWindowState* state = PinchStateFor(id);
+    if (state == nullptr) {
+        return;
+    }
+    ComputePinch(event, &state->active, &state->startDistance,
+                 [id](int phase, double scale, float x, float y) {
+                     ohos_host_notify_window_pinch(id, phase, scale, x, y);
+                 });
 }
 
 void OnTouch(OH_NativeXComponent* component, void* window) {
@@ -1125,10 +1193,12 @@ void OnTouch(OH_NativeXComponent* component, void* window) {
     if (!route.primary) {
         // MULTIWINDOW-L M2: the secondary window's input enters the id-tagged channel; the M1
         // counter stays as the device probe's evidence. It must never enter the single-window
-        // bridge.
+        // bridge. M4-04: its pinch stream is computed from this same event and reported under
+        // the window id (the primary's legacy pinch above is unchanged).
         ohos_host_window_note_touch(route.id);
         ohos_host_notify_window_touch(route.id, static_cast<int>(event.type), points, count,
                                       static_cast<int>(event.id), x, y);
+        MaybeReportWindowPinch(route.id, event);
         return;
     }
     MaybeReportPinch(event);
@@ -4259,6 +4329,9 @@ napi_value UnregisterXComponent(napi_env env, napi_callback_info info) {
             }
             if (ohos_host_window_unregister(claim.id.c_str()) == OHOS_HOST_WINDOW_OK) {
                 released = 1;
+                // M4-04: drop the window's pinch gesture state with its XComponent, so a
+                // re-opened window id starts with a fresh (inactive) gesture.
+                HostPinchStateRelease(claim.id.c_str());
             }
             if (claim.component == binding->xcomponent) {
                 binding->xcomponent = nullptr;

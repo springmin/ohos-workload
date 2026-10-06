@@ -39,6 +39,16 @@ void ohos_host_notify_window_touch(const char* id, int type, const OhosTouchPoin
                                    int count, int pointerId, float x, float y);
 void ohos_host_notify_window_frame(const char* id, int64_t timestamp, int64_t targetTimestamp);
 
+// MULTIWINDOW-L M4-04: per-window pinch. host_napi.cpp computes phase/scale/centre per window
+// from that window's own two-finger touch stream (each window keeps its own gesture state) and
+// forwards them here; the managed hosting assembly routes the event to the window's renderer.
+// A separate registration entry keeps the M2 arity of ohos_host_register_window_bridge frozen
+// (an older managed assembly and this module can coexist).
+typedef void (*ohos_host_window_pinch_fn)(const char* id, int phase, double scale, float x,
+                                          float y);
+void ohos_host_register_window_pinch(void* pinch);
+void ohos_host_notify_window_pinch(const char* id, int phase, double scale, float x, float y);
+
 // Drops every callback (unit tests only; the runtime never clears the bridge).
 void ohos_host_window_bridge_reset(void);
 

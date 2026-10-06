@@ -6,6 +6,7 @@
 // Required M2 cases: the window id and payload arrive unchanged on all three channels, an
 // empty/NULL id is dropped, re-registration replaces a callback, NULL disables one channel,
 // a no-op before registration, and a callback may re-register from inside the callback.
+// M4-04 adds the pinch channel (phase/scale/centre, own id, NULL disables it).
 #include <stdio.h>
 #include <string.h>
 
@@ -82,6 +83,23 @@ static void OnFrame(const char* id, int64_t timestamp, int64_t targetTimestamp) 
     g_frame_target = targetTimestamp;
 }
 
+// MULTIWINDOW-L M4-04: the per-window pinch channel (phase 0 start, 1 update, 2 end).
+static int g_pinch_calls = 0;
+static char g_pinch_id[64];
+static int g_pinch_phase = -1;
+static double g_pinch_scale = 0.0;
+static float g_pinch_x = 0.0f;
+static float g_pinch_y = 0.0f;
+
+static void OnPinch(const char* id, int phase, double scale, float x, float y) {
+    g_pinch_calls++;
+    snprintf(g_pinch_id, sizeof(g_pinch_id), "%s", id);
+    g_pinch_phase = phase;
+    g_pinch_scale = scale;
+    g_pinch_x = x;
+    g_pinch_y = y;
+}
+
 static void ResetRecorders(void) {
     g_surface_calls = 0;
     g_surface_id[0] = '\0';
@@ -101,6 +119,12 @@ static void ResetRecorders(void) {
     g_frame_id[0] = '\0';
     g_frame_timestamp = -1;
     g_frame_target = -1;
+    g_pinch_calls = 0;
+    g_pinch_id[0] = '\0';
+    g_pinch_phase = -1;
+    g_pinch_scale = 0.0;
+    g_pinch_x = 0.0f;
+    g_pinch_y = 0.0f;
 }
 
 int main(void) {
@@ -109,11 +133,13 @@ int main(void) {
     ohos_host_set_window_native_window("sub-1", (void*)0x1000, 640, 480, OHOS_SURFACE_CREATED);
     ohos_host_notify_window_touch("sub-1", 0, NULL, 0, 1, 12.5f, 24.5f);
     ohos_host_notify_window_frame("sub-1", 100, 116);
-    Check(g_surface_calls == 0 && g_touch_calls == 0 && g_frame_calls == 0,
+    ohos_host_notify_window_pinch("sub-1", 0, 1.0, 12.5f, 24.5f);
+    Check(g_surface_calls == 0 && g_touch_calls == 0 && g_frame_calls == 0 && g_pinch_calls == 0,
           "events before registration are dropped without invoking a callback");
 
     // --- registration forwards every payload unchanged ---------------------------------
     ohos_host_register_window_bridge((void*)OnSurface, (void*)OnTouch, (void*)OnFrame);
+    ohos_host_register_window_pinch((void*)OnPinch);
     ResetRecorders();
     ohos_host_set_window_native_window("sub-1", (void*)0x2000, 640, 480, OHOS_SURFACE_CREATED);
     Check(g_surface_calls == 1 && strcmp(g_surface_id, "sub-1") == 0 &&
@@ -150,6 +176,15 @@ int main(void) {
               g_frame_timestamp == 111 && g_frame_target == 116,
           "frame event carries id, timestamp and target timestamp");
 
+    // M4-04: the pinch channel mirrors the frame channel (id first, payload unchanged).
+    ohos_host_notify_window_pinch("sub-1", 1, 1.75, 30.5f, 40.5f);
+    Check(g_pinch_calls == 1 && strcmp(g_pinch_id, "sub-1") == 0 && g_pinch_phase == 1 &&
+              g_pinch_scale == 1.75 && g_pinch_x == 30.5f && g_pinch_y == 40.5f,
+          "pinch event carries id, phase, scale and centre");
+    ohos_host_notify_window_pinch("sub-2", 2, 1.0, 0.0f, 0.0f);
+    Check(g_pinch_calls == 2 && strcmp(g_pinch_id, "sub-2") == 0 && g_pinch_phase == 2,
+          "a second window routes its own pinch stream");
+
     // --- invalid ids are dropped --------------------------------------------------------
     ResetRecorders();
     ohos_host_set_window_native_window(NULL, (void*)0x4000, 10, 10, OHOS_SURFACE_CREATED);
@@ -158,16 +193,21 @@ int main(void) {
     ohos_host_notify_window_touch("", 0, NULL, 0, 0, 0.0f, 0.0f);
     ohos_host_notify_window_frame(NULL, 1, 2);
     ohos_host_notify_window_frame("", 1, 2);
-    Check(g_surface_calls == 0 && g_touch_calls == 0 && g_frame_calls == 0,
+    ohos_host_notify_window_pinch(NULL, 1, 1.0, 0.0f, 0.0f);
+    ohos_host_notify_window_pinch("", 1, 1.0, 0.0f, 0.0f);
+    Check(g_surface_calls == 0 && g_touch_calls == 0 && g_frame_calls == 0 && g_pinch_calls == 0,
           "NULL/empty window ids are dropped on every channel");
 
     // --- re-registration replaces the callback -----------------------------------------
     ResetRecorders();
     ohos_host_register_window_bridge((void*)OnSurface, NULL, NULL);
+    ohos_host_register_window_pinch(NULL);
     ohos_host_set_window_native_window("sub-3", (void*)0x5000, 1, 2, OHOS_SURFACE_CHANGED);
     ohos_host_notify_window_touch("sub-3", 0, NULL, 0, 0, 0.0f, 0.0f);
-    Check(g_surface_calls == 1 && strcmp(g_surface_id, "sub-3") == 0 && g_touch_calls == 0,
-          "re-registration replaces the surface channel and disables touch with NULL");
+    ohos_host_notify_window_pinch("sub-3", 1, 2.0, 1.0f, 1.0f);
+    Check(g_surface_calls == 1 && strcmp(g_surface_id, "sub-3") == 0 && g_touch_calls == 0 &&
+              g_pinch_calls == 0,
+          "re-registration replaces the surface channel and disables touch/pinch with NULL");
 
     ResetRecorders();
     ohos_host_register_window_bridge(NULL, NULL, (void*)OnFrame);
