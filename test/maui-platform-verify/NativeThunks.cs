@@ -20,6 +20,17 @@ internal static class NativeThunks
     [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
     public delegate void SurfaceCallback(IntPtr window, int width, int height, int mode);
 
+    // MULTIWINDOW-L M2 (M2-ow): the per-window dispatch thunks. The first argument is the M1
+    // host registry's window id as UTF-8; the payloads mirror the untagged callbacks above.
+    [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+    public delegate void WindowSurfaceCallback(IntPtr windowIdUtf8, IntPtr window, int width, int height, int mode);
+
+    [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+    public delegate void WindowTouchCallback(IntPtr windowIdUtf8, int type, IntPtr points, int count, int pointerId, float x, float y);
+
+    [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+    public delegate void WindowFrameCallback(IntPtr windowIdUtf8, long timestamp, long targetTimestamp);
+
     [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
     public delegate void VoidCallback();
 

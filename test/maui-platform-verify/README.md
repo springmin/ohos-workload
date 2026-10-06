@@ -1104,3 +1104,23 @@ parse.
   `OpenHarmonyToolbarItem` + `OpenHarmonyToolbarMirror` and the primary/overflow draw/hit-test
   paths to both bars. That is 6 lines; the suite total moves 566 -> 572 (floor 552), measured
   `checks=570 total=572 floor=552 assert=True` with the in-flight SAMPLE-FIX batch in the tree.
+
+- MULTIWINDOW-L M2 per-window renderer (2026-10-06): twenty-two lines pin the dual-window
+  headless contract of the windowed app host. A second `MauiApp` (its own app/host, so the
+  suite's primary window above is untouched) drives the primary window through the historical
+  path and a second window through the hosting bridge's window-id tagged channel: the tagged
+  thunks (`s_windowSurfaceThunk`/`s_windowTouchThunk`/`s_windowFrameThunk`, the exact
+  `[UnmanagedCallersOnly]` pointers the native host calls) raise
+  `OpenHarmonyBridge.WindowSurfaceChanged`/`WindowTouch`/`WindowFrame`, the harness forwards
+  each event by id into the slice's `RouteSurface`/`RouteTouch`/`RouteFrame` adapters, and every
+  window's renderer draws through its own `CanvasFactory` recording canvas. The checks cover:
+  the primary window's zero-change path, the single-surface `OpenWindow` degrade
+  (`CurrentWindowKept`, no extra window), a secondary surface recorded before its window and
+  bound at `OpenWindow` (`OpenedWindow`, independent 640x480), per-window frames and frame
+  isolation, an 800x600 secondary resize that leaves the 1080x1920 primary untouched, a tagged
+  touch landing only in the second window's button, closing the second window without touching
+  the primary, a closed window's surface/touch/frame events being dropped, rebuild with a fresh
+  id, the exact window id on every tagged event (an empty id is dropped) and the hosting
+  bridge's per-window surface map replaying the last report of every window to a late
+  subscriber. That is 22 lines; the suite total moves 609 -> 631 (floor 589 -> 611), measured
+  `checks=629 total=631 floor=611 assert=True`.
