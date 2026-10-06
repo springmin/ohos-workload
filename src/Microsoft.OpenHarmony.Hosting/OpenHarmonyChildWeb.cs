@@ -301,7 +301,10 @@ public static partial class OpenHarmonyChildWeb
 
     /// <summary>
     /// Parses a child page-event state. False (window unchanged) for every state that is not
-    /// tagged with <see cref="StatePrefix"/> - a primary or legacy event.
+    /// tagged with <see cref="StatePrefix"/> - a primary or legacy event - and for a tag that
+    /// names the primary window: "w:main|..." is not a child host event, and accepting it would
+    /// let a child-channel tag reach the primary pool's handlers (fail closed; the child page
+    /// tags every event with its own secondary window id).
     /// </summary>
     public static bool TryParseState(string? state, out string windowId, out string rest)
     {
@@ -316,9 +319,14 @@ public static partial class OpenHarmonyChildWeb
         {
             return false;
         }
-        windowId = state.Substring(StatePrefix.Length, separator - StatePrefix.Length);
+        string parsed = state.Substring(StatePrefix.Length, separator - StatePrefix.Length);
+        if (parsed.Length == 0 || string.Equals(parsed, PrimaryWindowId, StringComparison.Ordinal))
+        {
+            return false;
+        }
+        windowId = parsed;
         rest = state.Substring(separator + 1);
-        return windowId.Length > 0;
+        return true;
     }
 
     /// <summary>
