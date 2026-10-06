@@ -1,5 +1,5 @@
 // Shell content for the application subwindow: MULTIWINDOW-M drawn page + MULTIWINDOW-L M3
-// managed surface.
+// managed surface + MULTIWINDOW-L2 child ArkWeb host.
 //
 // Loaded with Window.loadContentByName('ohos_dotnet_subwindow', storage) by pages/Index.ets
 // after Window.createSubWindowWithOptions. Two modes:
@@ -20,6 +20,7 @@
 // interactive, drag disabled" instead of moving the wrong window.
 import { common } from '@kit.AbilityKit';
 import { window } from '@kit.ArkUI';
+import { webview as web_webview } from '@kit.ArkWeb';
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import host from 'libopenharmonyhost.so';
 
@@ -43,6 +44,33 @@ const SUB_WINDOW_NAME: string = 'ohos_dotnet_subwindow';
 // M4: the AppStorage key the main page writes a focus/keyboard request to (the child's own
 // LocalStorage is not propagated); the @StorageLink below watches it.
 const SUB_WINDOW_FOCUS_REQUEST_KEY: string = 'ohos_dotnet_subwindow_focus_request';
+
+// MULTIWINDOW-L2: the subwindow's own ArkWeb host (the second web host). The pool is small and
+// fully dynamic: a slot's ArkWeb is instantiated by the first tagged command that needs it and
+// destroyed when the managed pool releases the slot, so a subwindow without web content never
+// starts an ArkWeb engine (the AOT-STARTUP lesson from the main page). Commands arrive through
+// the native child sink (host.registerChildWebSink) and use the same "s<slot>" wire the main
+// page uses. Page events travel back through host.notifyWebEvent tagged with this window
+// ("w:<surfaceId>|s<slot>|<state>"; capacity is "w:<surfaceId>|capacity|<n>") so the primary
+// pool and this pool can never consume each other's events. The hybrid/Blazor asset bridges
+// stay primary-window-only in this wave: their registration explicitly disables the slot
+// instead of leaving a half-served document behind (see disableChildWebSlot).
+const SUB_WEB_SLOT_MAX: number = 2;
+const SUB_WEB_SLOT_PENDING_MAX: number = 32;
+const SUB_WEB_STATE_PREFIX: string = 'w:';
+
+// One deferred child-web command: replayed from onControllerAttached when the ArkWeb of its
+// slot was still being created (mirrors the main page's WebPendingOp, without the eval case:
+// a child eval is answered immediately when no page exists).
+interface SubWebPendingOp {
+  op: string;
+  arg: string;
+}
+
+// The hybrid/Blazor registration payload's slot field (the child host only reads the slot).
+interface SubWebAssetsConfig {
+  slot?: number;
+}
 
 // One typed-text report for the managed side.
 interface SubWindowTextPayload {
@@ -103,6 +131,25 @@ struct SubWindow {
   // The child's own hidden input (mirrors the main page's text-entry bridge): the managed
   // second window's Entry reads what is typed here and the IME follows this window.
   @State inputText: string = '';
+  // MULTIWINDOW-L2: the child ArkWeb host. `subWebSlots` is the declared-slot list (empty until
+  // the first claim, so no ArkWeb is instantiated before it is needed); every per-slot table is
+  // preallocated to SUB_WEB_SLOT_MAX so an index stays valid while a slot is created/destroyed.
+  @State subWebSlots: number[] = [];
+  @State subWebVisible: boolean[] = [false, false];
+  @State subWebZOrder: number[] = [0, 0];
+  @State subWebFrameX: number[] = [0, 0];
+  @State subWebFrameY: number[] = [0, 0];
+  @State subWebFrameW: number[] = [0, 0];
+  @State subWebFrameH: number[] = [0, 0];
+  private subWebZOrderSeq: number = 0;
+  private subWebCreated: boolean[] = [false, false];
+  private subWebAttached: boolean[] = [false, false];
+  // A slot whose hybrid/blazor registration was refused (the asset bridge is primary-only in
+  // this wave): no component is created and its commands are dropped with one bounded log.
+  private subWebUnsupported: boolean[] = [false, false];
+  private subWebControllers: (web_webview.WebviewController | null)[] = [null, null];
+  private subWebPending: SubWebPendingOp[][] = [[], []];
+  private subWebHostRegistered: boolean = false;
   private inputController: TextInputController = new TextInputController();
   private win: window.Window | null = null;
   private startLeft: number = 0;
@@ -148,6 +195,9 @@ struct SubWindow {
       // A request may have arrived while the page was loading (the main page writes AppStorage
       // before the child exists); apply the current value once the surface id is known.
       this.onFocusRequest();
+      // MULTIWINDOW-L2: the managed child pool may already have commands queued; registering
+      // the child sink and advertising the capacity flushes them (see registerChildWebHost).
+      this.registerChildWebHost();
     }).catch((readyError: Error): void => {
       hilog.error(DOMAIN, TAG, 'subwindow window lookup failed: %{public}s', readyError.message);
     });
@@ -329,6 +379,494 @@ struct SubWindow {
     return JSON.stringify(payload);
   }
 
+  // ---------------------------------------------------------------------------------------------
+  // MULTIWINDOW-L2: the child ArkWeb host. The managed subwindow pool (OpenHarmonyChildWeb)
+  // claims slots and sends tagged commands through the native child sink; this page runs them on
+  // its own controllers and reports page events back tagged with this window's surface id. The
+  // primary page's sink and slot tables are never touched.
+  // ---------------------------------------------------------------------------------------------
+
+  // Registers this page as the subwindow's ArkWeb host. The dedicated registration probes are
+  // what keeps a host library that predates the child host on the single-primary-host path:
+  // registerChildWebSink/registerChildWebEvalSink are missing there, the probe fails, no sink
+  // is registered and the managed pool never receives the capacity advertisement (its queued
+  // commands are dropped - exactly the pre-L2 behavior). A capacity that arrives before the
+  // managed pool exists is harmless: the pool clamps to the advertised count on its own.
+  private registerChildWebHost(): void {
+    if (this.surfaceId.length === 0) {
+      // The drawn (non-managed) subwindow has no managed tree, so no web control can exist.
+      return;
+    }
+    try {
+      if (typeof host === 'undefined' || typeof host.registerChildWebSink !== 'function') {
+        hilog.info(DOMAIN, TAG, 'child web host unavailable (registerChildWebSink missing); subwindow web stays unmounted');
+        return;
+      }
+      host.registerChildWebSink((op: string, arg: string): void => {
+        this.onChildWebCommand(op, arg);
+      });
+      if (typeof host.registerChildWebEvalSink === 'function') {
+        host.registerChildWebEvalSink((script: string, requestId: number): void => {
+          this.onChildWebEval(script, requestId);
+        });
+      }
+      this.subWebHostRegistered = true;
+      this.advertiseChildWebCapacity();
+      // The managed pool subscribes after the app host is up; a lost advertisement only delays
+      // the flush, so two bounded retries cover the startup ordering (the main page pattern).
+      setTimeout((): void => {
+        this.advertiseChildWebCapacity();
+      }, 1500);
+      hilog.info(DOMAIN, TAG, 'child web host registered: max=%{public}d surface=%{public}s', SUB_WEB_SLOT_MAX, this.surfaceId);
+    } catch (registerError) {
+      hilog.error(DOMAIN, TAG, 'child web registration failed: %{public}s', (registerError as Error).message);
+    }
+  }
+
+  // "w:<surfaceId>|capacity|<n>": marks the managed child pool ready and flushes its queue.
+  private advertiseChildWebCapacity(): void {
+    if (!this.subWebHostRegistered) {
+      return;
+    }
+    this.notifyWebHostState('capacity', `${SUB_WEB_SLOT_MAX}`);
+  }
+
+  // One host -> managed web event, prefixed with this window; per-slot states carry the slot.
+  private notifyWebHostState(slotState: string, url: string): void {
+    if (this.surfaceId.length === 0) {
+      return;
+    }
+    const tagged: string = `${SUB_WEB_STATE_PREFIX}${this.surfaceId}|${slotState}`;
+    try {
+      if (typeof host !== 'undefined' && typeof host.notifyWebEvent === 'function') {
+        host.notifyWebEvent(tagged, url);
+      }
+    } catch (notifyError) {
+      hilog.error(DOMAIN, TAG, 'child web event failed: %{public}s', (notifyError as Error).message);
+    }
+  }
+
+  private childWebEventState(slot: number, state: string): string {
+    return `s${slot}|${state}`;
+  }
+
+  private onChildWebCommand(op: string, arg: string): void {
+    try {
+      this.runChildWebCommand(op, arg);
+    } catch (commandError) {
+      // A web command must never take the page down.
+      hilog.error(DOMAIN, TAG, 'child web command failed: %{public}s', (commandError as Error).message);
+    }
+  }
+
+  private onChildWebEval(script: string, requestId: number): void {
+    try {
+      const slot: number = this.childWebSlotOf(script);
+      if (slot < 0 || !this.childWebSlotReady(slot) || this.subWebUnsupported[slot]) {
+        // No page to run on (an engine still being created or a refused bridge slot): answer
+        // immediately so the managed caller never waits out its eval timeout.
+        this.completeChildWebEval(requestId, '', 1);
+        return;
+      }
+      this.childWebController(slot).runJavaScript(this.childWebSlotPayload(script), (err, result) => {
+        this.completeChildWebEval(requestId, result || '', err ? 1 : 0);
+      });
+    } catch (evalError) {
+      hilog.error(DOMAIN, TAG, 'child web eval failed: %{public}s', (evalError as Error).message);
+      this.completeChildWebEval(requestId, '', 1);
+    }
+  }
+
+  private completeChildWebEval(requestId: number, result: string, error: number): void {
+    try {
+      if (typeof host !== 'undefined' && typeof host.notifyWebEvalResult === 'function') {
+        host.notifyWebEvalResult(requestId, result, error);
+      }
+    } catch (completeError) {
+      hilog.error(DOMAIN, TAG, 'child web eval result failed: %{public}s', (completeError as Error).message);
+    }
+  }
+
+  private runChildWebCommand(op: string, arg: string): void {
+    if (op === 'slot') {
+      this.applyChildSlotCommand(arg);
+      return;
+    }
+    if (op === 'cookie') {
+      // The cookie store is process-wide: setting a cookie here is the same store the main
+      // page configures. Only absolute http(s) URLs are accepted (the managed side validates
+      // its half too).
+      const cookieSeparator: number = arg.indexOf('\n');
+      if (cookieSeparator > 0) {
+        const cookieUrl: string = arg.substring(0, cookieSeparator);
+        const cookieValue: string = arg.substring(cookieSeparator + 1);
+        if ((cookieUrl.startsWith('http://') || cookieUrl.startsWith('https://')) &&
+            cookieValue.length > 0 && cookieValue.length <= 8192) {
+          web_webview.WebCookieManager.configCookieSync(cookieUrl, cookieValue);
+        }
+      }
+      return;
+    }
+    if (op === 'cookieGet') {
+      // "<requestId>\n<url>"; the value travels back through the eval-result channel.
+      const getSeparator: number = arg.indexOf('\n');
+      const requestId: number = getSeparator > 0 ? Number.parseInt(arg.substring(0, getSeparator), 10) : -1;
+      const cookieUrl: string = getSeparator > 0 ? arg.substring(getSeparator + 1) : '';
+      let cookieValue: string = '';
+      let cookieFailed: number = 0;
+      try {
+        if ((!cookieUrl.startsWith('http://') && !cookieUrl.startsWith('https://')) ||
+            !Number.isFinite(requestId) || requestId < 0 || Math.floor(requestId) !== requestId) {
+          cookieFailed = 1;
+        } else {
+          cookieValue = web_webview.WebCookieManager.fetchCookieSync(cookieUrl);
+        }
+      } catch {
+        cookieFailed = 1;
+      }
+      this.completeChildWebEval(requestId, cookieValue, cookieFailed);
+      return;
+    }
+    if (op === 'hybrid' || op === 'blazor') {
+      // HybridWebView/BlazorWebView asset bridges are primary-window-only in this wave: the
+      // registration refuses its slot instead of creating an engine that could never be served
+      // (no half-loaded document, no primary-window interaction).
+      this.disableChildWebSlot(this.childWebRegistrationSlot(arg), op);
+      return;
+    }
+    if (op === 'hide' && !this.childWebSlotTagged(arg)) {
+      // A legacy untagged hide still clears every child overlay; the managed child pool always
+      // tags its per-slot commands.
+      this.subWebVisible = [false, false];
+      return;
+    }
+    const slot: number = this.childWebSlotOf(arg);
+    if (slot < 0 || slot >= SUB_WEB_SLOT_MAX) {
+      hilog.warn(DOMAIN, TAG, 'child web command rejected: %{public}s', op);
+      return;
+    }
+    if (this.subWebUnsupported[slot]) {
+      return;
+    }
+    if (!this.childWebSlotReady(slot)) {
+      this.deferChildWebOp(slot, op, arg);
+      return;
+    }
+    if (op === 'show') {
+      this.subWebVisible[slot] = true;
+      this.noteChildWebActivation(slot);
+    } else if (op === 'hide') {
+      this.subWebVisible[slot] = false;
+    } else if (op === 'load') {
+      this.subWebVisible[slot] = true;
+      this.noteChildWebActivation(slot);
+      this.childWebController(slot).loadUrl(this.childWebSlotPayload(arg));
+      hilog.info(DOMAIN, TAG, 'child web load (slot %{public}d): %{public}s', slot, this.childWebSlotPayload(arg));
+    } else if (op === 'data') {
+      this.subWebVisible[slot] = true;
+      this.noteChildWebActivation(slot);
+      this.childWebController(slot).loadData(this.childWebSlotPayload(arg), 'text/html', 'UTF-8');
+    } else if (op === 'back') {
+      const backController: web_webview.WebviewController = this.childWebController(slot);
+      if (backController.accessBackward()) {
+        backController.backward();
+      }
+      this.reportChildWebHistory(slot);
+    } else if (op === 'forward') {
+      const forwardController: web_webview.WebviewController = this.childWebController(slot);
+      if (forwardController.accessForward()) {
+        forwardController.forward();
+      }
+      this.reportChildWebHistory(slot);
+    } else if (op === 'refresh') {
+      this.childWebController(slot).refresh();
+      this.reportChildWebHistory(slot);
+    } else if (op === 'frame') {
+      this.applyChildWebFrame(arg);
+    }
+  }
+
+  // "ensure\n<slot>" / "destroy\n<slot>" from the managed child pool (mirrors the main page's
+  // SLOTS-DYNAMIC lifecycle; every child slot is dynamic, so destroy is always allowed).
+  private applyChildSlotCommand(arg: string): void {
+    const separator: number = arg.indexOf('\n');
+    const action: string = separator > 0 ? arg.substring(0, separator) : arg;
+    const slot: number = separator > 0 ? Number.parseInt(arg.substring(separator + 1), 10) : -1;
+    if (slot < 0 || slot >= SUB_WEB_SLOT_MAX) {
+      hilog.warn(DOMAIN, TAG, 'child web slot rejected: %{public}s', arg);
+      return;
+    }
+    if (action === 'ensure') {
+      this.ensureChildWebSlot(slot);
+    } else if (action === 'destroy') {
+      this.destroyChildWebSlot(slot);
+    }
+  }
+
+  private ensureChildWebSlot(slot: number): void {
+    if (slot < 0 || slot >= SUB_WEB_SLOT_MAX) {
+      return;
+    }
+    if (this.subWebCreated[slot] || this.subWebUnsupported[slot]) {
+      return;
+    }
+    this.subWebCreated[slot] = true;
+    if (this.subWebControllers[slot] === null) {
+      this.subWebControllers[slot] = new web_webview.WebviewController();
+    }
+    this.rebuildChildWebSlots(slot, -1);
+    hilog.info(DOMAIN, TAG, 'child web slot create: %{public}d', slot);
+  }
+
+  private destroyChildWebSlot(slot: number): void {
+    if (slot < 0 || slot >= SUB_WEB_SLOT_MAX) {
+      return;
+    }
+    // A release always ends a refused registration too: the next claim of the slot starts
+    // clean (the refusal is scoped to the claim, not to the slot number).
+    this.subWebUnsupported[slot] = false;
+    if (!this.subWebCreated[slot]) {
+      return;
+    }
+    this.subWebCreated[slot] = false;
+    this.subWebAttached[slot] = false;
+    try {
+      const controller: web_webview.WebviewController | null = this.subWebControllers[slot];
+      if (controller !== null) {
+        controller.stop();
+      }
+    } catch {
+      // Stopping a controller with no active load must not fail the removal.
+    }
+    this.subWebControllers[slot] = null;
+    this.rebuildChildWebSlots(-1, slot);
+    this.resetChildWebSlotState(slot);
+    const emptyPending: SubWebPendingOp[] = [];
+    this.subWebPending[slot] = emptyPending;
+    hilog.info(DOMAIN, TAG, 'child web slot destroy: %{public}d', slot);
+  }
+
+  private rebuildChildWebSlots(addSlot: number, removeSlot: number): void {
+    const next: number[] = [];
+    for (let i = 0; i < this.subWebSlots.length; i++) {
+      const current: number = this.subWebSlots[i];
+      if (current !== removeSlot) {
+        next.push(current);
+      }
+    }
+    if (addSlot >= 0) {
+      let inserted: boolean = false;
+      for (let i = 0; i < next.length; i++) {
+        if (next[i] > addSlot) {
+          next.splice(i, 0, addSlot);
+          inserted = true;
+          break;
+        }
+      }
+      if (!inserted) {
+        next.push(addSlot);
+      }
+    }
+    this.subWebSlots = next;
+  }
+
+  private resetChildWebSlotState(slot: number): void {
+    this.subWebVisible[slot] = false;
+    this.subWebZOrder[slot] = 0;
+    this.subWebFrameX[slot] = 0;
+    this.subWebFrameY[slot] = 0;
+    this.subWebFrameW[slot] = 0;
+    this.subWebFrameH[slot] = 0;
+  }
+
+  // A slot whose hybrid/blazor registration cannot be served in this wave. Any component that
+  // was already created (a frame before the registration) is torn down, and every later
+  // command for the slot is dropped until its release.
+  private disableChildWebSlot(slot: number, op: string): void {
+    if (slot < 0 || slot >= SUB_WEB_SLOT_MAX) {
+      return;
+    }
+    if (this.subWebCreated[slot]) {
+      this.destroyChildWebSlot(slot);
+    }
+    this.subWebUnsupported[slot] = true;
+    hilog.info(DOMAIN, TAG, 'child web %{public}s refused: the asset bridge is primary-window-only in this wave (slot %{public}d)', op, slot);
+  }
+
+  private deferChildWebOp(slot: number, op: string, arg: string): void {
+    const pending: SubWebPendingOp[] = this.subWebPending[slot];
+    if (pending.length >= SUB_WEB_SLOT_PENDING_MAX) {
+      hilog.error(DOMAIN, TAG, 'child web defer overflow: %{public}d %{public}s', slot, op);
+      return;
+    }
+    pending.push({ op: op, arg: arg });
+    hilog.info(DOMAIN, TAG, 'child web defer: %{public}d %{public}s', slot, op);
+    this.ensureChildWebSlot(slot);
+  }
+
+  private flushChildWebOps(slot: number): void {
+    const pending: SubWebPendingOp[] = this.subWebPending[slot];
+    if (pending.length === 0) {
+      return;
+    }
+    const emptyPending: SubWebPendingOp[] = [];
+    this.subWebPending[slot] = emptyPending;
+    for (const item of pending) {
+      this.runChildWebCommand(item.op, item.arg);
+    }
+  }
+
+  private childWebController(slot: number): web_webview.WebviewController {
+    let controller: web_webview.WebviewController | null = this.subWebControllers[slot];
+    if (controller === null) {
+      controller = new web_webview.WebviewController();
+      this.subWebControllers[slot] = controller;
+    }
+    return controller;
+  }
+
+  private childWebSlotReady(slot: number): boolean {
+    return slot >= 0 && slot < SUB_WEB_SLOT_MAX && this.subWebCreated[slot] && this.subWebAttached[slot];
+  }
+
+  // The child wire keeps the main page's "s<slot>" / "s<slot>\n<payload>" codec; an untagged
+  // argument answers -1 (rejected) instead of falling back to slot 0, so a malformed command
+  // cannot land on the first child overlay.
+  private childWebSlotDigit(arg: string): number {
+    if (arg.length >= 2 && arg.charAt(0) === 's') {
+      const slot: number = arg.charCodeAt(1) - 0x30;
+      if (slot >= 0 && slot < SUB_WEB_SLOT_MAX && (arg.length === 2 || arg.charAt(2) === '\n')) {
+        return slot;
+      }
+    }
+    return -1;
+  }
+
+  private childWebSlotOf(arg: string): number {
+    return this.childWebSlotDigit(arg);
+  }
+
+  private childWebSlotTagged(arg: string): boolean {
+    return this.childWebSlotDigit(arg) >= 0;
+  }
+
+  private childWebSlotPayload(arg: string): string {
+    const slot: number = this.childWebSlotDigit(arg);
+    return slot >= 0 && arg.length > 2 ? arg.substring(3) : arg;
+  }
+
+  // The slot named by a hybrid/blazor registration JSON; a missing/malformed slot falls back to
+  // 0 exactly like the main page (the registration is refused either way).
+  private childWebRegistrationSlot(arg: string): number {
+    try {
+      const config = JSON.parse(arg) as SubWebAssetsConfig;
+      if (config.slot !== undefined && config.slot >= 0 && config.slot < SUB_WEB_SLOT_MAX) {
+        return config.slot;
+      }
+    } catch {
+      // A malformed registration falls back to slot 0; the refusal is logged by the caller.
+    }
+    return 0;
+  }
+
+  // WebView PlatformArrange: "s<slot>\nx\ny\nw\nh" in device pixels, converted to vp like the
+  // main page (a degenerate frame is ignored). A frame also shows the overlay.
+  private applyChildWebFrame(arg: string): void {
+    const slot: number = this.childWebSlotDigit(arg);
+    if (slot < 0 || this.subWebUnsupported[slot]) {
+      return;
+    }
+    const payload: string = this.childWebSlotPayload(arg);
+    const parts: string[] = payload.split('\n');
+    if (parts.length !== 4) {
+      return;
+    }
+    const x: number = Number.parseFloat(parts[0]);
+    const y: number = Number.parseFloat(parts[1]);
+    const w: number = Number.parseFloat(parts[2]);
+    const h: number = Number.parseFloat(parts[3]);
+    if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(w) || !Number.isFinite(h)) {
+      return;
+    }
+    const xVp: number = px2vp(Math.max(0, x));
+    const yVp: number = px2vp(Math.max(0, y));
+    const wVp: number = px2vp(w);
+    const hVp: number = px2vp(h);
+    if (!(wVp > 0) || !(hVp > 0)) {
+      return;
+    }
+    this.subWebFrameX[slot] = xVp;
+    this.subWebFrameY[slot] = yVp;
+    this.subWebFrameW[slot] = wVp;
+    this.subWebFrameH[slot] = hVp;
+    this.subWebVisible[slot] = true;
+    this.noteChildWebActivation(slot);
+  }
+
+  private noteChildWebActivation(slot: number): void {
+    this.subWebZOrderSeq++;
+    this.subWebZOrder[slot] = this.subWebZOrderSeq;
+  }
+
+  private reportChildWebHistory(slot: number): void {
+    let canBack: boolean = false;
+    let canForward: boolean = false;
+    try {
+      const controller: web_webview.WebviewController = this.childWebController(slot);
+      canBack = controller.accessBackward();
+      canForward = controller.accessForward();
+    } catch {
+      return;
+    }
+    this.notifyWebHostState(this.childWebEventState(slot, `history|${canBack ? 1 : 0}|${canForward ? 1 : 0}`), '');
+  }
+
+  // The child ArkWeb declaration, instantiated once per declared slot (created on demand by
+  // ensureChildWebSlot and removed by destroyChildWebSlot). Declared after the managed
+  // XComponent so the web content composites above the second MAUI tree.
+  @Builder
+  subWebOverlay(slot: number): void {
+    Web({ src: '', controller: this.childWebController(slot) })
+      .domStorageAccess(true)
+      .visibility(this.subWebVisible[slot] ? Visibility.Visible : Visibility.None)
+      .zIndex(this.subWebZOrder[slot])
+      .width(this.subWebFrameW[slot] > 0 ? `${this.subWebFrameW[slot]}vp` : '100%')
+      .height(this.subWebFrameH[slot] > 0 ? `${this.subWebFrameH[slot]}vp` : '100%')
+      .position({ x: this.subWebFrameX[slot], y: this.subWebFrameY[slot] })
+      .onControllerAttached(() => {
+        this.subWebAttached[slot] = true;
+        this.flushChildWebOps(slot);
+      })
+      .onPageBegin((event) => {
+        this.notifyWebHostState(this.childWebEventState(slot, 'started'), event ? event.url : '');
+      })
+      .onPageEnd((event) => {
+        const pageUrl: string = event ? event.url : '';
+        hilog.info(DOMAIN, TAG, 'child web page (slot %{public}d): %{public}s', slot, pageUrl);
+        this.notifyWebHostState(this.childWebEventState(slot, 'finished'), pageUrl);
+        this.reportChildWebHistory(slot);
+      })
+      .onErrorReceive((event) => {
+        try {
+          if (event && event.request && !event.request.isMainFrame()) {
+            return;
+          }
+          const errorUrl: string = event && event.request ? event.request.getRequestUrl() : '';
+          hilog.error(DOMAIN, TAG, 'child web error (slot %{public}d): %{public}s', slot, errorUrl);
+          this.notifyWebHostState(this.childWebEventState(slot, 'error'), errorUrl);
+        } catch {
+          // An unexpected event shape must not take the page down.
+        }
+      })
+      .onTouch((event: TouchEvent) => {
+        // A user touch activates the overlay (z-order); the event is not consumed.
+        if (event.type === TouchType.Down) {
+          this.noteChildWebActivation(slot);
+          this.notifyWebHostState(this.childWebEventState(slot, 'activate'), '');
+        }
+      })
+  }
+
   aboutToDisappear(): void {
     // The child dies with the page; report the state so the managed side does not keep an open
     // subwindow (the main page's windowEvent observer usually reports first).
@@ -396,6 +934,16 @@ struct SubWindow {
           })
           .width('100%')
           .height('100%')
+      }
+
+      // MULTIWINDOW-L2 child ArkWeb host: instantiated per declared slot from the @State list,
+      // so a claim creates its ArkWeb on demand (ensureChildWebSlot) and "slot destroy" tears it
+      // down. Declared after the managed XComponent: a Stack composites later children above
+      // earlier ones, so the child web content really shows over the second MAUI tree.
+      if (this.subWebSlots.length > 0) {
+        ForEach(this.subWebSlots, (slot: number) => {
+          this.subWebOverlay(slot)
+        }, (slot: number): string => `sub-web-slot-${slot}`)
       }
 
       // MULTIWINDOW-M drawn content, kept as the degradation path: shown until the managed

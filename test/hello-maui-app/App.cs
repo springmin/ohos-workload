@@ -157,6 +157,12 @@ public sealed class App : Application
         {
             OpenManagedSubWindow();
         }
+        // MULTIWINDOW-L2 device trigger: the managed child window carries a WebView whose
+        // ArkWeb component is hosted by the subwindow page's own child pool (the second host).
+        else if (uri.StartsWith("app://subwindow/openweb", StringComparison.OrdinalIgnoreCase))
+        {
+            OpenManagedSubWindow(withWeb: true);
+        }
         else if (uri.StartsWith("app://subwindow/close", StringComparison.OrdinalIgnoreCase))
         {
             CloseSubWindow();
@@ -175,7 +181,7 @@ public sealed class App : Application
     /// path is unavailable (no shell sink or an older host), the M shell-drawn child is created
     /// instead so the trigger never leaves the user with nothing.
     /// </summary>
-    private static void OpenManagedSubWindow()
+    private static void OpenManagedSubWindow(bool withWeb = false)
     {
         if (s_childWindow is not null && Application.Current?.Windows.Contains(s_childWindow) == true)
         {
@@ -187,13 +193,13 @@ public sealed class App : Application
         {
             return;
         }
-        var child = new Window(BuildChildWindowPage()) { Title = "MAUI child" };
+        var child = new Window(BuildChildWindowPage(withWeb)) { Title = "MAUI child" };
         s_childWindow = child;
         application.OpenWindow(child);
         var result = (application.Handler as OpenHarmonyApplicationHandler)?.LastOpenWindowResult
             ?? OpenHarmonyOpenWindowResult.None;
         OpenHarmonyBridge.WriteStatus(
-            $"[hello-maui-app] subwindow open(managed): supported={OpenHarmonySubWindow.IsSupported} result={result}");
+            $"[hello-maui-app] subwindow open(managed){((withWeb) ? " web" : string.Empty)}: supported={OpenHarmonySubWindow.IsSupported} result={result}");
         if (result != OpenHarmonyOpenWindowResult.OpenedWindow)
         {
             s_childWindow = null;
@@ -219,8 +225,10 @@ public sealed class App : Application
     }
 
     /// <summary>The second MAUI window's content: interactive managed views drawn by the
-    /// per-window renderer into the subwindow surface (touch feedback proves input routing).</summary>
-    private static ContentPage BuildChildWindowPage()
+    /// per-window renderer into the subwindow surface (touch feedback proves input routing).
+    /// MULTIWINDOW-L2: <paramref name="withWeb"/> adds a WebView whose ArkWeb component is
+    /// hosted by the subwindow page's own child pool (the second web host).</summary>
+    private static ContentPage BuildChildWindowPage(bool withWeb = false)
     {
         var title = new Label { Text = "MAUI child window", FontSize = 30, HorizontalOptions = LayoutOptions.Center };
         var counter = new Label { Text = "child taps: 0", FontSize = 26, HorizontalOptions = LayoutOptions.Center };
@@ -256,10 +264,43 @@ public sealed class App : Application
         // MULTIWINDOW-L M4-01: a continuously running indicator keeps this window rendering every
         // vsync during the dual-window frame-rate round (the primary page has its own spinner).
         var childSpinner = new ActivityIndicator { IsRunning = true, HeightRequest = 24 };
-        return new ContentPage
+        var children = new List<View> { title, counter, entryStatus, entry, pinchStatus, pinchLabel, childSpinner, button };
+        if (withWeb)
         {
-            Content = new VerticalStackLayout { Padding = 32, Spacing = 24, Children = { title, counter, entryStatus, entry, pinchStatus, pinchLabel, childSpinner, button } },
-        };
+            // MULTIWINDOW-L2: the child window's WebView. The document is inline (no network), so
+            // the round proves the second ArkWeb host on its own; clicking the heading switches
+            // the text, which shows the page really runs inside the child window.
+            var webStatus = new Label { Text = "child web: loading", FontSize = 22, HorizontalOptions = LayoutOptions.Center };
+            var web = new WebView
+            {
+                HeightRequest = 220,
+                Source = new HtmlWebViewSource
+                {
+                    Html = "<html><body style=\"margin:0;background:#101820\">" +
+                        "<h1 id=\"h\" style=\"color:#6ec1ff;font-family:sans-serif;font-size:28px\">CHILD WEB OK</h1>" +
+                        "<script>document.getElementById('h').onclick=function(){this.textContent='CHILD WEB TAP';};</script>" +
+                        "</body></html>",
+                },
+            };
+            web.Navigating += (_, e) => OpenHarmonyBridge.WriteStatus($"[hello-maui-app] child web navigating: {e.Url}");
+            web.Navigated += (_, e) => OpenHarmonyBridge.WriteStatus($"[hello-maui-app] child web navigated: {e.Result} {e.Url}");
+            // The eval round proves the child host's eval sink: the script runs on the child
+            // window's own controller, not on the primary page's first overlay.
+            web.Navigated += async (_, _) =>
+            {
+                var documentTitle = await web.EvaluateJavaScriptAsync("document.title || 'no-title'");
+                OpenHarmonyBridge.WriteStatus($"[hello-maui-app] child web eval title='{documentTitle}'");
+                webStatus.Text = $"child web: {web.Source} eval='{documentTitle}'";
+            };
+            children.Add(webStatus);
+            children.Add(web);
+        }
+        var childLayout = new VerticalStackLayout { Padding = 32, Spacing = 24 };
+        foreach (var element in children)
+        {
+            childLayout.Children.Add(element);
+        }
+        return new ContentPage { Content = childLayout };
     }
 
     /// <summary>
