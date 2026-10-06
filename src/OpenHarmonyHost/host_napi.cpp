@@ -1220,7 +1220,24 @@ void HostClaimXComponent(napi_env env, napi_value exportInstance, OH_NativeXComp
     }
     ohos_host_window_record existing = {};
     if (ohos_host_window_lookup_component(component, &existing) == OHOS_HOST_WINDOW_OK) {
-        return;  // a repeated Init / registerXComponent retry for an already claimed component
+        // A repeated Init / registerXComponent retry for an already claimed component. M3: an
+        // explicit id from the shell is authoritative over an auto-derived component id, so the
+        // managed session id and the registry id stay identical (the primary's id is fixed).
+        if (requested_id != nullptr && requested_id[0] != '\0' && !existing.primary &&
+            strcmp(requested_id, existing.id) != 0) {
+            if (ohos_host_window_rename_component(component, requested_id) == OHOS_HOST_WINDOW_OK) {
+                fprintf(stderr, "[openharmony-host] window '%s' renamed from '%s'\n", requested_id,
+                        existing.id);
+                fflush(stderr);
+                OH_LOG_INFO(LOG_APP, "[openharmony-host] window '%{public}s' renamed from '%{public}s'",
+                            requested_id, existing.id);
+            } else {
+                fprintf(stderr, "[openharmony-host] window '%s' rename from '%s' refused\n", requested_id,
+                        existing.id);
+                fflush(stderr);
+            }
+        }
+        return;
     }
     std::string native_id = HostXComponentId(component);
     std::string id;
@@ -1317,40 +1334,53 @@ void HostClaimXComponent(napi_env env, napi_value exportInstance, OH_NativeXComp
 
 // Claims the XComponent carried by one exports object (OH_NATIVE_XCOMPONENT_OBJ is set when the
 // page uses <XComponent libraryname="...">). No-op when the object is absent, e.g. a plain
-// module import from EntryAbility.
-void TryClaimXComponentFromExports(napi_env env, napi_value exports, const char* requested_id) {
+// module import from EntryAbility. Returns true when the exports carried a component that is
+// registered after the call (M3: registerXComponent reports this to the shell).
+bool TryClaimXComponentFromExports(napi_env env, napi_value exports, const char* requested_id) {
     if (exports == nullptr) {
-        return;
+        return false;
     }
     napi_value exportInstance = nullptr;
     if (napi_get_named_property(env, exports, OH_NATIVE_XCOMPONENT_OBJ, &exportInstance) != napi_ok) {
-        return;
+        return false;
     }
     void* native = nullptr;
     if (napi_unwrap(env, exportInstance, &native) != napi_ok || native == nullptr) {
-        return;
+        return false;
     }
     HostClaimXComponent(env, exportInstance, reinterpret_cast<OH_NativeXComponent*>(native), requested_id);
+    ohos_host_window_record record;
+    return ohos_host_window_lookup_component(native, &record) == OHOS_HOST_WINDOW_OK;
 }
 
 // Retry path for the shell's registerXComponent(): reads the XComponent object out of the
 // current exports and claims it. Init claims directly, so this only matters for an object that
-// appeared after Init.
-void TryRegisterXComponent(const char* requested_id) {
+// appeared after Init. Returns true when the current exports carried a registered component.
+bool TryRegisterXComponent(const char* requested_id) {
     HostBinding* binding = g_host;
     if (binding->env == nullptr || binding->exports_ref == nullptr) {
-        return;
+        return false;
     }
     if (!HostIsJsThread()) {
         OH_LOG_WARN(LOG_APP, "[openharmony-host] registerXComponent: not on the JS thread, ignored");
-        return;
+        return false;
     }
     napi_env env = binding->env;
     napi_value exports = nullptr;
     if (napi_get_reference_value(env, binding->exports_ref, &exports) != napi_ok || exports == nullptr) {
-        return;
+        return false;
     }
-    TryClaimXComponentFromExports(env, exports, requested_id);
+    if (!TryClaimXComponentFromExports(env, exports, requested_id)) {
+        return false;
+    }
+    // M3: with an explicit id the caller wants to know that *that* id is registered (an
+    // auto-derived component id must not answer as success); without one, any registration of
+    // the current exports' component counts.
+    if (requested_id != nullptr && requested_id[0] != '\0') {
+        ohos_host_window_record record;
+        return ohos_host_window_lookup(requested_id, &record) == OHOS_HOST_WINDOW_OK;
+    }
+    return true;
 }
 
 std::string GetStringArg(napi_env env, napi_value value);
@@ -4149,7 +4179,10 @@ napi_value NotifyTextComposition(napi_env env, napi_callback_info info) {
 }
 
 // ArkTS calls host.registerXComponent() (legacy, no argument) or
-// host.registerXComponent(windowId) when a page declares more than one XComponent.
+// host.registerXComponent(windowId) when a page declares more than one XComponent. Returns 1
+// when the current exports carried the component and it is registered after the call (0
+// otherwise, including an unknown env or a not-JS-thread call), so a page can keep its drawn
+// fallback when the host cannot bind the XComponent (MULTIWINDOW-L M3).
 napi_value RegisterXComponent(napi_env env, napi_callback_info info) {
     size_t argc = 1;
     napi_value argv[1] = {nullptr};
@@ -4162,16 +4195,17 @@ napi_value RegisterXComponent(napi_env env, napi_callback_info info) {
     // Init already bound this env; refresh the recorded JS thread (this is a JS callback) and
     // claim the XComponent whose object is in the current exports. A different env never
     // silently rebinds here.
+    bool registered = false;
     if (g_host->env == env) {
         g_host->js_thread = pthread_self();
         g_host->js_thread_valid = true;
-        TryRegisterXComponent(requested.empty() ? nullptr : requested.c_str());
+        registered = TryRegisterXComponent(requested.empty() ? nullptr : requested.c_str());
     } else {
         OH_LOG_WARN(LOG_APP, "[openharmony-host] registerXComponent: unknown env, ignored");
     }
-    napi_value undefined = nullptr;
-    napi_get_undefined(env, &undefined);
-    return undefined;
+    napi_value result = nullptr;
+    napi_create_int32(env, registered ? 1 : 0, &result);
+    return result;
 }
 
 // ArkTS calls host.unregisterXComponent(windowId) from an XComponent's onDestroy; an omitted id

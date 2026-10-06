@@ -135,6 +135,25 @@ int main(void) {
               ohos_host_window_lookup_component(NULL, &record) == OHOS_HOST_WINDOW_INVALID,
           "lookups reject NULL id/component/out");
 
+    // --- explicit-id rename (M3: the shell's registerXComponent id is authoritative) ----
+    Check(ohos_host_window_rename_component((void*)0x20, "child-managed") == OHOS_HOST_WINDOW_OK,
+          "rename: an explicit id renames the component's window");
+    if (Lookup("child-managed", &record, "rename: lookup the new id")) {
+        Check(strcmp(record.id, "child-managed") == 0 && record.component == (void*)0x20 &&
+                  record.touch_events == 2 && record.frame_events == 1,
+              "rename: the record and its counters moved to the new id");
+    }
+    Check(ohos_host_window_lookup("child-a", &record) == OHOS_HOST_WINDOW_NOT_FOUND,
+          "rename: the old id no longer resolves");
+    Check(ohos_host_window_rename_component((void*)0x20, "main") == OHOS_HOST_WINDOW_DUPLICATE,
+          "rename: an id taken by another component is refused");
+    Check(ohos_host_window_rename_component((void*)0x99, "child-x") == OHOS_HOST_WINDOW_NOT_FOUND &&
+              ohos_host_window_rename_component(NULL, "child-x") == OHOS_HOST_WINDOW_INVALID &&
+              ohos_host_window_rename_component((void*)0x20, "") == OHOS_HOST_WINDOW_INVALID,
+          "rename: unknown component / NULL component / empty id are rejected");
+    Check(ohos_host_window_rename_component((void*)0x20, "child-a") == OHOS_HOST_WINDOW_OK,
+          "rename: renaming back keeps the later checks on their id");
+
     // --- unregister ---------------------------------------------------------------------
     Check(ohos_host_window_unregister("child-a") == OHOS_HOST_WINDOW_OK, "unregister child-a");
     Check(ohos_host_window_count() == 1, "count drops after unregister");

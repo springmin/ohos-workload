@@ -74,6 +74,13 @@ typedef struct ohos_host_window_record {
 // full table returns FULL. On failure nothing is stored.
 int ohos_host_window_register(const char* id, void* component, void* owner, int primary);
 
+// Renames the window registered for a component to new_id (MULTIWINDOW-L M3): the shell's
+// explicit registerXComponent(id) is authoritative over an auto-derived component id, so the
+// managed session id and the host registry id stay identical. The primary flag and the counters
+// stay with the record; a new_id already taken by another component returns DUPLICATE, an
+// unknown component NOT_FOUND and an invalid id INVALID.
+int ohos_host_window_rename_component(void* component, const char* new_id);
+
 // Records one surface lifecycle event (created/changed/destroyed) for id: stores the window
 // pointer and geometry, updates the state and bumps surface_events. Out-of-order events are
 // accepted (the platform recreates a surface after a destroy without a re-registration); an

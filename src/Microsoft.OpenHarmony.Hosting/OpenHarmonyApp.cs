@@ -1991,6 +1991,15 @@ public static partial class OpenHarmonyCanvas
     [LibraryImport(HostLibrary, EntryPoint = "ohos_host_draw_present")]
     private static partial int PresentNative();
 
+    // MULTIWINDOW-L M3 (per-window rendering): the primary window keeps Begin/Present above; a
+    // secondary window begins/presents through these, which resolve the M1 registry id to that
+    // window's own canvas and surface.
+    [LibraryImport(HostLibrary, EntryPoint = "ohos_host_draw_begin_window", StringMarshalling = StringMarshalling.Utf8)]
+    private static partial int BeginWindowNative(string windowId, int width, int height);
+
+    [LibraryImport(HostLibrary, EntryPoint = "ohos_host_draw_present_window", StringMarshalling = StringMarshalling.Utf8)]
+    private static partial int PresentWindowNative(string windowId);
+
     /// <summary>Creates/resizes the canvas for the current surface. Safe to call repeatedly.</summary>
     public static bool Begin(int width, int height)
     {
@@ -2200,6 +2209,34 @@ public static partial class OpenHarmonyCanvas
         try
         {
             return PresentNative() == 0;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    /// <summary>Begins a frame on the registered window's own canvas (MULTIWINDOW-L M3). The
+    /// id is the M1 registry id ("main" for the primary). The drawing primitives after this
+    /// call target that window until another Begin/BeginWindow.</summary>
+    public static bool BeginWindow(string windowId, int width, int height)
+    {
+        try
+        {
+            return BeginWindowNative(windowId, width, height) == 0;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    /// <summary>Presents the frame last begun for the window id into that window's surface.</summary>
+    public static bool PresentWindow(string windowId)
+    {
+        try
+        {
+            return PresentWindowNative(windowId) == 0;
         }
         catch
         {

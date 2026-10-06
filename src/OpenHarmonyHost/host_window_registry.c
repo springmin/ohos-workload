@@ -102,10 +102,33 @@ int ohos_host_window_register(const char* id, void* component, void* owner, int 
     return OHOS_HOST_WINDOW_OK;
 }
 
+int ohos_host_window_rename_component(void* component, const char* new_id) {
+    if (component == NULL || !WindowIdValid(new_id)) {
+        return OHOS_HOST_WINDOW_INVALID;
+    }
+    pthread_mutex_lock(&g_windows_lock);
+    ohos_host_window_record* record = FindByComponent(component);
+    if (record == NULL) {
+        pthread_mutex_unlock(&g_windows_lock);
+        return OHOS_HOST_WINDOW_NOT_FOUND;
+    }
+    if (strcmp(record->id, new_id) == 0) {
+        pthread_mutex_unlock(&g_windows_lock);
+        return OHOS_HOST_WINDOW_OK;
+    }
+    ohos_host_window_record* taken = FindById(new_id);
+    if (taken != NULL && taken->component != component) {
+        pthread_mutex_unlock(&g_windows_lock);
+        return OHOS_HOST_WINDOW_DUPLICATE;
+    }
+    CopyId(record->id, new_id);
+    pthread_mutex_unlock(&g_windows_lock);
+    return OHOS_HOST_WINDOW_OK;
+}
+
 // Applies one surface lifecycle event to a record; the caller holds g_windows_lock.
 static void StoreSurfaceLocked(ohos_host_window_record* record, void* surface, int width, int height,
-                               int state) {
-    record->surface = surface;
+                               int state) {    record->surface = surface;
     record->width = width;
     record->height = height;
     record->state = state;
