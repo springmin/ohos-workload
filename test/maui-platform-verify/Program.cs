@@ -12,7 +12,7 @@ using Microsoft.Maui.Platform;
 // after the fuzz tail) instead of letting every caller repeat its own threshold constant.
 VerifyLineCountingWriter verifyStdout = new(Console.Out);
 Console.SetOut(verifyStdout);
-const int verifyCheckTotal = 663;                     // +2 MULTIWINDOW-L M4-04: the per-window pinch channel (a child-tagged stream reaches the child renderer only; main/unknown/empty ids never do) // +16 MULTIWINDOW-L M4 first wave: the per-window focus/suspend-resume state machine (Activated/Deactivated/Stopped/Resumed, idempotent, primary untouched, the shell-Closed session belt), the per-window keyboard/IME wire (child Entry focus -> op 6 surface-tagged payload, text/composition/submit routed to the child only, window-tagged keys, per-window Back, text ports, the primary-to-child global-text isolation pin (SEC-SCAN-5c)) and the per-window accessibility frame + alert ownership partition, plus the four-pack shell/slice source pins // +14 MULTIWINDOW-L M3 shell subwindow XComponent + production consumption: the app host consumes the tagged channel itself, a deferred OpenWindow asks the shell for the subwindow surface and RouteSurface binds/first-frames/adopts it, its input/frame/close/reopen are window-id routed with no main-window interference, plus the four-pack shell source pins (XComponent id = surface id, register/unregister lifecycle, drawn fallback) and the host/slice per-window draw-target pins // +22 MULTIWINDOW-L M2 per-window renderer: the dual-window headless pin (the mw-l/m2 scratch assertions, driven through the hosting bridge's window-id tagged thunks and the slice's RouteSurface/RouteTouch/RouteFrame adapters, with one CanvasFactory recording canvas per window) plus the bridge id and late-subscriber replay contract // +6 MULTIWINDOW-M in-app subwindow: the create/move/resize/show/close command set and its JSON payloads, the lifecycle/geometry state machine, the routed touch event, malformed/unknown payload robustness, the off-device degradation, and the shell/host/slice source+pack-identity contract // +1 SEC-SCAN-4 a11y password masking (plaintext must not be published to the shadow tree; bullets mirror the drawn text) // +1 SEC-SCAN-4 off-surface cull boundary (zero-size frame draws, shadow extent rescues, off-surface Image keeps the decode pipeline) // +1 CG2-R2R host interp R2R opt-out pin (DOTNET_ReadyToRun=0 inside the mode-3 block; the runtime already forces it for InterpMode>=2, the host makes it explicit and the device retest holds IL parity) // +1 AOT-STARTUP first-use ArkWeb overlay mount gate (state flag + ensureWebSlot flip/log + build gate order) protects the -262 ms AOT startup fix + host identical-context replay skip pin // +2 MULTIWINDOW-S surface resize: the Created/Changed arrange gate (Destroyed/0x0 rejected) + the Changed replay re-arranging the window frame while Destroyed keeps it (A0 form adaptation)                     // +2 WASM-MIME .wasm -> application/wasm mapping in every pack shell + the standalone rawfile host / the host's `wasm mime:` + `wasm fallback:` instrumentation and the pack-host.sh --bad-mime negative control                     // +2 FIX-A11YFLYOUT a11y walk FlyoutPage Detail/presented-Flyout subtree pins (device nodeCount=1 root cause)                     // +1 FIX-A11YBUTTON shell self-check absolute position + z-order-above-overlays pin (button reachable with/without a live web control)                     // +3 AUTODISCONNECT layout-removal detach (dynamic slot destroy + claim release + handler kept) / re-add rebuild (ensure + registration replay on the reclaimed slot) / slice watcher-and-owner wiring pins                     // +6 SLOTS-DYNAMIC dynamic slot growth (ensure/destroy commands), capacity downgrade/event, configurable 2/4 limits, shell lazy/defer pins, 3rd-overlay sample                     // documented full [verify] line count (+3 FIX-SLICERACE concurrent connect/host storm/ pins, +5 L6 screenshot Jpeg format/quality capture/fallback/helper + title heartbeat behavior/source, +6 LEGACY toolbar primary/overflow/icon/events/shell/source, +3 SAMPLE-FIX hybrid bootstrap pack staging / read-only payload handler / stock-script demo, +4 MULTI-OVERLAY-FULL LRU pool/invoke slot codec/per-slot hybrid shell/slice owner wiring, +4 MULTI-OVL slot pool/wire codec/two-overlay shell/slice wiring, +4 FIX-BACKSIZE Back-press forwarding/drawer drill/ shell drawer/BlazorWebView desired size, +4 FIX-WVP overlay px->vp/degenerate-frame/hybrid-overlay arbitration/suspend-restore (shell+slice), +2 FIX-DISMISS flyout drawer dismiss under the device display conditions, +4 FIX-HOME home page arrange/draw (NavigationPage-in-TabbedPage descent), +4 MS-MODE runtime mode switch, +10 P2c-DEEPLINK, +4 P2b-IMG, +16 P1b-LIST, +10 P1a-ANIM, +2 SEC3 storage/deep-link pins, +5 W-series WebView wiring, +3 T1 InputView mapping, +4 T2 WebView gaps, +4 T3 GraphicsView interaction, +7 T10 modal accessibility, +4 T4 Label formatted text, +4 T5 layout semantics, +6 T7 DatePicker calendar/min-max, +4 T9 window title bar, +4 T11 diagnostics overlay, +1 N2 empty ContentPage arrangement, +6 T8 TableView, +5 T8 uneven rows, +7 T6 RTL flow direction, +5 T22 MainThread bridge, +2 FIX-TABBED tabbed CurrentPage, +4 T13 group footer view/N3 picker IsOpen, +5 T21 system font scale, +3 T21 font scale source wiring, +2 A11Y-TABBED tabbed accessibility, +3 N1 host multi-pointer, +5 T12 CarouselView group slides, +7 T14 rich shell flyout, +10 T14 flyout leftovers (MenuItemTemplate/FlyoutContent/AsMultipleItems), +2 FIX-SHELL shell CurrentPage, +2 A11Y-SHELL shell accessibility, +7 T15 rich Shell.TitleView, +8 T16 structured menus, +3 N4 TitleBar accessibility row, +3 T18 Essentials Map, +4 N5 overlay passthrough suppression, +5 N6 window decorations, +4 T20 media bridge, +3 B2 wasm site in a MAUI WebView, +2 W10 NativeAOT managed entry (host libs-dir resolution + shell AOT payload probe), +1 FIX-JSCALL Blazor IPC enum/struct AOT roots (JSCallResultType/JSCallType/NavigationOptions in the slice context + handler static-ctor touch + stub click-probe removed), +3 INTERP-DRAW2 draw-cost seam kinds / off-surface cull / translated-node rescue))
+const int verifyCheckTotal = 670;                     // +7 MULTIWINDOW-L2 a W1: per-window a11y frame lookup/view ownership, window-routed actions (sub vs primary vs unknown), the per-instance listener thunk, the provider-gate local degrade, the subwindow password pin, the per-window modal gate and the host/shell/slice source pins // +2 MULTIWINDOW-L M4-04: the per-window pinch channel (a child-tagged stream reaches the child renderer only; main/unknown/empty ids never do) // +16 MULTIWINDOW-L M4 first wave: the per-window focus/suspend-resume state machine (Activated/Deactivated/Stopped/Resumed, idempotent, primary untouched, the shell-Closed session belt), the per-window keyboard/IME wire (child Entry focus -> op 6 surface-tagged payload, text/composition/submit routed to the child only, window-tagged keys, per-window Back, text ports, the primary-to-child global-text isolation pin (SEC-SCAN-5c)) and the per-window accessibility frame + alert ownership partition, plus the four-pack shell/slice source pins // +14 MULTIWINDOW-L M3 shell subwindow XComponent + production consumption: the app host consumes the tagged channel itself, a deferred OpenWindow asks the shell for the subwindow surface and RouteSurface binds/first-frames/adopts it, its input/frame/close/reopen are window-id routed with no main-window interference, plus the four-pack shell source pins (XComponent id = surface id, register/unregister lifecycle, drawn fallback) and the host/slice per-window draw-target pins // +22 MULTIWINDOW-L M2 per-window renderer: the dual-window headless pin (the mw-l/m2 scratch assertions, driven through the hosting bridge's window-id tagged thunks and the slice's RouteSurface/RouteTouch/RouteFrame adapters, with one CanvasFactory recording canvas per window) plus the bridge id and late-subscriber replay contract // +6 MULTIWINDOW-M in-app subwindow: the create/move/resize/show/close command set and its JSON payloads, the lifecycle/geometry state machine, the routed touch event, malformed/unknown payload robustness, the off-device degradation, and the shell/host/slice source+pack-identity contract // +1 SEC-SCAN-4 a11y password masking (plaintext must not be published to the shadow tree; bullets mirror the drawn text) // +1 SEC-SCAN-4 off-surface cull boundary (zero-size frame draws, shadow extent rescues, off-surface Image keeps the decode pipeline) // +1 CG2-R2R host interp R2R opt-out pin (DOTNET_ReadyToRun=0 inside the mode-3 block; the runtime already forces it for InterpMode>=2, the host makes it explicit and the device retest holds IL parity) // +1 AOT-STARTUP first-use ArkWeb overlay mount gate (state flag + ensureWebSlot flip/log + build gate order) protects the -262 ms AOT startup fix + host identical-context replay skip pin // +2 MULTIWINDOW-S surface resize: the Created/Changed arrange gate (Destroyed/0x0 rejected) + the Changed replay re-arranging the window frame while Destroyed keeps it (A0 form adaptation)                     // +2 WASM-MIME .wasm -> application/wasm mapping in every pack shell + the standalone rawfile host / the host's `wasm mime:` + `wasm fallback:` instrumentation and the pack-host.sh --bad-mime negative control                     // +2 FIX-A11YFLYOUT a11y walk FlyoutPage Detail/presented-Flyout subtree pins (device nodeCount=1 root cause)                     // +1 FIX-A11YBUTTON shell self-check absolute position + z-order-above-overlays pin (button reachable with/without a live web control)                     // +3 AUTODISCONNECT layout-removal detach (dynamic slot destroy + claim release + handler kept) / re-add rebuild (ensure + registration replay on the reclaimed slot) / slice watcher-and-owner wiring pins                     // +6 SLOTS-DYNAMIC dynamic slot growth (ensure/destroy commands), capacity downgrade/event, configurable 2/4 limits, shell lazy/defer pins, 3rd-overlay sample                     // documented full [verify] line count (+3 FIX-SLICERACE concurrent connect/host storm/ pins, +5 L6 screenshot Jpeg format/quality capture/fallback/helper + title heartbeat behavior/source, +6 LEGACY toolbar primary/overflow/icon/events/shell/source, +3 SAMPLE-FIX hybrid bootstrap pack staging / read-only payload handler / stock-script demo, +4 MULTI-OVERLAY-FULL LRU pool/invoke slot codec/per-slot hybrid shell/slice owner wiring, +4 MULTI-OVL slot pool/wire codec/two-overlay shell/slice wiring, +4 FIX-BACKSIZE Back-press forwarding/drawer drill/ shell drawer/BlazorWebView desired size, +4 FIX-WVP overlay px->vp/degenerate-frame/hybrid-overlay arbitration/suspend-restore (shell+slice), +2 FIX-DISMISS flyout drawer dismiss under the device display conditions, +4 FIX-HOME home page arrange/draw (NavigationPage-in-TabbedPage descent), +4 MS-MODE runtime mode switch, +10 P2c-DEEPLINK, +4 P2b-IMG, +16 P1b-LIST, +10 P1a-ANIM, +2 SEC3 storage/deep-link pins, +5 W-series WebView wiring, +3 T1 InputView mapping, +4 T2 WebView gaps, +4 T3 GraphicsView interaction, +7 T10 modal accessibility, +4 T4 Label formatted text, +4 T5 layout semantics, +6 T7 DatePicker calendar/min-max, +4 T9 window title bar, +4 T11 diagnostics overlay, +1 N2 empty ContentPage arrangement, +6 T8 TableView, +5 T8 uneven rows, +7 T6 RTL flow direction, +5 T22 MainThread bridge, +2 FIX-TABBED tabbed CurrentPage, +4 T13 group footer view/N3 picker IsOpen, +5 T21 system font scale, +3 T21 font scale source wiring, +2 A11Y-TABBED tabbed accessibility, +3 N1 host multi-pointer, +5 T12 CarouselView group slides, +7 T14 rich shell flyout, +10 T14 flyout leftovers (MenuItemTemplate/FlyoutContent/AsMultipleItems), +2 FIX-SHELL shell CurrentPage, +2 A11Y-SHELL shell accessibility, +7 T15 rich Shell.TitleView, +8 T16 structured menus, +3 N4 TitleBar accessibility row, +3 T18 Essentials Map, +4 N5 overlay passthrough suppression, +5 N6 window decorations, +4 T20 media bridge, +3 B2 wasm site in a MAUI WebView, +2 W10 NativeAOT managed entry (host libs-dir resolution + shell AOT payload probe), +1 FIX-JSCALL Blazor IPC enum/struct AOT roots (JSCallResultType/JSCallType/NavigationOptions in the slice context + handler static-ctor touch + stub click-probe removed), +3 INTERP-DRAW2 draw-cost seam kinds / off-surface cull / translated-node rescue))
 const int verifyCheckFloor = verifyCheckTotal - 20;   // documented floor convention (total - 20)
 
 // A small image file for the Image handler.
@@ -7526,12 +7526,16 @@ static bool HasUtf8Marshal(ParameterInfo parameter) =>
     parameter.GetCustomAttribute<MarshalAsAttribute>()?.Value == UnmanagedType.LPUTF8Str;
 
 string? cSourcePath = FindHostSource("src/OpenHarmonyHost/openharmony_host.c");
+// MULTIWINDOW-L2 a: the a11y node table moved into its own pure-C module (partitioned per
+// provider instance); the a11y contract/lock checks read that file.
+string? a11yTablePath = FindHostSource("src/OpenHarmonyHost/host_a11y_table.c");
 string? hSourcePath = FindHostSource("src/OpenHarmonyHost/openharmony_host.h");
 string? cSource = cSourcePath is null ? null : File.ReadAllText(cSourcePath);
+string? a11yTableSource = a11yTablePath is null ? null : File.ReadAllText(a11yTablePath);
 string? hSource = hSourcePath is null ? null : File.ReadAllText(hSourcePath);
 MethodInfo? nodePinvoke = typeof(OpenHarmonyAccessibility).GetMethod(
     "AccessibilityNode", BindingFlags.NonPublic | BindingFlags.Static);
-string? nativeNodeList = cSource is null ? null : ExtractParameterList(cSource, "ohos_host_accessibility_node");
+string? nativeNodeList = a11yTableSource is null ? null : ExtractParameterList(a11yTableSource, "ohos_host_accessibility_node");
 string[] nativeNodeParameters = nativeNodeList is null ? Array.Empty<string>() : SplitParameters(nativeNodeList);
 ParameterInfo[] managedNodeParameters = nodePinvoke?.GetParameters() ?? Array.Empty<ParameterInfo>();
 bool nodeCountOk = managedNodeParameters.Length == 16 && nativeNodeParameters.Length == 16;
@@ -7543,19 +7547,19 @@ bool nodeTypesOk = nodeCountOk && managedNodeParameters
     .SequenceEqual(nativeNodeParameters.Select(NativeKind));
 bool nodeMarshalOk = nodeCountOk && managedNodeParameters
     .Where(p => p.ParameterType == typeof(string)).All(HasUtf8Marshal);
-string? nativeGetList = cSource is null ? null : ExtractParameterList(cSource, "ohos_host_accessibility_get");
+string? nativeGetList = a11yTableSource is null ? null : ExtractParameterList(a11yTableSource, "ohos_host_accessibility_get");
 string[] nativeGetParameters = nativeGetList is null ? Array.Empty<string>() : SplitParameters(nativeGetList);
 string? headerNodeList = hSource is null ? null : ExtractParameterList(hSource, "ohos_host_accessibility_node");
 string[] headerNodeParameters = headerNodeList is null ? Array.Empty<string>() : SplitParameters(headerNodeList);
 bool contractOk = nodeCountOk && nodeNamesOk && nodeTypesOk && nodeMarshalOk &&
     nativeGetParameters.Length == 17 && headerNodeParameters.Length == 16;
-Console.WriteLine($"[verify] a11y node contract managedArgs={managedNodeParameters.Length} nativeArgs={nativeNodeParameters.Length} names={nodeNamesOk} types={nodeTypesOk} utf8={nodeMarshalOk} nativeGetArgs={nativeGetParameters.Length} headerArgs={headerNodeParameters.Length} source='{cSourcePath ?? "<missing>"}' assert={contractOk}");
+Console.WriteLine($"[verify] a11y node contract managedArgs={managedNodeParameters.Length} nativeArgs={nativeNodeParameters.Length} names={nodeNamesOk} types={nodeTypesOk} utf8={nodeMarshalOk} nativeGetArgs={nativeGetParameters.Length} headerArgs={headerNodeParameters.Length} source='{a11yTablePath ?? "<missing>"}' assert={contractOk}");
 if (!contractOk)
 {
     throw new InvalidOperationException(
         $"the ohos_host_accessibility_node publish contract drifted: managed={managedNodeParameters.Length} " +
         $"native={nativeNodeParameters.Length} names={nodeNamesOk} types={nodeTypesOk} utf8={nodeMarshalOk} " +
-        $"nativeGet={nativeGetParameters.Length} header={headerNodeParameters.Length} source={cSourcePath ?? "<missing>"}");
+        $"nativeGet={nativeGetParameters.Length} header={headerNodeParameters.Length} source={a11yTablePath ?? "<missing>"}");
 }
 
 // Value mapping: range is published only where the control has one (slider Minimum/Maximum/
@@ -7691,7 +7695,7 @@ string? s2NapiPath = FindHostSource("src/OpenHarmonyHost/host_napi.cpp");
 string s2Napi = s2NapiPath is null ? string.Empty : File.ReadAllText(s2NapiPath);
 string? s2RendererPath = FindHostSource("OpenHarmonyWindowRenderer.cs");
 string s2Renderer = s2RendererPath is null ? string.Empty : File.ReadAllText(s2RendererPath);
-bool s2CExportOk = cSource?.Contains("int ohos_host_accessibility_node_count(void)") == true;
+bool s2CExportOk = a11yTableSource?.Contains("int ohos_host_accessibility_node_count(void)") == true;
 bool s2HeaderOk = hSource?.Contains("int ohos_host_accessibility_node_count(void);") == true;
 bool s2NapiOk = s2Napi.Contains("napi_value AccessibilityNodeCount(") &&
     s2Napi.Contains("ohos_host_accessibility_node_count()") &&
@@ -7701,7 +7705,7 @@ bool s2NapiOk = s2Napi.Contains("napi_value AccessibilityNodeCount(") &&
 bool s2RenderOk = s2Renderer.Contains(
     "OpenHarmonyAccessibility.Refresh(RenderWindowId, content);\n        OpenHarmonyAccessibility.Publish(RenderWindowId);");
 bool s2ExportOk = s2CExportOk && s2HeaderOk && s2NapiOk && s2RenderOk;
-Console.WriteLine($"[verify] s2 a11y node-count export c={s2CExportOk} header={s2HeaderOk} napi={s2NapiOk} renderAttached={s2RenderOk} distinct={cSource?.Contains("int ohos_host_accessibility_count(void)") == true} source='{s2NapiPath ?? "<missing>"}' renderer='{s2RendererPath ?? "<missing>"}' assert={s2ExportOk}");
+Console.WriteLine($"[verify] s2 a11y node-count export c={s2CExportOk} header={s2HeaderOk} napi={s2NapiOk} renderAttached={s2RenderOk} distinct={a11yTableSource?.Contains("int ohos_host_accessibility_count(void)") == true} source='{s2NapiPath ?? "<missing>"}' renderer='{s2RendererPath ?? "<missing>"}' assert={s2ExportOk}");
 if (!s2ExportOk)
 {
     throw new InvalidOperationException("the S2 accessibility node-count export or its render-frame attachment is missing from the sources");
@@ -8979,34 +8983,45 @@ if (!a1Ok)
 // NAPI provider reading on the ArkUI thread; get() copies the interned strings under the lock
 // into per-thread storage hung off a pthread key (freed on thread exit, not __thread/emutls),
 // so begin() can free the table while ArkUI still fills its element. The 16-argument publish
-// and 17-argument getter ABI stay unchanged.
-int a2BeginAt = cSource?.IndexOf("int ohos_host_accessibility_begin(int count) {", StringComparison.Ordinal) ?? -1;
-int a2NodeAt = cSource?.IndexOf("int ohos_host_accessibility_node(int id,", StringComparison.Ordinal) ?? -1;
-int a2CommitAt = cSource?.IndexOf("int ohos_host_accessibility_commit(void) {", StringComparison.Ordinal) ?? -1;
-int a2CountAt = cSource?.IndexOf("int ohos_host_accessibility_count(void) {", StringComparison.Ordinal) ?? -1;
-int a2NodeCountAt = cSource?.IndexOf("int ohos_host_accessibility_node_count(void) {", StringComparison.Ordinal) ?? -1;
-int a2GetAt = cSource?.IndexOf("int ohos_host_accessibility_get(int index,", StringComparison.Ordinal) ?? -1;
-int a2EndAt = a2GetAt < 0 ? -1 : cSource!.IndexOf("#ifdef __cplusplus", a2GetAt, StringComparison.Ordinal);
+// and 17-argument getter ABI stay unchanged. MULTIWINDOW-L2 a moved the table into
+// host_a11y_table.c and factored the locked read into OhosA11yGetLocked (also used by the
+// per-instance get_for), so the copy-under-lock assertion follows the public get's call into
+// that helper, which sits between the getter's own lock/unlock calls.
+int a2BeginAt = a11yTableSource?.IndexOf("int ohos_host_accessibility_begin(int count) {", StringComparison.Ordinal) ?? -1;
+int a2NodeAt = a11yTableSource?.IndexOf("int ohos_host_accessibility_node(int id,", StringComparison.Ordinal) ?? -1;
+int a2CommitAt = a11yTableSource?.IndexOf("int ohos_host_accessibility_commit(void) {", StringComparison.Ordinal) ?? -1;
+int a2CountAt = a11yTableSource?.IndexOf("int ohos_host_accessibility_count(void) {", StringComparison.Ordinal) ?? -1;
+int a2NodeCountAt = a11yTableSource?.IndexOf("int ohos_host_accessibility_node_count(void) {", StringComparison.Ordinal) ?? -1;
+int a2GetAt = a11yTableSource?.IndexOf("int ohos_host_accessibility_get(int index,", StringComparison.Ordinal) ?? -1;
+// The legacy get ends where the per-instance exports begin (MULTIWINDOW-L2 a).
+int a2EndAt = a2GetAt < 0 ? -1 : a11yTableSource!.IndexOf("int ohos_host_accessibility_begin_for(const char* instance", a2GetAt, StringComparison.Ordinal);
 const string a2LockCall = "pthread_mutex_lock(&g_a11y_mutex);";
 const string a2UnlockCall = "pthread_mutex_unlock(&g_a11y_mutex);";
-bool a2BeginLock = LockedRegion(cSource, a2LockCall, a2UnlockCall, a2BeginAt, a2NodeAt);
-bool a2NodeLock = LockedRegion(cSource, a2LockCall, a2UnlockCall, a2NodeAt, a2CommitAt);
-bool a2CommitLock = LockedRegion(cSource, a2LockCall, a2UnlockCall, a2CommitAt, a2CountAt);
-bool a2CountLock = LockedRegion(cSource, a2LockCall, a2UnlockCall, a2CountAt, a2NodeCountAt);
-bool a2GetLock = LockedRegion(cSource, a2LockCall, a2UnlockCall, a2GetAt, a2EndAt);
-int a2GetCopyAt = a2GetAt < 0 ? -1 : cSource!.IndexOf("OhosA11yCopySet* copies = OhosA11yCopySetForThread();", a2GetAt, StringComparison.Ordinal);
-int a2GetUnlockAt = a2GetCopyAt < 0 ? -1 : cSource!.IndexOf(a2UnlockCall, a2GetCopyAt, StringComparison.Ordinal);
-bool a2CopyKeyOk = cSource?.Contains("static pthread_key_t g_a11y_copy_key;") == true &&
-    cSource.Contains("pthread_key_create(&g_a11y_copy_key, OhosA11yCopySetDestroy)") &&
-    cSource.Contains("pthread_once(&g_a11y_copy_once, OhosA11yCopyKeyInit)") &&
-    cSource.Contains("pthread_getspecific(g_a11y_copy_key)") &&
-    cSource.Contains("pthread_setspecific(g_a11y_copy_key, set)") &&
-    cSource.Contains("free(set->strings[i]);");
-bool a2CopyFieldsOk = cSource?.Contains("if (role != NULL) *role = OhosA11yCopyString(copies, 0, node->role);") == true &&
-    cSource.Contains("if (text != NULL) *text = OhosA11yCopyString(copies, 1, node->text);") &&
-    cSource.Contains("if (description != NULL) *description = OhosA11yCopyString(copies, 2, node->description);") &&
-    cSource.Contains("if (hint != NULL) *hint = OhosA11yCopyString(copies, 3, node->hint);");
-bool a2CopyInsideLock = a2GetCopyAt > a2GetAt && a2GetCopyAt < a2GetUnlockAt;
+bool a2BeginLock = LockedRegion(a11yTableSource, a2LockCall, a2UnlockCall, a2BeginAt, a2NodeAt);
+bool a2NodeLock = LockedRegion(a11yTableSource, a2LockCall, a2UnlockCall, a2NodeAt, a2CommitAt);
+bool a2CommitLock = LockedRegion(a11yTableSource, a2LockCall, a2UnlockCall, a2CommitAt, a2CountAt);
+bool a2CountLock = LockedRegion(a11yTableSource, a2LockCall, a2UnlockCall, a2CountAt, a2NodeCountAt);
+bool a2GetLock = LockedRegion(a11yTableSource, a2LockCall, a2UnlockCall, a2GetAt, a2EndAt);
+// The locked read helper: the public getter calls it between its lock and unlock lines, and the
+// helper takes the per-thread string copies (the lock is held by the caller).
+int a2HelperAt = a11yTableSource?.IndexOf("static int OhosA11yGetLocked(", StringComparison.Ordinal) ?? -1;
+int a2HelperEndAt = a2HelperAt < 0 ? -1 : a11yTableSource!.IndexOf("// --- legacy exports", a2HelperAt, StringComparison.Ordinal);
+int a2GetCopyAt = a2HelperAt < 0 ? -1 : a11yTableSource!.IndexOf("OhosA11yCopySet* copies = OhosA11yCopySetForThread();", a2HelperAt, StringComparison.Ordinal);
+int a2GetCallAt = a2GetAt < 0 ? -1 : a11yTableSource!.IndexOf("OhosA11yGetLocked(", a2GetAt, StringComparison.Ordinal);
+int a2GetLockAt = a2GetAt < 0 ? -1 : a11yTableSource!.IndexOf(a2LockCall, a2GetAt, StringComparison.Ordinal);
+int a2GetUnlockAt = a2GetAt < 0 ? -1 : a11yTableSource!.IndexOf(a2UnlockCall, a2GetAt, StringComparison.Ordinal);
+bool a2CopyKeyOk = a11yTableSource?.Contains("static pthread_key_t g_a11y_copy_key;") == true &&
+    a11yTableSource.Contains("pthread_key_create(&g_a11y_copy_key, OhosA11yCopySetDestroy)") &&
+    a11yTableSource.Contains("pthread_once(&g_a11y_copy_once, OhosA11yCopyKeyInit)") &&
+    a11yTableSource.Contains("pthread_getspecific(g_a11y_copy_key)") &&
+    a11yTableSource.Contains("pthread_setspecific(g_a11y_copy_key, set)") &&
+    a11yTableSource.Contains("free(set->strings[i]);");
+bool a2CopyFieldsOk = a11yTableSource?.Contains("if (role != NULL) *role = OhosA11yCopyString(copies, 0, node->role);") == true &&
+    a11yTableSource.Contains("if (text != NULL) *text = OhosA11yCopyString(copies, 1, node->text);") &&
+    a11yTableSource.Contains("if (description != NULL) *description = OhosA11yCopyString(copies, 2, node->description);") &&
+    a11yTableSource.Contains("if (hint != NULL) *hint = OhosA11yCopyString(copies, 3, node->hint);");
+bool a2CopyInsideLock = a2GetCallAt > a2GetLockAt && a2GetCallAt < a2GetUnlockAt
+    && a2GetCopyAt > a2HelperAt && a2GetCopyAt < a2HelperEndAt;
 bool a2SignatureOk = nativeNodeParameters.Length == 16 && nativeGetParameters.Length == 17 && headerNodeParameters.Length == 16;
 bool a2Ok = a2BeginLock && a2NodeLock && a2CommitLock && a2CountLock && a2GetLock &&
     a2CopyKeyOk && a2CopyFieldsOk && a2CopyInsideLock && a2SignatureOk;
@@ -9018,20 +9033,25 @@ if (!a2Ok)
         $"commit={a2CommitLock} count={a2CountLock} get={a2GetLock} copyKey={a2CopyKeyOk} " +
         $"copyUnderLock={a2CopyInsideLock} fields={a2CopyFieldsOk} " +
         $"signatures={nativeNodeParameters.Length}/{nativeGetParameters.Length}/{headerNodeParameters.Length} " +
-        $"source={cSourcePath ?? "<missing>"}");
+        $"source={a11yTablePath ?? "<missing>"}");
 }
 
 // A5: the ArkUI_AccessibilityEventInfo created for every published event is destroyed on both
-// exits of ohos_host_accessibility_send_event: the SetEventType failure path and, after the
-// async send, the normal path (the provider serializes during the send; the caller keeps
-// ownership), so a published event no longer leaks one info object.
-int a5SendAt = s2Napi.IndexOf("OH_ArkUI_SendAccessibilityAsyncEvent(g_a11y_provider, event, nullptr);", StringComparison.Ordinal);
+// exits of the shared send helper (MULTIWINDOW-L2 a factored it out of
+// ohos_host_accessibility_send_event so send_event_for reuses it): the SetEventType failure path
+// and, after the async send, the normal path (the provider serializes during the send; the
+// caller keeps ownership), so a published event no longer leaks one info object.
+int a5SendAt = s2Napi.IndexOf("OH_ArkUI_SendAccessibilityAsyncEvent(provider, event, nullptr);", StringComparison.Ordinal);
 int a5DestroyAfterSendAt = a5SendAt < 0 ? -1 : s2Napi.IndexOf("OH_ArkUI_DestoryAccessibilityEventInfo(event);", a5SendAt, StringComparison.Ordinal);
 int a5DestroyCount = CountOccurrences(s2Napi, "OH_ArkUI_DestoryAccessibilityEventInfo(event);");
-bool a5SendThenDestroy = s2Napi.Contains("OH_ArkUI_SendAccessibilityAsyncEvent(g_a11y_provider, event, nullptr);\n    OH_ArkUI_DestoryAccessibilityEventInfo(event);");
+bool a5SendThenDestroy = s2Napi.Contains("OH_ArkUI_SendAccessibilityAsyncEvent(provider, event, nullptr);\n    OH_ArkUI_DestoryAccessibilityEventInfo(event);");
 bool a5FailureDestroy = s2Napi.Contains("if (OH_ArkUI_AccessibilityEventSetEventType(event, (ArkUI_AccessibilityEventType)eventType) != 0) {\n        OH_ArkUI_DestoryAccessibilityEventInfo(event);\n        return 0;\n    }");
-bool a5Ok = a5SendThenDestroy && a5FailureDestroy && a5DestroyCount == 2 && a5DestroyAfterSendAt > a5SendAt;
-Console.WriteLine($"[verify] a5 a11y event destroy sendThenDestroy={a5SendThenDestroy} failurePathDestroy={a5FailureDestroy} destroyCalls={a5DestroyCount} afterSend={a5DestroyAfterSendAt > a5SendAt} source='{s2NapiPath ?? "<missing>"}' assert={a5Ok}");
+// The primary path keeps the historical provider; the per-instance path resolves its own.
+bool a5PrimaryProvider = s2Napi.Contains("return A11ySendEventThrough(g_a11y_provider, eventType);")
+    && s2Napi.Contains("A11ySendEventThrough(A11yInstanceProviderFor(instance), eventType)");
+bool a5Ok = a5SendThenDestroy && a5FailureDestroy && a5DestroyCount == 2 && a5DestroyAfterSendAt > a5SendAt
+    && a5PrimaryProvider;
+Console.WriteLine($"[verify] a5 a11y event destroy sendThenDestroy={a5SendThenDestroy} failurePathDestroy={a5FailureDestroy} destroyCalls={a5DestroyCount} afterSend={a5DestroyAfterSendAt > a5SendAt} providers={a5PrimaryProvider} source='{s2NapiPath ?? "<missing>"}' assert={a5Ok}");
 if (!a5Ok)
 {
     throw new InvalidOperationException(
@@ -15075,6 +15095,158 @@ bool m4AlertOwnerOk = OpenHarmonyAlertHost.CurrentFor("sub-1") is not null
     && OpenHarmonyAccessibility.NodesForWindow("sub-1").Any(n => n.Role == "dialog" && n.Text == "m4-owned-alert");
 OpenHarmonyAlertHost.Hide();
 M4Check("a11y alert owner", m4AlertOwnerOk);
+
+// --- MULTIWINDOW-L2 a (W1): per-window a11y frames, lookups, actions, the provider gate --------
+// The window's frame is rebuilt from the window's real content so the action targets are the
+// views that window renders; node ids are positional, so every assertion resolves window-first.
+OpenHarmonyAccessibility.Refresh("sub-1", m4Input.Page);
+OpenHarmonyAccessibility.Publish("sub-1");
+OpenHarmonyAccessibility.Refresh(OpenHarmonyWindowSurface.PrimaryWindowId, m2MainWindow.Content);
+OpenHarmonyAccessibilityNode? l2SubButton = OpenHarmonyAccessibility.NodesForWindow("sub-1")
+    .FirstOrDefault(n => n.Role == "button");
+OpenHarmonyAccessibilityNode? l2MainButton = OpenHarmonyAccessibility
+    .NodesForWindow(OpenHarmonyWindowSurface.PrimaryWindowId).FirstOrDefault(n => n.Role == "button");
+bool l2SubButtonResolves = l2SubButton is not null
+    && OpenHarmonyAccessibility.TryFindNode("sub-1", l2SubButton.Id, out OpenHarmonyAccessibilityNode l2SubNode)
+    && ReferenceEquals(l2SubNode, l2SubButton)
+    && OpenHarmonyAccessibility.TryFindView("sub-1", l2SubButton.Id, out IView l2SubView)
+    && ReferenceEquals(l2SubView, m4Input.Button);
+bool l2WindowFirst = l2MainButton is not null
+    && OpenHarmonyAccessibility.TryFindView(OpenHarmonyWindowSurface.PrimaryWindowId, l2MainButton.Id, out IView l2MainView)
+    && ReferenceEquals(l2MainView, ((M2PerWindowApp)m2Application).Main.Button)
+    && (!OpenHarmonyAccessibility.TryFindView(OpenHarmonyWindowSurface.PrimaryWindowId, l2SubButton!.Id, out IView l2Foreign)
+        || !ReferenceEquals(l2Foreign, m4Input.Button));
+M4Check("a11y window lookup", l2SubButtonResolves && l2WindowFirst);
+
+// The action dispatch: a child-window node id executes on the child's renderer/view only, the
+// primary path still executes on the primary window, and an unknown window id is rejected.
+int l2SubClicks = m4Input.Clicks;
+int l2MainClicks = ((M2PerWindowApp)m2Application).Main.Clicks;
+bool l2SubAction = m2Host.HandleAccessibilityAction("sub-1", l2SubButton!.Id,
+    (int)OpenHarmonyAccessibilityAction.Click) && m4Input.Clicks == l2SubClicks + 1;
+bool l2MainUntouched = ((M2PerWindowApp)m2Application).Main.Clicks == l2MainClicks;
+bool l2MainAction = m2Host.HandleAccessibilityAction(OpenHarmonyWindowSurface.PrimaryWindowId, l2MainButton!.Id,
+    (int)OpenHarmonyAccessibilityAction.Click) && ((M2PerWindowApp)m2Application).Main.Clicks == l2MainClicks + 1;
+bool l2UnknownWindow = !m2Host.HandleAccessibilityAction("sub-404", l2SubButton.Id,
+    (int)OpenHarmonyAccessibilityAction.Click);
+M4Check("a11y window action routed", l2SubAction && l2MainUntouched && l2MainAction && l2UnknownWindow);
+
+// The registered per-instance listener thunk (the exact reverse P/Invoke the host's WithInstance
+// callbacks use): the window id travels with the action and selects the window; a NULL id is
+// rejected without touching any window.
+// The per-instance listener slots are process-global (one app host per process); the suite runs
+// a second host that owns the subwindows, so the owning host is wired here exactly as its first
+// primary input would on device (HandleCancel is the cheapest production entry that wires).
+m2Host.HandleCancel(0, 0);
+int l2ThunkClicks = m4Input.Clicks;
+var l2WindowActionThunk = NativeThunks.Invoker<NativeThunks.WindowActionCallback>(
+    NativeThunks.Pointer(typeof(OpenHarmonyAccessibility), "_windowActionThunk"));
+IntPtr l2SubIdUtf8 = Marshal.StringToCoTaskMemUTF8("sub-1");
+try
+{
+    l2WindowActionThunk(l2SubIdUtf8, l2SubButton.Id, (int)OpenHarmonyAccessibilityAction.Click);
+}
+finally
+{
+    Marshal.FreeCoTaskMem(l2SubIdUtf8);
+}
+bool l2ThunkRouted = m4Input.Clicks == l2ThunkClicks + 1;
+l2WindowActionThunk(IntPtr.Zero, l2SubButton.Id, (int)OpenHarmonyAccessibilityAction.Click);
+bool l2ThunkEmptyRejected = m4Input.Clicks == l2ThunkClicks + 1;
+M4Check("a11y window action thunk", l2ThunkRouted && l2ThunkEmptyRejected);
+
+// Provider gate: without a per-instance provider attached (no host library off-device) the
+// secondary publish stays local - no partial publish, no primary traffic, frame kept.
+int l2SecondaryPasses = OpenHarmonyAccessibility.SecondaryPublishes;
+int l2ProviderPasses = OpenHarmonyAccessibility.SecondaryProviderPublishes;
+OpenHarmonyAccessibility.Publish("sub-1");
+bool l2ProviderGate = OpenHarmonyAccessibility.SecondaryProviderPublishes == l2ProviderPasses
+    && OpenHarmonyAccessibility.SecondaryPublishes > l2SecondaryPasses
+    && OpenHarmonyAccessibility.NodesForWindow("sub-1").Count == OpenHarmonyAccessibility.LastSecondaryPublishedCount;
+M4Check("a11y secondary provider local", l2ProviderGate);
+
+// SEC-SCAN-4 pin copied to the child window: a password entry in the subwindow frame publishes
+// bullets, never its plaintext (the walk is shared, so the masking must hold per window too).
+string l2Plain = m4Input.Entry.Text ?? string.Empty;
+m4Input.Entry.IsPassword = true;
+try
+{
+    OpenHarmonyAccessibility.Refresh("sub-1", m4Input.Page);
+    bool l2PlainHidden = !OpenHarmonyAccessibility.NodesForWindow("sub-1").Any(n => n.Text == l2Plain);
+    bool l2Masked = OpenHarmonyAccessibility.NodesForWindow("sub-1").Any(n =>
+        n.Role == "textInput" && n.Text == new string('\u2022', l2Plain.Length));
+    M4Check("a11y subwindow password masked", l2Plain.Length > 0 && l2PlainHidden && l2Masked);
+}
+finally
+{
+    m4Input.Entry.IsPassword = false;
+    OpenHarmonyAccessibility.Refresh("sub-1", m4Input.Page);
+}
+
+// A child-owned alert traps the child's frame only: the background child node is inert while
+// the primary window's action path keeps working (its own CurrentFor is null).
+OpenHarmonyAlertHost.Show(new OpenHarmonyAlertState
+{
+    WindowId = "sub-1",
+    Title = "l2-owned-modal",
+    Message = "child modal",
+    Accept = "OK",
+    Cancel = "Cancel",
+    Complete = _ => { },
+});
+OpenHarmonyAlertHost.SetSurface("sub-1", 700, 500);
+OpenHarmonyAccessibility.Refresh("sub-1", m4Input.Page);
+OpenHarmonyAccessibility.Refresh(OpenHarmonyWindowSurface.PrimaryWindowId, m2MainWindow.Content);
+int l2ModalClicks = m4Input.Clicks;
+bool l2ModalBackgroundInert = !m2Host.HandleAccessibilityAction("sub-1", l2SubButton.Id,
+    (int)OpenHarmonyAccessibilityAction.Click) && m4Input.Clicks == l2ModalClicks;
+bool l2PrimaryUnaffected = m2Host.HandleAccessibilityAction(OpenHarmonyWindowSurface.PrimaryWindowId,
+    l2MainButton.Id, (int)OpenHarmonyAccessibilityAction.Click);
+OpenHarmonyAlertHost.Hide();
+M4Check("a11y per-window modal gate", l2ModalBackgroundInert && l2PrimaryUnaffected);
+
+// Source pins: the host table partition + WithInstance provider + shell ContentSlot + the
+// managed window-parameterized path all ship together.
+string l2Napi = FindHostSource("src/OpenHarmonyHost/host_napi.cpp") is { } l2NapiPath
+    ? File.ReadAllText(l2NapiPath) : string.Empty;
+string l2Table = FindHostSource("src/OpenHarmonyHost/host_a11y_table.c") is { } l2TablePath
+    ? File.ReadAllText(l2TablePath) : string.Empty;
+string l2Exports = FindHostSource("src/OpenHarmonyHost/host-exports.txt") is { } l2ExportsPath
+    ? File.ReadAllText(l2ExportsPath) : string.Empty;
+string l2SliceA11y = FindHostSource("OpenHarmonyAccessibility.cs") is { } l2SlicePath
+    ? File.ReadAllText(l2SlicePath) : string.Empty;
+bool l2ShellPinsOk = true;
+foreach (string l2ShellVersion in new[] { "1.0.0-preview.22", "1.0.0-preview.23", "1.0.0-preview.24", "1.0.0-preview.28" })
+{
+    string l2Page = FindHostSource($"packs/Microsoft.OpenHarmony.Sdk/{l2ShellVersion}/templates/ets/pages/SubWindow.ets") is { } l2PagePath
+        ? File.ReadAllText(l2PagePath) : string.Empty;
+    l2ShellPinsOk &= l2Page.Contains("import { NodeContent } from '@kit.ArkUI';")
+        && l2Page.Contains("private content: NodeContent = new NodeContent();")
+        && l2Page.Contains("ContentSlot(this.content)")
+        && l2Page.Contains("host.attachAccessibilityNodeFor(this.surfaceId, this.content)")
+        && l2Page.Contains("onPageShow(): void");
+}
+bool l2NativePinsOk = l2Napi.Contains("OH_ArkUI_AccessibilityProviderRegisterCallbackWithInstance")
+    && l2Napi.Contains("AttachAccessibilityValueFor")
+    && l2Napi.Contains("\"attachAccessibilityNodeFor\"")
+    && l2Napi.Contains("\"accessibilityStatusFor\"")
+    && l2Napi.Contains("\"accessibilityNodeCountFor\"")
+    && l2Napi.Contains("g_a11y_window_action_listener")
+    && l2Napi.Contains("ohos_host_accessibility_set_window_action_listener")
+    && l2Napi.Contains("ohos_host_accessibility_send_event_for")
+    && l2Table.Contains("ohos_host_accessibility_begin_for")
+    && l2Table.Contains("OhosA11yPartitionForLocked")
+    && l2Table.Contains("OHOS_A11Y_MAX_NAMED_PARTITIONS")
+    && l2Exports.Contains("ohos_host_accessibility_begin_for")
+    && l2Exports.Contains("ohos_host_accessibility_set_window_action_listener")
+    && l2SliceA11y.Contains("TryFindNode(string windowId, int id")
+    && l2SliceA11y.Contains("TryFindView(string windowId, int id")
+    && l2SliceA11y.Contains("PublishSecondary")
+    && l2SliceA11y.Contains("WindowProviderAttached")
+    && l2SliceA11y.Contains("SetWindowActionHandler")
+    && l2SliceA11y.Contains("OnWindowAction")
+    && l2SliceA11y.Contains("ohos_host_accessibility_begin_for");
+M4Check("a11y provider source pins", l2ShellPinsOk && l2NativePinsOk);
 
 // --- source pins: the shell and slice carry the M4 wires --------------------------------------
 bool m4ShellPinsOk = true;

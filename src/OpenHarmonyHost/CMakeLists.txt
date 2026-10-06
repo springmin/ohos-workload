@@ -3,7 +3,7 @@ project(openharmonyhost)
 
 set(CMAKE_CXX_STANDARD 17)
 
-add_library(openharmonyhost SHARED host_napi.cpp openharmony_host.c host_optional.c host_keystore.c host_window_registry.c host_window_bridge.c)
+add_library(openharmonyhost SHARED host_napi.cpp openharmony_host.c host_optional.c host_keystore.c host_window_registry.c host_window_bridge.c host_a11y_table.c)
 
 target_include_directories(openharmonyhost PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 

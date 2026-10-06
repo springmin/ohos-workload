@@ -20,6 +20,7 @@
 // interactive, drag disabled" instead of moving the wrong window.
 import { common } from '@kit.AbilityKit';
 import { window } from '@kit.ArkUI';
+import { NodeContent } from '@kit.ArkUI';
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import host from 'libopenharmonyhost.so';
 
@@ -104,6 +105,10 @@ struct SubWindow {
   // second window's Entry reads what is typed here and the IME follows this window.
   @State inputText: string = '';
   private inputController: TextInputController = new TextInputController();
+  // MULTIWINDOW-L2 a: the child's own accessibility content slot. The host creates a CUSTOM
+  // node inside it and registers a per-instance ArkUI accessibility provider
+  // (attachAccessibilityNodeFor), so the child's shadow tree is served by its own provider.
+  private content: NodeContent = new NodeContent();
   private win: window.Window | null = null;
   private startLeft: number = 0;
   private startTop: number = 0;
@@ -148,6 +153,9 @@ struct SubWindow {
       // A request may have arrived while the page was loading (the main page writes AppStorage
       // before the child exists); apply the current value once the surface id is known.
       this.onFocusRequest();
+      // MULTIWINDOW-L2 a: the ContentSlot exists once build() has mounted the page (this
+      // promise resolves after that), so the per-instance accessibility provider can attach now.
+      this.attachAccessibility();
     }).catch((readyError: Error): void => {
       hilog.error(DOMAIN, TAG, 'subwindow window lookup failed: %{public}s', readyError.message);
     });
@@ -170,6 +178,47 @@ struct SubWindow {
   private readyPayload(): string {
     const base = `{"id":${this.resolvedId}`;
     return this.surfaceId.length > 0 ? `${base},"surfaceId":"${this.surfaceId}"}` : `${base}}`;
+  }
+
+  // MULTIWINDOW-L2 a: hands the child's ContentSlot to the host, which creates the per-instance
+  // CUSTOM node and registers the WithInstance accessibility provider (1 = attached, 3/4 =
+  // refused, no export = silent degrade). Idempotent on the host side (same instance + same
+  // content is a no-op), so both the surface-id resolution and every page show can call it.
+  private attachAccessibility(): void {
+    if (this.surfaceId.length === 0) {
+      return;
+    }
+    try {
+      if (typeof host !== 'undefined' && typeof host.attachAccessibilityNodeFor === 'function') {
+        const status: number = host.attachAccessibilityNodeFor(this.surfaceId, this.content);
+        hilog.info(DOMAIN, TAG, 'subwindow a11y provider status=%{public}d instance=%{public}s',
+          status, this.surfaceId);
+        // MULTIWINDOW-L2 a W2: the per-instance self-check. The managed frame reaches the
+        // provider on the next render tick, so the attach status and the published node count
+        // are read back after a short delay (the no-screen-reader evidence for provider+count).
+        if (status === 1 && typeof host.accessibilityStatusFor === 'function') {
+          setTimeout((): void => {
+            try {
+              const attached: number = host.accessibilityStatusFor(this.surfaceId);
+              const nodes: number = host.accessibilityNodeCountFor(this.surfaceId);
+              hilog.info(DOMAIN, TAG, 'subwindow a11y selfcheck status=%{public}d nodes=%{public}d instance=%{public}s',
+                attached, nodes, this.surfaceId);
+            } catch (checkError) {
+              hilog.error(DOMAIN, TAG, 'subwindow a11y selfcheck failed: %{public}s', (checkError as Error).message);
+            }
+          }, 3000);
+        }
+      }
+    } catch (a11yError) {
+      hilog.error(DOMAIN, TAG, 'subwindow a11y attach failed: %{public}s', (a11yError as Error).message);
+    }
+  }
+
+  // The ContentSlot is mounted with the page; a page re-show re-publishes the same content, which
+  // the host treats as already attached, so this is a safe second call site (the first is after
+  // the surface id resolves in aboutToAppear).
+  onPageShow(): void {
+    this.attachAccessibility();
   }
 
   // MULTIWINDOW-L M3: the surface lifecycle. registerXComponent returns 1 when the host has the
@@ -397,6 +446,11 @@ struct SubWindow {
           .width('100%')
           .height('100%')
       }
+
+      // MULTIWINDOW-L2 a: the child's accessibility ContentSlot (the host adds the per-instance
+      // CUSTOM node to it), declared after the XComponent like the main page. The CUSTOM node is
+      // non-visual, so it never intercepts the managed surface's input.
+      ContentSlot(this.content)
 
       // MULTIWINDOW-M drawn content, kept as the degradation path: shown until the managed
       // surface is confirmed (or forever without a surface id), and hidden afterwards so the
