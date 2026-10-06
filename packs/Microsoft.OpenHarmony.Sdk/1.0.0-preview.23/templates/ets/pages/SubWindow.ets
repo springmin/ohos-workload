@@ -193,6 +193,21 @@ struct SubWindow {
         const status: number = host.attachAccessibilityNodeFor(this.surfaceId, this.content);
         hilog.info(DOMAIN, TAG, 'subwindow a11y provider status=%{public}d instance=%{public}s',
           status, this.surfaceId);
+        // MULTIWINDOW-L2 a W2: the per-instance self-check. The managed frame reaches the
+        // provider on the next render tick, so the attach status and the published node count
+        // are read back after a short delay (the no-screen-reader evidence for provider+count).
+        if (status === 1 && typeof host.accessibilityStatusFor === 'function') {
+          setTimeout((): void => {
+            try {
+              const attached: number = host.accessibilityStatusFor(this.surfaceId);
+              const nodes: number = host.accessibilityNodeCountFor(this.surfaceId);
+              hilog.info(DOMAIN, TAG, 'subwindow a11y selfcheck status=%{public}d nodes=%{public}d instance=%{public}s',
+                attached, nodes, this.surfaceId);
+            } catch (checkError) {
+              hilog.error(DOMAIN, TAG, 'subwindow a11y selfcheck failed: %{public}s', (checkError as Error).message);
+            }
+          }, 3000);
+        }
       }
     } catch (a11yError) {
       hilog.error(DOMAIN, TAG, 'subwindow a11y attach failed: %{public}s', (a11yError as Error).message);
