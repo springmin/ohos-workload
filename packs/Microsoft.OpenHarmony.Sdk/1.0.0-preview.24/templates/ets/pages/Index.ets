@@ -88,6 +88,15 @@ interface SubWindowCommand {
   y?: number;
   w?: number;
   h?: number;
+  // MULTIWINDOW-L M3: the managed surface id. When present the child page mounts an XComponent
+  // with this component id and the managed second window renders into it; absent = the M
+  // shell-drawn path.
+  surfaceId?: string;
+  // MULTIWINDOW-L M4 (op 6, per-window text focus): show 1 = focus the child's hidden input
+  // (raise the keyboard), 0 = focus the child surface; caret/text seed the child input.
+  show?: number;
+  caret?: number;
+  text?: string;
 }
 
 // One subwindow state report: id + rect (window pixels). Only the fields the op uses are read.
@@ -97,6 +106,8 @@ interface SubWindowStatePayload {
   y: number;
   w: number;
   h: number;
+  // M3: the managed surface id of the child, so the managed side can map its window id.
+  surfaceId?: string;
 }
 
 // One touch inside the shell-drawn subwindow content.
@@ -112,6 +123,16 @@ interface SubWindowTouchPayload {
 interface SubWindowErrorPayload {
   code: number;
   message: string;
+}
+
+// MULTIWINDOW-L M4: the AppStorage payload that carries a managed focus/keyboard request from
+// the main page to the child page (see forwardSubWindowTextFocus).
+interface SubWindowFocusRequest {
+  surfaceId: string;
+  show: number;
+  caret: number;
+  text?: string;
+  seq: number;
 }
 
 // window.SubWindowOptions plus the platform parser's undocumented zLevelAboveParentLoosened
@@ -666,6 +687,14 @@ const SUB_EVENT_CLOSED: number = 5;
 const SUB_EVENT_FAILED: number = 7;
 const SUB_EVENT_SUSPENDED: number = 9;
 const SUB_EVENT_RESUMED: number = 10;
+// MULTIWINDOW-L M4: the child window's own focus transitions (managed per-window lifecycle).
+const SUB_EVENT_ACTIVE: number = 11;
+const SUB_EVENT_INACTIVE: number = 12;
+// M4: a managed per-window focus/keyboard request for the child page (payload surfaceId/show/
+// caret/text). The child page's LocalStorage is not propagated (measured), so the request
+// travels through AppStorage, which the child page watches with @StorageLink @Watch.
+const SUB_CMD_TEXT_FOCUS: number = 6;
+const SUB_WINDOW_FOCUS_REQUEST_KEY: string = 'ohos_dotnet_subwindow_focus_request';
 // The subwindow's named route (pages/SubWindow.ets) and its parent-window name; both are
 // single-instance by design (one application subwindow in this slice).
 const SUB_WINDOW_ROUTE: string = 'ohos_dotnet_subwindow';
@@ -821,6 +850,12 @@ struct Index {
   // opens a child pays nothing (no observer, no window, no per-frame work).
   private subWindow: window.Window | null = null;
   private subWindowId: number = -1;
+  // M4: the monotonically increasing sequence stamped into every AppStorage focus/keyboard
+  // request for the child, so the child's @Watch fires even when the request content repeats.
+  private subWindowFocusSeq: number = 0;
+  // MULTIWINDOW-L M3: the managed surface id of the live child ('' for the shell-drawn M path);
+  // stamped into the child's LocalStorage and reported back in state payloads.
+  private subWindowSurfaceId: string = '';
   private subWindowCreating: boolean = false;
   // The main window resolved before the first child exists (getLastWindow would return the
   // focused child afterwards), and the once-registered main-window event observer.
@@ -2272,6 +2307,9 @@ struct Index {
       this.logError(`[maui] subwindow state read failed: ${(stateError as Error).message}`);
     }
     const payload: SubWindowStatePayload = { id: id, x: x, y: y, w: w, h: h };
+    if (this.subWindowSurfaceId.length > 0) {
+      payload.surfaceId = this.subWindowSurfaceId;
+    }
     return JSON.stringify(payload);
   }
 
@@ -2286,6 +2324,28 @@ struct Index {
   private reportSubWindowFailure(code: number, message: string): void {
     const payload: SubWindowErrorPayload = { code: code, message: message };
     this.notifySubWindowEvent(SUB_EVENT_FAILED, JSON.stringify(payload));
+  }
+
+  // MULTIWINDOW-L M4: forwards a managed per-window focus/keyboard request to the child page.
+  // The request travels through AppStorage (the child's LocalStorage is not propagated on this
+  // device): the child page watches the key and gives focus to its own hidden input or surface.
+  // A request naming a surface that is not the live managed child is answered honestly.
+  private forwardSubWindowTextFocus(cmd: SubWindowCommand): void {
+    const requested: string = cmd.surfaceId !== undefined ? cmd.surfaceId : '';
+    if (this.subWindow === null || (requested.length > 0 && requested !== this.subWindowSurfaceId)) {
+      this.reportSubWindowFailure(801, 'text focus: no matching managed subwindow');
+      return;
+    }
+    this.subWindowFocusSeq++;
+    const request: SubWindowFocusRequest = {
+      surfaceId: this.subWindowSurfaceId,
+      show: cmd.show !== undefined ? cmd.show : 0,
+      caret: cmd.caret !== undefined ? cmd.caret : -1,
+      text: cmd.text !== undefined ? cmd.text : '',
+      seq: this.subWindowFocusSeq,
+    };
+    AppStorage.setOrCreate(SUB_WINDOW_FOCUS_REQUEST_KEY, JSON.stringify(request));
+    this.logInfo(`[maui] subwindow text focus forwarded: show=${request.show} caret=${request.caret}`);
   }
 
   // Clamps a managed request into the window-manager's documented bounds; an absent or
@@ -2426,6 +2486,8 @@ struct Index {
     }
     if (op === SUB_CMD_CREATE) {
       this.createSubWindow(cmd);
+    } else if (op === SUB_CMD_TEXT_FOCUS) {
+      this.forwardSubWindowTextFocus(cmd);
     } else if (op === SUB_CMD_MOVE) {
       this.moveSubWindow(cmd);
     } else if (op === SUB_CMD_RESIZE) {
@@ -2444,10 +2506,17 @@ struct Index {
     }
   }
 
-  // Creates the child under the main window and loads the shell-drawn page. Single-instance:
-  // a repeated create reports the live window instead of leaking a second child.
+  // Creates the child under the main window and loads the shell page. Single-instance: a
+  // repeated create reports the live window instead of leaking a second child; a repeated
+  // managed create for a different surface id is answered honestly (the M3 shell carries one
+  // managed child).
   private async createSubWindow(cmd: SubWindowCommand): Promise<void> {
     if (this.subWindow !== null) {
+      const requestedSurfaceId: string = cmd.surfaceId !== undefined ? cmd.surfaceId : '';
+      if (requestedSurfaceId.length > 0 && requestedSurfaceId !== this.subWindowSurfaceId) {
+        this.reportSubWindowFailure(801, 'the shell supports one managed subwindow; close it before opening another');
+        return;
+      }
       this.reportSubWindowState(SUB_EVENT_CREATED);
       return;
     }
@@ -2457,6 +2526,14 @@ struct Index {
     this.subWindowCreating = true;
     try {
       const main = await this.resolveMainWindow();
+      const surfaceId: string = cmd.surfaceId !== undefined ? cmd.surfaceId : '';
+      // M3: the managed surface id travels in the child's window name (the runtime does not
+      // propagate the loadContentByName LocalStorage reliably): the page reads it from
+      // WindowProperties.name, which also keeps the drag guard's identity check. The plain name
+      // keeps the M shell-drawn path.
+      const childName: string = surfaceId.length > 0
+        ? `${SUB_WINDOW_NAME}__${surfaceId}`
+        : SUB_WINDOW_NAME;
       // ParseSubWindowOptions (window_manager) converts each optional boolean and logs
       // E "Failed to convert parameter to <name>" when one is absent, keeping its false default.
       // Spell all three out (zLevelAboveParentLoosened through ShellSubWindowOptions, which the
@@ -2475,15 +2552,20 @@ struct Index {
         outlineEnabled: false,
         zLevelAboveParentLoosened: false,
       };
-      const child = await main.createSubWindowWithOptions(SUB_WINDOW_NAME, options);
+      const child = await main.createSubWindowWithOptions(childName, options);
       this.subWindow = child;
       this.subWindowId = child.getWindowProperties().id;
+      this.subWindowSurfaceId = surfaceId;
       // pages/SubWindow.ets is a named route compiled into this shell abc; the storage passes
-      // the window id so the page can refuse to move a window that is not its own. A runtime
+      // the window id so the page can refuse to move a window that is not its own, and (M3)
+      // the managed surface id so the page mounts the host XComponent under that id. A runtime
       // without the named-route index falls back to the path form (which also needs the page in
       // the packaged main_pages.json).
       const storage: LocalStorage = new LocalStorage();
       storage.setOrCreate('subWindowId', this.subWindowId);
+      if (surfaceId.length > 0) {
+        storage.setOrCreate('subWindowSurfaceId', surfaceId);
+      }
       try {
         await child.loadContentByName(SUB_WINDOW_ROUTE, storage);
       } catch (namedRouteError) {
@@ -2602,8 +2684,12 @@ struct Index {
       this.reportSubWindowState(SUB_EVENT_HIDDEN);
     } else if (evt === window.WindowEventType.WINDOW_ACTIVE) {
       this.noteSubWindowWindowActive();
+      // M4: the focused-window identity travels to the managed side, which raises the child
+      // window's IWindow.Activated and clears a pending Deactivated.
+      this.reportSubWindowState(SUB_EVENT_ACTIVE);
     } else if (evt === window.WindowEventType.WINDOW_INACTIVE) {
       this.noteSubWindowWindowInactive();
+      this.reportSubWindowState(SUB_EVENT_INACTIVE);
     } else if (evt === window.WindowEventType.WINDOW_DESTROYED) {
       this.finishSubWindowClosed();
     }
@@ -2624,7 +2710,10 @@ struct Index {
     this.cancelSubWindowForegroundLossCheck();
     this.subWindow = null;
     this.subWindowId = -1;
+    this.subWindowSurfaceId = '';
     this.subWindowSuspended = false;
+    // M4: a pending focus request must not fire in a later child that reuses the surface id.
+    AppStorage.setOrCreate(SUB_WINDOW_FOCUS_REQUEST_KEY, '');
   }
 
   // Best-effort teardown when the page disappears; a failure only leaves the child for the

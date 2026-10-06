@@ -202,6 +202,14 @@ public static partial class OpenHarmonyBridge
     [LibraryImport(HostLibrary, EntryPoint = "ohos_host_register_bridge")]
     private static partial void RegisterBridgeNative(IntPtr lifecycle, IntPtr node, IntPtr surface);
 
+    [LibraryImport(HostLibrary, EntryPoint = "ohos_host_register_window_bridge")]
+    private static partial void RegisterWindowBridgeNative(IntPtr surface, IntPtr touch, IntPtr frame);
+
+    // MULTIWINDOW-L M4-04: the per-window pinch channel registers separately, so the M2
+    // register's arity stays frozen for an older managed assembly.
+    [LibraryImport(HostLibrary, EntryPoint = "ohos_host_register_window_pinch")]
+    private static partial void RegisterWindowPinchNative(IntPtr pinch);
+
     [LibraryImport(HostLibrary, EntryPoint = "ohos_host_register_input")]
     private static partial void RegisterInputNative(IntPtr touch, IntPtr frame);
 
@@ -318,6 +326,18 @@ public static partial class OpenHarmonyBridge
     private delegate void NativeWebEventDelegate(IntPtr stateUtf8, IntPtr urlUtf8);
     [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
     private delegate void NativeActivationDelegate(IntPtr payloadUtf8);
+    // MULTIWINDOW-L M2 (M2-ow): per-window dispatch callbacks. The first argument is the M1
+    // host window id ("main" for the primary XComponent); the remaining payloads mirror the
+    // untagged delegates above. A window id is never empty.
+    [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+    private delegate void NativeWindowSurfaceDelegate(IntPtr windowIdUtf8, IntPtr window, int width, int height, int state);
+    [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+    private delegate void NativeWindowTouchDelegate(IntPtr windowIdUtf8, int type, IntPtr points, int count, int pointerId, float x, float y);
+    [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+    private delegate void NativeWindowFrameDelegate(IntPtr windowIdUtf8, long timestamp, long targetTimestamp);
+    // M4-04: the per-window pinch payload (id first, then phase/scale/centre like Pinch).
+    [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+    private delegate void NativeWindowPinchDelegate(IntPtr windowIdUtf8, int phase, double scale, float x, float y);
 
     private static readonly object s_sync = new();
     private static OpenHarmonyAppContext? s_context;
@@ -338,6 +358,10 @@ public static partial class OpenHarmonyBridge
     private static unsafe IntPtr s_pickerResultThunk = (IntPtr)(delegate* unmanaged[Cdecl]<int, int, IntPtr, IntPtr, void>)&OnPickerResultNative;
     private static unsafe IntPtr s_webEventThunk = (IntPtr)(delegate* unmanaged[Cdecl]<IntPtr, IntPtr, void>)&OnWebEventNative;
     private static unsafe IntPtr s_activationThunk = (IntPtr)(delegate* unmanaged[Cdecl]<IntPtr, void>)&OnActivationNative;
+    private static unsafe IntPtr s_windowSurfaceThunk = (IntPtr)(delegate* unmanaged[Cdecl]<IntPtr, IntPtr, int, int, int, void>)&OnWindowSurfaceNative;
+    private static unsafe IntPtr s_windowTouchThunk = (IntPtr)(delegate* unmanaged[Cdecl]<IntPtr, int, OpenHarmonyNativeTouchPoint*, int, int, float, float, void>)&OnWindowTouchNative;
+    private static unsafe IntPtr s_windowFrameThunk = (IntPtr)(delegate* unmanaged[Cdecl]<IntPtr, long, long, void>)&OnWindowFrameNative;
+    private static unsafe IntPtr s_windowPinchThunk = (IntPtr)(delegate* unmanaged[Cdecl]<IntPtr, int, double, float, float, void>)&OnWindowPinchNative;
     private static readonly List<OpenHarmonyLifecycleEvent> s_pending = new();
     // Activations that arrived before any subscriber: replayed in order by the Activation
     // add accessor. The host can deliver the cold-start want while the application assembly
@@ -355,6 +379,14 @@ public static partial class OpenHarmonyBridge
     // Back-press handlers in registration order; CompleteBackPressed walks them newest first.
     private static BackPressedHandler? s_backPressedHandlers;
     private static OpenHarmonySurfaceInfo? s_surface;
+    // MULTIWINDOW-L M2: the last surface report per window id (the M1 host registry id; the
+    // primary window is "main"). The untagged s_surface above stays the primary window's
+    // historical slot; this map is what a late WindowSurfaceChanged subscriber replays.
+    private static readonly Dictionary<string, OpenHarmonySurfaceInfo> s_windowSurfaces = new(StringComparer.Ordinal);
+    private static Action<string, OpenHarmonySurfaceInfo>? s_windowSurfaceHandlers;
+    private static Action<string, OpenHarmonyTouchEventArgs>? s_windowTouchHandlers;
+    private static Action<string, OpenHarmonyFrameEventArgs>? s_windowFrameHandlers;
+    private static Action<string, int, double, float, float>? s_windowPinchHandlers;
     private static Action<OpenHarmonyAppContext>? s_initializedHandlers;
     private static Action<OpenHarmonyLifecycleEvent>? s_lifecycleHandlers;
     private static Action<OpenHarmonyActivationEventArgs>? s_activationHandlers;
@@ -848,6 +880,116 @@ public static partial class OpenHarmonyBridge
         get { lock (s_sync) { return s_surface; } }
     }
 
+    /// <summary>
+    /// Raised with the window id whenever a per-window surface report arrives (MULTIWINDOW-L
+    /// M2-ow). The id is the M1 host registry id ("main" for the primary window). A late
+    /// subscriber replays the last report of every window, so a window whose surface came up
+    /// before the subscriber registered is still seen.
+    /// </summary>
+    public static event Action<string, OpenHarmonySurfaceInfo>? WindowSurfaceChanged
+    {
+        add
+        {
+            // A ready surface is also the signal that the host is fully up; pick up a context
+            // that landed after Attach() before replaying, like the untagged event above.
+            RefreshContext();
+            List<KeyValuePair<string, OpenHarmonySurfaceInfo>> replay;
+            lock (s_sync)
+            {
+                s_windowSurfaceHandlers += value;
+                replay = new List<KeyValuePair<string, OpenHarmonySurfaceInfo>>(s_windowSurfaces);
+            }
+            foreach (KeyValuePair<string, OpenHarmonySurfaceInfo> pair in replay)
+            {
+                value(pair.Key, pair.Value);
+            }
+        }
+        remove
+        {
+            lock (s_sync)
+            {
+                s_windowSurfaceHandlers -= value;
+            }
+        }
+    }
+
+    /// <summary>The last surface reported for a window id (null until one arrives).</summary>
+    public static OpenHarmonySurfaceInfo? GetWindowSurface(string windowId)
+    {
+        lock (s_sync)
+        {
+            return s_windowSurfaces.TryGetValue(windowId, out OpenHarmonySurfaceInfo? info) ? info : null;
+        }
+    }
+
+    /// <summary>
+    /// Raised for every per-window touch/mouse event (MULTIWINDOW-L M2-ow) with the window id
+    /// first; the payload matches <see cref="Touch"/>. Transient: no replay for late
+    /// subscribers.
+    /// </summary>
+    public static event Action<string, OpenHarmonyTouchEventArgs>? WindowTouch
+    {
+        add { lock (s_sync) { s_windowTouchHandlers += value; } }
+        remove { lock (s_sync) { s_windowTouchHandlers -= value; } }
+    }
+
+    /// <summary>
+    /// Raised for every per-window frame tick (MULTIWINDOW-L M2-ow) with the window id first;
+    /// the payload matches <see cref="Frame"/>. Transient: no replay for late subscribers.
+    /// </summary>
+    public static event Action<string, OpenHarmonyFrameEventArgs>? WindowFrame
+    {
+        add { lock (s_sync) { s_windowFrameHandlers += value; } }
+        remove { lock (s_sync) { s_windowFrameHandlers -= value; } }
+    }
+
+    /// <summary>
+    /// Raised for every per-window pinch (MULTIWINDOW-L M4-04) with the window id first; the
+    /// payload matches <see cref="Pinch"/>. Transient: no replay for late subscribers. The
+    /// first subscriber registers the native entry (idempotent; off-device the registration is
+    /// a logged no-op).
+    /// </summary>
+    public static event Action<string, int, double, float, float>? WindowPinch
+    {
+        add
+        {
+            RegisterWindowPinchListener();
+            lock (s_sync)
+            {
+                s_windowPinchHandlers += value;
+            }
+        }
+        remove
+        {
+            lock (s_sync)
+            {
+                s_windowPinchHandlers -= value;
+            }
+        }
+    }
+
+    private static bool _windowPinchRegistered;
+    private static unsafe IntPtr _windowPinchCallback =
+        (IntPtr)(delegate* unmanaged[Cdecl]<IntPtr, int, double, float, float, void>)&OnWindowPinchNative;
+
+    /// <summary>Registers the per-window pinch listener with the host (idempotent, device only).</summary>
+    public static void RegisterWindowPinchListener()
+    {
+        if (_windowPinchRegistered)
+        {
+            return;
+        }
+        _windowPinchRegistered = true;
+        try
+        {
+            RegisterWindowPinchNative(_windowPinchCallback);
+        }
+        catch (Exception)
+        {
+            // Not running on a device: per-window pinch reports never arrive.
+        }
+    }
+
     public static event Action<OpenHarmonyLifecycleEvent>? LifecycleChanged
     {
         add
@@ -1144,6 +1286,22 @@ public static partial class OpenHarmonyBridge
                 // export keeps working (no activation delivery, one status line).
                 RegisterActivationNative(s_activationThunk);
                 RegisterActivationNative(s_activationThunk);
+                // MULTIWINDOW-L M2 (M2-ow): the per-window channel. Optional like the rest of
+                // this block: an older host library keeps the single-window path.
+                RegisterWindowBridgeNative(
+                    s_windowSurfaceThunk,
+                    s_windowTouchThunk,
+                    s_windowFrameThunk);
+                // MULTIWINDOW-L M4-04: the per-window pinch channel; separate registration so
+                // an older host library without the export keeps the M2 channels above.
+                try
+                {
+                    RegisterWindowPinchNative(s_windowPinchThunk);
+                }
+                catch (Exception ex)
+                {
+                    WriteStatus($"window pinch registration skipped: {ex.GetType().Name}");
+                }
             }
             catch (Exception ex)
             {
@@ -1684,6 +1842,129 @@ public static partial class OpenHarmonyBridge
         }
     }
 
+    // MULTIWINDOW-L M2 (M2-ow): the per-window native entries. The host's window registry has
+    // the XComponent's id at the callback and forwards it here; an empty id is dropped (the
+    // untagged entry above already carries the primary path).
+    [UnmanagedCallersOnly(CallConvs = new[] { typeof(CallConvCdecl) })]
+    private static void OnWindowSurfaceNative(IntPtr windowIdUtf8, IntPtr window, int width, int height, int state)
+    {
+        try
+        {
+            string windowId = windowIdUtf8 == IntPtr.Zero ? string.Empty : Marshal.PtrToStringUTF8(windowIdUtf8) ?? string.Empty;
+            if (windowId.Length == 0)
+            {
+                return;
+            }
+            var info = new OpenHarmonySurfaceInfo(window, width, height, (OpenHarmonySurfaceState)state);
+            // The surface becoming ready is the point where the host (payload extraction, app
+            // context) is fully up, like the untagged entry above.
+            RefreshContext();
+            Action<string, OpenHarmonySurfaceInfo>? handlers;
+            lock (s_sync)
+            {
+                s_windowSurfaces[windowId] = info;
+                handlers = s_windowSurfaceHandlers;
+            }
+            WriteStatus($"window surface: id={windowId} state={info.State} window=0x{window.ToInt64():x} {width}x{height}");
+            handlers?.Invoke(windowId, info);
+        }
+        catch (Exception ex)
+        {
+            ReportCallbackFailure("window surface", ex);
+        }
+    }
+
+    [UnmanagedCallersOnly(CallConvs = new[] { typeof(CallConvCdecl) })]
+    private static unsafe void OnWindowTouchNative(IntPtr windowIdUtf8, int type, OpenHarmonyNativeTouchPoint* points,
+        int count, int pointerId, float x, float y)
+    {
+        try
+        {
+            string windowId = windowIdUtf8 == IntPtr.Zero ? string.Empty : Marshal.PtrToStringUTF8(windowIdUtf8) ?? string.Empty;
+            if (windowId.Length == 0)
+            {
+                return;
+            }
+            // Same copy-out contract as OnTouchNative: the points array is borrowed for the call.
+            OpenHarmonyTouchPoint[] reported = count > 0
+                ? new OpenHarmonyTouchPoint[count]
+                : Array.Empty<OpenHarmonyTouchPoint>();
+            float primaryX = x;
+            float primaryY = y;
+            for (int i = 0; i < count; i++)
+            {
+                OpenHarmonyNativeTouchPoint point = points[i];
+                reported[i] = new OpenHarmonyTouchPoint(point.Id, point.X, point.Y);
+                if (point.Id == pointerId)
+                {
+                    primaryX = point.X;
+                    primaryY = point.Y;
+                }
+            }
+            var args = new OpenHarmonyTouchEventArgs((OpenHarmonyTouchAction)type, primaryX, primaryY, count, pointerId, reported);
+            Action<string, OpenHarmonyTouchEventArgs>? handlers;
+            lock (s_sync)
+            {
+                handlers = s_windowTouchHandlers;
+            }
+            handlers?.Invoke(windowId, args);
+        }
+        catch (Exception ex)
+        {
+            ReportCallbackFailure("window touch", ex);
+        }
+    }
+
+    [UnmanagedCallersOnly(CallConvs = new[] { typeof(CallConvCdecl) })]
+    private static void OnWindowFrameNative(IntPtr windowIdUtf8, long timestamp, long targetTimestamp)
+    {
+        try
+        {
+            string windowId = windowIdUtf8 == IntPtr.Zero ? string.Empty : Marshal.PtrToStringUTF8(windowIdUtf8) ?? string.Empty;
+            if (windowId.Length == 0)
+            {
+                return;
+            }
+            Action<string, OpenHarmonyFrameEventArgs>? handlers;
+            lock (s_sync)
+            {
+                handlers = s_windowFrameHandlers;
+            }
+            if (handlers is null)
+            {
+                return;
+            }
+            handlers(windowId, new OpenHarmonyFrameEventArgs(timestamp, targetTimestamp));
+        }
+        catch (Exception ex)
+        {
+            ReportCallbackFailure("window frame", ex);
+        }
+    }
+
+    [UnmanagedCallersOnly(CallConvs = new[] { typeof(CallConvCdecl) })]
+    private static void OnWindowPinchNative(IntPtr windowIdUtf8, int phase, double scale, float x, float y)
+    {
+        try
+        {
+            string windowId = windowIdUtf8 == IntPtr.Zero ? string.Empty : Marshal.PtrToStringUTF8(windowIdUtf8) ?? string.Empty;
+            if (windowId.Length == 0)
+            {
+                return;
+            }
+            Action<string, int, double, float, float>? handlers;
+            lock (s_sync)
+            {
+                handlers = s_windowPinchHandlers;
+            }
+            handlers?.Invoke(windowId, phase, scale, x, y);
+        }
+        catch (Exception ex)
+        {
+            ReportCallbackFailure("window pinch", ex);
+        }
+    }
+
     [UnmanagedCallersOnly(CallConvs = new[] { typeof(CallConvCdecl) })]
     private static void OnNodeNative(IntPtr node)
     {
@@ -1799,6 +2080,15 @@ public static partial class OpenHarmonyCanvas
 
     [LibraryImport(HostLibrary, EntryPoint = "ohos_host_draw_present")]
     private static partial int PresentNative();
+
+    // MULTIWINDOW-L M3 (per-window rendering): the primary window keeps Begin/Present above; a
+    // secondary window begins/presents through these, which resolve the M1 registry id to that
+    // window's own canvas and surface.
+    [LibraryImport(HostLibrary, EntryPoint = "ohos_host_draw_begin_window", StringMarshalling = StringMarshalling.Utf8)]
+    private static partial int BeginWindowNative(string windowId, int width, int height);
+
+    [LibraryImport(HostLibrary, EntryPoint = "ohos_host_draw_present_window", StringMarshalling = StringMarshalling.Utf8)]
+    private static partial int PresentWindowNative(string windowId);
 
     /// <summary>Creates/resizes the canvas for the current surface. Safe to call repeatedly.</summary>
     public static bool Begin(int width, int height)
@@ -2009,6 +2299,34 @@ public static partial class OpenHarmonyCanvas
         try
         {
             return PresentNative() == 0;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    /// <summary>Begins a frame on the registered window's own canvas (MULTIWINDOW-L M3). The
+    /// id is the M1 registry id ("main" for the primary). The drawing primitives after this
+    /// call target that window until another Begin/BeginWindow.</summary>
+    public static bool BeginWindow(string windowId, int width, int height)
+    {
+        try
+        {
+            return BeginWindowNative(windowId, width, height) == 0;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    /// <summary>Presents the frame last begun for the window id into that window's surface.</summary>
+    public static bool PresentWindow(string windowId)
+    {
+        try
+        {
+            return PresentWindowNative(windowId) == 0;
         }
         catch
         {

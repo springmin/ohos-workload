@@ -85,6 +85,24 @@ void ohos_host_register_bridge(void* lifecycle, void* node, void* surface);
 /// frame: void (*)(int64_t timestamp, int64_t targetTimestamp). Both may be NULL.
 void ohos_host_register_input(void* touch, void* frame);
 
+/// Per-window bridge callbacks (MULTIWINDOW-L M2, M2-ow; registered by the managed bridge in
+/// addition to the untagged slots above). Every callback takes the M1 host registry's window
+/// id ("main" for the primary XComponent) as its first argument:
+///   surface: void (*)(const char* id, void* window, int width, int height, int state)
+///   touch:   void (*)(const char* id, int type, const OhosTouchPoint* points, int count,
+///                     int pointerId, float x, float y)
+///   frame:   void (*)(const char* id, int64_t timestamp, int64_t targetTimestamp)
+/// Any of them may be NULL; a later call replaces the earlier set. The definitions live in
+/// host_window_bridge.c (pure C, unit-tested by scripts/selftest-host-window-bridge.sh).
+void ohos_host_register_window_bridge(void* surface, void* touch, void* frame);
+
+/// MULTIWINDOW-L M4-04: registers the per-window pinch callback (optional; separate from the
+/// M2 register so its arity stays frozen). The callback is
+/// void (*)(const char* id, int phase, double scale, float x, float y): host_napi.cpp computes
+/// the phase/scale/centre from each window's own touch stream. May be NULL; a later call
+/// replaces the earlier one. Defined in host_window_bridge.c.
+void ohos_host_register_window_pinch(void* callback);
+
 /// Registers the managed text-input callback (optional; apps without text input skip it).
 void ohos_host_register_text_input(void* callback);
 
@@ -626,6 +644,12 @@ int ohos_host_fill_surface(unsigned int argb);
 // full renderer (Microsoft.Maui.Graphics/Skia) is attached. All calls are no-ops when there
 // is no surface.
 int  ohos_host_draw_begin(int width, int height);
+/// Per-window drawing (MULTIWINDOW-L M3): begins/presents a frame on the registered window
+/// identified by its M1 registry id (the primary window is "main"). Each target keeps its
+/// own canvas/bitmap, so interleaving windows of different sizes does not rebuild the canvas
+/// every frame; the drawing primitives above always operate on the canvas begun last.
+/// Returns 0 on success, -1 for an unknown window, a dead/NULL surface or a failed begin.
+int  ohos_host_draw_begin_window(const char* window_id, int width, int height);
 void ohos_host_draw_clear(unsigned int argb);
 void ohos_host_draw_rect(int x, int y, int width, int height, unsigned int argb, int filled);
 int  ohos_host_draw_text(int x, int y, const char* utf8, float size, unsigned int argb);
@@ -664,6 +688,9 @@ int  ohos_host_draw_image_bytes_sized(const void* data, int length, float x, flo
 /// flattened by the caller. filled = 1 fills (closed), otherwise strokes with stroke_width.
 void ohos_host_draw_polyline(const float* xy, int count, int closed, unsigned int argb, int filled, float stroke_width);
 int  ohos_host_draw_present(void);
+/// Presents the frame last begun for the window id (ohos_host_draw_begin_window) from that
+/// window's own canvas into that window's registered surface.
+int  ohos_host_draw_present_window(const char* window_id);
 
 // --- accessibility shadow tree (native node table) ---------------------------------
 // The managed runtime publishes one node per rendered frame through

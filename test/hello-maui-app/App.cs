@@ -145,21 +145,121 @@ public sealed class App : Application
         {
             MediaProbe.Start(probeWindow);
         }
-        // MULTIWINDOW-M deterministic device triggers (documented in the M plan): "demo" drives
-        // create -> move -> resize -> close with a status line per step, "open" creates and
-        // leaves the child up for the touch/drag checks, "close" destroys it.
+        // MULTIWINDOW-M/L device triggers (documented in the M/L plans): "demo" drives the
+        // shell-drawn child create -> move -> resize -> close, "open" opens a real second MAUI
+        // window on the subwindow XComponent (M3; falls back to the drawn child when the
+        // per-window path is unavailable), "close" destroys whichever child is live.
         if (uri.StartsWith("app://subwindow/demo", StringComparison.OrdinalIgnoreCase))
         {
             RunSubWindowDemo();
         }
         else if (uri.StartsWith("app://subwindow/open", StringComparison.OrdinalIgnoreCase))
         {
-            OpenHarmonyBridge.WriteStatus($"[hello-maui-app] subwindow open: supported={OpenHarmonySubWindow.IsSupported} create queued={OpenHarmonySubWindow.Create("maui-demo", 120, 160, 720, 480, "MAUI child")}");
+            OpenManagedSubWindow();
         }
         else if (uri.StartsWith("app://subwindow/close", StringComparison.OrdinalIgnoreCase))
         {
-            OpenHarmonyBridge.WriteStatus($"[hello-maui-app] subwindow close: queued={OpenHarmonySubWindow.Close()}");
+            CloseSubWindow();
         }
+    }
+
+    // One live child at a time: the managed window when OpenWindow adopted it on the subwindow
+    // XComponent, or the shell-drawn child as the degradation path.
+    private static Window? s_childWindow;
+    private static int s_childTaps;
+
+    /// <summary>
+    /// MULTIWINDOW-L M3 entry: opens a real second MAUI window. Application.OpenWindow routes
+    /// through the slice's application handler, which asks the shell for a subwindow XComponent
+    /// (deferred surface) and binds the window when the surface reports in. When the managed
+    /// path is unavailable (no shell sink or an older host), the M shell-drawn child is created
+    /// instead so the trigger never leaves the user with nothing.
+    /// </summary>
+    private static void OpenManagedSubWindow()
+    {
+        if (s_childWindow is not null && Application.Current?.Windows.Contains(s_childWindow) == true)
+        {
+            OpenHarmonyBridge.WriteStatus("[hello-maui-app] subwindow open: the managed child window is already open");
+            return;
+        }
+        var application = Application.Current;
+        if (application is null)
+        {
+            return;
+        }
+        var child = new Window(BuildChildWindowPage()) { Title = "MAUI child" };
+        s_childWindow = child;
+        application.OpenWindow(child);
+        var result = (application.Handler as OpenHarmonyApplicationHandler)?.LastOpenWindowResult
+            ?? OpenHarmonyOpenWindowResult.None;
+        OpenHarmonyBridge.WriteStatus(
+            $"[hello-maui-app] subwindow open(managed): supported={OpenHarmonySubWindow.IsSupported} result={result}");
+        if (result != OpenHarmonyOpenWindowResult.OpenedWindow)
+        {
+            s_childWindow = null;
+            OpenHarmonyBridge.WriteStatus(
+                $"[hello-maui-app] subwindow open(fallback drawn): queued={OpenHarmonySubWindow.Create("maui-demo", 120, 160, 720, 480, "MAUI child")}");
+        }
+    }
+
+    /// <summary>Closes the live child: the managed window through CloseWindow (the slice then
+    /// asks the shell to destroy the subwindow), the drawn child through the shell command.</summary>
+    private static void CloseSubWindow()
+    {
+        var application = Application.Current;
+        if (s_childWindow is not null && application?.Windows.Contains(s_childWindow) == true)
+        {
+            application.CloseWindow(s_childWindow);
+            OpenHarmonyBridge.WriteStatus("[hello-maui-app] subwindow close(managed): queued");
+            s_childWindow = null;
+            return;
+        }
+        s_childWindow = null;
+        OpenHarmonyBridge.WriteStatus($"[hello-maui-app] subwindow close(drawn): queued={OpenHarmonySubWindow.Close()}");
+    }
+
+    /// <summary>The second MAUI window's content: interactive managed views drawn by the
+    /// per-window renderer into the subwindow surface (touch feedback proves input routing).</summary>
+    private static ContentPage BuildChildWindowPage()
+    {
+        var title = new Label { Text = "MAUI child window", FontSize = 30, HorizontalOptions = LayoutOptions.Center };
+        var counter = new Label { Text = "child taps: 0", FontSize = 26, HorizontalOptions = LayoutOptions.Center };
+        var button = new Button { Text = "tap the child", FontSize = 30 };
+        button.Clicked += (_, _) =>
+        {
+            s_childTaps++;
+            counter.Text = $"child taps: {s_childTaps}";
+            OpenHarmonyBridge.WriteStatus($"[hello-maui-app] child window tap #{s_childTaps}");
+        };
+        // MULTIWINDOW-L M4 device probe: a text entry in the second window. Tapping it must
+        // raise the system IME for the child only (the per-window text focus request), and the
+        // typed text must land in this window's Entry (tagged text events).
+        var entryStatus = new Label { Text = "child entry: seed", FontSize = 22, HorizontalOptions = LayoutOptions.Center };
+        var entry = new Entry { Text = "seed", FontSize = 26, Placeholder = "type in the child" };
+        entry.TextChanged += (_, _) =>
+        {
+            entryStatus.Text = $"child entry: {entry.Text}";
+            OpenHarmonyBridge.WriteStatus($"[hello-maui-app] child entry text '{entry.Text}'");
+        };
+        // MULTIWINDOW-L M4-04 device probe: per-window pinch. The gesture can only fire through
+        // the child window's own routed pinch stream (the shell computes it from the child
+        // XComponent's two-finger touches, tagged with the child surface id).
+        var pinchStatus = new Label { Text = "child pinch: -", FontSize = 22, HorizontalOptions = LayoutOptions.Center };
+        var pinchGesture = new PinchGestureRecognizer();
+        pinchGesture.PinchUpdated += (_, e) =>
+        {
+            pinchStatus.Text = $"child pinch: {e.Status} {e.Scale:0.00}";
+            OpenHarmonyBridge.WriteStatus($"[hello-maui-app] child pinch {e.Status} scale={e.Scale:0.00}");
+        };
+        var pinchLabel = new Label { Text = "pinch the child", FontSize = 26, HorizontalOptions = LayoutOptions.Center };
+        pinchLabel.GestureRecognizers.Add(pinchGesture);
+        // MULTIWINDOW-L M4-01: a continuously running indicator keeps this window rendering every
+        // vsync during the dual-window frame-rate round (the primary page has its own spinner).
+        var childSpinner = new ActivityIndicator { IsRunning = true, HeightRequest = 24 };
+        return new ContentPage
+        {
+            Content = new VerticalStackLayout { Padding = 32, Spacing = 24, Children = { title, counter, entryStatus, entry, pinchStatus, pinchLabel, childSpinner, button } },
+        };
     }
 
     /// <summary>
@@ -514,17 +614,43 @@ public sealed class App : Application
         subWindowOpen.Clicked += (_, _) =>
         {
             subWindowStatus.Text = OpenHarmonySubWindow.IsSupported
-                ? "subwindow: create(120,160 720x480) queued"
+                ? "subwindow: managed OpenWindow queued"
                 : "subwindow: the shell reports no subwindow sink";
-            OpenHarmonySubWindow.Create("maui-demo", 120, 160, 720, 480, "MAUI child");
+            OpenManagedSubWindow();
         };
-        subWindowMove.Clicked += (_, _) => OpenHarmonySubWindow.Move(420, 360);
-        subWindowResize.Clicked += (_, _) => OpenHarmonySubWindow.Resize(900, 600);
-        subWindowClose.Clicked += (_, _) => OpenHarmonySubWindow.Close();
+        subWindowMove.Clicked += (_, _) =>
+        {
+            if (s_childWindow is not null)
+            {
+                OpenHarmonyBridge.WriteStatus("[hello-maui-app] subwindow move: the managed child is moved with the OS title bar");
+                return;
+            }
+            OpenHarmonySubWindow.Move(420, 360);
+        };
+        subWindowResize.Clicked += (_, _) =>
+        {
+            if (s_childWindow is not null)
+            {
+                OpenHarmonyBridge.WriteStatus("[hello-maui-app] subwindow resize: the managed child follows its surface size");
+                return;
+            }
+            OpenHarmonySubWindow.Resize(900, 600);
+        };
+        subWindowClose.Clicked += (_, _) => CloseSubWindow();
         OpenHarmonySubWindow.Changed += (_, e) =>
         {
             // Device evidence: every transition reaches the managed side (and the status file).
-            OpenHarmonyBridge.WriteStatus($"[hello-maui-app] subwindow event {e.Kind}: id={e.WindowId} rect={e.Bounds.X:0},{e.Bounds.Y:0} {e.Bounds.Width:0}x{e.Bounds.Height:0}{(e.Message is null ? "" : " / " + e.Message)}");
+            // M4: text events log their payload and key events their code/type, so a device
+            // round can read the per-window input routing straight out of hilog.
+            string m4Input = e.Kind switch
+            {
+                OpenHarmonySubWindowEventKind.TextInput or OpenHarmonySubWindowEventKind.TextSubmitted =>
+                    $" text='{e.Text}'",
+                OpenHarmonySubWindowEventKind.TextComposition => $" composition='{e.Text}' offset={e.CompositionOffset}",
+                OpenHarmonySubWindowEventKind.Key => $" key={e.KeyCode}/{e.KeyEventType}",
+                _ => string.Empty,
+            };
+            OpenHarmonyBridge.WriteStatus($"[hello-maui-app] subwindow event {e.Kind}: id={e.WindowId} surface={e.SurfaceId} rect={e.Bounds.X:0},{e.Bounds.Y:0} {e.Bounds.Width:0}x{e.Bounds.Height:0}{m4Input}{(e.Message is null ? "" : " / " + e.Message)}");
             Microsoft.Maui.ApplicationModel.MainThread.BeginInvokeOnMainThread(() =>
                 subWindowStatus.Text = $"subwindow {e.Kind}: id={e.WindowId} rect={e.Bounds.X:0},{e.Bounds.Y:0} {e.Bounds.Width:0}x{e.Bounds.Height:0}{(e.Message is null ? "" : " / " + e.Message)}");
         };
@@ -534,6 +660,12 @@ public sealed class App : Application
             Microsoft.Maui.ApplicationModel.MainThread.BeginInvokeOnMainThread(() =>
                 subWindowStatus.Text = $"subwindow touch: action={e.Action} ({e.X:0},{e.Y:0}) pointers={e.PointerCount}");
         };
+        // MULTIWINDOW-L M4-04: the per-window pinch stream. A report tagged with a window id is
+        // the device evidence that each window's gesture routing is independent.
+        OpenHarmonyBridge.WindowPinch += (id, phase, scale, x, y) =>
+            OpenHarmonyBridge.WriteStatus($"[hello-maui-app] per-window pinch window={id} phase={phase} scale={scale:0.00} at {x:0},{y:0}");
+        // MULTIWINDOW-L M4-01/M4-06: per-window frame pacing evidence (framestats lines).
+        WindowFrameStats.Install();
         var subWindowRow = new HorizontalStackLayout { Spacing = 8 };
         subWindowRow.Add(subWindowOpen);
         subWindowRow.Add(subWindowMove);

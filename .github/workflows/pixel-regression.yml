@@ -42,7 +42,7 @@ on:
         description: 'maui-ohos commit SHA to compile (defaults to the pinned feature/openharmony tip)'
         required: false
         type: string
-        default: 'b093e3382550670936c1c399e3db6c1114cbc302'
+        default: 'd4ff7d445e28dd2aa275491255b3488e8ad343c2'
 
 # Least privilege: the job only reads this repository and the public springmin/maui-ohos fork;
 # no step pushes anywhere.
@@ -51,12 +51,16 @@ permissions:
 
 # Reproducible cross-repo compile: the MAUI slice is checked out at an exact commit, not the
 # mutable feature/openharmony branch, so a push to the fork cannot change what this gate compiles.
-# The default is the feature/openharmony tip: b093e33825 (MULTIWINDOW-M: the in-app subwindow
+# The default is the feature/openharmony tip: 1a15f56b30 (MULTIWINDOW-L M2: the slice's app host
+# is windowed - per-window surface/renderer state and the window-id routing entries
+# RouteSurface/RouteTouch/RouteFrame; managed-only, the rasterizer output does not move and the
+# interaction harness moves to 629/631 floor 611 - the 22 dual-window checks driven through this
+# repository's window-id tagged hosting bridge), on top of b093e33825 (MULTIWINDOW-M: the in-app subwindow
 # bridge is shell/host/managed - the shell's Index.ets subwindow controller and named-route
 # SubWindow page, the host's ohos_host_sub_window_command / ohos_host_sub_window_event_listener
 # exports and the slice's OpenHarmonySubWindow command/event state machine; SEC-SCAN-4 5f3efd55e5
 # masks password Entry text in the accessibility shadow tree; the rasterizer output does not move
-# and the interaction harness moves to 607/609 floor 589), on top of ed02203bfd (MULTIWINDOW-S: the
+# and the interaction harness moved to 607/609 floor 589), on top of ed02203bfd (MULTIWINDOW-S: the
 # managed app host arranges on a live surface Changed and keeps the last frame on Destroyed/0x0 -
 # managed-only, the rasterizer output does not move and the interaction harness moves to 599/601
 # floor 581), on top of d5384d6cc3 (FIX-A11YFLYOUT: the FlyoutPage
@@ -127,11 +131,11 @@ permissions:
 # + T2 WebView CookieContainer sync 8241f1b3, on top of the W-series webview wiring d6325990 and
 # the SEC-SCAN-3 S3-DL3 dot-dot deep-link rejection, on top of the P2c deep-link routing, P2b-IMG,
 # P1b-LIST and P1a-ANIM batches).
-# The interaction harness pins 607 checks / total 609 / floor 589; advance the pin in lockstep
+# The interaction harness pins 629 checks / total 631 / floor 611; advance the pin in lockstep
 # with the interaction gate and change it deliberately (workflow_dispatch can compile any other
 # commit SHA).
 env:
-  MAUI_OHOS_REF: ${{ github.event.inputs.maui_ohos_ref || 'b093e3382550670936c1c399e3db6c1114cbc302' }}
+  MAUI_OHOS_REF: ${{ github.event.inputs.maui_ohos_ref || 'd4ff7d445e28dd2aa275491255b3488e8ad343c2' }}
   # Same as the interaction gate: keep the setup-dotnet preview SDK in a cacheable per-user path
   # instead of the runner's /usr/share/dotnet; a newer 11.0.x preview is still downloaded (the
   # action re-resolves the channel), the cache only skips the ~200 MB download when it moved.

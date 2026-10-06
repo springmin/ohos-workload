@@ -10,6 +10,7 @@
 // Native HUKS engine for the SecureStorage bridge (P2a-HUKS); answers keystore requests
 // in-process when the device ships libhuks_ndk.z.so (see openharmony_host.c below).
 #include "host_keystore.h"
+#include "host_window_registry.h"  // MULTIWINDOW-L M3: per-window draw targets resolve the surface
 
 #include <sensors/vibrator.h>
 #include <network/netmanager/net_connection.h>
@@ -4031,36 +4032,150 @@ static OH_Drawing_Canvas* g_canvas = NULL;
 static int g_canvas_width = 0;
 static int g_canvas_height = 0;
 
-int ohos_host_draw_begin(int width, int height) {
-    if (width <= 0 || height <= 0) {
+// MULTIWINDOW-L M3: one canvas+bitmap per draw target (window). The drawing primitives keep
+// using the single g_canvas/g_canvas_bitmap pair, which ohos_host_draw_begin* points at the
+// target begun last; the per-target store is what makes interleaving two windows of different
+// sizes cheap (a shared canvas would be destroyed and rebuilt twice per frame) and impossible
+// to cross (the primary's legacy functions resolve their own slot, never "whatever is current").
+// The primary/legacy target uses an empty id; the windowed functions key by the M1 registry id.
+#define OHOS_DRAW_TARGET_MAX 8
+typedef struct {
+    char id[OHOS_HOST_WINDOW_ID_MAX + 1];
+    OH_Drawing_Canvas* canvas;
+    OH_Drawing_Bitmap* bitmap;
+    int width;
+    int height;
+    // Secondary present telemetry (primary uses the historical OhosHostLogPresent statics).
+    int log_w;
+    int log_h;
+    long frames;
+    long start_ms;
+    long last_ms;
+    long max_gap_ms;
+    long gap_sum_ms;
+    long gap_count;
+} OhosDrawTarget;
+
+static OhosDrawTarget g_draw_targets[OHOS_DRAW_TARGET_MAX];
+static int g_draw_target_count = 0;
+
+static OhosDrawTarget* OhosDrawTargetFind(const char* id, int create) {
+    for (int i = 0; i < g_draw_target_count; i++) {
+        if (strcmp(g_draw_targets[i].id, id) == 0) {
+            return &g_draw_targets[i];
+        }
+    }
+    if (!create || g_draw_target_count >= OHOS_DRAW_TARGET_MAX) {
+        return NULL;
+    }
+    OhosDrawTarget* target = &g_draw_targets[g_draw_target_count++];
+    memset(target, 0, sizeof(*target));
+    snprintf(target->id, sizeof(target->id), "%s", id);
+    target->log_w = -1;
+    target->log_h = -1;
+    return target;
+}
+
+// Points the drawing globals at the target's canvas (creating/recreating it for the size).
+static int OhosDrawTargetBegin(OhosDrawTarget* target, int width, int height, int legacy_log) {
+    if (target == NULL || width <= 0 || height <= 0) {
         return -1;
     }
-    if (g_canvas != NULL && g_canvas_width == width && g_canvas_height == height) {
+    if (target->canvas != NULL && target->width == width && target->height == height) {
+        g_canvas = target->canvas;
+        g_canvas_bitmap = target->bitmap;
+        g_canvas_width = width;
+        g_canvas_height = height;
         return 0;
     }
-    if (g_canvas != NULL) {
-        OH_Drawing_CanvasDestroy(g_canvas);
+    if (g_canvas == target->canvas) {
         g_canvas = NULL;
-    }
-    if (g_canvas_bitmap != NULL) {
-        OH_Drawing_BitmapDestroy(g_canvas_bitmap);
         g_canvas_bitmap = NULL;
     }
-    g_canvas_bitmap = OH_Drawing_BitmapCreate();
-    if (g_canvas_bitmap == NULL) {
+    if (target->canvas != NULL) {
+        OH_Drawing_CanvasDestroy(target->canvas);
+        target->canvas = NULL;
+    }
+    if (target->bitmap != NULL) {
+        OH_Drawing_BitmapDestroy(target->bitmap);
+        target->bitmap = NULL;
+    }
+    OH_Drawing_Bitmap* bitmap = OH_Drawing_BitmapCreate();
+    if (bitmap == NULL) {
         return -1;
     }
     OH_Drawing_BitmapFormat format = { COLOR_FORMAT_RGBA_8888, ALPHA_FORMAT_OPAQUE };
-    OH_Drawing_BitmapBuild(g_canvas_bitmap, (uint32_t)width, (uint32_t)height, &format);
-    g_canvas = OH_Drawing_CanvasCreate();
-    if (g_canvas == NULL) {
+    OH_Drawing_BitmapBuild(bitmap, (uint32_t)width, (uint32_t)height, &format);
+    OH_Drawing_Canvas* canvas = OH_Drawing_CanvasCreate();
+    if (canvas == NULL) {
+        OH_Drawing_BitmapDestroy(bitmap);
         return -1;
     }
-    OH_Drawing_CanvasBind(g_canvas, g_canvas_bitmap);
+    OH_Drawing_CanvasBind(canvas, bitmap);
+    target->canvas = canvas;
+    target->bitmap = bitmap;
+    target->width = width;
+    target->height = height;
+    g_canvas = canvas;
+    g_canvas_bitmap = bitmap;
     g_canvas_width = width;
     g_canvas_height = height;
-    fprintf(stderr, "[openharmony-host] canvas %dx%d ready\n", width, height);
+    if (legacy_log) {
+        fprintf(stderr, "[openharmony-host] canvas %dx%d ready\n", width, height);
+    }
     return 0;
+}
+
+int ohos_host_draw_begin(int width, int height) {
+    return OhosDrawTargetBegin(OhosDrawTargetFind("", 1), width, height, 1);
+}
+
+// Windowed draw refusals/failures are logged at most once per window id (the frame loop would
+// otherwise flood the status channel at 60 fps).
+#define OHOS_DRAW_FAIL_LOG_MAX 8
+static char g_draw_fail_logged[OHOS_DRAW_FAIL_LOG_MAX][OHOS_HOST_WINDOW_ID_MAX + 1];
+static int g_draw_fail_logged_count = 0;
+
+static int OhosDrawFailLogFirst(const char* id) {
+    for (int i = 0; i < g_draw_fail_logged_count; i++) {
+        if (strcmp(g_draw_fail_logged[i], id) == 0) {
+            return 0;
+        }
+    }
+    if (g_draw_fail_logged_count >= OHOS_DRAW_FAIL_LOG_MAX) {
+        return 0;
+    }
+    snprintf(g_draw_fail_logged[g_draw_fail_logged_count], OHOS_HOST_WINDOW_ID_MAX + 1, "%s", id);
+    g_draw_fail_logged_count++;
+    return 1;
+}
+
+int ohos_host_draw_begin_window(const char* window_id, int width, int height) {
+    if (window_id == NULL || window_id[0] == '\0') {
+        return -1;
+    }
+    ohos_host_window_record record;
+    if (ohos_host_window_lookup(window_id, &record) != OHOS_HOST_WINDOW_OK) {
+        if (OhosDrawFailLogFirst(window_id)) {
+            fprintf(stderr, "[openharmony-host] draw begin window '%s' refused: unknown window\n", window_id);
+            fflush(stderr);
+        }
+        return -1;
+    }
+    if (record.surface == NULL || record.state == (int)OHOS_SURFACE_DESTROYED) {
+        if (OhosDrawFailLogFirst(window_id)) {
+            fprintf(stderr, "[openharmony-host] draw begin window '%s' refused: no live surface (state=%d)\n",
+                    window_id, record.state);
+            fflush(stderr);
+        }
+        return -1;
+    }
+    int rc = OhosDrawTargetBegin(OhosDrawTargetFind(window_id, 1), width, height, 0);
+    if (rc != 0 && OhosDrawFailLogFirst(window_id)) {
+        fprintf(stderr, "[openharmony-host] draw begin window '%s' failed rc=%d\n", window_id, rc);
+        fflush(stderr);
+    }
+    return rc;
 }
 
 void ohos_host_draw_clear(unsigned int argb) {
@@ -4920,17 +5035,64 @@ static void OhosHostLogPresent(int width, int height) {
     }
 }
 
-int ohos_host_draw_present(void) {
-    if (g_canvas == NULL || !g_surface_valid || g_surface_state == (int)OHOS_SURFACE_DESTROYED) {
+// Per-window present telemetry (MULTIWINDOW-L M3): the same fold as above, keyed by the draw
+// target (one window), so a secondary window's first frame and pacing are readable without
+// mixing into the primary's line. The tag distinguishes the line.
+static void OhosHostLogPresentTarget(OhosDrawTarget* target, int width, int height) {
+    long now = OhosHostMonotonicMs();
+    if (now == 0) {
+        return;  // no monotonic clock: drop telemetry, never the frame itself
+    }
+    if (target->last_ms != 0) {
+        long gap = now - target->last_ms;
+        if (gap > 0) {
+            if (gap > target->max_gap_ms) {
+                target->max_gap_ms = gap;
+            }
+            target->gap_sum_ms += gap;
+            target->gap_count++;
+        }
+    }
+    target->last_ms = now;
+    target->frames++;
+    if (width != target->log_w || height != target->log_h) {
+        fprintf(stderr, "[openharmony-host] canvas presented [%s] (%dx%d)\n",
+                target->id, width, height);
+        target->log_w = width;
+        target->log_h = height;
+        target->start_ms = now;
+        target->frames = 1;
+        target->max_gap_ms = 0;
+        target->gap_sum_ms = 0;
+        target->gap_count = 0;
+        return;
+    }
+    if (now - target->start_ms >= 5000 && target->gap_count > 0) {
+        long avg = target->gap_sum_ms / target->gap_count;
+        fprintf(stderr,
+                "[openharmony-host] canvas presented [%s] (%dx%d) n=%ld avg=%ldms max=%ldms\n",
+                target->id, width, height, target->frames, avg, target->max_gap_ms);
+        target->start_ms = now;
+        target->frames = 1;  // this present opens the next window
+        target->max_gap_ms = 0;
+        target->gap_sum_ms = 0;
+        target->gap_count = 0;
+    }
+}
+
+// Presents a target's bitmap into one surface. legacy selects the historical primary telemetry
+// line; the frame's destructor flushes the requested buffer exactly once on every exit path.
+static int OhosHostPresentTarget(OhosDrawTarget* target, void* surface, int legacy) {
+    if (target == NULL || target->canvas == NULL || target->bitmap == NULL) {
         return -1;
     }
     if (!ohos_host_optional_native_window_available()) {
         return -1;  // reported once by the optional-library loader; present dropped silently
     }
-    OHNativeWindow* native_window = (OHNativeWindow*)g_surface_window;
-    int width = g_canvas_width;
-    int height = g_canvas_height;
-    void* pixels = OH_Drawing_BitmapGetPixels(g_canvas_bitmap);
+    OHNativeWindow* native_window = (OHNativeWindow*)surface;
+    int width = target->width;
+    int height = target->height;
+    void* pixels = OH_Drawing_BitmapGetPixels(target->bitmap);
     if (native_window == NULL || pixels == NULL) {
         return -1;
     }
@@ -4950,8 +5112,56 @@ int ohos_host_draw_present(void) {
         }
     }
     // frame's destructor flushes the requested buffer exactly once.
-    OhosHostLogPresent(width, height);
+    if (legacy) {
+        OhosHostLogPresent(width, height);
+    } else {
+        OhosHostLogPresentTarget(target, width, height);
+    }
     return 0;
+}
+
+int ohos_host_draw_present(void) {
+    if (!g_surface_valid || g_surface_state == (int)OHOS_SURFACE_DESTROYED) {
+        return -1;
+    }
+    return OhosHostPresentTarget(OhosDrawTargetFind("", 0), g_surface_window, 1);
+}
+
+int ohos_host_draw_present_window(const char* window_id) {
+    if (window_id == NULL || window_id[0] == '\0') {
+        return -1;
+    }
+    ohos_host_window_record record;
+    if (ohos_host_window_lookup(window_id, &record) != OHOS_HOST_WINDOW_OK) {
+        if (OhosDrawFailLogFirst(window_id)) {
+            fprintf(stderr, "[openharmony-host] draw present window '%s' refused: unknown window\n", window_id);
+            fflush(stderr);
+        }
+        return -1;
+    }
+    if (record.surface == NULL || record.state == (int)OHOS_SURFACE_DESTROYED) {
+        if (OhosDrawFailLogFirst(window_id)) {
+            fprintf(stderr, "[openharmony-host] draw present window '%s' refused: no live surface (state=%d)\n",
+                    window_id, record.state);
+            fflush(stderr);
+        }
+        return -1;
+    }
+    OhosDrawTarget* target = OhosDrawTargetFind(window_id, 0);
+    if (target == NULL) {
+        if (OhosDrawFailLogFirst(window_id)) {
+            fprintf(stderr, "[openharmony-host] draw present window '%s' refused: no canvas (begin first)\n",
+                    window_id);
+            fflush(stderr);
+        }
+        return -1;
+    }
+    int rc = OhosHostPresentTarget(target, record.surface, 0);
+    if (rc != 0 && OhosDrawFailLogFirst(window_id)) {
+        fprintf(stderr, "[openharmony-host] draw present window '%s' failed rc=%d\n", window_id, rc);
+        fflush(stderr);
+    }
+    return rc;
 }
 
 

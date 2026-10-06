@@ -39,6 +39,8 @@ napi_value AccessibilityNodeCount(napi_env env, napi_callback_info info);
 #include <vector>
 
 #include "openharmony_host.h"
+#include "host_window_bridge.h"
+#include "host_window_registry.h"
 
 #define OHOS_HOST_DOMAIN 0x0002
 #define OHOS_HOST_TAG "OHOS_DOTNET"
@@ -249,6 +251,18 @@ struct HostBinding {
     napi_ref exports_ref = nullptr;
     napi_ref xcomponent_export_ref = nullptr;
     OH_NativeXComponent* xcomponent = nullptr;
+
+    // MULTIWINDOW-L M1: every XComponent this binding claimed, in claim order. The primary
+    // window additionally keeps the historical xcomponent/xcomponent_export_ref members above
+    // (the legacy single-surface path); every claim holds its wrapper reference here so the
+    // borrowed OH_NativeXComponent cannot be collected while it is registered with the window
+    // registry. Released by HostBindingTeardown / unregisterXComponent.
+    struct WindowClaim {
+        std::string id;
+        napi_ref export_ref = nullptr;
+        OH_NativeXComponent* component = nullptr;
+    };
+    std::vector<WindowClaim> window_claims;
 
     // Menu tables: the builder and the last published snapshot are managed-thread state under
     // menu_lock; menu_js is the immutable snapshot the JS thread is currently serving (only
@@ -805,6 +819,16 @@ static void HostBindingTeardown(HostBindingSlot* slot, bool from_hook) {
     HostBinding& binding = slot->binding;
     napi_env env = binding.env;
     HostResetAllSinks(binding);
+    // MULTIWINDOW-L M1: drop every window claim of this binding before releasing the wrapper
+    // references, so a collected wrapper cannot leave a registry record pointing at a component
+    // of the dead env.
+    ohos_host_window_unregister_owner(&binding);
+    for (HostBinding::WindowClaim& claim : binding.window_claims) {
+        if (env != nullptr && claim.export_ref != nullptr) {
+            napi_delete_reference(env, claim.export_ref);
+        }
+    }
+    binding.window_claims.clear();
     if (env != nullptr) {
         if (binding.exports_ref != nullptr) {
             napi_delete_reference(env, binding.exports_ref);
@@ -943,25 +967,70 @@ static napi_value HostNapiEntry(napi_env env, napi_callback_info info) {
 }
 
 
+// ---------------------------------------------------------------------------
+// XComponent windows (MULTIWINDOW-L M1)
+// ---------------------------------------------------------------------------
+// Every <XComponent libraryname="openharmonyhost"> triggers one Init on the shared module and
+// carries its own OH_NATIVE_XCOMPONENT_OBJ, so the host records one window per claimed component
+// (host_window_registry.c) and routes each callback to the component's record. The first claim
+// is the primary window (id "main"): it keeps the historical single-surface path
+// (ohos_host_set_native_window/g_surface_* and exactly the same managed bridge callback), so a
+// single-XComponent shell behaves as before. Every window (the primary under "main" included)
+// also enters the window-id tagged channel (host_window_bridge.c, MULTIWINDOW-L M2): the
+// managed hosting assembly turns those events into its per-window WindowSurfaceChanged/
+// WindowTouch/WindowFrame stream, and the untagged primary path above stays authoritative for
+// a single-XComponent shell. A secondary window's input/frame events never enter the
+// single-window bridge, which must never see another window's events.
+
+// Routes one surface lifecycle callback to the window registered for the component.
+void HostRouteSurface(OH_NativeXComponent* component, void* window, int width, int height, int state) {
+    ohos_host_window_record record;
+    // Component-keyed lookup+update in one call: the callback's component is the routing key, so
+    // a concurrent unregister/re-register of the same id can never move this event's surface
+    // state onto another component's record.
+    if (ohos_host_window_surface_component(component, window, width, height, state, &record) !=
+        OHOS_HOST_WINDOW_OK) {
+        OH_LOG_WARN(LOG_APP, "[openharmony-host] surface event for an unregistered xcomponent dropped");
+        return;
+    }
+    // M2-ow: every window reports through the id-tagged bridge (the primary additionally keeps
+    // its untagged legacy call below, so a single-XComponent shell's callback sequence is
+    // unchanged).
+    ohos_host_set_window_native_window(record.id, window, width, height,
+                                       static_cast<ohos_surface_state>(state));
+    if (record.primary) {
+        ohos_host_set_native_window(window, width, height, static_cast<ohos_surface_state>(state));
+    }
+    if (!record.primary) {
+        // Secondary-window evidence lands in the shell status file (native stderr), which the
+        // feasibility probes read back; the primary already prints its historical surface line.
+        fprintf(stderr, "[openharmony-host] window '%s' surface state=%d %dx%d\n",
+                record.id, state, width, height);
+        fflush(stderr);
+    }
+    OH_LOG_INFO(LOG_APP,
+                "[openharmony-host] window '%{public}s' surface state=%{public}d %{public}dx%{public}d primary=%{public}d",
+                record.id, state, width, height, record.primary);
+}
+
 void OnSurfaceCreated(OH_NativeXComponent* component, void* window) {
     uint64_t width = 0;
     uint64_t height = 0;
     OH_NativeXComponent_GetXComponentSize(component, window, &width, &height);
-    ohos_host_set_native_window(window, static_cast<int>(width), static_cast<int>(height),
-                                OHOS_SURFACE_CREATED);
+    HostRouteSurface(component, window, static_cast<int>(width), static_cast<int>(height),
+                     OHOS_SURFACE_CREATED);
 }
 
 void OnSurfaceChanged(OH_NativeXComponent* component, void* window) {
     uint64_t width = 0;
     uint64_t height = 0;
     OH_NativeXComponent_GetXComponentSize(component, window, &width, &height);
-    ohos_host_set_native_window(window, static_cast<int>(width), static_cast<int>(height),
-                                OHOS_SURFACE_CHANGED);
+    HostRouteSurface(component, window, static_cast<int>(width), static_cast<int>(height),
+                     OHOS_SURFACE_CHANGED);
 }
 
 void OnSurfaceDestroyed(OH_NativeXComponent* component, void* window) {
-    (void)component;
-    ohos_host_set_native_window(window, 0, 0, OHOS_SURFACE_DESTROYED);
+    HostRouteSurface(component, window, 0, 0, OHOS_SURFACE_DESTROYED);
 }
 
 extern "C" void OhosNotifyPinch(int phase, double scale, float x, float y);
@@ -971,8 +1040,12 @@ static double g_pinch_start_distance = 0.0;
 
 // Two-finger pinch straight from the XComponent touch event (the event carries every point).
 // The points' element-relative coordinates (see OnTouch) feed the centre, so the managed
-// pinch hit-test sees the same surface space as every other input path.
-static void MaybeReportPinch(const OH_NativeXComponent_TouchEvent& event) {
+// pinch hit-test sees the same surface space as every other input path. The shared core drives
+// the legacy primary stream and, in M4-04, every registered window's own stream (each window
+// keeps its own active/start-distance pair, so two simultaneous pinches never share state).
+template <typename Report>
+static void ComputePinch(const OH_NativeXComponent_TouchEvent& event, bool* active,
+                         double* startDistance, Report report) {
     if (event.numPoints >= 2) {
         float x0 = event.touchPoints[0].x;
         float y0 = event.touchPoints[0].y;
@@ -984,27 +1057,95 @@ static void MaybeReportPinch(const OH_NativeXComponent_TouchEvent& event) {
         double distance = squared > 0.0 ? __builtin_sqrt(squared) : 1.0;
         float centerX = static_cast<float>((static_cast<double>(x0) + static_cast<double>(x1)) / 2.0);
         float centerY = static_cast<float>((static_cast<double>(y0) + static_cast<double>(y1)) / 2.0);
-        if (!g_pinch_active) {
-            g_pinch_active = true;
-            g_pinch_start_distance = distance;
-            OhosNotifyPinch(0, 1.0, centerX, centerY);
+        if (!*active) {
+            *active = true;
+            *startDistance = distance;
+            report(0, 1.0, centerX, centerY);
         } else {
-            double scale = g_pinch_start_distance > 0.0 ? distance / g_pinch_start_distance : 1.0;
-            OhosNotifyPinch(1, scale, centerX, centerY);
+            double scale = *startDistance > 0.0 ? distance / *startDistance : 1.0;
+            report(1, scale, centerX, centerY);
         }
-    } else if (g_pinch_active) {
-        g_pinch_active = false;
-        g_pinch_start_distance = 0.0;
-        OhosNotifyPinch(2, 1.0, 0.0f, 0.0f);
+    } else if (*active) {
+        *active = false;
+        *startDistance = 0.0;
+        report(2, 1.0, 0.0f, 0.0f);
     }
 }
 
+static void MaybeReportPinch(const OH_NativeXComponent_TouchEvent& event) {
+    ComputePinch(event, &g_pinch_active, &g_pinch_start_distance,
+                 [](int phase, double scale, float x, float y) {
+                     OhosNotifyPinch(phase, scale, x, y);
+                 });
+}
+
+// MULTIWINDOW-L M4-04: one pinch stream per registered window (the primary keeps the legacy
+// global pair above; a secondary window's stream lives here and reaches the managed per-window
+// renderer through host_window_bridge.c). The table is bounded by the shell's window count; a
+// window id is released with its XComponent, so re-opening a window starts a fresh gesture.
+static const int kHostPinchWindowMax = 8;
+
+struct HostPinchWindowState {
+    std::string id;
+    bool active = false;
+    double startDistance = 0.0;
+};
+
+static HostPinchWindowState g_pinch_windows[kHostPinchWindowMax];
+
+static HostPinchWindowState* PinchStateFor(const char* id) {
+    if (id == nullptr || id[0] == '\0') {
+        return nullptr;
+    }
+    for (int i = 0; i < kHostPinchWindowMax; i++) {
+        if (g_pinch_windows[i].id == id) {
+            return &g_pinch_windows[i];
+        }
+    }
+    for (int i = 0; i < kHostPinchWindowMax; i++) {
+        if (g_pinch_windows[i].id.empty()) {
+            g_pinch_windows[i].id = id;
+            g_pinch_windows[i].active = false;
+            g_pinch_windows[i].startDistance = 0.0;
+            return &g_pinch_windows[i];
+        }
+    }
+    return nullptr;  // table full: drop rather than mixing two windows' gesture state
+}
+
+static void HostPinchStateRelease(const char* id) {
+    if (id == nullptr) {
+        return;
+    }
+    for (int i = 0; i < kHostPinchWindowMax; i++) {
+        if (g_pinch_windows[i].id == id) {
+            g_pinch_windows[i] = HostPinchWindowState{};
+            return;
+        }
+    }
+}
+
+static void MaybeReportWindowPinch(const char* id, const OH_NativeXComponent_TouchEvent& event) {
+    HostPinchWindowState* state = PinchStateFor(id);
+    if (state == nullptr) {
+        return;
+    }
+    ComputePinch(event, &state->active, &state->startDistance,
+                 [id](int phase, double scale, float x, float y) {
+                     ohos_host_notify_window_pinch(id, phase, scale, x, y);
+                 });
+}
+
 void OnTouch(OH_NativeXComponent* component, void* window) {
+    ohos_host_window_record route;
+    if (ohos_host_window_lookup_component(component, &route) != OHOS_HOST_WINDOW_OK) {
+        OH_LOG_WARN(LOG_APP, "[openharmony-host] touch event for an unregistered xcomponent dropped");
+        return;
+    }
     OH_NativeXComponent_TouchEvent event = {};
     if (OH_NativeXComponent_GetTouchEvent(component, window, &event) != 0) {
         return;
     }
-    MaybeReportPinch(event);
     // Report every active point with its element-relative (surface) coordinates, so the
     // managed side can associate a multi-finger stream by pointer id (the old point-0-only
     // report pinned every finger's position to the first one).
@@ -1049,11 +1190,28 @@ void OnTouch(OH_NativeXComponent* component, void* window) {
         x = points[0].x;
         y = points[0].y;
     }
+    if (!route.primary) {
+        // MULTIWINDOW-L M2: the secondary window's input enters the id-tagged channel; the M1
+        // counter stays as the device probe's evidence. It must never enter the single-window
+        // bridge. M4-04: its pinch stream is computed from this same event and reported under
+        // the window id (the primary's legacy pinch above is unchanged).
+        ohos_host_window_note_touch(route.id);
+        ohos_host_notify_window_touch(route.id, static_cast<int>(event.type), points, count,
+                                      static_cast<int>(event.id), x, y);
+        MaybeReportWindowPinch(route.id, event);
+        return;
+    }
+    MaybeReportPinch(event);
     ohos_host_notify_touch_points(static_cast<int>(event.type), points, count,
                                   static_cast<int>(event.id), x, y);
 }
 
 void OnMouse(OH_NativeXComponent* component, void* window) {
+    ohos_host_window_record route;
+    if (ohos_host_window_lookup_component(component, &route) != OHOS_HOST_WINDOW_OK) {
+        OH_LOG_WARN(LOG_APP, "[openharmony-host] mouse event for an unregistered xcomponent dropped");
+        return;
+    }
     OH_NativeXComponent_MouseEvent event = {};
     if (OH_NativeXComponent_GetMouseEvent(component, window, &event) != 0) {
         return;
@@ -1064,11 +1222,30 @@ void OnMouse(OH_NativeXComponent* component, void* window) {
     } else if (event.action == OH_NATIVEXCOMPONENT_MOUSE_RELEASE) {
         type = 1;
     }
+    if (!route.primary) {
+        // MULTIWINDOW-L M2: the secondary window's mouse input enters the id-tagged channel
+        // (one-point payload; the pointless touch form carries the coordinates).
+        ohos_host_window_note_touch(route.id);
+        ohos_host_notify_window_touch(route.id, type, NULL, 0, 0, event.x, event.y);
+        return;
+    }
     ohos_host_notify_touch(type, event.x, event.y, 1, 0);
 }
 
 void OnFrame(OH_NativeXComponent* component, uint64_t timestamp, uint64_t targetTimestamp) {
-    (void)component;
+    ohos_host_window_record route;
+    if (ohos_host_window_lookup_component(component, &route) != OHOS_HOST_WINDOW_OK) {
+        OH_LOG_WARN(LOG_APP, "[openharmony-host] frame event for an unregistered xcomponent dropped");
+        return;
+    }
+    if (!route.primary) {
+        // MULTIWINDOW-L M2: the secondary window's frame tick enters the id-tagged channel;
+        // the M1 counter stays as the device probe's evidence.
+        ohos_host_window_note_frame(route.id);
+        ohos_host_notify_window_frame(route.id, static_cast<int64_t>(timestamp),
+                                      static_cast<int64_t>(targetTimestamp));
+        return;
+    }
     ohos_host_notify_frame(static_cast<int64_t>(timestamp), static_cast<int64_t>(targetTimestamp));
 }
 
@@ -1088,42 +1265,80 @@ static void HostXComponentWrapperFinalized(napi_env env, void* data, void* hint)
     }
 }
 
-// The framework exposes the native XComponent through the module exports
-// (OH_NATIVE_XCOMPONENT_OBJ) when the page uses <XComponent libraryname="...">.
-void TryRegisterXComponent() {
+// The component id the framework reports for this XComponent ("ohos_dotnet_surface", ...), or
+// an empty string when it does not answer. The feasibility probe observed GetXComponentId
+// failing in some callback contexts, so a caller must treat an empty answer as "derive one".
+std::string HostXComponentId(OH_NativeXComponent* component) {
+    char id[128] = {0};
+    uint64_t size = sizeof(id);
+    if (component == nullptr || OH_NativeXComponent_GetXComponentId(component, id, &size) != 0) {
+        return std::string();
+    }
+    return std::string(id);
+}
+
+// Registers one XComponent as a window and arms its callbacks. requested_id may be null (auto):
+// the first claim takes OHOS_HOST_WINDOW_PRIMARY_ID ("main") and the legacy single-surface path;
+// a later claim uses the framework's component id, then a "surface-<n>" fallback, suffixing
+// "#n" when taken, so ids never collide. A repeated claim for the same component is a no-op.
+void HostClaimXComponent(napi_env env, napi_value exportInstance, OH_NativeXComponent* component,
+                         const char* requested_id) {
     HostBinding* binding = g_host;
-    if (binding->env == nullptr || binding->exports_ref == nullptr || binding->xcomponent != nullptr) {
+    if (env == nullptr || exportInstance == nullptr || component == nullptr || binding == nullptr ||
+        binding->env != env) {
         return;
     }
-    if (!HostIsJsThread()) {
-        OH_LOG_WARN(LOG_APP, "[openharmony-host] registerXComponent: not on the JS thread, ignored");
+    ohos_host_window_record existing = {};
+    if (ohos_host_window_lookup_component(component, &existing) == OHOS_HOST_WINDOW_OK) {
+        // A repeated Init / registerXComponent retry for an already claimed component. M3: an
+        // explicit id from the shell is authoritative over an auto-derived component id, so the
+        // managed session id and the registry id stay identical (the primary's id is fixed).
+        if (requested_id != nullptr && requested_id[0] != '\0' && !existing.primary &&
+            strcmp(requested_id, existing.id) != 0) {
+            if (ohos_host_window_rename_component(component, requested_id) == OHOS_HOST_WINDOW_OK) {
+                fprintf(stderr, "[openharmony-host] window '%s' renamed from '%s'\n", requested_id,
+                        existing.id);
+                fflush(stderr);
+                OH_LOG_INFO(LOG_APP, "[openharmony-host] window '%{public}s' renamed from '%{public}s'",
+                            requested_id, existing.id);
+            } else {
+                fprintf(stderr, "[openharmony-host] window '%s' rename from '%s' refused\n", requested_id,
+                        existing.id);
+                fflush(stderr);
+            }
+        }
         return;
     }
-    napi_env env = binding->env;
-    napi_value exports = nullptr;
-    if (napi_get_reference_value(env, binding->exports_ref, &exports) != napi_ok || exports == nullptr) {
+    std::string native_id = HostXComponentId(component);
+    std::string id;
+    int primary = 0;
+    int explicit_id = requested_id != nullptr && requested_id[0] != '\0';
+    if (explicit_id && strcmp(requested_id, OHOS_HOST_WINDOW_PRIMARY_ID) != 0) {
+        id = requested_id;
+    } else if (ohos_host_window_lookup(OHOS_HOST_WINDOW_PRIMARY_ID, &existing) != OHOS_HOST_WINDOW_OK) {
+        id = OHOS_HOST_WINDOW_PRIMARY_ID;
+        primary = 1;
+    } else {
+        id = native_id;
+        if (id.empty()) {
+            id = "surface-" + std::to_string(binding->window_claims.size() + 1);
+        }
+        std::string base = id;
+        for (int suffix = 2;
+             ohos_host_window_lookup(id.c_str(), &existing) == OHOS_HOST_WINDOW_OK; suffix++) {
+            id = base + "#" + std::to_string(suffix);
+        }
+    }
+    if (id.size() > OHOS_HOST_WINDOW_ID_MAX) {
+        OH_LOG_WARN(LOG_APP, "[openharmony-host] window id over the %{public}d char cap, ignored",
+                    OHOS_HOST_WINDOW_ID_MAX);
         return;
     }
-    napi_value exportInstance = nullptr;
-    if (napi_get_named_property(env, exports, OH_NATIVE_XCOMPONENT_OBJ, &exportInstance) != napi_ok) {
+    if (ohos_host_window_register(id.c_str(), component, binding, primary) != OHOS_HOST_WINDOW_OK) {
+        fprintf(stderr, "[openharmony-host] window '%s' could not be registered\n", id.c_str());
+        fflush(stderr);
+        OH_LOG_WARN(LOG_APP, "[openharmony-host] window '%{public}s' could not be registered", id.c_str());
         return;
-    }
-    void* native = nullptr;
-    if (napi_unwrap(env, exportInstance, &native) != napi_ok || native == nullptr) {
-        return;
-    }
-    // Keep the JS object that owns the native XComponent alive for the binding's lifetime: a
-    // collected wrapper would leave the raw pointer below dangling. The reference is released
-    // by HostBindingTeardown (a page rebuild re-binds it to the new env's object).
-    if (HostRefReplace(env, &binding->xcomponent_export_ref, exportInstance) != napi_ok) {
-        return;
-    }
-    binding->xcomponent = reinterpret_cast<OH_NativeXComponent*>(native);
-    // Arm the wrapper finalizer now that the binding stores the borrowed pointer (see
-    // HostXComponentWrapperFinalized). A failure only costs the late-clear safety net.
-    if (napi_add_finalizer(env, exportInstance, native, HostXComponentWrapperFinalized, binding,
-                           nullptr) != napi_ok) {
-        OH_LOG_WARN(LOG_APP, "[openharmony-host] xcomponent wrapper finalizer could not be armed");
     }
     static OH_NativeXComponent_Callback callback = {
         .OnSurfaceCreated = OnSurfaceCreated,
@@ -1135,23 +1350,118 @@ void TryRegisterXComponent() {
         .DispatchMouseEvent = OnMouse,
         .DispatchHoverEvent = nullptr,
     };
-    if (OH_NativeXComponent_RegisterCallback(binding->xcomponent, &callback) != 0) {
-        OH_LOG_WARN(LOG_APP, "[openharmony-host] RegisterCallback failed");
-        binding->xcomponent = nullptr;
+    if (OH_NativeXComponent_RegisterCallback(component, &callback) != 0) {
+        fprintf(stderr, "[openharmony-host] window '%s' RegisterCallback failed\n", id.c_str());
+        fflush(stderr);
+        OH_LOG_WARN(LOG_APP, "[openharmony-host] RegisterCallback failed for window '%{public}s'",
+                    id.c_str());
+        ohos_host_window_unregister(id.c_str());
         return;
     }
-    OH_NativeXComponent_RegisterMouseEventCallback(binding->xcomponent, &mouseCallback);
-    OH_NativeXComponent_RegisterOnFrameCallback(binding->xcomponent, OnFrame);
+    OH_NativeXComponent_RegisterMouseEventCallback(component, &mouseCallback);
+    OH_NativeXComponent_RegisterOnFrameCallback(component, OnFrame);
     // FPS48: request the frame rate explicitly. Without a vote the RS frame scheduler may
     // divide the XComponent's onFrame cadence (48/30 fps observed) even while the managed app
     // draws every callback; the expected rate is the documented XComponent self-draw knob.
     OH_NativeXComponent_ExpectedRateRange rateRange = {60, 60, 60};
-    OH_NativeXComponent_SetExpectedFrameRateRange(binding->xcomponent, &rateRange);
-    char id[128] = {0};
-    uint64_t size = sizeof(id);
-    if (OH_NativeXComponent_GetXComponentId(binding->xcomponent, id, &size) == 0) {
-        OH_LOG_INFO(LOG_APP, "[openharmony-host] xcomponent '%{public}s' registered (touch+frame)", id);
+    OH_NativeXComponent_SetExpectedFrameRateRange(component, &rateRange);
+    // Keep the JS object that owns the native XComponent alive for the claim's lifetime: a
+    // collected wrapper would leave the borrowed pointer (stored in the registry) dangling. The
+    // reference is released by HostBindingTeardown / unregisterXComponent.
+    napi_ref wrapper_ref = nullptr;
+    if (HostRefReplace(env, &wrapper_ref, exportInstance) != napi_ok) {
+        OH_LOG_WARN(LOG_APP, "[openharmony-host] window '%{public}s' wrapper could not be kept alive",
+                    id.c_str());
+        ohos_host_window_unregister(id.c_str());
+        return;
     }
+    HostBinding::WindowClaim claim;
+    claim.id = id;
+    claim.export_ref = wrapper_ref;
+    claim.component = component;
+    binding->window_claims.push_back(claim);
+    if (primary) {
+        binding->xcomponent = component;
+        // The historical reference slot and finalizer stay in place for the primary window (a
+        // page rebuild releases the reference in HostBindingTeardown).
+        if (HostRefReplace(env, &binding->xcomponent_export_ref, exportInstance) == napi_ok) {
+            if (napi_add_finalizer(env, exportInstance, component, HostXComponentWrapperFinalized,
+                                   binding, nullptr) != napi_ok) {
+                OH_LOG_WARN(LOG_APP, "[openharmony-host] xcomponent wrapper finalizer could not be armed");
+            }
+        }
+    }
+    OH_LOG_INFO(LOG_APP,
+                "[openharmony-host] window '%{public}s' registered (xcomponent '%{public}s' primary=%{public}d), %{public}d window(s)",
+                id.c_str(), native_id.c_str(), primary, ohos_host_window_count());
+    // The device logs native OH_LOG_* only through the shell status file, so the claim keeps a
+    // stderr mirror like the surface path: this is the probe's evidence that window N registered.
+    fprintf(stderr,
+            "[openharmony-host] window '%s' registered (xcomponent '%s' primary=%d) windows=%d\n",
+            id.c_str(), native_id.c_str(), primary, ohos_host_window_count());
+    fflush(stderr);
+}
+
+// Claims the XComponent carried by one exports object (OH_NATIVE_XCOMPONENT_OBJ is set when the
+// page uses <XComponent libraryname="...">). No-op when the object is absent, e.g. a plain
+// module import from EntryAbility. Returns true when the exports carried a component that is
+// registered after the call (M3: registerXComponent reports this to the shell); when out_record
+// is non-null it receives that component's registry record, so the caller can tell which id the
+// component actually holds (SEC-SCAN-5b: lookup(requested_id) alone can resolve to another
+// component's record).
+bool TryClaimXComponentFromExports(napi_env env, napi_value exports, const char* requested_id,
+                                   ohos_host_window_record* out_record) {
+    if (exports == nullptr) {
+        return false;
+    }
+    napi_value exportInstance = nullptr;
+    if (napi_get_named_property(env, exports, OH_NATIVE_XCOMPONENT_OBJ, &exportInstance) != napi_ok) {
+        return false;
+    }
+    void* native = nullptr;
+    if (napi_unwrap(env, exportInstance, &native) != napi_ok || native == nullptr) {
+        return false;
+    }
+    HostClaimXComponent(env, exportInstance, reinterpret_cast<OH_NativeXComponent*>(native), requested_id);
+    ohos_host_window_record record;
+    if (ohos_host_window_lookup_component(native, &record) != OHOS_HOST_WINDOW_OK) {
+        return false;
+    }
+    if (out_record != nullptr) {
+        *out_record = record;
+    }
+    return true;
+}
+
+// Retry path for the shell's registerXComponent(): reads the XComponent object out of the
+// current exports and claims it. Init claims directly, so this only matters for an object that
+// appeared after Init. Returns true when the current exports carried a registered component.
+bool TryRegisterXComponent(const char* requested_id) {
+    HostBinding* binding = g_host;
+    if (binding->env == nullptr || binding->exports_ref == nullptr) {
+        return false;
+    }
+    if (!HostIsJsThread()) {
+        OH_LOG_WARN(LOG_APP, "[openharmony-host] registerXComponent: not on the JS thread, ignored");
+        return false;
+    }
+    napi_env env = binding->env;
+    napi_value exports = nullptr;
+    if (napi_get_reference_value(env, binding->exports_ref, &exports) != napi_ok || exports == nullptr) {
+        return false;
+    }
+    ohos_host_window_record record;
+    if (!TryClaimXComponentFromExports(env, exports, requested_id, &record)) {
+        return false;
+    }
+    // M3: with an explicit id the caller wants to know that *that* id is registered on this
+    // component (an auto-derived component id must not answer as success, and another window's
+    // record must not answer for a rename this component's claim was refused: SEC-SCAN-5b), so
+    // the check compares the component's own record, not just any record with that id.
+    if (requested_id != nullptr && requested_id[0] != '\0') {
+        return strcmp(record.id, requested_id) == 0;
+    }
+    return true;
 }
 
 std::string GetStringArg(napi_env env, napi_value value);
@@ -3949,20 +4259,105 @@ napi_value NotifyTextComposition(napi_env env, napi_callback_info info) {
     return undefined;
 }
 
+// ArkTS calls host.registerXComponent() (legacy, no argument) or
+// host.registerXComponent(windowId) when a page declares more than one XComponent. Returns 1
+// when the current exports carried the component and it is registered after the call (0
+// otherwise, including an unknown env or a not-JS-thread call), so a page can keep its drawn
+// fallback when the host cannot bind the XComponent (MULTIWINDOW-L M3).
 napi_value RegisterXComponent(napi_env env, napi_callback_info info) {
-    (void)info;
+    size_t argc = 1;
+    napi_value argv[1] = {nullptr};
+    napi_get_cb_info(env, info, &argc, argv, nullptr, nullptr);
+    std::string requested;
+    napi_valuetype type = napi_undefined;
+    if (argc >= 1 && napi_typeof(env, argv[0], &type) == napi_ok && type == napi_string) {
+        requested = GetStringArg(env, argv[0]);
+    }
     // Init already bound this env; refresh the recorded JS thread (this is a JS callback) and
-    // retry the XComponent bind. A different env never silently rebinds here.
+    // claim the XComponent whose object is in the current exports. A different env never
+    // silently rebinds here.
+    bool registered = false;
     if (g_host->env == env) {
         g_host->js_thread = pthread_self();
         g_host->js_thread_valid = true;
-        TryRegisterXComponent();
+        registered = TryRegisterXComponent(requested.empty() ? nullptr : requested.c_str());
     } else {
         OH_LOG_WARN(LOG_APP, "[openharmony-host] registerXComponent: unknown env, ignored");
     }
-    napi_value undefined = nullptr;
-    napi_get_undefined(env, &undefined);
-    return undefined;
+    napi_value result = nullptr;
+    napi_create_int32(env, registered ? 1 : 0, &result);
+    return result;
+}
+
+// ArkTS calls host.unregisterXComponent(windowId) from an XComponent's onDestroy; an omitted id
+// releases the primary window. Releases the claim's wrapper reference and drops the registry
+// entry first, so a late surface event is rejected instead of touching a released component.
+// Returns 1 when a window was released, 0 otherwise. An invalid argument (a non-string value or
+// an empty id) releases nothing: it must never fall back to the primary window.
+napi_value UnregisterXComponent(napi_env env, napi_callback_info info) {
+    size_t argc = 1;
+    napi_value argv[1] = {nullptr};
+    napi_get_cb_info(env, info, &argc, argv, nullptr, nullptr);
+    std::string requested = OHOS_HOST_WINDOW_PRIMARY_ID;
+    if (argc >= 1) {
+        napi_valuetype type = napi_undefined;
+        napi_status type_status = napi_typeof(env, argv[0], &type);
+        // Only an omitted/undefined id means "the primary window" (the legacy contract).
+        if (!(type_status == napi_ok && type == napi_undefined)) {
+            std::string value;
+            if (type_status == napi_ok && type == napi_string) {
+                value = GetStringArg(env, argv[0]);
+            }
+            if (value.empty()) {
+                OH_LOG_WARN(LOG_APP, "[openharmony-host] unregisterXComponent: invalid id ignored");
+                fprintf(stderr, "[openharmony-host] unregisterXComponent: invalid id ignored\n");
+                fflush(stderr);
+                napi_value zero = nullptr;
+                napi_create_int32(env, 0, &zero);
+                return zero;
+            }
+            requested = value;
+        }
+    }
+    int released = 0;
+    if (g_host->env == env) {
+        HostBinding* binding = g_host;
+        for (size_t i = 0; i < binding->window_claims.size(); i++) {
+            HostBinding::WindowClaim& claim = binding->window_claims[i];
+            if (claim.id != requested) {
+                continue;
+            }
+            if (ohos_host_window_unregister(claim.id.c_str()) == OHOS_HOST_WINDOW_OK) {
+                released = 1;
+                // M4-04: drop the window's pinch gesture state with its XComponent, so a
+                // re-opened window id starts with a fresh (inactive) gesture.
+                HostPinchStateRelease(claim.id.c_str());
+            }
+            if (claim.component == binding->xcomponent) {
+                binding->xcomponent = nullptr;
+                if (binding->xcomponent_export_ref != nullptr) {
+                    napi_delete_reference(env, binding->xcomponent_export_ref);
+                    binding->xcomponent_export_ref = nullptr;
+                }
+            }
+            if (claim.export_ref != nullptr) {
+                napi_delete_reference(env, claim.export_ref);
+            }
+            binding->window_claims.erase(binding->window_claims.begin() +
+                                         static_cast<std::ptrdiff_t>(i));
+            break;
+        }
+        OH_LOG_INFO(LOG_APP, "[openharmony-host] unregisterXComponent '%{public}s' -> %{public}d",
+                    requested.c_str(), released);
+        fprintf(stderr, "[openharmony-host] unregisterXComponent '%s' -> %d\n",
+                requested.c_str(), released);
+        fflush(stderr);
+    } else {
+        OH_LOG_WARN(LOG_APP, "[openharmony-host] unregisterXComponent: unknown env, ignored");
+    }
+    napi_value result = nullptr;
+    napi_create_int32(env, released, &result);
+    return result;
 }
 
 struct LaunchRequest {
@@ -4187,10 +4582,11 @@ napi_value RunApp(napi_env env, napi_callback_info info) {
 
 napi_value Init(napi_env env, napi_value exports) {
     // Re-entrant by design: the library registers this same Init under more than one module
-    // name (the alias table at the end of the file), and the loader may call the register
-    // function once per name it binds. Each call returns its own exports object with the same
-    // property table; the newest exports stays the XComponent reference source, and
-    // TryRegisterXComponent retries until it has one (it returns early once bound).
+    // name (the alias table at the end of the file), the loader may call the register function
+    // once per name it binds, and the framework calls it once per XComponent with that
+    // component's exports. Each call returns its own exports object; the newest exports stays
+    // the XComponent reference source and Init claims the component it carries
+    // (registerXComponent retries the same claim when the object was not attached yet).
     //
     // A page rebuild (or an ability restart) hands this function a new env: HostEnsureBinding
     // tears the previous binding down with the env that created its references, aborts its
@@ -4204,10 +4600,13 @@ napi_value Init(napi_env env, napi_value exports) {
         if (HostRefReplace(env, &binding->exports_ref, exports) != napi_ok) {
             OH_LOG_WARN(LOG_APP, "[openharmony-host] Init could not keep the exports object");
         }
-        TryRegisterXComponent();
+        // MULTIWINDOW-L M1: claim the XComponent this Init call carries (one Init per XComponent;
+        // a plain module import carries no OH_NATIVE_XCOMPONENT_OBJ).
+        TryClaimXComponentFromExports(env, exports, nullptr, nullptr);
     }
     napi_property_descriptor properties[] = {
         {"registerXComponent", nullptr, RegisterXComponent, nullptr, nullptr, nullptr, napi_default, nullptr},
+        {"unregisterXComponent", nullptr, UnregisterXComponent, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"registerTextInputSink", nullptr, RegisterTextInputSink, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"notifyTextInput", nullptr, NotifyTextInput, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"notifyTextComposition", nullptr, NotifyTextComposition, nullptr, nullptr, nullptr, napi_default, nullptr},
