@@ -989,6 +989,13 @@ void HostRouteSurface(OH_NativeXComponent* component, void* window, int width, i
         ohos_host_set_native_window(window, width, height, static_cast<ohos_surface_state>(state));
     }
     ohos_host_window_surface(record.id, window, width, height, state);
+    if (!record.primary) {
+        // Secondary-window evidence lands in the shell status file (native stderr), which the
+        // feasibility probes read back; the primary already prints its historical surface line.
+        fprintf(stderr, "[openharmony-host] window '%s' surface state=%d %dx%d\n",
+                record.id, state, width, height);
+        fflush(stderr);
+    }
     OH_LOG_INFO(LOG_APP,
                 "[openharmony-host] window '%{public}s' surface state=%{public}d %{public}dx%{public}d primary=%{public}d",
                 record.id, state, width, height, record.primary);
@@ -1219,6 +1226,8 @@ void HostClaimXComponent(napi_env env, napi_value exportInstance, OH_NativeXComp
         return;
     }
     if (ohos_host_window_register(id.c_str(), component, binding, primary) != OHOS_HOST_WINDOW_OK) {
+        fprintf(stderr, "[openharmony-host] window '%s' could not be registered\n", id.c_str());
+        fflush(stderr);
         OH_LOG_WARN(LOG_APP, "[openharmony-host] window '%{public}s' could not be registered", id.c_str());
         return;
     }
@@ -1233,6 +1242,8 @@ void HostClaimXComponent(napi_env env, napi_value exportInstance, OH_NativeXComp
         .DispatchHoverEvent = nullptr,
     };
     if (OH_NativeXComponent_RegisterCallback(component, &callback) != 0) {
+        fprintf(stderr, "[openharmony-host] window '%s' RegisterCallback failed\n", id.c_str());
+        fflush(stderr);
         OH_LOG_WARN(LOG_APP, "[openharmony-host] RegisterCallback failed for window '%{public}s'",
                     id.c_str());
         ohos_host_window_unregister(id.c_str());
@@ -1274,6 +1285,12 @@ void HostClaimXComponent(napi_env env, napi_value exportInstance, OH_NativeXComp
     OH_LOG_INFO(LOG_APP,
                 "[openharmony-host] window '%{public}s' registered (xcomponent '%{public}s' primary=%{public}d), %{public}d window(s)",
                 id.c_str(), native_id.c_str(), primary, ohos_host_window_count());
+    // The device logs native OH_LOG_* only through the shell status file, so the claim keeps a
+    // stderr mirror like the surface path: this is the probe's evidence that window N registered.
+    fprintf(stderr,
+            "[openharmony-host] window '%s' registered (xcomponent '%s' primary=%d) windows=%d\n",
+            id.c_str(), native_id.c_str(), primary, ohos_host_window_count());
+    fflush(stderr);
 }
 
 // Claims the XComponent carried by one exports object (OH_NATIVE_XCOMPONENT_OBJ is set when the
@@ -4178,6 +4195,9 @@ napi_value UnregisterXComponent(napi_env env, napi_callback_info info) {
         }
         OH_LOG_INFO(LOG_APP, "[openharmony-host] unregisterXComponent '%{public}s' -> %{public}d",
                     requested.c_str(), released);
+        fprintf(stderr, "[openharmony-host] unregisterXComponent '%s' -> %d\n",
+                requested.c_str(), released);
+        fflush(stderr);
     } else {
         OH_LOG_WARN(LOG_APP, "[openharmony-host] unregisterXComponent: unknown env, ignored");
     }
