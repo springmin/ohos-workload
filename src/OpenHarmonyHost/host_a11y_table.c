@@ -483,7 +483,10 @@ int ohos_host_accessibility_node_for(const char* instance, int id, int parent_id
                                      double range_min, double range_max, double range_current,
                                      int checked) {
     pthread_mutex_lock(&g_a11y_mutex);
-    OhosA11yPartition* part = OhosA11yPartitionForLocked(instance, 1);
+    // create=0: only begin_for allocates a partition. A stray node write for a typo'd instance
+    // must not burn one of the OHOS_A11Y_MAX_NAMED_PARTITIONS slots (the capped partition table
+    // is the resource guard; the documented sequence is begin/node/commit).
+    OhosA11yPartition* part = OhosA11yPartitionForLocked(instance, 0);
     int rc = part == NULL ? -1 : OhosA11yNodeLocked(part, id, parent_id, role, text, description,
                                                     hint, x, y, width, height, flags, actions,
                                                     range_min, range_max, range_current, checked);

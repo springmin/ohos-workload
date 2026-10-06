@@ -130,7 +130,15 @@ int main(void) {
     Check(copy != NULL && strcmp(copy, "child-A") == 0,
           "a get string copy survives the partition's next begin");
 
-    // 10. The named-partition count is capped (2 above + 6 here = 8; the 9th is rejected).
+    // 10. A stray write for an unknown instance does not allocate a partition: only begin_for
+    // spends the capped partition table, so a typo'd node_for cannot burn one of the 8 slots.
+    Check(ohos_host_accessibility_node_for("sub-orphan", 61, 0, "text", "x", NULL, NULL, 0, 0, 0,
+                                           0, 0, 0, NAN, NAN, 0, -1) == -1
+          && ohos_host_accessibility_count_for("sub-orphan") == 0,
+          "a write without begin does not allocate a partition");
+
+    // 11. The named-partition count is capped (2 above + 6 here = 8; the 9th is rejected). This
+    // only holds when the stray write above did not take a slot, so it doubles as its pin.
     PublishFor("sub-c", 51, "text", "c");
     PublishFor("sub-d", 52, "text", "d");
     PublishFor("sub-e", 53, "text", "e");
@@ -142,7 +150,7 @@ int main(void) {
           && ohos_host_accessibility_count_for("sub-overflow") == 0,
           "named partitions are capped");
 
-    // 11. Reset drops the primary and every named partition.
+    // 12. Reset drops the primary and every named partition.
     ohos_host_accessibility_table_reset();
     Check(ohos_host_accessibility_count() == 0 && ohos_host_accessibility_count_for("sub-a") == 0
           && ohos_host_accessibility_count_for("sub-h") == 0,
