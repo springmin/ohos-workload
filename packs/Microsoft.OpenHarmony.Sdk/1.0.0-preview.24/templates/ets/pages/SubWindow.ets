@@ -428,6 +428,7 @@ struct SubWindow {
     if (!this.subWebHostRegistered) {
       return;
     }
+    hilog.info(DOMAIN, TAG, 'child web capacity advertised: max=%{public}d surface=%{public}s', SUB_WEB_SLOT_MAX, this.surfaceId);
     this.notifyWebHostState('capacity', `${SUB_WEB_SLOT_MAX}`);
   }
 
@@ -440,6 +441,8 @@ struct SubWindow {
     try {
       if (typeof host !== 'undefined' && typeof host.notifyWebEvent === 'function') {
         host.notifyWebEvent(tagged, url);
+      } else {
+        hilog.warn(DOMAIN, TAG, 'host.notifyWebEvent unavailable; child web event %{public}s dropped', slotState);
       }
     } catch (notifyError) {
       hilog.error(DOMAIN, TAG, 'child web event failed: %{public}s', (notifyError as Error).message);
