@@ -22,7 +22,7 @@ on:
         description: 'maui-ohos commit SHA to cross-check (defaults to the pinned slice tip)'
         required: false
         type: string
-        default: '23d98a96152de8d83141942dab0df8c28498765d'
+        default: 'bb6b06990d0583f429620545375c8d2d9f8d6709'
   push:
     branches: [ master ]
   pull_request:
@@ -32,7 +32,11 @@ permissions:
 
 # Reproducible cross-repo check: the slice is checked out at an exact commit, not the mutable
 # feature/openharmony branch, so a push to the fork cannot change what this gate verifies.
-# Current tip: 23d98a9615 (MULTIWINDOW-L final: M4 routes the per-window pinch streams to the
+# Current tip: bb6b06990d (MULTIWINDOW-L2 merged: the L2-a per-window a11y provider adds six
+# exports - ohos_host_accessibility_{begin,commit,node,provider_status,send_event}_for and
+# set_window_action_listener - so the export set moves to 163/163; the L2-b child ArkWeb host
+# rides the existing ohos_host_web_command/eval wire (NAPI properties, no new export); SEC-SCAN-6
+# A/B/C are in) on 23d98a9615 (MULTIWINDOW-L final: M4 routes the per-window pinch streams to the
 # owning renderer through the new ohos_host_register_window_pinch export in the
 # host_window_bridge.c contract table, so the export set moves to 157/157; the per-window
 # focus/IME/lifecycle/a11y/alert partition and SEC-SCAN-5c's primary-window text gate are
@@ -121,7 +125,7 @@ permissions:
 # 151/151).
 # Advance the pin deliberately, in lockstep with the interaction/pixel gates.
 env:
-  MAUI_OHOS_REF: ${{ github.event.inputs.maui_ohos_ref || '23d98a96152de8d83141942dab0df8c28498765d' }}
+  MAUI_OHOS_REF: ${{ github.event.inputs.maui_ohos_ref || 'bb6b06990d0583f429620545375c8d2d9f8d6709' }}
 
 jobs:
   contract:
