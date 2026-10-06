@@ -34,6 +34,10 @@ napi_value AttachAccessibilityNode(napi_env env, napi_callback_info info);
 static int AttachAccessibilityValue(napi_env env, napi_value value);
 napi_value AccessibilityStatus(napi_env env, napi_callback_info info);
 napi_value AccessibilityNodeCount(napi_env env, napi_callback_info info);
+// MULTIWINDOW-L2 a: the per-instance provider entries.
+napi_value AttachAccessibilityNodeFor(napi_env env, napi_callback_info info);
+napi_value AccessibilityStatusFor(napi_env env, napi_callback_info info);
+napi_value AccessibilityNodeCountFor(napi_env env, napi_callback_info info);
 
 #include <string>
 #include <vector>
@@ -4684,6 +4688,9 @@ napi_value Init(napi_env env, napi_value exports) {
 
 
         {"attachAccessibilityNode", nullptr, AttachAccessibilityNode, nullptr, nullptr, nullptr, napi_default, nullptr},
+        {"attachAccessibilityNodeFor", nullptr, AttachAccessibilityNodeFor, nullptr, nullptr, nullptr, napi_default, nullptr},
+        {"accessibilityStatusFor", nullptr, AccessibilityStatusFor, nullptr, nullptr, nullptr, napi_default, nullptr},
+        {"accessibilityNodeCountFor", nullptr, AccessibilityNodeCountFor, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"registerWebSink", nullptr, RegisterWebSink, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"notifyWebEvent", nullptr, NotifyWebEvent, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"registerWebEvalSink", nullptr, RegisterWebEvalSink, nullptr, nullptr, nullptr, napi_default, nullptr},
@@ -4806,6 +4813,7 @@ extern "C" __attribute__((constructor)) void RegisterHostModule(void) {
 #include <arkui/native_interface_accessibility.h>
 #include <cmath>
 #include <cstring>
+#include "host_a11y_table.h"  // per-instance caps/validator shared with the table module
 
 // The node table accessors (and the publish contract) are declared in openharmony_host.h,
 // which both this file and openharmony_host.c include, so the C++ consumer and the C
@@ -4827,7 +4835,23 @@ struct A11yNodeRecord {
     double rangeMin = 0, rangeMax = 0, rangeCurrent = 0;
 };
 
-static bool A11yReadNode(int index, A11yNodeRecord* out) {
+// MULTIWINDOW-L2 a: every read below carries the provider instance (the string registered with
+// OH_ArkUI_AccessibilityProviderRegisterCallbackWithInstance, i.e. the shell's window id).
+// A NULL instance is the legacy primary provider path: it calls the original exports, so the
+// main window's table access is byte-for-byte what it was before the instance work.
+static int A11yCount(const char* instance) {
+    return instance != nullptr ? ohos_host_accessibility_count_for(instance)
+                               : ohos_host_accessibility_count();
+}
+
+static bool A11yReadNode(const char* instance, int index, A11yNodeRecord* out) {
+    if (instance != nullptr) {
+        return ohos_host_accessibility_get_for(instance, index, &out->id, &out->parent, &out->role,
+                                               &out->text, &out->description, &out->hint, &out->x,
+                                               &out->y, &out->width, &out->height, &out->flags,
+                                               &out->actions, &out->rangeMin, &out->rangeMax,
+                                               &out->rangeCurrent, &out->checked) == 0;
+    }
     return ohos_host_accessibility_get(index, &out->id, &out->parent, &out->role, &out->text,
                                        &out->description, &out->hint, &out->x, &out->y,
                                        &out->width, &out->height, &out->flags, &out->actions,
@@ -4837,8 +4861,13 @@ static bool A11yReadNode(int index, A11yNodeRecord* out) {
 
 // Geometry-only read for the focus-move scans: every string output stays NULL, so a probe
 // does not copy the four interned strings the full record carries.
-static bool A11yReadNodeGeometry(int index, float* x, float* y, float* width, float* height,
-                                 int* flags) {
+static bool A11yReadNodeGeometry(const char* instance, int index, float* x, float* y,
+                                 float* width, float* height, int* flags) {
+    if (instance != nullptr) {
+        return ohos_host_accessibility_get_for(instance, index, nullptr, nullptr, nullptr, nullptr,
+                                               nullptr, nullptr, x, y, width, height, flags, nullptr,
+                                               nullptr, nullptr, nullptr, nullptr) == 0;
+    }
     return ohos_host_accessibility_get(index, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr,
                                        x, y, width, height, flags, nullptr,
                                        nullptr, nullptr, nullptr, nullptr) == 0;
@@ -4847,11 +4876,12 @@ static bool A11yReadNodeGeometry(int index, float* x, float* y, float* width, fl
 // Index of the node published under this id, or -1 when it is not in the table. The native
 // table builds its id -> index map while publishing (ohos_host_accessibility_index_of), so
 // this is O(1) instead of the linear scan it used to be.
-static int A11yIndexOfId(int64_t elementId) {
+static int A11yIndexOfId(const char* instance, int64_t elementId) {
     if (elementId <= 0) {
         return -1;
     }
-    return ohos_host_accessibility_index_of((int)elementId);
+    return instance != nullptr ? ohos_host_accessibility_index_of_for(instance, (int)elementId)
+                               : ohos_host_accessibility_index_of((int)elementId);
 }
 
 static ArkUI_AccessibilityProvider* g_a11y_provider = nullptr;
@@ -4874,6 +4904,61 @@ static bool g_a11y_custom_added = false;
 // the provider stays attached to the CUSTOM node, so the node has to be re-added to the new
 // content (setNodeContent runs again); the identity is what makes that rebind detectable.
 static ArkUI_NodeContentHandle g_a11y_content = nullptr;
+
+// MULTIWINDOW-L2 a: per-instance providers for child windows. The shell hands the child's
+// ContentSlot over through host.attachAccessibilityNodeFor(instance, content); this file
+// creates one CUSTOM node per instance, obtains that node's provider and registers the
+// WithInstance callbacks (the instance string is echoed back on every callback, which is how
+// each provider reads its own node-table partition). The primary provider above is untouched.
+static std::atomic<void (*)(const char*, int, int)> g_a11y_window_action_listener{nullptr};
+
+struct A11yInstanceProvider {
+    std::string instance;
+    ArkUI_NodeHandle customNode = nullptr;
+    bool customAdded = false;
+    ArkUI_NodeContentHandle content = nullptr;
+    ArkUI_AccessibilityProvider* provider = nullptr;
+    // 0 not attached, 1 attached/callbacks registered, 3 content received but node not added,
+    // 4 CUSTOM node added but the provider refused it (same vocabulary as the primary status).
+    int status = 0;
+};
+
+static std::mutex g_a11y_instances_mutex;
+static std::vector<std::unique_ptr<A11yInstanceProvider>> g_a11y_instances;
+
+// One instance record; create=0 never allocates. The returned pointer stays valid for the
+// process lifetime (the vector owns unique_ptrs; the pointee never moves).
+static A11yInstanceProvider* A11yInstanceFor(const char* instance, bool create) {
+    if (instance == nullptr || instance[0] == '\0' || !ohos_host_accessibility_instance_valid(instance)) {
+        return nullptr;
+    }
+    std::lock_guard<std::mutex> guard(g_a11y_instances_mutex);
+    for (const std::unique_ptr<A11yInstanceProvider>& entry : g_a11y_instances) {
+        if (entry->instance == instance) {
+            return entry.get();
+        }
+    }
+    if (!create || (int)g_a11y_instances.size() >= OHOS_A11Y_MAX_NAMED_PARTITIONS) {
+        return nullptr;
+    }
+    std::unique_ptr<A11yInstanceProvider> entry(new A11yInstanceProvider());
+    entry->instance = instance;
+    A11yInstanceProvider* raw = entry.get();
+    g_a11y_instances.push_back(std::move(entry));
+    return raw;
+}
+
+static int A11yInstanceStatusFor(const char* instance) {
+    A11yInstanceProvider* entry = A11yInstanceFor(instance, false);
+    return entry != nullptr ? entry->status : 0;
+}
+
+// The attached provider for one instance, or NULL. The pointer is stable after registration
+// (the record is never removed), so the caller may send through it after the lock is dropped.
+static ArkUI_AccessibilityProvider* A11yInstanceProviderFor(const char* instance) {
+    A11yInstanceProvider* entry = A11yInstanceFor(instance, false);
+    return entry != nullptr ? entry->provider : nullptr;
+}
 
 // Layout coordinates can be extreme or NaN; the framework rect is int32, so clamp them.
 static int32_t A11yCoord(float value) {
@@ -5044,31 +5129,31 @@ static void A11yAddNodeRecord(ArkUI_AccessibilityElementInfoList* list, const A1
     A11yFillElement(node, info);
 }
 
-static void A11yAddNode(ArkUI_AccessibilityElementInfoList* list, int index) {
+static void A11yAddNode(const char* instance, ArkUI_AccessibilityElementInfoList* list, int index) {
     A11yNodeRecord node;
-    if (!A11yReadNode(index, &node)) {
+    if (!A11yReadNode(instance, index, &node)) {
         return;   // keeps empty elements out of the list for a stale index
     }
     A11yAddNodeRecord(list, node);
 }
 
-static int32_t A11yFindById(int64_t elementId, ArkUI_AccessibilitySearchMode mode,
+static int32_t A11yFindById(const char* instance, int64_t elementId, ArkUI_AccessibilitySearchMode mode,
                             int32_t requestId, ArkUI_AccessibilityElementInfoList* list) {
     (void)requestId;
-    int count = ohos_host_accessibility_count();
+    int count = A11yCount(instance);
     if (count <= 0) {
         return ARKUI_ACCESSIBILITY_NATIVE_RESULT_FAILED;
     }
     if (elementId <= 0) {
-        A11yAddNode(list, 0);              // root
+        A11yAddNode(instance, list, 0);    // root
         return ARKUI_ACCESSIBILITY_NATIVE_RESULT_SUCCESSFUL;
     }
-    int index = A11yIndexOfId(elementId);
+    int index = A11yIndexOfId(instance, elementId);
     if (index < 0) {
         return ARKUI_ACCESSIBILITY_NATIVE_RESULT_FAILED;
     }
     A11yNodeRecord node;
-    if (!A11yReadNode(index, &node)) {
+    if (!A11yReadNode(instance, index, &node)) {
         return ARKUI_ACCESSIBILITY_NATIVE_RESULT_FAILED;
     }
     A11yAddNodeRecord(list, node);
@@ -5077,7 +5162,7 @@ static int32_t A11yFindById(int64_t elementId, ArkUI_AccessibilitySearchMode mod
         // record: the nested scan used to read every node once per candidate child (O(N^2)).
         for (int j = 0; j < count; j++) {
             A11yNodeRecord child;
-            if (A11yReadNode(j, &child) && child.parent == node.id) {
+            if (A11yReadNode(instance, j, &child) && child.parent == node.id) {
                 A11yAddNodeRecord(list, child);
             }
         }
@@ -5085,17 +5170,17 @@ static int32_t A11yFindById(int64_t elementId, ArkUI_AccessibilitySearchMode mod
     return ARKUI_ACCESSIBILITY_NATIVE_RESULT_SUCCESSFUL;
 }
 
-static int32_t A11yFindByText(int64_t elementId, const char* text, int32_t requestId,
-                              ArkUI_AccessibilityElementInfoList* list) {
+static int32_t A11yFindByText(const char* instance, int64_t elementId, const char* text,
+                              int32_t requestId, ArkUI_AccessibilityElementInfoList* list) {
     (void)elementId; (void)requestId;
     if (text == nullptr) {
         return ARKUI_ACCESSIBILITY_NATIVE_RESULT_BAD_PARAMETER;
     }
-    int count = ohos_host_accessibility_count();
+    int count = A11yCount(instance);
     int found = 0;
     for (int i = 0; i < count; i++) {
         A11yNodeRecord node;
-        if (!A11yReadNode(i, &node)) {
+        if (!A11yReadNode(instance, i, &node)) {
             continue;
         }
         if ((node.text != nullptr && strstr(node.text, text) != nullptr) ||
@@ -5107,12 +5192,12 @@ static int32_t A11yFindByText(int64_t elementId, const char* text, int32_t reque
     return found > 0 ? ARKUI_ACCESSIBILITY_NATIVE_RESULT_SUCCESSFUL : ARKUI_ACCESSIBILITY_NATIVE_RESULT_FAILED;
 }
 
-static int A11yFirstFocusable(int afterIndex) {
-    int count = ohos_host_accessibility_count();
+static int A11yFirstFocusable(const char* instance, int afterIndex) {
+    int count = A11yCount(instance);
     for (int step = 0; step < count; step++) {
         int i = (afterIndex + 1 + step) % count;
         int flags = 0;
-        if (A11yReadNodeGeometry(i, nullptr, nullptr, nullptr, nullptr, &flags) && (flags & 2) != 0) {
+        if (A11yReadNodeGeometry(instance, i, nullptr, nullptr, nullptr, nullptr, &flags) && (flags & 2) != 0) {
             return i;
         }
     }
@@ -5141,10 +5226,10 @@ static const float kA11yFocusEpsilon = 1.0f;
 static const float kA11yFocusPerpendicularPenalty = 2.0f;
 
 // Reads the centre and focusable bit of one table entry; false when the index is not in the table.
-static bool A11yReadNodeGeom(int index, float* centerX, float* centerY, bool* focusable) {
+static bool A11yReadNodeGeom(const char* instance, int index, float* centerX, float* centerY, bool* focusable) {
     float x = 0, y = 0, width = 0, height = 0;
     int flags = 0;
-    if (!A11yReadNodeGeometry(index, &x, &y, &width, &height, &flags)) {
+    if (!A11yReadNodeGeometry(instance, index, &x, &y, &width, &height, &flags)) {
         return false;
     }
     if (centerX != nullptr) {
@@ -5160,16 +5245,16 @@ static bool A11yReadNodeGeom(int index, float* centerX, float* centerY, bool* fo
 }
 
 // Nearest focusable node in one of the four geometric directions; -1 when none qualifies.
-static int A11yNearestInDirection(int current, ArkUI_AccessibilityFocusMoveDirection direction) {
+static int A11yNearestInDirection(const char* instance, int current, ArkUI_AccessibilityFocusMoveDirection direction) {
     float originX = 0, originY = 0;
-    if (!A11yReadNodeGeom(current, &originX, &originY, nullptr)) {
+    if (!A11yReadNodeGeom(instance, current, &originX, &originY, nullptr)) {
         return -1;
     }
     const bool horizontal = direction == ARKUI_ACCESSIBILITY_NATIVE_DIRECTION_LEFT ||
                             direction == ARKUI_ACCESSIBILITY_NATIVE_DIRECTION_RIGHT;
     const float sign = (direction == ARKUI_ACCESSIBILITY_NATIVE_DIRECTION_RIGHT ||
                         direction == ARKUI_ACCESSIBILITY_NATIVE_DIRECTION_DOWN) ? 1.0f : -1.0f;
-    int count = ohos_host_accessibility_count();
+    int count = A11yCount(instance);
     int best = -1;
     float bestScore = 0, bestPerpendicular = 0;
     for (int i = 0; i < count; i++) {
@@ -5178,7 +5263,7 @@ static int A11yNearestInDirection(int current, ArkUI_AccessibilityFocusMoveDirec
         }
         float cx = 0, cy = 0;
         bool focusable = false;
-        if (!A11yReadNodeGeom(i, &cx, &cy, &focusable) || !focusable) {
+        if (!A11yReadNodeGeom(instance, i, &cx, &cy, &focusable) || !focusable) {
             continue;
         }
         float primary = sign * (horizontal ? cx - originX : cy - originY);
@@ -5203,12 +5288,12 @@ static int A11yNearestInDirection(int current, ArkUI_AccessibilityFocusMoveDirec
 // Index-order focus step (FORWARD/BACKWARD), wrapping at both ends. When the current id is not
 // in the table, the pre-R2 assumption "id == index + 1" is kept so stale ids move relative to
 // the same index as before; ids <= 0 start at the first (FORWARD) or last (BACKWARD) node.
-static int A11yStepFocus(int64_t elementId, bool backward) {
-    int count = ohos_host_accessibility_count();
+static int A11yStepFocus(const char* instance, int64_t elementId, bool backward) {
+    int count = A11yCount(instance);
     if (count <= 0) {
         return -1;
     }
-    int start = A11yIndexOfId(elementId);
+    int start = A11yIndexOfId(instance, elementId);
     if (start < 0) {
         if (elementId > 0) {
             start = (int)((elementId - 1) % count);
@@ -5220,28 +5305,28 @@ static int A11yStepFocus(int64_t elementId, bool backward) {
         int i = backward ? (int)(((start - step) % count + count) % count)
                          : (start + step) % count;
         int flags = 0;
-        if (A11yReadNodeGeometry(i, nullptr, nullptr, nullptr, nullptr, &flags) && (flags & 2) != 0) {
+        if (A11yReadNodeGeometry(instance, i, nullptr, nullptr, nullptr, nullptr, &flags) && (flags & 2) != 0) {
             return i;
         }
     }
     return -1;
 }
 
-static int32_t A11yFocused(int64_t elementId, ArkUI_AccessibilityFocusType focusType,
+static int32_t A11yFocused(const char* instance, int64_t elementId, ArkUI_AccessibilityFocusType focusType,
                            int32_t requestId, ArkUI_AccessibilityElementInfo* info) {
     (void)elementId; (void)focusType; (void)requestId;
-    int index = A11yFirstFocusable(-1);
+    int index = A11yFirstFocusable(instance, -1);
     if (index < 0) {
         return ARKUI_ACCESSIBILITY_NATIVE_RESULT_FAILED;
     }
     A11yNodeRecord node;
-    if (!A11yReadNode(index, &node)) {
+    if (!A11yReadNode(instance, index, &node)) {
         return ARKUI_ACCESSIBILITY_NATIVE_RESULT_FAILED;
     }
     return A11yFillElement(node, info);
 }
 
-static int32_t A11yNextFocus(int64_t elementId, ArkUI_AccessibilityFocusMoveDirection direction,
+static int32_t A11yNextFocus(const char* instance, int64_t elementId, ArkUI_AccessibilityFocusMoveDirection direction,
                              int32_t requestId, ArkUI_AccessibilityElementInfo* info) {
     (void)requestId;
     int index = -1;
@@ -5252,35 +5337,46 @@ static int32_t A11yNextFocus(int64_t elementId, ArkUI_AccessibilityFocusMoveDire
         case ARKUI_ACCESSIBILITY_NATIVE_DIRECTION_RIGHT: {
             // elementId <= 0 means "no current node" (the convention used by findAccessibilityNodeInfosById,
             // where it selects the root): use the root's rect as the geometric origin.
-            int current = A11yIndexOfId(elementId);
+            int current = A11yIndexOfId(instance, elementId);
             if (current < 0 && elementId <= 0) {
                 current = 0;
             }
-            index = A11yNearestInDirection(current, direction);
+            index = A11yNearestInDirection(instance, current, direction);
             break;
         }
         case ARKUI_ACCESSIBILITY_NATIVE_DIRECTION_BACKWARD:
-            index = A11yStepFocus(elementId, true);
+            index = A11yStepFocus(instance, elementId, true);
             break;
         case ARKUI_ACCESSIBILITY_NATIVE_DIRECTION_FORWARD:
         default:
             // FORWARD, and also INVALID/unknown values: those keep the pre-R2 index-order move.
-            index = A11yStepFocus(elementId, false);
+            index = A11yStepFocus(instance, elementId, false);
             break;
     }
     if (index < 0) {
         return ARKUI_ACCESSIBILITY_NATIVE_RESULT_FAILED;
     }
     A11yNodeRecord node;
-    if (!A11yReadNode(index, &node)) {
+    if (!A11yReadNode(instance, index, &node)) {
         return ARKUI_ACCESSIBILITY_NATIVE_RESULT_FAILED;
     }
     return A11yFillElement(node, info);
 }
 
-static int32_t A11yExecuteAction(int64_t elementId, ArkUI_Accessibility_ActionType action,
+// Executes one action on the provider that called back. A per-instance provider forwards the
+// instance string to the managed per-window listener (so the action executes in the owning
+// window); the legacy primary provider keeps the historical two-argument listener.
+static int32_t A11yExecuteAction(const char* instance, int64_t elementId, ArkUI_Accessibility_ActionType action,
                                  ArkUI_AccessibilityActionArguments* arguments, int32_t requestId) {
     (void)arguments; (void)requestId;
+    if (instance != nullptr) {
+        auto listener = HostListenerLoad(g_a11y_window_action_listener);
+        if (listener != nullptr) {
+            listener(instance, (int)elementId, (int)action);
+            return ARKUI_ACCESSIBILITY_NATIVE_RESULT_SUCCESSFUL;
+        }
+        return ARKUI_ACCESSIBILITY_NATIVE_RESULT_FAILED;
+    }
     auto listener = HostListenerLoad(g_a11y_action_listener);
     if (listener != nullptr) {
         listener((int)elementId, (int)action);
@@ -5301,9 +5397,79 @@ static int32_t A11yCursorPosition(int64_t elementId, int32_t requestId, int32_t*
     return ARKUI_ACCESSIBILITY_NATIVE_RESULT_SUCCESSFUL;
 }
 
+// The primary provider keeps the original callback shape; each forwarder passes a NULL
+// instance, so the shared readers take exactly the legacy exports they always took.
+static int32_t A11yFindByIdPrimary(int64_t elementId, ArkUI_AccessibilitySearchMode mode,
+                                   int32_t requestId, ArkUI_AccessibilityElementInfoList* list) {
+    return A11yFindById(nullptr, elementId, mode, requestId, list);
+}
+static int32_t A11yFindByTextPrimary(int64_t elementId, const char* text, int32_t requestId,
+                                     ArkUI_AccessibilityElementInfoList* list) {
+    return A11yFindByText(nullptr, elementId, text, requestId, list);
+}
+static int32_t A11yFocusedPrimary(int64_t elementId, ArkUI_AccessibilityFocusType focusType,
+                                  int32_t requestId, ArkUI_AccessibilityElementInfo* info) {
+    return A11yFocused(nullptr, elementId, focusType, requestId, info);
+}
+static int32_t A11yNextFocusPrimary(int64_t elementId, ArkUI_AccessibilityFocusMoveDirection direction,
+                                    int32_t requestId, ArkUI_AccessibilityElementInfo* info) {
+    return A11yNextFocus(nullptr, elementId, direction, requestId, info);
+}
+static int32_t A11yExecuteActionPrimary(int64_t elementId, ArkUI_Accessibility_ActionType action,
+                                        ArkUI_AccessibilityActionArguments* arguments, int32_t requestId) {
+    return A11yExecuteAction(nullptr, elementId, action, arguments, requestId);
+}
+
 static ArkUI_AccessibilityProviderCallbacks g_a11y_callbacks = {
-    A11yFindById, A11yFindByText, A11yFocused, A11yNextFocus,
-    A11yExecuteAction, A11yClearFocus, A11yCursorPosition,
+    A11yFindByIdPrimary, A11yFindByTextPrimary, A11yFocusedPrimary, A11yNextFocusPrimary,
+    A11yExecuteActionPrimary, A11yClearFocus, A11yCursorPosition,
+};
+
+// The per-instance callbacks (RegisterCallbackWithInstance): the framework echoes the instance
+// string the provider was registered under, and every read routes to that instance's node-table
+// partition. One static callback set serves every instance; the string is the discriminator.
+static int32_t A11yFindByIdInstance(const char* instanceId, int64_t elementId,
+                                    ArkUI_AccessibilitySearchMode mode, int32_t requestId,
+                                    ArkUI_AccessibilityElementInfoList* list) {
+    return instanceId == nullptr ? ARKUI_ACCESSIBILITY_NATIVE_RESULT_BAD_PARAMETER
+                                 : A11yFindById(instanceId, elementId, mode, requestId, list);
+}
+static int32_t A11yFindByTextInstance(const char* instanceId, int64_t elementId, const char* text,
+                                      int32_t requestId, ArkUI_AccessibilityElementInfoList* list) {
+    return instanceId == nullptr ? ARKUI_ACCESSIBILITY_NATIVE_RESULT_BAD_PARAMETER
+                                 : A11yFindByText(instanceId, elementId, text, requestId, list);
+}
+static int32_t A11yFocusedInstance(const char* instanceId, int64_t elementId,
+                                   ArkUI_AccessibilityFocusType focusType, int32_t requestId,
+                                   ArkUI_AccessibilityElementInfo* info) {
+    return instanceId == nullptr ? ARKUI_ACCESSIBILITY_NATIVE_RESULT_BAD_PARAMETER
+                                 : A11yFocused(instanceId, elementId, focusType, requestId, info);
+}
+static int32_t A11yNextFocusInstance(const char* instanceId, int64_t elementId,
+                                     ArkUI_AccessibilityFocusMoveDirection direction, int32_t requestId,
+                                     ArkUI_AccessibilityElementInfo* info) {
+    return instanceId == nullptr ? ARKUI_ACCESSIBILITY_NATIVE_RESULT_BAD_PARAMETER
+                                 : A11yNextFocus(instanceId, elementId, direction, requestId, info);
+}
+static int32_t A11yExecuteActionInstance(const char* instanceId, int64_t elementId,
+                                         ArkUI_Accessibility_ActionType action,
+                                         ArkUI_AccessibilityActionArguments* arguments, int32_t requestId) {
+    return instanceId == nullptr ? ARKUI_ACCESSIBILITY_NATIVE_RESULT_BAD_PARAMETER
+                                 : A11yExecuteAction(instanceId, elementId, action, arguments, requestId);
+}
+static int32_t A11yClearFocusInstance(const char* instanceId) {
+    (void)instanceId;
+    return A11yClearFocus();
+}
+static int32_t A11yCursorPositionInstance(const char* instanceId, int64_t elementId, int32_t requestId,
+                                          int32_t* index) {
+    (void)instanceId;
+    return A11yCursorPosition(elementId, requestId, index);
+}
+
+static ArkUI_AccessibilityProviderCallbacksWithInstance g_a11y_callbacks_instance = {
+    A11yFindByIdInstance, A11yFindByTextInstance, A11yFocusedInstance, A11yNextFocusInstance,
+    A11yExecuteActionInstance, A11yClearFocusInstance, A11yCursorPositionInstance,
 };
 
 // Attaches the accessibility provider from the value the shell hands over. Two shapes are
@@ -5395,6 +5561,83 @@ static int AttachAccessibilityValue(napi_env env, napi_value value) {
     return g_a11y_status;
 }
 
+// MULTIWINDOW-L2 a: attaches a provider for one child-window instance from the NodeContent the
+// child page's ContentSlot hands over. The primary provider machinery above is not touched; each
+// instance gets its own CUSTOM node (the only node type ArkUI grants a provider) and registers
+// the WithInstance callbacks. Returns the instance status (0/1/3/4) for the shell's log.
+static int AttachAccessibilityValueFor(napi_env env, const char* instance, napi_value value) {
+    if (env == nullptr || value == nullptr || instance == nullptr || instance[0] == '\0') {
+        return 0;
+    }
+    if (!ohos_host_accessibility_instance_valid(instance)) {
+        OH_LOG_WARN(LOG_APP, "[openharmony-host] accessibility: instance id rejected (empty, over-long or non-printable)");
+        return 0;
+    }
+    ArkUI_NodeContentHandle content = nullptr;
+    if (OH_ArkUI_GetNodeContentFromNapiValue(env, value, &content) != 0 || content == nullptr) {
+        OH_LOG_WARN(LOG_APP, "[openharmony-host] accessibility: attachAccessibilityNodeFor expects a NodeContent");
+        return A11yInstanceStatusFor(instance);
+    }
+    A11yInstanceProvider* entry = A11yInstanceFor(instance, true);
+    if (entry == nullptr) {
+        OH_LOG_WARN(LOG_APP, "[openharmony-host] accessibility: no per-instance provider slot left");
+        return 0;
+    }
+    if (entry->provider != nullptr && entry->content == content) {
+        return entry->status;  // same content re-published: the provider already serves it
+    }
+    if (entry->provider != nullptr && entry->content != content) {
+        OH_LOG_WARN(LOG_APP, "[openharmony-host] accessibility: instance NodeContent replaced; re-adding the CUSTOM node");
+        entry->customAdded = false;
+    }
+    entry->status = 3;  // NodeContent received; the CUSTOM node still has to be created/added
+
+    ArkUI_NativeNodeAPI_1* api = nullptr;
+    OH_ArkUI_GetModuleInterface(ARKUI_NATIVE_NODE, ArkUI_NativeNodeAPI_1, api);
+    if (api == nullptr || api->createNode == nullptr) {
+        OH_LOG_WARN(LOG_APP, "[openharmony-host] accessibility: native node API unavailable (instance)");
+        return entry->status;
+    }
+    if (entry->customNode == nullptr) {
+        entry->customNode = api->createNode(ARKUI_NODE_CUSTOM);
+    }
+    if (entry->customNode == nullptr) {
+        OH_LOG_WARN(LOG_APP, "[openharmony-host] accessibility: createNode(ARKUI_NODE_CUSTOM) failed (instance)");
+        return entry->status;
+    }
+    if (!entry->customAdded) {
+        if (OH_ArkUI_NodeContent_AddNode(content, entry->customNode) != 0) {
+            OH_LOG_WARN(LOG_APP, "[openharmony-host] accessibility: NodeContent_AddNode failed (instance)");
+            return entry->status;
+        }
+        entry->customAdded = true;
+        entry->content = content;
+    }
+    entry->status = 4;  // CUSTOM node is in the content; the provider has not accepted it yet
+
+    if (entry->provider != nullptr) {
+        entry->status = 1;  // provider stays attached to the same CUSTOM node across the rebind
+        return entry->status;
+    }
+    ArkUI_NodeHandle custom = entry->customNode;
+    ArkUI_AccessibilityProvider* provider = nullptr;
+    if (OH_ArkUI_NativeModule_GetNativeAccessibilityProvider(&custom, &provider) != 0 ||
+        provider == nullptr) {
+        OH_LOG_WARN(LOG_APP, "[openharmony-host] accessibility: provider refused the instance CUSTOM node");
+        return entry->status;
+    }
+    if (OH_ArkUI_AccessibilityProviderRegisterCallbackWithInstance(instance, provider,
+                                                                   &g_a11y_callbacks_instance) != 0) {
+        OH_LOG_WARN(LOG_APP, "[openharmony-host] accessibility: instance callback registration failed");
+        return entry->status;
+    }
+    entry->provider = provider;
+    entry->status = 1;
+    OH_LOG_INFO(LOG_APP, "[openharmony-host] accessibility: provider attached to the CUSTOM node (instance=%{public}s)",
+                instance);
+    return entry->status;
+}
+
 napi_value AttachAccessibilityNode(napi_env env, napi_callback_info info) {
     size_t argc = 1;
     napi_value argv[1];
@@ -5424,14 +5667,59 @@ napi_value AccessibilityNodeCount(napi_env env, napi_callback_info info) {
     return result;
 }
 
+// MULTIWINDOW-L2 a: the child-window half of the accessibility self-check. The child page
+// reports its ContentSlot through attachAccessibilityNodeFor(instance, content); the shell can
+// then read the per-instance attach status (1 = attached) and the per-instance published node
+// count without a screen reader, which is the W2 device self-check.
+napi_value AttachAccessibilityNodeFor(napi_env env, napi_callback_info info) {
+    size_t argc = 2;
+    napi_value argv[2] = {nullptr, nullptr};
+    napi_get_cb_info(env, info, &argc, argv, nullptr, nullptr);
+    if (argc < 2) {
+        return nullptr;
+    }
+    std::string instance = GetStringArg(env, argv[0]);
+    int status = AttachAccessibilityValueFor(env, instance.c_str(), argv[1]);
+    napi_value result = nullptr;
+    napi_create_int32(env, status, &result);
+    return result;
+}
+
+napi_value AccessibilityStatusFor(napi_env env, napi_callback_info info) {
+    size_t argc = 1;
+    napi_value argv[1] = {nullptr};
+    napi_get_cb_info(env, info, &argc, argv, nullptr, nullptr);
+    std::string instance = argc >= 1 ? GetStringArg(env, argv[0]) : std::string();
+    napi_value result = nullptr;
+    napi_create_int32(env, A11yInstanceStatusFor(instance.c_str()), &result);
+    return result;
+}
+
+napi_value AccessibilityNodeCountFor(napi_env env, napi_callback_info info) {
+    size_t argc = 1;
+    napi_value argv[1] = {nullptr};
+    napi_get_cb_info(env, info, &argc, argv, nullptr, nullptr);
+    std::string instance = argc >= 1 ? GetStringArg(env, argv[0]) : std::string();
+    napi_value result = nullptr;
+    napi_create_int32(env, ohos_host_accessibility_node_count_for(instance.c_str()), &result);
+    return result;
+}
+
 
 // Managed side hooks: register the action listener and push accessibility events.
 extern "C" void ohos_host_accessibility_set_action_listener(void* callback) {
     HostListenerStore(g_a11y_action_listener, callback);
 }
 
-extern "C" int ohos_host_accessibility_send_event(int eventType) {
-    if (g_a11y_provider == nullptr || eventType == 0) {
+extern "C" void ohos_host_accessibility_set_window_action_listener(void* callback) {
+    HostListenerStore(g_a11y_window_action_listener, callback);
+}
+
+// One event send through one provider. Returns 1 when the event was created and sent, 0 when
+// there is no provider or the event type is invalid. The provider serializes the event during
+// the send; the caller still owns the object, so it is destroyed on every path here.
+static int A11ySendEventThrough(ArkUI_AccessibilityProvider* provider, int eventType) {
+    if (provider == nullptr || eventType == 0) {
         return 0;
     }
     ArkUI_AccessibilityEventInfo* event = OH_ArkUI_CreateAccessibilityEventInfo();
@@ -5442,11 +5730,22 @@ extern "C" int ohos_host_accessibility_send_event(int eventType) {
         OH_ArkUI_DestoryAccessibilityEventInfo(event);
         return 0;
     }
-    // The provider serializes the event during the send; the caller still owns the object, so
-    // it is destroyed here instead of leaking one event info per published event.
-    OH_ArkUI_SendAccessibilityAsyncEvent(g_a11y_provider, event, nullptr);
+    OH_ArkUI_SendAccessibilityAsyncEvent(provider, event, nullptr);
     OH_ArkUI_DestoryAccessibilityEventInfo(event);
     return 1;
+}
+
+extern "C" int ohos_host_accessibility_send_event(int eventType) {
+    return A11ySendEventThrough(g_a11y_provider, eventType);
+}
+
+// The child provider's own event stream: the managed secondary publish flushes its diff here
+// (never through the primary provider above).
+extern "C" int ohos_host_accessibility_send_event_for(const char* instance, int eventType) {
+    if (instance == nullptr || instance[0] == '\0') {
+        return 0;
+    }
+    return A11ySendEventThrough(A11yInstanceProviderFor(instance), eventType);
 }
 
 // Announces text through the attached provider. Same event lifetime discipline as
@@ -5483,5 +5782,11 @@ extern "C" int ohos_host_accessibility_announce(const char* text) {
 // C entry point so the managed runtime can log the attach state (1/2/3, see the handover status).
 extern "C" int ohos_host_accessibility_provider_status(void) {
     return g_a11y_status;
+}
+
+// Per-instance attach state (0 = not attached, 1 = provider attached; 0 for an unknown
+// instance). The managed side gates its per-window publish on this.
+extern "C" int ohos_host_accessibility_provider_status_for(const char* instance) {
+    return A11yInstanceStatusFor(instance);
 }
 

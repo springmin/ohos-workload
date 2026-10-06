@@ -697,7 +697,7 @@ int  ohos_host_draw_present_window(const char* window_id);
 // ohos_host_accessibility_node; the NAPI accessibility provider reads the table back
 // through ohos_host_accessibility_get and fills ArkUI element info from it.
 // THE ARGUMENT ORDER IS THE CONTRACT: the managed DllImport in maui-ohos
-// (OpenHarmonyAccessibility.AccessibilityNode), this header and openharmony_host.c must
+// (OpenHarmonyAccessibility.AccessibilityNode), this header and host_a11y_table.c must
 // all agree. Under AAPCS64 any arity/order drift shifts arguments silently (an earlier
 // revision declared hint as the managed 6th argument while the C side had none, so flags
 // and actions were delivered swapped on device), which is why the interaction harness
@@ -705,6 +705,13 @@ int  ohos_host_draw_present_window(const char* window_id);
 // reorder, insert or drop arguments without changing both sides and the harness assertion.
 // Absent values: hint may be NULL; a range is only valid when range_min <= range_max
 // (NaN compares false); checked is -1 when unknown/not applicable and 0/1 otherwise.
+//
+// MULTIWINDOW-L2 a: the table is partitioned per provider instance. The exports below
+// (no instance argument) address the primary window's partition exactly as before; the
+// *_for exports take the instance string the NAPI layer registered with
+// OH_ArkUI_AccessibilityProviderRegisterCallbackWithInstance (the shell's window id) and
+// address only that instance's partition. The subwindow's publish never touches the
+// primary table. Both families share the same 16-argument publish contract above.
 int ohos_host_accessibility_begin(int count);
 int ohos_host_accessibility_node(int id, int parent_id, const char* role, const char* text,
                                  const char* description, const char* hint,
@@ -714,6 +721,27 @@ int ohos_host_accessibility_node(int id, int parent_id, const char* role, const 
                                  int checked);
 int ohos_host_accessibility_commit(void);
 int ohos_host_accessibility_count(void);
+/// Per-instance variants of the begin/node/commit/count/get/index_of family. The instance
+/// must be a non-empty printable-ASCII string shorter than OHOS_A11Y_INSTANCE_MAX (the shell's
+/// window id); an invalid/unknown instance returns -1 (begin/node/commit/get/index_of) or 0
+/// (count). They are implemented in host_a11y_table.c (see host_a11y_table.h for the caps).
+int ohos_host_accessibility_begin_for(const char* instance, int count);
+int ohos_host_accessibility_node_for(const char* instance, int id, int parent_id, const char* role,
+                                     const char* text, const char* description, const char* hint,
+                                     float x, float y, float width, float height,
+                                     int flags, int actions,
+                                     double range_min, double range_max, double range_current,
+                                     int checked);
+int ohos_host_accessibility_commit_for(const char* instance);
+int ohos_host_accessibility_count_for(const char* instance);
+int ohos_host_accessibility_node_count_for(const char* instance);
+int ohos_host_accessibility_index_of_for(const char* instance, int id);
+int ohos_host_accessibility_get_for(const char* instance, int index, int* id, int* parent_id,
+                                    const char** role, const char** text, const char** description,
+                                    const char** hint, float* x, float* y, float* width,
+                                    float* height, int* flags, int* actions,
+                                    double* range_min, double* range_max, double* range_current,
+                                    int* checked);
 /// Index of the committed node published under this id, or -1 when it is not in the table.
 /// O(1): the publisher maintains an id -> index map while it fills the table, so the NAPI
 /// provider (findAccessibilityNodeInfosById/findNextFocus) does not scan the node list per
@@ -738,6 +766,20 @@ int ohos_host_accessibility_get(int index, int* id, int* parent_id, const char**
 void ohos_host_accessibility_set_action_listener(void* callback);
 int ohos_host_accessibility_send_event(int event_type);
 int ohos_host_accessibility_provider_status(void);
+/// MULTIWINDOW-L2 a: the per-instance action listener, called by the WithInstance provider
+/// callbacks. Signature: void (*)(const char* instance, int element_id, int action), where
+/// `instance` is the string the provider was registered under (the shell's window id, the
+/// same id the managed frame was published with). The legacy single-argument listener above
+/// stays the primary provider's path (zero change).
+void ohos_host_accessibility_set_window_action_listener(void* callback);
+/// Per-instance event send (the child provider's own event stream): returns 1 when the event
+/// was created and sent through that instance's provider, 0 when the instance has no attached
+/// provider. The legacy send_event above stays the primary provider's path.
+int ohos_host_accessibility_send_event_for(const char* instance, int event_type);
+/// Attach status of one per-instance provider (0 = not attached, 1 = attached; the 2/3/4
+/// failure states are internal to host_napi.cpp), or 0 for an instance that never attached.
+/// The legacy ohos_host_accessibility_provider_status below reports the primary provider.
+int ohos_host_accessibility_provider_status_for(const char* instance);
 /// Announces text through the platform screen reader: creates an accessibility event with
 /// event type ARKUI_ACCESSIBILITY_NATIVE_EVENT_TYPE_ANNOUNCE_FOR_ACCESSIBILITY, sets the
 /// announced text and sends it asynchronously through the attached provider. Same lifetime

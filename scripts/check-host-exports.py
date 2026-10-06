@@ -34,7 +34,8 @@ REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 HOST = os.path.join(REPO, "src", "OpenHarmonyHost")
 EXPECTED = os.path.join(HOST, "host-exports.txt")
 HEADER = os.path.join(HOST, "openharmony_host.h")
-SOURCES = ["host_napi.cpp", "openharmony_host.c", "host_optional.c", "host_window_bridge.c"]
+SOURCES = ["host_napi.cpp", "openharmony_host.c", "host_optional.c", "host_window_bridge.c",
+           "host_a11y_table.c"]
 # Managed import sources beyond the slice: keep in sync with the audit's extract.py.
 HOSTING_DIRS = [
     os.path.join(REPO, "src", "Microsoft.OpenHarmony.Hosting"),
