@@ -153,15 +153,16 @@ public sealed class App : Application
         {
             RunSubWindowDemo();
         }
-        else if (uri.StartsWith("app://subwindow/open", StringComparison.OrdinalIgnoreCase))
-        {
-            OpenManagedSubWindow();
-        }
         // MULTIWINDOW-L2 device trigger: the managed child window carries a WebView whose
         // ArkWeb component is hosted by the subwindow page's own child pool (the second host).
+        // Checked before the plain "open" branch: "openweb" also starts with "open".
         else if (uri.StartsWith("app://subwindow/openweb", StringComparison.OrdinalIgnoreCase))
         {
             OpenManagedSubWindow(withWeb: true);
+        }
+        else if (uri.StartsWith("app://subwindow/open", StringComparison.OrdinalIgnoreCase))
+        {
+            OpenManagedSubWindow();
         }
         else if (uri.StartsWith("app://subwindow/close", StringComparison.OrdinalIgnoreCase))
         {
@@ -276,7 +277,7 @@ public sealed class App : Application
                 HeightRequest = 220,
                 Source = new HtmlWebViewSource
                 {
-                    Html = "<html><body style=\"margin:0;background:#101820\">" +
+                    Html = "<html><head><title>CHILD-WEB</title></head><body style=\"margin:0;background:#101820\">" +
                         "<h1 id=\"h\" style=\"color:#6ec1ff;font-family:sans-serif;font-size:28px\">CHILD WEB OK</h1>" +
                         "<script>document.getElementById('h').onclick=function(){this.textContent='CHILD WEB TAP';};</script>" +
                         "</body></html>",
