@@ -28,8 +28,9 @@
 extern "C" {
 #endif
 
-// Window-id and capacity bounds. An id longer than the maximum is rejected (INVALID) rather than
-// silently truncated, so a caller cannot collide two windows by overflow.
+// Window-id and capacity bounds. An id longer than the maximum or carrying a C0 control
+// character / DEL is rejected (INVALID) rather than silently truncated, so a caller cannot
+// collide two windows by overflow and a page-controlled id cannot forge evidence lines.
 #define OHOS_HOST_WINDOW_ID_MAX 63
 #define OHOS_HOST_WINDOW_COUNT_MAX 8
 
@@ -77,8 +78,9 @@ int ohos_host_window_register(const char* id, void* component, void* owner, int 
 // Renames the window registered for a component to new_id (MULTIWINDOW-L M3): the shell's
 // explicit registerXComponent(id) is authoritative over an auto-derived component id, so the
 // managed session id and the host registry id stay identical. The primary flag and the counters
-// stay with the record; a new_id already taken by another component returns DUPLICATE, an
-// unknown component NOT_FOUND and an invalid id INVALID.
+// stay with the record; a new_id already taken by another component, or the primary id for a
+// non-primary record, returns DUPLICATE, an unknown component NOT_FOUND and an invalid id
+// INVALID.
 int ohos_host_window_rename_component(void* component, const char* new_id);
 
 // Records one surface lifecycle event (created/changed/destroyed) for id: stores the window

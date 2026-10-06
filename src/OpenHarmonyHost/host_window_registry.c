@@ -14,7 +14,23 @@ static ohos_host_window_slot g_windows[OHOS_HOST_WINDOW_COUNT_MAX];
 static pthread_mutex_t g_windows_lock = PTHREAD_MUTEX_INITIALIZER;
 
 static int WindowIdValid(const char* id) {
-    return id != NULL && id[0] != '\0' && strlen(id) <= OHOS_HOST_WINDOW_ID_MAX;
+    if (id == NULL || id[0] == '\0') {
+        return 0;
+    }
+    size_t length = strlen(id);
+    if (length > OHOS_HOST_WINDOW_ID_MAX) {
+        return 0;
+    }
+    // No C0 control characters or DEL: ids are echoed into stderr/hilog/status evidence lines
+    // and compared as routing keys, so a newline/escape could forge an evidence line or split a
+    // record (SEC-SCAN-5b, SEC5A-L1). Printable UTF-8 stays accepted.
+    for (size_t i = 0; i < length; i++) {
+        unsigned char c = (unsigned char)id[i];
+        if (c < 0x20 || c == 0x7F) {
+            return 0;
+        }
+    }
+    return 1;
 }
 
 static void CopyId(char* destination, const char* source) {
@@ -116,6 +132,13 @@ int ohos_host_window_rename_component(void* component, const char* new_id) {
         pthread_mutex_unlock(&g_windows_lock);
         return OHOS_HOST_WINDOW_OK;
     }
+    // The primary id is reserved for the primary record (SEC-SCAN-5b): a secondary window must
+    // not take "main" while the primary is absent, or its tagged events would be filtered as the
+    // primary window's by the managed consumer while lookup("main") resolves to the child.
+    if (!record->primary && strcmp(new_id, OHOS_HOST_WINDOW_PRIMARY_ID) == 0) {
+        pthread_mutex_unlock(&g_windows_lock);
+        return OHOS_HOST_WINDOW_DUPLICATE;
+    }
     ohos_host_window_record* taken = FindById(new_id);
     if (taken != NULL && taken->component != component) {
         pthread_mutex_unlock(&g_windows_lock);
@@ -128,7 +151,8 @@ int ohos_host_window_rename_component(void* component, const char* new_id) {
 
 // Applies one surface lifecycle event to a record; the caller holds g_windows_lock.
 static void StoreSurfaceLocked(ohos_host_window_record* record, void* surface, int width, int height,
-                               int state) {    record->surface = surface;
+                               int state) {
+    record->surface = surface;
     record->width = width;
     record->height = height;
     record->state = state;

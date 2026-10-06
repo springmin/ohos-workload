@@ -1335,8 +1335,12 @@ void HostClaimXComponent(napi_env env, napi_value exportInstance, OH_NativeXComp
 // Claims the XComponent carried by one exports object (OH_NATIVE_XCOMPONENT_OBJ is set when the
 // page uses <XComponent libraryname="...">). No-op when the object is absent, e.g. a plain
 // module import from EntryAbility. Returns true when the exports carried a component that is
-// registered after the call (M3: registerXComponent reports this to the shell).
-bool TryClaimXComponentFromExports(napi_env env, napi_value exports, const char* requested_id) {
+// registered after the call (M3: registerXComponent reports this to the shell); when out_record
+// is non-null it receives that component's registry record, so the caller can tell which id the
+// component actually holds (SEC-SCAN-5b: lookup(requested_id) alone can resolve to another
+// component's record).
+bool TryClaimXComponentFromExports(napi_env env, napi_value exports, const char* requested_id,
+                                   ohos_host_window_record* out_record) {
     if (exports == nullptr) {
         return false;
     }
@@ -1350,7 +1354,13 @@ bool TryClaimXComponentFromExports(napi_env env, napi_value exports, const char*
     }
     HostClaimXComponent(env, exportInstance, reinterpret_cast<OH_NativeXComponent*>(native), requested_id);
     ohos_host_window_record record;
-    return ohos_host_window_lookup_component(native, &record) == OHOS_HOST_WINDOW_OK;
+    if (ohos_host_window_lookup_component(native, &record) != OHOS_HOST_WINDOW_OK) {
+        return false;
+    }
+    if (out_record != nullptr) {
+        *out_record = record;
+    }
+    return true;
 }
 
 // Retry path for the shell's registerXComponent(): reads the XComponent object out of the
@@ -1370,15 +1380,16 @@ bool TryRegisterXComponent(const char* requested_id) {
     if (napi_get_reference_value(env, binding->exports_ref, &exports) != napi_ok || exports == nullptr) {
         return false;
     }
-    if (!TryClaimXComponentFromExports(env, exports, requested_id)) {
+    ohos_host_window_record record;
+    if (!TryClaimXComponentFromExports(env, exports, requested_id, &record)) {
         return false;
     }
-    // M3: with an explicit id the caller wants to know that *that* id is registered (an
-    // auto-derived component id must not answer as success); without one, any registration of
-    // the current exports' component counts.
+    // M3: with an explicit id the caller wants to know that *that* id is registered on this
+    // component (an auto-derived component id must not answer as success, and another window's
+    // record must not answer for a rename this component's claim was refused: SEC-SCAN-5b), so
+    // the check compares the component's own record, not just any record with that id.
     if (requested_id != nullptr && requested_id[0] != '\0') {
-        ohos_host_window_record record;
-        return ohos_host_window_lookup(requested_id, &record) == OHOS_HOST_WINDOW_OK;
+        return strcmp(record.id, requested_id) == 0;
     }
     return true;
 }
@@ -4518,7 +4529,7 @@ napi_value Init(napi_env env, napi_value exports) {
         }
         // MULTIWINDOW-L M1: claim the XComponent this Init call carries (one Init per XComponent;
         // a plain module import carries no OH_NATIVE_XCOMPONENT_OBJ).
-        TryClaimXComponentFromExports(env, exports, nullptr);
+        TryClaimXComponentFromExports(env, exports, nullptr, nullptr);
     }
     napi_property_descriptor properties[] = {
         {"registerXComponent", nullptr, RegisterXComponent, nullptr, nullptr, nullptr, napi_default, nullptr},

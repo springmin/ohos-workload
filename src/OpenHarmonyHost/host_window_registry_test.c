@@ -69,6 +69,13 @@ int main(void) {
           "empty id is rejected");
     Check(ohos_host_window_register(long_id, (void*)0x20, NULL, 0) == OHOS_HOST_WINDOW_INVALID,
           "over-long id is rejected (never truncated into a collision)");
+    Check(ohos_host_window_register("line\nbreak", (void*)0x90, NULL, 0) == OHOS_HOST_WINDOW_INVALID &&
+              ohos_host_window_register("esc\x1b[0m", (void*)0x90, NULL, 0) == OHOS_HOST_WINDOW_INVALID &&
+              ohos_host_window_register("del\x7f", (void*)0x90, NULL, 0) == OHOS_HOST_WINDOW_INVALID,
+          "control characters in an id are rejected (evidence/log forging)");
+    Check(ohos_host_window_register("\xE5\xAD\x90-1", (void*)0x90, NULL, 0) == OHOS_HOST_WINDOW_OK &&
+              ohos_host_window_unregister("\xE5\xAD\x90-1") == OHOS_HOST_WINDOW_OK,
+          "a printable UTF-8 id is still accepted");
     Check(ohos_host_window_register("nullcomp", NULL, NULL, 0) == OHOS_HOST_WINDOW_INVALID,
           "NULL component is rejected");
 
@@ -146,7 +153,7 @@ int main(void) {
     Check(ohos_host_window_lookup("child-a", &record) == OHOS_HOST_WINDOW_NOT_FOUND,
           "rename: the old id no longer resolves");
     Check(ohos_host_window_rename_component((void*)0x20, "main") == OHOS_HOST_WINDOW_DUPLICATE,
-          "rename: an id taken by another component is refused");
+          "rename: the primary id (taken) is refused for a secondary window");
     Check(ohos_host_window_rename_component((void*)0x99, "child-x") == OHOS_HOST_WINDOW_NOT_FOUND &&
               ohos_host_window_rename_component(NULL, "child-x") == OHOS_HOST_WINDOW_INVALID &&
               ohos_host_window_rename_component((void*)0x20, "") == OHOS_HOST_WINDOW_INVALID,
@@ -196,6 +203,21 @@ int main(void) {
               ohos_host_window_surface_component((void*)0x99, (void*)0x1, 1, 1, 0, &record) ==
                   OHOS_HOST_WINDOW_NOT_FOUND,
           "component surface: NULL component/out and unknown component are rejected");
+
+    // --- the primary id is reserved (SEC-SCAN-5b rename hardening) -----------------------
+    ohos_host_window_reset();
+    Check(ohos_host_window_register("child-r", (void*)0x70, NULL, 0) == OHOS_HOST_WINDOW_OK &&
+              ohos_host_window_rename_component((void*)0x70, OHOS_HOST_WINDOW_PRIMARY_ID) ==
+                  OHOS_HOST_WINDOW_DUPLICATE,
+          "rename: a non-primary window cannot take the reserved primary id");
+    Check(ohos_host_window_register(OHOS_HOST_WINDOW_PRIMARY_ID, (void*)0x71, NULL, 1) ==
+              OHOS_HOST_WINDOW_OK &&
+              ohos_host_window_rename_component((void*)0x71, OHOS_HOST_WINDOW_PRIMARY_ID) ==
+                  OHOS_HOST_WINDOW_OK,
+          "rename: the primary record re-claiming its own id is a no-op");
+    Check(ohos_host_window_lookup(OHOS_HOST_WINDOW_PRIMARY_ID, &record) == OHOS_HOST_WINDOW_OK &&
+              record.component == (void*)0x71,
+          "rename: lookup(main) still resolves to the primary record");
 
     // --- capacity ------------------------------------------------------------------------
     ohos_host_window_reset();
