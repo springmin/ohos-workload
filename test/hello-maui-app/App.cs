@@ -231,9 +231,19 @@ public sealed class App : Application
             counter.Text = $"child taps: {s_childTaps}";
             OpenHarmonyBridge.WriteStatus($"[hello-maui-app] child window tap #{s_childTaps}");
         };
+        // MULTIWINDOW-L M4 device probe: a text entry in the second window. Tapping it must
+        // raise the system IME for the child only (the per-window text focus request), and the
+        // typed text must land in this window's Entry (tagged text events).
+        var entryStatus = new Label { Text = "child entry: seed", FontSize = 22, HorizontalOptions = LayoutOptions.Center };
+        var entry = new Entry { Text = "seed", FontSize = 26, Placeholder = "type in the child" };
+        entry.TextChanged += (_, _) =>
+        {
+            entryStatus.Text = $"child entry: {entry.Text}";
+            OpenHarmonyBridge.WriteStatus($"[hello-maui-app] child entry text '{entry.Text}'");
+        };
         return new ContentPage
         {
-            Content = new VerticalStackLayout { Padding = 32, Spacing = 24, Children = { title, counter, button } },
+            Content = new VerticalStackLayout { Padding = 32, Spacing = 24, Children = { title, counter, entryStatus, entry, button } },
         };
     }
 
@@ -615,7 +625,17 @@ public sealed class App : Application
         OpenHarmonySubWindow.Changed += (_, e) =>
         {
             // Device evidence: every transition reaches the managed side (and the status file).
-            OpenHarmonyBridge.WriteStatus($"[hello-maui-app] subwindow event {e.Kind}: id={e.WindowId} rect={e.Bounds.X:0},{e.Bounds.Y:0} {e.Bounds.Width:0}x{e.Bounds.Height:0}{(e.Message is null ? "" : " / " + e.Message)}");
+            // M4: text events log their payload and key events their code/type, so a device
+            // round can read the per-window input routing straight out of hilog.
+            string m4Input = e.Kind switch
+            {
+                OpenHarmonySubWindowEventKind.TextInput or OpenHarmonySubWindowEventKind.TextSubmitted =>
+                    $" text='{e.Text}'",
+                OpenHarmonySubWindowEventKind.TextComposition => $" composition='{e.Text}' offset={e.CompositionOffset}",
+                OpenHarmonySubWindowEventKind.Key => $" key={e.KeyCode}/{e.KeyEventType}",
+                _ => string.Empty,
+            };
+            OpenHarmonyBridge.WriteStatus($"[hello-maui-app] subwindow event {e.Kind}: id={e.WindowId} surface={e.SurfaceId} rect={e.Bounds.X:0},{e.Bounds.Y:0} {e.Bounds.Width:0}x{e.Bounds.Height:0}{m4Input}{(e.Message is null ? "" : " / " + e.Message)}");
             Microsoft.Maui.ApplicationModel.MainThread.BeginInvokeOnMainThread(() =>
                 subWindowStatus.Text = $"subwindow {e.Kind}: id={e.WindowId} rect={e.Bounds.X:0},{e.Bounds.Y:0} {e.Bounds.Width:0}x{e.Bounds.Height:0}{(e.Message is null ? "" : " / " + e.Message)}");
         };
