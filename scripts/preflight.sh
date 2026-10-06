@@ -2,15 +2,16 @@
 # Local preflight for ohos-workload: the five CI gates, with a PASS/FAIL/SKIP per step and a
 # summary at the end.
 #   1. repository gates, scripts/selftest-ridgraph.sh + scripts/selftest-packs.sh +
-#      scripts/selftest-repo-hygiene.sh + scripts/selftest-tasks.sh: the pack RID graph copies
+#      scripts/selftest-repo-hygiene.sh + scripts/selftest-tasks.sh +
+#      scripts/selftest-host-registry.sh: the pack RID graph copies
 #      must match sdk-ohos/eng/PortableRuntimeIdentifierGraph.openharmony.json (byte-level when
 #      the sibling checkout is present, digest-level otherwise), the packed UseRidGraph branch
 #      must hold, every pack props/targets file must have an importer or be an entry point, a
 #      double import of Sdk.targets must not duplicate the platform items, the shipped module.json
 #      task must reproduce its documented bytes and reject broken input, the compiled packaging
-#      tasks must pass their unit tests and the packs must ship the built assembly, and the build
+#      tasks must pass their unit tests and the packs must ship the built assembly, the build
 #      inputs must carry no machine-specific absolute paths (test/Directory.Build.props relative
-#      roots)
+#      roots), and the host window registry's off-device unit tests must pass (MULTIWINDOW-L M1)
 #   2. sh -n over scripts/*.sh
 #   3. markdownlint-cli2@0.23.3 (skipped when npx is missing)
 #   4. interaction suite, test/maui-platform-verify: rebuilt from this tree before it runs; its
@@ -110,10 +111,10 @@ if [ "$SKIP_INTERACTION" = 0 ] || [ "$SKIP_PIXEL" = 0 ]; then
 fi
 
 # ---------------------------------------------------------------- step 1: repository gates
-log "== step 1/5: repository gates (RID graph, pack lint, hap module.json, task unit tests, absolute paths) =="
+log "== step 1/5: repository gates (RID graph, pack lint, hap module.json, task unit tests, host window registry, absolute paths) =="
 PACK_GATE_DETAIL=""
 PACK_GATE_FAILED=0
-for gate in selftest-ridgraph.sh selftest-packs.sh selftest-hap-targets.sh selftest-tasks.sh selftest-repo-hygiene.sh; do
+for gate in selftest-ridgraph.sh selftest-packs.sh selftest-hap-targets.sh selftest-tasks.sh selftest-repo-hygiene.sh selftest-host-registry.sh; do
     if [ ! -f "$W/scripts/$gate" ]; then
         warn "missing scripts/$gate"
         PACK_GATE_FAILED=1
