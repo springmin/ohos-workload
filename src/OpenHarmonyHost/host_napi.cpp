@@ -25,6 +25,7 @@
 #include <chrono>
 #include <condition_variable>
 #include <exception>
+#include <map>
 #include <memory>
 #include <mutex>
 #include <utility>
@@ -231,6 +232,18 @@ struct HostSink {
     std::vector<SinkCall*> pending;
 };
 
+// MULTIWINDOW-L3 M4: one subwindow's child web sinks. The window's page registers each sink with
+// its own surface id (registerChildWebSink(fn, surfaceId) and friends), and the managed transport
+// tags every command/eval/result with that id ("child:<window>|..."), so the module routes to the
+// window's own sinks and two child windows can never consume each other's traffic. The legacy
+// per-binding sinks (binding.web_child / web_eval_child / hybrid_invoke_result_child) stay for a
+// shell or managed library that predates the window tag.
+struct ChildWebWindowSinks {
+    HostSink command{"web child", true};
+    HostSink eval{"web eval child", false};
+    HostSink hybrid_result{"hybrid invoke result child", false};
+};
+
 // The managed-side menu table is published as an immutable snapshot: ohos_host_menu_begin/item
 // fill a builder vector on the managed thread, commit copies it into a fresh snapshot and hands
 // that snapshot to the JS thread through the menu sink. The JS-thread menu getters read the
@@ -319,6 +332,17 @@ struct HostBinding {
     // MULTIWINDOW-L3: the child page's hybrid-invoke result sink. Results whose request id
     // carries the child flag go here instead of the primary sink above.
     HostSink hybrid_invoke_result_child{"hybrid invoke result child", false};
+    // MULTIWINDOW-L3 M4: the per-window child web sinks, keyed by the subwindow surface id. A
+    // window's page registers its sinks with its own id; commands/eval/results tagged with that
+    // id are routed here instead of the single legacy child sink above. The mutex orders the
+    // managed-thread lookup+post against the JS-thread register/unregister; entries are held by
+    // shared_ptr so a sink stays alive while a post is in flight (the map may drop it meanwhile).
+    std::mutex child_web_lock;
+    std::map<std::string, std::shared_ptr<ChildWebWindowSinks>> child_web_windows;
+    // The zero-based window index (the surface-id suffix: sub-1 -> 0, sub-2 -> 1) recorded at
+    // registration, so a hybrid-invoke result whose id carries the second-window bit can select
+    // the actual registered surface id instead of a hard-coded name.
+    std::map<int, std::string> child_web_index;
     HostSink raw_file{"raw file", false};
     HostSink permission{"permission", false};
     HostSink notification_permission{"notification permission", false};
@@ -829,9 +853,146 @@ static napi_value HostSinkRegisterFromArgs(napi_env env, napi_callback_info info
 
 // --- per-env lifetime --------------------------------------------------------------
 
+// MULTIWINDOW-L3 M4: child window id acceptance. The id travels inside the "child:<id>|..."
+// wire, so it must be a short tag that cannot contain the separators itself; anything else is
+// rejected (registration and routing both fail closed).
+static bool HostChildWindowIdOk(const std::string& window) {
+    if (window.empty() || window.size() > 64) {
+        return false;
+    }
+    for (char c : window) {
+        if (c == '|' || c == '\n' || c == '\r') {
+            return false;
+        }
+    }
+    return true;
+}
+
+// The zero-based child window index the surface id names ("sub-1" -> 0, "sub-2" -> 1; the
+// managed allocator produces these ids). False for any other shape, which simply never maps an
+// indexed result.
+static bool HostChildWindowIndex(const std::string& window, int* index) {
+    size_t separator = window.rfind('-');
+    if (separator == std::string::npos || separator + 1 >= window.size() || index == nullptr) {
+        return false;
+    }
+    int value = 0;
+    for (size_t i = separator + 1; i < window.size(); i++) {
+        if (window[i] < '0' || window[i] > '9') {
+            return false;
+        }
+        value = value * 10 + (window[i] - '0');
+        if (value > 256) {
+            return false;
+        }
+    }
+    if (value <= 0) {
+        return false;
+    }
+    *index = value - 1;
+    return true;
+}
+
+// The window's sink set: an existing entry always wins; create=true adds a missing one (JS
+// thread only, inside the register handlers). A malformed id reports null.
+static std::shared_ptr<ChildWebWindowSinks> HostChildWebWindow(HostBinding* binding,
+                                                               const std::string& window,
+                                                               bool create) {
+    if (binding == nullptr || !HostChildWindowIdOk(window)) {
+        return nullptr;
+    }
+    std::lock_guard<std::mutex> guard(binding->child_web_lock);
+    auto found = binding->child_web_windows.find(window);
+    if (found != binding->child_web_windows.end()) {
+        return found->second;
+    }
+    if (!create) {
+        return nullptr;
+    }
+    auto sinks = std::make_shared<ChildWebWindowSinks>();
+    binding->child_web_windows.emplace(window, sinks);
+    int index = 0;
+    if (HostChildWindowIndex(window, &index)) {
+        binding->child_web_index[index] = window;
+    }
+    return sinks;
+}
+
+// The window id registered for a zero-based index (the hybrid-result second-window routing).
+static std::string HostChildWebWindowForIndex(HostBinding* binding, int index) {
+    if (binding == nullptr) {
+        return std::string();
+    }
+    std::lock_guard<std::mutex> guard(binding->child_web_lock);
+    auto found = binding->child_web_index.find(index);
+    return found != binding->child_web_index.end() ? found->second : std::string();
+}
+
+// Drops one window's sinks (unregister handler / binding teardown). JS thread only: every sink
+// reset touches napi. A post already in flight keeps its shared_ptr and observes the aborted
+// threadsafe function as a drop.
+static void HostChildWebWindowReset(HostBinding* binding, const std::string& window) {
+    std::shared_ptr<ChildWebWindowSinks> sinks;
+    {
+        if (binding == nullptr) {
+            return;
+        }
+        std::lock_guard<std::mutex> guard(binding->child_web_lock);
+        auto found = binding->child_web_windows.find(window);
+        if (found == binding->child_web_windows.end()) {
+            return;
+        }
+        sinks = found->second;
+        binding->child_web_windows.erase(found);
+        int index = 0;
+        if (HostChildWindowIndex(window, &index)) {
+            auto named = binding->child_web_index.find(index);
+            if (named != binding->child_web_index.end() && named->second == window) {
+                binding->child_web_index.erase(named);
+            }
+        }
+    }
+    HostSinkReset(sinks->command);
+    HostSinkReset(sinks->eval);
+    HostSinkReset(sinks->hybrid_result);
+}
+
+// Splits a window-tagged child payload ("<window>|<payload>", the rest after kChildWebMarker).
+// Returns: 1 = a well-formed window tag (window/payload filled), 0 = no tag at all (a legacy
+// managed transport keeps the historical single sink), -1 = a malformed tag that must be
+// dropped fail-closed (so it can never reach another window's sink).
+static int HostSplitChildWindowTag(const char* rest, std::string* window_out,
+                                   const char** payload_out) {
+    const char* separator = strchr(rest, '|');
+    if (separator == nullptr) {
+        return 0;
+    }
+    std::string window(rest, static_cast<size_t>(separator - rest));
+    if (!HostChildWindowIdOk(window)) {
+        return -1;
+    }
+    *window_out = window;
+    *payload_out = separator + 1;
+    return 1;
+}
+
 // Releases every threadsafe function a binding owns (and any queued call).
 static void HostResetAllSinks(HostBinding& binding) {
     HostForEachSink(binding, [](HostSink& sink) { HostSinkReset(sink); });
+    std::vector<std::shared_ptr<ChildWebWindowSinks>> child_windows;
+    {
+        std::lock_guard<std::mutex> guard(binding.child_web_lock);
+        for (const auto& entry : binding.child_web_windows) {
+            child_windows.push_back(entry.second);
+        }
+        binding.child_web_windows.clear();
+        binding.child_web_index.clear();
+    }
+    for (const auto& sinks : child_windows) {
+        HostSinkReset(sinks->command);
+        HostSinkReset(sinks->eval);
+        HostSinkReset(sinks->hybrid_result);
+    }
 }
 
 static void HostEnvCleanup(void* arg);
@@ -2796,15 +2957,45 @@ void OnPickerRequest(int requestId, int kind) {
 
 // MULTIWINDOW-L2: the managed transport prefixes child-host commands with kChildWebMarker
 // (OpenHarmonyChildWeb); the module strips it and posts to the subwindow page's sink. An
-// untagged command keeps the historical primary-sink path byte-for-byte.
+// untagged command keeps the historical primary-sink path byte-for-byte. MULTIWINDOW-L3 M4:
+// a window-tagged command ("child:<window>|<op>") goes to that window's own sink; an unknown
+// window is dropped with one log line (fail closed - it must never reach another window's page).
 void OnWebCommand(const char* op, const char* arg) {
     HostCxxBoundaryVoid("web command", [&] {
         const char* effective_op = op != nullptr ? op : "";
-        const bool child = strncmp(effective_op, kChildWebMarker, kChildWebMarkerLength) == 0;
+        if (strncmp(effective_op, kChildWebMarker, kChildWebMarkerLength) != 0) {
+            SinkCall* call = new SinkCall();
+            call->AddString(effective_op);
+            call->AddString(arg != nullptr ? arg : "");
+            HostSinkPost(g_web_sink, call);
+            return;
+        }
+        const char* rest = effective_op + kChildWebMarkerLength;
+        std::string window;
+        const char* payload = nullptr;
+        int tag = HostSplitChildWindowTag(rest, &window, &payload);
         SinkCall* call = new SinkCall();
-        call->AddString(child ? effective_op + kChildWebMarkerLength : effective_op);
+        if (tag == 1) {
+            std::shared_ptr<ChildWebWindowSinks> sinks = HostChildWebWindow(g_host, window, false);
+            if (sinks == nullptr) {
+                delete call;
+                OH_LOG_WARN(LOG_APP, "[openharmony-host] child web command dropped: no sink for window '%{public}s'",
+                            window.c_str());
+                return;
+            }
+            call->AddString(payload);
+            call->AddString(arg != nullptr ? arg : "");
+            HostSinkPost(sinks->command, call);
+            return;
+        }
+        if (tag == -1) {
+            delete call;
+            OH_LOG_WARN(LOG_APP, "[openharmony-host] child web command dropped: malformed window tag");
+            return;
+        }
+        call->AddString(rest);
         call->AddString(arg != nullptr ? arg : "");
-        HostSinkPost(child ? g_web_child_sink : g_web_sink, call);
+        HostSinkPost(g_web_child_sink, call);
     });
 }
 
@@ -2828,11 +3019,47 @@ napi_value RegisterWebSink(napi_env env, napi_callback_info info) {
 
 // MULTIWINDOW-L2: the subwindow page's registration. A shell that predates the child host
 // has no registerChildWebSink property, the page's typeof probe fails and the child web host
-// stays disabled (single-primary-host degradation).
+// stays disabled (single-primary-host degradation). MULTIWINDOW-L3 M4: the optional second
+// argument is the window's surface id, so each child page registers its own sink; without it
+// the historical single child sink is kept (an old shell/managed pair).
 napi_value RegisterChildWebSink(napi_env env, napi_callback_info info) {
-    napi_value result = HostSinkRegisterFromArgs(env, info, g_web_child_sink);
+    size_t argc = 2;
+    napi_value argv[2] = {nullptr, nullptr};
+    napi_get_cb_info(env, info, &argc, argv, nullptr, nullptr);
+    if (argc >= 2 && argv[1] != nullptr) {
+        std::string window = GetStringArg(env, argv[1]);
+        std::shared_ptr<ChildWebWindowSinks> sinks = HostChildWebWindow(g_host, window, true);
+        if (sinks == nullptr) {
+            OH_LOG_WARN(LOG_APP, "[openharmony-host] child web sink registration rejected: bad window id");
+        } else {
+            HostSinkRegister(env, sinks->command, argc >= 1 ? argv[0] : nullptr);
+        }
+    } else if (argc >= 1) {
+        // Legacy registration (no window): the historical single child sink.
+        HostSinkRegister(env, g_web_child_sink, argv[0]);
+    }
     ohos_host_web_set_listener(OnWebCommand);
-    return result;
+    napi_value undefined = nullptr;
+    napi_get_undefined(env, &undefined);
+    return undefined;
+}
+
+// MULTIWINDOW-L3 M4: drops one subwindow page's child web sinks (its aboutToDisappear). A later
+// command for the window is dropped until the window's next page registers again; the legacy
+// single sink is never touched. Unknown/invalid ids are a no-op.
+napi_value UnregisterChildWebSink(napi_env env, napi_callback_info info) {
+    size_t argc = 1;
+    napi_value argv[1] = {nullptr};
+    napi_get_cb_info(env, info, &argc, argv, nullptr, nullptr);
+    std::string window = argc >= 1 && argv[0] != nullptr ? GetStringArg(env, argv[0]) : "";
+    if (HostChildWindowIdOk(window)) {
+        HostChildWebWindowReset(g_host, window);
+        OH_LOG_INFO(LOG_APP, "[openharmony-host] child web sinks unregistered for window '%{public}s'",
+                    window.c_str());
+    }
+    napi_value undefined = nullptr;
+    napi_get_undefined(env, &undefined);
+    return undefined;
 }
 
 // ArkTS calls host.notifyAvoidArea(top, bottom, left, right).
@@ -3219,13 +3446,17 @@ napi_value RegisterWindowRectSink(napi_env env, napi_callback_info info) {
 // ---------------------------------------------------------------------------
 constexpr int kSubWindowProbeOp = 99;
 
-// Called from managed code (P/Invoke): op 0 create, 1 move, 2 resize, 3 show, 4 hide, 5 close.
+// Called from managed code (P/Invoke): op 0 create, 1 move, 2 resize, 3 show, 4 hide, 5 close,
+// 6 per-window text/keyboard focus (MULTIWINDOW-L M4) and 7 identity ack (MULTIWINDOW-L3 M2).
+// The payload is opaque JSON and the op set is a shell contract, so only the probe (99) and
+// negative/out-of-range values are answered here.
+constexpr int kSubWindowLastOp = 7;
 extern "C" int ohos_host_sub_window_command(int op, const char* utf8) {
     return HostCxxBoundary("sub window command", [&] {
         if (op == kSubWindowProbeOp) {
             return g_subwindow_sink.tsfn != nullptr ? 1 : -1;
         }
-        if (op < 0 || op > 5) {
+        if (op < 0 || op > kSubWindowLastOp) {
             OH_LOG_WARN(LOG_APP, "[openharmony-host] sub_window_command: invalid op %{public}d", op);
             return -1;
         }
@@ -3604,14 +3835,42 @@ static std::atomic<void (*)(int, const char*, int)> g_web_eval_result_listener{n
 static std::atomic<void (*)(const char*)> g_web_js_message_listener{nullptr};
 
 // Called from managed code (P/Invoke): forwards a script evaluation request to the ArkTS sink.
+// MULTIWINDOW-L3 M4: a window-tagged child eval ("child:<window>|<script>") goes to that
+// window's own eval sink; an unknown window answers -1 (the managed caller reports false).
 extern "C" int ohos_host_web_eval(const char* script, int request_id) {
     return HostCxxBoundary("web eval", [&] {
         const char* effective_script = script != nullptr ? script : "";
-        const bool child = strncmp(effective_script, kChildWebMarker, kChildWebMarkerLength) == 0;
+        if (strncmp(effective_script, kChildWebMarker, kChildWebMarkerLength) != 0) {
+            SinkCall* call = new SinkCall();
+            call->AddString(effective_script);
+            call->AddInt(request_id);
+            return HostSinkPost(g_web_eval_sink, call) ? 0 : -1;
+        }
+        const char* rest = effective_script + kChildWebMarkerLength;
+        std::string window;
+        const char* payload = nullptr;
+        int tag = HostSplitChildWindowTag(rest, &window, &payload);
         SinkCall* call = new SinkCall();
-        call->AddString(child ? effective_script + kChildWebMarkerLength : effective_script);
+        if (tag == 1) {
+            std::shared_ptr<ChildWebWindowSinks> sinks = HostChildWebWindow(g_host, window, false);
+            if (sinks == nullptr) {
+                delete call;
+                OH_LOG_WARN(LOG_APP, "[openharmony-host] child web eval dropped: no sink for window '%{public}s'",
+                            window.c_str());
+                return -1;
+            }
+            call->AddString(payload);
+            call->AddInt(request_id);
+            return HostSinkPost(sinks->eval, call) ? 0 : -1;
+        }
+        if (tag == -1) {
+            delete call;
+            OH_LOG_WARN(LOG_APP, "[openharmony-host] child web eval dropped: malformed window tag");
+            return -1;
+        }
+        call->AddString(rest);
         call->AddInt(request_id);
-        return HostSinkPost(child ? g_web_eval_child_sink : g_web_eval_sink, call) ? 0 : -1;
+        return HostSinkPost(g_web_eval_child_sink, call) ? 0 : -1;
     });
 }
 
@@ -3632,8 +3891,26 @@ napi_value RegisterWebEvalSink(napi_env env, napi_callback_info info) {
 
 // MULTIWINDOW-L2: the subwindow page's own eval sink (the child host's controllers), probed
 // by the page with typeof so a host library that predates it keeps the child host disabled.
+// MULTIWINDOW-L3 M4: the optional second argument is the window's surface id, so each child
+// page owns its eval sink; without it the historical single child eval sink is kept.
 napi_value RegisterChildWebEvalSink(napi_env env, napi_callback_info info) {
-    return HostSinkRegisterFromArgs(env, info, g_web_eval_child_sink);
+    size_t argc = 2;
+    napi_value argv[2] = {nullptr, nullptr};
+    napi_get_cb_info(env, info, &argc, argv, nullptr, nullptr);
+    if (argc >= 2 && argv[1] != nullptr) {
+        std::string window = GetStringArg(env, argv[1]);
+        std::shared_ptr<ChildWebWindowSinks> sinks = HostChildWebWindow(g_host, window, true);
+        if (sinks == nullptr) {
+            OH_LOG_WARN(LOG_APP, "[openharmony-host] child web eval sink registration rejected: bad window id");
+        } else {
+            HostSinkRegister(env, sinks->eval, argc >= 1 ? argv[0] : nullptr);
+        }
+    } else if (argc >= 1) {
+        HostSinkRegister(env, g_web_eval_child_sink, argv[0]);
+    }
+    napi_value undefined = nullptr;
+    napi_get_undefined(env, &undefined);
+    return undefined;
 }
 
 // ArkTS calls host.notifyWebEvalResult(requestId, result, error) when runJavaScript finished.
@@ -3717,8 +3994,27 @@ napi_value RegisterHybridInvokeResultSink(napi_env env, napi_callback_info info)
 
 // MULTIWINDOW-L3: ArkTS calls host.registerChildHybridInvokeResultSink(fn) on the subwindow
 // page to receive the results of invocations whose request id carries the child flag.
+// MULTIWINDOW-L3 M4: the optional second argument is the window's surface id, so each child
+// page receives only its own window's results; without it the historical single child sink
+// is kept (and the legacy id shape routes there).
 napi_value RegisterChildHybridInvokeResultSink(napi_env env, napi_callback_info info) {
-    return HostSinkRegisterFromArgs(env, info, g_hybrid_invoke_result_child_sink);
+    size_t argc = 2;
+    napi_value argv[2] = {nullptr, nullptr};
+    napi_get_cb_info(env, info, &argc, argv, nullptr, nullptr);
+    if (argc >= 2 && argv[1] != nullptr) {
+        std::string window = GetStringArg(env, argv[1]);
+        std::shared_ptr<ChildWebWindowSinks> sinks = HostChildWebWindow(g_host, window, true);
+        if (sinks == nullptr) {
+            OH_LOG_WARN(LOG_APP, "[openharmony-host] child result sink registration rejected: bad window id");
+        } else {
+            HostSinkRegister(env, sinks->hybrid_result, argc >= 1 ? argv[0] : nullptr);
+        }
+    } else if (argc >= 1) {
+        HostSinkRegister(env, g_hybrid_invoke_result_child_sink, argv[0]);
+    }
+    napi_value undefined = nullptr;
+    napi_get_undefined(env, &undefined);
+    return undefined;
 }
 
 // Bit 30 of a hybrid-invoke request id marks the child window's channel (mirrors
@@ -3726,18 +4022,37 @@ napi_value RegisterChildHybridInvokeResultSink(napi_env env, napi_callback_info 
 // ids it passes to notifyHybridInvoke; the managed result comes back with the same id, so this
 // single call site routes it to the child page's sink and the primary sink is never consumed.
 constexpr int kChildHybridInvokeFlag = 1 << 30;
+// MULTIWINDOW-L3 M4: bit 29 marks the second child window (sub-2), so the result of a child
+// invocation reaches the page that issued it even when two child windows both own slot 0.
+constexpr int kChildHybridSecondWindowFlag = 1 << 29;
+
+// The invocation result's target window id, for the window-tagged result routing. Bit 29 marks
+// the second child window; the actual surface id comes from the registration-time index map so
+// no window name is hard-coded here. An unregistered index reports an empty id (fallback).
+static std::string HostChildWindowForInvoke(int request_id) {
+    const int index = (request_id & kChildHybridSecondWindowFlag) != 0 ? 1 : 0;
+    return HostChildWebWindowForIndex(g_host, index);
+}
 
 // Called from managed code (P/Invoke) with the invocation result. Returns 0 when the result
-// reached the matching ArkTS sink, -1 when no sink is registered.
+// reached the matching ArkTS sink, -1 when no sink is registered. MULTIWINDOW-L3 M4: a child
+// result first tries the issuing window's own sink (bit 29 selects the second window) and only
+// falls back to the legacy single child sink, so a stale window never receives another
+// window's result.
 extern "C" int ohos_host_hwv_invoke_result(int request_id, const char* payload_json) {
     return HostCxxBoundary("hybrid invoke result", [&] {
         SinkCall* call = new SinkCall();
         call->AddInt(request_id);
         call->AddString(payload_json);
-        HostSink& sink = (request_id & kChildHybridInvokeFlag) != 0
-            ? g_hybrid_invoke_result_child_sink
-            : g_hybrid_invoke_result_sink;
-        return HostSinkPost(sink, call) ? 0 : -1;
+        if ((request_id & kChildHybridInvokeFlag) != 0) {
+            std::shared_ptr<ChildWebWindowSinks> sinks =
+                HostChildWebWindow(g_host, HostChildWindowForInvoke(request_id), false);
+            if (sinks != nullptr) {
+                return HostSinkPost(sinks->hybrid_result, call) ? 0 : -1;
+            }
+            return HostSinkPost(g_hybrid_invoke_result_child_sink, call) ? 0 : -1;
+        }
+        return HostSinkPost(g_hybrid_invoke_result_sink, call) ? 0 : -1;
     });
 }
 
@@ -4764,6 +5079,7 @@ napi_value Init(napi_env env, napi_value exports) {
         {"accessibilityNodeCountFor", nullptr, AccessibilityNodeCountFor, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"registerWebSink", nullptr, RegisterWebSink, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"registerChildWebSink", nullptr, RegisterChildWebSink, nullptr, nullptr, nullptr, napi_default, nullptr},
+        {"unregisterChildWebSink", nullptr, UnregisterChildWebSink, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"notifyWebEvent", nullptr, NotifyWebEvent, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"registerWebEvalSink", nullptr, RegisterWebEvalSink, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"registerChildWebEvalSink", nullptr, RegisterChildWebEvalSink, nullptr, nullptr, nullptr, napi_default, nullptr},

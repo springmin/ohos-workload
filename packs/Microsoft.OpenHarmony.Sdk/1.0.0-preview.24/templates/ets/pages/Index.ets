@@ -97,16 +97,52 @@ interface SubWindowCommand {
   show?: number;
   caret?: number;
   text?: string;
+  // MULTIWINDOW-L3 M2 (op 7, identity ack from the managed side): the child window id and the
+  // session generation the managed side confirms. The shell validates both against its own
+  // session before the child page may mount the managed surface.
+  id?: number;
+  gen?: number;
 }
 
 // MULTIWINDOW-L3 M1: one shell subwindow session. The Map key is the managed surface id
 // ("sub-N", also stamped into the child's window name); the empty string keys the single
 // shell-drawn M degradation child. Every command targets its session by that id, so two managed
-// children can never drive each other's window.
+// children can never drive each other's window. MULTIWINDOW-L3 M2: the session also carries the
+// generation stamped into the child name ('<name>__<surfaceId>.g<generation>'), the exact child
+// name, and whether the managed side confirmed the child page's identity handshake.
 interface SubWindowSession {
   window: window.Window;
   id: number;
   surfaceId: string;
+  generation: number;
+  claimName: string;
+  identityConfirmed: boolean;
+}
+
+// MULTIWINDOW-L3 M2: one per-child claim the shell publishes to AppStorage before the child page
+// loads (the loadContentByName LocalStorage is not propagated on device). The page resolves its
+// own identity from its window name and validates it against this claim; no matching claim (or a
+// generation mismatch) rejects the identity and the managed surface is not mounted.
+interface SubWindowClaimRecord {
+  surfaceId: string;
+  id: number;
+  gen: number;
+  name: string;
+}
+
+// MULTIWINDOW-L3 M2: the claim table serialized into one AppStorage value.
+interface SubWindowClaimTable {
+  claims: SubWindowClaimRecord[];
+}
+
+// MULTIWINDOW-L3 M2: the identity ack the shell writes for the child page after validating the
+// managed op 7 (see confirmSubWindowIdentity). The page mounts the managed surface only when the
+// ack names its own surface id and generation.
+interface SubWindowIdentityAck {
+  surfaceId: string;
+  id: number;
+  gen: number;
+  seq: number;
 }
 
 // One subwindow state report: id + rect (window pixels). Only the fields the op uses are read.
@@ -118,6 +154,9 @@ interface SubWindowStatePayload {
   h: number;
   // M3: the managed surface id of the child, so the managed side can map its window id.
   surfaceId?: string;
+  // MULTIWINDOW-L3 M2: the generation the shell stamped into the child window name; the managed
+  // side answers the identity handshake for exactly this generation.
+  gen?: number;
 }
 
 // One touch inside the shell-drawn subwindow content.
@@ -129,20 +168,25 @@ interface SubWindowTouchPayload {
 }
 
 // A failed subwindow operation: the shell could not create/drive the child (BusinessError code
-// or 801 when the platform has no such affordance, for example Hide).
+// or 801 when the platform has no such affordance, for example Hide). MULTIWINDOW-L3 M2: a
+// failure that belongs to one session names it, so the managed side clears exactly that child.
 interface SubWindowErrorPayload {
   code: number;
   message: string;
+  surfaceId?: string;
 }
 
 // MULTIWINDOW-L M4: the AppStorage payload that carries a managed focus/keyboard request from
-// the main page to the child page (see forwardSubWindowTextFocus).
+// the main page to the child page (see forwardSubWindowTextFocus). MULTIWINDOW-L3 M3: the
+// request names the session generation it belongs to, so a reopened surface id cannot inherit
+// the retired child's keyboard request.
 interface SubWindowFocusRequest {
   surfaceId: string;
   show: number;
   caret: number;
   text?: string;
   seq: number;
+  gen?: number;
 }
 
 // window.SubWindowOptions plus the platform parser's undocumented zLevelAboveParentLoosened
@@ -704,7 +748,19 @@ const SUB_EVENT_INACTIVE: number = 12;
 // caret/text). The child page's LocalStorage is not propagated (measured), so the request
 // travels through AppStorage, which the child page watches with @StorageLink @Watch.
 const SUB_CMD_TEXT_FOCUS: number = 6;
+// MULTIWINDOW-L3 M2: the identity handshake. The managed side answers a validated PageReady claim
+// with (surfaceId, id, gen); the shell validates it against its session registry and only then
+// publishes SUB_WINDOW_IDENTITY_KEY for the child page, which mounts the managed surface only on
+// a matching ack. SUB_WINDOW_CLAIM_KEY carries the per-child claims the shell publishes before
+// loading each page (the fallback for the unreliable per-child LocalStorage).
+const SUB_CMD_IDENTITY: number = 7;
 const SUB_WINDOW_FOCUS_REQUEST_KEY: string = 'ohos_dotnet_subwindow_focus_request';
+const SUB_WINDOW_CLAIM_KEY: string = 'ohos_dotnet_subwindow_claim';
+const SUB_WINDOW_IDENTITY_KEY: string = 'ohos_dotnet_subwindow_identity';
+// The generation separator in the managed child window name: '<SUB_WINDOW_NAME>__<surfaceId>.gN'.
+// The generation retires a closed child's late events (a reopen never inherits the old page's
+// identity) while the name keeps the drag guard's prefix check working.
+const SUB_WINDOW_GENERATION_SEPARATOR: string = '.g';
 // The subwindow's named route (pages/SubWindow.ets) and the parent-window name prefix; the
 // managed surface id (shell session key) is appended to the name as
 // '<SUB_WINDOW_NAME>__<surfaceId>' so the page can resolve its own identity.
@@ -872,6 +928,19 @@ struct Index {
   // M4: the monotonically increasing sequence stamped into every AppStorage focus/keyboard
   // request for a child, so the child's @Watch fires even when the request content repeats.
   private subWindowFocusSeq: number = 0;
+  // MULTIWINDOW-L3 M3: the surface id whose child page currently owns the forwarded IME
+  // request. All child pages watch the same AppStorage key (each filters on its own surface id),
+  // so a show=1 for another session first publishes a blur for this one (keyboard mutual
+  // exclusion); a close of this session clears the tracked request so a reopened surface id
+  // cannot inherit it.
+  private subWindowImeSurfaceId: string = '';
+  // MULTIWINDOW-L3 M2: the identity handshake state. subWindowGeneration stamps a fresh
+  // generation into every managed child name so a reopened surface id never inherits the closed
+  // child's events; subWindowClaims is the per-child claim table published to AppStorage before
+  // the child page loads; subWindowIdentitySeq makes the ack observable even when it repeats.
+  private subWindowGeneration: number = 0;
+  private subWindowIdentitySeq: number = 0;
+  private subWindowClaims: Map<string, SubWindowClaimRecord> = new Map();
   // The main window resolved before the first child exists (getLastWindow would return the
   // focused child afterwards), and the once-registered main-window event observer.
   private subWindowMainWindow: window.Window | null = null;
@@ -2346,7 +2415,82 @@ struct Index {
     if (session.surfaceId.length > 0) {
       payload.surfaceId = session.surfaceId;
     }
+    if (session.generation > 0) {
+      payload.gen = session.generation;
+    }
     return JSON.stringify(payload);
+  }
+
+  // MULTIWINDOW-L3 M2: a compact reference payload (no window read) for the per-session
+  // suspend/resume reports.
+  private subWindowRefPayload(session: SubWindowSession): string {
+    const payload: SubWindowStatePayload = { id: session.id, x: 0, y: 0, w: 0, h: 0 };
+    if (session.surfaceId.length > 0) {
+      payload.surfaceId = session.surfaceId;
+    }
+    if (session.generation > 0) {
+      payload.gen = session.generation;
+    }
+    return JSON.stringify(payload);
+  }
+
+  // MULTIWINDOW-L3 M2: publishes the per-child claim table (one JSON value in AppStorage) so the
+  // child page can validate the identity it derived from its window name. Written before
+  // loadContent and withdrawn in finishSubWindowClosed, so a page can only validate against a
+  // live shell session.
+  private flushSubWindowClaims(): void {
+    const claims: SubWindowClaimRecord[] = [];
+    this.subWindowClaims.forEach((claim: SubWindowClaimRecord, surfaceId: string): void => {
+      if (claim.gen > 0) {
+        claims.push({ surfaceId: surfaceId, id: claim.id, gen: claim.gen, name: claim.name });
+      }
+    });
+    const table: SubWindowClaimTable = { claims: claims };
+    AppStorage.setOrCreate(SUB_WINDOW_CLAIM_KEY, JSON.stringify(table));
+  }
+
+  private publishSubWindowClaim(session: SubWindowSession): void {
+    if (session.surfaceId.length === 0) {
+      return;
+    }
+    this.subWindowClaims.set(session.surfaceId, {
+      surfaceId: session.surfaceId,
+      id: session.id,
+      gen: session.generation,
+      name: session.claimName,
+    });
+    this.flushSubWindowClaims();
+  }
+
+  private withdrawSubWindowClaim(session: SubWindowSession): void {
+    if (session.surfaceId.length === 0) {
+      return;
+    }
+    const claim: SubWindowClaimRecord | undefined = this.subWindowClaims.get(session.surfaceId);
+    if (claim !== undefined && claim.gen === session.generation) {
+      this.subWindowClaims.delete(session.surfaceId);
+      this.flushSubWindowClaims();
+    }
+  }
+
+  // MULTIWINDOW-L3 M2: drops the identity ack of a closed session so a reopened surface id that
+  // reused it can never inherit the retired page's confirmation.
+  private clearSubWindowIdentity(session: SubWindowSession): void {
+    if (session.surfaceId.length === 0 || session.generation === 0) {
+      return;
+    }
+    const current: string | undefined = AppStorage.get<string>(SUB_WINDOW_IDENTITY_KEY);
+    if (current === undefined || current.length === 0) {
+      return;
+    }
+    try {
+      const ack = JSON.parse(current) as SubWindowIdentityAck;
+      if (ack.surfaceId === session.surfaceId && ack.gen === session.generation) {
+        AppStorage.setOrCreate(SUB_WINDOW_IDENTITY_KEY, '');
+      }
+    } catch (identityError) {
+      this.logError(`[maui] subwindow identity ack parse failed: ${(identityError as Error).message}`);
+    }
   }
 
   private reportSubWindowState(op: number, session: SubWindowSession | undefined): void {
@@ -2356,8 +2500,11 @@ struct Index {
     this.notifySubWindowEvent(op, this.subWindowStatePayload(session));
   }
 
-  private reportSubWindowFailure(code: number, message: string): void {
+  private reportSubWindowFailure(code: number, message: string, surfaceId?: string): void {
     const payload: SubWindowErrorPayload = { code: code, message: message };
+    if (surfaceId !== undefined && surfaceId.length > 0) {
+      payload.surfaceId = surfaceId;
+    }
     this.notifySubWindowEvent(SUB_EVENT_FAILED, JSON.stringify(payload));
   }
 
@@ -2365,6 +2512,9 @@ struct Index {
   // The request travels through AppStorage (the child's LocalStorage is not propagated on this
   // device): the child page watches the key and gives focus to its own hidden input or surface.
   // A request naming a surface that is not a live managed session is answered honestly.
+  // MULTIWINDOW-L3 M3: only one child may hold the forwarded IME request, so a show=1 for a
+  // different session first publishes the blur for the previous one; the request carries the
+  // session generation so a reopened surface id ignores the retired child's request.
   private forwardSubWindowTextFocus(cmd: SubWindowCommand): void {
     const requested: string = cmd.surfaceId !== undefined ? cmd.surfaceId : '';
     const session: SubWindowSession | null = this.findSubWindowSession(requested);
@@ -2372,16 +2522,55 @@ struct Index {
       this.reportSubWindowFailure(801, 'text focus: no matching managed subwindow');
       return;
     }
+    const show: number = cmd.show !== undefined ? cmd.show : 0;
+    if (show === 1 && this.subWindowImeSurfaceId.length > 0
+      && this.subWindowImeSurfaceId !== session.surfaceId) {
+      this.blurSubWindowTextFocus(this.subWindowImeSurfaceId, 'focus moved');
+    }
     this.subWindowFocusSeq++;
     const request: SubWindowFocusRequest = {
       surfaceId: session.surfaceId,
-      show: cmd.show !== undefined ? cmd.show : 0,
+      show: show,
       caret: cmd.caret !== undefined ? cmd.caret : -1,
       text: cmd.text !== undefined ? cmd.text : '',
       seq: this.subWindowFocusSeq,
     };
+    if (session.generation > 0) {
+      request.gen = session.generation;
+    }
     AppStorage.setOrCreate(SUB_WINDOW_FOCUS_REQUEST_KEY, JSON.stringify(request));
-    this.logInfo(`[maui] subwindow text focus forwarded: surface=${session.surfaceId} show=${request.show} caret=${request.caret}`);
+    if (show === 1) {
+      this.subWindowImeSurfaceId = session.surfaceId;
+    } else if (this.subWindowImeSurfaceId === session.surfaceId) {
+      this.subWindowImeSurfaceId = '';
+    }
+    this.logInfo(`[maui] subwindow text focus forwarded: surface=${session.surfaceId} gen=${session.generation} show=${request.show} caret=${request.caret}`);
+  }
+
+  // M3: publishes a blur request for one session (show=0), so a child that is losing the
+  // keyboard drops it before the new window's show=1 arrives. The generation travels with the
+  // request; a session already closed has no page left and only clears the tracked id.
+  private blurSubWindowTextFocus(surfaceId: string, reason: string): void {
+    if (this.subWindowImeSurfaceId === surfaceId) {
+      this.subWindowImeSurfaceId = '';
+    }
+    const session: SubWindowSession | undefined = this.subWindows.get(surfaceId);
+    if (session === undefined) {
+      return;
+    }
+    this.subWindowFocusSeq++;
+    const request: SubWindowFocusRequest = {
+      surfaceId: surfaceId,
+      show: 0,
+      caret: -1,
+      text: '',
+      seq: this.subWindowFocusSeq,
+    };
+    if (session.generation > 0) {
+      request.gen = session.generation;
+    }
+    AppStorage.setOrCreate(SUB_WINDOW_FOCUS_REQUEST_KEY, JSON.stringify(request));
+    this.logInfo(`[maui] subwindow text blur forwarded: surface=${surfaceId} gen=${session.generation} (${reason})`);
   }
 
   // Clamps a managed request into the window-manager's documented bounds; an absent or
@@ -2489,17 +2678,31 @@ struct Index {
 
   // The one suspend/resume state every path writes. The log prefix stays the SOAK49/test-script
   // marker; the suffix names the source so a device log shows which path caught it.
+  // MULTIWINDOW-L3 M2: with live sessions the report is emitted once per session (named by
+  // surfaceId), so each child stops/resumes exactly once; the aggregate form stays for the
+  // shell-drawn M path and an empty registry.
   private setSubWindowSuspended(suspended: boolean, source: string): void {
     if (this.subWindowSuspended === suspended) {
       return;
     }
     this.subWindowSuspended = suspended;
+    const op: number = suspended ? SUB_EVENT_SUSPENDED : SUB_EVENT_RESUMED;
+    if (this.subWindows.size > 0) {
+      this.subWindows.forEach((session: SubWindowSession, _surfaceId: string): void => {
+        if (session.surfaceId.length > 0) {
+          this.notifySubWindowEvent(op, this.subWindowRefPayload(session));
+          this.logInfo(`[maui] subwindow ${suspended ? 'suspended' : 'resumed'}: surface=${session.surfaceId} gen=${session.generation}`);
+        } else {
+          this.notifySubWindowEvent(op, '{}');
+        }
+      });
+    } else {
+      this.notifySubWindowEvent(op, '{}');
+    }
     if (suspended) {
       this.logInfo(`[maui] main window hidden: subwindow suspended (${source})`);
-      this.notifySubWindowEvent(SUB_EVENT_SUSPENDED, '{}');
     } else {
       this.logInfo(`[maui] main window shown: subwindow resumed (${source})`);
-      this.notifySubWindowEvent(SUB_EVENT_RESUMED, '{}');
     }
   }
 
@@ -2514,14 +2717,16 @@ struct Index {
       this.reportSubWindowFailure(-1, 'malformed subwindow command payload');
       return;
     }
-    // While the main window is hidden, only close/hide are meaningful: the child is suspended
-    // with its parent and a forced show/move would be applied to a hidden window.
-    if (this.subWindowSuspended && op !== SUB_CMD_CLOSE && op !== SUB_CMD_HIDE) {
+    // While the main window is hidden, only close/hide/identity are meaningful: the child is
+    // suspended with its parent and a forced show/move would be applied to a hidden window.
+    if (this.subWindowSuspended && op !== SUB_CMD_CLOSE && op !== SUB_CMD_HIDE && op !== SUB_CMD_IDENTITY) {
       this.logInfo(`[maui] subwindow command ${op} skipped: the main window is suspended`);
       return;
     }
     if (op === SUB_CMD_CREATE) {
       this.createSubWindow(cmd);
+    } else if (op === SUB_CMD_IDENTITY) {
+      this.confirmSubWindowIdentity(cmd);
     } else if (op === SUB_CMD_TEXT_FOCUS) {
       this.forwardSubWindowTextFocus(cmd);
     } else if (op === SUB_CMD_MOVE) {
@@ -2563,13 +2768,12 @@ struct Index {
     this.subWindowCreating.set(surfaceId, true);
     try {
       const main = await this.resolveMainWindow();
-      // M3: the managed surface id travels in the child's window name (the runtime does not
-      // propagate the loadContentByName LocalStorage reliably): the page reads it from
-      // WindowProperties.name, which also keeps the drag guard's identity check. The plain name
-      // keeps the M shell-drawn path.
-      const childName: string = surfaceId.length > 0
-        ? `${SUB_WINDOW_NAME}__${surfaceId}`
-        : SUB_WINDOW_NAME;
+      // M3/M2: the managed surface id and the session generation travel in the child's window
+      // name (the runtime does not propagate the loadContentByName LocalStorage reliably): the
+      // page reads its own name from its UIContext, so the identity is deterministic and a
+      // reopened surface id is a new generation. The plain name keeps the M shell-drawn path.
+      const generation: number = surfaceId.length > 0 ? ++this.subWindowGeneration : 0;
+      const childName: string = this.subWindowChildName(surfaceId, generation);
       // ParseSubWindowOptions (window_manager) converts each optional boolean and logs
       // E "Failed to convert parameter to <name>" when one is absent, keeping its false default.
       // Spell all three out (zLevelAboveParentLoosened through ShellSubWindowOptions, which the
@@ -2590,8 +2794,14 @@ struct Index {
       };
       const child = await main.createSubWindowWithOptions(childName, options);
       const childId: number = child.getWindowProperties().id;
-      const session: SubWindowSession = { window: child, id: childId, surfaceId: surfaceId };
+      const session: SubWindowSession = {
+        window: child, id: childId, surfaceId: surfaceId,
+        generation: generation, claimName: childName, identityConfirmed: false,
+      };
       this.subWindows.set(surfaceId, session);
+      // M2: publish the claim before the page loads, so a page can only validate an identity
+      // against a live shell session (withdrawn in finishSubWindowClosed / page teardown).
+      this.publishSubWindowClaim(session);
       // pages/SubWindow.ets is a named route compiled into this shell abc; the storage passes
       // the window id so the page can refuse to move a window that is not its own, and (M3)
       // the managed surface id so the page mounts the host XComponent under that id. A runtime
@@ -2601,6 +2811,7 @@ struct Index {
       storage.setOrCreate('subWindowId', childId);
       if (surfaceId.length > 0) {
         storage.setOrCreate('subWindowSurfaceId', surfaceId);
+        storage.setOrCreate('subWindowGen', generation);
       }
       try {
         await child.loadContentByName(SUB_WINDOW_ROUTE, storage);
@@ -2608,8 +2819,12 @@ struct Index {
         this.logError(`[maui] subwindow named route failed, falling back to setUIContent: ${(namedRouteError as Error).message}`);
         await child.setUIContent('pages/SubWindow');
       }
+      // M2: every callback is bound to the session object and re-checks liveness, so a late
+      // event from a closed/reopened surface id can never move the new session's state.
       child.on('windowEvent', (evt: window.WindowEventType): void => {
-        this.onSubWindowWindowEvent(surfaceId, evt);
+        if (this.subWindows.get(surfaceId) === session) {
+          this.onSubWindowWindowEvent(surfaceId, evt);
+        }
       });
       child.on('windowSizeChange', (_size: window.Size): void => {
         this.reportSubWindowState(SUB_EVENT_RESIZED, this.liveSubWindowSession(session));
@@ -2626,6 +2841,9 @@ struct Index {
       this.logError(`[maui] subwindow create failed: code=${error.code} message=${error.message}`);
       // Clean up a child created before a later step failed, so no empty frame is left behind.
       const leaked: SubWindowSession | undefined = this.subWindows.get(surfaceId);
+      if (leaked !== undefined) {
+        this.withdrawSubWindowClaim(leaked);
+      }
       this.subWindows.delete(surfaceId);
       if (leaked !== undefined) {
         try {
@@ -2638,6 +2856,43 @@ struct Index {
     } finally {
       this.subWindowCreating.delete(surfaceId);
     }
+  }
+
+  // MULTIWINDOW-L3 M2: the exact child window name for a managed session; the empty surface id
+  // keeps the historical plain name (the shell-drawn M path).
+  private subWindowChildName(surfaceId: string, generation: number): string {
+    return surfaceId.length > 0
+      ? `${SUB_WINDOW_NAME}__${surfaceId}${SUB_WINDOW_GENERATION_SEPARATOR}${generation}`
+      : SUB_WINDOW_NAME;
+  }
+
+  // MULTIWINDOW-L3 M2: validates the managed identity ack (op 7) against the live session and
+  // publishes it for the child page. A stale, unknown or mismatched ack is answered honestly and
+  // leaves the state untouched (fail-closed: no ack, so the page never mounts a surface).
+  private confirmSubWindowIdentity(cmd: SubWindowCommand): void {
+    const surfaceId: string = cmd.surfaceId !== undefined ? cmd.surfaceId : '';
+    const session: SubWindowSession | undefined = surfaceId.length > 0 ? this.subWindows.get(surfaceId) : undefined;
+    const ackId: number = cmd.id !== undefined ? cmd.id : -1;
+    const ackGen: number = cmd.gen !== undefined ? cmd.gen : -1;
+    if (session === undefined || (ackId >= 0 && ackId !== session.id) || (ackGen >= 0 && ackGen !== session.generation)) {
+      this.logError(`[maui] subwindow identity ack rejected: surface=${surfaceId} id=${ackId} gen=${ackGen}`);
+      this.reportSubWindowFailure(801, `subwindow identity ack rejected for '${surfaceId}'`, surfaceId);
+      return;
+    }
+    if (session.identityConfirmed) {
+      // A repeated ack for the confirmed session is a no-op (no AppStorage churn).
+      return;
+    }
+    session.identityConfirmed = true;
+    this.subWindowIdentitySeq++;
+    const ack: SubWindowIdentityAck = {
+      surfaceId: surfaceId,
+      id: session.id,
+      gen: session.generation,
+      seq: this.subWindowIdentitySeq,
+    };
+    AppStorage.setOrCreate(SUB_WINDOW_IDENTITY_KEY, JSON.stringify(ack));
+    this.logInfo(`[maui] subwindow identity confirmed: surface=${surfaceId} id=${session.id} gen=${session.generation}`);
   }
 
   private moveSubWindow(cmd: SubWindowCommand): void {
@@ -2743,10 +2998,13 @@ struct Index {
     } else if (evt === window.WindowEventType.WINDOW_ACTIVE) {
       this.noteSubWindowWindowActive();
       // M4: the focused-window identity travels to the managed side, which raises the child
-      // window's IWindow.Activated and clears a pending Deactivated.
+      // window's IWindow.Activated and clears a pending Deactivated. M2: the log is the device
+      // evidence that a focus switch moved only the addressed window.
+      this.logInfo(`[maui] subwindow active: surface=${session.surfaceId} gen=${session.generation}`);
       this.reportSubWindowState(SUB_EVENT_ACTIVE, session);
     } else if (evt === window.WindowEventType.WINDOW_INACTIVE) {
       this.noteSubWindowWindowInactive();
+      this.logInfo(`[maui] subwindow inactive: surface=${session.surfaceId} gen=${session.generation}`);
       this.reportSubWindowState(SUB_EVENT_INACTIVE, session);
     } else if (evt === window.WindowEventType.WINDOW_DESTROYED) {
       this.finishSubWindowClosed(session);
@@ -2757,7 +3015,17 @@ struct Index {
     if (this.subWindows.get(session.surfaceId) !== session) {
       return;
     }
+    // M3: a closed window must not keep the forwarded IME ownership; its page is going away,
+    // and a reopen under the same surface id starts with no pending focus (the request carries
+    // the retired generation, which the new page ignores).
+    if (this.subWindowImeSurfaceId === session.surfaceId) {
+      this.blurSubWindowTextFocus(session.surfaceId, 'session closed');
+    }
     this.subWindows.delete(session.surfaceId);
+    // M2: the claim and the identity ack belong to the closed generation; a reopened surface id
+    // must not inherit either.
+    this.withdrawSubWindowClaim(session);
+    this.clearSubWindowIdentity(session);
     // The close report carries the session key: with two managed children the managed side
     // must destroy exactly the window that owned this shell session (SEC5B-L3 belt).
     this.notifySubWindowEvent(SUB_EVENT_CLOSED, this.subWindowStatePayload(session));
@@ -2777,7 +3045,14 @@ struct Index {
     }
     const sessions: Map<string, SubWindowSession> = this.subWindows;
     this.subWindows = new Map();
+    // M3: no forwarded IME request may survive the page teardown either.
+    this.subWindowImeSurfaceId = '';
+    AppStorage.setOrCreate(SUB_WINDOW_FOCUS_REQUEST_KEY, '');
+    // M2: no claim/ack may survive the page teardown; a later page instance must handshake from
+    // scratch.
     sessions.forEach((session: SubWindowSession, _surfaceId: string): void => {
+      this.withdrawSubWindowClaim(session);
+      this.clearSubWindowIdentity(session);
       try {
         session.window.destroyWindow().catch((destroyError: Error): void => {
           this.logError(`[maui] subwindow page teardown failed: ${destroyError.message}`);

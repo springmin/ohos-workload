@@ -197,7 +197,7 @@ public sealed class App : Application
             OpenHarmonyBridge.WriteStatus("[hello-maui-app] subwindow open: both managed child windows are already open");
             return;
         }
-        var child = new Window(BuildChildWindowPage(withWeb)) { Title = $"MAUI child {s_childWindows.Count + 1}" };
+        var child = new Window(BuildChildWindowPage(withWeb, s_childWindows.Count + 1)) { Title = $"MAUI child {s_childWindows.Count + 1}" };
         s_childWindows.Add(child);
         application.OpenWindow(child);
         var result = (application.Handler as OpenHarmonyApplicationHandler)?.LastOpenWindowResult
@@ -248,8 +248,10 @@ public sealed class App : Application
     /// <summary>The second MAUI window's content: interactive managed views drawn by the
     /// per-window renderer into the subwindow surface (touch feedback proves input routing).
     /// MULTIWINDOW-L2: <paramref name="withWeb"/> adds a WebView whose ArkWeb component is
-    /// hosted by the subwindow page's own child pool (the second web host).</summary>
-    private static ContentPage BuildChildWindowPage(bool withWeb = false)
+    /// hosted by the subwindow page's own child pool (the second web host). MULTIWINDOW-L3 M4:
+    /// <paramref name="ordinal"/> names this child in its document (title/heading/tap text), so
+    /// the two subwindows' eval read-backs prove which window's controller ran the script.</summary>
+    private static ContentPage BuildChildWindowPage(bool withWeb = false, int ordinal = 1)
     {
         var title = new Label { Text = "MAUI child window", FontSize = 30, HorizontalOptions = LayoutOptions.Center };
         var counter = new Label { Text = "child taps: 0", FontSize = 26, HorizontalOptions = LayoutOptions.Center };
@@ -302,10 +304,12 @@ public sealed class App : Application
                 {
                     // No '#' anywhere: ArkWeb's loadData builds a data: URL and a raw '#' starts
                     // the URL fragment, which would truncate the document body (the existing
-                    // primary data-load path has the same platform behavior).
-                    Html = "<html><head><title>CHILD-WEB</title></head><body style=\"margin:0;background:rgb(16,24,32)\">" +
-                        "<h1 id=\"h\" style=\"color:rgb(110,193,255);font-family:sans-serif;font-size:28px\">CHILD WEB OK</h1>" +
-                        "<script>document.getElementById('h').onclick=function(){this.textContent='CHILD WEB TAP';};</script>" +
+                    // primary data-load path has the same platform behavior). M4: the ordinal
+                    // names this child window in the document so the two windows' eval results
+                    // are attributable (a cross-window command would read the other title).
+                    Html = "<html><head><title>CHILD-WEB-" + ordinal + "</title></head><body style=\"margin:0;background:rgb(16,24,32)\">" +
+                        "<h1 id=\"h\" style=\"color:rgb(110,193,255);font-family:sans-serif;font-size:28px\">CHILD WEB OK " + ordinal + "</h1>" +
+                        "<script>document.getElementById('h').onclick=function(){this.textContent='CHILD WEB TAP " + ordinal + "';};</script>" +
                         "</body></html>",
                 },
             };

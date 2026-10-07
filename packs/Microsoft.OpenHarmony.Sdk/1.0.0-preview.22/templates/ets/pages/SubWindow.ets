@@ -41,11 +41,49 @@ const SUB_EVENT_TEXT_SUBMITTED: number = 15;
 const SUB_EVENT_KEY: number = 16;
 const SUB_EVENT_BACK: number = 17;
 // The name pages/Index.ets hands to createSubWindowWithOptions; WindowProperties.name carries
-// it back, and it is the drag guard's identity check (see aboutToAppear).
+// it back, and it is the drag guard's identity check (see aboutToAppear). MULTIWINDOW-L3 M2
+// appends the session generation: '<SUB_WINDOW_NAME>__<surfaceId>.g<generation>'.
 const SUB_WINDOW_NAME: string = 'ohos_dotnet_subwindow';
 // M4: the AppStorage key the main page writes a focus/keyboard request to (the child's own
 // LocalStorage is not propagated); the @StorageLink below watches it.
 const SUB_WINDOW_FOCUS_REQUEST_KEY: string = 'ohos_dotnet_subwindow_focus_request';
+// MULTIWINDOW-L3 M2 identity handshake. The shell publishes one claim per live child before the
+// page loads (SUB_WINDOW_CLAIM_KEY) and confirms the managed ack through SUB_WINDOW_IDENTITY_KEY;
+// the page mounts the managed surface only after the ack names its own surface id and generation.
+const SUB_WINDOW_CLAIM_KEY: string = 'ohos_dotnet_subwindow_claim';
+const SUB_WINDOW_IDENTITY_KEY: string = 'ohos_dotnet_subwindow_identity';
+const SUB_WINDOW_GENERATION_SEPARATOR: string = '.g';
+
+// One shell-published claim (pages/Index.ets SubWindowClaimRecord).
+interface SubWindowClaimRecord {
+  surfaceId: string;
+  id: number;
+  gen: number;
+  name: string;
+}
+
+interface SubWindowClaimTable {
+  claims: SubWindowClaimRecord[];
+}
+
+// The shell's identity confirmation (pages/Index.ets SubWindowIdentityAck).
+interface SubWindowIdentityAck {
+  surfaceId: string;
+  id: number;
+  gen: number;
+  seq: number;
+}
+
+// The child page's ready report. status 0 = identity resolved (surfaceId/gen/name carry it),
+// status 1 = identity rejected (rejectedSurfaceId names the claim the managed side must close).
+interface SubWindowReadyPayload {
+  id: number;
+  status: number;
+  surfaceId?: string;
+  gen?: number;
+  name?: string;
+  reason?: string;
+}
 
 // MULTIWINDOW-L2: the subwindow's own ArkWeb host (the second web host). The pool is small and
 // fully dynamic: a slot's ArkWeb is instantiated by the first tagged command that needs it and
@@ -141,13 +179,16 @@ interface SubWindowKeyPayload {
   type: number;
 }
 
-// The focus/keyboard request written by pages/Index.ets (mirrors its interface).
+// The focus/keyboard request written by pages/Index.ets (mirrors its interface). M3: the
+// generation names the session the request was issued for; a reopened surface id ignores a
+// request that belongs to a retired generation.
 interface SubWindowFocusRequest {
   surfaceId: string;
   show: number;
   caret: number;
   text?: string;
   seq: number;
+  gen?: number;
 }
 
 @Entry({ routeName: 'ohos_dotnet_subwindow' })
@@ -158,11 +199,12 @@ struct SubWindow {
   // the guard).
   @LocalStorageProp('subWindowId') subWindowId: number = -1;
   // MULTIWINDOW-L M3: the managed surface id (the managed OpenWindow command's window id, used
-  // as the XComponent component id and the host registry id). It travels in the child window's
-  // name (see aboutToAppear) because the loadContentByName LocalStorage is not reliably
-  // propagated; the LocalStorage value stays as a secondary source. Empty selects the drawn M
-  // path.
+  // as the XComponent component id and the host registry id). MULTIWINDOW-L3 M2: the page's own
+  // window name (UIContext.getWindowName) is the authoritative source; the LocalStorage value is
+  // the exact per-window fallback when the runtime propagates it.
   @LocalStorageProp('subWindowSurfaceId') storedSurfaceId: string = '';
+  // MULTIWINDOW-L3 M2: the session generation, the LocalStorage fallback of the name suffix.
+  @LocalStorageProp('subWindowGen') subWindowGen: number = 0;
   // State (not a plain field): the id is assigned in aboutToAppear, and the XComponent branch
   // must mount on the render that follows that assignment.
   @State surfaceId: string = '';
@@ -170,6 +212,19 @@ struct SubWindow {
   @State drags: number = 0;
   @State resolvedId: number = -1;
   @State dragEnabled: boolean = false;
+  // MULTIWINDOW-L3 M2: the identity handshake state. surfaceId resolves the page's own identity;
+  // identityConfirmed flips only when the shell's ack names that identity, and the managed
+  // XComponent/text input mount only then (a page whose name/LocalStorage/claim disagree stays
+  // on the drawn fallback and never binds a managed surface). identityRejected marks a
+  // fail-closed rejection (reported to the managed side, which closes the claimed session).
+  @State identityConfirmed: boolean = false;
+  @State identityRejected: boolean = false;
+  private identityRejectReason: string = '';
+  private rejectedSurfaceId: string = '';
+  private parsedGeneration: number = 0;
+  private ownName: string = '';
+  private resolvedWindowName: string = '';
+  private windowIsOwn: boolean = false;
   // True once the host confirmed the XComponent claim; the drawn fallback stays (and stays
   // interactive) until then, and hides once the managed surface owns the child.
   @State surfaceBound: boolean = false;
@@ -177,6 +232,9 @@ struct SubWindow {
   // @Watch runs on every change (the payload carries a sequence number, so a repeated request
   // still notifies).
   @StorageLink('ohos_dotnet_subwindow_focus_request') @Watch('onFocusRequest') focusRequest: string = '';
+  // MULTIWINDOW-L3 M2: the shell's identity confirmation. The watch flips identityConfirmed only
+  // for the ack that names this page's own surface id and generation.
+  @StorageLink('ohos_dotnet_subwindow_identity') @Watch('onIdentityAck') identityAck: string = '';
   // The child's own hidden input (mirrors the main page's text-entry bridge): the managed
   // second window's Entry reads what is typed here and the IME follows this window.
   @State inputText: string = '';
@@ -222,6 +280,12 @@ struct SubWindow {
   private subHybridEndpointLogs: number = 0;
   private subHybridInvokeTimeoutMs: number = 15000;
   private inputController: TextInputController = new TextInputController();
+  // MULTIWINDOW-L3 M3: this window's own focus state for the IME contract. A show=1 request is
+  // only applied while the window is active; one that arrives while it is inactive is
+  // remembered and applied on the next WINDOW_ACTIVE (the focus-switch case), so the keyboard
+  // can never open for a background window.
+  private windowActive: boolean = true;
+  private pendingInputFocus: boolean = false;
   // MULTIWINDOW-L2 a: the child's own accessibility content slot. The host creates a CUSTOM
   // node inside it and registers a per-instance ArkUI accessibility provider
   // (attachAccessibilityNodeFor), so the child's shadow tree is served by its own provider.
@@ -232,48 +296,114 @@ struct SubWindow {
 
   aboutToAppear(): void {
     const context = this.getUIContext().getHostContext() as common.UIAbilityContext;
+    // MULTIWINDOW-L3 M2: the page's own window name is the deterministic identity source
+    // (getLastWindow can return the main or the other child window while this page loads); it is
+    // read synchronously and cross-checked against the LocalStorage value and the shell's claim
+    // table. A disagreement rejects the identity: no managed surface is mounted.
+    let ownName: string = '';
+    try {
+      const resolvedOwnName: string | undefined = this.getUIContext().getWindowName();
+      ownName = resolvedOwnName !== undefined ? resolvedOwnName : '';
+    } catch (ownNameError) {
+      hilog.warn(DOMAIN, TAG, 'subwindow own window name unavailable: %{public}s', (ownNameError as Error).message);
+    }
+    this.ownName = ownName;
     window.getLastWindow(context).then((win: window.Window): void => {
       this.win = win;
       const props = win.getWindowProperties();
       this.resolvedId = props.id;
       const resolvedName: string = props.name !== undefined ? props.name : '';
-      // M3: the managed surface id is stamped into the window name as
-      // '<SUB_WINDOW_NAME>__<surfaceId>' (pages/Index.ets); the LocalStorage prop is the exact
-      // per-window value when the runtime propagates it, so it wins over the name-derived one
-      // (L3-M1: with two children the name prefix alone cannot tell a page which child it is).
-      // The name check doubles as the drag guard below.
+      this.resolvedWindowName = resolvedName;
       const managedPrefix: string = `${SUB_WINDOW_NAME}__`;
-      if (this.storedSurfaceId.length > 0) {
-        this.surfaceId = this.storedSurfaceId;
-        if (resolvedName.startsWith(managedPrefix) &&
-            resolvedName.substring(managedPrefix.length) !== this.storedSurfaceId) {
-          hilog.warn(DOMAIN, TAG, 'subwindow identity mismatch: name=%{public}s stored=%{public}s',
-            resolvedName, this.storedSurfaceId);
+      // The identity name: the page's own window name when the runtime exposes it, else the
+      // name of the window getLastWindow resolved (the legacy fallback, hardened below).
+      const identityName: string = this.ownName.length > 0 ? this.ownName : resolvedName;
+      let nameSurfaceId: string = '';
+      let nameGeneration: number = 0;
+      if (identityName.startsWith(managedPrefix)) {
+        const rest: string = identityName.substring(managedPrefix.length);
+        const separatorIndex: number = rest.indexOf(SUB_WINDOW_GENERATION_SEPARATOR);
+        if (separatorIndex > 0) {
+          nameSurfaceId = rest.substring(0, separatorIndex);
+          const parsed: number = Number.parseInt(
+            rest.substring(separatorIndex + SUB_WINDOW_GENERATION_SEPARATOR.length), 10);
+          nameGeneration = Number.isNaN(parsed) ? 0 : parsed;
+        } else {
+          nameSurfaceId = rest;
         }
-      } else if (resolvedName.startsWith(managedPrefix)) {
-        this.surfaceId = resolvedName.substring(managedPrefix.length);
       }
-      // Only the subwindow page may move a window: window.getLastWindow can return the main
-      // window while the child is not focused, and moving the main window from here would be
-      // wrong. The window name stamped at creation is the primary identity; the LocalStorage id
-      // (when the runtime propagates it) is the secondary check. A mismatch disables dragging
-      // instead of moving the wrong window; the content stays interactive either way.
-      this.dragEnabled = resolvedName === SUB_WINDOW_NAME || resolvedName.startsWith(managedPrefix) ||
-        (this.subWindowId >= 0 && props.id === this.subWindowId);
-      hilog.info(DOMAIN, TAG, 'subwindow page ready: expected=%{public}d resolved=%{public}d name=%{public}s surface=%{public}s drag=%{public}s',
-        this.subWindowId, this.resolvedId, resolvedName, this.surfaceId, this.dragEnabled ? 'on' : 'off');
+      const storedSurfaceId: string = this.storedSurfaceId;
+      const storedGeneration: number = this.subWindowGen;
+      let rejected: boolean = false;
+      let reason: string = '';
+      let candidateSurfaceId: string = nameSurfaceId.length > 0 ? nameSurfaceId : storedSurfaceId;
+      let candidateGeneration: number = nameSurfaceId.length > 0 ? nameGeneration : storedGeneration;
+      if (nameSurfaceId.length > 0 && storedSurfaceId.length > 0
+        && (nameSurfaceId !== storedSurfaceId
+          || (nameGeneration > 0 && storedGeneration > 0 && nameGeneration !== storedGeneration))) {
+        rejected = true;
+        reason = `window name and LocalStorage disagree: name=${nameSurfaceId}/${nameGeneration} stored=${storedSurfaceId}/${storedGeneration}`;
+      } else if (candidateSurfaceId.length > 0 && this.ownName.length === 0 && storedSurfaceId.length === 0) {
+        // Without the own-window-name API the page only has the getLastWindow name, which can be
+        // the other child's window: require the exact LocalStorage identity or reject.
+        rejected = true;
+        reason = `no per-window LocalStorage identity for surface=${candidateSurfaceId}`;
+      }
+      if (!rejected && candidateSurfaceId.length > 0) {
+        const claim: SubWindowClaimRecord | null = this.findSubWindowClaim(candidateSurfaceId, candidateGeneration, identityName);
+        if (claim === null) {
+          rejected = true;
+          reason = `no matching shell claim for surface=${candidateSurfaceId}`;
+        }
+      }
+      if (rejected) {
+        this.identityRejected = true;
+        this.identityRejectReason = reason;
+        this.rejectedSurfaceId = candidateSurfaceId.length > 0 ? candidateSurfaceId : nameSurfaceId;
+        this.surfaceId = '';
+        hilog.warn(DOMAIN, TAG, 'subwindow identity rejected: %{public}s', reason);
+      } else if (candidateSurfaceId.length > 0) {
+        this.surfaceId = candidateSurfaceId;
+        this.parsedGeneration = candidateGeneration;
+      }
+      // Only the subwindow page may move/close a window: window.getLastWindow can return the
+      // main or the other child window. With an own window name the resolved window must be
+      // exactly it; without one the M1 name/LocalStorage guard is the fallback. A mismatch
+      // disables dragging and closing instead of driving the wrong window.
+      this.windowIsOwn = this.ownName.length > 0
+        ? resolvedName === this.ownName
+        : (resolvedName === SUB_WINDOW_NAME || resolvedName.startsWith(managedPrefix) ||
+           (this.subWindowId >= 0 && props.id === this.subWindowId));
+      this.dragEnabled = this.windowIsOwn;
+      hilog.info(DOMAIN, TAG, 'subwindow page ready: expected=%{public}d resolved=%{public}d name=%{public}s own=%{public}s surface=%{public}s gen=%{public}d rejected=%{public}s drag=%{public}s',
+        this.subWindowId, this.resolvedId, resolvedName, identityName, this.surfaceId,
+        this.parsedGeneration, this.identityRejected ? 'yes' : 'no', this.dragEnabled ? 'on' : 'off');
       // M4: when this window loses focus, drop the IME with it (the keyboard follows the
       // focused window; the managed side re-focuses the child input when an Entry focuses).
-      try {
-        win.on('windowEvent', (evt: window.WindowEventType): void => {
-          if (evt === window.WindowEventType.WINDOW_INACTIVE) {
-            this.blurInput();
-          }
-        });
-      } catch (eventError) {
-        hilog.error(DOMAIN, TAG, 'subwindow window events unavailable: %{public}s', (eventError as Error).message);
+      // M3: the focus state also gates an incoming show=1 request (a background window never
+      // opens the keyboard; the pending request fires when this window becomes active).
+      if (this.windowIsOwn) {
+        try {
+          win.on('windowEvent', (evt: window.WindowEventType): void => {
+            if (evt === window.WindowEventType.WINDOW_INACTIVE) {
+              this.windowActive = false;
+              this.blurInput();
+            } else if (evt === window.WindowEventType.WINDOW_ACTIVE) {
+              this.windowActive = true;
+              if (this.pendingInputFocus) {
+                this.pendingInputFocus = false;
+                this.onFocusRequest();
+              }
+            }
+          });
+        } catch (eventError) {
+          hilog.error(DOMAIN, TAG, 'subwindow window events unavailable: %{public}s', (eventError as Error).message);
+        }
       }
       this.notifyHost(SUB_EVENT_PAGE_READY, this.readyPayload());
+      // The shell's ack may have arrived while this page's promise was still resolving: re-read
+      // it now that the surface id is known.
+      this.onIdentityAck();
       // A request may have arrived while the page was loading (the main page writes AppStorage
       // before the child exists); apply the current value once the surface id is known.
       this.onFocusRequest();
@@ -303,8 +433,76 @@ struct SubWindow {
   }
 
   private readyPayload(): string {
-    const base = `{"id":${this.resolvedId}`;
-    return this.surfaceId.length > 0 ? `${base},"surfaceId":"${this.surfaceId}"}` : `${base}}`;
+    const payload: SubWindowReadyPayload = {
+      id: this.resolvedId,
+      status: this.identityRejected ? 1 : 0,
+    };
+    if (this.identityRejected && this.rejectedSurfaceId.length > 0) {
+      payload.surfaceId = this.rejectedSurfaceId;
+    } else if (this.surfaceId.length > 0) {
+      payload.surfaceId = this.surfaceId;
+    }
+    if (this.parsedGeneration > 0) {
+      payload.gen = this.parsedGeneration;
+    }
+    if (this.ownName.length > 0) {
+      payload.name = this.ownName;
+    } else if (this.resolvedWindowName.length > 0) {
+      payload.name = this.resolvedWindowName;
+    }
+    if (this.identityRejected && this.identityRejectReason.length > 0) {
+      payload.reason = this.identityRejectReason;
+    }
+    return JSON.stringify(payload);
+  }
+
+  // MULTIWINDOW-L3 M2: validates an identity against the shell's per-child claim table. A
+  // missing table/entry, a generation mismatch or a name mismatch returns null (fail-closed).
+  private findSubWindowClaim(surfaceId: string, generation: number, name: string): SubWindowClaimRecord | null {
+    const raw: string | undefined = AppStorage.get<string>(SUB_WINDOW_CLAIM_KEY);
+    if (raw === undefined || raw.length === 0) {
+      return null;
+    }
+    try {
+      const table = JSON.parse(raw) as SubWindowClaimTable;
+      const claims: SubWindowClaimRecord[] = table.claims;
+      for (let i = 0; i < claims.length; i++) {
+        const claim: SubWindowClaimRecord = claims[i];
+        if (claim.surfaceId === surfaceId && claim.gen === generation && claim.name === name) {
+          return claim;
+        }
+      }
+    } catch (claimError) {
+      hilog.error(DOMAIN, TAG, 'subwindow claim table parse failed: %{public}s', (claimError as Error).message);
+    }
+    return null;
+  }
+
+  // MULTIWINDOW-L3 M2: the shell's identity confirmation (written after the managed op 7 was
+  // validated). Only the ack naming this page's own surface id and generation confirms the
+  // identity; anything else is ignored, so a stale ack from a retired generation cannot mount
+  // the wrong surface.
+  private onIdentityAck(): void {
+    if (this.surfaceId.length === 0 || this.identityRejected || this.identityAck.length === 0) {
+      return;
+    }
+    try {
+      const ack = JSON.parse(this.identityAck) as SubWindowIdentityAck;
+      if (ack.surfaceId !== this.surfaceId || (ack.gen > 0 && ack.gen !== this.parsedGeneration)) {
+        return;
+      }
+      if (this.identityConfirmed) {
+        return;
+      }
+      this.identityConfirmed = true;
+      hilog.info(DOMAIN, TAG, 'subwindow identity confirmed: surface=%{public}s gen=%{public}d id=%{public}d',
+        this.surfaceId, this.parsedGeneration, ack.id);
+      // A focus request that arrived while the identity was unconfirmed is applied now (the
+      // input/XComponent mount with the confirmation).
+      this.onFocusRequest();
+    } catch (ackError) {
+      hilog.error(DOMAIN, TAG, 'subwindow identity ack parse failed: %{public}s', (ackError as Error).message);
+    }
   }
 
   // MULTIWINDOW-L2 a: hands the child's ContentSlot to the host, which creates the per-instance
@@ -393,6 +591,12 @@ struct SubWindow {
       hilog.warn(DOMAIN, TAG, 'close requested before the window resolved');
       return;
     }
+    if (!this.windowIsOwn) {
+      // MULTIWINDOW-L3 M2: getLastWindow may have resolved the main or the other child window;
+      // only the window this page proved to own may be destroyed.
+      hilog.warn(DOMAIN, TAG, 'close ignored: the resolved window is not this page\'s own window');
+      return;
+    }
     win.destroyWindow().then((): void => {
       hilog.info(DOMAIN, TAG, 'subwindow destroyed by its close button');
     }).catch((closeError: Error): void => {
@@ -449,9 +653,9 @@ struct SubWindow {
 
   // M4: focus leaves the child window -> hand ArkUI focus back to the child surface so the
   // soft keyboard hides with the window (window-level focus is the only reliable signal; see
-  // the Home-note in pages/Index.ets).
+  // the Home-note in pages/Index.ets). M2: only after the identity handshake mounted the surface.
   private blurInput(): void {
-    if (this.surfaceId.length === 0) {
+    if (this.surfaceId.length === 0 || !this.identityConfirmed) {
       return;
     }
     try {
@@ -463,9 +667,11 @@ struct SubWindow {
 
   // Applies one managed focus/keyboard request: show=1 focuses the hidden input (the IME opens
   // for this window) and seeds it with the managed text/caret; show=0 returns focus to the
-  // child XComponent (typing/keys, keyboard closed).
+  // child XComponent (typing/keys, keyboard closed). M2: only a confirmed identity may focus.
+  // M3: only the request's own generation may focus, and only while this window is active (an
+  // inactive window remembers the request until WINDOW_ACTIVE).
   private onFocusRequest(): void {
-    if (this.surfaceId.length === 0 || this.focusRequest.length === 0) {
+    if (this.surfaceId.length === 0 || !this.identityConfirmed || this.focusRequest.length === 0) {
       return;
     }
     try {
@@ -473,7 +679,16 @@ struct SubWindow {
       if (request.surfaceId !== this.surfaceId) {
         return;
       }
+      if (request.gen !== undefined && request.gen > 0 && this.parsedGeneration > 0
+        && request.gen !== this.parsedGeneration) {
+        return;
+      }
       if (request.show === 1) {
+        if (!this.windowActive) {
+          this.pendingInputFocus = true;
+          return;
+        }
+        this.pendingInputFocus = false;
         if (request.text !== undefined && request.text.length > 0) {
           this.inputText = request.text;
         }
@@ -482,6 +697,7 @@ struct SubWindow {
         hilog.info(DOMAIN, TAG, 'subwindow text input focused: caret=%{public}d textLen=%{public}d',
           request.caret, this.inputText.length);
       } else {
+        this.pendingInputFocus = false;
         this.getUIContext().getFocusController().requestFocus(this.surfaceId);
       }
     } catch (requestError) {
@@ -518,6 +734,9 @@ struct SubWindow {
   // is registered and the managed pool never receives the capacity advertisement (its queued
   // commands are dropped - exactly the pre-L2 behavior). A capacity that arrives before the
   // managed pool exists is harmless: the pool clamps to the advertised count on its own.
+  // MULTIWINDOW-L3 M4: every sink is registered with this page's surface id, so the native
+  // module routes each child window's commands/eval/results to its own page (two concurrent
+  // subwindows never consume each other's traffic). The page unregisters them on disappear.
   private registerChildWebHost(): void {
     if (this.surfaceId.length === 0) {
       // The drawn (non-managed) subwindow has no managed tree, so no web control can exist.
@@ -531,19 +750,19 @@ struct SubWindow {
       host.registerChildWebSink((op: string, arg: string): void => {
         this.logChildWebCommand(op, arg);
         this.onChildWebCommand(op, arg);
-      });
+      }, this.surfaceId);
       if (typeof host.registerChildWebEvalSink === 'function') {
         host.registerChildWebEvalSink((script: string, requestId: number): void => {
           this.onChildWebEval(script, requestId);
-        });
+        }, this.surfaceId);
       }
       // MULTIWINDOW-L3: the hybrid __hwvInvokeDotNet results for this page. The native module
-      // routes a result here only when its request id carries the child-window tag, so the main
-      // page's sink is never consumed.
+      // routes a result here only when its request id carries the child-window tag AND this
+      // window's index, so neither the main page's sink nor the other subwindow's is consumed.
       if (typeof host.registerChildHybridInvokeResultSink === 'function') {
         host.registerChildHybridInvokeResultSink((requestId: number, payload: string): void => {
           this.completeChildHybridInvoke(requestId, payload);
-        });
+        }, this.surfaceId);
       }
       this.subWebHostRegistered = true;
       this.advertiseChildWebCapacity();
@@ -556,6 +775,37 @@ struct SubWindow {
     } catch (registerError) {
       hilog.error(DOMAIN, TAG, 'child web registration failed: %{public}s', (registerError as Error).message);
     }
+  }
+
+  // MULTIWINDOW-L3 M4: drops this page's per-window sinks when the window's page goes away, so
+  // a later command for the closed window is dropped (fail closed) instead of being delivered
+  // to a dead page, and its callback reference cannot outlive the window (churn stability).
+  private unregisterChildWebHost(): void {
+    if (!this.subWebHostRegistered || this.surfaceId.length === 0) {
+      return;
+    }
+    this.subWebHostRegistered = false;
+    try {
+      if (typeof host !== 'undefined' && typeof host.unregisterChildWebSink === 'function') {
+        host.unregisterChildWebSink(this.surfaceId);
+      }
+    } catch (unregisterError) {
+      hilog.warn(DOMAIN, TAG, 'child web unregister failed: %{public}s', (unregisterError as Error).message);
+    }
+  }
+
+  // MULTIWINDOW-L3 M4: the 0-based index of this page's child window ("sub-1" -> 0, "sub-2" -> 1),
+  // mirrored by the hybrid invoke window bit (bit 29) and the native registration map.
+  private childWindowIndex(): number {
+    const separator: number = this.surfaceId.lastIndexOf('-');
+    if (separator < 0 || separator + 1 >= this.surfaceId.length) {
+      return 0;
+    }
+    const parsed: number = Number.parseInt(this.surfaceId.substring(separator + 1), 10);
+    if (Number.isNaN(parsed) || parsed <= 1) {
+      return 0;
+    }
+    return parsed - 1;
   }
 
   // "w:<surfaceId>|capacity|<n>": marks the managed child pool ready and flushes its queue.
@@ -1538,10 +1788,14 @@ struct SubWindow {
     response.setResponseMimeType('application/json');
     response.setResponseEncoding('utf-8');
     response.setResponseIsReady(false);
-    // Child-tagged request id: bit 30 | ((slot + 1) << 24) | (sequence & 0xFFFFFF). The bit is
-    // the OpenHarmonyOverlays.ChildInvokeFlag contract; the slot is this child pool's slot.
+    // Child-tagged request id: bit 30 | window bit 29 for the second subwindow | ((slot + 1) << 24)
+    // | (sequence & 0xFFFFFF). Bit 30 is the OpenHarmonyOverlays.ChildInvokeFlag contract; bit 29
+    // (M4) marks the second child window so the managed dispatch picks the right window's handler
+    // even when both windows own the same child slot, and the native module routes the result back
+    // to this page's own sink.
     this.subHybridInvokeSeq = (this.subHybridInvokeSeq + 1) & 0xFFFFFF;
-    const requestId: number = 0x40000000 | ((slot + 1) << 24) | this.subHybridInvokeSeq;
+    const windowBit: number = this.childWindowIndex() > 0 ? 0x20000000 : 0;
+    const requestId: number = 0x40000000 | windowBit | ((slot + 1) << 24) | this.subHybridInvokeSeq;
     const timer: number = setTimeout(() => {
       this.completeChildHybridInvoke(requestId,
         this.childHybridInvokeErrorPayload('the .NET invocation timed out'));
@@ -1809,6 +2063,9 @@ struct SubWindow {
   }
 
   aboutToDisappear(): void {
+    // MULTIWINDOW-L3 M4: this page's child web sinks die with the page (the window may be
+    // closed while another stays open; the native already drops commands for a closed window).
+    this.unregisterChildWebHost();
     // The child dies with the page; report the state so the managed side does not keep an open
     // subwindow (the main page's windowEvent observer usually reports first).
     this.notifyHost(SUB_EVENT_CLOSED, this.readyPayload());
@@ -1827,8 +2084,9 @@ struct SubWindow {
       // MULTIWINDOW-L M4: the child's own hidden text input (declared before the XComponent so
       // the managed surface composites above it). The managed second window focuses it through
       // the AppStorage request channel; its text/keys travel to the managed side tagged with
-      // this window's surface id, so the two windows never share keyboard state.
-      if (this.surfaceId.length > 0) {
+      // this window's surface id, so the two windows never share keyboard state. M2: mounted
+      // only after the shell confirmed this page's identity.
+      if (this.surfaceId.length > 0 && this.identityConfirmed) {
         TextInput({ text: this.inputText, controller: this.inputController })
           .id(this.inputControlId())
           .height(56)
@@ -1851,8 +2109,9 @@ struct SubWindow {
       // MULTIWINDOW-L M3 managed surface: the XComponent fills the child and the managed second
       // MAUI tree draws into it; the native host routes its input under the same window id. M4
       // adds the focusable/onKeyEvent half: hardware keys pressed while the child surface has
-      // focus are forwarded tagged with this window's id.
-      if (this.surfaceId.length > 0) {
+      // focus are forwarded tagged with this window's id. M2: mounted only after the shell
+      // confirmed this page's identity handshake (fail-closed otherwise).
+      if (this.surfaceId.length > 0 && this.identityConfirmed) {
         XComponent({
           id: this.surfaceId,
           type: XComponentType.SURFACE,

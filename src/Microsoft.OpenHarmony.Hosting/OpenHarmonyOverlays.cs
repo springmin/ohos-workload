@@ -686,11 +686,27 @@ public static class OpenHarmonyOverlays
     public const int ChildInvokeFlag = 1 << 30;
 
     /// <summary>
+    /// MULTIWINDOW-L3 M4: bit 29 of a child hybrid-invoke request id marks the second child
+    /// window ("sub-2"). With two concurrent subwindows that both own child slot 0 the slot alone
+    /// is ambiguous; the bit lets the managed callback pick the issuing window's handler and the
+    /// native module route the result back to that window's own result sink. Window 0 (sub-1)
+    /// leaves the bit clear, so its encoding is byte-for-byte the pre-M4 shape.
+    /// </summary>
+    public const int ChildSecondWindowFlag = 1 << 29;
+
+    /// <summary>
     /// Composes a child-window hybrid-invoke request id: the child flag, the child pool slot
     /// (slot + 1 in the high byte, like the primary encoding) and the shell's 24-bit sequence.
     /// </summary>
     public static int EncodeChildInvokeRequestId(int slot, int sequence)
         => ChildInvokeFlag | EncodeInvokeRequestId(slot, sequence);
+
+    /// <summary>
+    /// MULTIWINDOW-L3 M4: composes a child-window hybrid-invoke request id for the given child
+    /// window index (0 = sub-1, 1 = sub-2; out-of-range indices clamp to 0 like the shell).
+    /// </summary>
+    public static int EncodeChildInvokeRequestId(int windowIndex, int slot, int sequence)
+        => (windowIndex > 0 ? ChildSecondWindowFlag : 0) | EncodeChildInvokeRequestId(slot, sequence);
 
     /// <summary>True when the request id carries the child-window flag.</summary>
     public static bool IsChildInvokeRequestId(int requestId)
@@ -702,16 +718,26 @@ public static class OpenHarmonyOverlays
     /// child pool; the caller fails closed instead of dispatching to another window.
     /// </summary>
     public static bool TryDecodeChildInvokeRequestId(int requestId, out int slot, out int sequence)
+        => TryDecodeChildInvokeRequestId(requestId, out _, out slot, out sequence);
+
+    /// <summary>
+    /// MULTIWINDOW-L3 M4: the window-aware decode. Both the child flag and the second-window flag
+    /// are cleared before the slot byte is extracted, so either window's ids decode to their own
+    /// slot; <paramref name="windowIndex"/> is 0 for sub-1 and 1 for sub-2.
+    /// </summary>
+    public static bool TryDecodeChildInvokeRequestId(int requestId, out int windowIndex, out int slot,
+        out int sequence)
     {
+        windowIndex = (requestId & ChildSecondWindowFlag) != 0 ? 1 : 0;
         slot = -1;
         sequence = requestId & InvokeSequenceMask;
         if ((requestId & ChildInvokeFlag) == 0)
         {
             return false;
         }
-        // The flag sits above the slot byte, so clear it before extracting the slot (bit 30 is
+        // The flags sit above the slot byte, so clear both before extracting the slot (bit 30 is
         // not part of the slot + 1 tag).
-        int tag = ((requestId & ~ChildInvokeFlag) >> InvokeSlotShift) & 0xFF;
+        int tag = ((requestId & ~(ChildInvokeFlag | ChildSecondWindowFlag)) >> InvokeSlotShift) & 0xFF;
         if (tag <= 0 || tag > s_maxOverlays)
         {
             return false;
