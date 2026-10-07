@@ -169,13 +169,20 @@ struct SubWindow {
       this.resolvedId = props.id;
       const resolvedName: string = props.name !== undefined ? props.name : '';
       // M3: the managed surface id is stamped into the window name as
-      // '<SUB_WINDOW_NAME>__<surfaceId>' (pages/Index.ets); the LocalStorage prop is a fallback
-      // for a runtime that propagates it. The name check doubles as the drag guard below.
+      // '<SUB_WINDOW_NAME>__<surfaceId>' (pages/Index.ets); the LocalStorage prop is the exact
+      // per-window value when the runtime propagates it, so it wins over the name-derived one
+      // (L3-M1: with two children the name prefix alone cannot tell a page which child it is).
+      // The name check doubles as the drag guard below.
       const managedPrefix: string = `${SUB_WINDOW_NAME}__`;
-      if (resolvedName.startsWith(managedPrefix)) {
-        this.surfaceId = resolvedName.substring(managedPrefix.length);
-      } else if (this.storedSurfaceId.length > 0) {
+      if (this.storedSurfaceId.length > 0) {
         this.surfaceId = this.storedSurfaceId;
+        if (resolvedName.startsWith(managedPrefix) &&
+            resolvedName.substring(managedPrefix.length) !== this.storedSurfaceId) {
+          hilog.warn(DOMAIN, TAG, 'subwindow identity mismatch: name=%{public}s stored=%{public}s',
+            resolvedName, this.storedSurfaceId);
+        }
+      } else if (resolvedName.startsWith(managedPrefix)) {
+        this.surfaceId = resolvedName.substring(managedPrefix.length);
       }
       // Only the subwindow page may move a window: window.getLastWindow can return the main
       // window while the child is not focused, and moving the main window from here would be
