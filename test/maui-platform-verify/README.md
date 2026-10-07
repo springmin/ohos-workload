@@ -267,7 +267,13 @@ parse.
   control character, an empty id) stay inert. On the status side `SanitizeUrlForLog` drops the
   query/fragment, flattens control characters and truncates to 2 KiB, and 300 `finished` events
   keep `dotnet-status.txt` capped at 256 KiB with the newest line present, the oldest dropped and
-  no query text in the file.
+  no query text in the file. The MULTIWINDOW-L3 B6-child extension routes the same decision for a
+  subwindow over the window/slot-tagged web-event channel
+  (`w:<window>|s<slot>|navask|<id>`, URL in the event URL): five more pins cover the route +
+  one-shot started suppression, the cancelled decision (no approval), the fail-closed shapes
+  (H-C2 network-path spelling, scheme-like URL, missing id, the primary window tag and a slot
+  beyond the child pool), window isolation (the approval goes to the asking window only) and the
+  shell/slice source pins.
 - HybridWebView late app-context coverage (U1): the shell can publish `AppDir` (and with it the
   payload directory) after a HybridWebView connected, so the suite drives the bridge seam directly
   (it sets `OpenHarmonyBridge`'s private `s_context` field and replays the private
