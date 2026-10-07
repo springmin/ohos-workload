@@ -7,11 +7,15 @@
 # cases without a device or an SDK:
 #   green  - the legacy (primary) roundtrip plus the named-partition semantics: A/B frames stay
 #            independent, ids resolve per partition, unknown/invalid instances fail cleanly,
-#            the per-thread string copies survive a republish, the partition count is capped;
+#            the per-thread string copies survive a republish, the partition count is capped,
+#            release drops one closed window's partition and returns its slot;
 #   red    - the same test binary built against a copy of the source whose instance guard is
 #            disabled (every named lookup falls back to the primary table, the exact regression
 #            the partition prevents) must FAIL: the partition check turns assert=False. This is
 #            the offline negative control for "A被B覆盖".
+#   red    - a second red variant makes release a no-op (the close hook stops reclaiming): the
+#            release checks must FAIL, the offline negative control for the SEC-SCAN-6 C
+#            leftover (a closed window's partition staying resident).
 # The source-wiring pins keep the same file in the device build, the export contract and the
 # NAPI/managed/shell consumers.
 #
@@ -22,10 +26,10 @@
 # Exit: 0 = all checks passed; 1 = at least one check failed (work dir kept for triage).
 set -u
 
-SELFTEST_VERSION="1 (2026-10-06)"
+SELFTEST_VERSION="2 (2026-10-07)"
 # The unit binary's check count must stay at or above this floor; declared next to the suite
 # contract so deleting/reducing cases fails the gate instead of silently shrinking coverage.
-HOST_A11Y_TABLE_FLOOR=10
+HOST_A11Y_TABLE_FLOOR=15
 
 log()     { printf '[%s] %s\n' "$(date '+%H:%M:%S')" "$*"; }
 section() { printf '\n=== %s ===\n' "$*"; }
@@ -201,6 +205,7 @@ if grep -q '^ohos_host_accessibility_begin_for$' "$HOST/host-exports.txt" &&
     grep -q '^ohos_host_accessibility_node_for$' "$HOST/host-exports.txt" &&
     grep -q '^ohos_host_accessibility_commit_for$' "$HOST/host-exports.txt" &&
     grep -q '^ohos_host_accessibility_provider_status_for$' "$HOST/host-exports.txt" &&
+    grep -q '^ohos_host_accessibility_release_for$' "$HOST/host-exports.txt" &&
     grep -q '^ohos_host_accessibility_send_event_for$' "$HOST/host-exports.txt" &&
     grep -q '^ohos_host_accessibility_set_window_action_listener$' "$HOST/host-exports.txt"; then
     pass_ "T5 host-exports.txt lists the per-instance managed exports"
@@ -209,6 +214,7 @@ else
 fi
 if grep -q 'int ohos_host_accessibility_begin_for(const char\* instance, int count);' "$HOST/openharmony_host.h" &&
     grep -q 'int ohos_host_accessibility_get_for(const char\* instance, int index' "$HOST/openharmony_host.h" &&
+    grep -q 'int ohos_host_accessibility_release_for(const char\* instance);' "$HOST/openharmony_host.h" &&
     grep -q 'void ohos_host_accessibility_set_window_action_listener(void\* callback);' "$HOST/openharmony_host.h"; then
     pass_ "T5 openharmony_host.h declares the per-instance exports (C linkage)"
 else
@@ -218,8 +224,10 @@ if grep -q 'OH_ArkUI_AccessibilityProviderRegisterCallbackWithInstance' "$HOST/h
     grep -q 'AttachAccessibilityValueFor' "$HOST/host_napi.cpp" &&
     grep -q '"attachAccessibilityNodeFor"' "$HOST/host_napi.cpp" &&
     grep -q 'ohos_host_accessibility_count_for' "$HOST/host_napi.cpp" &&
-    grep -q 'g_a11y_window_action_listener' "$HOST/host_napi.cpp"; then
-    pass_ "T5 host_napi.cpp registers the WithInstance callbacks and routes them per instance"
+    grep -q 'g_a11y_window_action_listener' "$HOST/host_napi.cpp" &&
+    grep -q 'ohos_host_accessibility_release_for' "$HOST/host_napi.cpp" &&
+    grep -q "released the closed window's provider state" "$HOST/host_napi.cpp"; then
+    pass_ "T5 host_napi.cpp registers the WithInstance callbacks, routes them per instance and releases a closed window's state"
 else
     fail_ "T5 host_napi.cpp misses the per-instance provider wiring"
 fi
@@ -244,13 +252,56 @@ if [ -f "$MAUI_SLICE/OpenHarmonyAccessibility.cs" ]; then
     grep -q 'TryFindView(string windowId, int id' "$MAUI_SLICE/OpenHarmonyAccessibility.cs" || SLICE_OK=0
     grep -q 'PublishSecondary' "$MAUI_SLICE/OpenHarmonyAccessibility.cs" || SLICE_OK=0
     grep -q 'WindowProviderAttached' "$MAUI_SLICE/OpenHarmonyAccessibility.cs" || SLICE_OK=0
+    grep -q 'ohos_host_accessibility_release_for' "$MAUI_SLICE/OpenHarmonyAccessibility.cs" || SLICE_OK=0
+    grep -q 'AccessibilityRelease' "$MAUI_SLICE/OpenHarmonyAccessibility.cs" || SLICE_OK=0
+    grep -q '^        ReleaseProviderState(windowId);$' "$MAUI_SLICE/OpenHarmonyAccessibility.cs" || SLICE_OK=0
 else
     SLICE_OK=0
 fi
 if [ "$SLICE_OK" = 1 ]; then
-    pass_ "T5 the maui slice carries the window-parameterized frame/action path"
+    pass_ "T5 the maui slice carries the window-parameterized frame/action path and the close-hook release"
 else
-    fail_ "T5 the maui slice misses the window-parameterized frame/action path (set MAUI_SLICE_DIR)"
+    fail_ "T5 the maui slice misses the window-parameterized frame/action path or the close-hook release (set MAUI_SLICE_DIR)"
+fi
+
+# ---- T6: offline red control - a no-op release must fail the release checks -----------------
+# The exact regression the close hook prevents: ohos_host_accessibility_table_release returns
+# without dropping the partition, so a closed window's table slot stays resident and a reused
+# id inherits state. The patched copy is built with the same test; the run must fail and print
+# a release [FAIL].
+section "T6 red control (release ignored)"
+if [ -n "$CC_BIN" ]; then
+    awk '
+        /^int ohos_host_accessibility_table_release\(const char\* instance\) \{/ { infn = 1 }
+        infn && /pthread_mutex_lock\(&g_a11y_mutex\);/ {
+            print "    return 0;   /* RED CONTROL: release ignored */"
+            infn = 0
+        }
+        { print }
+    ' "$TABLE" > "$WORK/host_a11y_table.release-red.c"
+    if cmp -s "$TABLE" "$WORK/host_a11y_table.release-red.c"; then
+        fail_ "T6 red patch did not apply (the release function moved?)"
+    else
+        if env -u LD_LIBRARY_PATH "$CC_BIN" -O2 -Wall -I"$HOST" \
+            "$WORK/host_a11y_table.release-red.c" "$TEST" -o "$WORK/host-a11y-table-release-red" > "$WORK/red2-build.log" 2>&1; then
+            if "$WORK/host-a11y-table-release-red" > "$WORK/red2-run.log" 2>&1; then
+                RED2_RC=0
+            else
+                RED2_RC=$?
+            fi
+            sed 's/^/   /' "$WORK/red2-run.log"
+            if [ "$RED2_RC" -ne 0 ] && grep -q '^\[FAIL\] release' "$WORK/red2-run.log"; then
+                pass_ "T6 red binary fails ($RED2_RC) with a release [FAIL]"
+            else
+                fail_ "T6 the red control did not detect the ignored release (exit $RED2_RC)"
+            fi
+        else
+            sed 's/^/   /' "$WORK/red2-build.log" >&2
+            fail_ "T6 the release-red-control variant does not compile"
+        fi
+    fi
+else
+    fail_ "T6 skipped (no compiler)"
 fi
 
 printf '\nselftest-host-a11y-table: checks: %d, failed: %d\n' "$CHECKS" "$FAILED"

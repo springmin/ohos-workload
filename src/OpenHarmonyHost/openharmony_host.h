@@ -735,6 +735,13 @@ int ohos_host_accessibility_node_for(const char* instance, int id, int parent_id
 int ohos_host_accessibility_commit_for(const char* instance);
 int ohos_host_accessibility_count_for(const char* instance);
 int ohos_host_accessibility_node_count_for(const char* instance);
+/// Drops one closed secondary window's provider state (MULTIWINDOW-L3 / SEC-SCAN-6 C): the
+/// named table partition is freed (host_a11y_table.c) and the NAPI per-instance attach record
+/// is reset (host_napi.cpp), so a window reusing the id starts not-attached with a fresh
+/// CUSTOM node instead of inheriting the gone window's frame/registration. Returns 1 when a
+/// partition was dropped and 0 otherwise; the legacy primary partition (NULL/empty instance)
+/// is never addressed. Called by the managed close hook (OpenHarmonyAccessibility.ReleaseWindow).
+int ohos_host_accessibility_release_for(const char* instance);
 int ohos_host_accessibility_index_of_for(const char* instance, int id);
 int ohos_host_accessibility_get_for(const char* instance, int index, int* id, int* parent_id,
                                     const char** role, const char** text, const char** description,

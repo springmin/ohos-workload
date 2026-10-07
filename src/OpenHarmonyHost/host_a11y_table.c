@@ -561,3 +561,38 @@ void ohos_host_accessibility_table_reset(void) {
     g_a11y_named_count = 0;
     pthread_mutex_unlock(&g_a11y_mutex);
 }
+
+// Drops one named partition (the closed window's id). The unlink and the free both happen
+// under the table lock, so a concurrent provider read either reaches the live table or misses
+// the instance cleanly; the primary partition and the capped partition count are the only
+// shared state touched.
+int ohos_host_accessibility_table_release(const char* instance) {
+    if (instance == NULL || instance[0] == '\0' || !ohos_host_accessibility_instance_valid(instance)) {
+        return 0;
+    }
+    pthread_mutex_lock(&g_a11y_mutex);
+    OhosA11yPartition* prev = NULL;
+    OhosA11yPartition* part = g_a11y_named;
+    while (part != NULL && strcmp(part->instance, instance) != 0) {
+        prev = part;
+        part = part->next;
+    }
+    if (part == NULL) {
+        pthread_mutex_unlock(&g_a11y_mutex);
+        return 0;
+    }
+    if (prev == NULL) {
+        g_a11y_named = part->next;
+    } else {
+        prev->next = part->next;
+    }
+    g_a11y_named_count--;
+    OhosA11yFreeNodeStrings(part);
+    free(part->id_keys);
+    free(part->id_values);
+    free(part->nodes);
+    free(part->instance);
+    free(part);
+    pthread_mutex_unlock(&g_a11y_mutex);
+    return 1;
+}

@@ -36,6 +36,13 @@ int ohos_host_accessibility_instance_valid(const char* instance);
 // window's next publish rebuilds it, exactly like the legacy table).
 void ohos_host_accessibility_table_reset(void);
 
+// Drops one closed secondary window's named partition (MULTIWINDOW-L3 / SEC-SCAN-6 C): the
+// managed close hook calls ohos_host_accessibility_release_for, which frees the partition and
+// its node strings under the table lock, so the window id is reusable and a capped table slot
+// is returned. The legacy primary partition (NULL/empty instance) and unknown/invalid ids are
+// never touched; returns 1 when a partition was dropped and 0 otherwise.
+int ohos_host_accessibility_table_release(const char* instance);
+
 #ifdef __cplusplus
 }
 #endif

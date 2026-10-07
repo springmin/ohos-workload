@@ -15237,15 +15237,21 @@ bool l2NativePinsOk = l2Napi.Contains("OH_ArkUI_AccessibilityProviderRegisterCal
     && l2Table.Contains("ohos_host_accessibility_begin_for")
     && l2Table.Contains("OhosA11yPartitionForLocked")
     && l2Table.Contains("OHOS_A11Y_MAX_NAMED_PARTITIONS")
+    && l2Table.Contains("ohos_host_accessibility_table_release")
     && l2Exports.Contains("ohos_host_accessibility_begin_for")
     && l2Exports.Contains("ohos_host_accessibility_set_window_action_listener")
+    && l2Exports.Contains("ohos_host_accessibility_release_for")
+    && l2Napi.Contains("ohos_host_accessibility_release_for")
+    && l2Napi.Contains("g_a11y_instances")
     && l2SliceA11y.Contains("TryFindNode(string windowId, int id")
     && l2SliceA11y.Contains("TryFindView(string windowId, int id")
     && l2SliceA11y.Contains("PublishSecondary")
     && l2SliceA11y.Contains("WindowProviderAttached")
     && l2SliceA11y.Contains("SetWindowActionHandler")
     && l2SliceA11y.Contains("OnWindowAction")
-    && l2SliceA11y.Contains("ohos_host_accessibility_begin_for");
+    && l2SliceA11y.Contains("ohos_host_accessibility_begin_for")
+    && l2SliceA11y.Contains("ohos_host_accessibility_release_for")
+    && l2SliceA11y.Contains("ReleaseProviderState(windowId);");
 M4Check("a11y provider source pins", l2A11yShellPinsOk && l2NativePinsOk);
 
 // --- source pins: the shell and slice carry the M4 wires --------------------------------------
@@ -15541,7 +15547,7 @@ L2Check("host source", l2HostSource.Contains("web_child")
     && l2HostSource.Contains("registerChildWebSink\"")
     && !l2HostCoreSource.Contains("kChildWebMarker")
     && !l2ExportsSource.Contains("ohos_host_web_command_child")
-    && l2ExportCount == 163);   // L2-b adds no export; the L2-a six (attach/status/count/..._for + action listener) bring the contract from 157 to 163
+    && l2ExportCount == 164);   // L2-b adds no export; the L2-a six (attach/status/count/..._for + action listener) bring the contract from 157 to 163; the L3 a11y close-hook release adds ohos_host_accessibility_release_for (164)
 
 string l2SliceView = FindHostSource("OpenHarmonyWebViewHandler.cs") is { } l2ViewPath
     ? File.ReadAllText(l2ViewPath) : string.Empty;

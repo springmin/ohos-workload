@@ -5691,6 +5691,47 @@ static int AttachAccessibilityValueFor(napi_env env, const char* instance, napi_
     return entry->status;
 }
 
+// MULTIWINDOW-L3 / SEC-SCAN-6 C: drops one closed secondary window's provider state. The
+// managed close hook (OpenHarmonyAccessibility.ReleaseWindow) calls this export with the dead
+// window's id, so:
+//   * the window's node-table partition is freed (ohos_host_accessibility_table_release) and
+//     its slot in the capped named-partition table returns to the pool, and
+//   * the per-instance attach record is reset (provider/CUSTOM node/content cleared, status 0),
+//     so a later window reusing the id creates a fresh CUSTOM node on its own NodeContent and
+//     never sends through the dead window's provider.
+// The record itself stays allocated for the process lifetime: A11yInstanceProviderFor may hand
+// its provider pointer to a concurrent event send, and the vector owning the record is what
+// keeps that pointer valid until the send finishes (the same stability the attach path relies
+// on). The platform exposes no provider unregister API; the old CUSTOM node died with its
+// NodeContent, and a re-attach of the same instance either replaces the registration or (if
+// ArkUI refuses) degrades to no provider with the managed frame kept locally.
+extern "C" int ohos_host_accessibility_release_for(const char* instance) {
+    if (instance == nullptr || instance[0] == '\0' || !ohos_host_accessibility_instance_valid(instance)) {
+        return 0;
+    }
+    bool recordFound = false;
+    {
+        std::lock_guard<std::mutex> guard(g_a11y_instances_mutex);
+        for (const std::unique_ptr<A11yInstanceProvider>& entry : g_a11y_instances) {
+            if (entry->instance == instance) {
+                entry->provider = nullptr;
+                entry->customNode = nullptr;
+                entry->customAdded = false;
+                entry->content = nullptr;
+                entry->status = 0;
+                recordFound = true;
+                break;
+            }
+        }
+    }
+    int released = ohos_host_accessibility_table_release(instance);
+    if (recordFound || released != 0) {
+        OH_LOG_INFO(LOG_APP, "[openharmony-host] accessibility: released the closed window's provider state (instance=%{public}s, table=%{public}d)",
+                    instance, released);
+    }
+    return released;
+}
+
 napi_value AttachAccessibilityNode(napi_env env, napi_callback_info info) {
     size_t argc = 1;
     napi_value argv[1];

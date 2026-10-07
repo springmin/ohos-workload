@@ -7,7 +7,8 @@
 // Required cases: the legacy (primary) roundtrip is byte-for-byte the historical table; named
 // partitions hold their own nodes, ids and counts; a publish into one partition never changes
 // another; unknown/invalid instances fail cleanly; the per-thread string copies survive a
-// concurrent republish; the named-partition count is capped; reset drops everything.
+// concurrent republish; the named-partition count is capped; release drops one closed window's
+// partition and returns its slot; reset drops everything.
 #include <math.h>
 #include <stdio.h>
 #include <string.h>
@@ -150,7 +151,37 @@ int main(void) {
           && ohos_host_accessibility_count_for("sub-overflow") == 0,
           "named partitions are capped");
 
-    // 12. Reset drops the primary and every named partition.
+    // 12. SEC-SCAN-6 C leftover / MULTIWINDOW-L3: release drops one named partition (the closed
+    // window's id). Its nodes/ids stop resolving and the primary partition is untouched.
+    Check(ohos_host_accessibility_table_release("sub-a") == 1
+          && ohos_host_accessibility_count_for("sub-a") == 0
+          && ohos_host_accessibility_index_of_for("sub-a", 21) == -1
+          && ReadTextFor("sub-a", 0, text, sizeof(text)) == -1
+          && ohos_host_accessibility_commit_for("sub-a") == -1,
+          "release drops a named partition and its lookups");
+
+    // 13. Release is a no-op for the primary, unknown, invalid and already-released ids, and it
+    // never disturbs another partition.
+    Check(ohos_host_accessibility_table_release(NULL) == 0
+          && ohos_host_accessibility_table_release("") == 0
+          && ohos_host_accessibility_table_release("bad id") == 0
+          && ohos_host_accessibility_table_release("sub-missing") == 0
+          && ohos_host_accessibility_table_release("sub-a") == 0
+          && ohos_host_accessibility_count() == 1
+          && ReadTextFor(NULL, 0, text, sizeof(text)) == 12 && strcmp(text, "main-B") == 0
+          && ReadTextFor("sub-b", 0, text, sizeof(text)) == 31,
+          "release ignores the primary and unknown/invalid ids");
+
+    // 14. The released slot returns to the capped pool: the id can be published again from
+    // scratch (window-id reuse) and the cap still rejects the next new id.
+    PublishFor("sub-a", 71, "text", "child-A-reused");
+    Check(ohos_host_accessibility_count_for("sub-a") == 1
+          && ReadTextFor("sub-a", 0, text, sizeof(text)) == 71
+          && strcmp(text, "child-A-reused") == 0
+          && ohos_host_accessibility_begin_for("sub-overflow", 1) == -1,
+          "a released id is reusable and the cap still holds");
+
+    // 15. Reset drops the primary and every named partition.
     ohos_host_accessibility_table_reset();
     Check(ohos_host_accessibility_count() == 0 && ohos_host_accessibility_count_for("sub-a") == 0
           && ohos_host_accessibility_count_for("sub-h") == 0,
