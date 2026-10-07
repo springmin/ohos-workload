@@ -179,13 +179,16 @@ interface SubWindowKeyPayload {
   type: number;
 }
 
-// The focus/keyboard request written by pages/Index.ets (mirrors its interface).
+// The focus/keyboard request written by pages/Index.ets (mirrors its interface). M3: the
+// generation names the session the request was issued for; a reopened surface id ignores a
+// request that belongs to a retired generation.
 interface SubWindowFocusRequest {
   surfaceId: string;
   show: number;
   caret: number;
   text?: string;
   seq: number;
+  gen?: number;
 }
 
 @Entry({ routeName: 'ohos_dotnet_subwindow' })
@@ -277,6 +280,12 @@ struct SubWindow {
   private subHybridEndpointLogs: number = 0;
   private subHybridInvokeTimeoutMs: number = 15000;
   private inputController: TextInputController = new TextInputController();
+  // MULTIWINDOW-L3 M3: this window's own focus state for the IME contract. A show=1 request is
+  // only applied while the window is active; one that arrives while it is inactive is
+  // remembered and applied on the next WINDOW_ACTIVE (the focus-switch case), so the keyboard
+  // can never open for a background window.
+  private windowActive: boolean = true;
+  private pendingInputFocus: boolean = false;
   // MULTIWINDOW-L2 a: the child's own accessibility content slot. The host creates a CUSTOM
   // node inside it and registers a per-instance ArkUI accessibility provider
   // (attachAccessibilityNodeFor), so the child's shadow tree is served by its own provider.
@@ -371,11 +380,20 @@ struct SubWindow {
         this.parsedGeneration, this.identityRejected ? 'yes' : 'no', this.dragEnabled ? 'on' : 'off');
       // M4: when this window loses focus, drop the IME with it (the keyboard follows the
       // focused window; the managed side re-focuses the child input when an Entry focuses).
+      // M3: the focus state also gates an incoming show=1 request (a background window never
+      // opens the keyboard; the pending request fires when this window becomes active).
       if (this.windowIsOwn) {
         try {
           win.on('windowEvent', (evt: window.WindowEventType): void => {
             if (evt === window.WindowEventType.WINDOW_INACTIVE) {
+              this.windowActive = false;
               this.blurInput();
+            } else if (evt === window.WindowEventType.WINDOW_ACTIVE) {
+              this.windowActive = true;
+              if (this.pendingInputFocus) {
+                this.pendingInputFocus = false;
+                this.onFocusRequest();
+              }
             }
           });
         } catch (eventError) {
@@ -650,6 +668,8 @@ struct SubWindow {
   // Applies one managed focus/keyboard request: show=1 focuses the hidden input (the IME opens
   // for this window) and seeds it with the managed text/caret; show=0 returns focus to the
   // child XComponent (typing/keys, keyboard closed). M2: only a confirmed identity may focus.
+  // M3: only the request's own generation may focus, and only while this window is active (an
+  // inactive window remembers the request until WINDOW_ACTIVE).
   private onFocusRequest(): void {
     if (this.surfaceId.length === 0 || !this.identityConfirmed || this.focusRequest.length === 0) {
       return;
@@ -659,7 +679,16 @@ struct SubWindow {
       if (request.surfaceId !== this.surfaceId) {
         return;
       }
+      if (request.gen !== undefined && request.gen > 0 && this.parsedGeneration > 0
+        && request.gen !== this.parsedGeneration) {
+        return;
+      }
       if (request.show === 1) {
+        if (!this.windowActive) {
+          this.pendingInputFocus = true;
+          return;
+        }
+        this.pendingInputFocus = false;
         if (request.text !== undefined && request.text.length > 0) {
           this.inputText = request.text;
         }
@@ -668,6 +697,7 @@ struct SubWindow {
         hilog.info(DOMAIN, TAG, 'subwindow text input focused: caret=%{public}d textLen=%{public}d',
           request.caret, this.inputText.length);
       } else {
+        this.pendingInputFocus = false;
         this.getUIContext().getFocusController().requestFocus(this.surfaceId);
       }
     } catch (requestError) {

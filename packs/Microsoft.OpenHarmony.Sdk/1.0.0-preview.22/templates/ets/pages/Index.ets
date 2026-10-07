@@ -177,13 +177,16 @@ interface SubWindowErrorPayload {
 }
 
 // MULTIWINDOW-L M4: the AppStorage payload that carries a managed focus/keyboard request from
-// the main page to the child page (see forwardSubWindowTextFocus).
+// the main page to the child page (see forwardSubWindowTextFocus). MULTIWINDOW-L3 M3: the
+// request names the session generation it belongs to, so a reopened surface id cannot inherit
+// the retired child's keyboard request.
 interface SubWindowFocusRequest {
   surfaceId: string;
   show: number;
   caret: number;
   text?: string;
   seq: number;
+  gen?: number;
 }
 
 // window.SubWindowOptions plus the platform parser's undocumented zLevelAboveParentLoosened
@@ -925,6 +928,12 @@ struct Index {
   // M4: the monotonically increasing sequence stamped into every AppStorage focus/keyboard
   // request for a child, so the child's @Watch fires even when the request content repeats.
   private subWindowFocusSeq: number = 0;
+  // MULTIWINDOW-L3 M3: the surface id whose child page currently owns the forwarded IME
+  // request. All child pages watch the same AppStorage key (each filters on its own surface id),
+  // so a show=1 for another session first publishes a blur for this one (keyboard mutual
+  // exclusion); a close of this session clears the tracked request so a reopened surface id
+  // cannot inherit it.
+  private subWindowImeSurfaceId: string = '';
   // MULTIWINDOW-L3 M2: the identity handshake state. subWindowGeneration stamps a fresh
   // generation into every managed child name so a reopened surface id never inherits the closed
   // child's events; subWindowClaims is the per-child claim table published to AppStorage before
@@ -2503,6 +2512,9 @@ struct Index {
   // The request travels through AppStorage (the child's LocalStorage is not propagated on this
   // device): the child page watches the key and gives focus to its own hidden input or surface.
   // A request naming a surface that is not a live managed session is answered honestly.
+  // MULTIWINDOW-L3 M3: only one child may hold the forwarded IME request, so a show=1 for a
+  // different session first publishes the blur for the previous one; the request carries the
+  // session generation so a reopened surface id ignores the retired child's request.
   private forwardSubWindowTextFocus(cmd: SubWindowCommand): void {
     const requested: string = cmd.surfaceId !== undefined ? cmd.surfaceId : '';
     const session: SubWindowSession | null = this.findSubWindowSession(requested);
@@ -2510,16 +2522,55 @@ struct Index {
       this.reportSubWindowFailure(801, 'text focus: no matching managed subwindow');
       return;
     }
+    const show: number = cmd.show !== undefined ? cmd.show : 0;
+    if (show === 1 && this.subWindowImeSurfaceId.length > 0
+      && this.subWindowImeSurfaceId !== session.surfaceId) {
+      this.blurSubWindowTextFocus(this.subWindowImeSurfaceId, 'focus moved');
+    }
     this.subWindowFocusSeq++;
     const request: SubWindowFocusRequest = {
       surfaceId: session.surfaceId,
-      show: cmd.show !== undefined ? cmd.show : 0,
+      show: show,
       caret: cmd.caret !== undefined ? cmd.caret : -1,
       text: cmd.text !== undefined ? cmd.text : '',
       seq: this.subWindowFocusSeq,
     };
+    if (session.generation > 0) {
+      request.gen = session.generation;
+    }
     AppStorage.setOrCreate(SUB_WINDOW_FOCUS_REQUEST_KEY, JSON.stringify(request));
-    this.logInfo(`[maui] subwindow text focus forwarded: surface=${session.surfaceId} show=${request.show} caret=${request.caret}`);
+    if (show === 1) {
+      this.subWindowImeSurfaceId = session.surfaceId;
+    } else if (this.subWindowImeSurfaceId === session.surfaceId) {
+      this.subWindowImeSurfaceId = '';
+    }
+    this.logInfo(`[maui] subwindow text focus forwarded: surface=${session.surfaceId} gen=${session.generation} show=${request.show} caret=${request.caret}`);
+  }
+
+  // M3: publishes a blur request for one session (show=0), so a child that is losing the
+  // keyboard drops it before the new window's show=1 arrives. The generation travels with the
+  // request; a session already closed has no page left and only clears the tracked id.
+  private blurSubWindowTextFocus(surfaceId: string, reason: string): void {
+    if (this.subWindowImeSurfaceId === surfaceId) {
+      this.subWindowImeSurfaceId = '';
+    }
+    const session: SubWindowSession | undefined = this.subWindows.get(surfaceId);
+    if (session === undefined) {
+      return;
+    }
+    this.subWindowFocusSeq++;
+    const request: SubWindowFocusRequest = {
+      surfaceId: surfaceId,
+      show: 0,
+      caret: -1,
+      text: '',
+      seq: this.subWindowFocusSeq,
+    };
+    if (session.generation > 0) {
+      request.gen = session.generation;
+    }
+    AppStorage.setOrCreate(SUB_WINDOW_FOCUS_REQUEST_KEY, JSON.stringify(request));
+    this.logInfo(`[maui] subwindow text blur forwarded: surface=${surfaceId} gen=${session.generation} (${reason})`);
   }
 
   // Clamps a managed request into the window-manager's documented bounds; an absent or
@@ -2964,6 +3015,12 @@ struct Index {
     if (this.subWindows.get(session.surfaceId) !== session) {
       return;
     }
+    // M3: a closed window must not keep the forwarded IME ownership; its page is going away,
+    // and a reopen under the same surface id starts with no pending focus (the request carries
+    // the retired generation, which the new page ignores).
+    if (this.subWindowImeSurfaceId === session.surfaceId) {
+      this.blurSubWindowTextFocus(session.surfaceId, 'session closed');
+    }
     this.subWindows.delete(session.surfaceId);
     // M2: the claim and the identity ack belong to the closed generation; a reopened surface id
     // must not inherit either.
@@ -2988,6 +3045,9 @@ struct Index {
     }
     const sessions: Map<string, SubWindowSession> = this.subWindows;
     this.subWindows = new Map();
+    // M3: no forwarded IME request may survive the page teardown either.
+    this.subWindowImeSurfaceId = '';
+    AppStorage.setOrCreate(SUB_WINDOW_FOCUS_REQUEST_KEY, '');
     // M2: no claim/ack may survive the page teardown; a later page instance must handshake from
     // scratch.
     sessions.forEach((session: SubWindowSession, _surfaceId: string): void => {
