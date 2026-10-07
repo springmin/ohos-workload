@@ -40,7 +40,7 @@ on:
         description: 'maui-ohos commit SHA to compile (defaults to the pinned feature/openharmony tip)'
         required: false
         type: string
-        default: 'bb6b06990d0583f429620545375c8d2d9f8d6709'
+        default: 'd1d485bb67ad6f966f3029123340aad2691928fa'
   push:
     branches: [ master ]
   pull_request:
@@ -52,7 +52,15 @@ permissions:
 
 # Reproducible cross-repo compile: the MAUI slice is checked out at an exact commit, not the
 # mutable feature/openharmony branch, so a push to the fork cannot change what this gate compiles.
-# The default is the MULTIWINDOW-L2 merged slice tip: bb6b06990d (the L2-a per-window a11y
+# The default is the L3 merged slice tip: d1d485bb67 (the L3 a11y partition release - the
+# closed window's provider state is freed through the new ohos_host_accessibility_release_for
+# export, so the export set moves to 164/164 - plus the child hybrid/Blazor asset bridge (the
+# subwindow shell serves hybrid/blazor assets and routes child-tagged invokes to the owning
+# window's handler, no new export) and the MULTIWINDOW-L3 M1 session registry (two managed
+# subwindows coexist, targeted close/reopen, capacity decline); managed + shell source pins, so
+# the rasterizer output does not move; the suite below moves to 701/704 floor 684 - the
+# web-assets 3 + the L3-M1 11 checks on top of the L2 690; merged into feature/openharmony as
+# d1d485bb67) on bb6b06990d (the L2-a per-window a11y
 # provider - the six new managed exports move the contract to 163/163 - plus the L2-b child
 # ArkWeb second host, both merged with SEC-SCAN-6 A/B and the C close hook; managed + shell
 # source pins, so the rasterizer output does not move; the suite below moves to 688/690 floor
@@ -187,7 +195,7 @@ permissions:
 # budget); advance the pin deliberately and refresh this comment when the harness pins or the
 # tip move (workflow_dispatch can compile any commit).
 env:
-  MAUI_OHOS_REF: ${{ github.event.inputs.maui_ohos_ref || 'bb6b06990d0583f429620545375c8d2d9f8d6709' }}
+  MAUI_OHOS_REF: ${{ github.event.inputs.maui_ohos_ref || 'd1d485bb67ad6f966f3029123340aad2691928fa' }}
   # setup-dotnet installs the requested 11.0.x preview into DOTNET_INSTALL_DIR; on Linux that
   # defaults to /usr/share/dotnet, which a per-user cache cannot persist. Point it at ~/.dotnet
   # (the action resolves the ~ prefix against $HOME) so the cache step below actually avoids the
