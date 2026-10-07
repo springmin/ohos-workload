@@ -316,6 +316,9 @@ struct HostBinding {
     // MULTIWINDOW-L2: the child host's eval sink (the child page's own controller set).
     HostSink web_eval_child{"web eval child", false};
     HostSink hybrid_invoke_result{"hybrid invoke result", false};
+    // MULTIWINDOW-L3: the child page's hybrid-invoke result sink. Results whose request id
+    // carries the child flag go here instead of the primary sink above.
+    HostSink hybrid_invoke_result_child{"hybrid invoke result child", false};
     HostSink raw_file{"raw file", false};
     HostSink permission{"permission", false};
     HostSink notification_permission{"notification permission", false};
@@ -383,6 +386,7 @@ static HostBinding* g_host = &g_binding_slots[0].binding;
 #define g_web_eval_sink (g_host->web_eval)
 #define g_web_eval_child_sink (g_host->web_eval_child)
 #define g_hybrid_invoke_result_sink (g_host->hybrid_invoke_result)
+#define g_hybrid_invoke_result_child_sink (g_host->hybrid_invoke_result_child)
 #define g_raw_file_sink (g_host->raw_file)
 #define g_permission_sink (g_host->permission)
 #define g_notification_permission_sink (g_host->notification_permission)
@@ -428,6 +432,7 @@ static void HostForEachSink(HostBinding& binding, F&& visit) {
     visit(binding.web_eval);
     visit(binding.web_eval_child);
     visit(binding.hybrid_invoke_result);
+    visit(binding.hybrid_invoke_result_child);
     visit(binding.raw_file);
     visit(binding.permission);
     visit(binding.notification_permission);
@@ -3710,14 +3715,29 @@ napi_value RegisterHybridInvokeResultSink(napi_env env, napi_callback_info info)
     return HostSinkRegisterFromArgs(env, info, g_hybrid_invoke_result_sink);
 }
 
+// MULTIWINDOW-L3: ArkTS calls host.registerChildHybridInvokeResultSink(fn) on the subwindow
+// page to receive the results of invocations whose request id carries the child flag.
+napi_value RegisterChildHybridInvokeResultSink(napi_env env, napi_callback_info info) {
+    return HostSinkRegisterFromArgs(env, info, g_hybrid_invoke_result_child_sink);
+}
+
+// Bit 30 of a hybrid-invoke request id marks the child window's channel (mirrors
+// OpenHarmonyOverlays.ChildInvokeFlag in the managed slice). The child shell sets it on the
+// ids it passes to notifyHybridInvoke; the managed result comes back with the same id, so this
+// single call site routes it to the child page's sink and the primary sink is never consumed.
+constexpr int kChildHybridInvokeFlag = 1 << 30;
+
 // Called from managed code (P/Invoke) with the invocation result. Returns 0 when the result
-// reached the ArkTS sink, -1 when there is no result sink registered.
+// reached the matching ArkTS sink, -1 when no sink is registered.
 extern "C" int ohos_host_hwv_invoke_result(int request_id, const char* payload_json) {
     return HostCxxBoundary("hybrid invoke result", [&] {
         SinkCall* call = new SinkCall();
         call->AddInt(request_id);
         call->AddString(payload_json);
-        return HostSinkPost(g_hybrid_invoke_result_sink, call) ? 0 : -1;
+        HostSink& sink = (request_id & kChildHybridInvokeFlag) != 0
+            ? g_hybrid_invoke_result_child_sink
+            : g_hybrid_invoke_result_sink;
+        return HostSinkPost(sink, call) ? 0 : -1;
     });
 }
 
@@ -4751,6 +4771,7 @@ napi_value Init(napi_env env, napi_value exports) {
         {"notifyJsMessage", nullptr, NotifyJsMessage, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"notifyHybridInvoke", nullptr, NotifyHybridInvoke, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"registerHybridInvokeResultSink", nullptr, RegisterHybridInvokeResultSink, nullptr, nullptr, nullptr, napi_default, nullptr},
+        {"registerChildHybridInvokeResultSink", nullptr, RegisterChildHybridInvokeResultSink, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"notifyAvoidArea", nullptr, NotifyAvoidArea, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"notifySoftInputArea", nullptr, NotifySoftInputArea, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"notifyTheme", nullptr, NotifyTheme, nullptr, nullptr, nullptr, napi_default, nullptr},
