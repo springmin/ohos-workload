@@ -99,6 +99,16 @@ interface SubWindowCommand {
   text?: string;
 }
 
+// MULTIWINDOW-L3 M1: one shell subwindow session. The Map key is the managed surface id
+// ("sub-N", also stamped into the child's window name); the empty string keys the single
+// shell-drawn M degradation child. Every command targets its session by that id, so two managed
+// children can never drive each other's window.
+interface SubWindowSession {
+  window: window.Window;
+  id: number;
+  surfaceId: string;
+}
+
 // One subwindow state report: id + rect (window pixels). Only the fields the op uses are read.
 interface SubWindowStatePayload {
   id: number;
@@ -695,10 +705,16 @@ const SUB_EVENT_INACTIVE: number = 12;
 // travels through AppStorage, which the child page watches with @StorageLink @Watch.
 const SUB_CMD_TEXT_FOCUS: number = 6;
 const SUB_WINDOW_FOCUS_REQUEST_KEY: string = 'ohos_dotnet_subwindow_focus_request';
-// The subwindow's named route (pages/SubWindow.ets) and its parent-window name; both are
-// single-instance by design (one application subwindow in this slice).
+// The subwindow's named route (pages/SubWindow.ets) and the parent-window name prefix; the
+// managed surface id (shell session key) is appended to the name as
+// '<SUB_WINDOW_NAME>__<surfaceId>' so the page can resolve its own identity.
 const SUB_WINDOW_ROUTE: string = 'ohos_dotnet_subwindow';
 const SUB_WINDOW_NAME: string = 'ohos_dotnet_subwindow';
+// MULTIWINDOW-L3 M1: the maximum number of concurrent application subwindow sessions the shell
+// carries (the managed host mirrors it as OpenHarmonyMauiAppHost.MaxManagedSubWindows). The
+// platform allows far more (255, L2CAP); the shell caps product behavior for now and answers an
+// honest 801 beyond it.
+const SUB_WINDOW_MAX: number = 2;
 // Grace period after a window WINDOW_INACTIVE before the app counts as left the foreground: an
 // internal focus move (main <-> child) delivers the other window's WINDOW_ACTIVE in the same tick
 // (measured on HAD-W32), while the Home key delivers nothing more.
@@ -845,24 +861,23 @@ struct Index {
   // (see subscribeWindowShapeChange); the flag keeps a repeated aboutToAppear idempotent and
   // the disposer unregisters the exact callbacks.
   private windowShapeRegistered: boolean = false;
-  // MULTIWINDOW-M: the one application subwindow and its bookkeeping. All null/0 until the
-  // managed side creates it; every operation then degrades to a no-op, so an app that never
-  // opens a child pays nothing (no observer, no window, no per-frame work).
-  private subWindow: window.Window | null = null;
-  private subWindowId: number = -1;
+  // MULTIWINDOW-M / L3-M1: the application subwindow sessions, keyed by the managed surface id
+  // ('' keys the single shell-drawn M child). All operations degrade to a no-op while the map is
+  // empty, so an app that never opens a child pays nothing (no per-window work until a session
+  // exists).
+  private subWindows: Map<string, SubWindowSession> = new Map();
+  // Sessions whose create is in flight (same keys): a repeated create for one key is ignored and
+  // the capacity check counts them so two concurrent creates cannot overshoot SUB_WINDOW_MAX.
+  private subWindowCreating: Map<string, boolean> = new Map();
   // M4: the monotonically increasing sequence stamped into every AppStorage focus/keyboard
-  // request for the child, so the child's @Watch fires even when the request content repeats.
+  // request for a child, so the child's @Watch fires even when the request content repeats.
   private subWindowFocusSeq: number = 0;
-  // MULTIWINDOW-L M3: the managed surface id of the live child ('' for the shell-drawn M path);
-  // stamped into the child's LocalStorage and reported back in state payloads.
-  private subWindowSurfaceId: string = '';
-  private subWindowCreating: boolean = false;
   // The main window resolved before the first child exists (getLastWindow would return the
   // focused child afterwards), and the once-registered main-window event observer.
   private subWindowMainWindow: window.Window | null = null;
   private subWindowMainEventsRegistered: boolean = false;
   // The main window's HIDDEN/SHOWN state; while suspended, managed show/move/resize commands are
-  // skipped (the system already suspends the child with its parent) and reported as failed.
+  // skipped (the system already suspends the children with their parent) and reported as failed.
   private subWindowSuspended: boolean = false;
   // Pending foreground-loss candidate (setTimeout id, -1 none): a window WINDOW_INACTIVE starts
   // it and a window WINDOW_ACTIVE within the grace period cancels it (see
@@ -2288,16 +2303,37 @@ struct Index {
     });
   }
 
-  // One JSON state report for the current child rect; an unreadable window degrades to the
+  // MULTIWINDOW-L3 M1: resolves the session a command targets. An explicit surfaceId must name
+  // a live session (exact match); an omitted one is only served when exactly one session exists
+  // (the historical single-child wire). Null means "cannot answer without guessing".
+  private findSubWindowSession(surfaceId: string): SubWindowSession | null {
+    if (surfaceId.length > 0) {
+      const exact: SubWindowSession | undefined = this.subWindows.get(surfaceId);
+      return exact !== undefined ? exact : null;
+    }
+    if (this.subWindows.size === 1) {
+      const only: SubWindowSession | undefined = this.subWindows.values().next().value;
+      return only !== undefined ? only : null;
+    }
+    return null;
+  }
+
+  // The session as long as it is still the live one for its key (a callback that resolves after
+  // the child was closed or its key reopened must not report the new session's state).
+  private liveSubWindowSession(session: SubWindowSession): SubWindowSession | undefined {
+    return this.subWindows.get(session.surfaceId) === session ? session : undefined;
+  }
+
+  // One JSON state report for the session's child rect; an unreadable window degrades to the
   // cached id with a zero rect (the managed side treats a 0-size rect as unknown).
-  private subWindowStatePayload(win: window.Window): string {
-    let id: number = this.subWindowId;
+  private subWindowStatePayload(session: SubWindowSession): string {
+    let id: number = session.id;
     let x: number = 0;
     let y: number = 0;
     let w: number = 0;
     let h: number = 0;
     try {
-      const props = win.getWindowProperties();
+      const props = session.window.getWindowProperties();
       id = props.id;
       x = props.windowRect.left;
       y = props.windowRect.top;
@@ -2307,18 +2343,17 @@ struct Index {
       this.logError(`[maui] subwindow state read failed: ${(stateError as Error).message}`);
     }
     const payload: SubWindowStatePayload = { id: id, x: x, y: y, w: w, h: h };
-    if (this.subWindowSurfaceId.length > 0) {
-      payload.surfaceId = this.subWindowSurfaceId;
+    if (session.surfaceId.length > 0) {
+      payload.surfaceId = session.surfaceId;
     }
     return JSON.stringify(payload);
   }
 
-  private reportSubWindowState(op: number): void {
-    const win = this.subWindow;
-    if (win === null) {
+  private reportSubWindowState(op: number, session: SubWindowSession | undefined): void {
+    if (session === undefined) {
       return;
     }
-    this.notifySubWindowEvent(op, this.subWindowStatePayload(win));
+    this.notifySubWindowEvent(op, this.subWindowStatePayload(session));
   }
 
   private reportSubWindowFailure(code: number, message: string): void {
@@ -2329,23 +2364,24 @@ struct Index {
   // MULTIWINDOW-L M4: forwards a managed per-window focus/keyboard request to the child page.
   // The request travels through AppStorage (the child's LocalStorage is not propagated on this
   // device): the child page watches the key and gives focus to its own hidden input or surface.
-  // A request naming a surface that is not the live managed child is answered honestly.
+  // A request naming a surface that is not a live managed session is answered honestly.
   private forwardSubWindowTextFocus(cmd: SubWindowCommand): void {
     const requested: string = cmd.surfaceId !== undefined ? cmd.surfaceId : '';
-    if (this.subWindow === null || (requested.length > 0 && requested !== this.subWindowSurfaceId)) {
+    const session: SubWindowSession | null = this.findSubWindowSession(requested);
+    if (session === null || session.surfaceId.length === 0) {
       this.reportSubWindowFailure(801, 'text focus: no matching managed subwindow');
       return;
     }
     this.subWindowFocusSeq++;
     const request: SubWindowFocusRequest = {
-      surfaceId: this.subWindowSurfaceId,
+      surfaceId: session.surfaceId,
       show: cmd.show !== undefined ? cmd.show : 0,
       caret: cmd.caret !== undefined ? cmd.caret : -1,
       text: cmd.text !== undefined ? cmd.text : '',
       seq: this.subWindowFocusSeq,
     };
     AppStorage.setOrCreate(SUB_WINDOW_FOCUS_REQUEST_KEY, JSON.stringify(request));
-    this.logInfo(`[maui] subwindow text focus forwarded: show=${request.show} caret=${request.caret}`);
+    this.logInfo(`[maui] subwindow text focus forwarded: surface=${session.surfaceId} show=${request.show} caret=${request.caret}`);
   }
 
   // Clamps a managed request into the window-manager's documented bounds; an absent or
@@ -2493,40 +2529,40 @@ struct Index {
     } else if (op === SUB_CMD_RESIZE) {
       this.resizeSubWindow(cmd);
     } else if (op === SUB_CMD_SHOW) {
-      this.showSubWindow();
+      this.showSubWindow(cmd);
     } else if (op === SUB_CMD_HIDE) {
       // The public subwindow API has no hide(): the child hides with its parent and close
       // destroys it. The request is answered honestly instead of pretending the state moved.
       this.reportSubWindowFailure(801, 'hiding an application subwindow is not supported; the child hides with the main window and close destroys it');
     } else if (op === SUB_CMD_CLOSE) {
-      this.closeSubWindow();
+      this.closeSubWindow(cmd);
     } else {
       this.logError(`[maui] subwindow command ${op} is unknown`);
       this.reportSubWindowFailure(-1, `unknown subwindow command ${op}`);
     }
   }
 
-  // Creates the child under the main window and loads the shell page. Single-instance: a
-  // repeated create reports the live window instead of leaking a second child; a repeated
-  // managed create for a different surface id is answered honestly (the M3 shell carries one
-  // managed child).
+  // Creates one child under the main window and loads the shell page. Sessions are keyed by the
+  // managed surface id: a repeated create reports the live session instead of leaking a second
+  // child, and a create beyond SUB_WINDOW_MAX is answered honestly (801). The shell-drawn M path
+  // (no surfaceId) is one session keyed ''.
   private async createSubWindow(cmd: SubWindowCommand): Promise<void> {
-    if (this.subWindow !== null) {
-      const requestedSurfaceId: string = cmd.surfaceId !== undefined ? cmd.surfaceId : '';
-      if (requestedSurfaceId.length > 0 && requestedSurfaceId !== this.subWindowSurfaceId) {
-        this.reportSubWindowFailure(801, 'the shell supports one managed subwindow; close it before opening another');
-        return;
-      }
-      this.reportSubWindowState(SUB_EVENT_CREATED);
+    const surfaceId: string = cmd.surfaceId !== undefined ? cmd.surfaceId : '';
+    const existing: SubWindowSession | undefined = this.subWindows.get(surfaceId);
+    if (existing !== undefined) {
+      this.reportSubWindowState(SUB_EVENT_CREATED, existing);
       return;
     }
-    if (this.subWindowCreating) {
+    if (this.subWindowCreating.has(surfaceId)) {
       return;
     }
-    this.subWindowCreating = true;
+    if (this.subWindows.size + this.subWindowCreating.size >= SUB_WINDOW_MAX) {
+      this.reportSubWindowFailure(801, `the shell supports ${SUB_WINDOW_MAX} application subwindows; close one before opening another`);
+      return;
+    }
+    this.subWindowCreating.set(surfaceId, true);
     try {
       const main = await this.resolveMainWindow();
-      const surfaceId: string = cmd.surfaceId !== undefined ? cmd.surfaceId : '';
       // M3: the managed surface id travels in the child's window name (the runtime does not
       // propagate the loadContentByName LocalStorage reliably): the page reads it from
       // WindowProperties.name, which also keeps the drag guard's identity check. The plain name
@@ -2553,16 +2589,16 @@ struct Index {
         zLevelAboveParentLoosened: false,
       };
       const child = await main.createSubWindowWithOptions(childName, options);
-      this.subWindow = child;
-      this.subWindowId = child.getWindowProperties().id;
-      this.subWindowSurfaceId = surfaceId;
+      const childId: number = child.getWindowProperties().id;
+      const session: SubWindowSession = { window: child, id: childId, surfaceId: surfaceId };
+      this.subWindows.set(surfaceId, session);
       // pages/SubWindow.ets is a named route compiled into this shell abc; the storage passes
       // the window id so the page can refuse to move a window that is not its own, and (M3)
       // the managed surface id so the page mounts the host XComponent under that id. A runtime
       // without the named-route index falls back to the path form (which also needs the page in
       // the packaged main_pages.json).
       const storage: LocalStorage = new LocalStorage();
-      storage.setOrCreate('subWindowId', this.subWindowId);
+      storage.setOrCreate('subWindowId', childId);
       if (surfaceId.length > 0) {
         storage.setOrCreate('subWindowSurfaceId', surfaceId);
       }
@@ -2573,87 +2609,89 @@ struct Index {
         await child.setUIContent('pages/SubWindow');
       }
       child.on('windowEvent', (evt: window.WindowEventType): void => {
-        this.onSubWindowWindowEvent(evt);
+        this.onSubWindowWindowEvent(surfaceId, evt);
       });
       child.on('windowSizeChange', (_size: window.Size): void => {
-        this.reportSubWindowState(SUB_EVENT_RESIZED);
+        this.reportSubWindowState(SUB_EVENT_RESIZED, this.liveSubWindowSession(session));
       });
       child.on('windowRectChange', (_change: window.RectChangeOptions): void => {
-        this.reportSubWindowState(SUB_EVENT_MOVED);
+        this.reportSubWindowState(SUB_EVENT_MOVED, this.liveSubWindowSession(session));
       });
       await child.setWindowBackgroundColor('#FF11161C');
       await child.showWindow();
-      this.reportSubWindowState(SUB_EVENT_CREATED);
-      this.logInfo(`[maui] subwindow created: ${this.subWindowStatePayload(child)}`);
+      this.reportSubWindowState(SUB_EVENT_CREATED, session);
+      this.logInfo(`[maui] subwindow created: ${this.subWindowStatePayload(session)}`);
     } catch (createError) {
       const error = createError as BusinessError;
       this.logError(`[maui] subwindow create failed: code=${error.code} message=${error.message}`);
       // Clean up a child created before a later step failed, so no empty frame is left behind.
-      const leaked = this.subWindow;
-      this.clearSubWindow();
-      if (leaked !== null) {
+      const leaked: SubWindowSession | undefined = this.subWindows.get(surfaceId);
+      this.subWindows.delete(surfaceId);
+      if (leaked !== undefined) {
         try {
-          await leaked.destroyWindow();
+          await leaked.window.destroyWindow();
         } catch (cleanupError) {
           this.logError(`[maui] subwindow cleanup failed: ${(cleanupError as Error).message}`);
         }
       }
       this.reportSubWindowFailure(error.code, error.message);
     } finally {
-      this.subWindowCreating = false;
+      this.subWindowCreating.delete(surfaceId);
     }
   }
 
   private moveSubWindow(cmd: SubWindowCommand): void {
-    const child = this.subWindow;
-    if (child === null) {
-      this.reportSubWindowFailure(-1, 'move: no subwindow exists');
+    const session: SubWindowSession | null = this.findSubWindowSession(cmd.surfaceId !== undefined ? cmd.surfaceId : '');
+    if (session === null) {
+      this.reportSubWindowFailure(-1, 'move: no matching subwindow exists');
       return;
     }
     const x = this.subWindowOffset(cmd.x, 0);
     const y = this.subWindowOffset(cmd.y, 0);
-    child.moveWindowTo(x, y).then((): void => {
-      this.logInfo(`[maui] subwindow move applied: ${x},${y}`);
-      this.reportSubWindowState(SUB_EVENT_MOVED);
+    session.window.moveWindowTo(x, y).then((): void => {
+      this.logInfo(`[maui] subwindow move applied: ${x},${y} surface=${session.surfaceId}`);
+      this.reportSubWindowState(SUB_EVENT_MOVED, this.liveSubWindowSession(session));
     }).catch((moveError: Error): void => {
       this.reportSubWindowFailure(-1, `move failed: ${moveError.message}`);
     });
   }
 
   private resizeSubWindow(cmd: SubWindowCommand): void {
-    const child = this.subWindow;
-    if (child === null) {
-      this.reportSubWindowFailure(-1, 'resize: no subwindow exists');
+    const session: SubWindowSession | null = this.findSubWindowSession(cmd.surfaceId !== undefined ? cmd.surfaceId : '');
+    if (session === null) {
+      this.reportSubWindowFailure(-1, 'resize: no matching subwindow exists');
       return;
     }
     const w = this.subWindowDimension(cmd.w, 640);
     const h = this.subWindowDimension(cmd.h, 420);
-    child.resize(w, h).then((): void => {
-      this.logInfo(`[maui] subwindow resize applied: ${w}x${h}`);
-      this.reportSubWindowState(SUB_EVENT_RESIZED);
+    session.window.resize(w, h).then((): void => {
+      this.logInfo(`[maui] subwindow resize applied: ${w}x${h} surface=${session.surfaceId}`);
+      this.reportSubWindowState(SUB_EVENT_RESIZED, this.liveSubWindowSession(session));
     }).catch((resizeError: Error): void => {
       this.reportSubWindowFailure(-1, `resize failed: ${resizeError.message}`);
     });
   }
 
-  private showSubWindow(): void {
-    const child = this.subWindow;
-    if (child === null) {
-      this.reportSubWindowFailure(-1, 'show: no subwindow exists');
+  private showSubWindow(cmd: SubWindowCommand): void {
+    const session: SubWindowSession | null = this.findSubWindowSession(cmd.surfaceId !== undefined ? cmd.surfaceId : '');
+    if (session === null) {
+      this.reportSubWindowFailure(-1, 'show: no matching subwindow exists');
       return;
     }
-    child.showWindow().then((): void => {
-      this.reportSubWindowState(SUB_EVENT_SHOWN);
+    session.window.showWindow().then((): void => {
+      this.reportSubWindowState(SUB_EVENT_SHOWN, this.liveSubWindowSession(session));
     }).catch((showError: Error): void => {
       this.reportSubWindowFailure(-1, `show failed: ${showError.message}`);
     });
   }
 
-  private closeSubWindow(): void {
-    const child = this.subWindow;
-    if (child === null) {
-      // Idempotent close: a second close is a state no-op, not a failure.
-      this.notifySubWindowEvent(SUB_EVENT_CLOSED, '{}');
+  private closeSubWindow(cmd: SubWindowCommand): void {
+    const requested: string = cmd.surfaceId !== undefined ? cmd.surfaceId : '';
+    const session: SubWindowSession | null = this.findSubWindowSession(requested);
+    if (session === null) {
+      // Idempotent close: a second close (or an unknown session key) is a state no-op, not a
+      // failure; the payload names the requested session so the managed side clears exactly it.
+      this.notifySubWindowEvent(SUB_EVENT_CLOSED, this.subWindowClosedPayload(requested));
       return;
     }
     // A device close logs one platform WARN "AceSubWindow ... Fail to get subwindow in
@@ -2661,76 +2699,93 @@ struct Index {
     // that runs for every destroyed container before the child's own destroy work, and an app
     // subwindow is never a dialogSubwindowMap_ entry. WMSLife shows a single "Destroy specific
     // session end" per close, so this is platform noise, not a shell double close.
-    child.destroyWindow().then((): void => {
+    session.window.destroyWindow().then((): void => {
       // The windowEvent DESTROYED observer normally finishes the state; this is the belt for a
       // runtime that does not deliver it.
-      if (this.subWindow === child) {
-        this.finishSubWindowClosed();
+      if (this.subWindows.get(session.surfaceId) === session) {
+        this.finishSubWindowClosed(session);
       }
     }).catch((closeError: Error): void => {
       this.reportSubWindowFailure(-1, `close failed: ${closeError.message}`);
     });
   }
 
+  // The Closed payload for an idempotent close (no live session): zero rect, the requested
+  // session key when the caller named one.
+  private subWindowClosedPayload(surfaceId: string): string {
+    const payload: SubWindowStatePayload = { id: 0, x: 0, y: 0, w: 0, h: 0 };
+    if (surfaceId.length > 0) {
+      payload.surfaceId = surfaceId;
+    }
+    return JSON.stringify(payload);
+  }
+
   // The child's own window events: shown/hidden are mirrored, active/inactive feed the
-  // foreground chain (noteSubWindowWindowActive/Inactive), destroyed finishes the state.
-  private onSubWindowWindowEvent(evt: window.WindowEventType): void {
+  // foreground chain (noteSubWindowWindowActive/Inactive), destroyed finishes the state. Every
+  // event is scoped to the session that owns the window, so one child's event never moves
+  // another session's state.
+  private onSubWindowWindowEvent(surfaceId: string, evt: window.WindowEventType): void {
+    const session: SubWindowSession | undefined = this.subWindows.get(surfaceId);
+    if (session === undefined) {
+      return;
+    }
     if (evt === window.WindowEventType.WINDOW_SHOWN) {
       this.noteSubWindowWindowActive();
-      this.reportSubWindowState(SUB_EVENT_SHOWN);
+      this.reportSubWindowState(SUB_EVENT_SHOWN, session);
     } else if (evt === window.WindowEventType.WINDOW_HIDDEN) {
       this.cancelSubWindowForegroundLossCheck();
-      this.setSubWindowSuspended(true, 'subwindow hidden');
-      this.reportSubWindowState(SUB_EVENT_HIDDEN);
+      // MULTIWINDOW-L3 M1: a child hiding does not suspend the app-wide state while another
+      // session remains (the single-child path keeps the historical trigger).
+      if (this.subWindows.size <= 1) {
+        this.setSubWindowSuspended(true, 'subwindow hidden');
+      }
+      this.reportSubWindowState(SUB_EVENT_HIDDEN, session);
     } else if (evt === window.WindowEventType.WINDOW_ACTIVE) {
       this.noteSubWindowWindowActive();
       // M4: the focused-window identity travels to the managed side, which raises the child
       // window's IWindow.Activated and clears a pending Deactivated.
-      this.reportSubWindowState(SUB_EVENT_ACTIVE);
+      this.reportSubWindowState(SUB_EVENT_ACTIVE, session);
     } else if (evt === window.WindowEventType.WINDOW_INACTIVE) {
       this.noteSubWindowWindowInactive();
-      this.reportSubWindowState(SUB_EVENT_INACTIVE);
+      this.reportSubWindowState(SUB_EVENT_INACTIVE, session);
     } else if (evt === window.WindowEventType.WINDOW_DESTROYED) {
-      this.finishSubWindowClosed();
+      this.finishSubWindowClosed(session);
     }
   }
 
-  private finishSubWindowClosed(): void {
-    if (this.subWindow === null) {
+  private finishSubWindowClosed(session: SubWindowSession): void {
+    if (this.subWindows.get(session.surfaceId) !== session) {
       return;
     }
-    const id = this.subWindowId;
-    this.clearSubWindow();
-    const payload: SubWindowStatePayload = { id: id, x: 0, y: 0, w: 0, h: 0 };
-    this.notifySubWindowEvent(SUB_EVENT_CLOSED, JSON.stringify(payload));
-    this.logInfo('[maui] subwindow closed');
+    this.subWindows.delete(session.surfaceId);
+    // The close report carries the session key: with two managed children the managed side
+    // must destroy exactly the window that owned this shell session (SEC5B-L3 belt).
+    this.notifySubWindowEvent(SUB_EVENT_CLOSED, this.subWindowStatePayload(session));
+    this.logInfo(`[maui] subwindow closed: surface=${session.surfaceId} remaining=${this.subWindows.size}`);
+    if (this.subWindows.size === 0) {
+      this.cancelSubWindowForegroundLossCheck();
+      // M4: a pending focus request must not fire in a later child that reuses the surface id.
+      AppStorage.setOrCreate(SUB_WINDOW_FOCUS_REQUEST_KEY, '');
+    }
   }
 
-  private clearSubWindow(): void {
-    this.cancelSubWindowForegroundLossCheck();
-    this.subWindow = null;
-    this.subWindowId = -1;
-    this.subWindowSurfaceId = '';
-    this.subWindowSuspended = false;
-    // M4: a pending focus request must not fire in a later child that reuses the surface id.
-    AppStorage.setOrCreate(SUB_WINDOW_FOCUS_REQUEST_KEY, '');
-  }
-
-  // Best-effort teardown when the page disappears; a failure only leaves the child for the
+  // Best-effort teardown when the page disappears; a failure only leaves a child for the
   // system to reap with the ability.
   private destroySubWindowForPage(): void {
-    const child = this.subWindow;
-    if (child === null) {
+    if (this.subWindows.size === 0) {
       return;
     }
-    this.clearSubWindow();
-    try {
-      child.destroyWindow().catch((destroyError: Error): void => {
-        this.logError(`[maui] subwindow page teardown failed: ${destroyError.message}`);
-      });
-    } catch (destroyError) {
-      this.logError(`[maui] subwindow page teardown failed: ${(destroyError as Error).message}`);
-    }
+    const sessions: Map<string, SubWindowSession> = this.subWindows;
+    this.subWindows = new Map();
+    sessions.forEach((session: SubWindowSession, _surfaceId: string): void => {
+      try {
+        session.window.destroyWindow().catch((destroyError: Error): void => {
+          this.logError(`[maui] subwindow page teardown failed: ${destroyError.message}`);
+        });
+      } catch (destroyError) {
+        this.logError(`[maui] subwindow page teardown failed: ${(destroyError as Error).message}`);
+      }
+    });
   }
 
   // Connectivity (Essentials): the NetworkKit connection observer pushes host.notifyNetworkAccess
