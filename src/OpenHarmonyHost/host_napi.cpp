@@ -3219,13 +3219,17 @@ napi_value RegisterWindowRectSink(napi_env env, napi_callback_info info) {
 // ---------------------------------------------------------------------------
 constexpr int kSubWindowProbeOp = 99;
 
-// Called from managed code (P/Invoke): op 0 create, 1 move, 2 resize, 3 show, 4 hide, 5 close.
+// Called from managed code (P/Invoke): op 0 create, 1 move, 2 resize, 3 show, 4 hide, 5 close,
+// 6 per-window text/keyboard focus (MULTIWINDOW-L M4) and 7 identity ack (MULTIWINDOW-L3 M2).
+// The payload is opaque JSON and the op set is a shell contract, so only the probe (99) and
+// negative/out-of-range values are answered here.
+constexpr int kSubWindowLastOp = 7;
 extern "C" int ohos_host_sub_window_command(int op, const char* utf8) {
     return HostCxxBoundary("sub window command", [&] {
         if (op == kSubWindowProbeOp) {
             return g_subwindow_sink.tsfn != nullptr ? 1 : -1;
         }
-        if (op < 0 || op > 5) {
+        if (op < 0 || op > kSubWindowLastOp) {
             OH_LOG_WARN(LOG_APP, "[openharmony-host] sub_window_command: invalid op %{public}d", op);
             return -1;
         }
