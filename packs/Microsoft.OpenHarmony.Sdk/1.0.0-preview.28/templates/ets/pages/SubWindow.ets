@@ -734,6 +734,9 @@ struct SubWindow {
   // is registered and the managed pool never receives the capacity advertisement (its queued
   // commands are dropped - exactly the pre-L2 behavior). A capacity that arrives before the
   // managed pool exists is harmless: the pool clamps to the advertised count on its own.
+  // MULTIWINDOW-L3 M4: every sink is registered with this page's surface id, so the native
+  // module routes each child window's commands/eval/results to its own page (two concurrent
+  // subwindows never consume each other's traffic). The page unregisters them on disappear.
   private registerChildWebHost(): void {
     if (this.surfaceId.length === 0) {
       // The drawn (non-managed) subwindow has no managed tree, so no web control can exist.
@@ -747,19 +750,19 @@ struct SubWindow {
       host.registerChildWebSink((op: string, arg: string): void => {
         this.logChildWebCommand(op, arg);
         this.onChildWebCommand(op, arg);
-      });
+      }, this.surfaceId);
       if (typeof host.registerChildWebEvalSink === 'function') {
         host.registerChildWebEvalSink((script: string, requestId: number): void => {
           this.onChildWebEval(script, requestId);
-        });
+        }, this.surfaceId);
       }
       // MULTIWINDOW-L3: the hybrid __hwvInvokeDotNet results for this page. The native module
-      // routes a result here only when its request id carries the child-window tag, so the main
-      // page's sink is never consumed.
+      // routes a result here only when its request id carries the child-window tag AND this
+      // window's index, so neither the main page's sink nor the other subwindow's is consumed.
       if (typeof host.registerChildHybridInvokeResultSink === 'function') {
         host.registerChildHybridInvokeResultSink((requestId: number, payload: string): void => {
           this.completeChildHybridInvoke(requestId, payload);
-        });
+        }, this.surfaceId);
       }
       this.subWebHostRegistered = true;
       this.advertiseChildWebCapacity();
@@ -772,6 +775,37 @@ struct SubWindow {
     } catch (registerError) {
       hilog.error(DOMAIN, TAG, 'child web registration failed: %{public}s', (registerError as Error).message);
     }
+  }
+
+  // MULTIWINDOW-L3 M4: drops this page's per-window sinks when the window's page goes away, so
+  // a later command for the closed window is dropped (fail closed) instead of being delivered
+  // to a dead page, and its callback reference cannot outlive the window (churn stability).
+  private unregisterChildWebHost(): void {
+    if (!this.subWebHostRegistered || this.surfaceId.length === 0) {
+      return;
+    }
+    this.subWebHostRegistered = false;
+    try {
+      if (typeof host !== 'undefined' && typeof host.unregisterChildWebSink === 'function') {
+        host.unregisterChildWebSink(this.surfaceId);
+      }
+    } catch (unregisterError) {
+      hilog.warn(DOMAIN, TAG, 'child web unregister failed: %{public}s', (unregisterError as Error).message);
+    }
+  }
+
+  // MULTIWINDOW-L3 M4: the 0-based index of this page's child window ("sub-1" -> 0, "sub-2" -> 1),
+  // mirrored by the hybrid invoke window bit (bit 29) and the native registration map.
+  private childWindowIndex(): number {
+    const separator: number = this.surfaceId.lastIndexOf('-');
+    if (separator < 0 || separator + 1 >= this.surfaceId.length) {
+      return 0;
+    }
+    const parsed: number = Number.parseInt(this.surfaceId.substring(separator + 1), 10);
+    if (Number.isNaN(parsed) || parsed <= 1) {
+      return 0;
+    }
+    return parsed - 1;
   }
 
   // "w:<surfaceId>|capacity|<n>": marks the managed child pool ready and flushes its queue.
@@ -1754,10 +1788,14 @@ struct SubWindow {
     response.setResponseMimeType('application/json');
     response.setResponseEncoding('utf-8');
     response.setResponseIsReady(false);
-    // Child-tagged request id: bit 30 | ((slot + 1) << 24) | (sequence & 0xFFFFFF). The bit is
-    // the OpenHarmonyOverlays.ChildInvokeFlag contract; the slot is this child pool's slot.
+    // Child-tagged request id: bit 30 | window bit 29 for the second subwindow | ((slot + 1) << 24)
+    // | (sequence & 0xFFFFFF). Bit 30 is the OpenHarmonyOverlays.ChildInvokeFlag contract; bit 29
+    // (M4) marks the second child window so the managed dispatch picks the right window's handler
+    // even when both windows own the same child slot, and the native module routes the result back
+    // to this page's own sink.
     this.subHybridInvokeSeq = (this.subHybridInvokeSeq + 1) & 0xFFFFFF;
-    const requestId: number = 0x40000000 | ((slot + 1) << 24) | this.subHybridInvokeSeq;
+    const windowBit: number = this.childWindowIndex() > 0 ? 0x20000000 : 0;
+    const requestId: number = 0x40000000 | windowBit | ((slot + 1) << 24) | this.subHybridInvokeSeq;
     const timer: number = setTimeout(() => {
       this.completeChildHybridInvoke(requestId,
         this.childHybridInvokeErrorPayload('the .NET invocation timed out'));
@@ -2025,6 +2063,9 @@ struct SubWindow {
   }
 
   aboutToDisappear(): void {
+    // MULTIWINDOW-L3 M4: this page's child web sinks die with the page (the window may be
+    // closed while another stays open; the native already drops commands for a closed window).
+    this.unregisterChildWebHost();
     // The child dies with the page; report the state so the managed side does not keep an open
     // subwindow (the main page's windowEvent observer usually reports first).
     this.notifyHost(SUB_EVENT_CLOSED, this.readyPayload());

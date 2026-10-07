@@ -6,8 +6,9 @@
 // class is the managed half:
 //
 //   * transport: the child host shares the single web command/eval wire. Commands are sent as
-//     ohos_host_web_command with the op prefixed by CommandMarker ("child:"); the native module
-//     strips the marker and posts to the child sink, so the primary sink is never touched. The
+//     ohos_host_web_command with the op prefixed by CommandMarker ("child:") and the window's
+//     surface id ("child:<window>|<op>"); the native module strips the marker and routes the
+//     payload to the sink registered by that window's page (an unknown window is dropped). The
 //     per-slot tag inside the argument keeps the exact same "s<slot>" codec the primary pool
 //     uses (OpenHarmonyOverlays.Tag).
 //   * slot pool: MaxOverlays slots (the shell's SUB_WEB_SLOT_MAX), first-free claims, no LRU
@@ -44,6 +45,36 @@ public static partial class OpenHarmonyChildWeb
     /// managed side only sends after the child page advertised its capacity.
     /// </summary>
     public const string CommandMarker = "child:";
+
+    /// <summary>
+    /// MULTIWINDOW-L3 M4: composes the window-scoped native payload ("child:&lt;window&gt;|&lt;op&gt;").
+    /// Since N=2 the module routes every child command/eval/result by this tag: a command for one
+    /// subwindow can never reach another subwindow's page (an unknown window is dropped). The
+    /// format is single-sourced here so the host parser and the transport cannot drift.
+    /// </summary>
+    public static string WindowTagged(string windowId, string payload)
+        => CommandMarker + windowId + "|" + payload;
+
+    /// <summary>
+    /// True when <paramref name="windowId"/> can be a child wire tag: non-empty, at most 64
+    /// characters and free of the separators the wire itself uses. The native side applies the
+    /// same rule at registration and routing (fail closed).
+    /// </summary>
+    public static bool IsValidWindowTag(string? windowId)
+    {
+        if (string.IsNullOrEmpty(windowId) || windowId!.Length > 64)
+        {
+            return false;
+        }
+        foreach (char c in windowId)
+        {
+            if (c == '|' || c == '\n' || c == '\r')
+            {
+                return false;
+            }
+        }
+        return true;
+    }
 
     /// <summary>
     /// Prefix the child shell page puts on its page events ("w:&lt;window&gt;|s&lt;slot&gt;|..."),
@@ -118,6 +149,27 @@ public static partial class OpenHarmonyChildWeb
     public static bool IsApplicable(string? windowId)
         => !string.IsNullOrEmpty(windowId) &&
            !string.Equals(windowId, PrimaryWindowId, StringComparison.Ordinal);
+
+    /// <summary>
+    /// MULTIWINDOW-L3 M4: the zero-based child window index the surface id names ("sub-1" -&gt; 0,
+    /// "sub-2" -&gt; 1). Mirrors the shell's childWindowIndex and the native registration map; an
+    /// id of any other shape clamps to 0 (the first child), like the shell's own clamp.
+    /// </summary>
+    public static int WindowIndexOf(string? windowId)
+    {
+        if (string.IsNullOrEmpty(windowId))
+        {
+            return 0;
+        }
+        int separator = windowId!.LastIndexOf('-');
+        if (separator < 0 || separator + 1 >= windowId.Length)
+        {
+            return 0;
+        }
+        return int.TryParse(windowId.Substring(separator + 1), out int parsed) && parsed > 1
+            ? parsed - 1
+            : 0;
+    }
 
     /// <summary>True once the shell page of this window registered its child web host and
     /// advertised a usable capacity.</summary>
@@ -283,7 +335,7 @@ public static partial class OpenHarmonyChildWeb
     /// </summary>
     public static void Command(string windowId, string op, string? arg = null)
     {
-        if (!IsApplicable(windowId) || string.IsNullOrEmpty(op))
+        if (!IsApplicable(windowId) || !IsValidWindowTag(windowId) || string.IsNullOrEmpty(op))
         {
             return;
         }
@@ -303,14 +355,15 @@ public static partial class OpenHarmonyChildWeb
     /// </summary>
     public static bool Eval(string windowId, int slot, string script, int requestId)
     {
-        if (!IsApplicable(windowId) || string.IsNullOrEmpty(script) || !IsReady(windowId) || s_nativeUnavailable)
+        if (!IsApplicable(windowId) || !IsValidWindowTag(windowId) || string.IsNullOrEmpty(script) ||
+            !IsReady(windowId) || s_nativeUnavailable)
         {
             return false;
         }
         string tagged = OpenHarmonyOverlays.TagScript(slot, script);
         try
         {
-            return WebEvalNative(CommandMarker + tagged, requestId) == 0;
+            return WebEvalNative(WindowTagged(windowId, tagged), requestId) == 0;
         }
         catch (Exception ex) when (ex is DllNotFoundException or EntryPointNotFoundException)
         {
@@ -409,7 +462,7 @@ public static partial class OpenHarmonyChildWeb
         }
         foreach (PendingCommand command in flush)
         {
-            NativeSend(command.Op, command.Arg);
+            NativeSend(windowId, command.Op, command.Arg);
         }
     }
 
@@ -514,11 +567,11 @@ public static partial class OpenHarmonyChildWeb
         }
         if (!queued)
         {
-            NativeSend(op, arg);
+            NativeSend(windowId, op, arg);
         }
     }
 
-    private static void NativeSend(string op, string? arg)
+    private static void NativeSend(string windowId, string op, string? arg)
     {
         if (s_nativeUnavailable)
         {
@@ -526,7 +579,7 @@ public static partial class OpenHarmonyChildWeb
         }
         try
         {
-            WebCommandNative(CommandMarker + op, arg ?? string.Empty);
+            WebCommandNative(WindowTagged(windowId, op), arg ?? string.Empty);
         }
         catch (Exception ex) when (ex is DllNotFoundException or EntryPointNotFoundException)
         {
