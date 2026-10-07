@@ -21,6 +21,7 @@
 import { common } from '@kit.AbilityKit';
 import { window } from '@kit.ArkUI';
 import { NodeContent } from '@kit.ArkUI';
+import { fileIo as fs } from '@kit.CoreFileKit';
 import { webview as web_webview } from '@kit.ArkWeb';
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import host from 'libopenharmonyhost.so';
@@ -53,12 +54,22 @@ const SUB_WINDOW_FOCUS_REQUEST_KEY: string = 'ohos_dotnet_subwindow_focus_reques
 // the native child sink (host.registerChildWebSink) and use the same "s<slot>" wire the main
 // page uses. Page events travel back through host.notifyWebEvent tagged with this window
 // ("w:<surfaceId>|s<slot>|<state>"; capacity is "w:<surfaceId>|capacity|<n>") so the primary
-// pool and this pool can never consume each other's events. The hybrid/Blazor asset bridges
-// stay primary-window-only in this wave: their registration explicitly disables the slot
-// instead of leaving a half-served document behind (see disableChildWebSlot).
+// pool and this pool can never consume each other's events.
+// MULTIWINDOW-L3: the hybrid/Blazor asset bridge runs here too. The managed registration
+// (op "hybrid"/"blazor", already routed through the child command channel by the slice) is
+// accepted per slot, the app origins are intercepted and served from the same payload
+// directory, and the dotnetHost proxy + page bridge are installed per child controller, so a
+// child-window HybridWebView or BlazorWebView gets its documents and JS -> .NET messages. The
+// hybrid __hwvInvokeDotNet response channel completes through the child result sink
+// (host.registerChildHybridInvokeResultSink) with the child-tagged request id.
 const SUB_WEB_SLOT_MAX: number = 2;
 const SUB_WEB_SLOT_PENDING_MAX: number = 32;
 const SUB_WEB_STATE_PREFIX: string = 'w:';
+
+// The MAUI hybrid origin (mirrors OpenHarmonyHybridWebViewHandler.AppOrigin) and the default
+// Blazor origin. Both always carry a trailing '/'.
+const SUB_HYBRID_ORIGIN: string = 'https://0.0.0.1/';
+const SUB_BLAZOR_ORIGIN_DEFAULT: string = 'https://0.0.0.0/';
 
 // One deferred child-web command: replayed from onControllerAttached when the ArkWeb of its
 // slot was still being created (mirrors the main page's WebPendingOp, without the eval case:
@@ -68,9 +79,46 @@ interface SubWebPendingOp {
   arg: string;
 }
 
-// The hybrid/Blazor registration payload's slot field (the child host only reads the slot).
-interface SubWebAssetsConfig {
+// The hybrid registration payload (op "hybrid"): the managed handler names the payload
+// directory (base), the hybrid root and default file, the per-registration document id it
+// stamps into served documents, and the child slot that owns the registration. Mirrors
+// HybridAssetsConfig in pages/Index.ets; the child host stores one per slot.
+interface SubHybridAssetsConfig {
+  base: string;
+  root: string;
+  defaultFile: string;
+  id: string;
   slot?: number;
+}
+
+// The Blazor registration payload (op "blazor"): same layout plus the app origin and the
+// "wasm" mode marker (a WASM site ships its own bootstrap and is not loaded by the shell).
+interface SubBlazorAssetsConfig {
+  origin: string;
+  base: string;
+  root: string;
+  defaultFile: string;
+  id: string;
+  mode?: string;
+  slot?: number;
+}
+
+// The stock hybridwebview.js __hwvInvokeDotNet body.
+interface SubHybridInvokeRequest {
+  MethodName?: string;
+  ParamValues?: string[];
+}
+
+// The error payload completed into a delayed __hwvInvokeDotNet response.
+interface SubHybridInvokeErrorResult {
+  IsError: boolean;
+  ErrorMessage: string;
+}
+
+// One held-open __hwvInvokeDotNet response, completed by the child result sink or the timeout.
+interface SubHybridPendingInvoke {
+  response: WebResourceResponse;
+  timer: number;
 }
 
 // One typed-text report for the managed side.
@@ -145,13 +193,34 @@ struct SubWindow {
   private subWebZOrderSeq: number = 0;
   private subWebCreated: boolean[] = [false, false];
   private subWebAttached: boolean[] = [false, false];
-  // A slot whose hybrid/blazor registration was refused (the asset bridge is primary-only in
-  // this wave): no component is created and its commands are dropped with one bounded log.
-  private subWebUnsupported: boolean[] = [false, false];
   private subWebControllers: (web_webview.WebviewController | null)[] = [null, null];
   private subWebPending: SubWebPendingOp[][] = [[], []];
   private subWebHostRegistered: boolean = false;
   private subWebCmdFrameLogged: boolean[] = [false, false];
+  // MULTIWINDOW-L3: per-slot hybrid registration (base/root/defaultFile/document id; the
+  // managed handler registers one per child slot through the child command channel).
+  private subHybridBase: string[] = ['', ''];
+  private subHybridRoot: string[] = ['', ''];
+  private subHybridDefaultFile: string[] = ['', ''];
+  private subHybridDocId: string[] = ['', ''];
+  private subHybridRegistered: boolean[] = [false, false];
+  private subHybridServeLogs: number[] = [0, 0];
+  // Blazor registration (one per child page, mirroring the main page's single registration).
+  private subBlazorBase: string = '';
+  private subBlazorRoot: string = '';
+  private subBlazorDefaultFile: string = '';
+  private subBlazorDocId: string = '';
+  private subBlazorRegistered: boolean = false;
+  private subBlazorOrigin: string = SUB_BLAZOR_ORIGIN_DEFAULT;
+  private subBlazorWasmMode: boolean = false;
+  private subBlazorBootstrapped: boolean[] = [false, false];
+  private subBlazorServeLogs: number = 0;
+  // The hybrid __hwvInvokeDotNet responses held open until the managed handler answers through
+  // host.registerChildHybridInvokeResultSink (or the local timeout fires).
+  private subHybridInvokeSeq: number = 0;
+  private subHybridInvokes: Map<number, SubHybridPendingInvoke> = new Map();
+  private subHybridEndpointLogs: number = 0;
+  private subHybridInvokeTimeoutMs: number = 15000;
   private inputController: TextInputController = new TextInputController();
   // MULTIWINDOW-L2 a: the child's own accessibility content slot. The host creates a CUSTOM
   // node inside it and registers a per-instance ArkUI accessibility provider
@@ -461,6 +530,14 @@ struct SubWindow {
           this.onChildWebEval(script, requestId);
         });
       }
+      // MULTIWINDOW-L3: the hybrid __hwvInvokeDotNet results for this page. The native module
+      // routes a result here only when its request id carries the child-window tag, so the main
+      // page's sink is never consumed.
+      if (typeof host.registerChildHybridInvokeResultSink === 'function') {
+        host.registerChildHybridInvokeResultSink((requestId: number, payload: string): void => {
+          this.completeChildHybridInvoke(requestId, payload);
+        });
+      }
       this.subWebHostRegistered = true;
       this.advertiseChildWebCapacity();
       // The managed pool subscribes after the app host is up; a lost advertisement only delays
@@ -532,9 +609,9 @@ struct SubWindow {
   private onChildWebEval(script: string, requestId: number): void {
     try {
       const slot: number = this.childWebSlotOf(script);
-      if (slot < 0 || !this.childWebSlotReady(slot) || this.subWebUnsupported[slot]) {
-        // No page to run on (an engine still being created or a refused bridge slot): answer
-        // immediately so the managed caller never waits out its eval timeout.
+      if (slot < 0 || !this.childWebSlotReady(slot)) {
+        // No page to run on (an engine still being created): answer immediately so the managed
+        // caller never waits out its eval timeout.
         this.completeChildWebEval(requestId, '', 1);
         return;
       }
@@ -597,11 +674,15 @@ struct SubWindow {
       this.completeChildWebEval(requestId, cookieValue, cookieFailed);
       return;
     }
-    if (op === 'hybrid' || op === 'blazor') {
-      // HybridWebView/BlazorWebView asset bridges are primary-window-only in this wave: the
-      // registration refuses its slot instead of creating an engine that could never be served
-      // (no half-loaded document, no primary-window interaction).
-      this.disableChildWebSlot(this.childWebRegistrationSlot(arg), op);
+    if (op === 'hybrid') {
+      // MULTIWINDOW-L3: accept the HybridWebView asset registration for this child slot and
+      // serve the MAUI hybrid origin from the registered payload directory.
+      this.registerChildHybridAssets(arg);
+      return;
+    }
+    if (op === 'blazor') {
+      // MULTIWINDOW-L3: accept the BlazorWebView asset registration (hybrid and wasm modes).
+      this.registerChildBlazorAssets(arg);
       return;
     }
     if (op === 'hide' && !this.childWebSlotTagged(arg)) {
@@ -613,9 +694,6 @@ struct SubWindow {
     const slot: number = this.childWebSlotOf(arg);
     if (slot < 0 || slot >= SUB_WEB_SLOT_MAX) {
       hilog.warn(DOMAIN, TAG, 'child web command rejected: %{public}s', op);
-      return;
-    }
-    if (this.subWebUnsupported[slot]) {
       return;
     }
     if (!this.childWebSlotReady(slot)) {
@@ -677,7 +755,7 @@ struct SubWindow {
     if (slot < 0 || slot >= SUB_WEB_SLOT_MAX) {
       return;
     }
-    if (this.subWebCreated[slot] || this.subWebUnsupported[slot]) {
+    if (this.subWebCreated[slot]) {
       return;
     }
     this.subWebCreated[slot] = true;
@@ -692,9 +770,6 @@ struct SubWindow {
     if (slot < 0 || slot >= SUB_WEB_SLOT_MAX) {
       return;
     }
-    // A release always ends a refused registration too: the next claim of the slot starts
-    // clean (the refusal is scoped to the claim, not to the slot number).
-    this.subWebUnsupported[slot] = false;
     if (!this.subWebCreated[slot]) {
       return;
     }
@@ -747,20 +822,768 @@ struct SubWindow {
     this.subWebFrameY[slot] = 0;
     this.subWebFrameW[slot] = 0;
     this.subWebFrameH[slot] = 0;
+    // MULTIWINDOW-L3: the destroyed slot's asset bridge goes with its ArkWeb; the next claim
+    // starts with no registration and re-registers from the managed handler.
+    this.subHybridBase[slot] = '';
+    this.subHybridRoot[slot] = '';
+    this.subHybridDefaultFile[slot] = '';
+    this.subHybridDocId[slot] = '';
+    this.subHybridRegistered[slot] = false;
+    this.subHybridServeLogs[slot] = 0;
+    this.subBlazorBootstrapped[slot] = false;
   }
 
-  // A slot whose hybrid/blazor registration cannot be served in this wave. Any component that
-  // was already created (a frame before the registration) is torn down, and every later
-  // command for the slot is dropped until its release.
-  private disableChildWebSlot(slot: number, op: string): void {
+  // ---------------------------------------------------------------------------------------------
+  // MULTIWINDOW-L3: the child hybrid/Blazor asset bridge. The managed slice already routes the
+  // "hybrid"/"blazor" registrations and every web command through the child command channel
+  // (OpenHarmonyHybridWebViewHandler/OpenHarmonyBlazorWebViewHandler -> OpenHarmonyChildWeb),
+  // so this page only has to serve the registrations: intercept the app origins, read the
+  // payload files, install the dotnetHost proxy + window.external shim + Blazor bootstrap, and
+  // complete the hybrid __hwvInvokeDotNet responses through the child-tagged result sink.
+  // ---------------------------------------------------------------------------------------------
+
+  // Registration-time layout guard (mirrors the main page's isSafeLayoutPart): every root /
+  // defaultFile segment must be an ordinary relative path, so the <base>/<root>/<path> join can
+  // never leave the payload directory.
+  private childIsSafeLayoutPart(part: string): boolean {
+    if (part.length === 0 || part.indexOf('\\') >= 0 || part.startsWith('/')) {
+      return false;
+    }
+    const segments: string[] = part.split('/');
+    for (const segment of segments) {
+      if (segment.length === 0 || segment === '.' || segment === '..') {
+        return false;
+      }
+    }
+    return true;
+  }
+
+  // Accepts the HybridWebView assets registration for its child slot. Mirrors the main page's
+  // registerHybridAssets: the layout is validated and stored, then the hybrid origin is loaded
+  // on the slot's controller (deferred until the ArkWeb attaches, like every child command).
+  private registerChildHybridAssets(arg: string): void {
+    const slot: number = this.childWebRegistrationSlot(arg);
+    try {
+      const config = JSON.parse(arg) as SubHybridAssetsConfig;
+      this.subHybridBase[slot] = config.base.length > 0 ? config.base : '';
+      this.subHybridRoot[slot] = config.root.length > 0 ? config.root : '';
+      this.subHybridDefaultFile[slot] = config.defaultFile.length > 0 ? config.defaultFile : '';
+      this.subHybridDocId[slot] = config.id !== undefined && config.id.length > 0 ? config.id : '';
+      const safeLayout: boolean = this.childIsSafeLayoutPart(this.subHybridRoot[slot])
+        && this.childIsSafeLayoutPart(this.subHybridDefaultFile[slot]);
+      if (!safeLayout) {
+        hilog.error(DOMAIN, TAG, 'child hybrid assets rejected: root/defaultFile are not safe relative paths');
+      }
+      this.subHybridRegistered[slot] = safeLayout && this.subHybridBase[slot].length > 0
+        && this.subHybridRoot[slot].length > 0 && this.subHybridDefaultFile[slot].length > 0;
+      if (this.subHybridRegistered[slot]) {
+        this.subHybridServeLogs[slot] = 0;
+        hilog.info(DOMAIN, TAG, 'child hybrid assets: origin=%{public}s root=%{public}s slot=%{public}d',
+          SUB_HYBRID_ORIGIN, this.subHybridRoot[slot], slot);
+        this.loadChildWebOrigin(slot, SUB_HYBRID_ORIGIN);
+      }
+    } catch (hybridError) {
+      hilog.error(DOMAIN, TAG, 'child hybrid assets registration failed: %{public}s', (hybridError as Error).message);
+      this.subHybridRegistered[slot] = false;
+    }
+  }
+
+  // Accepts the BlazorWebView assets registration (both the Blazor Hybrid mode, which loads the
+  // origin, and the "wasm" mode, where the WebView's own Source drives the load).
+  private registerChildBlazorAssets(arg: string): void {
+    try {
+      const config = JSON.parse(arg) as SubBlazorAssetsConfig;
+      this.subBlazorBase = config.base.length > 0 ? config.base : '';
+      this.subBlazorRoot = config.root.length > 0 ? config.root : '';
+      this.subBlazorDefaultFile = config.defaultFile.length > 0 ? config.defaultFile : '';
+      this.subBlazorDocId = config.id !== undefined && config.id.length > 0 ? config.id : '';
+      this.subBlazorOrigin = config.origin !== undefined && config.origin.length > 0
+        ? config.origin
+        : SUB_BLAZOR_ORIGIN_DEFAULT;
+      if (!this.subBlazorOrigin.endsWith('/')) {
+        this.subBlazorOrigin = `${this.subBlazorOrigin}/`;
+      }
+      this.subBlazorWasmMode = config.mode === 'wasm';
+      this.subBlazorServeLogs = 0;
+      const safeLayout: boolean = this.childIsSafeLayoutPart(this.subBlazorRoot)
+        && this.childIsSafeLayoutPart(this.subBlazorDefaultFile);
+      if (!safeLayout) {
+        hilog.error(DOMAIN, TAG, 'child blazor assets rejected: root/defaultFile are not safe relative paths');
+      }
+      this.subBlazorRegistered = safeLayout && this.subBlazorBase.length > 0
+        && this.subBlazorRoot.length > 0 && this.subBlazorDefaultFile.length > 0;
+      if (this.subBlazorRegistered) {
+        hilog.info(DOMAIN, TAG, 'child blazor assets: origin=%{public}s root=%{public}s mode=%{public}s',
+          this.subBlazorOrigin, this.subBlazorRoot, this.subBlazorWasmMode ? 'wasm' : 'hybrid');
+        if (!this.subBlazorWasmMode) {
+          this.loadChildWebOrigin(this.childWebRegistrationSlot(arg), this.subBlazorOrigin);
+        }
+      }
+    } catch (blazorError) {
+      hilog.error(DOMAIN, TAG, 'child blazor assets registration failed: %{public}s', (blazorError as Error).message);
+      this.subBlazorRegistered = false;
+    }
+  }
+
+  // Shows the slot and loads the origin: directly when its ArkWeb is attached, otherwise as a
+  // deferred "load" command replayed from onControllerAttached.
+  private loadChildWebOrigin(slot: number, url: string): void {
     if (slot < 0 || slot >= SUB_WEB_SLOT_MAX) {
       return;
     }
-    if (this.subWebCreated[slot]) {
-      this.destroyChildWebSlot(slot);
+    this.subWebVisible[slot] = true;
+    this.noteChildWebActivation(slot);
+    if (this.childWebSlotReady(slot)) {
+      this.childWebController(slot).loadUrl(url);
+      return;
     }
-    this.subWebUnsupported[slot] = true;
-    hilog.info(DOMAIN, TAG, 'child web %{public}s refused: the asset bridge is primary-window-only in this wave (slot %{public}d)', op, slot);
+    this.deferChildWebOp(slot, 'load', `s${slot}\n${url}`);
+  }
+
+  // Resolves an app-origin URL to an absolute file below the payload directory (mirrors the
+  // main page's hybridFilePath). Unknown/malformed paths (including traversal attempts) return
+  // '' and are answered with 404; the hybrid bootstrap script is served next to the payload.
+  private childHybridFilePath(url: string, slot: number): string {
+    let path: string = this.childUrlPath(url);
+    if (path === '$bad') {
+      return '';
+    }
+    if (path.length === 0) {
+      path = this.subHybridDefaultFile[slot];
+    }
+    if (path === '_framework/hybridwebview.js') {
+      return `${this.subHybridBase[slot]}/${path}`;
+    }
+    return `${this.subHybridBase[slot]}/${this.subHybridRoot[slot]}/${path}`;
+  }
+
+  // Resolves a Blazor app-origin URL to <base>/<root>/<path> (every file, blazor.webview.js
+  // included, lives below the content root).
+  private childBlazorFilePath(url: string): string {
+    let path: string = this.childUrlPath(url);
+    if (path === '$bad') {
+      return '';
+    }
+    if (path.length === 0) {
+      path = this.subBlazorDefaultFile;
+    }
+    return `${this.subBlazorBase}/${this.subBlazorRoot}/${path}`;
+  }
+
+  // The validated path part of an app-origin URL, or the '' marker when it is malformed. The
+  // '$bad' sentinel distinguishes rejection from the legitimate empty path (the default file).
+  private childUrlPath(url: string): string {
+    let path: string = url;
+    const scheme: number = path.indexOf('://');
+    if (scheme >= 0) {
+      const slash: number = path.indexOf('/', scheme + 3);
+      path = slash >= 0 ? path.substring(slash) : '/';
+    }
+    const query: number = path.indexOf('?');
+    if (query >= 0) {
+      path = path.substring(0, query);
+    }
+    const fragment: number = path.indexOf('#');
+    if (fragment >= 0) {
+      path = path.substring(0, fragment);
+    }
+    try {
+      path = decodeURIComponent(path);
+    } catch {
+      return '$bad';
+    }
+    while (path.startsWith('/')) {
+      path = path.substring(1);
+    }
+    if (path.indexOf('..') >= 0 || path.indexOf('\\') >= 0) {
+      return '$bad';
+    }
+    return path;
+  }
+
+  private childHybridMimeType(filePath: string): string {
+    const lower: string = filePath.toLowerCase();
+    if (lower.endsWith('.html') || lower.endsWith('.htm')) {
+      return 'text/html';
+    }
+    if (lower.endsWith('.js') || lower.endsWith('.mjs')) {
+      return 'text/javascript';
+    }
+    if (lower.endsWith('.css')) {
+      return 'text/css';
+    }
+    if (lower.endsWith('.json')) {
+      return 'application/json';
+    }
+    if (lower.endsWith('.wasm')) {
+      return 'application/wasm';
+    }
+    if (lower.endsWith('.svg')) {
+      return 'image/svg+xml';
+    }
+    if (lower.endsWith('.png')) {
+      return 'image/png';
+    }
+    if (lower.endsWith('.jpg') || lower.endsWith('.jpeg')) {
+      return 'image/jpeg';
+    }
+    if (lower.endsWith('.gif')) {
+      return 'image/gif';
+    }
+    if (lower.endsWith('.webp')) {
+      return 'image/webp';
+    }
+    if (lower.endsWith('.ico')) {
+      return 'image/x-icon';
+    }
+    if (lower.endsWith('.woff')) {
+      return 'font/woff';
+    }
+    if (lower.endsWith('.woff2')) {
+      return 'font/woff2';
+    }
+    if (lower.endsWith('.ttf')) {
+      return 'font/ttf';
+    }
+    if (lower.endsWith('.txt') || lower.endsWith('.map')) {
+      return 'text/plain';
+    }
+    return 'application/octet-stream';
+  }
+
+  private childHybridErrorResponse(code: number): WebResourceResponse {
+    const response: WebResourceResponse = new WebResourceResponse();
+    response.setResponseCode(code);
+    response.setResponseMimeType('text/plain');
+    response.setResponseEncoding('utf-8');
+    if (code !== 204) {
+      response.setResponseData(code === 404 ? 'Not Found' : 'Bad Request');
+    }
+    return response;
+  }
+
+  // .NET static-web-asset fingerprint mapping (W10, same conservative grammar as the main
+  // page): the boot scripts request the base name while the publish carries the fingerprinted
+  // one, and vice versa.
+  private childStaticFingerprintBase(filePath: string): string {
+    const slash: number = filePath.lastIndexOf('/');
+    const nameStart: number = slash + 1;
+    const dot: number = filePath.lastIndexOf('.');
+    if (dot <= nameStart) {
+      return filePath;
+    }
+    const stem: string = filePath.substring(nameStart, dot);
+    const extension: string = filePath.substring(dot);
+    const match = new RegExp('^(.+)\\.[0-9a-z]{10}$').exec(stem);
+    if (match === null) {
+      return filePath;
+    }
+    return `${filePath.substring(0, nameStart)}${match[1]}${extension}`;
+  }
+
+  private childStaticFingerprintFile(filePath: string): string | undefined {
+    const slash: number = filePath.lastIndexOf('/');
+    const nameStart: number = slash + 1;
+    const dot: number = filePath.lastIndexOf('.');
+    if (dot <= nameStart) {
+      return undefined;
+    }
+    const stem: string = filePath.substring(nameStart, dot);
+    const extension: string = filePath.substring(dot);
+    const directory: string = slash > 0 ? filePath.substring(0, slash) : '/';
+    try {
+      const names: string[] = fs.listFileSync(directory);
+      const prefix: string = `${stem}.`;
+      for (const name of names) {
+        if (!name.startsWith(prefix) || !name.endsWith(extension)) {
+          continue;
+        }
+        const hash: string = name.substring(prefix.length, name.length - extension.length);
+        if (hash.length !== 10) {
+          continue;
+        }
+        let alnum: boolean = true;
+        for (let i = 0; i < hash.length; i++) {
+          const c: number = hash.charCodeAt(i);
+          if ((c < 0x30 || c > 0x39) && (c < 0x61 || c > 0x7a)) {
+            alnum = false;
+            break;
+          }
+        }
+        if (alnum) {
+          return `${directory}/${name}`;
+        }
+      }
+    } catch {
+      // A missing directory or a listing failure is not a readable file.
+    }
+    return undefined;
+  }
+
+  private childPayloadCacheHeaders(fingerprinted: boolean): Header[] {
+    const headers: Header[] = [{
+      headerKey: 'Cache-Control',
+      headerValue: fingerprinted ? 'public, max-age=31536000, immutable' : 'no-cache',
+    }];
+    return headers;
+  }
+
+  private childReadPayloadFile(filePath: string, fingerprinted: boolean): WebResourceResponse | undefined {
+    let fd: number = -1;
+    try {
+      const stat = fs.statSync(filePath);
+      if (!stat.isFile()) {
+        return undefined;
+      }
+      const file = fs.openSync(filePath, fs.OpenMode.READ_ONLY);
+      fd = file.fd;
+      const buffer = new ArrayBuffer(stat.size);
+      fs.readSync(fd, buffer);
+      const response: WebResourceResponse = new WebResourceResponse();
+      response.setResponseCode(200);
+      response.setResponseMimeType(this.childHybridMimeType(filePath));
+      response.setResponseEncoding('utf-8');
+      response.setResponseData(buffer);
+      response.setResponseHeader(this.childPayloadCacheHeaders(fingerprinted));
+      return response;
+    } catch {
+      return undefined;
+    } finally {
+      if (fd >= 0) {
+        try {
+          fs.closeSync(fd);
+        } catch {
+          // The handle is released with the response in the worst case.
+        }
+      }
+    }
+  }
+
+  private childServePayloadFile(filePath: string): WebResourceResponse {
+    if (filePath.length === 0) {
+      return this.childHybridErrorResponse(404);
+    }
+    const baseFile: string = this.childStaticFingerprintBase(filePath);
+    const fingerprinted: boolean = baseFile !== filePath;
+    const exact: WebResourceResponse | undefined = this.childReadPayloadFile(filePath, fingerprinted);
+    if (exact !== undefined) {
+      return exact;
+    }
+    if (fingerprinted) {
+      const fallback: WebResourceResponse | undefined = this.childReadPayloadFile(baseFile, true);
+      if (fallback !== undefined) {
+        return fallback;
+      }
+    } else {
+      const resolved: string | undefined = this.childStaticFingerprintFile(filePath);
+      if (resolved !== undefined) {
+        const mapped: WebResourceResponse | undefined = this.childReadPayloadFile(resolved, true);
+        if (mapped !== undefined) {
+          return mapped;
+        }
+      }
+    }
+    return this.childHybridErrorResponse(404);
+  }
+
+  private childServeHybridFile(url: string, slot: number): WebResourceResponse {
+    return this.childServePayloadFile(this.childHybridFilePath(url, slot));
+  }
+
+  private childServeBlazorFile(url: string): WebResourceResponse {
+    return this.childServePayloadFile(this.childBlazorFilePath(url));
+  }
+
+  // Installs the dotnetHost proxy on the slot's controller (the page scripts' JS -> .NET
+  // channel) and forwards its payloads with the document-origin envelope the managed handlers
+  // validate by document id - the child window needs no dedicated message export.
+  private registerChildDotNetHost(slot: number): void {
+    try {
+      this.childWebController(slot).registerJavaScriptProxy({
+        postMessage: (payload: string): void => {
+          // Same frame guard as the main page: ArkWeb registers the proxy into every frame, so
+          // a known non-empty caller URL that is not the main document's is dropped (empty/
+          // unknown values fail open, matching the main page's documented semantics).
+          let callerUrl: string = '';
+          try {
+            if (typeof this.childWebController(slot).getLastJavascriptProxyCallingFrameUrl === 'function') {
+              callerUrl = this.childWebController(slot).getLastJavascriptProxyCallingFrameUrl();
+            }
+          } catch {
+            callerUrl = '';
+          }
+          if (typeof callerUrl === 'string' && callerUrl.length > 0) {
+            let mainUrl: string = '';
+            try {
+              mainUrl = this.childWebController(slot).getUrl();
+            } catch {
+              mainUrl = '';
+            }
+            if (callerUrl !== mainUrl) {
+              return;
+            }
+          }
+          this.notifyChildJsMessage(payload, slot);
+        }
+      }, 'dotnetHost', ['postMessage']);
+    } catch (proxyError) {
+      hilog.error(DOMAIN, TAG, 'child dotnetHost proxy registration failed (slot %{public}d): %{public}s',
+        slot, (proxyError as Error).message);
+    }
+  }
+
+  private notifyChildJsMessage(payload: string, slot: number): void {
+    try {
+      if (typeof host !== 'undefined' && typeof host.notifyJsMessage === 'function') {
+        host.notifyJsMessage(this.childOriginEnvelope(payload, slot));
+      }
+    } catch (messageError) {
+      hilog.error(DOMAIN, TAG, 'child js message failed: %{public}s', (messageError as Error).message);
+    }
+  }
+
+  private childOriginEnvelope(payload: string, slot: number): string {
+    let url: string = '';
+    try {
+      url = this.childWebController(slot).getUrl();
+    } catch {
+      url = '';
+    }
+    let documentId: string = '';
+    if (this.subHybridRegistered[slot] && this.subHybridDocId[slot].length > 0
+        && url.startsWith(SUB_HYBRID_ORIGIN)) {
+      documentId = this.subHybridDocId[slot];
+    } else if (this.subBlazorRegistered && this.subBlazorDocId.length > 0 && url.startsWith(this.subBlazorOrigin)) {
+      documentId = this.subBlazorDocId;
+    }
+    return `__OHORIGIN|${url}|${documentId}\n${payload}`;
+  }
+
+  // Per-document marker + window.external shim (mirrors the main page's injectPageBridge): the
+  // managed handlers only accept messages from a document carrying the id the shell stamped.
+  private injectChildPageBridge(slot: number, pageUrl: string): void {
+    let markers: string = '';
+    if (this.subHybridRegistered[slot] && this.subHybridDocId[slot].length > 0
+        && pageUrl.startsWith(SUB_HYBRID_ORIGIN)) {
+      markers += `window.__ohHybridId = ${JSON.stringify(this.subHybridDocId[slot])};`;
+    }
+    if (this.subBlazorRegistered && this.subBlazorDocId.length > 0 && pageUrl.startsWith(this.subBlazorOrigin)) {
+      markers += `window.__ohBlazorId = ${JSON.stringify(this.subBlazorDocId)};`;
+    }
+    try {
+      this.childWebController(slot).runJavaScript(
+        `(function () {
+          ${markers}
+          var target = window.dotnetHost || window.__ohosDotNet;
+          window.__ohosDotNet = target;
+          var external = window.external;
+          if (!external || (typeof external !== 'object' && typeof external !== 'function')) {
+            external = {};
+            window.external = external;
+          }
+          if (typeof external.sendMessage !== 'function') {
+            external.sendMessage = function (payload) {
+              try {
+                var proxy = window.dotnetHost || window.__ohosDotNet;
+                if (proxy && typeof proxy.postMessage === 'function') {
+                  proxy.postMessage(payload);
+                }
+              } catch (sendError) {
+              }
+            };
+          }
+          if (typeof external.receiveMessage !== 'function') {
+            external.receiveMessage = function (payload) {
+              try {
+                window.dispatchEvent(new CustomEvent('HybridWebViewMessageReceived', { detail: { message: payload } }));
+              } catch (receiveError) {
+              }
+            };
+          }
+        })();`,
+        () => {
+          // The bridge is best-effort; a page that cannot run it keeps dotnetHost only.
+        });
+    } catch (bridgeError) {
+      hilog.error(DOMAIN, TAG, 'child page bridge failed (slot %{public}d): %{public}s',
+        slot, (bridgeError as Error).message);
+    }
+  }
+
+  private childIsBlazorRootDocument(pageUrl: string): boolean {
+    let url: string = pageUrl;
+    const query: number = url.indexOf('?');
+    if (query >= 0) {
+      url = url.substring(0, query);
+    }
+    const fragment: number = url.indexOf('#');
+    if (fragment >= 0) {
+      url = url.substring(0, fragment);
+    }
+    return url === this.subBlazorOrigin || url === `${this.subBlazorOrigin}${this.subBlazorDefaultFile}`;
+  }
+
+  // Blazor bootstrap (callback-form window.external.receiveMessage + __dispatchMessageCallback
+  // + Blazor.start()), mirroring the main page. A "wasm" registration is skipped: that site
+  // ships its own bootstrap.
+  private injectChildBlazorBootstrap(slot: number, pageUrl: string): void {
+    if (!this.subBlazorRegistered || this.subBlazorWasmMode || this.subBlazorBootstrapped[slot]
+        || !this.childIsBlazorRootDocument(pageUrl)) {
+      return;
+    }
+    this.subBlazorBootstrapped[slot] = true;
+    const scriptUrl: string = `${this.subBlazorOrigin}_framework/blazor.webview.js`;
+    const bootstrap: string = `(function () {
+      if (window.__ohosBlazorBootstrapped) { return; }
+      window.__ohosBlazorBootstrapped = true;
+      window.__receiveMessageCallbacks = window.__receiveMessageCallbacks || [];
+      window.__dispatchMessageCallback = function (message) {
+        window.__receiveMessageCallbacks.forEach(function (callback) { callback(message); });
+      };
+      var external = window.external;
+      if (!external || (typeof external !== 'object' && typeof external !== 'function')) {
+        external = {};
+        window.external = external;
+      }
+      if (typeof external.sendMessage !== 'function') {
+        external.sendMessage = function (payload) {
+          try {
+            var proxy = window.dotnetHost || window.__ohosDotNet;
+            if (proxy && typeof proxy.postMessage === 'function') {
+              proxy.postMessage(payload);
+            }
+          } catch (sendError) {
+          }
+        };
+      }
+      external.receiveMessage = function (callback) {
+        window.__receiveMessageCallbacks.push(callback);
+      };
+      window.onpageshow = function (event) {
+        if (event.persisted) {
+          window.location.reload();
+        }
+      };
+      function startBlazor() {
+        try {
+          if (typeof Blazor !== 'undefined' && typeof Blazor.start === 'function') {
+            Blazor.start();
+          }
+        } catch (startError) {
+        }
+      }
+      if (typeof Blazor !== 'undefined') {
+        startBlazor();
+        return;
+      }
+      var existing = document.querySelector('script[src*="blazor.webview.js"]');
+      if (existing) {
+        existing.addEventListener('load', startBlazor);
+        return;
+      }
+      var script = document.createElement('script');
+      script.src = '${scriptUrl}';
+      script.setAttribute('autostart', 'false');
+      script.addEventListener('load', startBlazor);
+      document.body.appendChild(script);
+    })();`;
+    try {
+      this.childWebController(slot).runJavaScript(bootstrap, () => {
+        // Best effort; a page without Blazor keeps running.
+      });
+    } catch (bootError) {
+      hilog.error(DOMAIN, TAG, 'child blazor bootstrap failed (slot %{public}d): %{public}s',
+        slot, (bootError as Error).message);
+    }
+  }
+
+  // The hybrid endpoints are POSTed by the served document (stock hybridwebview.js transport);
+  // the same same-origin check as the main page guards them (a cross-site iframe carries its
+  // own Origin and stays refused).
+  private childHybridEndpointAllowed(event: OnInterceptRequestEvent): boolean {
+    if (!event.request || typeof event.request.isMainFrame !== 'function') {
+      return true;
+    }
+    try {
+      if (event.request.isMainFrame()) {
+        return true;
+      }
+      let origin: string = '';
+      let referer: string = '';
+      let fetchSite: string = '';
+      const headers = event.request.getRequestHeader();
+      for (let i = 0; i < headers.length; i++) {
+        const name: string = headers[i].headerKey.toLowerCase();
+        if (name === 'origin') {
+          origin = headers[i].headerValue;
+        } else if (name === 'referer') {
+          referer = headers[i].headerValue;
+        } else if (name === 'sec-fetch-site') {
+          fetchSite = headers[i].headerValue;
+        }
+      }
+      const originName: string = SUB_HYBRID_ORIGIN.endsWith('/')
+        ? SUB_HYBRID_ORIGIN.substring(0, SUB_HYBRID_ORIGIN.length - 1)
+        : SUB_HYBRID_ORIGIN;
+      if (origin === originName && (fetchSite.length === 0 || fetchSite === 'same-origin')) {
+        return true;
+      }
+      return referer.startsWith(SUB_HYBRID_ORIGIN);
+    } catch {
+      return false;
+    }
+  }
+
+  private childHybridInvokeErrorPayload(message: string): string {
+    const payload: SubHybridInvokeErrorResult = { IsError: true, ErrorMessage: message };
+    return JSON.stringify(payload);
+  }
+
+  // A completed 200 response carrying the invoke error payload: the page's fetch resolves and
+  // the stock invokeDotNet code rejects with ErrorMessage (the same shape as a managed error).
+  private childHybridInvokeReadyError(message: string): WebResourceResponse {
+    const response: WebResourceResponse = new WebResourceResponse();
+    response.setResponseCode(200);
+    response.setResponseMimeType('application/json');
+    response.setResponseEncoding('utf-8');
+    response.setResponseData(this.childHybridInvokeErrorPayload(message));
+    return response;
+  }
+
+  // Defers to the next tick on the UI thread (the main page's runOnUiThread): the intercepted
+  // response must be returned first; its data is only written after onInterceptRequest returned.
+  private runChildOnUiThread(task: () => void): void {
+    setTimeout(() => {
+      this.getUIContext().runScopedTask(task);
+    }, 0);
+  }
+
+  // Completes a held-open __hwvInvokeDotNet response once (setResponseIsReady(false) ->
+  // setResponseData -> setResponseIsReady(true), always on the next tick through runOnUiThread).
+  private completeChildHybridInvoke(requestId: number, payload: string): void {
+    const pending: SubHybridPendingInvoke | undefined = this.subHybridInvokes.get(requestId);
+    if (pending === undefined) {
+      return;
+    }
+    this.subHybridInvokes.delete(requestId);
+    clearTimeout(pending.timer);
+    this.runChildOnUiThread(() => {
+      try {
+        pending.response.setResponseData(payload);
+        pending.response.setResponseCode(200);
+        pending.response.setReasonMessage('OK');
+        pending.response.setResponseIsReady(true);
+      } catch (completeError) {
+        hilog.error(DOMAIN, TAG, 'child hybrid invoke response failed: %{public}s', (completeError as Error).message);
+      }
+    });
+  }
+
+  // JS -> .NET invocation endpoint: { MethodName, ParamValues } POSTed to the hybrid origin.
+  // The request id carries the child-window tag (bit 30) so the managed slice routes it to this
+  // window's HybridWebView and the native module returns the result to this page's sink.
+  private childHybridInvokeResponse(event: OnInterceptRequestEvent, slot: number): WebResourceResponse {
+    if (!this.childHybridEndpointAllowed(event)) {
+      if (this.subHybridEndpointLogs < 3) {
+        this.subHybridEndpointLogs++;
+        hilog.error(DOMAIN, TAG, 'child hybrid invoke request refused (slot %{public}d)', slot);
+      }
+      return this.childHybridErrorResponse(400);
+    }
+    let body: string = '';
+    let token: string = '';
+    const headers = event.request.getRequestHeader();
+    for (let i = 0; i < headers.length; i++) {
+      const name: string = headers[i].headerKey.toLowerCase();
+      if (name === 'x-maui-request-body') {
+        body = headers[i].headerValue;
+      } else if (name === 'x-maui-invoke-token') {
+        token = headers[i].headerValue;
+      }
+    }
+    if (token !== 'HybridWebView' || body.length === 0) {
+      return this.childHybridErrorResponse(400);
+    }
+    let method: string = '';
+    let argsJson: string = '[]';
+    try {
+      const data = JSON.parse(body) as SubHybridInvokeRequest;
+      if (data.MethodName !== undefined) {
+        method = data.MethodName;
+      }
+      if (data.ParamValues !== undefined) {
+        argsJson = JSON.stringify(data.ParamValues);
+      }
+    } catch {
+      return this.childHybridErrorResponse(400);
+    }
+    if (method.length === 0) {
+      return this.childHybridErrorResponse(400);
+    }
+    // A host library without the child result sink cannot route this page's result (the primary
+    // sink belongs to pages/Index.ets): answer an immediate error payload instead of tagging an
+    // invocation the managed side would fall back to its last primary handler for.
+    if (typeof host === 'undefined' || typeof host.registerChildHybridInvokeResultSink !== 'function') {
+      return this.childHybridInvokeReadyError('the .NET host does not expose the child hybrid invocation bridge');
+    }
+    const response: WebResourceResponse = new WebResourceResponse();
+    response.setResponseCode(200);
+    response.setResponseMimeType('application/json');
+    response.setResponseEncoding('utf-8');
+    response.setResponseIsReady(false);
+    // Child-tagged request id: bit 30 | ((slot + 1) << 24) | (sequence & 0xFFFFFF). The bit is
+    // the OpenHarmonyOverlays.ChildInvokeFlag contract; the slot is this child pool's slot.
+    this.subHybridInvokeSeq = (this.subHybridInvokeSeq + 1) & 0xFFFFFF;
+    const requestId: number = 0x40000000 | ((slot + 1) << 24) | this.subHybridInvokeSeq;
+    const timer: number = setTimeout(() => {
+      this.completeChildHybridInvoke(requestId,
+        this.childHybridInvokeErrorPayload('the .NET invocation timed out'));
+    }, this.subHybridInvokeTimeoutMs);
+    this.subHybridInvokes.set(requestId, { response: response, timer: timer });
+    try {
+      const rc: number = host.notifyHybridInvoke(requestId, method, argsJson) as number;
+      if (rc !== 0) {
+        this.completeChildHybridInvoke(requestId,
+          this.childHybridInvokeErrorPayload('the .NET host is not listening for hybrid invocations'));
+      }
+    } catch (invokeError) {
+      hilog.error(DOMAIN, TAG, 'child hybrid invoke failed: %{public}s', (invokeError as Error).message);
+      this.completeChildHybridInvoke(requestId,
+        this.childHybridInvokeErrorPayload('the .NET host does not expose the hybrid invocation bridge'));
+    }
+    return response;
+  }
+
+  // __hwvSendMessage transport: the payload header is handed to the JS message sink with this
+  // page's origin envelope, so SendRawMessage reaches the managed handler like the main page.
+  private childHybridMessageResponse(event: OnInterceptRequestEvent, slot: number): WebResourceResponse {
+    if (!this.childHybridEndpointAllowed(event)) {
+      return this.childHybridErrorResponse(400);
+    }
+    let body: string = '';
+    let token: string = '';
+    const headers = event.request.getRequestHeader();
+    for (let i = 0; i < headers.length; i++) {
+      const name: string = headers[i].headerKey.toLowerCase();
+      if (name === 'x-maui-request-body') {
+        body = headers[i].headerValue;
+      } else if (name === 'x-maui-invoke-token') {
+        token = headers[i].headerValue;
+      }
+    }
+    if (token !== 'HybridWebView' || body.length === 0) {
+      return this.childHybridErrorResponse(400);
+    }
+    let delivered: boolean = false;
+    try {
+      if (typeof host !== 'undefined' && typeof host.notifyJsMessage === 'function') {
+        host.notifyJsMessage(this.childOriginEnvelope(body, slot));
+        delivered = true;
+      }
+    } catch {
+      delivered = false;
+    }
+    return this.childHybridErrorResponse(delivered ? 204 : 400);
   }
 
   private deferChildWebOp(slot: number, op: string, arg: string): void {
@@ -826,15 +1649,15 @@ struct SubWindow {
   }
 
   // The slot named by a hybrid/blazor registration JSON; a missing/malformed slot falls back to
-  // 0 exactly like the main page (the registration is refused either way).
+  // 0 exactly like the main page (the registration still has to name a safe layout).
   private childWebRegistrationSlot(arg: string): number {
     try {
-      const config = JSON.parse(arg) as SubWebAssetsConfig;
+      const config = JSON.parse(arg) as SubHybridAssetsConfig;
       if (config.slot !== undefined && config.slot >= 0 && config.slot < SUB_WEB_SLOT_MAX) {
         return config.slot;
       }
     } catch {
-      // A malformed registration falls back to slot 0; the refusal is logged by the caller.
+      // A malformed registration falls back to slot 0.
     }
     return 0;
   }
@@ -843,7 +1666,7 @@ struct SubWindow {
   // main page (a degenerate frame is ignored). A frame also shows the overlay.
   private applyChildWebFrame(arg: string): void {
     const slot: number = this.childWebSlotDigit(arg);
-    if (slot < 0 || this.subWebUnsupported[slot]) {
+    if (slot < 0) {
       return;
     }
     const payload: string = this.childWebSlotPayload(arg);
@@ -906,16 +1729,56 @@ struct SubWindow {
       .onControllerAttached(() => {
         this.subWebAttached[slot] = true;
         hilog.info(DOMAIN, TAG, 'child web attached: slot %{public}d', slot);
+        // MULTIWINDOW-L3: the page scripts' dotnetHost proxy; registering any earlier fails
+        // with BusinessError 17100001 (controller not associated with a Web component).
+        this.registerChildDotNetHost(slot);
         this.flushChildWebOps(slot);
       })
       .onPageBegin((event) => {
+        // MULTIWINDOW-L3: a new main-frame document gets its own Blazor bootstrap.
+        this.subBlazorBootstrapped[slot] = false;
         this.notifyWebHostState(this.childWebEventState(slot, 'started'), event ? event.url : '');
       })
       .onPageEnd((event) => {
         const pageUrl: string = event ? event.url : '';
         hilog.info(DOMAIN, TAG, 'child web page (slot %{public}d): %{public}s', slot, pageUrl);
         this.notifyWebHostState(this.childWebEventState(slot, 'finished'), pageUrl);
+        // MULTIWINDOW-L3: stamp this document's registration id and install the bridge/bootstrap
+        // (the managed handlers only accept messages from a document carrying their id).
+        this.injectChildPageBridge(slot, pageUrl);
+        this.injectChildBlazorBootstrap(slot, pageUrl);
         this.reportChildWebHistory(slot);
+      })
+      .onInterceptRequest((event) => {
+        // MULTIWINDOW-L3: serve the registered app origins from the payload directory. The
+        // hybrid endpoints (__hwvInvokeDotNet/__hwvSendMessage) complete through the managed
+        // handler; every other URL is left to the engine.
+        try {
+          const url: string = event.request.getRequestUrl();
+          if (this.subBlazorRegistered && url.startsWith(this.subBlazorOrigin)) {
+            if (this.subBlazorServeLogs < 3) {
+              this.subBlazorServeLogs++;
+              hilog.info(DOMAIN, TAG, 'child web serve blazor: %{public}s', url);
+            }
+            return this.childServeBlazorFile(url);
+          }
+          if (!this.subHybridRegistered[slot] || !url.startsWith(SUB_HYBRID_ORIGIN)) {
+            return null;
+          }
+          if (this.subHybridServeLogs[slot] < 3) {
+            this.subHybridServeLogs[slot]++;
+            hilog.info(DOMAIN, TAG, 'child web serve hybrid (slot %{public}d): %{public}s', slot, url);
+          }
+          if (url.startsWith(`${SUB_HYBRID_ORIGIN}__hwvInvokeDotNet`)) {
+            return this.childHybridInvokeResponse(event, slot);
+          }
+          if (url.startsWith(`${SUB_HYBRID_ORIGIN}__hwvSendMessage`)) {
+            return this.childHybridMessageResponse(event, slot);
+          }
+          return this.childServeHybridFile(url, slot);
+        } catch {
+          return null;
+        }
       })
       .onErrorReceive((event) => {
         try {

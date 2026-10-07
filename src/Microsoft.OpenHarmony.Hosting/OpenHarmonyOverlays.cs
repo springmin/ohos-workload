@@ -674,4 +674,49 @@ public static class OpenHarmonyOverlays
         slot = tag - 1;
         return true;
     }
+
+    /// <summary>
+    /// Bit 30 of a hybrid-invoke request id marks the child-window channel (MULTIWINDOW-L3): the
+    /// subwindow page numbers its held-open <c>__hwvInvokeDotNet</c> responses with it, the
+    /// managed callback dispatches to the child window's handler, and the native result path
+    /// (host_napi.cpp <c>ohos_host_hwv_invoke_result</c>) routes the answer back to the child
+    /// page's own sink instead of the primary one. The primary encoding leaves the bit clear, so
+    /// every existing id decodes exactly as before.
+    /// </summary>
+    public const int ChildInvokeFlag = 1 << 30;
+
+    /// <summary>
+    /// Composes a child-window hybrid-invoke request id: the child flag, the child pool slot
+    /// (slot + 1 in the high byte, like the primary encoding) and the shell's 24-bit sequence.
+    /// </summary>
+    public static int EncodeChildInvokeRequestId(int slot, int sequence)
+        => ChildInvokeFlag | EncodeInvokeRequestId(slot, sequence);
+
+    /// <summary>True when the request id carries the child-window flag.</summary>
+    public static bool IsChildInvokeRequestId(int requestId)
+        => (requestId & ChildInvokeFlag) != 0;
+
+    /// <summary>
+    /// Decodes a child-window hybrid-invoke request id. False for a primary/untagged id (whose
+    /// slot byte never exceeds the overlay cap), for the flag alone and for a slot outside the
+    /// child pool; the caller fails closed instead of dispatching to another window.
+    /// </summary>
+    public static bool TryDecodeChildInvokeRequestId(int requestId, out int slot, out int sequence)
+    {
+        slot = -1;
+        sequence = requestId & InvokeSequenceMask;
+        if ((requestId & ChildInvokeFlag) == 0)
+        {
+            return false;
+        }
+        // The flag sits above the slot byte, so clear it before extracting the slot (bit 30 is
+        // not part of the slot + 1 tag).
+        int tag = ((requestId & ~ChildInvokeFlag) >> InvokeSlotShift) & 0xFF;
+        if (tag <= 0 || tag > s_maxOverlays)
+        {
+            return false;
+        }
+        slot = tag - 1;
+        return true;
+    }
 }

@@ -12,7 +12,7 @@ using Microsoft.Maui.Platform;
 // after the fuzz tail) instead of letting every caller repeat its own threshold constant.
 VerifyLineCountingWriter verifyStdout = new(Console.Out);
 Console.SetOut(verifyStdout);
-const int verifyCheckTotal = 690;                     // +2 SEC-SCAN-6 C: the window close hook drops the child pool state and the a11y shadow frame + first-publish marker // +7 MULTIWINDOW-L2 a W1: per-window a11y frame lookup/view ownership, window-routed actions (sub vs primary vs unknown), the per-instance listener thunk, the provider-gate local degrade, the subwindow password pin, the per-window modal gate and the host/shell/slice source pins // +18 MULTIWINDOW-L2 b: the child capacity wire (state-carried and URL-carried count shapes), the subwindow ArkWeb second host (the window-scoped OpenHarmonyChildWeb pool + transport + ready gate, a real child-window WebView routed through it, the primary pool/transport isolation, and the four-pack shell/host/slice source pins) and the SEC-SCAN-6 primary-window-tag rejection pin // +2 MULTIWINDOW-L M4-04: the per-window pinch channel (a child-tagged stream reaches the child renderer only; main/unknown/empty ids never do) // +16 MULTIWINDOW-L M4 first wave: the per-window focus/suspend-resume state machine (Activated/Deactivated/Stopped/Resumed, idempotent, primary untouched, the shell-Closed session belt), the per-window keyboard/IME wire (child Entry focus -> op 6 surface-tagged payload, text/composition/submit routed to the child only, window-tagged keys, per-window Back, text ports, the primary-to-child global-text isolation pin (SEC-SCAN-5c)) and the per-window accessibility frame + alert ownership partition, plus the four-pack shell/slice source pins // +14 MULTIWINDOW-L M3 shell subwindow XComponent + production consumption: the app host consumes the tagged channel itself, a deferred OpenWindow asks the shell for the subwindow surface and RouteSurface binds/first-frames/adopts it, its input/frame/close/reopen are window-id routed with no main-window interference, plus the four-pack shell source pins (XComponent id = surface id, register/unregister lifecycle, drawn fallback) and the host/slice per-window draw-target pins // +22 MULTIWINDOW-L M2 per-window renderer: the dual-window headless pin (the mw-l/m2 scratch assertions, driven through the hosting bridge's window-id tagged thunks and the slice's RouteSurface/RouteTouch/RouteFrame adapters, with one CanvasFactory recording canvas per window) plus the bridge id and late-subscriber replay contract // +6 MULTIWINDOW-M in-app subwindow: the create/move/resize/show/close command set and its JSON payloads, the lifecycle/geometry state machine, the routed touch event, malformed/unknown payload robustness, the off-device degradation, and the shell/host/slice source+pack-identity contract // +1 SEC-SCAN-4 a11y password masking (plaintext must not be published to the shadow tree; bullets mirror the drawn text) // +1 SEC-SCAN-4 off-surface cull boundary (zero-size frame draws, shadow extent rescues, off-surface Image keeps the decode pipeline) // +1 CG2-R2R host interp R2R opt-out pin (DOTNET_ReadyToRun=0 inside the mode-3 block; the runtime already forces it for InterpMode>=2, the host makes it explicit and the device retest holds IL parity) // +1 AOT-STARTUP first-use ArkWeb overlay mount gate (state flag + ensureWebSlot flip/log + build gate order) protects the -262 ms AOT startup fix + host identical-context replay skip pin // +2 MULTIWINDOW-S surface resize: the Created/Changed arrange gate (Destroyed/0x0 rejected) + the Changed replay re-arranging the window frame while Destroyed keeps it (A0 form adaptation)                     // +2 WASM-MIME .wasm -> application/wasm mapping in every pack shell + the standalone rawfile host / the host's `wasm mime:` + `wasm fallback:` instrumentation and the pack-host.sh --bad-mime negative control                     // +2 FIX-A11YFLYOUT a11y walk FlyoutPage Detail/presented-Flyout subtree pins (device nodeCount=1 root cause)                     // +1 FIX-A11YBUTTON shell self-check absolute position + z-order-above-overlays pin (button reachable with/without a live web control)                     // +3 AUTODISCONNECT layout-removal detach (dynamic slot destroy + claim release + handler kept) / re-add rebuild (ensure + registration replay on the reclaimed slot) / slice watcher-and-owner wiring pins                     // +6 SLOTS-DYNAMIC dynamic slot growth (ensure/destroy commands), capacity downgrade/event, configurable 2/4 limits, shell lazy/defer pins, 3rd-overlay sample                     // documented full [verify] line count (+3 FIX-SLICERACE concurrent connect/host storm/ pins, +5 L6 screenshot Jpeg format/quality capture/fallback/helper + title heartbeat behavior/source, +6 LEGACY toolbar primary/overflow/icon/events/shell/source, +3 SAMPLE-FIX hybrid bootstrap pack staging / read-only payload handler / stock-script demo, +4 MULTI-OVERLAY-FULL LRU pool/invoke slot codec/per-slot hybrid shell/slice owner wiring, +4 MULTI-OVL slot pool/wire codec/two-overlay shell/slice wiring, +4 FIX-BACKSIZE Back-press forwarding/drawer drill/ shell drawer/BlazorWebView desired size, +4 FIX-WVP overlay px->vp/degenerate-frame/hybrid-overlay arbitration/suspend-restore (shell+slice), +2 FIX-DISMISS flyout drawer dismiss under the device display conditions, +4 FIX-HOME home page arrange/draw (NavigationPage-in-TabbedPage descent), +4 MS-MODE runtime mode switch, +10 P2c-DEEPLINK, +4 P2b-IMG, +16 P1b-LIST, +10 P1a-ANIM, +2 SEC3 storage/deep-link pins, +5 W-series WebView wiring, +3 T1 InputView mapping, +4 T2 WebView gaps, +4 T3 GraphicsView interaction, +7 T10 modal accessibility, +4 T4 Label formatted text, +4 T5 layout semantics, +6 T7 DatePicker calendar/min-max, +4 T9 window title bar, +4 T11 diagnostics overlay, +1 N2 empty ContentPage arrangement, +6 T8 TableView, +5 T8 uneven rows, +7 T6 RTL flow direction, +5 T22 MainThread bridge, +2 FIX-TABBED tabbed CurrentPage, +4 T13 group footer view/N3 picker IsOpen, +5 T21 system font scale, +3 T21 font scale source wiring, +2 A11Y-TABBED tabbed accessibility, +3 N1 host multi-pointer, +5 T12 CarouselView group slides, +7 T14 rich shell flyout, +10 T14 flyout leftovers (MenuItemTemplate/FlyoutContent/AsMultipleItems), +2 FIX-SHELL shell CurrentPage, +2 A11Y-SHELL shell accessibility, +7 T15 rich Shell.TitleView, +8 T16 structured menus, +3 N4 TitleBar accessibility row, +3 T18 Essentials Map, +4 N5 overlay passthrough suppression, +5 N6 window decorations, +4 T20 media bridge, +3 B2 wasm site in a MAUI WebView, +2 W10 NativeAOT managed entry (host libs-dir resolution + shell AOT payload probe), +1 FIX-JSCALL Blazor IPC enum/struct AOT roots (JSCallResultType/JSCallType/NavigationOptions in the slice context + handler static-ctor touch + stub click-probe removed), +3 INTERP-DRAW2 draw-cost seam kinds / off-surface cull / translated-node rescue))
+const int verifyCheckTotal = 693;                     // +3 MULTIWINDOW-L3: the child hybrid-invoke codec (flag encode/decode, primary decode unchanged), the child-window dispatch (real invoke round trip on the owning handler) and the fail-closed unclaimed slot // +2 SEC-SCAN-6 C: the window close hook drops the child pool state and the a11y shadow frame + first-publish marker // +7 MULTIWINDOW-L2 a W1: per-window a11y frame lookup/view ownership, window-routed actions (sub vs primary vs unknown), the per-instance listener thunk, the provider-gate local degrade, the subwindow password pin, the per-window modal gate and the host/shell/slice source pins // +18 MULTIWINDOW-L2 b: the child capacity wire (state-carried and URL-carried count shapes), the subwindow ArkWeb second host (the window-scoped OpenHarmonyChildWeb pool + transport + ready gate, a real child-window WebView routed through it, the primary pool/transport isolation, and the four-pack shell/host/slice source pins) and the SEC-SCAN-6 primary-window-tag rejection pin // +2 MULTIWINDOW-L M4-04: the per-window pinch channel (a child-tagged stream reaches the child renderer only; main/unknown/empty ids never do) // +16 MULTIWINDOW-L M4 first wave: the per-window focus/suspend-resume state machine (Activated/Deactivated/Stopped/Resumed, idempotent, primary untouched, the shell-Closed session belt), the per-window keyboard/IME wire (child Entry focus -> op 6 surface-tagged payload, text/composition/submit routed to the child only, window-tagged keys, per-window Back, text ports, the primary-to-child global-text isolation pin (SEC-SCAN-5c)) and the per-window accessibility frame + alert ownership partition, plus the four-pack shell/slice source pins // +14 MULTIWINDOW-L M3 shell subwindow XComponent + production consumption: the app host consumes the tagged channel itself, a deferred OpenWindow asks the shell for the subwindow surface and RouteSurface binds/first-frames/adopts it, its input/frame/close/reopen are window-id routed with no main-window interference, plus the four-pack shell source pins (XComponent id = surface id, register/unregister lifecycle, drawn fallback) and the host/slice per-window draw-target pins // +22 MULTIWINDOW-L M2 per-window renderer: the dual-window headless pin (the mw-l/m2 scratch assertions, driven through the hosting bridge's window-id tagged thunks and the slice's RouteSurface/RouteTouch/RouteFrame adapters, with one CanvasFactory recording canvas per window) plus the bridge id and late-subscriber replay contract // +6 MULTIWINDOW-M in-app subwindow: the create/move/resize/show/close command set and its JSON payloads, the lifecycle/geometry state machine, the routed touch event, malformed/unknown payload robustness, the off-device degradation, and the shell/host/slice source+pack-identity contract // +1 SEC-SCAN-4 a11y password masking (plaintext must not be published to the shadow tree; bullets mirror the drawn text) // +1 SEC-SCAN-4 off-surface cull boundary (zero-size frame draws, shadow extent rescues, off-surface Image keeps the decode pipeline) // +1 CG2-R2R host interp R2R opt-out pin (DOTNET_ReadyToRun=0 inside the mode-3 block; the runtime already forces it for InterpMode>=2, the host makes it explicit and the device retest holds IL parity) // +1 AOT-STARTUP first-use ArkWeb overlay mount gate (state flag + ensureWebSlot flip/log + build gate order) protects the -262 ms AOT startup fix + host identical-context replay skip pin // +2 MULTIWINDOW-S surface resize: the Created/Changed arrange gate (Destroyed/0x0 rejected) + the Changed replay re-arranging the window frame while Destroyed keeps it (A0 form adaptation)                     // +2 WASM-MIME .wasm -> application/wasm mapping in every pack shell + the standalone rawfile host / the host's `wasm mime:` + `wasm fallback:` instrumentation and the pack-host.sh --bad-mime negative control                     // +2 FIX-A11YFLYOUT a11y walk FlyoutPage Detail/presented-Flyout subtree pins (device nodeCount=1 root cause)                     // +1 FIX-A11YBUTTON shell self-check absolute position + z-order-above-overlays pin (button reachable with/without a live web control)                     // +3 AUTODISCONNECT layout-removal detach (dynamic slot destroy + claim release + handler kept) / re-add rebuild (ensure + registration replay on the reclaimed slot) / slice watcher-and-owner wiring pins                     // +6 SLOTS-DYNAMIC dynamic slot growth (ensure/destroy commands), capacity downgrade/event, configurable 2/4 limits, shell lazy/defer pins, 3rd-overlay sample                     // documented full [verify] line count (+3 FIX-SLICERACE concurrent connect/host storm/ pins, +5 L6 screenshot Jpeg format/quality capture/fallback/helper + title heartbeat behavior/source, +6 LEGACY toolbar primary/overflow/icon/events/shell/source, +3 SAMPLE-FIX hybrid bootstrap pack staging / read-only payload handler / stock-script demo, +4 MULTI-OVERLAY-FULL LRU pool/invoke slot codec/per-slot hybrid shell/slice owner wiring, +4 MULTI-OVL slot pool/wire codec/two-overlay shell/slice wiring, +4 FIX-BACKSIZE Back-press forwarding/drawer drill/ shell drawer/BlazorWebView desired size, +4 FIX-WVP overlay px->vp/degenerate-frame/hybrid-overlay arbitration/suspend-restore (shell+slice), +2 FIX-DISMISS flyout drawer dismiss under the device display conditions, +4 FIX-HOME home page arrange/draw (NavigationPage-in-TabbedPage descent), +4 MS-MODE runtime mode switch, +10 P2c-DEEPLINK, +4 P2b-IMG, +16 P1b-LIST, +10 P1a-ANIM, +2 SEC3 storage/deep-link pins, +5 W-series WebView wiring, +3 T1 InputView mapping, +4 T2 WebView gaps, +4 T3 GraphicsView interaction, +7 T10 modal accessibility, +4 T4 Label formatted text, +4 T5 layout semantics, +6 T7 DatePicker calendar/min-max, +4 T9 window title bar, +4 T11 diagnostics overlay, +1 N2 empty ContentPage arrangement, +6 T8 TableView, +5 T8 uneven rows, +7 T6 RTL flow direction, +5 T22 MainThread bridge, +2 FIX-TABBED tabbed CurrentPage, +4 T13 group footer view/N3 picker IsOpen, +5 T21 system font scale, +3 T21 font scale source wiring, +2 A11Y-TABBED tabbed accessibility, +3 N1 host multi-pointer, +5 T12 CarouselView group slides, +7 T14 rich shell flyout, +10 T14 flyout leftovers (MenuItemTemplate/FlyoutContent/AsMultipleItems), +2 FIX-SHELL shell CurrentPage, +2 A11Y-SHELL shell accessibility, +7 T15 rich Shell.TitleView, +8 T16 structured menus, +3 N4 TitleBar accessibility row, +3 T18 Essentials Map, +4 N5 overlay passthrough suppression, +5 N6 window decorations, +4 T20 media bridge, +3 B2 wasm site in a MAUI WebView, +2 W10 NativeAOT managed entry (host libs-dir resolution + shell AOT payload probe), +1 FIX-JSCALL Blazor IPC enum/struct AOT roots (JSCallResultType/JSCallType/NavigationOptions in the slice context + handler static-ctor touch + stub click-probe removed), +3 INTERP-DRAW2 draw-cost seam kinds / off-surface cull / translated-node rescue))
 const int verifyCheckFloor = verifyCheckTotal - 20;   // documented floor convention (total - 20)
 
 // A small image file for the Image handler.
@@ -15493,13 +15493,76 @@ bool l2ClosePoolDropped = Microsoft.OpenHarmony.Hosting.OpenHarmonyChildWeb.GetC
     && !Microsoft.OpenHarmony.Hosting.OpenHarmonyChildWeb.IsReady("sub-1")
     && Microsoft.OpenHarmony.Hosting.OpenHarmonyChildWeb.PendingCount("sub-1") == 0;
 L2Check("close drops child pool", l2ClosePoolDropped);
+
+// MULTIWINDOW-L3: the child hybrid-invoke codec and dispatch. The subwindow shell tags its
+// __hwvInvokeDotNet request ids with the child flag; the managed callback must route them to
+// the child window's handler and the primary encoding/decoding must stay byte-for-byte.
+bool l2ChildCodecOk = Microsoft.OpenHarmony.Hosting.OpenHarmonyOverlays.EncodeChildInvokeRequestId(0, 5) == 0x41000005
+    && Microsoft.OpenHarmony.Hosting.OpenHarmonyOverlays.EncodeChildInvokeRequestId(1, 7) == 0x42000007
+    && Microsoft.OpenHarmony.Hosting.OpenHarmonyOverlays.TryDecodeChildInvokeRequestId(0x42000007, out int l2ChildCodecSlot, out int l2ChildCodecSeq)
+    && l2ChildCodecSlot == 1 && l2ChildCodecSeq == 7
+    && Microsoft.OpenHarmony.Hosting.OpenHarmonyOverlays.IsChildInvokeRequestId(0x41000005)
+    && !Microsoft.OpenHarmony.Hosting.OpenHarmonyOverlays.IsChildInvokeRequestId(0x01000005)
+    && !Microsoft.OpenHarmony.Hosting.OpenHarmonyOverlays.TryDecodeChildInvokeRequestId(0x01000005, out _, out _)
+    && !Microsoft.OpenHarmony.Hosting.OpenHarmonyOverlays.TryDecodeInvokeRequestId(0x41000005, out _, out _)
+    && Microsoft.OpenHarmony.Hosting.OpenHarmonyOverlays.TryDecodeInvokeRequestId(0x01000005, out int l2PrimaryCodecSlot, out _)
+    && l2PrimaryCodecSlot == 0;
+L2Check("child invoke codec", l2ChildCodecOk);
+
+// Dispatch: a child-tagged invocation runs on the child-window hybrid that owns the slot (the
+// real invoke round trip through the same managed path), and an unclaimed child slot fails
+// closed instead of falling back to a primary handler.
+if (hybridProbe.Handler is OpenHarmonyHybridWebViewHandler l2ChildHybridHandler)
+{
+    FieldInfo l2HybridWindowField = typeof(OpenHarmonyHybridWebViewHandler)
+        .GetField("_overlayWindowId", BindingFlags.NonPublic | BindingFlags.Instance)
+        ?? throw new InvalidOperationException("OpenHarmonyHybridWebViewHandler._overlayWindowId was not found; the child invoke drill needs the window seam");
+    FieldInfo l2HybridSlotField = typeof(OpenHarmonyHybridWebViewHandler)
+        .GetField("_overlaySlot", BindingFlags.NonPublic | BindingFlags.Instance)
+        ?? throw new InvalidOperationException("OpenHarmonyHybridWebViewHandler._overlaySlot was not found; the child invoke drill needs the slot seam");
+    string l2HybridWindowBefore = (string)l2HybridWindowField.GetValue(l2ChildHybridHandler)!;
+    int l2HybridSlotBefore = (int)l2HybridSlotField.GetValue(l2ChildHybridHandler)!;
+    var l2ChildInvokeResults = new Dictionary<int, string>();
+    void L2OnChildInvokeResult(int requestId, string payload) => l2ChildInvokeResults[requestId] = payload;
+    OpenHarmonyHybridWebViewHandler.HybridInvokeResultSent += L2OnChildInvokeResult;
+    try
+    {
+        l2HybridWindowField.SetValue(l2ChildHybridHandler, "sub-1");
+        l2HybridSlotField.SetValue(l2ChildHybridHandler, 1);
+        int l2ChildInvokeId = Microsoft.OpenHarmony.Hosting.OpenHarmonyOverlays.EncodeChildInvokeRequestId(1, 77);
+        await OpenHarmonyHybridWebViewHandler.OnHybridInvokeAsync(l2ChildInvokeId, "Echo", "[\"\\\"child\\\"\"]");
+        bool l2ChildInvokeOk = l2ChildInvokeResults.TryGetValue(l2ChildInvokeId, out string? l2ChildPayload)
+            && PayloadBool(l2ChildPayload, "IsError") == false
+            && PayloadString(l2ChildPayload, "Result") == "\"echo:child\"";
+        L2Check($"child invoke dispatch result={PayloadString(l2ChildInvokeResults.GetValueOrDefault(l2ChildInvokeId), "Result")}",
+            l2ChildInvokeOk);
+        int l2ChildMissId = Microsoft.OpenHarmony.Hosting.OpenHarmonyOverlays.EncodeChildInvokeRequestId(0, 78);
+        await OpenHarmonyHybridWebViewHandler.OnHybridInvokeAsync(l2ChildMissId, "Echo", "[]");
+        bool l2ChildMissOk = l2ChildInvokeResults.TryGetValue(l2ChildMissId, out string? l2ChildMissPayload)
+            && PayloadBool(l2ChildMissPayload, "IsError") == true
+            && (PayloadString(l2ChildMissPayload, "ErrorMessage")?.Contains("child HybridWebView", StringComparison.Ordinal) ?? false);
+        L2Check("child invoke miss", l2ChildMissOk);
+    }
+    finally
+    {
+        OpenHarmonyHybridWebViewHandler.HybridInvokeResultSent -= L2OnChildInvokeResult;
+        l2HybridWindowField.SetValue(l2ChildHybridHandler, l2HybridWindowBefore);
+        l2HybridSlotField.SetValue(l2ChildHybridHandler, l2HybridSlotBefore);
+    }
+}
+else
+{
+    L2Check("child invoke dispatch", false);
+    L2Check("child invoke miss", false);
+}
 m2Host.SubWindowSurfaceRequester = null;
 Microsoft.OpenHarmony.Hosting.OpenHarmonyChildWeb.CommandSent -= l2OnChildCommand;
 Microsoft.OpenHarmony.Hosting.OpenHarmonyChildWeb.PageEvent -= l2OnChildEvent;
 
 // Source pins: every pack's SubWindow.ets carries the child host (registration probes, pool,
-// tagged events, the hybrid/blazor refusal) and the primary page keeps its single sink; the host
-// routes the child marker without a new export; the slice routes all three handlers by window.
+// tagged events, the MULTIWINDOW-L3 hybrid/Blazor asset bridge) and the primary page keeps its
+// single sink; the host routes the child marker and the child hybrid-invoke results without a
+// new export; the slice routes all three handlers by window and the child invokes by the flag.
 bool l2ShellPinsOk = true;
 bool l2PackIdentityOk = true;
 string l2FirstPageText = string.Empty;
@@ -15517,8 +15580,11 @@ foreach (string l2ShellVersion in new[] { "1.0.0-preview.22", "1.0.0-preview.23"
         && l2Page.Contains("typeof host.registerChildWebSink !== 'function'")
         && l2Page.Contains("SUB_WEB_SLOT_MAX")
         && l2Page.Contains("subWebOverlay")
-        && l2Page.Contains("subWebUnsupported")
-        && l2Page.Contains("disableChildWebSlot")
+        && l2Page.Contains("childHybridInvokeResponse")
+        && l2Page.Contains("registerChildDotNetHost")
+        && l2Page.Contains("injectChildBlazorBootstrap")
+        && l2Page.Contains("registerChildHybridInvokeResultSink")
+        && l2Page.Contains("SUB_HYBRID_ORIGIN")
         && l2Page.Contains("`${SUB_WEB_STATE_PREFIX}${this.surfaceId}|${slotState}`")
         && l2Page.Contains("`capacity|${SUB_WEB_SLOT_MAX}`")
         && l2Page.Contains("completeChildWebEval(requestId, '', 1)");
@@ -15545,9 +15611,13 @@ L2Check("host source", l2HostSource.Contains("web_child")
     && l2HostSource.Contains("kChildWebMarker")
     && l2HostSource.Contains("strncmp(effective_op, kChildWebMarker")
     && l2HostSource.Contains("registerChildWebSink\"")
+    && l2HostSource.Contains("RegisterChildHybridInvokeResultSink")
+    && l2HostSource.Contains("kChildHybridInvokeFlag")
+    && l2HostSource.Contains("hybrid_invoke_result_child")
+    && l2HostSource.Contains("registerChildHybridInvokeResultSink\"")
     && !l2HostCoreSource.Contains("kChildWebMarker")
     && !l2ExportsSource.Contains("ohos_host_web_command_child")
-    && l2ExportCount == 164);   // L2-b adds no export; the L2-a six (attach/status/count/..._for + action listener) bring the contract from 157 to 163; the L3 a11y close-hook release adds ohos_host_accessibility_release_for (164)
+    && l2ExportCount == 164);   // L2-b adds no export; the L2-a six (attach/status/count/..._for + action listener) bring the contract from 157 to 163; the L3 a11y close-hook release adds ohos_host_accessibility_release_for (164) and the L3 child invoke result rides the existing ohos_host_hwv_invoke_result
 
 string l2SliceView = FindHostSource("OpenHarmonyWebViewHandler.cs") is { } l2ViewPath
     ? File.ReadAllText(l2ViewPath) : string.Empty;
@@ -15561,6 +15631,8 @@ string l2SliceBlazor = FindHostSource("OpenHarmonyBlazorWebViewHandler.cs") is {
     ? File.ReadAllText(l2BlazorPath) : string.Empty;
 string l2HostingSource = FindHostSource("src/Microsoft.OpenHarmony.Hosting/OpenHarmonyChildWeb.cs") is { } l2ChildWebPath
     ? File.ReadAllText(l2ChildWebPath) : string.Empty;
+string l2OverlaysSource = FindHostSource("src/Microsoft.OpenHarmony.Hosting/OpenHarmonyOverlays.cs") is { } l2OverlaysPath
+    ? File.ReadAllText(l2OverlaysPath) : string.Empty;
 int l2TableStamp = l2SliceHosting.IndexOf("s_windowIdTable.TryGetValue(window, out WindowIdBox? box)", StringComparison.Ordinal);
 int l2HandlerStamp = l2SliceHosting.IndexOf("window.Handler is OpenHarmonyWindowHandler handler)", StringComparison.Ordinal);
 int l2AdoptStamp = l2SliceWindowHost.IndexOf("OpenHarmonyMauiAppHost.SetWindowId(_window, WindowId);", StringComparison.Ordinal);
@@ -15574,9 +15646,13 @@ L2Check("slice source", l2TableStamp >= 0 && l2HandlerStamp >= 0 && l2TableStamp
     && l2SliceView.Contains("HandlerMatches")
     && l2SliceHybrid.Contains("OpenHarmonyChildWeb.AcquireForWindow")
     && l2SliceHybrid.Contains("OpenHarmonyChildWeb.CommandForWindow")
+    && l2SliceHybrid.Contains("TryDecodeChildInvokeRequestId")
+    && l2SliceHybrid.Contains("ChildHandlerForSlot")
     && l2SliceBlazor.Contains("OpenHarmonyChildWeb.AcquireForWindow")
     && l2SliceBlazor.Contains("OpenHarmonyChildWeb.CommandForWindow")
-    && l2HostingSource.Contains("CommandMarker") && l2HostingSource.Contains("MaxPendingCommands"));
+    && l2HostingSource.Contains("CommandMarker") && l2HostingSource.Contains("MaxPendingCommands")
+    && l2OverlaysSource.Contains("ChildInvokeFlag") && l2OverlaysSource.Contains("EncodeChildInvokeRequestId")
+    && l2OverlaysSource.Contains("TryDecodeChildInvokeRequestId"));
 
 if (l2Failures > 0)
 {
