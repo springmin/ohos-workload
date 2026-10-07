@@ -42,7 +42,7 @@ on:
         description: 'maui-ohos commit SHA to compile (defaults to the pinned feature/openharmony tip)'
         required: false
         type: string
-        default: 'd1d485bb67ad6f966f3029123340aad2691928fa'
+        default: '277967cc56fb9339b0c6a0d09c4b5f772a3f8529'
 
 # Least privilege: the job only reads this repository and the public springmin/maui-ohos fork;
 # no step pushes anywhere.
@@ -51,7 +51,12 @@ permissions:
 
 # Reproducible cross-repo compile: the MAUI slice is checked out at an exact commit, not the
 # mutable feature/openharmony branch, so a push to the fork cannot change what this gate compiles.
-# The default is the L3 merged slice tip: d1d485bb67 (the L3 a11y partition release + the child
+# The default is the L3 M2-M4 merged slice tip: 277967cc (the per-window identity handshake +
+# the per-window IME/a11y/overlay/Back partitioning + the per-window child ArkWeb pool; managed +
+# shell
+# source pins, so the rasterizer output does not move and the interaction harness moves to
+# 731/734 floor 714; export 164/164 and abc 534,192 unchanged; merged into feature/openharmony
+# as 277967cc) on d1d485bb67 (the L3 a11y partition release + the child
 # hybrid/Blazor asset bridge + the MULTIWINDOW-L3 M1 two-session registry; managed + shell
 # source pins, so the rasterizer output does not move and the interaction harness moves to
 # 701/704 floor 684; merged into feature/openharmony as d1d485bb67) on bb6b06990d (the L2-a per-window a11y
@@ -141,11 +146,11 @@ permissions:
 # + T2 WebView CookieContainer sync 8241f1b3, on top of the W-series webview wiring d6325990 and
 # the SEC-SCAN-3 S3-DL3 dot-dot deep-link rejection, on top of the P2c deep-link routing, P2b-IMG,
 # P1b-LIST and P1a-ANIM batches).
-# The interaction harness pins 688 checks / total 690 / floor 670; advance the pin in lockstep
+# The interaction harness pins 731 checks / total 734 / floor 714; advance the pin in lockstep
 # with the interaction gate and change it deliberately (workflow_dispatch can compile any other
 # commit SHA).
 env:
-  MAUI_OHOS_REF: ${{ github.event.inputs.maui_ohos_ref || 'd1d485bb67ad6f966f3029123340aad2691928fa' }}
+  MAUI_OHOS_REF: ${{ github.event.inputs.maui_ohos_ref || '277967cc56fb9339b0c6a0d09c4b5f772a3f8529' }}
   # Same as the interaction gate: keep the setup-dotnet preview SDK in a cacheable per-user path
   # instead of the runner's /usr/share/dotnet; a newer 11.0.x preview is still downloaded (the
   # action re-resolves the channel), the cache only skips the ~200 MB download when it moved.

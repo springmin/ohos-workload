@@ -22,7 +22,7 @@ on:
         description: 'maui-ohos commit SHA to cross-check (defaults to the pinned slice tip)'
         required: false
         type: string
-        default: 'd1d485bb67ad6f966f3029123340aad2691928fa'
+        default: '277967cc56fb9339b0c6a0d09c4b5f772a3f8529'
   push:
     branches: [ master ]
   pull_request:
@@ -32,7 +32,12 @@ permissions:
 
 # Reproducible cross-repo check: the slice is checked out at an exact commit, not the mutable
 # feature/openharmony branch, so a push to the fork cannot change what this gate verifies.
-# Current tip: d1d485bb67 (L3 merged: the a11y close-hook release adds
+# Current tip: 277967cc (L3 M2-M4 merged: the per-window identity handshake ack (shell op7), the
+# per-window IME/a11y/overlay/Back partitioning and the per-window child ArkWeb pool (child
+# hybrid invokes dispatched by window; two subwindows each own their slot 0) are managed/shell/
+# host changes with no new managed DllImport - the M4 host adds only the JS-side
+# unregisterChildWebSink NAPI - so the export set stays 164/164 and the shell abc is 534,192;
+# suite 731/734 floor 714) on d1d485bb67 (L3 merged: the a11y close-hook release adds
 # ohos_host_accessibility_release_for, so the export set moves to 164/164; the child
 # hybrid/Blazor asset bridge routes child-tagged invokes through the existing
 # ohos_host_hwv_invoke_result and the M1 two-session registry adds no DllImport) on bb6b06990d (MULTIWINDOW-L2 merged: the L2-a per-window a11y provider adds six
@@ -128,7 +133,7 @@ permissions:
 # 151/151).
 # Advance the pin deliberately, in lockstep with the interaction/pixel gates.
 env:
-  MAUI_OHOS_REF: ${{ github.event.inputs.maui_ohos_ref || 'd1d485bb67ad6f966f3029123340aad2691928fa' }}
+  MAUI_OHOS_REF: ${{ github.event.inputs.maui_ohos_ref || '277967cc56fb9339b0c6a0d09c4b5f772a3f8529' }}
 
 jobs:
   contract:
