@@ -12,7 +12,7 @@ using Microsoft.Maui.Platform;
 // after the fuzz tail) instead of letting every caller repeat its own threshold constant.
 VerifyLineCountingWriter verifyStdout = new(Console.Out);
 Console.SetOut(verifyStdout);
-const int verifyCheckTotal = 704;                     // +3 MULTIWINDOW-L3: the child hybrid-invoke codec (flag encode/decode, primary decode unchanged), the child-window dispatch (real invoke round trip on the owning handler) and the fail-closed unclaimed slot // +11 MULTIWINDOW-L3 M1: two managed subwindow sessions coexist (the second deferred OpenWindow on the free sub-2, per-window input/frame isolation, the shell-Closed and app-close targeted to one session, the capacity bound rejecting a third, and the shell/slice source pins) // +2 SEC-SCAN-6 C: the window close hook drops the child pool state and the a11y shadow frame + first-publish marker // +7 MULTIWINDOW-L2 a W1: per-window a11y frame lookup/view ownership, window-routed actions (sub vs primary vs unknown), the per-instance listener thunk, the provider-gate local degrade, the subwindow password pin, the per-window modal gate and the host/shell/slice source pins // +18 MULTIWINDOW-L2 b: the child capacity wire (state-carried and URL-carried count shapes), the subwindow ArkWeb second host (the window-scoped OpenHarmonyChildWeb pool + transport + ready gate, a real child-window WebView routed through it, the primary pool/transport isolation, and the four-pack shell/host/slice source pins) and the SEC-SCAN-6 primary-window-tag rejection pin // +2 MULTIWINDOW-L M4-04: the per-window pinch channel (a child-tagged stream reaches the child renderer only; main/unknown/empty ids never do) // +16 MULTIWINDOW-L M4 first wave: the per-window focus/suspend-resume state machine (Activated/Deactivated/Stopped/Resumed, idempotent, primary untouched, the shell-Closed session belt), the per-window keyboard/IME wire (child Entry focus -> op 6 surface-tagged payload, text/composition/submit routed to the child only, window-tagged keys, per-window Back, text ports, the primary-to-child global-text isolation pin (SEC-SCAN-5c)) and the per-window accessibility frame + alert ownership partition, plus the four-pack shell/slice source pins // +14 MULTIWINDOW-L M3 shell subwindow XComponent + production consumption: the app host consumes the tagged channel itself, a deferred OpenWindow asks the shell for the subwindow surface and RouteSurface binds/first-frames/adopts it, its input/frame/close/reopen are window-id routed with no main-window interference, plus the four-pack shell source pins (XComponent id = surface id, register/unregister lifecycle, drawn fallback) and the host/slice per-window draw-target pins // +22 MULTIWINDOW-L M2 per-window renderer: the dual-window headless pin (the mw-l/m2 scratch assertions, driven through the hosting bridge's window-id tagged thunks and the slice's RouteSurface/RouteTouch/RouteFrame adapters, with one CanvasFactory recording canvas per window) plus the bridge id and late-subscriber replay contract // +6 MULTIWINDOW-M in-app subwindow: the create/move/resize/show/close command set and its JSON payloads, the lifecycle/geometry state machine, the routed touch event, malformed/unknown payload robustness, the off-device degradation, and the shell/host/slice source+pack-identity contract // +1 SEC-SCAN-4 a11y password masking (plaintext must not be published to the shadow tree; bullets mirror the drawn text) // +1 SEC-SCAN-4 off-surface cull boundary (zero-size frame draws, shadow extent rescues, off-surface Image keeps the decode pipeline) // +1 CG2-R2R host interp R2R opt-out pin (DOTNET_ReadyToRun=0 inside the mode-3 block; the runtime already forces it for InterpMode>=2, the host makes it explicit and the device retest holds IL parity) // +1 AOT-STARTUP first-use ArkWeb overlay mount gate (state flag + ensureWebSlot flip/log + build gate order) protects the -262 ms AOT startup fix + host identical-context replay skip pin // +2 MULTIWINDOW-S surface resize: the Created/Changed arrange gate (Destroyed/0x0 rejected) + the Changed replay re-arranging the window frame while Destroyed keeps it (A0 form adaptation)                     // +2 WASM-MIME .wasm -> application/wasm mapping in every pack shell + the standalone rawfile host / the host's `wasm mime:` + `wasm fallback:` instrumentation and the pack-host.sh --bad-mime negative control                     // +2 FIX-A11YFLYOUT a11y walk FlyoutPage Detail/presented-Flyout subtree pins (device nodeCount=1 root cause)                     // +1 FIX-A11YBUTTON shell self-check absolute position + z-order-above-overlays pin (button reachable with/without a live web control)                     // +3 AUTODISCONNECT layout-removal detach (dynamic slot destroy + claim release + handler kept) / re-add rebuild (ensure + registration replay on the reclaimed slot) / slice watcher-and-owner wiring pins                     // +6 SLOTS-DYNAMIC dynamic slot growth (ensure/destroy commands), capacity downgrade/event, configurable 2/4 limits, shell lazy/defer pins, 3rd-overlay sample                     // documented full [verify] line count (+3 FIX-SLICERACE concurrent connect/host storm/ pins, +5 L6 screenshot Jpeg format/quality capture/fallback/helper + title heartbeat behavior/source, +6 LEGACY toolbar primary/overflow/icon/events/shell/source, +3 SAMPLE-FIX hybrid bootstrap pack staging / read-only payload handler / stock-script demo, +4 MULTI-OVERLAY-FULL LRU pool/invoke slot codec/per-slot hybrid shell/slice owner wiring, +4 MULTI-OVL slot pool/wire codec/two-overlay shell/slice wiring, +4 FIX-BACKSIZE Back-press forwarding/drawer drill/ shell drawer/BlazorWebView desired size, +4 FIX-WVP overlay px->vp/degenerate-frame/hybrid-overlay arbitration/suspend-restore (shell+slice), +2 FIX-DISMISS flyout drawer dismiss under the device display conditions, +4 FIX-HOME home page arrange/draw (NavigationPage-in-TabbedPage descent), +4 MS-MODE runtime mode switch, +10 P2c-DEEPLINK, +4 P2b-IMG, +16 P1b-LIST, +10 P1a-ANIM, +2 SEC3 storage/deep-link pins, +5 W-series WebView wiring, +3 T1 InputView mapping, +4 T2 WebView gaps, +4 T3 GraphicsView interaction, +7 T10 modal accessibility, +4 T4 Label formatted text, +4 T5 layout semantics, +6 T7 DatePicker calendar/min-max, +4 T9 window title bar, +4 T11 diagnostics overlay, +1 N2 empty ContentPage arrangement, +6 T8 TableView, +5 T8 uneven rows, +7 T6 RTL flow direction, +5 T22 MainThread bridge, +2 FIX-TABBED tabbed CurrentPage, +4 T13 group footer view/N3 picker IsOpen, +5 T21 system font scale, +3 T21 font scale source wiring, +2 A11Y-TABBED tabbed accessibility, +3 N1 host multi-pointer, +5 T12 CarouselView group slides, +7 T14 rich shell flyout, +10 T14 flyout leftovers (MenuItemTemplate/FlyoutContent/AsMultipleItems), +2 FIX-SHELL shell CurrentPage, +2 A11Y-SHELL shell accessibility, +7 T15 rich Shell.TitleView, +8 T16 structured menus, +3 N4 TitleBar accessibility row, +3 T18 Essentials Map, +4 N5 overlay passthrough suppression, +5 N6 window decorations, +4 T20 media bridge, +3 B2 wasm site in a MAUI WebView, +2 W10 NativeAOT managed entry (host libs-dir resolution + shell AOT payload probe), +1 FIX-JSCALL Blazor IPC enum/struct AOT roots (JSCallResultType/JSCallType/NavigationOptions in the slice context + handler static-ctor touch + stub click-probe removed), +3 INTERP-DRAW2 draw-cost seam kinds / off-surface cull / translated-node rescue))
+const int verifyCheckTotal = 719;                     // +15 MULTIWINDOW-L3 M2: the per-window identity handshake (an out-of-order claim buffered then acked by its Created, duplicate ready without a second ack, an unknown id closed fail-closed, a retired generation declined, reopen with a fresh generation, churn x20) and the two-window lifecycle closure (suspend/resume exactly once per child, focus isolation, focus ignored while stopped, targeted close, late events after close) plus the four-pack shell and slice source pins // +3 MULTIWINDOW-L3: the child hybrid-invoke codec (flag encode/decode, primary decode unchanged), the child-window dispatch (real invoke round trip on the owning handler) and the fail-closed unclaimed slot // +11 MULTIWINDOW-L3 M1: two managed subwindow sessions coexist (the second deferred OpenWindow on the free sub-2, per-window input/frame isolation, the shell-Closed and app-close targeted to one session, the capacity bound rejecting a third, and the shell/slice source pins) // +2 SEC-SCAN-6 C: the window close hook drops the child pool state and the a11y shadow frame + first-publish marker // +7 MULTIWINDOW-L2 a W1: per-window a11y frame lookup/view ownership, window-routed actions (sub vs primary vs unknown), the per-instance listener thunk, the provider-gate local degrade, the subwindow password pin, the per-window modal gate and the host/shell/slice source pins // +18 MULTIWINDOW-L2 b: the child capacity wire (state-carried and URL-carried count shapes), the subwindow ArkWeb second host (the window-scoped OpenHarmonyChildWeb pool + transport + ready gate, a real child-window WebView routed through it, the primary pool/transport isolation, and the four-pack shell/host/slice source pins) and the SEC-SCAN-6 primary-window-tag rejection pin // +2 MULTIWINDOW-L M4-04: the per-window pinch channel (a child-tagged stream reaches the child renderer only; main/unknown/empty ids never do) // +16 MULTIWINDOW-L M4 first wave: the per-window focus/suspend-resume state machine (Activated/Deactivated/Stopped/Resumed, idempotent, primary untouched, the shell-Closed session belt), the per-window keyboard/IME wire (child Entry focus -> op 6 surface-tagged payload, text/composition/submit routed to the child only, window-tagged keys, per-window Back, text ports, the primary-to-child global-text isolation pin (SEC-SCAN-5c)) and the per-window accessibility frame + alert ownership partition, plus the four-pack shell/slice source pins // +14 MULTIWINDOW-L M3 shell subwindow XComponent + production consumption: the app host consumes the tagged channel itself, a deferred OpenWindow asks the shell for the subwindow surface and RouteSurface binds/first-frames/adopts it, its input/frame/close/reopen are window-id routed with no main-window interference, plus the four-pack shell source pins (XComponent id = surface id, register/unregister lifecycle, drawn fallback) and the host/slice per-window draw-target pins // +22 MULTIWINDOW-L M2 per-window renderer: the dual-window headless pin (the mw-l/m2 scratch assertions, driven through the hosting bridge's window-id tagged thunks and the slice's RouteSurface/RouteTouch/RouteFrame adapters, with one CanvasFactory recording canvas per window) plus the bridge id and late-subscriber replay contract // +6 MULTIWINDOW-M in-app subwindow: the create/move/resize/show/close command set and its JSON payloads, the lifecycle/geometry state machine, the routed touch event, malformed/unknown payload robustness, the off-device degradation, and the shell/host/slice source+pack-identity contract // +1 SEC-SCAN-4 a11y password masking (plaintext must not be published to the shadow tree; bullets mirror the drawn text) // +1 SEC-SCAN-4 off-surface cull boundary (zero-size frame draws, shadow extent rescues, off-surface Image keeps the decode pipeline) // +1 CG2-R2R host interp R2R opt-out pin (DOTNET_ReadyToRun=0 inside the mode-3 block; the runtime already forces it for InterpMode>=2, the host makes it explicit and the device retest holds IL parity) // +1 AOT-STARTUP first-use ArkWeb overlay mount gate (state flag + ensureWebSlot flip/log + build gate order) protects the -262 ms AOT startup fix + host identical-context replay skip pin // +2 MULTIWINDOW-S surface resize: the Created/Changed arrange gate (Destroyed/0x0 rejected) + the Changed replay re-arranging the window frame while Destroyed keeps it (A0 form adaptation)                     // +2 WASM-MIME .wasm -> application/wasm mapping in every pack shell + the standalone rawfile host / the host's `wasm mime:` + `wasm fallback:` instrumentation and the pack-host.sh --bad-mime negative control                     // +2 FIX-A11YFLYOUT a11y walk FlyoutPage Detail/presented-Flyout subtree pins (device nodeCount=1 root cause)                     // +1 FIX-A11YBUTTON shell self-check absolute position + z-order-above-overlays pin (button reachable with/without a live web control)                     // +3 AUTODISCONNECT layout-removal detach (dynamic slot destroy + claim release + handler kept) / re-add rebuild (ensure + registration replay on the reclaimed slot) / slice watcher-and-owner wiring pins                     // +6 SLOTS-DYNAMIC dynamic slot growth (ensure/destroy commands), capacity downgrade/event, configurable 2/4 limits, shell lazy/defer pins, 3rd-overlay sample                     // documented full [verify] line count (+3 FIX-SLICERACE concurrent connect/host storm/ pins, +5 L6 screenshot Jpeg format/quality capture/fallback/helper + title heartbeat behavior/source, +6 LEGACY toolbar primary/overflow/icon/events/shell/source, +3 SAMPLE-FIX hybrid bootstrap pack staging / read-only payload handler / stock-script demo, +4 MULTI-OVERLAY-FULL LRU pool/invoke slot codec/per-slot hybrid shell/slice owner wiring, +4 MULTI-OVL slot pool/wire codec/two-overlay shell/slice wiring, +4 FIX-BACKSIZE Back-press forwarding/drawer drill/ shell drawer/BlazorWebView desired size, +4 FIX-WVP overlay px->vp/degenerate-frame/hybrid-overlay arbitration/suspend-restore (shell+slice), +2 FIX-DISMISS flyout drawer dismiss under the device display conditions, +4 FIX-HOME home page arrange/draw (NavigationPage-in-TabbedPage descent), +4 MS-MODE runtime mode switch, +10 P2c-DEEPLINK, +4 P2b-IMG, +16 P1b-LIST, +10 P1a-ANIM, +2 SEC3 storage/deep-link pins, +5 W-series WebView wiring, +3 T1 InputView mapping, +4 T2 WebView gaps, +4 T3 GraphicsView interaction, +7 T10 modal accessibility, +4 T4 Label formatted text, +4 T5 layout semantics, +6 T7 DatePicker calendar/min-max, +4 T9 window title bar, +4 T11 diagnostics overlay, +1 N2 empty ContentPage arrangement, +6 T8 TableView, +5 T8 uneven rows, +7 T6 RTL flow direction, +5 T22 MainThread bridge, +2 FIX-TABBED tabbed CurrentPage, +4 T13 group footer view/N3 picker IsOpen, +5 T21 system font scale, +3 T21 font scale source wiring, +2 A11Y-TABBED tabbed accessibility, +3 N1 host multi-pointer, +5 T12 CarouselView group slides, +7 T14 rich shell flyout, +10 T14 flyout leftovers (MenuItemTemplate/FlyoutContent/AsMultipleItems), +2 FIX-SHELL shell CurrentPage, +2 A11Y-SHELL shell accessibility, +7 T15 rich Shell.TitleView, +8 T16 structured menus, +3 N4 TitleBar accessibility row, +3 T18 Essentials Map, +4 N5 overlay passthrough suppression, +5 N6 window decorations, +4 T20 media bridge, +3 B2 wasm site in a MAUI WebView, +2 W10 NativeAOT managed entry (host libs-dir resolution + shell AOT payload probe), +1 FIX-JSCALL Blazor IPC enum/struct AOT roots (JSCallResultType/JSCallType/NavigationOptions in the slice context + handler static-ctor touch + stub click-probe removed), +3 INTERP-DRAW2 draw-cost seam kinds / off-surface cull / translated-node rescue))
 const int verifyCheckFloor = verifyCheckTotal - 20;   // documented floor convention (total - 20)
 
 // A small image file for the Image handler.
@@ -14481,10 +14481,10 @@ foreach (string subWindowShellVersion in new[] { "1.0.0-preview.22", "1.0.0-prev
     }
     subWindowShellPinsOk &= subWindowIndex.Contains("registerSubWindowSink") &&
         subWindowIndex.Contains("createSubWindowWithOptions(childName, options)") &&
-        subWindowIndex.Contains("const childName: string = surfaceId.length > 0") &&
+        subWindowIndex.Contains("const childName: string = this.subWindowChildName(surfaceId, generation);") &&
         subWindowIndex.Contains("loadContentByName(SUB_WINDOW_ROUTE, storage)") &&
         subWindowIndex.Contains("handleSubWindowCommand(op, payload)") &&
-        subWindowIndex.Contains("notifySubWindowEvent(SUB_EVENT_SUSPENDED, '{}')") &&
+        subWindowIndex.Contains("suspended ? SUB_EVENT_SUSPENDED : SUB_EVENT_RESUMED") &&
         subWindowIndex.Contains("SUB_CMD_CLOSE") &&
         subWindowPage.Contains("routeName: 'ohos_dotnet_subwindow'") &&
         subWindowPage.Contains("dragEnabled") &&
@@ -15454,6 +15454,319 @@ if (m1Failures > 0)
 {
     throw new InvalidOperationException(
         $"{m1Failures} MULTIWINDOW-L3 M1 assertion(s) failed (the two managed subwindow sessions, their targeted close or the capacity bound regressed)");
+}
+
+// ---------------------------------------------------------------------------------------------
+// MULTIWINDOW-L3 M2: the per-window identity handshake and the lifecycle closure. The managed
+// side validates every child-page claim against the session it requested (a ready that arrived
+// before the shell's Created is buffered and answered when the Created validates its generation;
+// an unknown id is closed; a retired generation is ignored) and answers op 7; the app host
+// stops/resumes each child exactly once and bounds focus to the addressed window. The shell half
+// (own-window-name identity via UIContext.getWindowName, the per-child claim table, the op 7
+// validation and the ack-gated XComponent mount) is pinned in every pack's Index/SubWindow.ets,
+// and the slice half in maui-ohos.
+int m2idFailures = 0;
+void M2IdCheck(string name, bool ok)
+{
+    Console.WriteLine($"[verify] m2id {name} assert={ok}");
+    if (!ok)
+    {
+        m2idFailures++;
+    }
+}
+
+List<string> m2idCommands = new();
+OpenHarmonySubWindow.CommandSender = (op, payload) => { m2idCommands.Add($"{op}:{payload}"); return true; };
+
+// 1) Out-of-order identity: the page reports ready before the shell's Created report (device
+// order: loadContent runs before showWindow). The claim is buffered, then the Created validates
+// its generation and the managed side answers the handshake exactly once.
+OpenHarmonySubWindow.CreateManagedSurface("sub-a", "maui-child", 0, 0, 100, 100, null);
+OpenHarmonySubWindow.HandleNativeEvent((int)OpenHarmonySubWindowEventKind.PageReady,
+    "{\"id\":900,\"surfaceId\":\"sub-a\",\"gen\":7,\"name\":\"ohos_dotnet_subwindow__sub-a.g7\",\"status\":0}");
+bool m2idBuffered = OpenHarmonySubWindow.SessionCount == 0 && OpenHarmonySubWindow.PendingClaimCount == 1;
+m2idCommands.Clear();
+OpenHarmonySubWindow.HandleNativeEvent((int)OpenHarmonySubWindowEventKind.Created,
+    "{\"id\":900,\"surfaceId\":\"sub-a\",\"gen\":7}");
+bool m2idAcked = m2idCommands.Count(entry => entry.StartsWith("7:", StringComparison.Ordinal)
+        && entry.Contains("\"surfaceId\":\"sub-a\"", StringComparison.Ordinal)
+        && entry.Contains("\"id\":900", StringComparison.Ordinal)
+        && entry.Contains("\"gen\":7", StringComparison.Ordinal)) == 1
+    && OpenHarmonySubWindow.SessionCount == 1 && OpenHarmonySubWindow.PendingClaimCount == 0
+    && OpenHarmonySubWindow.IsSessionReady("sub-a") && OpenHarmonySubWindow.GenerationOf("sub-a") == 7
+    && OpenHarmonySubWindow.ShellWindowIdOf("sub-a") == 900;
+M2IdCheck($"out-of-order buffered={m2idBuffered} acked={m2idAcked}", m2idBuffered && m2idAcked);
+
+// 2) A duplicate ready claim for the live session is idempotent: no second ack.
+m2idCommands.Clear();
+OpenHarmonySubWindow.HandleNativeEvent((int)OpenHarmonySubWindowEventKind.PageReady,
+    "{\"id\":900,\"surfaceId\":\"sub-a\",\"gen\":7,\"status\":0}");
+M2IdCheck("duplicate ready no re-ack", m2idCommands.Count(entry => entry.StartsWith("7:", StringComparison.Ordinal)) == 0
+    && OpenHarmonySubWindow.IsSessionReady("sub-a"));
+
+// 3) An unknown id (never requested, never created) is closed fail-closed, never bound.
+m2idCommands.Clear();
+OpenHarmonySubWindow.HandleNativeEvent((int)OpenHarmonySubWindowEventKind.PageReady,
+    "{\"id\":901,\"surfaceId\":\"sub-zzz\",\"gen\":1,\"status\":0}");
+M2IdCheck("unknown id closed fail-closed",
+    m2idCommands.Count(entry => entry.StartsWith("5:", StringComparison.Ordinal)
+        && entry.Contains("\"surfaceId\":\"sub-zzz\"", StringComparison.Ordinal)) == 1
+    && m2idCommands.All(entry => !entry.StartsWith("7:", StringComparison.Ordinal))
+    && OpenHarmonySubWindow.SessionCount == 1 && !OpenHarmonySubWindow.IsSessionReady("sub-zzz"));
+
+// 4) A ready claim from a retired generation never readies the live session.
+OpenHarmonySubWindow.CreateManagedSurface("sub-b", "maui-child", 0, 0, 100, 100, null);
+OpenHarmonySubWindow.HandleNativeEvent((int)OpenHarmonySubWindowEventKind.Created,
+    "{\"id\":902,\"surfaceId\":\"sub-b\",\"gen\":2}");
+m2idCommands.Clear();
+OpenHarmonySubWindow.HandleNativeEvent((int)OpenHarmonySubWindowEventKind.PageReady,
+    "{\"id\":902,\"surfaceId\":\"sub-b\",\"gen\":1,\"status\":0}");
+bool m2idStaleDeclined = !OpenHarmonySubWindow.IsSessionReady("sub-b")
+    && m2idCommands.All(entry => !entry.StartsWith("7:", StringComparison.Ordinal));
+OpenHarmonySubWindow.HandleNativeEvent((int)OpenHarmonySubWindowEventKind.PageReady,
+    "{\"id\":902,\"surfaceId\":\"sub-b\",\"gen\":2,\"status\":0}");
+bool m2idCurrentAccepted = OpenHarmonySubWindow.IsSessionReady("sub-b")
+    && m2idCommands.Count(entry => entry.StartsWith("7:", StringComparison.Ordinal)
+        && entry.Contains("\"surfaceId\":\"sub-b\"", StringComparison.Ordinal)
+        && entry.Contains("\"gen\":2", StringComparison.Ordinal)) == 1;
+M2IdCheck($"stale declined={m2idStaleDeclined} current accepted={m2idCurrentAccepted}",
+    m2idStaleDeclined && m2idCurrentAccepted);
+
+// 5) Two sessions coexist and the legacy single-child mirror tracks the last created one.
+M2IdCheck("sessions coexist", OpenHarmonySubWindow.SessionCount == 2
+    && OpenHarmonySubWindow.CurrentSurfaceId == "sub-b"
+    && OpenHarmonySubWindow.SurfaceId == "sub-b");
+OpenHarmonySubWindow.Close("sub-a");
+OpenHarmonySubWindow.Close("sub-b");
+m2idCommands.Clear();
+
+// 6) Lifecycle: the app host carries sub-1 (the M4 input window) and a new sub-2. The M4 checks
+// left sub-1 stopped, so normalize it first; then a per-session suspend stops each child exactly
+// once, a duplicate report is a no-op and the primary window is untouched.
+List<string> m2idRequests = new();
+m2Host.SubWindowSurfaceRequester = id => { m2idRequests.Add(id); return true; };
+M4InputContent m2idContentB = new("m2id-b-label", "m2id-b-entry", "m2id-b-button");
+Window m2idWindowB = new(m2idContentB.Page);
+m2Application.OpenWindow(m2idWindowB);
+M2Surface("sub-2", Microsoft.OpenHarmony.Hosting.OpenHarmonySurfaceState.Created, 660, 440);
+OpenHarmonyWindowHost? m2idHostA = m2Host.FindSecondaryWindow("sub-1");
+OpenHarmonyWindowHost? m2idHostB = m2Host.FindSecondaryWindow("sub-2");
+bool m2idTwoWindows = m2idRequests.Count == 1 && m2idRequests[0] == "sub-2"
+    && m2idHostA is not null && m2idHostB is not null
+    && ReferenceEquals(m2idHostB!.Window, m2idWindowB) && m2Application.Windows.Count == 3;
+OpenHarmonySubWindow.HandleNativeEvent((int)OpenHarmonySubWindowEventKind.Resumed,
+    "{\"surfaceId\":\"sub-1\"}");
+int m2idAStop = m2idHostA!.StoppedCount;
+int m2idBStop = m2idHostB!.StoppedCount;
+int m2idAResume = m2idHostA.ResumedCount;
+int m2idBResume = m2idHostB.ResumedCount;
+OpenHarmonySubWindow.HandleNativeEvent((int)OpenHarmonySubWindowEventKind.Suspended,
+    "{\"surfaceId\":\"sub-1\"}");
+OpenHarmonySubWindow.HandleNativeEvent((int)OpenHarmonySubWindowEventKind.Suspended,
+    "{\"surfaceId\":\"sub-2\"}");
+OpenHarmonySubWindow.HandleNativeEvent((int)OpenHarmonySubWindowEventKind.Suspended,
+    "{\"surfaceId\":\"sub-1\"}");
+M2IdCheck("lifecycle suspend each once", m2idTwoWindows
+    && m2idHostA.StoppedCount == m2idAStop + 1 && m2idHostB.StoppedCount == m2idBStop + 1
+    && m2idHostA.IsStopped && m2idHostB.IsStopped
+    && ReferenceEquals(m2Host.Window, m2MainWindow));
+
+// 7) A duplicate resume is a no-op too; each child resumes exactly once.
+OpenHarmonySubWindow.HandleNativeEvent((int)OpenHarmonySubWindowEventKind.Resumed,
+    "{\"surfaceId\":\"sub-1\"}");
+OpenHarmonySubWindow.HandleNativeEvent((int)OpenHarmonySubWindowEventKind.Resumed,
+    "{\"surfaceId\":\"sub-2\"}");
+OpenHarmonySubWindow.HandleNativeEvent((int)OpenHarmonySubWindowEventKind.Resumed,
+    "{\"surfaceId\":\"sub-1\"}");
+M2IdCheck("lifecycle resume each once",
+    m2idHostA.ResumedCount == m2idAResume + 1 && m2idHostB.ResumedCount == m2idBResume + 1
+    && !m2idHostA.IsStopped && !m2idHostB.IsStopped);
+
+// 8) Focus switch A -> B moves only the addressed windows. Normalize first (B deactivated, A
+// activated), then the switch drives exactly the two events and the counters prove isolation.
+OpenHarmonySubWindow.HandleNativeEvent((int)OpenHarmonySubWindowEventKind.Inactive,
+    "{\"surfaceId\":\"sub-2\"}");
+OpenHarmonySubWindow.HandleNativeEvent((int)OpenHarmonySubWindowEventKind.Active,
+    "{\"surfaceId\":\"sub-1\"}");
+int m2idAActivated = m2idHostA.ActivatedCount;
+int m2idADeactivated = m2idHostA.DeactivatedCount;
+int m2idBActivated = m2idHostB.ActivatedCount;
+int m2idBDeactivated = m2idHostB.DeactivatedCount;
+OpenHarmonySubWindow.HandleNativeEvent((int)OpenHarmonySubWindowEventKind.Inactive,
+    "{\"surfaceId\":\"sub-1\"}");
+OpenHarmonySubWindow.HandleNativeEvent((int)OpenHarmonySubWindowEventKind.Active,
+    "{\"surfaceId\":\"sub-2\"}");
+M2IdCheck("lifecycle focus isolation",
+    m2idHostA.DeactivatedCount == m2idADeactivated + 1 && m2idHostA.ActivatedCount == m2idAActivated
+    && m2idHostB.ActivatedCount == m2idBActivated + 1 && m2idHostB.DeactivatedCount == m2idBDeactivated);
+
+// 9) Focus events while suspended are ignored (they must not clear the stopped state or deliver
+// an event the matching resume owns) - the duplicate-Stopped door the M1 host left open.
+OpenHarmonySubWindow.HandleNativeEvent((int)OpenHarmonySubWindowEventKind.Suspended,
+    "{\"surfaceId\":\"sub-1\"}");
+int m2idAActivatedStopped = m2idHostA.ActivatedCount;
+int m2idAStopped2 = m2idHostA.StoppedCount;
+OpenHarmonySubWindow.HandleNativeEvent((int)OpenHarmonySubWindowEventKind.Active,
+    "{\"surfaceId\":\"sub-1\"}");
+OpenHarmonySubWindow.HandleNativeEvent((int)OpenHarmonySubWindowEventKind.Suspended,
+    "{\"surfaceId\":\"sub-1\"}");
+bool m2idFocusWhileStopped = m2idHostA.IsStopped
+    && m2idHostA.ActivatedCount == m2idAActivatedStopped
+    && m2idHostA.StoppedCount == m2idAStopped2;
+OpenHarmonySubWindow.HandleNativeEvent((int)OpenHarmonySubWindowEventKind.Resumed,
+    "{\"surfaceId\":\"sub-1\"}");
+M2IdCheck("lifecycle late active while stopped",
+    m2idFocusWhileStopped && !m2idHostA.IsStopped && m2idHostA.ResumedCount == m2idAResume + 2);
+
+// 10) The shell's targeted Closed report drops exactly the named child; the sibling survives.
+OpenHarmonySubWindow.HandleNativeEvent((int)OpenHarmonySubWindowEventKind.Closed,
+    "{\"id\":2,\"x\":0,\"y\":0,\"w\":0,\"h\":0,\"surfaceId\":\"sub-2\"}");
+M2IdCheck("lifecycle targeted close isolation", m2Host.FindSecondaryWindow("sub-2") is null
+    && m2Host.FindSecondaryWindow("sub-1") is not null && m2Application.Windows.Count == 2);
+
+// 11) A late ready claim for the closed id is closed fail-closed (it does not recreate the
+// session or the window), and a late Closed/Active for it cannot revive anything either.
+m2idCommands.Clear();
+OpenHarmonySubWindow.HandleNativeEvent((int)OpenHarmonySubWindowEventKind.PageReady,
+    "{\"id\":2,\"surfaceId\":\"sub-2\",\"gen\":2,\"status\":0}");
+M2IdCheck("lifecycle late after close fail-closed",
+    m2idCommands.Count(entry => entry.StartsWith("5:", StringComparison.Ordinal)
+        && entry.Contains("\"surfaceId\":\"sub-2\"", StringComparison.Ordinal)) == 1
+    && m2idCommands.All(entry => !entry.StartsWith("7:", StringComparison.Ordinal))
+    && m2Host.FindSecondaryWindow("sub-2") is null
+    && OpenHarmonySubWindow.SessionCount == 0 && OpenHarmonySubWindow.PendingClaimCount == 0);
+
+// 12) Reopen: the freed id gets a new generation. A ready claim from the retired generation is
+// ignored; the new generation readies the session and is acked exactly once.
+m2idRequests.Clear();
+M4InputContent m2idContentC = new("m2id-c-label", "m2id-c-entry", "m2id-c-button");
+Window m2idWindowC = new(m2idContentC.Page);
+m2Application.OpenWindow(m2idWindowC);
+M2Surface("sub-2", Microsoft.OpenHarmony.Hosting.OpenHarmonySurfaceState.Created, 640, 480);
+bool m2idReopened = m2idRequests.Count == 1 && m2idRequests[0] == "sub-2"
+    && ReferenceEquals(m2Host.FindSecondaryWindow("sub-2")!.Window, m2idWindowC);
+m2idCommands.Clear();
+OpenHarmonySubWindow.HandleNativeEvent((int)OpenHarmonySubWindowEventKind.Created,
+    "{\"id\":910,\"surfaceId\":\"sub-2\",\"gen\":9}");
+OpenHarmonySubWindow.HandleNativeEvent((int)OpenHarmonySubWindowEventKind.PageReady,
+    "{\"id\":910,\"surfaceId\":\"sub-2\",\"gen\":3,\"status\":0}");
+bool m2idReopenStale = !OpenHarmonySubWindow.IsSessionReady("sub-2")
+    && m2idCommands.All(entry => !entry.StartsWith("7:", StringComparison.Ordinal));
+OpenHarmonySubWindow.HandleNativeEvent((int)OpenHarmonySubWindowEventKind.PageReady,
+    "{\"id\":910,\"surfaceId\":\"sub-2\",\"gen\":9,\"status\":0}");
+bool m2idReopenFresh = OpenHarmonySubWindow.IsSessionReady("sub-2")
+    && OpenHarmonySubWindow.GenerationOf("sub-2") == 9
+    && m2idCommands.Count(entry => entry.StartsWith("7:", StringComparison.Ordinal)
+        && entry.Contains("\"gen\":9", StringComparison.Ordinal)) == 1;
+M2IdCheck($"lifecycle reopen new generation bound={m2idReopened} stale={m2idReopenStale} fresh={m2idReopenFresh}",
+    m2idReopened && m2idReopenStale && m2idReopenFresh);
+OpenHarmonySubWindow.HandleNativeEvent((int)OpenHarmonySubWindowEventKind.Closed,
+    "{\"id\":910,\"x\":0,\"y\":0,\"w\":0,\"h\":0,\"surfaceId\":\"sub-2\"}");
+
+// 13) Churn x20: each create/ready/close cycle is a fresh generation with exactly one ack and no
+// residue; the requested/session/pending tables return to empty.
+int m2idChurnAcks = 0;
+bool m2idChurnClean = true;
+for (int m2idChurn = 0; m2idChurn < 20; m2idChurn++)
+{
+    int m2idGeneration = m2idChurn + 1;
+    int m2idShellId = 5000 + m2idChurn;
+    OpenHarmonySubWindow.CreateManagedSurface("sub-churn", "maui-child", 0, 0, 100, 100, null);
+    m2idCommands.Clear();
+    OpenHarmonySubWindow.HandleNativeEvent((int)OpenHarmonySubWindowEventKind.Created,
+        $"{{\"id\":{m2idShellId},\"surfaceId\":\"sub-churn\",\"gen\":{m2idGeneration}}}");
+    OpenHarmonySubWindow.HandleNativeEvent((int)OpenHarmonySubWindowEventKind.PageReady,
+        $"{{\"id\":{m2idShellId},\"surfaceId\":\"sub-churn\",\"gen\":{m2idGeneration},\"status\":0}}");
+    m2idChurnAcks += m2idCommands.Count(entry => entry.StartsWith("7:", StringComparison.Ordinal));
+    m2idChurnClean &= OpenHarmonySubWindow.IsSessionReady("sub-churn")
+        && OpenHarmonySubWindow.GenerationOf("sub-churn") == m2idGeneration;
+    OpenHarmonySubWindow.HandleNativeEvent((int)OpenHarmonySubWindowEventKind.Closed,
+        $"{{\"id\":{m2idShellId},\"surfaceId\":\"sub-churn\"}}");
+    m2idChurnClean &= OpenHarmonySubWindow.SessionCount == 0 && OpenHarmonySubWindow.PendingClaimCount == 0;
+}
+M2IdCheck($"churn x20 handshakes acked={m2idChurnAcks}", m2idChurnAcks == 20 && m2idChurnClean);
+OpenHarmonySubWindow.CommandSender = null;
+m2Host.SubWindowSurfaceRequester = null;
+
+// 14) Shell source pins: every pack carries the deterministic identity handshake (own window
+// name, claim table, op 7 validation, ack-gated mount, generation in the child name, session
+// liveness on every callback) and the four packs stay byte-identical.
+bool m2idShellPinsOk = true;
+string m2idShellFirst = string.Empty;
+string m2idPageFirst = string.Empty;
+foreach (string m2idShellVersion in new[] { "1.0.0-preview.22", "1.0.0-preview.23", "1.0.0-preview.24", "1.0.0-preview.28" })
+{
+    string m2idIndex = FindHostSource($"packs/Microsoft.OpenHarmony.Sdk/{m2idShellVersion}/templates/ets/pages/Index.ets") is { } m2idIndexPath
+        ? File.ReadAllText(m2idIndexPath) : string.Empty;
+    string m2idPage = FindHostSource($"packs/Microsoft.OpenHarmony.Sdk/{m2idShellVersion}/templates/ets/pages/SubWindow.ets") is { } m2idPagePath
+        ? File.ReadAllText(m2idPagePath) : string.Empty;
+    if (m2idShellFirst.Length == 0)
+    {
+        m2idShellFirst = m2idIndex;
+        m2idPageFirst = m2idPage;
+    }
+    else
+    {
+        m2idShellPinsOk &= m2idIndex == m2idShellFirst;
+        m2idShellPinsOk &= m2idPage == m2idPageFirst;
+    }
+    m2idShellPinsOk &= m2idIndex.Contains("const SUB_CMD_IDENTITY: number = 7")
+        && m2idIndex.Contains("const SUB_WINDOW_CLAIM_KEY: string = 'ohos_dotnet_subwindow_claim'")
+        && m2idIndex.Contains("const SUB_WINDOW_IDENTITY_KEY: string = 'ohos_dotnet_subwindow_identity'")
+        && m2idIndex.Contains("const SUB_WINDOW_GENERATION_SEPARATOR: string = '.g'")
+        && m2idIndex.Contains("private subWindowChildName(")
+        && m2idIndex.Contains("private confirmSubWindowIdentity(")
+        && m2idIndex.Contains("private publishSubWindowClaim(")
+        && m2idIndex.Contains("private withdrawSubWindowClaim(")
+        && m2idIndex.Contains("private clearSubWindowIdentity(")
+        && m2idIndex.Contains("private subWindowRefPayload(")
+        && m2idIndex.Contains("ack.gen === session.generation")
+        && m2idIndex.Contains("claimName: childName")
+        && m2idIndex.Contains("if (this.subWindows.get(surfaceId) === session) {")
+        && m2idIndex.Contains("this.notifySubWindowEvent(op, this.subWindowRefPayload(session))")
+        && m2idIndex.Contains("this.withdrawSubWindowClaim(session)")
+        && m2idIndex.Contains("op !== SUB_CMD_IDENTITY");
+    m2idShellPinsOk &= m2idPage.Contains("getUIContext().getWindowName()")
+        && m2idPage.Contains("const SUB_WINDOW_GENERATION_SEPARATOR: string = '.g'")
+        && m2idPage.Contains("private findSubWindowClaim(")
+        && m2idPage.Contains("private onIdentityAck()")
+        && m2idPage.Contains("@StorageLink('ohos_dotnet_subwindow_identity')")
+        && m2idPage.Contains("identityConfirmed: boolean = false")
+        && m2idPage.Contains("identityRejected: boolean = false")
+        && m2idPage.Contains("this.surfaceId.length > 0 && this.identityConfirmed")
+        && m2idPage.Contains("no matching shell claim for surface=")
+        && m2idPage.Contains("subwindow identity confirmed:")
+        && m2idPage.Contains("!this.windowIsOwn")
+        && m2idPage.Contains("this.windowIsOwn = this.ownName.length > 0");
+}
+M2IdCheck("shell source", m2idShellPinsOk && m2idShellFirst.Length > 0 && m2idPageFirst.Length > 0);
+
+// 15) Slice source pins: the managed session registry, the buffered claim, the identity ack and
+// the stopped-window focus guard.
+string m2idSlideHostSource = FindHostSource("OpenHarmonyWindowHost.cs") is { } m2idSlideHostPath
+    ? File.ReadAllText(m2idSlideHostPath) : string.Empty;
+string m2idSlideSubSource = FindHostSource("OpenHarmonySubWindow.cs") is { } m2idSlideSubPath
+    ? File.ReadAllText(m2idSlideSubPath) : string.Empty;
+string m2idHostBridgeSource = FindHostSource("src/OpenHarmonyHost/host_napi.cpp") is { } m2idHostBridgePath
+    ? File.ReadAllText(m2idHostBridgePath) : string.Empty;
+M2IdCheck("slice source", m2idSlideSubSource.Contains("public const int IdentityCommand = 7")
+    && m2idSlideSubSource.Contains("private static readonly Dictionary<string, SurfaceSession> s_sessions")
+    && m2idSlideSubSource.Contains("private static readonly HashSet<string> s_requestedSurfaces")
+    && m2idSlideSubSource.Contains("private static void UpsertSessionLocked(")
+    && m2idSlideSubSource.Contains("private static void CloseSessionLocked(")
+    && m2idSlideSubSource.Contains("private static bool SendIdentityAck(")
+    && m2idSlideSubSource.Contains("private static bool SendSessionClose(")
+    && m2idSlideSubSource.Contains("s_pendingClaims[surfaceId] = new PendingClaim(")
+    && m2idSlideSubSource.Contains("subwindow identity rejected: ")
+    && m2idSlideHostSource.Contains("if (window is null || _stopped)")
+    && m2idSlideHostSource.Contains("if (window is null || _stopped || !_activated)")
+    && m2idHostBridgeSource.Contains("constexpr int kSubWindowLastOp = 7;")
+    && m2idHostBridgeSource.Contains("if (op < 0 || op > kSubWindowLastOp)"));
+
+if (m2idFailures > 0)
+{
+    throw new InvalidOperationException(
+        $"{m2idFailures} MULTIWINDOW-L3 M2 assertion(s) failed (the identity handshake or the two-window lifecycle closure regressed)");
 }
 
 // ---------------------------------------------------------------------------------------------
