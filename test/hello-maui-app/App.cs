@@ -310,10 +310,29 @@ public sealed class App : Application
                     Html = "<html><head><title>CHILD-WEB-" + ordinal + "</title></head><body style=\"margin:0;background:rgb(16,24,32)\">" +
                         "<h1 id=\"h\" style=\"color:rgb(110,193,255);font-family:sans-serif;font-size:28px\">CHILD WEB OK " + ordinal + "</h1>" +
                         "<script>document.getElementById('h').onclick=function(){this.textContent='CHILD WEB TAP " + ordinal + "';};</script>" +
+                        // MULTIWINDOW-L3 B6 device probes: one app-origin-approvable link, one
+                        // network-path spelling (the managed channel must refuse it) and one the
+                        // sample's own Navigating handler cancels. All three keep the page.
+                        "<p style=\"font-family:sans-serif;font-size:22px;margin:8px 0\">" +
+                        "<a id=\"ext\" href=\"https://example.invalid/b6c\" style=\"color:rgb(255,180,80)\">external ok link</a> " +
+                        "<a id=\"veto\" href=\"//evil.invalid/x\" style=\"color:rgb(255,120,120)\">external veto link</a> " +
+                        "<a id=\"deny\" href=\"https://example.invalid/b6c-deny\" style=\"color:rgb(180,255,120)\">external deny link</a>" +
+                        "</p>" +
                         "</body></html>",
                 },
             };
-            web.Navigating += (_, e) => OpenHarmonyBridge.WriteStatus($"[hello-maui-app] child web navigating: {e.Url}");
+            web.Navigating += (_, e) =>
+            {
+                OpenHarmonyBridge.WriteStatus($"[hello-maui-app] child web navigating: {e.Url}");
+                // B6 device probe: the app's own veto. The managed child handler raises Navigating
+                // for the cancelled load; cancelling here must leave the load blocked and the
+                // child page untouched (no approval is sent back).
+                if (e.Url != null && e.Url.StartsWith("https://example.invalid/b6c-deny", StringComparison.Ordinal))
+                {
+                    e.Cancel = true;
+                    OpenHarmonyBridge.WriteStatus("[hello-maui-app] child web navigating cancelled: b6c-deny");
+                }
+            };
             web.Navigated += (_, e) => OpenHarmonyBridge.WriteStatus($"[hello-maui-app] child web navigated: {e.Result} {e.Url}");
             // The eval rounds prove the child host's eval sink: the title read runs on the child
             // window's own controller, and the click+read mutates the child document's DOM (the
