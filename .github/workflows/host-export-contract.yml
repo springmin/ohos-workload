@@ -22,7 +22,7 @@ on:
         description: 'maui-ohos commit SHA to cross-check (defaults to the pinned slice tip)'
         required: false
         type: string
-        default: 'b91437926906242764ad64955409f080a4cb206f'
+        default: '619c40a483130d0aab3669c45d7b5649f0944b22'
   push:
     branches: [ master ]
   pull_request:
@@ -32,7 +32,13 @@ permissions:
 
 # Reproducible cross-repo check: the slice is checked out at an exact commit, not the mutable
 # feature/openharmony branch, so a push to the fork cannot change what this gate verifies.
-# Current tip: b914379269 (SEC-SCAN-7 a11y close-hook merged: the close-hook native release calls
+# Current tip: 619c40a483 (PREPROBE-SWEEP merged: the retired NativeLibrary pre-probe family -
+# the a11y announce, the window title/rect chrome, the shell search/flyout extras and the
+# screenshot capability/format gates - now calls its host exports directly with the
+# DllNotFound/EntryPointNotFound cached (-1) degrade. This is a managed-only change with no new
+# DllImport, so the export set stays 164/164 and the shell abc is 542,936; the suite moves to
+# 738/741 floor 721 with the slice-has-no-NativeLibrary source pin) on b914379269 (SEC-SCAN-7
+# a11y close-hook merged: the close-hook native release calls
 # ohos_host_accessibility_release_for directly (SEC7-A) instead of the retired NativeLibrary
 # pre-probe; the EntryPointNotFound/DllNotFound cache keeps the old-host managed-only downgrade.
 # This is a managed-only change with no new DllImport, so the export set stays
@@ -144,7 +150,7 @@ permissions:
 # 151/151).
 # Advance the pin deliberately, in lockstep with the interaction/pixel gates.
 env:
-  MAUI_OHOS_REF: ${{ github.event.inputs.maui_ohos_ref || 'b91437926906242764ad64955409f080a4cb206f' }}
+  MAUI_OHOS_REF: ${{ github.event.inputs.maui_ohos_ref || '619c40a483130d0aab3669c45d7b5649f0944b22' }}
 
 jobs:
   contract:

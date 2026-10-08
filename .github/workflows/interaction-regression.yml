@@ -40,7 +40,7 @@ on:
         description: 'maui-ohos commit SHA to compile (defaults to the pinned feature/openharmony tip)'
         required: false
         type: string
-        default: 'b91437926906242764ad64955409f080a4cb206f'
+        default: '619c40a483130d0aab3669c45d7b5649f0944b22'
   push:
     branches: [ master ]
   pull_request:
@@ -52,7 +52,14 @@ permissions:
 
 # Reproducible cross-repo compile: the MAUI slice is checked out at an exact commit, not the
 # mutable feature/openharmony branch, so a push to the fork cannot change what this gate compiles.
-# The default is the SEC-SCAN-7 a11y close-hook merged slice tip: b914379269 (SEC7-A: the close-hook
+# The default is the PREPROBE-SWEEP retired-loader merged slice tip: 619c40a483 (the retired
+# NativeLibrary pre-probe family - the a11y announce, the window title/rect chrome, the shell
+# search/flyout extras and the screenshot capability/format gates - now calls its host exports
+# directly; a DllNotFound/EntryPointNotFound miss is cached (-1) and the old-host downgrades are
+# preserved; managed-only with no new DllImport, so the export/abc pins stay 164/164 and 542,936
+# and the rasterizer output does not move; the harness adds the slice-has-no-NativeLibrary source
+# pin, so the suite below moves to 738/741 floor 721 - the PREPROBE pin on top of the 737;
+# merged into feature/openharmony as 619c40a483) on b914379269 (SEC7-A: the close-hook
 # native release calls ohos_host_accessibility_release_for directly instead of the retired
 # NativeLibrary pre-probe, and the EntryPointNotFound/DllNotFound cache keeps the old-host
 # managed-only downgrade; managed-only with no new DllImport, so the export/abc pins stay
@@ -212,11 +219,11 @@ permissions:
 # IME/text/Back wire with the SEC-SCAN-5c primary->child isolation pin, the per-window a11y
 # frame/alert partition and the pinch routing (child-tagged only; main/unknown/empty ids rejected),
 # plus the four-pack shell source pins) and the full run
-# is green at this compiled tree (local verification: 737/740, floor 720, both perf lines within
+# is green at this compiled tree (local verification: 738/741, floor 721, both perf lines within
 # budget); advance the pin deliberately and refresh this comment when the harness pins or the
 # tip move (workflow_dispatch can compile any commit).
 env:
-  MAUI_OHOS_REF: ${{ github.event.inputs.maui_ohos_ref || 'b91437926906242764ad64955409f080a4cb206f' }}
+  MAUI_OHOS_REF: ${{ github.event.inputs.maui_ohos_ref || '619c40a483130d0aab3669c45d7b5649f0944b22' }}
   # setup-dotnet installs the requested 11.0.x preview into DOTNET_INSTALL_DIR; on Linux that
   # defaults to /usr/share/dotnet, which a per-user cache cannot persist. Point it at ~/.dotnet
   # (the action resolves the ~ prefix against $HOME) so the cache step below actually avoids the

@@ -42,7 +42,7 @@ on:
         description: 'maui-ohos commit SHA to compile (defaults to the pinned feature/openharmony tip)'
         required: false
         type: string
-        default: 'b91437926906242764ad64955409f080a4cb206f'
+        default: '619c40a483130d0aab3669c45d7b5649f0944b22'
 
 # Least privilege: the job only reads this repository and the public springmin/maui-ohos fork;
 # no step pushes anywhere.
@@ -51,7 +51,14 @@ permissions:
 
 # Reproducible cross-repo compile: the MAUI slice is checked out at an exact commit, not the
 # mutable feature/openharmony branch, so a push to the fork cannot change what this gate compiles.
-# The default is the SEC-SCAN-7 a11y close-hook merged slice tip: b914379269 (SEC7-A: the close-hook
+# The default is the PREPROBE-SWEEP retired-loader merged slice tip: 619c40a483 (the retired
+# NativeLibrary pre-probe family - the a11y announce, the window title/rect chrome, the shell
+# search/flyout extras and the screenshot capability/format gates - now calls its host exports
+# directly; a DllNotFound/EntryPointNotFound miss is cached (-1) and the old-host downgrades are
+# preserved; managed-only with no new DllImport, so the rasterizer output does not move, the
+# export/abc pins stay 164/164 and 542,936 and the interaction harness moves to 738/741 floor 721
+# with the slice-has-no-NativeLibrary source pin - the PREPROBE pin on top of the 737;
+# merged into feature/openharmony as 619c40a483) on b914379269 (SEC7-A: the close-hook
 # native release calls ohos_host_accessibility_release_for directly instead of the retired
 # NativeLibrary pre-probe, and the EntryPointNotFound/DllNotFound cache keeps the old-host
 # managed-only downgrade; managed-only with no new DllImport, so the rasterizer output does not
@@ -158,11 +165,11 @@ permissions:
 # + T2 WebView CookieContainer sync 8241f1b3, on top of the W-series webview wiring d6325990 and
 # the SEC-SCAN-3 S3-DL3 dot-dot deep-link rejection, on top of the P2c deep-link routing, P2b-IMG,
 # P1b-LIST and P1a-ANIM batches).
-# The interaction harness pins 737 checks / total 740 / floor 720; advance the pin in lockstep
+# The interaction harness pins 738 checks / total 741 / floor 721; advance the pin in lockstep
 # with the interaction gate and change it deliberately (workflow_dispatch can compile any other
 # commit SHA).
 env:
-  MAUI_OHOS_REF: ${{ github.event.inputs.maui_ohos_ref || 'b91437926906242764ad64955409f080a4cb206f' }}
+  MAUI_OHOS_REF: ${{ github.event.inputs.maui_ohos_ref || '619c40a483130d0aab3669c45d7b5649f0944b22' }}
   # Same as the interaction gate: keep the setup-dotnet preview SDK in a cacheable per-user path
   # instead of the runner's /usr/share/dotnet; a newer 11.0.x preview is still downloaded (the
   # action re-resolves the channel), the cache only skips the ~200 MB download when it moved.
