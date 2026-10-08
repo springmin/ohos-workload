@@ -16,7 +16,7 @@ import host from 'libopenharmonyhost.so';
 import { pasteboard } from '@kit.BasicServicesKit';
 import { uniformTypeDescriptor as utd } from '@kit.ArkData';
 import { hilog } from '@kit.PerformanceAnalysisKit';
-import { util } from '@kit.ArkTS';
+import { process, util } from '@kit.ArkTS';
 import { webview as web_webview } from '@kit.ArkWeb';
 // Device-compat (lazy SDK modules): the optional feature modules are deliberately NOT
 // imported statically. A device whose framework lacks one of them would otherwise fail this
@@ -766,11 +766,20 @@ const SUB_WINDOW_GENERATION_SEPARATOR: string = '.g';
 // '<SUB_WINDOW_NAME>__<surfaceId>' so the page can resolve its own identity.
 const SUB_WINDOW_ROUTE: string = 'ohos_dotnet_subwindow';
 const SUB_WINDOW_NAME: string = 'ohos_dotnet_subwindow';
-// MULTIWINDOW-L3 M1: the maximum number of concurrent application subwindow sessions the shell
-// carries (the managed host mirrors it as OpenHarmonyMauiAppHost.MaxManagedSubWindows). The
-// platform allows far more (255, L2CAP); the shell caps product behavior for now and answers an
-// honest 801 beyond it.
-const SUB_WINDOW_MAX: number = 2;
+// MULTIWINDOW-L3 M1/N-SUBWINDOW: the maximum number of concurrent application subwindow
+// sessions the shell carries. SubWindowSession entries live in a dynamically sized Map, so
+// SUB_WINDOW_MAX is only the ceiling the explicit switch may raise the served limit to (the
+// platform itself allows far more, 255 per L2CAP). The served limit defaults to
+// SUB_WINDOW_DEFAULT_MAX (2, the product default) and is raised only through the explicit
+// switch, mirroring the E4 overlay pattern: the OHOS_SUBWINDOW_MAX environment variable (the
+// managed host reads the same name) or the HAP rawfile "ohos-subwindow-max.txt" for pairings
+// that cannot set the process environment. A create beyond the served limit is answered with an
+// honest 801.
+const SUB_WINDOW_DEFAULT_MAX: number = 2;
+const SUB_WINDOW_MAX: number = 8;
+const SUB_WINDOW_MIN_MAX: number = 2;
+const SUB_WINDOW_MAX_ENV: string = 'OHOS_SUBWINDOW_MAX';
+const SUB_WINDOW_MAX_RAWFILE: string = 'ohos-subwindow-max.txt';
 // Grace period after a window WINDOW_INACTIVE before the app counts as left the foreground: an
 // internal focus move (main <-> child) delivers the other window's WINDOW_ACTIVE in the same tick
 // (measured on HAD-W32), while the Home key delivers nothing more.
@@ -923,8 +932,14 @@ struct Index {
   // exists).
   private subWindows: Map<string, SubWindowSession> = new Map();
   // Sessions whose create is in flight (same keys): a repeated create for one key is ignored and
-  // the capacity check counts them so two concurrent creates cannot overshoot SUB_WINDOW_MAX.
+  // the capacity check counts them so two concurrent creates cannot overshoot the served limit.
   private subWindowCreating: Map<string, boolean> = new Map();
+  // N-SUBWINDOW served session limit (SUB_WINDOW_MAX is the ceiling the switch may raise it
+  // to): starts at the 2-session default and is raised only by the explicit switch.
+  // subWindowLimitEnvChecked gates the deferred env read (the managed app may set
+  // OHOS_SUBWINDOW_MAX in its own startup, after this page loaded).
+  private subWindowLimit: number = SUB_WINDOW_DEFAULT_MAX;
+  private subWindowLimitEnvChecked: boolean = false;
   // M4: the monotonically increasing sequence stamped into every AppStorage focus/keyboard
   // request for a child, so the child's @Watch fires even when the request content repeats.
   private subWindowFocusSeq: number = 0;
@@ -2706,9 +2721,61 @@ struct Index {
     }
   }
 
+  // N-SUBWINDOW: parses one switch value ("4" -> 4); -1 for absent/invalid.
+  private parseSubWindowLimit(raw: string | undefined): number {
+    if (raw === undefined || raw === null || raw.length === 0) {
+      return -1;
+    }
+    const value: number = Number.parseInt(raw.trim(), 10);
+    return Number.isFinite(value) ? value : -1;
+  }
+
+  // The rawfile half of the switch: readable synchronously at page load, so aboutToAppear can
+  // apply it before the first create command. A missing or unreadable rawfile is the normal
+  // default path.
+  private readSubWindowLimitFromRawFile(): number {
+    try {
+      const bytes: Uint8Array = this.hostContext().resourceManager.getRawFileContentSync(SUB_WINDOW_MAX_RAWFILE);
+      return this.parseSubWindowLimit(util.TextDecoder.create('utf-8').decodeToString(bytes));
+    } catch {
+      return -1;
+    }
+  }
+
+  // The environment half: the managed host reads the same OHOS_SUBWINDOW_MAX name, and an app
+  // may set it in its own startup (Environment.SetEnvironmentVariable before Program.Run), which
+  // runs after this page loaded - so the read is deferred to the first managed command instead
+  // of aboutToAppear. One attempt is enough: a missing variable is the default path.
+  private resolveSubWindowLimitEnv(): void {
+    if (this.subWindowLimitEnvChecked) {
+      return;
+    }
+    this.subWindowLimitEnvChecked = true;
+    try {
+      const requested: number = this.parseSubWindowLimit(new process.ProcessManager().getEnvironmentVar(SUB_WINDOW_MAX_ENV));
+      if (requested > 0) {
+        this.applySubWindowLimit(requested);
+      }
+    } catch {
+      // An unavailable environment API keeps the default capacity.
+    }
+  }
+
+  // Applies a requested limit: only a raise matters (the default is the floor); the value
+  // clamps into [SUB_WINDOW_MIN_MAX, SUB_WINDOW_MAX] and is logged so the device round can
+  // anchor the effective capacity.
+  private applySubWindowLimit(requested: number): void {
+    const clamped: number = Math.min(Math.max(requested, SUB_WINDOW_MIN_MAX), SUB_WINDOW_MAX);
+    if (clamped > this.subWindowLimit) {
+      this.subWindowLimit = clamped;
+      this.logInfo(`[maui] subwindow capacity: ${this.subWindowLimit}`);
+    }
+  }
+
   // Dispatches one managed command. A malformed payload or an unknown op is reported as Failed
   // instead of silently dropping, so the managed side can record the degradation.
   private handleSubWindowCommand(op: number, payload: string): void {
+    this.resolveSubWindowLimitEnv();
     let cmd: SubWindowCommand = {};
     try {
       cmd = JSON.parse(payload) as SubWindowCommand;
@@ -2749,8 +2816,9 @@ struct Index {
 
   // Creates one child under the main window and loads the shell page. Sessions are keyed by the
   // managed surface id: a repeated create reports the live session instead of leaking a second
-  // child, and a create beyond SUB_WINDOW_MAX is answered honestly (801). The shell-drawn M path
-  // (no surfaceId) is one session keyed ''.
+  // child, and a create beyond the served session limit (SUB_WINDOW_DEFAULT_MAX, raised only by
+  // the explicit switch) is answered honestly (801). The shell-drawn M path (no surfaceId) is
+  // one session keyed ''.
   private async createSubWindow(cmd: SubWindowCommand): Promise<void> {
     const surfaceId: string = cmd.surfaceId !== undefined ? cmd.surfaceId : '';
     const existing: SubWindowSession | undefined = this.subWindows.get(surfaceId);
@@ -2761,8 +2829,8 @@ struct Index {
     if (this.subWindowCreating.has(surfaceId)) {
       return;
     }
-    if (this.subWindows.size + this.subWindowCreating.size >= SUB_WINDOW_MAX) {
-      this.reportSubWindowFailure(801, `the shell supports ${SUB_WINDOW_MAX} application subwindows; close one before opening another`);
+    if (this.subWindows.size + this.subWindowCreating.size >= this.subWindowLimit) {
+      this.reportSubWindowFailure(801, `the shell supports ${this.subWindowLimit} application subwindows; close one before opening another`);
       return;
     }
     this.subWindowCreating.set(surfaceId, true);
@@ -5203,6 +5271,10 @@ struct Index {
     this.subscribeWindowShapeChange();
     // MULTIWINDOW-M: the managed subwindow commands arrive through this sink (create is the
     // only entry; nothing is allocated until then, so apps without a child pay nothing).
+    // N-SUBWINDOW: the rawfile half of the capacity switch is readable synchronously at page
+    // load, so the served limit is final before the first managed create command; the env half
+    // is deferred to the first managed command (the app may set it in its own startup).
+    this.applySubWindowLimit(this.readSubWindowLimitFromRawFile());
     this.subscribeSubWindow();
     this.subscribeNetworkChanges();
     // Device-compat (lazy SDK modules): the camera module is needed by the synchronous

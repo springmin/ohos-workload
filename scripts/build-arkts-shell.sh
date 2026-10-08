@@ -530,7 +530,7 @@ patch_harmony_index_ets() { # <Index.ets>
     python3 - "$1" <<'PY'
 import sys
 path = sys.argv[1]
-import_anchor = "import { util } from '@kit.ArkTS';"
+import_anchor = "import { process, util } from '@kit.ArkTS';"
 static_import = "import { MapOverlayProxy as HmsMapOverlayProxyImpl } from '../map/MapOverlay';"
 probe_anchor = "    const overlayModule: string = './map/MapOverlay';\n    try {"
 probe_patch = """\
@@ -718,6 +718,42 @@ check_aot_startup_gate() { # <templates-dir>
     return 0
 }
 
+# N-SUBWINDOW: the application subwindow capacity is served from the explicit switch (default
+# 2, ceiling 8) instead of a hardcoded constant. The gate pins the switch constants, the served
+# limit field and the capacity check the create path uses; it also rejects the old hardcoded
+# shape so a future edit cannot silently pin the product back to two sessions or beyond the
+# supported ceiling.
+check_subwindow_capacity_contract() { # <templates-dir>
+    _index="$1/ets/pages/Index.ets"
+    _missing=""
+    for _marker in "const SUB_WINDOW_DEFAULT_MAX: number = 2;" \
+                   "const SUB_WINDOW_MAX: number = 8;" \
+                   "const SUB_WINDOW_MIN_MAX: number = 2;" \
+                   "const SUB_WINDOW_MAX_ENV: string = 'OHOS_SUBWINDOW_MAX';" \
+                   "const SUB_WINDOW_MAX_RAWFILE: string = 'ohos-subwindow-max.txt';" \
+                   "private subWindowLimit: number = SUB_WINDOW_DEFAULT_MAX;" \
+                   "this.subWindows.size + this.subWindowCreating.size >= this.subWindowLimit" \
+                   "private readSubWindowLimitFromRawFile(): number {" \
+                   "private resolveSubWindowLimitEnv(): void {" \
+                   "this.applySubWindowLimit(this.readSubWindowLimitFromRawFile());"; do
+        grep -Fq -- "$_marker" "$_index" 2>/dev/null || _missing="$_missing
+  $_marker"
+    done
+    if [ -n "$_missing" ]; then
+        printf 'ERROR: the N-SUBWINDOW configurable capacity switch contract is missing from %s:%s\n' "$_index" "$_missing" >&2
+        return 1
+    fi
+    # Red control: the pre-N hardcoded shapes must not come back (a constant 2 or a check that
+    # bypasses the served limit).
+    for _bad in "SUB_WINDOW_MAX: number = 2" ">= SUB_WINDOW_MAX)" "supports 2 application subwindows"; do
+        if grep -Fq -- "$_bad" "$_index"; then
+            printf 'ERROR: %s still hardcodes the subwindow capacity (%s); serve it from SUB_WINDOW_DEFAULT_MAX plus the switch (N-SUBWINDOW)\n' "$_index" "$_bad" >&2
+            return 1
+        fi
+    done
+    return 0
+}
+
 # pack_sources_hash <templates-dir>: one hash over the ets/**/*.ets file list and contents, so
 # the three preview packs can be compared without diffing directories.
 pack_sources_hash() { # <templates-dir>
@@ -746,7 +782,8 @@ PY
 check_sources_contract() { # [<templates-dir>]
     if [ -n "${1:-}" ]; then
         check_source_tokens "$1" || return 1
-        check_aot_startup_gate "$1"
+        check_aot_startup_gate "$1" || return 1
+        check_subwindow_capacity_contract "$1"
         return $?
     fi
     _hash=""
@@ -755,6 +792,7 @@ check_sources_contract() { # [<templates-dir>]
         _tpl="$_root/packs/Microsoft.OpenHarmony.Sdk/$_v/templates"
         check_source_tokens "$_tpl" || return 1
         check_aot_startup_gate "$_tpl" || return 1
+        check_subwindow_capacity_contract "$_tpl" || return 1
         _h="$(pack_sources_hash "$_tpl")" || return 1
         if [ -z "$_hash" ]; then
             _hash="$_h"
@@ -764,7 +802,7 @@ check_sources_contract() { # [<templates-dir>]
             return 1
         fi
     done
-    printf '    shell sources clean (no @ohos import, getContext(), decodeWithStream() or focusControl), AOT-STARTUP mount gate present, and byte-identical across preview.22/23/24 (sources %s)\n' "$_hash"
+    printf '    shell sources clean (no @ohos import, getContext(), decodeWithStream() or focusControl), AOT-STARTUP mount gate and N-SUBWINDOW capacity switch contract present, and byte-identical across preview.22/23/24 (sources %s)\n' "$_hash"
 }
 
 # pack_abc_provenance_json <dist-dir>: prints the provenance document for the two dist
