@@ -10,7 +10,7 @@
 #   S0b blazorperms the embedded BLAZOR_SOURCE_PERMS (the 2c source-side permission
 #                 expectation) matches test/hello-blazorwasm/arkts-host module.json5
 #   S1 good       a kit that satisfies the current contract -> exit 0, KIT OK, every 2b
-#                 assertion passes (index 1588 B, abc 534192 B / PANDA 13.0.1.0, 15 .so,
+#                 assertion passes (index 1588 B, abc 542936 B / PANDA 13.0.1.0, 15 .so,
 #                 payload-in-libs marker (assembly + 20 entries + zip sha), DT_NEEDED=5,
 #                 denylist 0, dotnet.zip 258 entries / 0 .so); S1b reruns the same kit to
 #                 prove the check leaves no state behind
@@ -174,7 +174,7 @@ MODULE = {
             "minAPIVersion": 50002014, "targetAPIVersion": 60101024, "apiReleaseType": "Release"},
     "module": {"name": "entry", "type": "entry", "requestPermissions": []},
 }
-ABC_SIZE = 534192
+ABC_SIZE = 542936
 ABC_VERSION = (13, 0, 1, 0)
 INDEX_SIZE = 1588
 DOTNET_ENTRIES = 258
@@ -669,7 +669,7 @@ assert_rc 0 "$RC" "S1 good kit"
 assert_contains "S1 KIT OK" "KIT OK" "$LOG_FILE"
 assert_contains "S1 all 2b assertions pass" "全部关键断言通过" "$LOG_FILE"
 assert_contains "S1 index 1588 B listed" "resources.index 1588 B（≤2560 B 合理范围）" "$LOG_FILE"
-assert_contains "S1 abc 534192 / PANDA 13.0.1.0" "ets/modules.abc 534192 B，PANDA 头版本 13.0.1.0" "$LOG_FILE"
+assert_contains "S1 abc 542936 / PANDA 13.0.1.0" "ets/modules.abc 542936 B，PANDA 头版本 13.0.1.0" "$LOG_FILE"
 assert_contains "S1 libs .so=15" "libs/arm64-v8a/: 15 个 .so" "$LOG_FILE"
 assert_contains "S1 payload-in-libs marker staged + counted" "payload-in-libs: assembly=hello-maui-app.dll，条目=20（实测 20）" "$LOG_FILE"
 assert_contains "S1 payload-in-libs marker zip bound" "zip=258/" "$LOG_FILE"
@@ -735,7 +735,7 @@ K="$(new_kit kit-abcdrift)"
 python3 "$WORK/fixture.py" patch "$K" abc-size 214000
 run_verify "$K"
 assert_rc 0 "$RC" "S5 drifted abc still KIT OK by default"
-assert_contains "S5 warns about the drifted size" "abc 大小 214000 不是当前期望（534192/24324）" "$LOG_FILE"
+assert_contains "S5 warns about the drifted size" "abc 大小 214000 不是当前期望（542936/24324）" "$LOG_FILE"
 assert_contains "S5 KIT OK carries the WARN count" "KIT OK（5 条 WARN" "$LOG_FILE"
 run_verify "$K" --expected-abc 342160
 assert_rc 1 "$RC" "S5 pinned --expected-abc 342160 turns the drift into a FAIL"
