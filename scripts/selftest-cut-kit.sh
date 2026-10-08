@@ -17,13 +17,16 @@
 #   T5 f4-gate    `--phase P4 --execute --i-know` with the confirmation declined ("no"):
 #                 prints the clobber plan, exits 3, performs no API snapshot and never calls curl
 #                 (a PATH stub records any call)
+#   T6 bump-docs  bump-tester-docs.sh on a #98 fixture: --dry-run writes nothing; the real run
+#                 lifts the 18 docs + README to #99; a second run is a byte-identical no-op;
+#                 a doc back at #98 plus a missing doc refuses with rc!=0 and zero partial writes
 #
 # Env: SELFTEST_TMPDIR=<dir>  work dir base (default: the approved opencode tmp dir)
 #      SELFTEST_KEEP=1       keep the work dir even when all checks pass
 # Exit: 0 = all checks passed; 1 = at least one check failed (work dir kept for triage).
 set -u
 
-SELFTEST_VERSION="1 (2026-10-08)"
+SELFTEST_VERSION="2 (2026-10-08)"
 
 log()     { printf '[%s] %s\n' "$(date '+%H:%M:%S')" "$*"; }
 section() { printf '\n=== %s ===\n' "$*"; }
@@ -265,6 +268,46 @@ sh "$CUT" --kit 99 --phase P4 --execute --skip-selftests --scratch "$S5" \
     --release-ids "dtk=11 latest=22 versioned=33 sdkrc2=44" --assets-dir "$F5/assets" --token-file "$F5/token" > "$OUT5B" 2>&1
 check_rc "T5b missing --i-know rc=3" "$?" 3
 assert_contains "T5b i-know message" "$OUT5B" 'requires --execute --i-know'
+
+# ------------------------------------------------------------------ T6 bump-tester-docs
+section "T6 bump-tester-docs (mechanical kit bump)"
+BUMP="$W/scripts/bump-tester-docs.sh"
+sh -n "$BUMP"
+check "sh -n scripts/bump-tester-docs.sh" $?
+F6="$T/fixture-bump"; make_fixture "$F6" 98 987,654 || exit 1
+fixture_docs "$F6/docs" 98 987,654 en   # checklist in the en marker style (kit #98 — current))
+_sum6() { find "$F6/docs" -name '*.md' -exec sha256sum {} \; | sort; }
+_sum6 > "$T/t6-before"
+sh "$BUMP" --kit 99 --docs-dir "$F6/docs" --abc 987654 --dry-run > "$T/t6a.out" 2>&1
+check_rc "T6a dry-run rc=0" "$?" 0
+assert_contains "T6a dry-run plan" "$T/t6a.out" 'would change'
+_sum6 > "$T/t6a-after"
+cmp -s "$T/t6-before" "$T/t6a-after"
+check "T6a dry-run writes nothing" $?
+sh "$BUMP" --kit 99 --docs-dir "$F6/docs" --abc 987654 > "$T/t6b.out" 2>&1
+check_rc "T6b bump 98->99 rc=0" "$?" 0
+grep -qF 'kit #99，当前）' "$F6/docs/2026-09-20-ohos-tester-quickstart.md"
+check "T6b zh marker bumped" $?
+grep -qF 'kit #99 — current)' "$F6/docs/2026-09-18-ohos-device-validation-checklist.md"
+check "T6b en marker bumped" $?
+grep -qF 'kit #99 日期口径' "$F6/docs/README.md"
+check "T6b README index bumped" $?
+_sum6 > "$T/t6b-after"
+sh "$BUMP" --kit 99 --docs-dir "$F6/docs" --abc 987654 > "$T/t6c.out" 2>&1
+check_rc "T6c idempotent rc=0" "$?" 0
+assert_contains "T6c already message" "$T/t6c.out" 'already at kit #99'
+_sum6 > "$T/t6c-after"
+cmp -s "$T/t6b-after" "$T/t6c-after"
+check "T6c idempotent (bytes unchanged)" $?
+sed -i 's/kit #99，当前）/kit #98，当前）/' "$F6/docs/2026-09-22-ohos-tester-runner.md"
+rm -f "$F6/docs/2026-09-24-ohos-kit-gap-analysis.md"
+_sum6 > "$T/t6-before-refuse"
+sh "$BUMP" --kit 99 --docs-dir "$F6/docs" --abc 987654 > "$T/t6d.out" 2>&1
+check_neg "T6d partial missing rc!=0" "$?"
+assert_contains "T6d names the missing doc" "$T/t6d.out" 'kit-gap-analysis.*missing'
+_sum6 > "$T/t6d-after"
+cmp -s "$T/t6-before-refuse" "$T/t6d-after"
+check "T6d rollback (no partial writes)" $?
 
 # ------------------------------------------------------------------ summary
 section "summary"

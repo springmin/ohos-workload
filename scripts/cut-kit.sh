@@ -7,7 +7,8 @@
 #   P0 preflight  repos + pins (worktrees/workflow MAUI_OHOS_REF) + four-pack abc + verify-kit
 #                 EXPECT_ABC + suite/host-export counts + worktree cleanliness + repo selftests
 #                 + the tester-docs gate (kit #N current block + current abc, fail-closed)
-#   P1 build      release worktrees at the pin + hosting/graphics Release prep +
+#   P1 build      release worktrees at the pin (git-ignored dist/ets + .arkts-build materialized
+#                 from the main checkout) + hosting/graphics Release prep +
 #                 make-device-test-kit.sh --runtime-mode aot --with-blazor (7 haps, no --publish);
 #                 the docs gate runs again first and refuses to build on stale docs
 #   P2 verify     the shipped verify-kit.sh in strict mode (rc=0, 0 FAIL, 0 WARN) on the built
@@ -429,7 +430,7 @@ docs_gate() { # 0 = docs match the target kit; also prints the check lines
         err "tester docs are stale for kit #$KIT ($_dfails doc issue(s)); refusing to build"
         log "hint: update the 18 tester docs (kit #$KIT current block + abc $(abc_forms "$_ui" | tr ' ' '/')) and the index"
         log "hint: commit the docs wave with scripts/commit-paths.sh, or re-run with --bump-docs"
-        log "hint: --bump-docs invokes scripts/bump-tester-docs.sh --kit $KIT when that helper exists"
+        log "hint: --bump-docs runs scripts/bump-tester-docs.sh --kit $KIT (18 docs + README; idempotent, --dry-run)"
         st_set "docs_gate_kit" "stale"
         return 3
     fi
@@ -446,7 +447,12 @@ bump_docs() {
     fi
     _helper="$OW_REPO/scripts/bump-tester-docs.sh"
     if [ -f "$_helper" ]; then
-        run sh "$_helper" --kit "$KIT"
+        _abc="$(expect_abc)"
+        if [ -n "$_abc" ]; then
+            run sh "$_helper" --kit "$KIT" --abc "$_abc" --docs-dir "$DOCS_DIR" || return $?
+        else
+            run sh "$_helper" --kit "$KIT" --docs-dir "$DOCS_DIR" || return $?
+        fi
     else
         err "scripts/bump-tester-docs.sh not found under $OW_REPO"
         log "the kit-round docs wave still has to edit the 18 tester docs + README index by hand"
@@ -714,10 +720,28 @@ p1_env() {
 
 p1_prep() {
     if [ "$DRY" = 1 ]; then
+        printf '   [dry-run] (materialize dist/ets + .arkts-build from the main checkout when missing)\n'
         printf '   [dry-run] (cd %s && $DOTNET build src/Microsoft.OpenHarmony.Hosting/... -c Release)\n' "$WT_OW"
         printf '   [dry-run] (cd %s && $DOTNET build src/Microsoft.OpenHarmony.Maui.Graphics/... -c Release)\n' "$WT_OW"
         return 0
     fi
+    # A fresh worktree never carries the two git-ignored inputs the kit build needs: the ArkTS
+    # shell (dist/ets/modules.abc) and the hvigor toolchain (.arkts-build, for --with-blazor).
+    # Copy them from the main checkout; both names are ignored, so the worktree stays clean.
+    _p1_ignored() {
+        _rel="$1"; _what="$2"
+        if [ ! -e "$WT_OW/$_rel" ]; then
+            [ -e "$OW_REPO/$_rel" ] || {
+                err "P1 prep: $_what missing ($WT_OW/$_rel; not in $OW_REPO either)"; return 1; }
+            log "P1 prep: materialize $_what: $OW_REPO/$_rel -> $WT_OW/$_rel"
+            mkdir -p "$(dirname "$WT_OW/$_rel")"
+            cp -R "$OW_REPO/$_rel" "$WT_OW/$_rel" || {
+                err "P1 prep: copy failed: $_what"; return 1; }
+        fi
+        return 0
+    }
+    _p1_ignored dist/ets "ArkTS shell" || return 1
+    _p1_ignored .arkts-build "hvigor toolchain" || return 1
     mkdir -p "$LOGDIR"
     ( cd "$WT_OW" && "$DOTNET" build src/Microsoft.OpenHarmony.Hosting/Microsoft.OpenHarmony.Hosting.csproj \
         -c Release -v:q --nologo ) >> "$LOGDIR/p1-prep.log" 2>&1 || return 1
