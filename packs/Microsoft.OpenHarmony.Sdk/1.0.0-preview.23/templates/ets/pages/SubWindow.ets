@@ -24,6 +24,7 @@ import { NodeContent } from '@kit.ArkUI';
 import { fileIo as fs } from '@kit.CoreFileKit';
 import { webview as web_webview } from '@kit.ArkWeb';
 import { hilog } from '@kit.PerformanceAnalysisKit';
+import { util } from '@kit.ArkTS';
 import host from 'libopenharmonyhost.so';
 
 const DOMAIN = 0x0002;
@@ -103,6 +104,10 @@ interface SubWindowReadyPayload {
 const SUB_WEB_SLOT_MAX: number = 2;
 const SUB_WEB_SLOT_PENDING_MAX: number = 32;
 const SUB_WEB_STATE_PREFIX: string = 'w:';
+// B6: the child navigation ask state ("s<slot>|navask|<id>" with the cancelled URL in the event
+// URL slot) and the managed answer command ("nav": "s<slot>\n<id>\n<url>") — the child-window
+// counterpart of the primary page's "__OHNAV" channel.
+const SUB_WEB_NAV_ASK_PREFIX: string = 'navask|';
 
 // The MAUI hybrid origin (mirrors OpenHarmonyHybridWebViewHandler.AppOrigin) and the default
 // Blazor origin. Both always carry a trailing '/'.
@@ -115,6 +120,22 @@ const SUB_BLAZOR_ORIGIN_DEFAULT: string = 'https://0.0.0.0/';
 interface SubWebPendingOp {
   op: string;
   arg: string;
+}
+
+// B6: one child-window navigation this page cancelled and asked the managed handler to decide
+// (the child counterpart of pages/Index.ets PendingNavigation). The URL stays with this page;
+// the managed answer echoes the unguessable id and only that stored URL may reload.
+interface SubWebPendingNavigation {
+  url: string;
+  expires: number;
+  slot: number;
+}
+
+// B6: the one-shot marker that lets exactly one child load pass onLoadIntercept without another
+// managed round trip (the approved reload, or a managed "load" command).
+interface SubWebApprovedNavigation {
+  url: string;
+  expires: number;
 }
 
 // The hybrid registration payload (op "hybrid"): the managed handler names the payload
@@ -255,6 +276,15 @@ struct SubWindow {
   private subWebPending: SubWebPendingOp[][] = [[], []];
   private subWebHostRegistered: boolean = false;
   private subWebCmdFrameLogged: boolean[] = [false, false];
+  // B6 child navigation allow-list: the same bounded pending/one-shot shape as the primary page,
+  // per child slot. Entries are time-bounded; a destroyed slot drops its pending decisions so a
+  // late approval can never reload on the slot's next owner.
+  private subNavPending: Map<string, SubWebPendingNavigation> = new Map();
+  private subNavApproved: (SubWebApprovedNavigation | null)[] = [null, null];
+  private subNavProgrammatic: (SubWebApprovedNavigation | null)[] = [null, null];
+  private subNavPendingLimit: number = 8;
+  private subNavPendingTtlMs: number = 5000;
+  private subNavMaxUrlLength: number = 8192;
   // MULTIWINDOW-L3: per-slot hybrid registration (base/root/defaultFile/document id; the
   // managed handler registers one per child slot through the child command channel).
   private subHybridBase: string[] = ['', ''];
@@ -963,10 +993,16 @@ struct SubWindow {
     } else if (op === 'hide') {
       this.subWebVisible[slot] = false;
     } else if (op === 'load') {
+      const loadUrl: string = this.childWebSlotPayload(arg);
       this.subWebVisible[slot] = true;
       this.noteChildWebActivation(slot);
-      this.childWebController(slot).loadUrl(this.childWebSlotPayload(arg));
-      hilog.info(DOMAIN, TAG, 'child web load (slot %{public}d): %{public}s', slot, this.childWebSlotPayload(arg));
+      // B6: the managed side asked for this URL; let this one load pass without a round trip.
+      this.subNavProgrammatic[slot] = { url: loadUrl, expires: Date.now() + this.subNavPendingTtlMs };
+      this.childWebController(slot).loadUrl(loadUrl);
+      hilog.info(DOMAIN, TAG, 'child web load (slot %{public}d): %{public}s', slot, loadUrl);
+    } else if (op === 'nav') {
+      // B6: the managed handler's answer to an intercepted child navigation.
+      this.approveChildNavigation(arg);
     } else if (op === 'data') {
       this.subWebVisible[slot] = true;
       this.noteChildWebActivation(slot);
@@ -1088,6 +1124,11 @@ struct SubWindow {
     this.subHybridRegistered[slot] = false;
     this.subHybridServeLogs[slot] = 0;
     this.subBlazorBootstrapped[slot] = false;
+    // B6: the destroyed slot's navigation markers/pending decisions go with its ArkWeb, so a
+    // delayed approval for the old owner can never reload on the slot's next claim.
+    this.subNavProgrammatic[slot] = null;
+    this.subNavApproved[slot] = null;
+    this.dropPendingChildNavigations(slot);
   }
 
   // ---------------------------------------------------------------------------------------------
@@ -1975,6 +2016,153 @@ struct SubWindow {
     this.notifyWebHostState(this.childWebEventState(slot, `history|${canBack ? 1 : 0}|${canForward ? 1 : 0}`), '');
   }
 
+  // ---------------------------------------------------------------------------------------------
+  // MULTIWINDOW-L3 B6: the child navigation allow-list (the child counterpart of the primary
+  // page's onLoadIntercept gateway). A main-frame load this page did not originate is cancelled
+  // and handed to the managed handler for a Navigating decision; the URL stays here under an
+  // unguessable id and only the managed "nav" answer (same id, same slot, same URL) may reload
+  // it. The ask travels on the child web-event channel ("w:<surface>|s<slot>|navask|<id>", URL
+  // in the event URL slot) because a subwindow cannot reach the primary __OHNAV channel; the
+  // answer arrives as a child command ("nav") through this window's own sink.
+  // ---------------------------------------------------------------------------------------------
+
+  // True when a child load is app-internal: the same fast paths as the primary page (H-C2 first,
+  // so "//host" never counts) plus this slot's own registered hybrid/Blazor origins.
+  private isChildAppNavigation(slot: number, url: string): boolean {
+    if (url.length === 0) {
+      return true;
+    }
+    let lead: number = 0;
+    while (lead < url.length) {
+      const code: number = url.charCodeAt(lead);
+      if (code <= 0x20 || code === 0x7f) {
+        lead++;
+      } else {
+        break;
+      }
+    }
+    if (lead + 1 < url.length) {
+      const first: string = url.charAt(lead);
+      const second: string = url.charAt(lead + 1);
+      if ((first === '/' || first === '\\') && (second === '/' || second === '\\')) {
+        return false;
+      }
+    }
+    if (url.charAt(0) === '/' || url.charAt(0) === '#' || url.charAt(0) === '?') {
+      return true;
+    }
+    if (url.startsWith('about:') || url.startsWith('data:') || url.startsWith('blob:') ||
+        url.startsWith('javascript:') || url.startsWith('file:')) {
+      return true;
+    }
+    if (this.subHybridRegistered[slot] && url.startsWith(SUB_HYBRID_ORIGIN)) {
+      return true;
+    }
+    if (this.subBlazorRegistered && url.startsWith(this.subBlazorOrigin)) {
+      return true;
+    }
+    return false;
+  }
+
+  // B6: consumes the one-shot marker for a load this page itself requested (managed "load") or
+  // the managed handler approved. Exactly that reload passes onLoadIntercept once.
+  private consumeChildApprovedNavigation(slot: number, url: string): boolean {
+    const now: number = Date.now();
+    const programmatic: SubWebApprovedNavigation | null = this.subNavProgrammatic[slot];
+    if (programmatic !== null && programmatic.expires >= now && programmatic.url === url) {
+      this.subNavProgrammatic[slot] = null;
+      return true;
+    }
+    const approved: SubWebApprovedNavigation | null = this.subNavApproved[slot];
+    if (approved !== null && approved.expires >= now && approved.url === url) {
+      this.subNavApproved[slot] = null;
+      return true;
+    }
+    return false;
+  }
+
+  // B6: retires a marker once the approved/requested load actually started, so a later
+  // page-initiated navigation to the same URL is asked about again.
+  private retireChildNavigationMarker(url: string, slot: number): void {
+    const programmatic: SubWebApprovedNavigation | null = this.subNavProgrammatic[slot];
+    if (programmatic !== null && programmatic.url === url) {
+      this.subNavProgrammatic[slot] = null;
+    }
+    const approved: SubWebApprovedNavigation | null = this.subNavApproved[slot];
+    if (approved !== null && approved.url === url) {
+      this.subNavApproved[slot] = null;
+    }
+  }
+
+  private dropPendingChildNavigations(slot: number): void {
+    const stale: string[] = [];
+    this.subNavPending.forEach((pending: SubWebPendingNavigation, id: string): void => {
+      if (pending.slot === slot) {
+        stale.push(id);
+      }
+    });
+    for (const id of stale) {
+      this.subNavPending.delete(id);
+    }
+  }
+
+  // B6: asks the managed handler for a decision on a cancelled child load. The pending table is
+  // bounded (oldest dropped when full) and every entry expires; without a host channel nothing
+  // can approve the load, so it stays cancelled (fail closed).
+  private askManagedAboutChildNavigation(slot: number, url: string): void {
+    const now: number = Date.now();
+    this.subNavPending.forEach((pending: SubWebPendingNavigation, id: string): void => {
+      if (pending.expires < now) {
+        this.subNavPending.delete(id);
+      }
+    });
+    while (this.subNavPending.size >= this.subNavPendingLimit) {
+      const oldest: string | undefined = this.subNavPending.keys().next().value;
+      if (oldest === undefined) {
+        break;
+      }
+      this.subNavPending.delete(oldest);
+    }
+    let id: string = '';
+    try {
+      id = util.generateRandomUUID(true);
+    } catch {
+      id = `${now.toString(16)}-${Math.random().toString(16).substring(2)}`;
+    }
+    this.subNavPending.set(id, { url: url, expires: now + this.subNavPendingTtlMs, slot: slot });
+    hilog.info(DOMAIN, TAG, 'child web nav ask (slot %{public}d): %{public}s', slot, url);
+    this.notifyWebHostState(this.childWebEventState(slot, `${SUB_WEB_NAV_ASK_PREFIX}${id}`), url);
+  }
+
+  // B6: the managed answer ("nav", "s<slot>\n<id>\n<url>"). The URL must be the exact one this
+  // page cancelled for that id on that slot, and the approval is one-shot: only the reload that
+  // follows may pass onLoadIntercept.
+  private approveChildNavigation(arg: string): void {
+    const slot: number = this.childWebSlotOf(arg);
+    if (slot < 0) {
+      return;
+    }
+    const tagged: string = this.childWebSlotPayload(arg);
+    const separator: number = tagged.indexOf('\n');
+    const id: string = separator >= 0 ? tagged.substring(0, separator) : tagged;
+    const url: string = separator >= 0 ? tagged.substring(separator + 1) : '';
+    const pending: SubWebPendingNavigation | undefined = this.subNavPending.get(id);
+    if (pending === undefined) {
+      return;
+    }
+    this.subNavPending.delete(id);
+    if (pending.expires < Date.now() || pending.url !== url || pending.slot !== slot) {
+      return;
+    }
+    this.subNavApproved[slot] = { url: pending.url, expires: Date.now() + this.subNavPendingTtlMs };
+    hilog.info(DOMAIN, TAG, 'child web nav approved (slot %{public}d): %{public}s', slot, pending.url);
+    try {
+      this.childWebController(slot).loadUrl(pending.url);
+    } catch {
+      // The reload failed (e.g., the controller detached); the navigation stays cancelled.
+    }
+  }
+
   // The child ArkWeb declaration, instantiated once per declared slot (created on demand by
   // ensureChildWebSlot and removed by destroyChildWebSlot). Declared after the managed
   // XComponent so the web content composites above the second MAUI tree.
@@ -1995,10 +2183,40 @@ struct SubWindow {
         this.registerChildDotNetHost(slot);
         this.flushChildWebOps(slot);
       })
+      .onLoadIntercept((event) => {
+        // B6 navigation allow-list (child counterpart of the primary page): a top-level load
+        // this page did not originate is cancelled and decided by the managed handler's
+        // Navigating event. Frames/subresources, the app's own origins and the one-shot
+        // approved/requested reloads keep loading unchanged.
+        try {
+          if (!event.data.isMainFrame()) {
+            return false;
+          }
+          const url: string = event.data.getRequestUrl();
+          if (this.isChildAppNavigation(slot, url)) {
+            return false;
+          }
+          if (this.consumeChildApprovedNavigation(slot, url)) {
+            return false;
+          }
+          if (url.length === 0 || url.length > this.subNavMaxUrlLength) {
+            // Nothing to hand over (or too large to copy): the load stays blocked.
+            return true;
+          }
+          this.askManagedAboutChildNavigation(slot, url);
+          return true;
+        } catch {
+          // An unexpected event shape must not take the page down; allow the load.
+          return false;
+        }
+      })
       .onPageBegin((event) => {
         // MULTIWINDOW-L3: a new main-frame document gets its own Blazor bootstrap.
         this.subBlazorBootstrapped[slot] = false;
-        this.notifyWebHostState(this.childWebEventState(slot, 'started'), event ? event.url : '');
+        const startedUrl: string = event ? event.url : '';
+        // B6: the approved/app-requested load started; its one-shot marker is used up.
+        this.retireChildNavigationMarker(startedUrl, slot);
+        this.notifyWebHostState(this.childWebEventState(slot, 'started'), startedUrl);
       })
       .onPageEnd((event) => {
         const pageUrl: string = event ? event.url : '';
