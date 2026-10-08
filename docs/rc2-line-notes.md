@@ -86,6 +86,9 @@ RID `openharmony-arm64`；workload `openharmony 1.0.0-preview.28/11.0.100-rc.2`�
    （keg-only → PATH 探测会漏 ✗）；另 `ohos-selfsign`（第三方 0BSD）可作签名器备选评估 ✓。
    一般升级（openssl@3 3.6.5/node/git/python 等）对本移植无影响 ✓；`ohos-compat-shim`
    0.5→0.7 是唯一行为面变更 ⚠️（如设备端出现异常行为先查它 ✓）。
+   **升级后冒烟（10-08）** ✓✓：`binary-sign-tool` **实签 rc=0 / 块 0→1** ✓；NDK `clang++` =
+   `15.0.4`（target `aarch64-unknown-linux-ohos`）✓；`~/.dotnet.rc2-fix` 运行 = `11.0.100-rc.2.26451.112`
+   / `OS Platform: Linux` ✓——**工具链功能完好** ✓。
 
 - **发布重跑协议（第四锚）**：selfsign 已重上 ✓ → 发布面为**四锚**（SDK / runtime / workload /
   selfsign ✓，`SELFSIGN_SHA256=a403a1b4…` ✓）。CI `OHOS_SELFSIGN_PUBLISH` 门保持关闭 ✓；
