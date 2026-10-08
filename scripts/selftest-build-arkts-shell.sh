@@ -446,6 +446,24 @@ assert_rc 1 "$_rc" "T15 the gate rejects a stripped AOT-STARTUP mount gate"
 assert_contains "T15 the rejection names the mount gate" "AOT-STARTUP first-use overlay mount gate is missing" "$WORK/T15-aot.log"
 assert_contains "T15 the rejection names the missing marker" "@State webOverlaysMounted: boolean = false;" "$WORK/T15-aot.log"
 cp "$REAL_SOURCE" "$SRC_FAKE/ets/pages/Index.ets"
+# E4-CAPACITY8: the per-slot tables derive from WEB_SLOT_MAX and the 4-slot default plus the
+# explicit switch stay in place. Red control: a reintroduced hardcoded 4-slot table (the exact
+# shape the incomplete scratch patch left behind) is rejected and the shape is named.
+cp "$REAL_SOURCE" "$SRC_FAKE/ets/pages/Index.ets"
+printf '\nconst e4RedControl: boolean[] = [false, false, false, false];\n' >> "$SRC_FAKE/ets/pages/Index.ets"
+sh "$BUILD_SCRIPT" --check-sources "$SRC_FAKE" > "$WORK/T15-e4-hardcoded.log" 2>&1 && _rc=0 || _rc=$?
+assert_rc 1 "$_rc" "T15 the gate rejects a hardcoded 4-slot table (E4 red control)"
+assert_contains "T15 the rejection names the hardcoded table" "hardcodes a 4-slot table" "$WORK/T15-e4-hardcoded.log"
+assert_contains "T15 the rejection names the literal" "[false, false, false, false]" "$WORK/T15-e4-hardcoded.log"
+grep -v 'function slotControllers' "$REAL_SOURCE" > "$SRC_FAKE/ets/pages/Index.ets"
+sh "$BUILD_SCRIPT" --check-sources "$SRC_FAKE" > "$WORK/T15-e4-noderive.log" 2>&1 && _rc=0 || _rc=$?
+assert_rc 1 "$_rc" "T15 the gate rejects a stripped derivation helper"
+assert_contains "T15 the rejection names the missing helper" "function slotControllers" "$WORK/T15-e4-noderive.log"
+grep -v "const WEB_SLOT_MAX_ENV" "$REAL_SOURCE" > "$SRC_FAKE/ets/pages/Index.ets"
+sh "$BUILD_SCRIPT" --check-sources "$SRC_FAKE" > "$WORK/T15-e4-noswitch.log" 2>&1 && _rc=0 || _rc=$?
+assert_rc 1 "$_rc" "T15 the gate rejects a stripped capacity switch"
+assert_contains "T15 the rejection names the missing switch" "const WEB_SLOT_MAX_ENV" "$WORK/T15-e4-noswitch.log"
+cp "$REAL_SOURCE" "$SRC_FAKE/ets/pages/Index.ets"
 
 # ---- T16: the abc provenance gate ---------------------------------------------------------
 section "T16 abc provenance gate (--check-pack-abc)"
@@ -682,7 +700,7 @@ sed 's#const overlayModule: string#const overlayModuleRenamed: string#' "$T18_SR
 sh "$BUILD_SCRIPT" --patch-harmony-index "$WORK/T18-Index-noprobe.ets" > "$WORK/T18-noprobe.log" 2>&1 && _rc=0 || _rc=$?
 assert_rc 1 "$_rc" "T18 a page without the probe anchor is refused"
 assert_contains "T18 the refusal names the missing probe anchor" "the probeMapOverlay dynamic-import block" "$WORK/T18-noprobe.log"
-sed "s#import { util } from '@kit.ArkTS';#import { util as util2 } from '@kit.ArkTS';#" "$T18_SRC" > "$WORK/T18-Index-noimport.ets"
+sed "s#import { process, util } from '@kit.ArkTS';#import { process, util as util2 } from '@kit.ArkTS';#" "$T18_SRC" > "$WORK/T18-Index-noimport.ets"
 sh "$BUILD_SCRIPT" --patch-harmony-index "$WORK/T18-Index-noimport.ets" > "$WORK/T18-noimport.log" 2>&1 && _rc=0 || _rc=$?
 assert_rc 1 "$_rc" "T18 a page without the import anchor is refused"
 assert_contains "T18 the refusal names the missing import anchor" "the @kit.ArkTS import line" "$WORK/T18-noimport.log"

@@ -304,7 +304,7 @@ expect_abc() { # resolved expectation of this run
     fi
 }
 
-abc_forms() { # 542936 -> "542936 542,936"
+abc_forms() { # 548192 -> "548192 548,192"
     _plain="$1"
     _comma="$(printf '%s' "$_plain" | sed -e 's/^\([0-9]\{1,\}\)\([0-9][0-9][0-9]\)$/\1,\2/')"
     printf '%s %s\n' "$_plain" "$_comma"

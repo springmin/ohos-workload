@@ -16,7 +16,7 @@ import host from 'libopenharmonyhost.so';
 import { pasteboard } from '@kit.BasicServicesKit';
 import { uniformTypeDescriptor as utd } from '@kit.ArkData';
 import { hilog } from '@kit.PerformanceAnalysisKit';
-import { util } from '@kit.ArkTS';
+import { process, util } from '@kit.ArkTS';
 import { webview as web_webview } from '@kit.ArkWeb';
 // Device-compat (lazy SDK modules): the optional feature modules are deliberately NOT
 // imported statically. A device whose framework lacks one of them would otherwise fail this
@@ -711,12 +711,26 @@ const TAG = 'OHOS_MAUI';
 const BLZ_TAG = 'BlazorWebHost';
 
 // SLOTS-DYNAMIC overlay pool: the shell declares the hot pair (slots 0/1) at startup and grows
-// the overlay set on demand up to WEB_SLOT_MAX. Slots at or above WEB_SLOT_HOT are removed
-// again when the managed pool releases them ("slot destroy"), so an idle dynamic ArkWeb cannot
-// keep its engine and document alive; the managed pool mirrors both numbers (OHOS_OVERLAY_MAX /
-// OHOS_OVERLAY_HOT, defaults 4/2) and learns this ceiling from the "capacity" page event.
-const WEB_SLOT_MAX: number = 4;
+// the overlay set on demand up to the served capacity. Every per-slot table is preallocated to
+// WEB_SLOT_MAX (the highest capacity the shell carries, E4-CAPACITY8) and its length derives
+// from that constant - one hardcoded length desynchronizes a table from the others and the
+// slots beyond it silently never attach (E4 root cause, 2026-10-08). The served capacity
+// defaults to WEB_SLOT_DEFAULT_MAX (4, the previous behavior) and is raised to WEB_SLOT_MAX
+// only through the explicit switch: the OHOS_OVERLAY_MAX environment variable the managed pool
+// already reads (set by the app process before the first web control connects), or the HAP
+// rawfile "ohos-overlay-max.txt" for pairings that cannot set the process environment. Slots at
+// or above WEB_SLOT_HOT are removed again when the managed pool releases them ("slot destroy"),
+// so an idle dynamic ArkWeb cannot keep its engine and document alive; the managed pool mirrors
+// both numbers (OHOS_OVERLAY_MAX / OHOS_OVERLAY_HOT, defaults 4/2) and learns the served
+// capacity from the "capacity" page event.
+const WEB_SLOT_MAX: number = 8;
+const WEB_SLOT_DEFAULT_MAX: number = 4;
+const WEB_SLOT_MIN_MAX: number = 2;
 const WEB_SLOT_HOT: number = 2;
+// E4-CAPACITY8 explicit capacity switch: the environment name the managed pool reads, plus its
+// rawfile twin for HAPs that cannot set the process environment. Both carry the same integer.
+const WEB_SLOT_MAX_ENV: string = 'OHOS_OVERLAY_MAX';
+const WEB_SLOT_MAX_RAWFILE: string = 'ohos-overlay-max.txt';
 // Bound on the per-slot deferral queue (see pendingWebOps).
 const WEB_SLOT_PENDING_MAX: number = 32;
 
@@ -785,6 +799,68 @@ interface WebPendingOp {
   requestId: number;
 }
 
+// E4-CAPACITY8: every per-slot table is built by one of these helpers, so its length always
+// derives from WEB_SLOT_MAX and no table can drift to a hardcoded count again. The tables are
+// tiny (booleans/numbers/strings) and only the hot pair carries eagerly-created controllers, so
+// the full WEB_SLOT_MAX allocation costs nothing while the served capacity stays at its default.
+function slotBooleans(value: boolean): boolean[] {
+  const table: boolean[] = [];
+  for (let slot = 0; slot < WEB_SLOT_MAX; slot++) {
+    table.push(value);
+  }
+  return table;
+}
+
+// The hot pair is declared (and attached) from startup; the dynamic slots start false.
+function hotSlotBooleans(): boolean[] {
+  const table: boolean[] = [];
+  for (let slot = 0; slot < WEB_SLOT_MAX; slot++) {
+    table.push(slot < WEB_SLOT_HOT);
+  }
+  return table;
+}
+
+function slotNumbers(value: number): number[] {
+  const table: number[] = [];
+  for (let slot = 0; slot < WEB_SLOT_MAX; slot++) {
+    table.push(value);
+  }
+  return table;
+}
+
+function slotStrings(): string[] {
+  const table: string[] = [];
+  for (let slot = 0; slot < WEB_SLOT_MAX; slot++) {
+    table.push('');
+  }
+  return table;
+}
+
+function slotControllers(): (web_webview.WebviewController | null)[] {
+  const table: (web_webview.WebviewController | null)[] = [];
+  for (let slot = 0; slot < WEB_SLOT_MAX; slot++) {
+    table.push(slot < WEB_SLOT_HOT ? new web_webview.WebviewController() : null);
+  }
+  return table;
+}
+
+function slotNavigations(): (ApprovedNavigation | null)[] {
+  const table: (ApprovedNavigation | null)[] = [];
+  for (let slot = 0; slot < WEB_SLOT_MAX; slot++) {
+    table.push(null);
+  }
+  return table;
+}
+
+// Suspend/resume restores the exact previous visibility vector (a fresh array for @State).
+function copySlotBooleans(source: boolean[]): boolean[] {
+  const table: boolean[] = [];
+  for (let slot = 0; slot < WEB_SLOT_MAX; slot++) {
+    table.push(source[slot] === true);
+  }
+  return table;
+}
+
 @Entry
 @Component
 struct Index {
@@ -797,13 +873,13 @@ struct Index {
   // commands with it ("s<slot>" / "s<slot>\n<arg>") and receive the shell's page events tagged
   // the same way. Global commands (hide/suspend/resume/cookie) stay untagged and apply to both
   // overlays, and an untagged per-overlay command still lands on slot 0 (a legacy handler).
-  @State webVisible: boolean[] = [false, false, false, false];
+  @State webVisible: boolean[] = slotBooleans(false);
   // MULTI-OVERLAY-FULL z-order: the shell no longer keeps slot 1 permanently above slot 0. Each
   // overlay's activation order (a user touch or a programmatic show/load on that slot) is
   // tracked and applied as its zIndex, so the most recently activated overlay composites on top
   // (U5: overlapping web controls). `.zIndex` is an ArkUI universal attribute inside the same
   // Stack; the declaration order below only decides the initial state.
-  @State webZOrder: number[] = [0, 0, 0, 0];
+  @State webZOrder: number[] = slotNumbers(0);
   // The activation counter behind webZOrder. @State (not a plain field) so the A11Y self-check
   // button's zIndex (counter + 1) is refreshed on every web activation: the self-check can
   // never be composited under an activated overlay no matter how many times a web control is
@@ -816,14 +892,14 @@ struct Index {
   // switch uses the plain `hide`: the hidden page is not arranged, so no stale frame follows,
   // and the next page's web control re-shows through its own frame.
   private webSuspended: boolean = false;
-  private webVisibleBeforeSuspend: boolean[] = [false, false, false, false];
+  private webVisibleBeforeSuspend: boolean[] = slotBooleans(false);
   // ArkWeb overlay frames (managed WebView PlatformArrange -> WebCommand "frame"): each overlay
   // starts full-window; the frame arrives in device pixels and is converted to vp with px2vp,
   // and a frame with a non-positive width/height (control not arranged yet) is ignored.
-  @State webFrameX: number[] = [0, 0, 0, 0];
-  @State webFrameY: number[] = [0, 0, 0, 0];
-  @State webFrameW: number[] = [0, 0, 0, 0];
-  @State webFrameH: number[] = [0, 0, 0, 0];
+  @State webFrameX: number[] = slotNumbers(0);
+  @State webFrameY: number[] = slotNumbers(0);
+  @State webFrameW: number[] = slotNumbers(0);
+  @State webFrameH: number[] = slotNumbers(0);
   // AOT-STARTUP: the ArkWeb components of webSlots are declared but not instantiated until the
   // managed side first uses an overlay (any defer/ensure). Creating a Web component starts the
   // ArkWeb engine synchronously on the UI thread (~0.25 s on the 2in1), and at page build that
@@ -838,29 +914,33 @@ struct Index {
   @State webSlots: number[] = [0, 1];
   // Whether a slot's ArkWeb is declared (hot: always; dynamic: after ensure/lazy create) and
   // whether its controller has attached (commands arriving in between are deferred).
-  private webSlotCreated: boolean[] = [true, true, false, false];
-  private webSlotAttached: boolean[] = [false, false, false, false];
+  private webSlotCreated: boolean[] = hotSlotBooleans();
+  private webSlotAttached: boolean[] = slotBooleans(false);
+  // E4-CAPACITY8 served capacity (WEB_SLOT_MAX is the table bound): starts at the 4-slot default
+  // and is raised only by the explicit switch. webSlotLimitEnvChecked gates the deferred env
+  // read (the managed app may set OHOS_OVERLAY_MAX in its own startup, after this page loads).
+  private webSlotLimit: number = WEB_SLOT_DEFAULT_MAX;
+  private webSlotLimitEnvChecked: boolean = false;
   // Per-overlay commands whose slot was still being created; replayed from onControllerAttached
   // in arrival order and bounded per slot so a burst cannot grow without limit.
   private pendingWebOps: Map<number, WebPendingOp[]> = new Map();
   // One controller per overlay; the Web components below bind them in slot order. The hot pair
   // is created eagerly (the previous single-overlay behavior); a dynamic controller is created
   // by ensureWebSlot and dropped by destroyWebSlot.
-  private webControllers: (web_webview.WebviewController | null)[] =
-    [new web_webview.WebviewController(), new web_webview.WebviewController(), null, null];
+  private webControllers: (web_webview.WebviewController | null)[] = slotControllers();
   @State menuItems: HostMenuItem[] = [];
   // HybridWebView asset bridge state (registered by the managed handler; empty -> no
   // interception, so the regular WebView flows are never touched). MULTI-OVERLAY-FULL: the
   // registration state is per overlay slot, because two HybridWebViews on the same page each
   // register their own layout on their own slot and the shell must serve each document from its
   // own registration (same origin, different default file/root, different document id).
-  private hybridBase: string[] = ['', '', '', ''];
-  private hybridRoot: string[] = ['', '', '', ''];
-  private hybridDefaultFile: string[] = ['', '', '', ''];
-  private hybridRegistered: boolean[] = [false, false, false, false];
+  private hybridBase: string[] = slotStrings();
+  private hybridRoot: string[] = slotStrings();
+  private hybridDefaultFile: string[] = slotStrings();
+  private hybridRegistered: boolean[] = slotBooleans(false);
   // Per-registration document id (HybridAssetsConfig.id): stamped into matching documents and
   // echoed in the message envelope; '' means the page was not served for a registration.
-  private hybridDocId: string[] = ['', '', '', ''];
+  private hybridDocId: string[] = slotStrings();
   // MAUI's hybrid origin: HybridWebViewHandler.AppOrigin (https://0.0.0.1/).
   private hybridOrigin: string = 'https://0.0.0.1/';
   // Blazor asset bridge state (registered by the managed handler; empty -> no interception of
@@ -882,7 +962,7 @@ struct Index {
   private blazorServeLogs: number = 0;
   // The same bounded diagnostics for the hybrid origin (https://0.0.0.1/): its served requests
   // are the device evidence that the HybridWebView page really loaded (one counter per slot).
-  private hybridServeLogs: number[] = [0, 0, 0, 0];
+  private hybridServeLogs: number[] = slotNumbers(0);
   // Managed status-file polling (device diagnostics): bounded reads of <filesDir>/dotnet-status.txt
   // while the app starts; see pollManagedStatus.
   private statusReads: number = 0;
@@ -890,7 +970,7 @@ struct Index {
   // One bootstrap per loaded document: reset in onPageBegin, so a navigation/reload runs the
   // sequence again while repeated onPageEnd callbacks for the same document do not. Indexed by
   // slot (MULTI-OVL): a slot-0 page begin must not reset the Blazor overlay's bootstrap.
-  private blazorBootstrapped: boolean[] = [false, false, false, false];
+  private blazorBootstrapped: boolean[] = slotBooleans(false);
   // JS -> .NET invocation state: the intercepted __hwvInvokeDotNet responses held open until
   // the managed handler answers through host.registerHybridInvokeResultSink.
   private hybridInvokeSeq: number = 0;
@@ -903,7 +983,7 @@ struct Index {
   private hybridInvokeTimeoutMs: number = 15000;
   // JavaScript bridge: set once the dotnetHost proxy was registered on the attached controller,
   // per overlay slot (the proxy is registered on each Web component's controller).
-  private dotNetHostRegistered: boolean[] = [false, false, false, false];
+  private dotNetHostRegistered: boolean[] = slotBooleans(false);
   // App theme: 'colorMode' is an ArkUI environment property that the framework keeps in
   // AppStorage and refreshes when the device switches between light and dark. The watch
   // forwards every change to the managed side through host.notifyTheme(isDark).
@@ -1099,8 +1179,8 @@ struct Index {
   // markers that let the shell's own reloads pass, indexed by overlay slot (MULTI-OVL). All
   // entries are time-bounded and dropped when they expire.
   private navPending: Map<string, PendingNavigation> = new Map();
-  private navApproved: (ApprovedNavigation | null)[] = [null, null, null, null];
-  private navProgrammatic: (ApprovedNavigation | null)[] = [null, null, null, null];
+  private navApproved: (ApprovedNavigation | null)[] = slotNavigations();
+  private navProgrammatic: (ApprovedNavigation | null)[] = slotNavigations();
   private navPendingLimit: number = 8;
   private navPendingTtlMs: number = 5000;
   private navMaxUrlLength: number = 8192;
@@ -3825,12 +3905,12 @@ struct Index {
   // followed by '\n' and the payload; an untagged argument lands on slot 0 (legacy handler or
   // a global command). The tag is the wire contract the managed handlers build in
   // OpenHarmonyOverlays.Tag/TagScript and parse back from the event states.
-  // SLOTS-DYNAMIC: a tag is valid for any declared slot below WEB_SLOT_MAX ("s0".."s3"); the
+  // SLOTS-DYNAMIC: a tag is valid for any served slot below webSlotLimit ("s0".."s7"); the
   // digit-only form keeps the wire protocol unchanged.
   private webSlotDigit(arg: string): number {
     if (arg.length >= 2 && arg.charAt(0) === 's') {
       const slot: number = arg.charCodeAt(1) - 48;
-      if (slot >= 0 && slot < WEB_SLOT_MAX && (arg.length === 2 || arg.charAt(2) === '\n')) {
+      if (slot >= 0 && slot < this.webSlotLimit && (arg.length === 2 || arg.charAt(2) === '\n')) {
         return slot;
       }
     }
@@ -3874,12 +3954,17 @@ struct Index {
   }
 
   private slotController(slot: number): web_webview.WebviewController {
-    let controller: web_webview.WebviewController | null = this.webControllers[slot];
-    if (controller === null) {
+    // E4-CAPACITY8: an out-of-table index reads `undefined` and must not be written back (that
+    // would extend the table); callers are capacity-gated, this is the fail-safe belt.
+    const inTable: boolean = slot >= 0 && slot < WEB_SLOT_MAX;
+    let controller: web_webview.WebviewController | null = inTable ? this.webControllers[slot] : null;
+    if (!controller) {
       // A dynamic controller is normally created by ensureWebSlot; this is the defensive path
       // for a caller that reached the controller first.
       controller = new web_webview.WebviewController();
-      this.webControllers[slot] = controller;
+      if (inTable) {
+        this.webControllers[slot] = controller;
+      }
     }
     return controller;
   }
@@ -3892,18 +3977,69 @@ struct Index {
   // and replayed from onControllerAttached, so the asynchronous ArkUI create cannot lose them.
   // ---------------------------------------------------------------------------------------------
 
-  // Sends the shell's overlay capacity to the managed pool ("capacity" page event). The page can
-  // load before the managed WebEvent subscription exists, so aboutToAppear sends it with a
-  // couple of bounded retries; a lost notification only delays the pool's clamp (its default is
-  // the same WEB_SLOT_MAX).
+  // Sends the shell's served overlay capacity to the managed pool ("capacity" page event). The
+  // page can load before the managed WebEvent subscription exists, so aboutToAppear sends it
+  // with a couple of bounded retries; a lost notification only delays the pool's clamp (its
+  // own default is its max, and this shell starts at WEB_SLOT_DEFAULT_MAX).
   private advertiseWebCapacity(): void {
     this.hostCall('notifyWebEvent', typeof host !== 'undefined' && typeof host.notifyWebEvent === 'function', (): void => {
-      host.notifyWebEvent('capacity', `${WEB_SLOT_MAX}`);
+      host.notifyWebEvent('capacity', `${this.webSlotLimit}`);
     });
   }
 
+  // E4-CAPACITY8: parses one switch value ("8" -> 8); -1 for absent/invalid.
+  private parseWebSlotLimit(raw: string | undefined): number {
+    if (raw === undefined || raw === null || raw.length === 0) {
+      return -1;
+    }
+    const value: number = Number.parseInt(raw.trim(), 10);
+    return Number.isFinite(value) ? value : -1;
+  }
+
+  // The rawfile half of the switch: readable synchronously at page load, so aboutToAppear can
+  // apply it before the first capacity advertisement (a raise then looks like a plain capacity,
+  // not a clamp/raise churn). A missing or unreadable rawfile is the normal default path.
+  private readWebSlotLimitFromRawFile(): number {
+    try {
+      const bytes: Uint8Array = this.hostContext().resourceManager.getRawFileContentSync(WEB_SLOT_MAX_RAWFILE);
+      return this.parseWebSlotLimit(util.TextDecoder.create('utf-8').decodeToString(bytes));
+    } catch {
+      return -1;
+    }
+  }
+
+  // The environment half: the managed pool reads the same OHOS_OVERLAY_MAX name, and an app may
+  // set it in its own startup (Environment.SetEnvironmentVariable in Program.Run), which runs
+  // after this page loaded - so the read is deferred to the first managed command instead of
+  // aboutToAppear. One attempt is enough: a missing variable is the default path.
+  private resolveWebSlotLimitEnv(): void {
+    if (this.webSlotLimitEnvChecked) {
+      return;
+    }
+    this.webSlotLimitEnvChecked = true;
+    try {
+      const requested: number = this.parseWebSlotLimit(new process.ProcessManager().getEnvironmentVar(WEB_SLOT_MAX_ENV));
+      if (requested > 0) {
+        this.applyWebSlotLimit(requested);
+      }
+    } catch {
+      // An unavailable environment API keeps the default capacity.
+    }
+  }
+
+  // Applies a requested capacity: only a raise matters (the default is the floor); the value
+  // clamps into [WEB_SLOT_MIN_MAX, WEB_SLOT_MAX] and re-advertises so the managed pool follows.
+  private applyWebSlotLimit(requested: number): void {
+    const clamped: number = Math.min(Math.max(requested, WEB_SLOT_MIN_MAX), WEB_SLOT_MAX);
+    if (clamped > this.webSlotLimit) {
+      this.webSlotLimit = clamped;
+      this.logInfo(`[maui] web slot capacity: ${this.webSlotLimit}`);
+      this.advertiseWebCapacity();
+    }
+  }
+
   private ensureWebSlot(slot: number): void {
-    if (slot < 0 || slot >= WEB_SLOT_MAX) {
+    if (slot < 0 || slot >= this.webSlotLimit) {
       this.logError(`[maui] web slot ensure rejected: ${slot}`);
       return;
     }
@@ -3915,7 +4051,7 @@ struct Index {
       return;
     }
     this.webSlotCreated[slot] = true;
-    if (this.webControllers[slot] === null) {
+    if (!this.webControllers[slot]) {
       this.webControllers[slot] = new web_webview.WebviewController();
     }
     this.rebuildWebSlots(slot, -1);
@@ -3923,7 +4059,7 @@ struct Index {
   }
 
   private destroyWebSlot(slot: number): void {
-    if (slot < WEB_SLOT_HOT || slot >= WEB_SLOT_MAX) {
+    if (slot < WEB_SLOT_HOT || slot >= this.webSlotLimit) {
       // The hot pair is never destroyed (the pool's HotOverlays floor), and an out-of-range
       // request is a protocol error.
       this.logError(`[maui] web slot destroy rejected: ${slot}`);
@@ -3936,7 +4072,7 @@ struct Index {
     this.webSlotAttached[slot] = false;
     try {
       const controller: web_webview.WebviewController | null = this.webControllers[slot];
-      if (controller !== null) {
+      if (controller) {
         controller.stop();
       }
     } catch {
@@ -4001,11 +4137,11 @@ struct Index {
   // True when the slot's ArkWeb exists and its controller is attached, i.e. a controller call
   // cannot fail with BusinessError 17100001.
   private webSlotReady(slot: number): boolean {
-    return slot >= 0 && slot < WEB_SLOT_MAX && this.webSlotCreated[slot] && this.webSlotAttached[slot];
+    return slot >= 0 && slot < this.webSlotLimit && this.webSlotCreated[slot] && this.webSlotAttached[slot];
   }
 
   private deferWebOp(slot: number, op: string, arg: string, requestId: number = -1): void {
-    if (slot < 0 || slot >= WEB_SLOT_MAX) {
+    if (slot < 0 || slot >= this.webSlotLimit) {
       this.logError(`[maui] web slot defer rejected: ${slot} ${op}`);
       return;
     }
@@ -4054,7 +4190,7 @@ struct Index {
   private registrationSlot(arg: string): number {
     try {
       const config = JSON.parse(arg) as HybridAssetsConfig;
-      if (config.slot !== undefined && config.slot >= 0 && config.slot < WEB_SLOT_MAX) {
+      if (config.slot !== undefined && config.slot >= 0 && config.slot < this.webSlotLimit) {
         return config.slot;
       }
     } catch {
@@ -4067,6 +4203,10 @@ struct Index {
   // not attached yet are deferred (deferWebOp) and replayed from onControllerAttached; the
   // untagged global commands keep their all-overlays/untagged meaning.
   private runWebCommand(op: string, arg: string): void {
+    // E4-CAPACITY8: the first command from the managed side is the first point the app's own
+    // startup (and its OHOS_OVERLAY_MAX, if any) has definitely run; resolve the deferred env
+    // half of the capacity switch before this command is gated.
+    this.resolveWebSlotLimitEnv();
     if (op === 'slot') {
       // SLOTS-DYNAMIC slot lifecycle from the managed pool: "ensure\n<slot>" declares the
       // ArkWeb, "destroy\n<slot>" removes it (only slots >= WEB_SLOT_HOT).
@@ -4077,24 +4217,23 @@ struct Index {
       // FIX-WVP tab switch: hide every overlay; the hidden page is not arranged, so no stale
       // frame re-shows it, and the next page's web control re-shows through its own frame. A
       // slot-tagged hide (below) clears only that overlay (the managed error handler).
-      this.webVisible = [false, false, false, false];
+      this.webVisible = slotBooleans(false);
       return;
     }
     if (op === 'suspend') {
       // FIX-WVP drawer presented: hide every overlay and keep frame/load commands from
       // re-showing them (the flyout's own arrange cycle re-emits the detail's web frames).
       if (!this.webSuspended) {
-        this.webVisibleBeforeSuspend = [this.webVisible[0], this.webVisible[1], this.webVisible[2], this.webVisible[3]];
+        this.webVisibleBeforeSuspend = copySlotBooleans(this.webVisible);
         this.webSuspended = true;
       }
-      this.webVisible = [false, false, false, false];
+      this.webVisible = slotBooleans(false);
       return;
     }
     if (op === 'resume') {
       // FIX-WVP drawer dismissed: restore the visibility the suspend remembered.
       this.webSuspended = false;
-      this.webVisible = [this.webVisibleBeforeSuspend[0], this.webVisibleBeforeSuspend[1],
-        this.webVisibleBeforeSuspend[2], this.webVisibleBeforeSuspend[3]];
+      this.webVisible = copySlotBooleans(this.webVisibleBeforeSuspend);
       return;
     }
     if (op === 'cookie') {
@@ -4197,7 +4336,7 @@ struct Index {
     const separator: number = arg.indexOf('\n');
     const action: string = separator > 0 ? arg.substring(0, separator) : arg;
     const slot: number = separator > 0 ? Number.parseInt(arg.substring(separator + 1), 10) : -1;
-    if (!Number.isFinite(slot) || Math.floor(slot) !== slot || slot < 0 || slot >= WEB_SLOT_MAX) {
+    if (!Number.isFinite(slot) || Math.floor(slot) !== slot || slot < 0 || slot >= this.webSlotLimit) {
       this.logError(`[maui] web slot command rejected: ${action}`);
       return;
     }
@@ -4213,6 +4352,7 @@ struct Index {
   // Runs one registerWebEvalSink script on its slot's controller and answers the request id.
   // Shared by the inline sink and the SLOTS-DYNAMIC deferral replay.
   private runWebEval(script: string, requestId: number): void {
+    this.resolveWebSlotLimitEnv();
     const slot: number = this.webSlotOf(script);
     this.slotController(slot).runJavaScript(this.webSlotPayload(script), (err, result) => {
       this.hostCall('notifyWebEvalResult', typeof host !== 'undefined' && typeof host.notifyWebEvalResult === 'function', (): void => {
@@ -4221,18 +4361,28 @@ struct Index {
     });
   }
 
+  // E4-CAPACITY8: every nav-marker table is length WEB_SLOT_MAX; the explicit bound keeps a
+  // future/foreign slot from reading or writing past it (an out-of-bounds read is `undefined`,
+  // which used to pass the `!== null` sentinel test and crashed on `.url` - E4 R1).
+  private navSlotIndexable(slot: number): boolean {
+    return slot >= 0 && slot < WEB_SLOT_MAX;
+  }
+
   // B6: consumes a one-shot marker for a load the shell itself requested (WebCommand "load")
   // or one the managed handler approved. The marker lets exactly that reload pass
   // onLoadIntercept without another managed round trip (loop guard); expired markers are stale.
   private consumeApprovedNavigation(url: string, slot: number): boolean {
+    if (!this.navSlotIndexable(slot)) {
+      return false;
+    }
     const now: number = Date.now();
     const programmatic: ApprovedNavigation | null = this.navProgrammatic[slot];
-    if (programmatic !== null && programmatic.expires >= now && programmatic.url === url) {
+    if (programmatic && programmatic.expires >= now && programmatic.url === url) {
       this.navProgrammatic[slot] = null;
       return true;
     }
     const approved: ApprovedNavigation | null = this.navApproved[slot];
-    if (approved !== null && approved.expires >= now && approved.url === url) {
+    if (approved && approved.expires >= now && approved.url === url) {
       this.navApproved[slot] = null;
       return true;
     }
@@ -4242,12 +4392,15 @@ struct Index {
   // B6: retires a marker once the approved/app-requested load actually started, so a later
   // page-initiated navigation to the same URL is asked about again.
   private retireNavigationMarker(url: string, slot: number): void {
+    if (!this.navSlotIndexable(slot)) {
+      return;
+    }
     const programmatic: ApprovedNavigation | null = this.navProgrammatic[slot];
-    if (programmatic !== null && programmatic.url === url) {
+    if (programmatic && programmatic.url === url) {
       this.navProgrammatic[slot] = null;
     }
     const approved: ApprovedNavigation | null = this.navApproved[slot];
-    if (approved !== null && approved.url === url) {
+    if (approved && approved.url === url) {
       this.navApproved[slot] = null;
     }
   }
@@ -4293,6 +4446,9 @@ struct Index {
   // the reload that follows may pass.
   private approveNavigation(arg: string): void {
     const slot: number = this.webSlotOf(arg);
+    if (!this.navSlotIndexable(slot)) {
+      return;
+    }
     const tagged: string = this.webSlotPayload(arg);
     const separator: number = tagged.indexOf('\n');
     const id: string = separator >= 0 ? tagged.substring(0, separator) : tagged;
@@ -5353,10 +5509,17 @@ struct Index {
       });
     });
     this.logInfo(`[maui] web sink: ${webSinkRegistered}`);
-    // SLOTS-DYNAMIC: tell the managed pool how many overlays this shell can declare. The page
-    // can load before the managed WebEvent subscription exists, so the notification is sent
-    // with two bounded retries (the pool's default is the same WEB_SLOT_MAX, so a lost event
-    // only delays a downgrade on a legacy shell).
+    // E4-CAPACITY8: the rawfile half of the explicit capacity switch is available now, so apply
+    // it before the first advertisement (a raise then looks like a plain capacity to the pool,
+    // not a clamp/raise churn).
+    const requestedSlotLimit: number = this.readWebSlotLimitFromRawFile();
+    if (requestedSlotLimit > 0) {
+      this.applyWebSlotLimit(requestedSlotLimit);
+    }
+    // SLOTS-DYNAMIC: tell the managed pool how many overlays this shell serves. The page can
+    // load before the managed WebEvent subscription exists, so the notification is sent with
+    // two bounded retries (the pool's default is its own max, so a lost event only delays a
+    // downgrade on a legacy shell).
     this.advertiseWebCapacity();
     setTimeout((): void => {
       this.advertiseWebCapacity();
@@ -6673,7 +6836,7 @@ struct Index {
   private registerHybridAssets(arg: string): void {
     try {
       const config = JSON.parse(arg) as HybridAssetsConfig;
-      const hybridSlot: number = config.slot !== undefined && config.slot >= 0 && config.slot < WEB_SLOT_MAX ? config.slot : 0;
+      const hybridSlot: number = config.slot !== undefined && config.slot >= 0 && config.slot < this.webSlotLimit ? config.slot : 0;
       this.hybridBase[hybridSlot] = config.base;
       this.hybridRoot[hybridSlot] = config.root;
       this.hybridDefaultFile[hybridSlot] = config.defaultFile;
@@ -6730,7 +6893,7 @@ struct Index {
       if (this.blazorRegistered) {
         // MULTI-OVL: the registration names the overlay it belongs to; absent/-1 lands on the
         // first overlay (a WebView-driven WASM site or a legacy handler).
-        const blazorSlot: number = config.slot !== undefined && config.slot >= 0 && config.slot < WEB_SLOT_MAX ? config.slot : 0;
+        const blazorSlot: number = config.slot !== undefined && config.slot >= 0 && config.slot < this.webSlotLimit ? config.slot : 0;
         this.logInfo(`[maui] blazor assets: origin=${this.blazorOrigin} root=${this.blazorRoot} base=${this.blazorBase} mode=${this.blazorWasmMode ? 'wasm' : 'hybrid'} slot=${blazorSlot}`);
         if (!this.blazorWasmMode) {
           // MULTI-OVL replaces the single-overlay arbitration (FIX-WVP): the Blazor page loads
