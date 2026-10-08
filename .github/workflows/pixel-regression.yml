@@ -42,7 +42,7 @@ on:
         description: 'maui-ohos commit SHA to compile (defaults to the pinned feature/openharmony tip)'
         required: false
         type: string
-        default: '277967cc56fb9339b0c6a0d09c4b5f772a3f8529'
+        default: 'caa463434bc141b1106eb7303e29d225e2491433'
 
 # Least privilege: the job only reads this repository and the public springmin/maui-ohos fork;
 # no step pushes anywhere.
@@ -51,7 +51,14 @@ permissions:
 
 # Reproducible cross-repo compile: the MAUI slice is checked out at an exact commit, not the
 # mutable feature/openharmony branch, so a push to the fork cannot change what this gate compiles.
-# The default is the L3 M2-M4 merged slice tip: 277967cc (the per-window identity handshake +
+# The default is the L3 A11Y-SELFCHECK + B6 merged slice tip: caa46343 (the A11Y-SELFCHECK child
+# first-publish fix - the per-window publish gate reads ohos_host_accessibility_provider_status_for
+# directly and the window host repaints once when a provider attaches after the last frame - plus
+# the MULTIWINDOW-L3 B6 child navigation veto (the subwindow ArkWeb onLoadIntercept gateway asks
+# managed and the same Navigating decision approves/cancels through the child|<win>|<slot>|<url>
+# key); managed + shell source pins, so the rasterizer output does not move and the interaction
+# harness moves to 737/740 floor 720; export 164/164 and abc 542,936 (the B6 shell); merged into
+# feature/openharmony as caa46343) on 277967cc (the per-window identity handshake +
 # the per-window IME/a11y/overlay/Back partitioning + the per-window child ArkWeb pool; managed +
 # shell
 # source pins, so the rasterizer output does not move and the interaction harness moves to
@@ -150,7 +157,7 @@ permissions:
 # with the interaction gate and change it deliberately (workflow_dispatch can compile any other
 # commit SHA).
 env:
-  MAUI_OHOS_REF: ${{ github.event.inputs.maui_ohos_ref || '277967cc56fb9339b0c6a0d09c4b5f772a3f8529' }}
+  MAUI_OHOS_REF: ${{ github.event.inputs.maui_ohos_ref || 'caa463434bc141b1106eb7303e29d225e2491433' }}
   # Same as the interaction gate: keep the setup-dotnet preview SDK in a cacheable per-user path
   # instead of the runner's /usr/share/dotnet; a newer 11.0.x preview is still downloaded (the
   # action re-resolves the channel), the cache only skips the ~200 MB download when it moved.
