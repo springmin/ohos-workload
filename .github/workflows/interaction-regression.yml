@@ -40,7 +40,7 @@ on:
         description: 'maui-ohos commit SHA to compile (defaults to the pinned feature/openharmony tip)'
         required: false
         type: string
-        default: 'caa463434bc141b1106eb7303e29d225e2491433'
+        default: 'b91437926906242764ad64955409f080a4cb206f'
   push:
     branches: [ master ]
   pull_request:
@@ -52,7 +52,12 @@ permissions:
 
 # Reproducible cross-repo compile: the MAUI slice is checked out at an exact commit, not the
 # mutable feature/openharmony branch, so a push to the fork cannot change what this gate compiles.
-# The default is the L3 A11Y-SELFCHECK + B6 merged slice tip: caa46343 (the A11Y-SELFCHECK child
+# The default is the SEC-SCAN-7 a11y close-hook merged slice tip: b914379269 (SEC7-A: the close-hook
+# native release calls ohos_host_accessibility_release_for directly instead of the retired
+# NativeLibrary pre-probe, and the EntryPointNotFound/DllNotFound cache keeps the old-host
+# managed-only downgrade; managed-only with no new DllImport, so the export/abc pins stay
+# 164/164 and 542,936 and the suite stays 737/740 floor 720; merged into feature/openharmony as
+# b914379269) on caa46343 (the A11Y-SELFCHECK child
 # first-publish fix - the per-window publish gate reads ohos_host_accessibility_provider_status_for
 # directly and the window host repaints once when a provider attaches after the last frame, so the
 # shell 3s selfcheck reads nodes>0 - plus the MULTIWINDOW-L3 B6 child navigation veto - the
@@ -207,11 +212,11 @@ permissions:
 # IME/text/Back wire with the SEC-SCAN-5c primary->child isolation pin, the per-window a11y
 # frame/alert partition and the pinch routing (child-tagged only; main/unknown/empty ids rejected),
 # plus the four-pack shell source pins) and the full run
-# is green at this compiled tree (local verification: 731/734, floor 714, both perf lines within
+# is green at this compiled tree (local verification: 737/740, floor 720, both perf lines within
 # budget); advance the pin deliberately and refresh this comment when the harness pins or the
 # tip move (workflow_dispatch can compile any commit).
 env:
-  MAUI_OHOS_REF: ${{ github.event.inputs.maui_ohos_ref || 'caa463434bc141b1106eb7303e29d225e2491433' }}
+  MAUI_OHOS_REF: ${{ github.event.inputs.maui_ohos_ref || 'b91437926906242764ad64955409f080a4cb206f' }}
   # setup-dotnet installs the requested 11.0.x preview into DOTNET_INSTALL_DIR; on Linux that
   # defaults to /usr/share/dotnet, which a per-user cache cannot persist. Point it at ~/.dotnet
   # (the action resolves the ~ prefix against $HOME) so the cache step below actually avoids the

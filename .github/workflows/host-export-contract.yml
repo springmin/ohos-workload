@@ -22,7 +22,7 @@ on:
         description: 'maui-ohos commit SHA to cross-check (defaults to the pinned slice tip)'
         required: false
         type: string
-        default: 'caa463434bc141b1106eb7303e29d225e2491433'
+        default: 'b91437926906242764ad64955409f080a4cb206f'
   push:
     branches: [ master ]
   pull_request:
@@ -32,7 +32,12 @@ permissions:
 
 # Reproducible cross-repo check: the slice is checked out at an exact commit, not the mutable
 # feature/openharmony branch, so a push to the fork cannot change what this gate verifies.
-# Current tip: caa46343 (L3 A11Y-SELFCHECK + B6 merged: the child a11y first-publish fix (the
+# Current tip: b914379269 (SEC-SCAN-7 a11y close-hook merged: the close-hook native release calls
+# ohos_host_accessibility_release_for directly (SEC7-A) instead of the retired NativeLibrary
+# pre-probe; the EntryPointNotFound/DllNotFound cache keeps the old-host managed-only downgrade.
+# This is a managed-only change with no new DllImport, so the export set stays
+# 164/164 and the shell abc is 542,936; suite 737/740 floor 720) on caa46343 (L3 A11Y-SELFCHECK
+# + B6 merged: the child a11y first-publish fix (the
 # per-window publish gate reads ohos_host_accessibility_provider_status_for directly; the window
 # host repaints once when the provider attaches after the last frame) and the MULTIWINDOW-L3 B6
 # child navigation veto (the subwindow ArkWeb onLoadIntercept gateway + the same Navigating
@@ -139,7 +144,7 @@ permissions:
 # 151/151).
 # Advance the pin deliberately, in lockstep with the interaction/pixel gates.
 env:
-  MAUI_OHOS_REF: ${{ github.event.inputs.maui_ohos_ref || 'caa463434bc141b1106eb7303e29d225e2491433' }}
+  MAUI_OHOS_REF: ${{ github.event.inputs.maui_ohos_ref || 'b91437926906242764ad64955409f080a4cb206f' }}
 
 jobs:
   contract:
