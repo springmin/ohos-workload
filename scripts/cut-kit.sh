@@ -762,6 +762,8 @@ p1_build() {
     _rc=$?
     [ "$_rc" = 0 ] || { err "kit build failed (rc=$_rc; log $LOGDIR/p1-build.log)"; return 1; }
     [ -f "$KIT_OUT" ] || { err "kit tarball not produced: $KIT_OUT"; return 1; }
+    # A (re)built tarball invalidates the previous transport sidecar; P2 recreates it.
+    rm -f "$KIT_OUT.sha256"
     st_set kit_size_B "$(size_of "$KIT_OUT")"
     st_set kit_sha256 "$(sha256_of "$KIT_OUT")"
     return 0
