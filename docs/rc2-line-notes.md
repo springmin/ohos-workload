@@ -76,6 +76,17 @@ RID `openharmony-arm64`；workload `openharmony 1.0.0-preview.28/11.0.100-rc.2`�
    ——全新 checkout 开箱构建 4.9s ✓）；
    ③ **网络还原无超时会挂** ✗（需离线/最小 `RestoreConfigFile` ✓）。
 
+7. **设备环境（2026-10-08 harmonybrew 升级）**：`ohos-sdk` 停在 `26.0.0.18_2`
+   （`_3` 升级因与 `llvm` 的 clang 冲突被拒 ✗→**非破坏** ✓）；关键工具不变 ✓
+   （`Cellar/ohos-sdk/26.0.0.18_2/{native/llvm/bin/clang++, native/sysroot, bin/binary-sign-tool}`
+   ✓，`binary-sign-tool` 摘要仍 `c7d6575d…` ✓）。tap 新方向 = **拆分组件**：
+   `ohos-sdk-native` 已装 ✓（其 `llvm/`+`sysroot/` 在**顶层** ✗——与旧包 `native/` 层不同 ⚠️）；
+   `ohos-sdk-toolchains`（hdc/restool/**signing tools**）**keg-only 未装** ⚠️。
+   **跟进**：安装器 `binary-sign-tool` 探测应扩展覆盖 `ohos-sdk-toolchains/*`
+   （keg-only → PATH 探测会漏 ✗）；另 `ohos-selfsign`（第三方 0BSD）可作签名器备选评估 ✓。
+   一般升级（openssl@3 3.6.5/node/git/python 等）对本移植无影响 ✓；`ohos-compat-shim`
+   0.5→0.7 是唯一行为面变更 ⚠️（如设备端出现异常行为先查它 ✓）。
+
 - **发布重跑协议（第四锚）**：selfsign 已重上 ✓ → 发布面为**四锚**（SDK / runtime / workload /
   selfsign ✓，`SELFSIGN_SHA256=a403a1b4…` ✓）。CI `OHOS_SELFSIGN_PUBLISH` 门保持关闭 ✓；
   release 重跑若重建 SHA256SUMS 或覆盖资产，需按锚刷新协议重测并**重挂设备版 selfsign** ✓。
