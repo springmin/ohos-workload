@@ -48,11 +48,14 @@ import type { geoLocationManager } from '@kit.LocationKit';
 // Raw HAP resources (resources/rawfile/**): names the ResourceManager type the ability context
 // exposes; the type-only import is erased by the compiler.
 import type { resourceManager } from '@kit.LocalizationKit';
-// MULTIWINDOW-M: side-effect import that evaluates pages/SubWindow.ets so its @Entry named
-// route ('ohos_dotnet_subwindow') is registered in this UI instance. Without the import the
-// named route can resolve as an empty content load (the subwindow then shows its background
-// only), because nothing else references the page module.
-import './SubWindow';
+// MULTIWINDOW-M: the import evaluates pages/SubWindow.ets so its @Entry named route
+// ('ohos_dotnet_subwindow') is registered in this UI instance. Without it the named route can
+// resolve as an empty content load (the subwindow then shows its background only), because
+// nothing else references the page module. L8-POPUP: the same module also carries
+// ShellPopupBridge, the page-module hand-off for a popup's bound WebviewController (the device
+// probe measured that the window LocalStorage does not reach the named-route page, so the
+// static page-module import is the supported form).
+import { ShellPopupBridge } from './SubWindow';
 
 // Menu bridge: the managed side publishes the current page's menu bars (MenuBarItem/MenuFlyout)
 // as a structured table through the host. registerMenuChangedSink fires after every commit -
@@ -110,10 +113,13 @@ interface SubWindowCommand {
 // children can never drive each other's window. MULTIWINDOW-L3 M2: the session also carries the
 // generation stamped into the child name ('<name>__<surfaceId>.g<generation>'), the exact child
 // name, and whether the managed side confirmed the child page's identity handshake.
+// L8-POPUP: a popup session shares the Map for capacity but carries kind=popup and a 'web:N'
+// key; it never publishes a claim and never reaches the managed state/close wire.
 interface SubWindowSession {
   window: window.Window;
   id: number;
   surfaceId: string;
+  kind: number;
   generation: number;
   claimName: string;
   identityConfirmed: boolean;
@@ -805,6 +811,16 @@ const SUB_WINDOW_MAX: number = 8;
 const SUB_WINDOW_MIN_MAX: number = 2;
 const SUB_WINDOW_MAX_ENV: string = 'OHOS_SUBWINDOW_MAX';
 const SUB_WINDOW_MAX_RAWFILE: string = 'ohos-subwindow-max.txt';
+// L8-POPUP: the popup subwindow's native window-name prefix ('<prefix>web:N'), its title and
+// the session-kind discriminator. A popup joins the same session Map and SUB_WINDOW_MAX
+// accounting as a managed child (one capacity, no second limit), but its 'web:N' key namespace
+// and kind keep it out of the managed identity handshake, the managed state/close wire and the
+// managed command lookup. The SubWindow page reads the prefix from its own window name to find
+// the bridge entry whose controller this page bound in onWindowNew.
+const SUB_WINDOW_POPUP_PREFIX: string = 'ohos_dotnet_webpop__';
+const SUB_WINDOW_POPUP_TITLE: string = 'Popup';
+const SUB_WINDOW_KIND_MANAGED: number = 0;
+const SUB_WINDOW_KIND_POPUP: number = 1;
 // Grace period after a window WINDOW_INACTIVE before the app counts as left the foreground: an
 // internal focus move (main <-> child) delivers the other window's WINDOW_ACTIVE in the same tick
 // (measured on HAD-W32), while the Home key delivers nothing more.
@@ -2489,16 +2505,18 @@ struct Index {
   }
 
   // MULTIWINDOW-L3 M1: resolves the session a command targets. An explicit surfaceId must name
-  // a live session (exact match); an omitted one is only served when exactly one session exists
-  // (the historical single-child wire). Null means "cannot answer without guessing".
+  // a live managed session (exact match); an omitted one is only served when exactly one
+  // session exists (the historical single-child wire). Null means "cannot answer without
+  // guessing". L8-POPUP: popup sessions are not command targets, so both lookups require
+  // kind=managed (a popup sharing the registry can never be moved/closed by a managed command).
   private findSubWindowSession(surfaceId: string): SubWindowSession | null {
     if (surfaceId.length > 0) {
       const exact: SubWindowSession | undefined = this.subWindows.get(surfaceId);
-      return exact !== undefined ? exact : null;
+      return exact !== undefined && exact.kind === SUB_WINDOW_KIND_MANAGED ? exact : null;
     }
     if (this.subWindows.size === 1) {
       const only: SubWindowSession | undefined = this.subWindows.values().next().value;
-      return only !== undefined ? only : null;
+      return only !== undefined && only.kind === SUB_WINDOW_KIND_MANAGED ? only : null;
     }
     return null;
   }
@@ -2805,6 +2823,11 @@ struct Index {
     const op: number = suspended ? SUB_EVENT_SUSPENDED : SUB_EVENT_RESUMED;
     if (this.subWindows.size > 0) {
       this.subWindows.forEach((session: SubWindowSession, _surfaceId: string): void => {
+        // L8-POPUP: the managed side does not know popup sessions, so they never appear on the
+        // per-session suspend/resume wire.
+        if (session.kind === SUB_WINDOW_KIND_POPUP) {
+          return;
+        }
         if (session.surfaceId.length > 0) {
           this.notifySubWindowEvent(op, this.subWindowRefPayload(session));
           this.logInfo(`[maui] subwindow ${suspended ? 'suspended' : 'resumed'}: surface=${session.surfaceId} gen=${session.generation}`);
@@ -2964,7 +2987,7 @@ struct Index {
       const child = await main.createSubWindowWithOptions(childName, options);
       const childId: number = child.getWindowProperties().id;
       const session: SubWindowSession = {
-        window: child, id: childId, surfaceId: surfaceId,
+        window: child, id: childId, surfaceId: surfaceId, kind: SUB_WINDOW_KIND_MANAGED,
         generation: generation, claimName: childName, identityConfirmed: false,
       };
       this.subWindows.set(surfaceId, session);
@@ -3153,6 +3176,23 @@ struct Index {
     if (session === undefined) {
       return;
     }
+    // L8-POPUP: a popup's lifecycle stays off the managed report wire; only the shared
+    // foreground chain is fed (an ACTIVE/SHOWN popup keeps the app foreground, an INACTIVE one
+    // starts the same foreground-loss candidate a managed child does).
+    if (session.kind === SUB_WINDOW_KIND_POPUP) {
+      if (evt === window.WindowEventType.WINDOW_SHOWN) {
+        this.noteSubWindowWindowActive();
+      } else if (evt === window.WindowEventType.WINDOW_ACTIVE) {
+        this.noteSubWindowWindowActive();
+        this.logInfo(`[maui] popup active: key=${surfaceId}`);
+      } else if (evt === window.WindowEventType.WINDOW_INACTIVE) {
+        this.noteSubWindowWindowInactive();
+        this.logInfo(`[maui] popup inactive: key=${surfaceId}`);
+      } else if (evt === window.WindowEventType.WINDOW_DESTROYED) {
+        this.finishSubWindowClosed(session);
+      }
+      return;
+    }
     if (evt === window.WindowEventType.WINDOW_SHOWN) {
       this.noteSubWindowWindowActive();
       this.reportSubWindowState(SUB_EVENT_SHOWN, session);
@@ -3182,6 +3222,15 @@ struct Index {
 
   private finishSubWindowClosed(session: SubWindowSession): void {
     if (this.subWindows.get(session.surfaceId) !== session) {
+      return;
+    }
+    // L8-POPUP: a popup session leaves the same way it lived - off the managed wire. The
+    // bridge entry dies with the window, so a name-reuse open cannot hand the retired
+    // controller to a new page build.
+    if (session.kind === SUB_WINDOW_KIND_POPUP) {
+      this.subWindows.delete(session.surfaceId);
+      ShellPopupBridge.withdraw(session.surfaceId);
+      this.logInfo(`[maui] popup closed: key=${session.surfaceId} remaining=${this.subWindows.size}`);
       return;
     }
     // M3: a closed window must not keep the forwarded IME ownership; its page is going away,
@@ -3220,8 +3269,14 @@ struct Index {
     // M2: no claim/ack may survive the page teardown; a later page instance must handshake from
     // scratch.
     sessions.forEach((session: SubWindowSession, _surfaceId: string): void => {
-      this.withdrawSubWindowClaim(session);
-      this.clearSubWindowIdentity(session);
+      if (session.kind === SUB_WINDOW_KIND_POPUP) {
+        // L8-POPUP: the bridge entry belongs to this page instance; withdraw it with the window
+        // it was bound to.
+        ShellPopupBridge.withdraw(session.surfaceId);
+      } else {
+        this.withdrawSubWindowClaim(session);
+        this.clearSubWindowIdentity(session);
+      }
       try {
         session.window.destroyWindow().catch((destroyError: Error): void => {
           this.logError(`[maui] subwindow page teardown failed: ${destroyError.message}`);
@@ -3229,6 +3284,184 @@ struct Index {
       } catch (destroyError) {
         this.logError(`[maui] subwindow page teardown failed: ${(destroyError as Error).message}`);
       }
+    });
+    // L8-POPUP: the close/front hooks point at this page instance; drop them with it so a later
+    // page instance registers its own.
+    ShellPopupBridge.clearHooks();
+  }
+
+  // L8-POPUP: one window.open request from a page hosted by an overlay slot. The handler is
+  // answered synchronously - capacity check, URL whitelist, controller creation and
+  // setWebController all run before the first await - because the device probe measured that a
+  // controller published after the popup's Web attached delivers no content (window.open
+  // returns null) and that an unanswered handler blocks the opener's renderer. The subwindow
+  // itself is created afterwards. Every rejection path answers with setWebController(null).
+  private handleWindowNew(event: OnWindowNewEvent): void {
+    try {
+      const targetUrl: string = event.targetUrl;
+      const overCapacity: boolean = this.subWindows.size + this.subWindowCreating.size >= this.subWindowLimit;
+      if (overCapacity) {
+        this.logError(`[maui] window.open rejected: subwindow capacity ${this.subWindowLimit} reached`);
+        this.rejectWindowNew(event);
+        return;
+      }
+      if (!this.isPopupUrlAllowed(targetUrl)) {
+        this.logError(`[maui] window.open rejected: popup URL not allowed (${targetUrl})`);
+        this.rejectWindowNew(event);
+        return;
+      }
+      const key: string = this.nextPopupKey();
+      const popupController: web_webview.WebviewController = new web_webview.WebviewController();
+      ShellPopupBridge.stash(key, popupController);
+      try {
+        event.handler.setWebController(popupController);
+      } catch (bindError) {
+        ShellPopupBridge.withdraw(key);
+        this.logError(`[maui] popup controller bind failed: ${(bindError as Error).message}`);
+        this.rejectWindowNew(event);
+        return;
+      }
+      this.subWindowCreating.set(key, true);
+      this.logInfo(`[maui] popup bound: key=${key} url=${targetUrl} alert=${event.isAlert} user=${event.isUserTrigger}`);
+      this.openPopupWindow(key).catch((openError: Error): void => {
+        this.logError(`[maui] popup open failed: key=${key} ${openError.message}`);
+        this.subWindowCreating.delete(key);
+        ShellPopupBridge.withdraw(key);
+      });
+    } catch (windowError) {
+      this.logError(`[maui] window.open handling failed: ${(windowError as Error).message}`);
+    }
+  }
+
+  // L8-POPUP: the popup URL gate (the B6 policy). A popup is untrusted new-window content, so only the
+  // two web schemes and the inline about:blank document are admitted; an off-whitelist or
+  // oversized target is answered honestly (null) instead of opening a shell window for it. The
+  // length cap is the same navMaxUrlLength the retired same-window fallback used.
+  private isPopupUrlAllowed(url: string): boolean {
+    const trimmed: string = url.trim();
+    if (trimmed.length === 0 || trimmed.length > this.navMaxUrlLength) {
+      return false;
+    }
+    const lower: string = trimmed.toLowerCase();
+    return lower.startsWith('https://') || lower.startsWith('http://') || lower === 'about:blank';
+  }
+
+  // L8-POPUP: the lowest free popup session key in the 'web:N' namespace; managed keys ('sub-N')
+  // live in a different namespace, and the synchronous capacity check bounds the scan.
+  private nextPopupKey(): string {
+    let index: number = 1;
+    while (this.subWindows.has(`web:${index}`) || this.subWindowCreating.has(`web:${index}`)) {
+      index++;
+    }
+    return `web:${index}`;
+  }
+
+  // L8-POPUP: the one honest rejection form. The empty controller makes window.open return null
+  // and never blocks the renderer (device probe: the un-answered handler is the blocking form).
+  // The d.ts declares the parameter non-nullable while the official sample passes null, so the
+  // probe-verified cast is kept.
+  private rejectWindowNew(event: OnWindowNewEvent): void {
+    try {
+      event.handler.setWebController(null as ESObject as web_webview.WebviewController);
+    } catch (rejectError) {
+      this.logError(`[maui] popup reject failed: ${(rejectError as Error).message}`);
+    }
+  }
+
+  // L8-POPUP: creates the popup's subwindow and loads the shell popup page. The controller is
+  // already bound and stashed under the key; the page finds it by its own window name. The
+  // creation is deliberately post-bind (the probe's supported ordering). A failure withdraws
+  // the bridge entry and destroys a half-created window, so no stale controller or empty frame
+  // is left behind.
+  private async openPopupWindow(key: string): Promise<void> {
+    let session: SubWindowSession | null = null;
+    try {
+      const main: window.Window = await this.resolveMainWindow();
+      const childName: string = `${SUB_WINDOW_POPUP_PREFIX}${key}`;
+      const options: ShellSubWindowOptions = {
+        title: SUB_WINDOW_POPUP_TITLE,
+        decorEnabled: false,
+        windowRect: {
+          left: this.subWindowOffset(undefined, 160),
+          top: this.subWindowOffset(undefined, 140),
+          width: this.subWindowDimension(undefined, 720),
+          height: this.subWindowDimension(undefined, 560),
+        },
+        maximizeSupported: false,
+        outlineEnabled: false,
+        zLevelAboveParentLoosened: false,
+      };
+      const child: window.Window = await main.createSubWindowWithOptions(childName, options);
+      const childId: number = child.getWindowProperties().id;
+      session = {
+        window: child, id: childId, surfaceId: key, kind: SUB_WINDOW_KIND_POPUP,
+        generation: 0, claimName: childName, identityConfirmed: false,
+      };
+      this.subWindows.set(key, session);
+      child.on('windowEvent', (evt: window.WindowEventType): void => {
+        if (this.subWindows.get(key) === session) {
+          this.onSubWindowWindowEvent(key, evt);
+        }
+      });
+      const storage: LocalStorage = new LocalStorage();
+      storage.setOrCreate('subWindowId', childId);
+      try {
+        await child.loadContentByName(SUB_WINDOW_ROUTE, storage);
+      } catch (namedRouteError) {
+        this.logError(`[maui] popup named route failed, falling back to setUIContent: ${(namedRouteError as Error).message}`);
+        await child.setUIContent('pages/SubWindow');
+      }
+      await child.setWindowBackgroundColor('#FF11161C');
+      await child.showWindow();
+      this.logInfo(`[maui] popup created: key=${key} id=${childId}`);
+    } catch (popupError) {
+      const error = popupError as BusinessError;
+      this.logError(`[maui] popup create failed: key=${key} code=${error.code} message=${error.message}`);
+      if (session !== null && this.subWindows.get(key) === session) {
+        this.subWindows.delete(key);
+        try {
+          await session.window.destroyWindow();
+        } catch (cleanupError) {
+          this.logError(`[maui] popup cleanup failed: ${(cleanupError as Error).message}`);
+        }
+      }
+      ShellPopupBridge.withdraw(key);
+    } finally {
+      this.subWindowCreating.delete(key);
+    }
+  }
+
+  // L8-POPUP: the popup page's window.close() (onWindowExit) reaches the shell through the
+  // module bridge. The bridge entry is withdrawn before the destroy starts, so a name-reuse
+  // open racing the teardown can never pick up the dying controller.
+  private closePopupWindow(key: string, source: string): void {
+    ShellPopupBridge.withdraw(key);
+    const session: SubWindowSession | undefined = this.subWindows.get(key);
+    if (session === undefined || session.kind !== SUB_WINDOW_KIND_POPUP) {
+      this.logInfo(`[maui] popup close (${source}): no live session for ${key}`);
+      return;
+    }
+    session.window.destroyWindow().then((): void => {
+      if (this.subWindows.get(key) === session) {
+        this.finishSubWindowClosed(session);
+      }
+    }).catch((closeError: Error): void => {
+      this.logError(`[maui] popup close failed (${source}): key=${key} ${closeError.message}`);
+    });
+  }
+
+  // L8-POPUP: onActivateContent (window.open with a name that is already bound) best-effort
+  // raise. The probe measured the callback does not fire while the popup is already frontmost,
+  // so this is a hint, never a guarantee.
+  private requestPopupFront(key: string): void {
+    const session: SubWindowSession | undefined = this.subWindows.get(key);
+    if (session === undefined || session.kind !== SUB_WINDOW_KIND_POPUP) {
+      return;
+    }
+    session.window.showWindow().then((): void => {
+      this.logInfo(`[maui] popup front: key=${key}`);
+    }).catch((frontError: Error): void => {
+      this.logError(`[maui] popup front failed: key=${key} ${frontError.message}`);
     });
   }
 
@@ -5463,6 +5696,13 @@ struct Index {
     // is deferred to the first managed command (the app may set it in its own startup).
     this.applySubWindowLimit(this.readSubWindowLimitFromRawFile());
     this.subscribeSubWindow();
+    // L8-POPUP: a popup page reaches back for window.close/activate through the module bridge;
+    // the hooks belong to this page instance and are dropped in destroySubWindowForPage.
+    ShellPopupBridge.setHooks((key: string): void => {
+      this.closePopupWindow(key, 'popup window.close');
+    }, (key: string): void => {
+      this.requestPopupFront(key);
+    });
     this.subscribeNetworkChanges();
     // Device-compat (lazy SDK modules): the camera module is needed by the synchronous
     // flashlight sink and by the picker's camera position, so it is preloaded once here.
@@ -7758,22 +7998,17 @@ struct Index {
           }
         }
       })
-      // Multi-window (matrix #13): window.open asks for a new window. This slice is
-      // single-window, so the target loads in this component instead of creating a second
-      // ArkWeb; the programmatic marker lets the load through the navigation gateway, and the
-      // page's controller handler is left unset (no new window is created).
+      // Multi-window (matrix #13 / L8-POPUP): window.open asks for a new window. The shell
+      // answers as a popup: the target opens in a dedicated subwindow whose ArkWeb binds to a
+      // controller created and handed over synchronously in this callback (the device probe
+      // measured that an async bind delivers no content and that an unanswered handler blocks
+      // the renderer). The popup joins the same SUB_WINDOW_MAX accounting as a managed child;
+      // capacity overflow and off-whitelist URLs answer with setWebController(null), and
+      // allowWindowOpenMethod admits a script-triggered window.open (no user gesture).
       .multiWindowAccess(true)
+      .allowWindowOpenMethod(true)
       .onWindowNew((event) => {
-        try {
-          const targetUrl: string = event.targetUrl;
-          if (targetUrl.length === 0 || targetUrl.length > this.navMaxUrlLength) {
-            return;
-          }
-          this.navProgrammatic[slot] = { url: targetUrl, expires: Date.now() + this.navPendingTtlMs };
-          this.slotController(slot).loadUrl(targetUrl);
-        } catch (windowError) {
-          this.logError(`[maui] window.open fallback failed: ${(windowError as Error).message}`);
-        }
+        this.handleWindowNew(event);
       })
   }
 

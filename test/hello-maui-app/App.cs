@@ -189,6 +189,31 @@ public sealed class App : Application
         }
         // C5-L3 main-page probe: "app://web/datahash" opens the primary window's data WebView
         // with a '#' in the document; "app://web/datanohash" is the no-# regression twin.
+        // L8-POPUP: "app://web/windowopen" drives the popup sequence (open -> write ->
+        // postMessage both ways -> window.close -> second popup); ".../windowopen/cap" drives
+        // the capacity reject (the last free session is filled, the next window.open must come
+        // back null). Checked first: "windowopen/cap" also starts with "windowopen".
+        // L8-POPUP: "app://web/windowopenseq" (and /cap) runs the popup sequence inside the
+        // already-mounted hybrid A WebView. The current slice was measured not to materialize
+        // newly pushed pages from a deep link in a quiet app (the web handler never connects),
+        // so the product round drives window.open from a proven-live page instead of pushing
+        // the windowopen page. Checked before the windowopen branch (shared prefix).
+        else if (uri.StartsWith("app://web/windowopenseq/cap", StringComparison.OrdinalIgnoreCase))
+        {
+            RunWindowOpenSequence(capacityProbe: true);
+        }
+        else if (uri.StartsWith("app://web/windowopenseq", StringComparison.OrdinalIgnoreCase))
+        {
+            RunWindowOpenSequence(capacityProbe: false);
+        }
+        else if (uri.StartsWith("app://web/windowopen/cap", StringComparison.OrdinalIgnoreCase))
+        {
+            RunWindowOpenProbe(capacityProbe: true);
+        }
+        else if (uri.StartsWith("app://web/windowopen", StringComparison.OrdinalIgnoreCase))
+        {
+            RunWindowOpenProbe(capacityProbe: false);
+        }
         else if (uri.StartsWith("app://web/datahash", StringComparison.OrdinalIgnoreCase))
         {
             RunMainDataProbe(withHash: true);
@@ -541,6 +566,238 @@ public sealed class App : Application
     }
 
     /// <summary>
+    /// L8-POPUP device trigger: pushes a main-window WebView whose inline document drives the
+    /// popup sequence over the shell's onWindowNew path: open about:blank, write the popup
+    /// document through the window proxy, exchange postMessage both ways, close with
+    /// window.close(), then open a second popup. The capacity variant opens two popups against
+    /// an already-full session table, so the second window.open must come back null (the
+    /// shell's setWebController(null) reject). The managed poller mirrors the document HUD into
+    /// the status file, so the round reads the same text a screenshot shows.
+    /// </summary>
+    private static void RunWindowOpenProbe(bool capacityProbe)
+    {
+        if (CurrentWindow() is not Window window)
+        {
+            OpenHarmonyBridge.WriteStatus("[hello-maui-app] windowopen probe: no main window");
+            return;
+        }
+        if (window.Page is FlyoutPage { Detail: TabbedPage { CurrentPage: NavigationPage nav } })
+        {
+            // Modal (not PushAsync): a modal page presents over the tabbed/flyout shell reliably
+            // from a deep link in a quiet app; the plain push was measured not to materialize in
+            // some foreground states. The result is logged so the round can tell a failed
+            // presentation from a loaded-but-blank page.
+            _ = Task.Run(async () =>
+            {
+                try
+                {
+                    await nav.Navigation.PushModalAsync(BuildWindowOpenPage(capacityProbe), animated: false);
+                    OpenHarmonyBridge.WriteStatus($"[hello-maui-app] windowopen modal push ok: capacity={capacityProbe}");
+                }
+                catch (Exception pushEx)
+                {
+                    OpenHarmonyBridge.WriteStatus($"[hello-maui-app] windowopen modal push failed: {pushEx.GetType().Name}: {pushEx.Message}");
+                }
+            });
+            OpenHarmonyBridge.WriteStatus($"[hello-maui-app] windowopen probe open: capacity={capacityProbe}");
+        }
+        else
+        {
+            OpenHarmonyBridge.WriteStatus("[hello-maui-app] windowopen probe: main navigation page unavailable");
+        }
+    }
+
+    private static ContentPage BuildWindowOpenPage(bool capacityProbe)
+    {
+        string doc = capacityProbe ? WindowOpenCapacityDoc() : WindowOpenDoc();
+        var status = new Label { Text = "windowopen: loading", FontSize = 22 };
+        // A continuous animation keeps the main window presenting every vsync, so the popup
+        // round also reads the main window's framestats line (60fps zero-regression evidence).
+        var spinner = new ActivityIndicator { IsRunning = true, HeightRequest = 24 };
+        var web = new WebView
+        {
+            HeightRequest = 260,
+            Source = new HtmlWebViewSource { Html = doc },
+        };
+        string lastHud = string.Empty;
+        _ = Task.Run(async () =>
+        {
+            for (int i = 0; i < 40; i++)
+            {
+                await Task.Delay(1000);
+                try
+                {
+                    string? hud = await web.EvaluateJavaScriptAsync(
+                        "(function(){var h=document.getElementById('hud');return h?h.textContent:'NO-HUD';})()")
+                        .WaitAsync(TimeSpan.FromSeconds(3));
+                    if (hud is not null && hud != lastHud)
+                    {
+                        lastHud = hud;
+                        OpenHarmonyBridge.WriteStatus($"[hello-maui-app] windowopen hud: {hud}");
+                        status.Text = hud;
+                    }
+                }
+                catch
+                {
+                    // A probe read is best effort (and bounded by WaitAsync so a stalled eval can
+                    // never wedge the loop); the screenshots and the shell hilog stay the
+                    // authoritative evidence.
+                }
+            }
+        });
+        return new ContentPage
+        {
+            Title = capacityProbe ? "L8-POPUP-CAP" : "L8-POPUP",
+            Content = new VerticalStackLayout { Padding = 24, Spacing = 12, Children = { status, spinner, web } },
+        };
+    }
+
+    // The popup-document writer embedded into both opener documents: PD(name) returns the
+    // document the opener writes into the child window through the window proxy (about:blank +
+    // document.write is the no-network form the probe used). The popup answers opener PINGs
+    // with PONG, shows every message in its HUD and closes itself with window.close() 20 s
+    // after load; a name-reuse rewrite makes the reused child carry the second name in its HUD.
+    // The '<\/script>' spelling keeps the HTML parser from ending the opener's script block at
+    // the literal (it becomes a plain closing tag after JS unescaping).
+    private const string PopupWriterJs = """
+function PD(n) {
+  return '<html><head><meta charset="utf-8"><title>L8POP</title></head>'
+    + '<body style="font-family:sans-serif">'
+    + '<div id="hud" style="font-size:30px">L8 POPUP ' + n + ' READY</div>'
+    + '<script>'
+    + 'window.addEventListener("message",function(e){'
+    + 'var h=document.getElementById("hud");h.textContent="L8 POPUP " + n + " GOT " + e.data;'
+    + 'try{if(window.opener){window.opener.postMessage("PONG-" + n + " " + e.data,"*");}}catch(err){}'
+    + '});'
+    + 'setTimeout(function(){document.getElementById("hud").textContent="L8 POPUP " + n + " CLOSING";window.close();},20000);'
+    + '<\/script></body></html>';
+}
+""";
+
+    // The hybrid-A WebView the windowopenseq trigger drives (set by BuildPage).
+    private static HybridWebView? s_windowOpenHybrid;
+
+    // L8-POPUP device trigger (hybrid form): evaluates the whole opener sequence inside the
+    // already-mounted hybrid A page. Every step reports through the hybrid raw-message channel
+    // ("L8-..."), which this handler mirrors into the status file/hilog; the on-page HUD makes
+    // the same state visible in a screenshot.
+    private static void RunWindowOpenSequence(bool capacityProbe)
+    {
+        HybridWebView? web = s_windowOpenHybrid;
+        if (web is null)
+        {
+            OpenHarmonyBridge.WriteStatus("[hello-maui-app] windowopenseq: no hybrid webview");
+            return;
+        }
+        web.RawMessageReceived += (_, e) =>
+        {
+            if (e.Message.StartsWith("L8-", StringComparison.Ordinal))
+            {
+                OpenHarmonyBridge.WriteStatus($"[hello-maui-app] windowopenseq js: {e.Message}");
+            }
+        };
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                string? result = await web.EvaluateJavaScriptAsync(WindowOpenSequenceScript(capacityProbe));
+                OpenHarmonyBridge.WriteStatus($"[hello-maui-app] windowopenseq started: {result ?? "null"}");
+            }
+            catch (Exception jsEx)
+            {
+                OpenHarmonyBridge.WriteStatus($"[hello-maui-app] windowopenseq failed: {jsEx.GetType().Name}: {jsEx.Message}");
+            }
+        });
+    }
+
+    // The complete opener sequence as one JS IIFE: on-page HUD + raw-message reporting + the
+    // PD() popup writer + the timed open/ping/reuse/open/close/closed-check (or the capacity
+    // C1/C2 pair for the full-session reject).
+    private static string WindowOpenSequenceScript(bool capacityProbe)
+    {
+        const string head =
+            "(function(){"
+            + "function send(t){try{if(window.external&&window.external.sendMessage){window.external.sendMessage('__RawMessage|'+encodeURIComponent('L8-'+t));}}catch(e){}}"
+            + "var h=document.createElement('div');h.id='l8hud';"
+            + "h.style.cssText='position:fixed;top:0;left:0;right:0;background:#000;color:#0f0;font:30px monospace;z-index:99999;padding:6px';"
+            + "document.body.appendChild(h);"
+            + "function H(t){h.textContent='L8 MAIN '+t;send(t);}"
+            + "function PD(n){return '<html><head><meta charset=\"utf-8\"><title>L8POP</title></head>'"
+            + "+'<body style=\"font-family:sans-serif\">'"
+            + "+'<div id=\"hud\" style=\"font-size:30px\">L8 POPUP '+n+' READY</div>'"
+            + "+'<scr'+'ipt>'"
+            + "+'window.addEventListener(\"message\",function(e){'"
+            + "+'var p=document.getElementById(\"hud\");p.textContent=\"L8 POPUP \"+n+\" GOT \"+e.data;'"
+            + "+'try{if(window.opener){window.opener.postMessage(\"PONG-\"+n+\" \"+e.data,\"*\");p.textContent=p.textContent+\" PONG-SENT\";}}catch(err){}'"
+            + "+'});'"
+            + "+'setTimeout(function(){document.getElementById(\"hud\").textContent=\"L8 POPUP \"+n+\" CLOSING\";window.close();},20000);'"
+            + "+'</scr'+'ipt></body></html>';}"
+            + "window.addEventListener('message',function(e){H('GOT '+e.data);});"
+            + "H('READY');";
+        const string tailTimed =
+            "var a=null;var b=null;"
+            + "setTimeout(function(){a=window.open('about:blank','l8pop_a');"
+            + "if(a){H('A OPEN');try{a.document.write(PD('A'));a.document.close();}catch(e){H('A WRITE-ERR '+e);}}else{H('A NULL');}},3000);"
+            + "setTimeout(function(){if(a){try{a.postMessage('PING-A','*');H('A PING SENT');}catch(e){H('A PING-ERR '+e);}}},5000);"
+            + "setTimeout(function(){if(a){try{a.document.write(PD('A2-REUSE'));a.document.close();H('A REUSE WRITE');}catch(e){H('A REUSE-ERR '+e);}}},12000);"
+            + "setTimeout(function(){b=window.open('about:blank','l8pop_b');"
+            + "if(b){H('B OPEN');try{b.document.write(PD('B'));b.document.close();}catch(e){H('B WRITE-ERR '+e);}}else{H('B NULL');}},24000);"
+            + "setTimeout(function(){if(a){H('A CLOSED='+a.closed);}},38000);"
+            + "setTimeout(function(){if(a&&!a.closed){try{a.close();H('A PROXY-CLOSE');}catch(e){H('A PROXY-ERR '+e);}}},42000);"
+            + "setTimeout(function(){if(b&&!b.closed){try{b.close();H('B PROXY-CLOSE');}catch(e){H('B PROXY-ERR '+e);}}},58000);"
+            + "return 'started';})()";
+        const string tailCapacity =
+            "var a=null;var b=null;"
+            + "setTimeout(function(){a=window.open('about:blank','l8cap_a');"
+            + "if(a){H('C1 OPEN');try{a.document.write(PD('C1'));a.document.close();}catch(e){H('C1 WRITE-ERR '+e);}}else{H('C1 NULL');}},3000);"
+            + "setTimeout(function(){b=window.open('about:blank','l8cap_b');"
+            + "if(b){H('C2 OPENED-UNEXPECTED');try{b.document.write(PD('C2'));b.document.close();}catch(e){}}else{H('C2 NULL REJECT');}},8000);"
+            + "return 'started';})()";
+        return head + (capacityProbe ? tailCapacity : tailTimed);
+    }
+
+    // The opener document: 3 s open A + write, 6 s PING-A, 10 s same-name reuse write into A,
+    // 20 s open B + write, 32 s report A's closed flag. Every step lands in the HUD; the managed
+    // poller mirrors it into the status file.
+    private static string WindowOpenDoc()
+    {
+        return "<html><head><meta charset=\"utf-8\"><title>L8MAIN</title></head>"
+            + "<body style=\"font-family:sans-serif\">"
+            + "<div id=\"hud\" style=\"font-size:30px\">L8 MAIN READY</div>"
+            + "<script>"
+            + "function H(t){document.getElementById('hud').textContent=t;}"
+            + PopupWriterJs
+            + "window.addEventListener('message',function(e){H('MAIN GOT '+e.data);});"
+            + "var a=null;var b=null;"
+            + "setTimeout(function(){a=window.open('about:blank','l8pop_a');"
+            + "if(a){H('A OPEN');try{a.document.write(PD('A'));a.document.close();}catch(e){H('A WRITE-ERR '+e);}}else{H('A NULL');}},3000);"
+            + "setTimeout(function(){if(a){try{a.postMessage('PING-A','*');H('A PING SENT');}catch(e){H('A PING-ERR '+e);}}},6000);"
+            + "setTimeout(function(){if(a){try{a.document.write(PD('A2-REUSE'));a.document.close();H('A REUSE WRITE');}catch(e){H('A REUSE-ERR '+e);}}},10000);"
+            + "setTimeout(function(){b=window.open('about:blank','l8pop_b');"
+            + "if(b){H('B OPEN');try{b.document.write(PD('B'));b.document.close();}catch(e){H('B WRITE-ERR '+e);}}else{H('B NULL');}},20000);"
+            + "setTimeout(function(){if(a){H('A CLOSED='+a.closed);}},32000);"
+            + "</script></body></html>";
+    }
+
+    // The capacity document: 3 s open C1 (the last free session), 8 s open C2 - with the shared
+    // table full the shell rejects with setWebController(null), so C2 must report null.
+    private static string WindowOpenCapacityDoc()
+    {
+        return "<html><head><meta charset=\"utf-8\"><title>L8MAIN-CAP</title></head>"
+            + "<body style=\"font-family:sans-serif\">"
+            + "<div id=\"hud\" style=\"font-size:30px\">L8 MAIN CAP READY</div>"
+            + "<script>"
+            + "function H(t){document.getElementById('hud').textContent=t;}"
+            + PopupWriterJs
+            + "var a=null;var b=null;"
+            + "setTimeout(function(){a=window.open('about:blank','l8cap_a');"
+            + "if(a){H('C1 OPEN');try{a.document.write(PD('C1'));a.document.close();}catch(e){H('C1 WRITE-ERR '+e);}}else{H('C1 NULL');}},3000);"
+            + "setTimeout(function(){b=window.open('about:blank','l8cap_b');"
+            + "if(b){H('C2 OPENED-UNEXPECTED');try{b.document.write(PD('C2'));b.document.close();}catch(e){}}else{H('C2 NULL REJECT');}},8000);"
+            + "</script></body></html>";
+    }
+
+    /// <summary>
     /// Managed-driven subwindow demo: create -> move -> resize -> close, one status line per
     /// step. Every shell transition is also logged by the Changed handler in BuildPage, so a
     /// device round reads the whole sequence out of hilog without touching the page.
@@ -692,6 +949,7 @@ public sealed class App : Application
             HeightRequest = 180,
         };
         hybridA.Invoker = new EchoInvoker("A");
+        s_windowOpenHybrid = hybridA;
         var hybridAStatus = new Label { Text = "hybrid A: loading hybrid-a.html", FontSize = 20 };
         hybridA.RawMessageReceived += (_, e) => SetStatus(hybridA, hybridAStatus, $"A raw: {e.Message}");
 

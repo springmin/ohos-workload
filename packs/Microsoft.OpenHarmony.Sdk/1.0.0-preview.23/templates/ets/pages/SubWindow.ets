@@ -54,6 +54,13 @@ const SUB_WINDOW_FOCUS_REQUEST_KEY: string = 'ohos_dotnet_subwindow_focus_reques
 const SUB_WINDOW_CLAIM_KEY: string = 'ohos_dotnet_subwindow_claim';
 const SUB_WINDOW_IDENTITY_KEY: string = 'ohos_dotnet_subwindow_identity';
 const SUB_WINDOW_GENERATION_SEPARATOR: string = '.g';
+// L8-POPUP: the popup mode's window-name prefix. pages/Index.ets creates a popup child as
+// '<prefix>web:N' (the opener bound the popup's WebviewController synchronously in onWindowNew
+// and stashed it in ShellPopupBridge under 'web:N'); this page resolves its own key from its
+// window name and takes the controller from the bridge. The window-name route is the same
+// identity source the managed handshake uses, because the per-window LocalStorage measured
+// unreliable on device (probe round 1: the popup page read it back empty).
+const SUB_WINDOW_POPUP_PREFIX: string = 'ohos_dotnet_webpop__';
 
 // One shell-published claim (pages/Index.ets SubWindowClaimRecord).
 interface SubWindowClaimRecord {
@@ -221,6 +228,66 @@ interface SubWindowFocusRequest {
   gen?: number;
 }
 
+// L8-POPUP: the page-module bridge shared by pages/Index.ets (opener) and pages/SubWindow.ets
+// (popup mode). The opener creates a popup's WebviewController and hands it to the engine's
+// ControllerHandler SYNCHRONOUSLY inside onWindowNew, then stashes the same object here before
+// the subwindow exists; the popup page picks it up by its own session key when it builds its
+// Web. The device probe (2026-10-09) measured that this static hand-off is the working form:
+// the window LocalStorage does not reach the named-route page, and a controller published
+// after the popup Web attached delivers no content. close/front callbacks travel the other way
+// through the same bridge, bound by the main page instance.
+export class ShellPopupBridge {
+  private static controllers: Map<string, web_webview.WebviewController> = new Map();
+  private static closeHook: ((key: string) => void) | null = null;
+  private static frontHook: ((key: string) => void) | null = null;
+
+  // Called by the opener before the popup window/page exists.
+  static stash(key: string, controller: web_webview.WebviewController): void {
+    ShellPopupBridge.controllers.set(key, controller);
+  }
+
+  // The popup page's own controller lookup; null means the binding was rejected/never made
+  // (the page then renders the fallback status without a live document).
+  static controllerFor(key: string): web_webview.WebviewController | null {
+    const found: web_webview.WebviewController | undefined = ShellPopupBridge.controllers.get(key);
+    return found !== undefined ? found : null;
+  }
+
+  // Drops a controller for good (window closed, creation failed, page teardown): a later
+  // page build must never pick up a retired object.
+  static withdraw(key: string): void {
+    ShellPopupBridge.controllers.delete(key);
+  }
+
+  static setHooks(close: (key: string) => void, front: (key: string) => void): void {
+    ShellPopupBridge.closeHook = close;
+    ShellPopupBridge.frontHook = front;
+  }
+
+  static clearHooks(): void {
+    ShellPopupBridge.closeHook = null;
+    ShellPopupBridge.frontHook = null;
+  }
+
+  // The popup document called window.close() (the popup Web's onWindowExit).
+  static requestClose(key: string): void {
+    const hook = ShellPopupBridge.closeHook;
+    if (hook !== null) {
+      hook(key);
+    } else {
+      hilog.warn(DOMAIN, TAG, 'popup close request without a hook: %{public}s', key);
+    }
+  }
+
+  // window.open(url, name) hit the already-bound popup (onActivateContent): best-effort raise.
+  static requestFront(key: string): void {
+    const hook = ShellPopupBridge.frontHook;
+    if (hook !== null) {
+      hook(key);
+    }
+  }
+}
+
 @Entry({ routeName: 'ohos_dotnet_subwindow' })
 @Component
 struct SubWindow {
@@ -337,6 +404,15 @@ struct SubWindow {
   private win: window.Window | null = null;
   private startLeft: number = 0;
   private startTop: number = 0;
+  // L8-POPUP: set when this page instance is a popup (its native window name carries the popup
+  // prefix). popupKey is the shell session key ('web:N'); the controller is the exact object
+  // the opener created and bound through the ControllerHandler, read back from ShellPopupBridge.
+  // A missing bridge entry (should not happen while the session lives) degrades to the fallback
+  // controller and a visible status instead of failing the page.
+  @State popupKey: string = '';
+  @State popupBound: boolean = false;
+  private popupController: web_webview.WebviewController | null = null;
+  private popupFallbackController: web_webview.WebviewController = new web_webview.WebviewController();
 
   aboutToAppear(): void {
     const context = this.getUIContext().getHostContext() as common.UIAbilityContext;
@@ -352,6 +428,13 @@ struct SubWindow {
       hilog.warn(DOMAIN, TAG, 'subwindow own window name unavailable: %{public}s', (ownNameError as Error).message);
     }
     this.ownName = ownName;
+    // L8-POPUP: a popup page is identified by its native window name ('<prefix>web:N'). It
+    // consumes the opener-bound controller from the module bridge and never touches the managed
+    // identity/claim/host/child-web paths (the managed side does not know popup sessions).
+    if (ownName.startsWith(SUB_WINDOW_POPUP_PREFIX)) {
+      this.enterPopupMode(ownName.substring(SUB_WINDOW_POPUP_PREFIX.length));
+      return;
+    }
     window.getLastWindow(context).then((win: window.Window): void => {
       this.win = win;
       const props = win.getWindowProperties();
@@ -460,6 +543,19 @@ struct SubWindow {
     }).catch((readyError: Error): void => {
       hilog.error(DOMAIN, TAG, 'subwindow window lookup failed: %{public}s', readyError.message);
     });
+  }
+
+  // L8-POPUP: the popup half of the page. The session key comes from the window name; the
+  // controller is the opener's bound object (probe: cross-window binding works only when the
+  // opener creates and hands over the controller synchronously in onWindowNew). Nothing here
+  // registers the managed surface, the child web sink or the accessibility provider.
+  private enterPopupMode(key: string): void {
+    this.popupKey = key;
+    const bound: web_webview.WebviewController | null = ShellPopupBridge.controllerFor(key);
+    this.popupController = bound;
+    this.popupBound = bound !== null;
+    hilog.info(DOMAIN, TAG, 'popup page ready: key=%{public}s bound=%{public}s',
+      key, this.popupBound ? 'yes' : 'no');
   }
 
   // One event to the managed side. A shell whose host library lacks the export logs once and
@@ -2338,13 +2434,44 @@ struct SubWindow {
   // M4: the system Back on the child page. The event channel is one-way (no synchronous
   // consume answer), so the notification is advisory and the platform default still runs; a
   // per-window consumer receives it through OpenHarmonyWindowInputRouter.Back.
+  // L8-POPUP: a popup has no managed Back consumer, so the notification is skipped and only
+  // the platform default runs.
   onBackPress(): boolean {
-    this.notifyHost(SUB_EVENT_BACK, this.readyPayload());
+    if (this.popupKey.length === 0) {
+      this.notifyHost(SUB_EVENT_BACK, this.readyPayload());
+    }
     return false;
   }
 
   build() {
     Stack() {
+      // L8-POPUP: popup mode carries exactly one Web, bound to the opener-created controller.
+      // multiWindowAccess(false): a popup cannot ask for further windows (the request falls
+      // back into this window, mirroring the single-window shell default). No managed surface,
+      // input or child-web content is mounted here; onWindowExit is the page's window.close()
+      // and onActivateContent is the name-reuse "bring to front" hint (best effort: the probe
+      // measured it not firing while the popup is already frontmost).
+      if (this.popupKey.length > 0) {
+        if (this.popupBound) {
+          Web({ src: '', controller: this.popupController !== null ? this.popupController : this.popupFallbackController })
+            .multiWindowAccess(false)
+            .domStorageAccess(true)
+            .javaScriptAccess(true)
+            .onWindowExit((): void => {
+              ShellPopupBridge.requestClose(this.popupKey);
+            })
+            .onActivateContent((): void => {
+              ShellPopupBridge.requestFront(this.popupKey);
+            })
+            .width('100%')
+            .height('100%')
+        } else {
+          Text('popup binding unavailable')
+            .fontSize(14)
+            .fontColor('#FFE8F1FA')
+        }
+      }
+
       // MULTIWINDOW-L M4: the child's own hidden text input (declared before the XComponent so
       // the managed surface composites above it). The managed second window focuses it through
       // the AppStorage request channel; its text/keys travel to the managed side tagged with
@@ -2417,8 +2544,9 @@ struct SubWindow {
 
       // MULTIWINDOW-M drawn content, kept as the degradation path: shown until the managed
       // surface is confirmed (or forever without a surface id), and hidden afterwards so the
-      // two content paths never fight for input.
-      if (!this.surfaceBound) {
+      // two content paths never fight for input. L8-POPUP: never mounted for a popup page -
+      // the bound Web owns the whole window.
+      if (this.popupKey.length === 0 && !this.surfaceBound) {
         Column() {
           Row() {
             Text('MAUI subwindow')
