@@ -715,16 +715,16 @@ const BLZ_TAG = 'BlazorWebHost';
 // WEB_SLOT_MAX (the highest capacity the shell carries, E4-CAPACITY8) and its length derives
 // from that constant - one hardcoded length desynchronizes a table from the others and the
 // slots beyond it silently never attach (E4 root cause, 2026-10-08). The served capacity
-// defaults to WEB_SLOT_DEFAULT_MAX (4, the previous behavior) and is raised to WEB_SLOT_MAX
-// only through the explicit switch: the OHOS_OVERLAY_MAX environment variable the managed pool
-// already reads (set by the app process before the first web control connects), or the HAP
-// rawfile "ohos-overlay-max.txt" for pairings that cannot set the process environment. Slots at
+// defaults to WEB_SLOT_DEFAULT_MAX (8, the shipped default) and can be lowered through the
+// explicit switch: the OHOS_OVERLAY_MAX environment variable the managed pool already reads
+// (set by the app process before the first web control connects), or the HAP rawfile
+// "ohos-overlay-max.txt" for pairings that cannot set the process environment. Slots at
 // or above WEB_SLOT_HOT are removed again when the managed pool releases them ("slot destroy"),
 // so an idle dynamic ArkWeb cannot keep its engine and document alive; the managed pool mirrors
-// both numbers (OHOS_OVERLAY_MAX / OHOS_OVERLAY_HOT, defaults 4/2) and learns the served
+// both numbers (OHOS_OVERLAY_MAX / OHOS_OVERLAY_HOT, defaults 8/2) and learns the served
 // capacity from the "capacity" page event.
 const WEB_SLOT_MAX: number = 8;
-const WEB_SLOT_DEFAULT_MAX: number = 4;
+const WEB_SLOT_DEFAULT_MAX: number = 8;
 const WEB_SLOT_MIN_MAX: number = 2;
 const WEB_SLOT_HOT: number = 2;
 // E4-CAPACITY8 explicit capacity switch: the environment name the managed pool reads, plus its
@@ -925,8 +925,8 @@ struct Index {
   // whether its controller has attached (commands arriving in between are deferred).
   private webSlotCreated: boolean[] = hotSlotBooleans();
   private webSlotAttached: boolean[] = slotBooleans(false);
-  // E4-CAPACITY8 served capacity (WEB_SLOT_MAX is the table bound): starts at the 4-slot default
-  // and is raised only by the explicit switch. webSlotLimitEnvChecked gates the deferred env
+  // E4-CAPACITY8 served capacity (WEB_SLOT_MAX is the table bound): starts at the 8-slot default
+  // and is lowered only by the explicit switch. webSlotLimitEnvChecked gates the deferred env
   // read (the managed app may set OHOS_OVERLAY_MAX in its own startup, after this page loads).
   private webSlotLimit: number = WEB_SLOT_DEFAULT_MAX;
   private webSlotLimitEnvChecked: boolean = false;

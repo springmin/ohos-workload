@@ -719,7 +719,7 @@ check_aot_startup_gate() { # <templates-dir>
 }
 
 # E4-CAPACITY8: the per-slot tables must derive from WEB_SLOT_MAX and the served capacity must
-# keep the 4-slot default plus the explicit 8-slot switch. The E4 root cause (2026-10-08) was a
+# keep the shipped 8-slot default with the explicit switch able to lower it. The E4 root cause (2026-10-08) was a
 # constant-only capacity raise: WEB_SLOT_MAX moved to 8 but 18 per-slot tables stayed at a
 # hardcoded length 4, so slots 4-7 were created but never attached/served. This gate fails when
 # a future edit reintroduces a fixed-length table literal or drops a derivation/switch marker.
@@ -727,7 +727,7 @@ check_slot_capacity_contract() { # <templates-dir>
     _index="$1/ets/pages/Index.ets"
     _missing=""
     for _marker in "const WEB_SLOT_MAX: number = 8;" \
-                   "const WEB_SLOT_DEFAULT_MAX: number = 4;" \
+                   "const WEB_SLOT_DEFAULT_MAX: number = 8;" \
                    "function slotBooleans(value: boolean): boolean[] {" \
                    "function hotSlotBooleans(): boolean[] {" \
                    "function slotNumbers(value: number): number[] {" \

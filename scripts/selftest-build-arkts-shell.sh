@@ -451,8 +451,8 @@ assert_rc 1 "$_rc" "T15 the gate rejects a stripped AOT-STARTUP mount gate"
 assert_contains "T15 the rejection names the mount gate" "AOT-STARTUP first-use overlay mount gate is missing" "$WORK/T15-aot.log"
 assert_contains "T15 the rejection names the missing marker" "@State webOverlaysMounted: boolean = false;" "$WORK/T15-aot.log"
 cp "$REAL_SOURCE" "$SRC_FAKE/ets/pages/Index.ets"
-# E4-CAPACITY8: the per-slot tables derive from WEB_SLOT_MAX and the 4-slot default plus the
-# explicit switch stay in place. Red control: a reintroduced hardcoded 4-slot table (the exact
+# E4-CAPACITY8: the per-slot tables derive from WEB_SLOT_MAX and the shipped 8-slot default with
+# the explicit switch stay in place. Red control: a reintroduced hardcoded 4-slot table (the exact
 # shape the incomplete scratch patch left behind) is rejected and the shape is named.
 cp "$REAL_SOURCE" "$SRC_FAKE/ets/pages/Index.ets"
 printf '\nconst e4RedControl: boolean[] = [false, false, false, false];\n' >> "$SRC_FAKE/ets/pages/Index.ets"

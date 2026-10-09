@@ -11,7 +11,7 @@
 //     <see cref="Acquire(IOpenHarmonyOverlaySlotOwner)"/> overload. The pool sizes itself from
 //     the shell's declared capacity (<see cref="SetShellCapacity"/>; the shell advertises
 //     WEB_SLOT_MAX, and the managed limits are <see cref="MaxOverlays"/> /
-//     <see cref="HotOverlays"/>, default 4/2, overridable through the OHOS_OVERLAY_MAX and
+//     <see cref="HotOverlays"/>, default 8/2, overridable through the OHOS_OVERLAY_MAX and
 //     OHOS_OVERLAY_HOT environment variables). A free slot is claimed directly; a slot the
 //     shell has not created yet is created on demand with the shell's "slot ensure" command
 //     (the shell also lazily creates a slot when the first tagged command for it arrives, so a
@@ -35,7 +35,7 @@
 //     ("__OHNAV|s<slot>|<url>|<id>") and routes the hybrid invoke endpoint per slot
 //     (<see cref="EncodeInvokeRequestId"/>). An untagged state stays a fan-out for a shell that
 //     predates the second overlay. The shell advertises its overlay capacity as the page event
-//     ("capacity", "4"); the pool defaults to <see cref="MaxOverlays"/> so the shipped
+//     ("capacity", "8"); the pool defaults to <see cref="MaxOverlays"/> so the shipped
 //     shell+slice pairing renders 3+ concurrent controls even when the notification beats the
 //     managed subscription, and a legacy 2-overlay shell would downgrade the pool through the
 //     same event (mismatched shell/slice pairings beyond the advertised capacity are not
@@ -82,8 +82,8 @@ public interface IOpenHarmonyOverlaySlotOwner
 /// </summary>
 public static class OpenHarmonyOverlays
 {
-    /// <summary>Default overlay slots the pool may use (SLOTS-DYNAMIC; env OHOS_OVERLAY_MAX).</summary>
-    public const int DefaultMaxOverlays = 4;
+    /// <summary>Default overlay slots the pool may use (SLOTS-DYNAMIC; env OHOS_OVERLAY_MAX, default 8).</summary>
+    public const int DefaultMaxOverlays = 8;
 
     /// <summary>Default always-declared hot slots kept across a release (env OHOS_OVERLAY_HOT).</summary>
     public const int DefaultHotOverlays = 2;
@@ -136,7 +136,7 @@ public static class OpenHarmonyOverlays
     // (a legacy 2-overlay shell) and preempts any claim the shell cannot serve.
     private static int s_shellCapacity;
 
-    /// <summary>Overlay slots the pool may use (SLOTS-DYNAMIC; env OHOS_OVERLAY_MAX, default 4).</summary>
+    /// <summary>Overlay slots the pool may use (SLOTS-DYNAMIC; env OHOS_OVERLAY_MAX, default 8).</summary>
     public static int MaxOverlays => s_maxOverlays;
 
     /// <summary>
