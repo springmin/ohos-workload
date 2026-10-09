@@ -22,7 +22,7 @@ on:
         description: 'maui-ohos commit SHA to cross-check (defaults to the pinned slice tip)'
         required: false
         type: string
-        default: '4fa017090076b510bdea97a6cd77df57446d1577'
+        default: '14cc245902a9ce7260f49664ea80d020cbe2ad4a'
   push:
     branches: [ master ]
   pull_request:
@@ -32,7 +32,14 @@ permissions:
 
 # Reproducible cross-repo check: the slice is checked out at an exact commit, not the mutable
 # feature/openharmony branch, so a push to the fork cannot change what this gate verifies.
-# Current tip: 4fa0170900 (BATCH-MERGE: CUT-KIT-2 + E4-CAPACITY8 (the derived per-slot tables
+# Current tip: 14cc245902 (MERGE-BATCH-2: DEEPLINK-REGRESSION (RequestNavigation marks the
+# compositor layout gate so a pushed page is arranged and its handlers connect on the next
+# frame) + HARMONY-FLAVOR (the API-22 free-window members are read through a runtime-probed
+# structural view, so the HarmonyOS 6.0.1 SDK compiles) + L8-POPUP (window.open answers
+# onWindowNew with a synchronously bound controller and a dedicated popup subwindow sharing
+# SUB_WINDOW_MAX); managed/shell changes with no new DllImport, so the export set stays
+# 164/164 and the shell abc is 574,336 (the merged L8-popup + harmony shell); suite 763/766
+# floor 746) on 4fa0170900 (BATCH-MERGE: CUT-KIT-2 + E4-CAPACITY8 (the derived per-slot tables
 # and the shipped eight-slot default, lowerable through OHOS_OVERLAY_MAX/rawfile) + L3/L4
 # (C5/SEC7-F) + WEB-AUTHENTICATOR (the real redirect flow and the shell Want fix) + SEC-SCAN-5c
 # E/F + N-SUBWINDOW (OHOS_SUBWINDOW_MAX, default 2/ceiling 8); managed/shell changes with no new
@@ -156,7 +163,7 @@ permissions:
 # 151/151).
 # Advance the pin deliberately, in lockstep with the interaction/pixel gates.
 env:
-  MAUI_OHOS_REF: ${{ github.event.inputs.maui_ohos_ref || '4fa017090076b510bdea97a6cd77df57446d1577' }}
+  MAUI_OHOS_REF: ${{ github.event.inputs.maui_ohos_ref || '14cc245902a9ce7260f49664ea80d020cbe2ad4a' }}
 
 jobs:
   contract:

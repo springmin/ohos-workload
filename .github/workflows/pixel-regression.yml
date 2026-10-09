@@ -42,7 +42,7 @@ on:
         description: 'maui-ohos commit SHA to compile (defaults to the pinned feature/openharmony tip)'
         required: false
         type: string
-        default: '4fa017090076b510bdea97a6cd77df57446d1577'
+        default: '14cc245902a9ce7260f49664ea80d020cbe2ad4a'
 
 # Least privilege: the job only reads this repository and the public springmin/maui-ohos fork;
 # no step pushes anywhere.
@@ -51,7 +51,13 @@ permissions:
 
 # Reproducible cross-repo compile: the MAUI slice is checked out at an exact commit, not the
 # mutable feature/openharmony branch, so a push to the fork cannot change what this gate compiles.
-# The default is the BATCH-MERGE slice tip: 4fa0170900 (CUT-KIT-2 + E4-CAPACITY8: every
+# The default is the MERGE-BATCH-2 slice tip: 14cc245902 (DEEPLINK-REGRESSION: a navigation
+# request marks the compositor's layout gate so the pushed page is arranged and its handlers
+# connect on the next frame; managed-only with no new host DllImport, so the rasterizer output
+# does not move, the export/abc pins stay 164/164 and the shell abc moves to 574,336 - the
+# L8-popup + harmony-probe shell; the interaction harness moves to 763/766 floor 746 - the
+# deeplink +1 and the L8 +6 on top of the BATCH-MERGE 759; merged into feature/openharmony as
+# 14cc245902) on 4fa0170900 (CUT-KIT-2 + E4-CAPACITY8: every
 # per-slot table derives from WEB_SLOT_MAX and the shipped eight-slot default is lowerable only
 # through OHOS_OVERLAY_MAX or its rawfile twin; L3/L4: the C5 loadData '#'->'%23' encoding and
 # the SEC7-F child ask-rate cap; WEB-AUTHENTICATOR: the real OAuth redirect flow with the
@@ -180,7 +186,7 @@ permissions:
 # with the interaction gate and change it deliberately (workflow_dispatch can compile any other
 # commit SHA).
 env:
-  MAUI_OHOS_REF: ${{ github.event.inputs.maui_ohos_ref || '4fa017090076b510bdea97a6cd77df57446d1577' }}
+  MAUI_OHOS_REF: ${{ github.event.inputs.maui_ohos_ref || '14cc245902a9ce7260f49664ea80d020cbe2ad4a' }}
   # Same as the interaction gate: keep the setup-dotnet preview SDK in a cacheable per-user path
   # instead of the runner's /usr/share/dotnet; a newer 11.0.x preview is still downloaded (the
   # action re-resolves the channel), the cache only skips the ~200 MB download when it moved.
