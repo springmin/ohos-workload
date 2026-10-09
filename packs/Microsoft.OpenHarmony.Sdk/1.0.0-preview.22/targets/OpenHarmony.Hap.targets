@@ -116,6 +116,14 @@
          registered (the uris stay declared, the gate stays off) - see "Deep links /
          activation" in the packaging doc. -->
     <OpenHarmonyAppLinkDomainVerify Condition=" '$(OpenHarmonyAppLinkDomainVerify)' == '' ">true</OpenHarmonyAppLinkDomainVerify>
+    <!-- WebAuthenticator redirect callbacks: OpenHarmonyWebAuthenticatorCallbackUrls is the
+         ';'-separated callback route list (for example "myapp://callback;otherapp"). Each route
+         becomes one uri of a browsable/viewData skill element in module.json
+         abilities[0].skills, so the system can dispatch the browser's redirect back to the
+         app; the managed WebAuthenticator matches the route and completes the flow. A bare
+         scheme declares a scheme-only uri. Empty keeps the generated module.json bytes
+         unchanged. -->
+    <OpenHarmonyWebAuthenticatorCallbackUrls Condition=" '$(OpenHarmonyWebAuthenticatorCallbackUrls)' == '' "></OpenHarmonyWebAuthenticatorCallbackUrls>
     <!-- Default ArkTS shell: the prebuilt UI shell (official toolchain, ability + page) when a
          page is requested, otherwise the headless shell compiled from the same sources. -->
     <OpenHarmonyArktsModulesAbc Condition=" '$(OpenHarmonyArktsModulesAbc)' == '' and '$(OpenHarmonyUIPage)' != '' ">$(MSBuildThisFileDirectory)../templates/ets/modules.ui.abc</OpenHarmonyArktsModulesAbc>
@@ -603,10 +611,11 @@
                                    CompileSdkType="$(OpenHarmonyCompileSdkType)"
                                    ExtraPermissions="@(_OpenHarmonyModuleJsonPermission)"
                                    AppLinkHosts="$(OpenHarmonyAppLinkHosts)"
-                                   AppLinkDomainVerify="$(OpenHarmonyAppLinkDomainVerify)">
+                                   AppLinkDomainVerify="$(OpenHarmonyAppLinkDomainVerify)"
+                                   WebAuthenticatorCallbackUrls="$(OpenHarmonyWebAuthenticatorCallbackUrls)">
       <Output TaskParameter="Changed" PropertyName="_OpenHarmonyModuleJsonChanged" />
     </OpenHarmonyGenerateModuleJson>
-    <Message Importance="high" Text="OpenHarmony: wrote $(_OpenHarmonyHapStageDir)module.json (changed=$(_OpenHarmonyModuleJsonChanged), compileSdk=$(OpenHarmonyCompileSdkType)/$(OpenHarmonyCompileSdkVersion), permissions=@(_OpenHarmonyModuleJsonPermission->Count()), appLinkHosts='$(OpenHarmonyAppLinkHosts)')" />
+    <Message Importance="high" Text="OpenHarmony: wrote $(_OpenHarmonyHapStageDir)module.json (changed=$(_OpenHarmonyModuleJsonChanged), compileSdk=$(OpenHarmonyCompileSdkType)/$(OpenHarmonyCompileSdkVersion), permissions=@(_OpenHarmonyModuleJsonPermission->Count()), appLinkHosts='$(OpenHarmonyAppLinkHosts)', webAuthCallbacks='$(OpenHarmonyWebAuthenticatorCallbackUrls)')" />
 
     <!-- ArkTS shell (compiled), resources and the native host -->
     <Error Condition=" !Exists('$(OpenHarmonyArktsModulesAbc)') " Text="OpenHarmonyArktsModulesAbc does not exist: $(OpenHarmonyArktsModulesAbc)" />

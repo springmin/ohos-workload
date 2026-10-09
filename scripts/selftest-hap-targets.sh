@@ -48,6 +48,11 @@
 #                  OpenHarmony-enabled dotnet; SKIPs otherwise. On hosts whose built-in Exec task
 #                  writes a Windows batch wrapper (the OpenHarmony sandbox), the fixture
 #                  substitutes an in-process sh Exec; the shipped command strings stay as-is.
+#   T10 webauth   same fixture and conditions as T9: OpenHarmonyWebAuthenticatorCallbackUrls
+#                  adds its own browsable/viewData skill element carrying one uri per callback
+#                  route (full URL -> scheme+host, bare scheme -> scheme-only) next to the
+#                  app-link skill; an invalid route fails the build naming the route rule and
+#                  leaves no hap.
 #
 # The fixture imports the real pack targets (so the UsingTask under test is the shipped one) and
 # calls the task directly. Needs a dotnet SDK; when dotnet is unavailable the functional half is
@@ -857,6 +862,30 @@ if os.path.exists(staged):
     assert module == json.load(open(staged)), 'packed module.json differs from the staged manifest'
 PY
         }
+        check_webauth_hap() { # <hap> <staged module.json>
+            python3 - "$1" "$2" <<'PY'
+import json, os, sys, zipfile
+hap, staged = sys.argv[1:3]
+z = zipfile.ZipFile(hap)
+module = json.loads(z.read('module.json'))
+abilities = module['module']['abilities']
+assert len(abilities) == 1, abilities
+skills = abilities[0]['skills']
+assert len(skills) == 3, skills
+assert skills[0]['entities'] == ['entity.system.home'], skills[0]
+assert skills[1]['uris'] == [{'scheme': 'https', 'host': 'example.com'}], skills[1]
+assert skills[1].get('domainVerify') is True, skills[1]
+callbacks = skills[2]
+assert callbacks['entities'] == ['entity.system.browsable'], callbacks
+assert callbacks['actions'] == ['ohos.want.action.viewData'], callbacks
+assert callbacks['uris'] == [{'scheme': 'myapp', 'host': 'callback'}, {'scheme': 'custom'}], callbacks
+app = json.loads(z.read('resources/rawfile/app.json'))
+assert app.get('linkHosts') == ['example.com'], app
+# The packed manifest must be the staged one (JSON-equal; the packer only strips the final \n).
+if os.path.exists(staged):
+    assert module == json.load(open(staged)), 'packed module.json differs from the staged manifest'
+PY
+        }
         rm -rf "$LINKFIX/bin" "$LINKFIX/stage"
         run_link T9-badhost -p:OpenHarmonyAppLinkHosts='exa mple.com'
         rc=$?
@@ -886,6 +915,29 @@ PY
                 && pass_ "T9 OpenHarmonyAppLinkDomainVerify=false keeps the uris and drops the gate in the packed hap" \
                 || fail_ "T9 the domainVerify=false packed hap is wrong (see $HAP)"
         fi
+        # T10 (same fixture, same conditions): OpenHarmonyWebAuthenticatorCallbackUrls adds its
+        # own browsable/viewData skill element next to the app-link one; an invalid route fails
+        # the build with the route rule named and leaves no hap.
+        rm -rf "$LINKFIX/bin" "$LINKFIX/stage"
+        run_link T10-webauth -p:OpenHarmonyAppLinkHosts='example.com' -p:OpenHarmonyWebAuthenticatorCallbackUrls='myapp://callback%3Bcustom'
+        rc=$?
+        [ "$rc" -eq 0 ] && [ -f "$HAP" ] && pass_ "T10 the fixture packs a hap with app links and webauth callback routes (exit 0)" \
+                                          || fail_ "T10 the webauth fixture hap build failed (exit $rc; see $WORK/T10-webauth.log)"
+        if [ -f "$HAP" ]; then
+            check_webauth_hap "$HAP" "$LINKFIX/stage/module.json" \
+                && pass_ "T10 the packed module.json carries the callback-route skill next to the app-link skill" \
+                || fail_ "T10 the packed hap disagrees with OpenHarmonyWebAuthenticatorCallbackUrls (see $HAP)"
+        fi
+        rm -rf "$LINKFIX/bin" "$LINKFIX/stage"
+        run_link T10-badroute -p:OpenHarmonyWebAuthenticatorCallbackUrls='exa mple'
+        rc=$?
+        [ "$rc" -ne 0 ] && pass_ "T10 an invalid callback route fails the staged hap build (exit $rc)" \
+                        || fail_ "T10 an invalid callback route was accepted"
+        grep -qF 'is not a callback route' "$WORK/T10-badroute.log" \
+            && pass_ "T10 the invalid-route error names the route rule" \
+            || fail_ "T10 the invalid-route error does not name the route rule"
+        [ ! -e "$HAP" ] && pass_ "T10 the failed build leaves no hap behind" \
+                        || fail_ "T10 the failed build left a hap behind"
     fi
 fi
 

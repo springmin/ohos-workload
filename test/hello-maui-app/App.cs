@@ -145,6 +145,16 @@ public sealed class App : Application
         {
             MediaProbe.Start(probeWindow);
         }
+#if WEBAUTH_PROBE
+        // WEB-AUTH device probe (see WebAuthProbe.cs): the flow triggers ride the same warm
+        // activation path; the callback want (myapp://callback) is consumed by the
+        // WebAuthenticator subscription itself.
+        if (uri.StartsWith("app://webauth/", StringComparison.OrdinalIgnoreCase))
+        {
+            WebAuthProbe.Handle(uri);
+            return;
+        }
+#endif
         // MULTIWINDOW-M/L device triggers (documented in the M/L plans): "demo" drives the
         // shell-drawn child create -> move -> resize -> close, "open" opens a real second MAUI
         // window on the subwindow XComponent (M3; falls back to the drawn child when the

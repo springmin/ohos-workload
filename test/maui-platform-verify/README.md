@@ -529,9 +529,13 @@ parse.
   window. `audit2 settings` pins AppInfo's settings kind 4 and bundle-metadata getters with the
   host's set/get exports and the NAPI `setBundleInfo` name, plus the PostNotifications enablement
   bridge (op 0/1, DllImports, host exports, NAPI names, shell `isNotificationEnabledSync`/
-  `requestEnableNotification`/`notificationPermissionResult`). `audit2 webauth` pins the
-  WebAuthenticator implementation, its `FeatureNotSupportedException`/cancellation contract, the
-  ModuleInitializer install and the DI registration. `audit2 softinput` pins the soft-input
+  `requestEnableNotification`/`notificationPermissionResult`). `audit2 webauth` drives the real
+  WebAuthenticator flow: the source/install/manifest-injection pins, then (through the
+  `OpenBrowserOverride` seam and `OpenHarmonyBridge.CompleteActivation`) the query and fragment
+  callback completion with the non-matching route guard, caller cancellation, the caller timeout
+  (`CancellationTokenSource`), the single-active-request + duplicate-drop contract, the option
+  validation, the launch-failure `InvalidOperationException` and the platform-less
+  `FeatureNotSupportedException` degrade. `audit2 softinput` pins the soft-input
   set/get/register exports and the managed inset reads, the ConnectionProfiles bearer-mask bridge
   (host parser, NAPI `notifyNetworkAccess`, managed `ConnectionProfile` mapping) and the shell
   `avoidAreaChange`/TYPE_KEYBOARD + `notifySoftInputArea`/`notifyNetworkAccess` pushes.

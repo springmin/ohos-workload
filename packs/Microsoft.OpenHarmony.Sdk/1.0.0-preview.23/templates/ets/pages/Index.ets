@@ -6198,13 +6198,13 @@ struct Index {
             return context !== undefined && context !== null;
           }
           if (kind === 4) {
-            const explicitWant: Want = new Want();
+            const explicitWant: Want = {};
             explicitWant.bundleName = uri;
             explicitWant.abilityName = text;
             context.startAbility(explicitWant).then((): void => {
               this.logInfo('[maui] settings ability start dispatched (explicit)');
             }).catch((explicitError: Error): void => {
-              const implicitWant: Want = new Want();
+              const implicitWant: Want = {};
               implicitWant.action = 'ohos.settings';
               context.startAbility(implicitWant).then((): void => {
                 this.logInfo('[maui] settings ability start dispatched (implicit)');
@@ -6214,7 +6214,7 @@ struct Index {
             });
             return true;
           }
-          const want: Want = new Want();
+          const want: Want = {};
           if (kind === 1) {
             want.action = 'ohos.want.action.sendData';
             want.type = 'text/plain';
