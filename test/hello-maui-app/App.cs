@@ -156,9 +156,29 @@ public sealed class App : Application
         // MULTIWINDOW-L2 device trigger: the managed child window carries a WebView whose
         // ArkWeb component is hosted by the subwindow page's own child pool (the second host).
         // Checked before the plain "open" branch: "openweb" also starts with "open".
+        // C5-L3: "openwebhash" loads a '#'-bearing document (the loadData percent-encoding
+        // probe); "openwebstorm" starts the navigation storm (the SEC7-F ask-rate probe).
+        else if (uri.StartsWith("app://subwindow/openwebstorm", StringComparison.OrdinalIgnoreCase))
+        {
+            OpenManagedSubWindow(withWeb: true, stormDoc: true);
+        }
+        else if (uri.StartsWith("app://subwindow/openwebhash", StringComparison.OrdinalIgnoreCase))
+        {
+            OpenManagedSubWindow(withWeb: true, hashDoc: true);
+        }
         else if (uri.StartsWith("app://subwindow/openweb", StringComparison.OrdinalIgnoreCase))
         {
             OpenManagedSubWindow(withWeb: true);
+        }
+        // C5-L3 main-page probe: "app://web/datahash" opens the primary window's data WebView
+        // with a '#' in the document; "app://web/datanohash" is the no-# regression twin.
+        else if (uri.StartsWith("app://web/datahash", StringComparison.OrdinalIgnoreCase))
+        {
+            RunMainDataProbe(withHash: true);
+        }
+        else if (uri.StartsWith("app://web/datanohash", StringComparison.OrdinalIgnoreCase))
+        {
+            RunMainDataProbe(withHash: false);
         }
         else if (uri.StartsWith("app://subwindow/open", StringComparison.OrdinalIgnoreCase))
         {
@@ -184,7 +204,7 @@ public sealed class App : Application
     /// shell sink or an older host), the M shell-drawn child is created instead so the trigger
     /// never leaves the user with nothing.
     /// </summary>
-    private static void OpenManagedSubWindow(bool withWeb = false)
+    private static void OpenManagedSubWindow(bool withWeb = false, bool hashDoc = false, bool stormDoc = false)
     {
         var application = Application.Current;
         if (application is null)
@@ -197,7 +217,7 @@ public sealed class App : Application
             OpenHarmonyBridge.WriteStatus("[hello-maui-app] subwindow open: both managed child windows are already open");
             return;
         }
-        var child = new Window(BuildChildWindowPage(withWeb, s_childWindows.Count + 1)) { Title = $"MAUI child {s_childWindows.Count + 1}" };
+        var child = new Window(BuildChildWindowPage(withWeb, s_childWindows.Count + 1, hashDoc, stormDoc)) { Title = $"MAUI child {s_childWindows.Count + 1}" };
         s_childWindows.Add(child);
         application.OpenWindow(child);
         var result = (application.Handler as OpenHarmonyApplicationHandler)?.LastOpenWindowResult
@@ -251,7 +271,7 @@ public sealed class App : Application
     /// hosted by the subwindow page's own child pool (the second web host). MULTIWINDOW-L3 M4:
     /// <paramref name="ordinal"/> names this child in its document (title/heading/tap text), so
     /// the two subwindows' eval read-backs prove which window's controller ran the script.</summary>
-    private static ContentPage BuildChildWindowPage(bool withWeb = false, int ordinal = 1)
+    private static ContentPage BuildChildWindowPage(bool withWeb = false, int ordinal = 1, bool hashDoc = false, bool stormDoc = false)
     {
         var title = new Label { Text = "MAUI child window", FontSize = 30, HorizontalOptions = LayoutOptions.Center };
         var counter = new Label { Text = "child taps: 0", FontSize = 26, HorizontalOptions = LayoutOptions.Center };
@@ -297,54 +317,84 @@ public sealed class App : Application
             // the round proves the second ArkWeb host on its own; clicking the heading switches
             // the text, which shows the page really runs inside the child window.
             var webStatus = new Label { Text = "child web: loading", FontSize = 22, HorizontalOptions = LayoutOptions.Center };
+            // C5-L3 probe: the hash document carries real '#' bytes (a hex color and body text).
+            // With the loadData encoding fix they reach the page; without it the document is
+            // truncated at the first '#' (the pre-fix A/B shape). The default/no-# document and
+            // the storm document are the regression and SEC7-F probes.
+            string childHtml;
+            if (stormDoc)
+            {
+                childHtml = "<html><head><title>CHILD-WEB-STORM-" + ordinal + "</title></head><body style=\"margin:0;background:rgb(16,24,32)\">" +
+                    "<h1 id=\"h\" style=\"color:rgb(255,180,80);font-family:sans-serif;font-size:28px\">CHILD STORM " + ordinal + "</h1>" +
+                    // 30 navigations, 30 ms apart (~0.9 s): without the shell ask cap every one
+                    // enters the managed Navigating path; with it only the burst reaches it.
+                    "<script>var n=0;function storm(){n++;if(n>30)return;location.href='https://example.invalid/storm/'+n;setTimeout(storm,30);}setTimeout(storm,400);</script>" +
+                    "</body></html>";
+            }
+            else if (hashDoc)
+            {
+                childHtml = "<html><head><title>CHILD-WEB-HASH-" + ordinal + "</title></head><body style=\"margin:0;background:#101820\">" +
+                    "<h1 id=\"h\" style=\"color:#6ec1ff;font-family:sans-serif;font-size:28px\">CHILD HASH OK " + ordinal + "</h1>" +
+                    "<p id=\"p\" style=\"color:#ffb450;font-family:sans-serif;font-size:22px\">tag#value</p>" +
+                    "</body></html>";
+            }
+            else
+            {
+                childHtml = "<html><head><title>CHILD-WEB-" + ordinal + "</title></head><body style=\"margin:0;background:rgb(16,24,32)\">" +
+                    "<h1 id=\"h\" style=\"color:rgb(110,193,255);font-family:sans-serif;font-size:28px\">CHILD WEB OK " + ordinal + "</h1>" +
+                    "<script>document.getElementById('h').onclick=function(){this.textContent='CHILD WEB TAP " + ordinal + "';};</script>" +
+                    // MULTIWINDOW-L3 B6 device probes: one app-origin-approvable link, one
+                    // network-path spelling (the managed channel must refuse it) and one the
+                    // sample's own Navigating handler cancels. All three keep the page.
+                    "<p style=\"font-family:sans-serif;font-size:22px;margin:8px 0\">" +
+                    "<a id=\"ext\" href=\"https://example.invalid/b6c\" style=\"color:rgb(255,180,80)\">external ok link</a> " +
+                    "<a id=\"veto\" href=\"//evil.invalid/x\" style=\"color:rgb(255,120,120)\">external veto link</a> " +
+                    "<a id=\"deny\" href=\"https://example.invalid/b6c-deny\" style=\"color:rgb(180,255,120)\">external deny link</a>" +
+                    "</p>" +
+                    "</body></html>";
+            }
             var web = new WebView
             {
                 HeightRequest = 220,
-                Source = new HtmlWebViewSource
-                {
-                    // No '#' anywhere: ArkWeb's loadData builds a data: URL and a raw '#' starts
-                    // the URL fragment, which would truncate the document body (the existing
-                    // primary data-load path has the same platform behavior). M4: the ordinal
-                    // names this child window in the document so the two windows' eval results
-                    // are attributable (a cross-window command would read the other title).
-                    Html = "<html><head><title>CHILD-WEB-" + ordinal + "</title></head><body style=\"margin:0;background:rgb(16,24,32)\">" +
-                        "<h1 id=\"h\" style=\"color:rgb(110,193,255);font-family:sans-serif;font-size:28px\">CHILD WEB OK " + ordinal + "</h1>" +
-                        "<script>document.getElementById('h').onclick=function(){this.textContent='CHILD WEB TAP " + ordinal + "';};</script>" +
-                        // MULTIWINDOW-L3 B6 device probes: one app-origin-approvable link, one
-                        // network-path spelling (the managed channel must refuse it) and one the
-                        // sample's own Navigating handler cancels. All three keep the page.
-                        "<p style=\"font-family:sans-serif;font-size:22px;margin:8px 0\">" +
-                        "<a id=\"ext\" href=\"https://example.invalid/b6c\" style=\"color:rgb(255,180,80)\">external ok link</a> " +
-                        "<a id=\"veto\" href=\"//evil.invalid/x\" style=\"color:rgb(255,120,120)\">external veto link</a> " +
-                        "<a id=\"deny\" href=\"https://example.invalid/b6c-deny\" style=\"color:rgb(180,255,120)\">external deny link</a>" +
-                        "</p>" +
-                        "</body></html>",
-                },
+                Source = new HtmlWebViewSource { Html = childHtml },
             };
             web.Navigating += (_, e) =>
             {
                 OpenHarmonyBridge.WriteStatus($"[hello-maui-app] child web navigating: {e.Url}");
                 // B6 device probe: the app's own veto. The managed child handler raises Navigating
                 // for the cancelled load; cancelling here must leave the load blocked and the
-                // child page untouched (no approval is sent back).
-                if (e.Url != null && e.Url.StartsWith("https://example.invalid/b6c-deny", StringComparison.Ordinal))
+                // child page untouched (no approval is sent back). The SEC7-F storm navigations
+                // are vetoed the same way so the storm document survives to keep firing.
+                if (e.Url != null && (e.Url.StartsWith("https://example.invalid/b6c-deny", StringComparison.Ordinal) ||
+                    e.Url.StartsWith("https://example.invalid/storm/", StringComparison.Ordinal)))
                 {
                     e.Cancel = true;
-                    OpenHarmonyBridge.WriteStatus("[hello-maui-app] child web navigating cancelled: b6c-deny");
+                    OpenHarmonyBridge.WriteStatus($"[hello-maui-app] child web navigating cancelled: {e.Url}");
                 }
             };
             web.Navigated += (_, e) => OpenHarmonyBridge.WriteStatus($"[hello-maui-app] child web navigated: {e.Result} {e.Url}");
             // The eval rounds prove the child host's eval sink: the title read runs on the child
             // window's own controller, and the click+read mutates the child document's DOM (the
-            // interaction evidence that does not need uitest pointer injection).
+            // interaction evidence that does not need uitest pointer injection). C5-L3: the hash
+            // document also reads the '#'-bearing paragraph, so a truncated body shows as NO-P.
             web.Navigated += async (_, _) =>
             {
                 var documentTitle = await web.EvaluateJavaScriptAsync("document.title || 'no-title'");
                 OpenHarmonyBridge.WriteStatus($"[hello-maui-app] child web eval title='{documentTitle}'");
                 var tapped = await web.EvaluateJavaScriptAsync(
-                    "(function(){var h=document.getElementById('h');h.click();return h.textContent;})()");
-                OpenHarmonyBridge.WriteStatus($"[hello-maui-app] child web tap text='{tapped}'");
-                webStatus.Text = $"child web eval='{documentTitle}' tap='{tapped}'";
+                    "(function(){var h=document.getElementById('h');if(!h)return 'NO-H';h.click();return h.textContent;})()");
+                if (hashDoc)
+                {
+                    var hashText = await web.EvaluateJavaScriptAsync(
+                        "(function(){var p=document.getElementById('p');return p?p.textContent:'NO-P';})()");
+                    OpenHarmonyBridge.WriteStatus($"[hello-maui-app] child web hash p='{hashText}' tap='{tapped}'");
+                    webStatus.Text = $"child web hash p='{hashText}'";
+                }
+                else
+                {
+                    OpenHarmonyBridge.WriteStatus($"[hello-maui-app] child web tap text='{tapped}'");
+                    webStatus.Text = $"child web eval='{documentTitle}' tap='{tapped}'";
+                }
             };
             // The web sits at the top of the child page so the 720x480 window shows it without
             // scrolling (the M4 probing controls follow below).
@@ -358,6 +408,67 @@ public sealed class App : Application
             childLayout.Children.Add(element);
         }
         return new ContentPage { Content = childLayout };
+    }
+
+    /// <summary>
+    /// C5-L3 primary-window probe: pushes a data WebView onto the main window's navigation page
+    /// (the app://web/datahash and app://web/datanohash triggers). The hash document carries
+    /// '#' bytes in a hex color and in body text; the eval read-back logs the paragraph and its
+    /// computed color, so the pre-fix truncation (NO-P / NO-H) and the fixed document are both
+    /// machine-readable from the status line.
+    /// </summary>
+    private static void RunMainDataProbe(bool withHash)
+    {
+        if (CurrentWindow() is not Window window)
+        {
+            OpenHarmonyBridge.WriteStatus("[hello-maui-app] main data probe: no main window");
+            return;
+        }
+        if (window.Page is FlyoutPage { Detail: TabbedPage { CurrentPage: NavigationPage nav } })
+        {
+            _ = nav.PushAsync(BuildMainDataPage(withHash));
+            OpenHarmonyBridge.WriteStatus($"[hello-maui-app] main data probe open: hash={withHash}");
+        }
+        else
+        {
+            OpenHarmonyBridge.WriteStatus("[hello-maui-app] main data probe: main navigation page unavailable");
+        }
+    }
+
+    private static ContentPage BuildMainDataPage(bool withHash)
+    {
+        var status = new Label { Text = "main data: loading", FontSize = 22 };
+        string docTitle = withHash ? "MAIN-DATA-HASH" : "MAIN-DATA-NOHASH";
+        string doc = withHash
+            ? "<html><head><title>" + docTitle + "</title></head><body>" +
+              "<h1 id=\"h\" style=\"color:#3366ff;font-family:sans-serif;font-size:28px\">MAIN HASH</h1>" +
+              "<p id=\"p\" style=\"font-family:sans-serif;font-size:22px\">tag#value</p>" +
+              "</body></html>"
+            : "<html><head><title>" + docTitle + "</title></head><body>" +
+              "<h1 id=\"h\" style=\"color:rgb(51,102,255);font-family:sans-serif;font-size:28px\">MAIN NOHASH</h1>" +
+              "<p id=\"p\" style=\"font-family:sans-serif;font-size:22px\">plain value</p>" +
+              "</body></html>";
+        var web = new WebView
+        {
+            HeightRequest = 220,
+            Source = new HtmlWebViewSource { Html = doc },
+        };
+        web.Navigated += async (_, _) =>
+        {
+            var title = await web.EvaluateJavaScriptAsync("document.title || 'no-title'");
+            var paragraph = await web.EvaluateJavaScriptAsync(
+                "(function(){var p=document.getElementById('p');return p?p.textContent:'NO-P';})()");
+            var color = await web.EvaluateJavaScriptAsync(
+                "(function(){var h=document.getElementById('h');return h?getComputedStyle(h).color:'NO-H';})()");
+            OpenHarmonyBridge.WriteStatus(
+                $"[hello-maui-app] main data probe hash={withHash} title='{title}' p='{paragraph}' color='{color}'");
+            status.Text = $"main data hash={withHash}: p='{paragraph}'";
+        };
+        return new ContentPage
+        {
+            Title = docTitle,
+            Content = new VerticalStackLayout { Padding = 24, Spacing = 12, Children = { status, web } },
+        };
     }
 
     /// <summary>

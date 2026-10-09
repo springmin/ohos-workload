@@ -103,6 +103,15 @@ interface SubWindowReadyPayload {
 // (host.registerChildHybridInvokeResultSink) with the child-tagged request id.
 const SUB_WEB_SLOT_MAX: number = 2;
 const SUB_WEB_SLOT_PENDING_MAX: number = 32;
+// SEC7-F: ask rate limit. The B6 pending table is already bounded (8 entries / TTL 5 s), but a
+// page can still drive unlimited top-level navigations and every ask synchronously enters the
+// managed Navigating event plus a status line. A per-slot fixed window admits at most
+// SUB_WEB_NAV_ASK_BURST_MAX asks per SUB_WEB_NAV_ASK_WINDOW_MS; the excess is dropped (the load
+// stays cancelled, fail closed) with a bounded per-slot diagnostic, so a replay/storm cannot
+// multiply the managed round trips or the pending churn.
+const SUB_WEB_NAV_ASK_BURST_MAX: number = 6;
+const SUB_WEB_NAV_ASK_WINDOW_MS: number = 1000;
+const SUB_WEB_NAV_ASK_DROP_LOGS: number = 3;
 const SUB_WEB_STATE_PREFIX: string = 'w:';
 // B6: the child navigation ask state ("s<slot>|navask|<id>" with the cancelled URL in the event
 // URL slot) and the managed answer command ("nav": "s<slot>\n<id>\n<url>") — the child-window
@@ -285,6 +294,11 @@ struct SubWindow {
   private subNavPendingLimit: number = 8;
   private subNavPendingTtlMs: number = 5000;
   private subNavMaxUrlLength: number = 8192;
+  // SEC7-F ask budget: a fixed window per slot (window start + count) and a bounded drop-log
+  // counter. Fixed-length arrays - a storm cannot grow this state.
+  private subNavAskWindowStart: number[] = [0, 0];
+  private subNavAskWindowCount: number[] = [0, 0];
+  private subNavAskDropLogs: number[] = [0, 0];
   // MULTIWINDOW-L3: per-slot hybrid registration (base/root/defaultFile/document id; the
   // managed handler registers one per child slot through the child command channel).
   private subHybridBase: string[] = ['', ''];
@@ -1006,7 +1020,7 @@ struct SubWindow {
     } else if (op === 'data') {
       this.subWebVisible[slot] = true;
       this.noteChildWebActivation(slot);
-      this.childWebController(slot).loadData(this.childWebSlotPayload(arg), 'text/html', 'UTF-8');
+      this.childWebController(slot).loadData(this.childWebDataPayload(arg), 'text/html', 'UTF-8');
     } else if (op === 'back') {
       const backController: web_webview.WebviewController = this.childWebController(slot);
       if (backController.accessBackward()) {
@@ -1950,6 +1964,14 @@ struct SubWindow {
     return slot >= 0 && arg.length > 2 ? arg.substring(3) : arg;
   }
 
+  // C5 platform mitigation (child counterpart of pages/Index.ets webDataPayload): ArkWeb
+  // loadData is a data: URL and a bare '#' truncates the body at the fragment. Encoding '#' as
+  // '%23' lets the decoder restore the exact document, so content '#' survives and a '#'-free
+  // document is unchanged. The data op is this page's only loadData caller.
+  private childWebDataPayload(arg: string): string {
+    return this.childWebSlotPayload(arg).split('#').join('%23');
+  }
+
   // The slot named by a hybrid/blazor registration JSON; a missing/malformed slot falls back to
   // 0 exactly like the main page (the registration still has to name a safe layout).
   private childWebRegistrationSlot(arg: string): number {
@@ -2106,11 +2128,35 @@ struct SubWindow {
     }
   }
 
+  // SEC7-F: admits an ask into the pending table only while this slot's current window budget
+  // lasts (a fixed one-second window with a small burst). A refusal is fail closed: no pending
+  // entry and no managed event are created, so nothing can ever approve the cancelled load. The
+  // one-shot approval/reload state machine is untouched; this only bounds the ask rate.
+  private childNavAskAllowed(slot: number, now: number): boolean {
+    if (this.subNavAskWindowStart[slot] + SUB_WEB_NAV_ASK_WINDOW_MS <= now) {
+      this.subNavAskWindowStart[slot] = now;
+      this.subNavAskWindowCount[slot] = 0;
+    }
+    if (this.subNavAskWindowCount[slot] >= SUB_WEB_NAV_ASK_BURST_MAX) {
+      return false;
+    }
+    this.subNavAskWindowCount[slot]++;
+    return true;
+  }
+
   // B6: asks the managed handler for a decision on a cancelled child load. The pending table is
   // bounded (oldest dropped when full) and every entry expires; without a host channel nothing
-  // can approve the load, so it stays cancelled (fail closed).
+  // can approve the load, so it stays cancelled (fail closed). SEC7-F: the ask rate itself is
+  // capped per slot, so a navigation storm cannot multiply managed round trips or pending churn.
   private askManagedAboutChildNavigation(slot: number, url: string): void {
     const now: number = Date.now();
+    if (!this.childNavAskAllowed(slot, now)) {
+      if (this.subNavAskDropLogs[slot] < SUB_WEB_NAV_ASK_DROP_LOGS) {
+        this.subNavAskDropLogs[slot]++;
+        hilog.warn(DOMAIN, TAG, 'child web nav ask dropped (slot %{public}d): ask rate limit', slot);
+      }
+      return;
+    }
     this.subNavPending.forEach((pending: SubWebPendingNavigation, id: string): void => {
       if (pending.expires < now) {
         this.subNavPending.delete(id);
