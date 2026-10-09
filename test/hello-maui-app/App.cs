@@ -583,6 +583,9 @@ public sealed class App : Application
     {
         string doc = capacityProbe ? WindowOpenCapacityDoc() : WindowOpenDoc();
         var status = new Label { Text = "windowopen: loading", FontSize = 22 };
+        // A continuous animation keeps the main window presenting every vsync, so the popup
+        // round also reads the main window's framestats line (60fps zero-regression evidence).
+        var spinner = new ActivityIndicator { IsRunning = true, HeightRequest = 24 };
         var web = new WebView
         {
             HeightRequest = 260,
@@ -615,7 +618,7 @@ public sealed class App : Application
         return new ContentPage
         {
             Title = capacityProbe ? "L8-POPUP-CAP" : "L8-POPUP",
-            Content = new VerticalStackLayout { Padding = 24, Spacing = 12, Children = { status, web } },
+            Content = new VerticalStackLayout { Padding = 24, Spacing = 12, Children = { status, spinner, web } },
         };
     }
 
