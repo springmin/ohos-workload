@@ -119,6 +119,17 @@ interface SubWindowSession {
   identityConfirmed: boolean;
 }
 
+// MULTIWINDOW-S free-window probe (API 22+): isInFreeWindowMode() and the freeWindowModeChange
+// event are newer than the HarmonyOS 6.0.1 (API 21) SDK the harmony flavor compiles against,
+// which does not declare them. The page reads them through this structural view (cast through
+// ESObject: a direct cast from Window cannot overlap the SDK type that lacks the members) and
+// probes each member at runtime, so an SDK/runtime without the API only loses that log value.
+interface FreeWindowProbe {
+  isInFreeWindowMode?: () => boolean;
+  on?: (type: string, callback: (free: boolean) => void) => void;
+  off?: (type: string, callback?: (free: boolean) => void) => void;
+}
+
 // MULTIWINDOW-L3 M2: one per-child claim the shell publishes to AppStorage before the child page
 // loads (the loadContentByName LocalStorage is not propagated on device). The page resolves its
 // own identity from its window name and validates it against this claim; no matching claim (or a
@@ -2390,7 +2401,8 @@ struct Index {
   // split or put into free window mode. The page (and its 100% XComponent) follows the new
   // size and the native host re-arranges the managed window through the surface callback; this
   // observer records the shape change and re-reads the avoid area, which can move with the
-  // window. Best effort: a runtime without isInFreeWindowMode only costs the mode read.
+  // window. The free-window half is API 22+ (see FreeWindowProbe) and member-probed at runtime:
+  // an older SDK/runtime keeps the '?' marker and only costs that mode read.
   private subscribeWindowShapeChange(): void {
     if (this.windowShapeRegistered) {
       return;
@@ -2399,14 +2411,20 @@ struct Index {
       if (this.windowShapeRegistered) {
         return;
       }
-      const sizeListener = (size: window.Size): void => {
-        let free: string = '?';
+      const freeWin: FreeWindowProbe = win as ESObject as FreeWindowProbe;
+      const readFree = (): string => {
+        if (typeof freeWin.isInFreeWindowMode !== 'function') {
+          return '?';
+        }
         try {
-          free = win.isInFreeWindowMode() ? 'true' : 'false';
+          return freeWin.isInFreeWindowMode() ? 'true' : 'false';
         } catch {
           // A runtime without the free-window syscap keeps the unknown marker.
+          return '?';
         }
-        this.logInfo(`[maui] window size change: ${size.width}x${size.height} free=${free}`);
+      };
+      const sizeListener = (size: window.Size): void => {
+        this.logInfo(`[maui] window size change: ${size.width}x${size.height} free=${readFree()}`);
         try {
           this.reportWindowAvoidArea(win);
         } catch (avoidError) {
@@ -2418,7 +2436,14 @@ struct Index {
       };
       try {
         win.on('windowSizeChange', sizeListener);
-        win.on('freeWindowModeChange', freeListener);
+        if (typeof freeWin.isInFreeWindowMode === 'function' && typeof freeWin.on === 'function') {
+          try {
+            freeWin.on('freeWindowModeChange', freeListener);
+          } catch (freeEventError) {
+            // The free-window listener is optional: the size observer stays tracked without it.
+            this.logWarn(`[maui] free window mode observer unavailable: ${(freeEventError as Error).message}`);
+          }
+        }
         this.trackDisposer((): void => {
           try {
             win.off('windowSizeChange', sizeListener);
@@ -2426,20 +2451,16 @@ struct Index {
             // A disposed window makes the unregister a no-op.
           }
           try {
-            win.off('freeWindowModeChange', freeListener);
+            if (typeof freeWin.isInFreeWindowMode === 'function' && typeof freeWin.off === 'function') {
+              freeWin.off('freeWindowModeChange', freeListener);
+            }
           } catch {
             // A disposed window makes the unregister a no-op.
           }
           this.windowShapeRegistered = false;
         });
         this.windowShapeRegistered = true;
-        let freeNow: string = '?';
-        try {
-          freeNow = win.isInFreeWindowMode() ? 'true' : 'false';
-        } catch {
-          // Same syscap guard as the listener above.
-        }
-        this.logInfo(`[maui] window shape baseline: free=${freeNow}`);
+        this.logInfo(`[maui] window shape baseline: free=${readFree()}`);
       } catch (shapeError) {
         this.logError(`[maui] window shape observers unavailable: ${(shapeError as Error).message}`);
       }
