@@ -530,7 +530,7 @@ patch_harmony_index_ets() { # <Index.ets>
     python3 - "$1" <<'PY'
 import sys
 path = sys.argv[1]
-import_anchor = "import { util } from '@kit.ArkTS';"
+import_anchor = "import { process, util } from '@kit.ArkTS';"
 static_import = "import { MapOverlayProxy as HmsMapOverlayProxyImpl } from '../map/MapOverlay';"
 probe_anchor = "    const overlayModule: string = './map/MapOverlay';\n    try {"
 probe_patch = """\
@@ -718,6 +718,50 @@ check_aot_startup_gate() { # <templates-dir>
     return 0
 }
 
+# E4-CAPACITY8: the per-slot tables must derive from WEB_SLOT_MAX and the served capacity must
+# keep the 4-slot default plus the explicit 8-slot switch. The E4 root cause (2026-10-08) was a
+# constant-only capacity raise: WEB_SLOT_MAX moved to 8 but 18 per-slot tables stayed at a
+# hardcoded length 4, so slots 4-7 were created but never attached/served. This gate fails when
+# a future edit reintroduces a fixed-length table literal or drops a derivation/switch marker.
+check_slot_capacity_contract() { # <templates-dir>
+    _index="$1/ets/pages/Index.ets"
+    _missing=""
+    for _marker in "const WEB_SLOT_MAX: number = 8;" \
+                   "const WEB_SLOT_DEFAULT_MAX: number = 4;" \
+                   "function slotBooleans(value: boolean): boolean[] {" \
+                   "function hotSlotBooleans(): boolean[] {" \
+                   "function slotNumbers(value: number): number[] {" \
+                   "function slotStrings(): string[] {" \
+                   "function slotControllers(): (web_webview.WebviewController | null)[] {" \
+                   "function slotNavigations(): (ApprovedNavigation | null)[] {" \
+                   "@State webVisible: boolean[] = slotBooleans(false);" \
+                   "private webSlotCreated: boolean[] = hotSlotBooleans();" \
+                   "private webControllers: (web_webview.WebviewController | null)[] = slotControllers();" \
+                   "private navApproved: (ApprovedNavigation | null)[] = slotNavigations();" \
+                   "private webSlotLimit: number = WEB_SLOT_DEFAULT_MAX;" \
+                   "private navSlotIndexable(slot: number): boolean {" \
+                   "host.notifyWebEvent('capacity', \`\${this.webSlotLimit}\`);" \
+                   "const WEB_SLOT_MAX_ENV: string = 'OHOS_OVERLAY_MAX';" \
+                   "const WEB_SLOT_MAX_RAWFILE: string = 'ohos-overlay-max.txt';"; do
+        grep -Fq -- "$_marker" "$_index" 2>/dev/null || _missing="$_missing
+  $_marker"
+    done
+    if [ -n "$_missing" ]; then
+        printf 'ERROR: the E4-CAPACITY8 derived per-slot tables/capacity switch contract is missing from %s:%s\n' "$_index" "$_missing" >&2
+        return 1
+    fi
+    # The exact fixed-length literals the incomplete scratch patch left behind (the red control:
+    # a copy with one of these is rejected and the shape is named).
+    for _bad in "[false, false, false, false]" "[0, 0, 0, 0]" "[null, null, null, null]" \
+                "[true, true, false, false]" "['', '', '', '']"; do
+        if grep -Fq -- "$_bad" "$_index"; then
+            printf 'ERROR: %s still hardcodes a 4-slot table (%s); derive it from WEB_SLOT_MAX (E4-CAPACITY8)\n' "$_index" "$_bad" >&2
+            return 1
+        fi
+    done
+    return 0
+}
+
 # pack_sources_hash <templates-dir>: one hash over the ets/**/*.ets file list and contents, so
 # the three preview packs can be compared without diffing directories.
 pack_sources_hash() { # <templates-dir>
@@ -746,7 +790,8 @@ PY
 check_sources_contract() { # [<templates-dir>]
     if [ -n "${1:-}" ]; then
         check_source_tokens "$1" || return 1
-        check_aot_startup_gate "$1"
+        check_aot_startup_gate "$1" || return 1
+        check_slot_capacity_contract "$1"
         return $?
     fi
     _hash=""
@@ -755,6 +800,7 @@ check_sources_contract() { # [<templates-dir>]
         _tpl="$_root/packs/Microsoft.OpenHarmony.Sdk/$_v/templates"
         check_source_tokens "$_tpl" || return 1
         check_aot_startup_gate "$_tpl" || return 1
+        check_slot_capacity_contract "$_tpl" || return 1
         _h="$(pack_sources_hash "$_tpl")" || return 1
         if [ -z "$_hash" ]; then
             _hash="$_h"
@@ -764,7 +810,7 @@ check_sources_contract() { # [<templates-dir>]
             return 1
         fi
     done
-    printf '    shell sources clean (no @ohos import, getContext(), decodeWithStream() or focusControl), AOT-STARTUP mount gate present, and byte-identical across preview.22/23/24 (sources %s)\n' "$_hash"
+    printf '    shell sources clean (no @ohos import, getContext(), decodeWithStream() or focusControl), AOT-STARTUP mount gate and E4-CAPACITY8 derived-slot-table/switch contract present, and byte-identical across preview.22/23/24 (sources %s)\n' "$_hash"
 }
 
 # pack_abc_provenance_json <dist-dir>: prints the provenance document for the two dist
