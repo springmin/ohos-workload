@@ -805,9 +805,18 @@ parse.
   `w6 shell webview gaps` pins the three new shell blocks in every preview pack (and their
   byte-identity): `onShowFileSelector` feeding the document picker into `handleFileList`,
   `onPermissionRequest` prompting for CAMERA/MICROPHONE through
-  `abilityAccessCtrl.requestPermissionsFromUser` and granting exactly the granted subset,
-  `multiWindowAccess(true)` with `onWindowNew` loading the popup target in the same component
-  (single-window slice). `w7 webview media feature` pins the `webview-media` feature entries
+  `abilityAccessCtrl.requestPermissionsFromUser` and granting exactly the granted subset, and
+  the L8 popup path: `multiWindowAccess(true)` + `allowWindowOpenMethod(true)` with
+  `onWindowNew` routed through `this.handleWindowNew(event)` (the retired same-component
+  `loadUrl` fallback is rejected). `l8 popup shell` (six lines) pins the full popup wiring in
+  all four packs: the route (`openPopupWindow`, the `ohos_dotnet_webpop__` name prefix), the
+  synchronous bind (`ShellPopupBridge.stash` + `event.handler.setWebController(popupController)`
+  before any await, the bridge export/import), close (`onWindowExit` ->
+  `ShellPopupBridge.requestClose` -> `closePopupWindow` -> `destroyWindow`), the capacity
+  (`overCapacity` -> `rejectWindowNew` -> `setWebController(null as ESObject as ...)`), name
+  reuse (`onActivateContent` -> `requestFront` -> `showWindow`) and the kind=popup isolation
+  (`SUB_WINDOW_KIND_POPUP`, the managed lookup filter, the popup page mode and its
+  `multiWindowAccess(false)`). `w7 webview media feature` pins the `webview-media` feature entries
   (CAMERA + MICROPHONE, user_grant, reason strings) and the reason resources in every pack.
   `w8 cookie container pins` pins the managed sync surface (the `IWebView.Cookies` mapper,
   `SyncContainerToPlatform`, `MergeCookieHeader`, `ScheduleCookieRead` on page finished).
@@ -1134,3 +1143,22 @@ parse.
   bridge's per-window surface map replaying the last report of every window to a late
   subscriber. That is 22 lines; the suite total moves 609 -> 631 (floor 589 -> 611), measured
   `checks=629 total=631 floor=611 assert=True`.
+
+- L8 popup subwindows (2026-10-09): six lines pin the `window.open` productization the probe
+  round proved feasible. `l8 popup route` requires the main overlay Web to keep
+  `multiWindowAccess(true)`, gain `allowWindowOpenMethod(true)` and route `onWindowNew` through
+  `handleWindowNew`/`openPopupWindow` under the `ohos_dotnet_webpop__` child-name prefix, while
+  the retired same-component `loadUrl` fallback stays rejected (it left the handler unanswered,
+  which blocked the renderer). `l8 popup bind` requires the synchronous bind the probe measured
+  as the only working form: a fresh `WebviewController` stashed in `ShellPopupBridge` and handed
+  to `event.handler.setWebController` before any await, with the bridge exported by
+  SubWindow.ets and imported by Index.ets. `l8 popup close` follows the popup page's
+  `window.close()`: `.onWindowExit` -> `ShellPopupBridge.requestClose` -> the main page's
+  `closePopupWindow` -> `destroyWindow` -> the `popup closed` log. `l8 popup capacityNull`
+  pins the shared-capacity reject: `subWindows + subWindowCreating >= subWindowLimit` ->
+  `rejectWindowNew` -> `setWebController(null as ESObject as ...)`. `l8 popup nameReuse` pins
+  `onActivateContent` -> `requestFront` -> `showWindow` (best effort; the probe measured it not
+  firing while the popup is frontmost). `l8 popup isolation` pins the `kind=popup` seams: the
+  managed lookup filter, the `web:N` session kind, the popup page mode branch and the popup
+  Web's `multiWindowAccess(false)`. All six run over preview.22/23/24/28 and require the four
+  packs byte-identical; the total moves 759 -> 765 (floor 739 -> 745).
