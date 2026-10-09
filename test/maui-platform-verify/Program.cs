@@ -4519,7 +4519,7 @@ if (!jscallOk)
 
 // ---- MULTI-OVL / SLOTS-DYNAMIC: overlay slot pool, wire codec and the dynamic shell ---------
 // The shell declares the hot pair [0, 1] and grows the overlay set on demand up to WEB_SLOT_MAX
-// (4); the managed web handlers claim a slot, tag their per-overlay commands with it
+// (8, the shipped default); the managed web handlers claim a slot, tag their per-overlay commands with it
 // ("s<slot>" / "s<slot>\n<arg>") and receive the page events tagged back ("s<slot>|<state>").
 // The hosting pool/codec and the shell half are both in this repository, so these pins are
 // strict in CI; the managed slice half is dual-mode (the pinned slice still withholds frames
@@ -4543,21 +4543,32 @@ try
     int multiOvlC = Microsoft.OpenHarmony.Hosting.OpenHarmonyOverlays.Acquire();
     int multiOvlD = Microsoft.OpenHarmony.Hosting.OpenHarmonyOverlays.Acquire();
     int multiOvlE = Microsoft.OpenHarmony.Hosting.OpenHarmonyOverlays.Acquire();
-    multiOvlPool = multiOvlA == 0 && multiOvlB == 1 && multiOvlC == 2 && multiOvlD == 3 && multiOvlE == -1 &&
+    int multiOvlF = Microsoft.OpenHarmony.Hosting.OpenHarmonyOverlays.Acquire();
+    int multiOvlG = Microsoft.OpenHarmony.Hosting.OpenHarmonyOverlays.Acquire();
+    int multiOvlH = Microsoft.OpenHarmony.Hosting.OpenHarmonyOverlays.Acquire();
+    int multiOvlOverflow = Microsoft.OpenHarmony.Hosting.OpenHarmonyOverlays.Acquire();
+    multiOvlPool = multiOvlA == 0 && multiOvlB == 1 && multiOvlC == 2 && multiOvlD == 3 &&
+        multiOvlE == 4 && multiOvlF == 5 && multiOvlG == 6 && multiOvlH == 7 && multiOvlOverflow == -1 &&
         Microsoft.OpenHarmony.Hosting.OpenHarmonyOverlays.IsClaimed(0) && Microsoft.OpenHarmony.Hosting.OpenHarmonyOverlays.IsClaimed(1) &&
         Microsoft.OpenHarmony.Hosting.OpenHarmonyOverlays.IsClaimed(2) && Microsoft.OpenHarmony.Hosting.OpenHarmonyOverlays.IsClaimed(3) &&
-        !Microsoft.OpenHarmony.Hosting.OpenHarmonyOverlays.IsClaimed(4);
+        Microsoft.OpenHarmony.Hosting.OpenHarmonyOverlays.IsClaimed(4) && Microsoft.OpenHarmony.Hosting.OpenHarmonyOverlays.IsClaimed(5) &&
+        Microsoft.OpenHarmony.Hosting.OpenHarmonyOverlays.IsClaimed(6) && Microsoft.OpenHarmony.Hosting.OpenHarmonyOverlays.IsClaimed(7) &&
+        !Microsoft.OpenHarmony.Hosting.OpenHarmonyOverlays.IsClaimed(8);
     // The cap is a hard stop: a released slot is reusable and an out-of-range release is a no-op.
     Microsoft.OpenHarmony.Hosting.OpenHarmonyOverlays.Release(1);
     Microsoft.OpenHarmony.Hosting.OpenHarmonyOverlays.Release(99);
-    int multiOvlF = Microsoft.OpenHarmony.Hosting.OpenHarmonyOverlays.Acquire();
-    multiOvlPool = multiOvlPool && multiOvlF == 1 &&
+    int multiOvlReuse = Microsoft.OpenHarmony.Hosting.OpenHarmonyOverlays.Acquire();
+    multiOvlPool = multiOvlPool && multiOvlReuse == 1 &&
         Microsoft.OpenHarmony.Hosting.OpenHarmonyOverlays.Tag(0) == "s0" && Microsoft.OpenHarmony.Hosting.OpenHarmonyOverlays.Tag(1, "payload") == "s1\npayload" &&
         Microsoft.OpenHarmony.Hosting.OpenHarmonyOverlays.Tag(-1, "payload") == "payload";
     Microsoft.OpenHarmony.Hosting.OpenHarmonyOverlays.Release(0);
     Microsoft.OpenHarmony.Hosting.OpenHarmonyOverlays.Release(1);
     Microsoft.OpenHarmony.Hosting.OpenHarmonyOverlays.Release(2);
     Microsoft.OpenHarmony.Hosting.OpenHarmonyOverlays.Release(3);
+    Microsoft.OpenHarmony.Hosting.OpenHarmonyOverlays.Release(4);
+    Microsoft.OpenHarmony.Hosting.OpenHarmonyOverlays.Release(5);
+    Microsoft.OpenHarmony.Hosting.OpenHarmonyOverlays.Release(6);
+    Microsoft.OpenHarmony.Hosting.OpenHarmonyOverlays.Release(7);
 }
 finally
 {
@@ -4571,7 +4582,9 @@ bool multiOvlCodec =
     multiOvlSlot3 == 3 && multiOvlPayload3 == "payload" &&
     Microsoft.OpenHarmony.Hosting.OpenHarmonyOverlays.Tag(3, "payload") == "s3\npayload" &&
     !Microsoft.OpenHarmony.Hosting.OpenHarmonyOverlays.TryUntag("40\n500\n1000\n400", out _, out _) &&
-    !Microsoft.OpenHarmony.Hosting.OpenHarmonyOverlays.TryUntag("s4\nx", out _, out _) &&
+    Microsoft.OpenHarmony.Hosting.OpenHarmonyOverlays.TryUntag("s7\npayload", out int multiOvlSlot7, out string multiOvlPayload7) &&
+    multiOvlSlot7 == 7 && multiOvlPayload7 == "payload" &&
+    !Microsoft.OpenHarmony.Hosting.OpenHarmonyOverlays.TryUntag("s8\nx", out _, out _) &&
     !Microsoft.OpenHarmony.Hosting.OpenHarmonyOverlays.TryUntag("s9\nx", out _, out _) &&
     Microsoft.OpenHarmony.Hosting.OpenHarmonyOverlays.TagState(3, "finished") == "s3|finished" &&
     Microsoft.OpenHarmony.Hosting.OpenHarmonyOverlays.TagState(1, "finished") == "s1|finished" &&
@@ -4580,7 +4593,7 @@ bool multiOvlCodec =
     Microsoft.OpenHarmony.Hosting.OpenHarmonyOverlays.TryParseEventState("s3|finished", out int multiOvlEventSlot3, out string multiOvlEvent3) &&
     multiOvlEventSlot3 == 3 && multiOvlEvent3 == "finished" &&
     !Microsoft.OpenHarmony.Hosting.OpenHarmonyOverlays.TryParseEventState("finished", out _, out _) &&
-    !Microsoft.OpenHarmony.Hosting.OpenHarmonyOverlays.TryParseEventState("s4|finished", out _, out _) &&
+    !Microsoft.OpenHarmony.Hosting.OpenHarmonyOverlays.TryParseEventState("s8|finished", out _, out _) &&
     Microsoft.OpenHarmony.Hosting.OpenHarmonyOverlays.TryParseNavigationRequest("__OHNAV|s1|https://x/y|abc", out int multiOvlNavSlot, out string multiOvlNavUrl, out string multiOvlNavId) &&
     multiOvlNavSlot == 1 && multiOvlNavUrl == "https://x/y" && multiOvlNavId == "abc" &&
     Microsoft.OpenHarmony.Hosting.OpenHarmonyOverlays.TryParseNavigationRequest("__OHNAV|https://x/y|abc", out int multiOvlLegacySlot, out string multiOvlLegacyUrl, out string multiOvlLegacyId) &&
