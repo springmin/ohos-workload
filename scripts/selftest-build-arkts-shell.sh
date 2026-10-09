@@ -494,6 +494,19 @@ sh "$BUILD_SCRIPT" --check-sources "$SRC_FAKE" > "$WORK/T15-l4-noburst.log" 2>&1
 assert_rc 1 "$_rc" "T15 the gate rejects a stripped ask burst constant (L4 red control)"
 assert_contains "T15 the rejection names the burst constant" "const SUB_WEB_NAV_ASK_BURST_MAX" "$WORK/T15-l4-noburst.log"
 cp "$REAL_SUB_SOURCE" "$SRC_FAKE/ets/pages/SubWindow.ets"
+# N-SUBWINDOW: the subwindow capacity must stay served from the explicit switch instead of a
+# hardcoded constant. Red controls: a stripped switch constant and the old hardcoded 2 are
+# both rejected and the offending shape is named.
+grep -v "const SUB_WINDOW_MAX_ENV" "$REAL_SOURCE" > "$SRC_FAKE/ets/pages/Index.ets"
+sh "$BUILD_SCRIPT" --check-sources "$SRC_FAKE" > "$WORK/T15-nsub-noswitch.log" 2>&1 && _rc=0 || _rc=$?
+assert_rc 1 "$_rc" "T15 the gate rejects a stripped N-SUBWINDOW capacity switch"
+assert_contains "T15 the rejection names the missing switch" "const SUB_WINDOW_MAX_ENV" "$WORK/T15-nsub-noswitch.log"
+cp "$REAL_SOURCE" "$SRC_FAKE/ets/pages/Index.ets"
+printf '\nconst SUB_WINDOW_MAX: number = 2;\n' >> "$SRC_FAKE/ets/pages/Index.ets"
+sh "$BUILD_SCRIPT" --check-sources "$SRC_FAKE" > "$WORK/T15-nsub-hardcoded.log" 2>&1 && _rc=0 || _rc=$?
+assert_rc 1 "$_rc" "T15 the gate rejects a hardcoded subwindow capacity (N-SUBWINDOW red control)"
+assert_contains "T15 the rejection names the hardcoded capacity" "hardcodes the subwindow capacity" "$WORK/T15-nsub-hardcoded.log"
+cp "$REAL_SOURCE" "$SRC_FAKE/ets/pages/Index.ets"
 
 # ---- T16: the abc provenance gate ---------------------------------------------------------
 section "T16 abc provenance gate (--check-pack-abc)"

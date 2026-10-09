@@ -159,6 +159,13 @@ public sealed class App : Application
         // shell-drawn child create -> move -> resize -> close, "open" opens a real second MAUI
         // window on the subwindow XComponent (M3; falls back to the drawn child when the
         // per-window path is unavailable), "close" destroys whichever child is live.
+        // N-SUBWINDOW: any subwindow trigger may carry the cap switch (app://subwindow/max/4,
+        // or ?max=4 on an open) so the device round can move the pairing's bound before the
+        // first command. Both the host and the shell read OHOS_SUBWINDOW_MAX lazily.
+        if (uri.Contains("app://subwindow/", StringComparison.OrdinalIgnoreCase))
+        {
+            ApplySubWindowMaxFromUri(uri);
+        }
         if (uri.StartsWith("app://subwindow/demo", StringComparison.OrdinalIgnoreCase))
         {
             RunSubWindowDemo();
@@ -200,11 +207,63 @@ public sealed class App : Application
         }
     }
 
-    // MULTIWINDOW-L3 M1: the live managed children in open order (max 2). The app host binds
-    // each to its own shell session (sub-1, sub-2) on the subwindow XComponent; the shell-drawn
-    // child stays the degradation path when the managed path is unavailable.
+    // MULTIWINDOW-L3 M1/N-SUBWINDOW: the live managed children in open order (default max 2,
+    // raised by OHOS_SUBWINDOW_MAX up to the supported ceiling). The app host binds each to its
+    // own shell session (sub-1, sub-2, ...) on the subwindow XComponent; the shell-drawn child
+    // stays the degradation path when the managed path is unavailable.
     private static readonly List<Window> s_childWindows = new();
-    private const int MaxManagedChildren = 2;
+    private const int DefaultMaxManagedChildren = 2;
+    private const int MaxSupportedManagedChildren = 8;
+
+    /// <summary>The demo's own open guard: the same OHOS_SUBWINDOW_MAX switch the host and the
+    /// shell read (default 2, ceiling 8), so the round's ?max=N triggers N child windows.</summary>
+    private static int MaxManagedChildren()
+    {
+        string? raw = Environment.GetEnvironmentVariable("OHOS_SUBWINDOW_MAX");
+        return int.TryParse(raw, out int value)
+            ? Math.Clamp(value, DefaultMaxManagedChildren, MaxSupportedManagedChildren)
+            : DefaultMaxManagedChildren;
+    }
+
+    /// <summary>N-SUBWINDOW test trigger: sets OHOS_SUBWINDOW_MAX from a subwindow deep link
+    /// (app://subwindow/max/4 or ...?max=4) before the pairing's lazy reads happen.</summary>
+    private static void ApplySubWindowMaxFromUri(string uri)
+    {
+        string digits = string.Empty;
+        int query = uri.IndexOf("max=", StringComparison.OrdinalIgnoreCase);
+        if (query >= 0)
+        {
+            foreach (char c in uri.AsSpan(query + 4))
+            {
+                if (!char.IsAsciiDigit(c))
+                {
+                    break;
+                }
+                digits += c;
+            }
+        }
+        else
+        {
+            const string maxPrefix = "app://subwindow/max/";
+            if (uri.StartsWith(maxPrefix, StringComparison.OrdinalIgnoreCase))
+            {
+                foreach (char c in uri.AsSpan(maxPrefix.Length))
+                {
+                    if (!char.IsAsciiDigit(c))
+                    {
+                        break;
+                    }
+                    digits += c;
+                }
+            }
+        }
+        if (digits.Length > 0 && int.TryParse(digits, out int value))
+        {
+            int clamped = Math.Clamp(value, DefaultMaxManagedChildren, MaxSupportedManagedChildren);
+            Environment.SetEnvironmentVariable("OHOS_SUBWINDOW_MAX", clamped.ToString());
+            OpenHarmonyBridge.WriteStatus($"[hello-maui-app] subwindow max switch: OHOS_SUBWINDOW_MAX={clamped}");
+        }
+    }
 
     /// <summary>
     /// MULTIWINDOW-L M3 entry / L3-M1: opens a real MAUI child window. Application.OpenWindow
@@ -222,9 +281,9 @@ public sealed class App : Application
             return;
         }
         PruneClosedChildren(application);
-        if (s_childWindows.Count >= MaxManagedChildren)
+        if (s_childWindows.Count >= MaxManagedChildren())
         {
-            OpenHarmonyBridge.WriteStatus("[hello-maui-app] subwindow open: both managed child windows are already open");
+            OpenHarmonyBridge.WriteStatus($"[hello-maui-app] subwindow open: managed child windows already open (max {MaxManagedChildren()})");
             return;
         }
         var child = new Window(BuildChildWindowPage(withWeb, s_childWindows.Count + 1, hashDoc, stormDoc)) { Title = $"MAUI child {s_childWindows.Count + 1}" };
