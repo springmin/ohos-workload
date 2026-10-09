@@ -3947,6 +3947,16 @@ struct Index {
     return slot >= 0 && arg.length > 2 ? arg.substring(3) : arg;
   }
 
+  // C5 platform mitigation: ArkWeb loadData builds a data: URL, so a bare '#' in the body is
+  // parsed as the URL fragment and the rest of the document is dropped (empty body, null
+  // getElementById). Encoding every '#' as '%23' lets the data-URL decoder restore the exact
+  // document, so real content characters (text, hex colors, in-page href fragments) reach the
+  // page intact and a '#'-free document is byte-for-byte unchanged. This is the main-page
+  // counterpart of SubWindow.ets childWebDataPayload; the data op is the only loadData caller.
+  private webDataPayload(arg: string): string {
+    return this.webSlotPayload(arg).split('#').join('%23');
+  }
+
   // MULTI-OVL: the page-event state carries the slot ("s0|finished"), so the managed side routes
   // the event to the handler that owns the overlay.
   private webEventState(slot: number, state: string): string {
@@ -4302,7 +4312,7 @@ struct Index {
     } else if (op === 'data') {
       this.webVisible[commandSlot] = !this.webSuspended;
       this.noteWebActivation(commandSlot);
-      this.slotController(commandSlot).loadData(this.webSlotPayload(arg), 'text/html', 'UTF-8');
+      this.slotController(commandSlot).loadData(this.webDataPayload(arg), 'text/html', 'UTF-8');
     } else if (op === 'back') {
       const backController: web_webview.WebviewController = this.slotController(commandSlot);
       if (backController.accessBackward()) {

@@ -41,11 +41,14 @@
 #                 (dotnet.marker); each missing literal fails with its name, an unreadable file
 #                 is exit 2 and a missing argument is refused
 #   T15 sources   `--check-sources` accepts the shipped packs (token gate + AOT-STARTUP mount
-#                 gate + cross-pack source identity) and rejects an injected @ohos import,
-#                 getContext() call, decodeWithStream() call or focusControl call, naming the
-#                 pattern; a copy with the first-use overlay mount gate stripped (the
-#                 @State webOverlaysMounted flag removed) is also rejected and the missing
-#                 marker is named
+#                 gate + E4-CAPACITY8 derived tables/switch + C5 loadData '#'->'%23' encoding +
+#                 SEC7-F child ask-rate/pending bounds + cross-pack source identity) and rejects
+#                 an injected @ohos import, getContext() call, decodeWithStream() call or
+#                 focusControl call, naming the pattern; a copy with the first-use overlay mount
+#                 gate stripped (the @State webOverlaysMounted flag removed) is also rejected and
+#                 the missing marker is named; the red controls strip the L3 encoding helper
+#                 (Index) / revert the child data wiring, and strip the L4 admission branch /
+#                 burst constant (SubWindow), each rejected with the missing marker named
 #   T16 provenance `--check-pack-abc` accepts the shipped packs (size/sha/abc-version/literal/
 #                 source-hash provenance) and, on a self-contained pack copy, rejects a corrupted
 #                 abc, a source edit without a rebuild, a missing provenance record and a stale
@@ -418,7 +421,9 @@ assert_contains "T15 reports the sources byte-identical" "byte-identical across 
 SRC_FAKE="$WORK/source-fake"
 mkdir -p "$SRC_FAKE/ets/pages"
 REAL_SOURCE="$SELFTEST_DIR/../packs/Microsoft.OpenHarmony.Sdk/1.0.0-preview.24/templates/ets/pages/Index.ets"
+REAL_SUB_SOURCE="$SELFTEST_DIR/../packs/Microsoft.OpenHarmony.Sdk/1.0.0-preview.24/templates/ets/pages/SubWindow.ets"
 cp "$REAL_SOURCE" "$SRC_FAKE/ets/pages/Index.ets"
+cp "$REAL_SUB_SOURCE" "$SRC_FAKE/ets/pages/SubWindow.ets"
 sh "$BUILD_SCRIPT" --check-sources "$SRC_FAKE" > "$WORK/T15-copy.log" 2>&1
 assert_rc 0 $? "T15 an unmodified source copy passes the token gate"
 # Each case is <label>|<snippet>; the split uses sed because this host's shell does not expand
@@ -464,6 +469,31 @@ sh "$BUILD_SCRIPT" --check-sources "$SRC_FAKE" > "$WORK/T15-e4-noswitch.log" 2>&
 assert_rc 1 "$_rc" "T15 the gate rejects a stripped capacity switch"
 assert_contains "T15 the rejection names the missing switch" "const WEB_SLOT_MAX_ENV" "$WORK/T15-e4-noswitch.log"
 cp "$REAL_SOURCE" "$SRC_FAKE/ets/pages/Index.ets"
+# C5 loadData encoding (L3): the main and child data paths must both go through their '#'->
+# '%23' helper. Red controls: a stripped Index helper and a reverted child wiring are rejected
+# and the missing marker is named.
+grep -v "private webDataPayload(arg: string): string {" "$REAL_SOURCE" > "$SRC_FAKE/ets/pages/Index.ets"
+sh "$BUILD_SCRIPT" --check-sources "$SRC_FAKE" > "$WORK/T15-l3-nohelper.log" 2>&1 && _rc=0 || _rc=$?
+assert_rc 1 "$_rc" "T15 the gate rejects a stripped C5 encoding helper"
+assert_contains "T15 the rejection names the encoding helper" "private webDataPayload" "$WORK/T15-l3-nohelper.log"
+cp "$REAL_SOURCE" "$SRC_FAKE/ets/pages/Index.ets"
+sed 's|loadData(this.childWebDataPayload(arg)|loadData(this.childWebSlotPayload(arg)|' "$REAL_SUB_SOURCE" > "$SRC_FAKE/ets/pages/SubWindow.ets"
+sh "$BUILD_SCRIPT" --check-sources "$SRC_FAKE" > "$WORK/T15-l3-rawwire.log" 2>&1 && _rc=0 || _rc=$?
+assert_rc 1 "$_rc" "T15 the gate rejects the reverted child data wiring (C5 red control)"
+assert_contains "T15 the rejection names the child data wiring" "this.childWebController(slot).loadData(this.childWebDataPayload(arg)" "$WORK/T15-l3-rawwire.log"
+cp "$REAL_SUB_SOURCE" "$SRC_FAKE/ets/pages/SubWindow.ets"
+# SEC7-F ask rate (L4): the per-slot admission branch and the burst constant are part of the
+# contract. Red controls: a stripped admission branch and a stripped burst constant are
+# rejected and the missing marker is named.
+grep -v "if (!this.childNavAskAllowed(slot, now)) {" "$REAL_SUB_SOURCE" > "$SRC_FAKE/ets/pages/SubWindow.ets"
+sh "$BUILD_SCRIPT" --check-sources "$SRC_FAKE" > "$WORK/T15-l4-nogate.log" 2>&1 && _rc=0 || _rc=$?
+assert_rc 1 "$_rc" "T15 the gate rejects a stripped ask admission branch (L4 red control)"
+assert_contains "T15 the rejection names the admission branch" "if (!this.childNavAskAllowed(slot, now)) {" "$WORK/T15-l4-nogate.log"
+grep -v "const SUB_WEB_NAV_ASK_BURST_MAX" "$REAL_SUB_SOURCE" > "$SRC_FAKE/ets/pages/SubWindow.ets"
+sh "$BUILD_SCRIPT" --check-sources "$SRC_FAKE" > "$WORK/T15-l4-noburst.log" 2>&1 && _rc=0 || _rc=$?
+assert_rc 1 "$_rc" "T15 the gate rejects a stripped ask burst constant (L4 red control)"
+assert_contains "T15 the rejection names the burst constant" "const SUB_WEB_NAV_ASK_BURST_MAX" "$WORK/T15-l4-noburst.log"
+cp "$REAL_SUB_SOURCE" "$SRC_FAKE/ets/pages/SubWindow.ets"
 
 # ---- T16: the abc provenance gate ---------------------------------------------------------
 section "T16 abc provenance gate (--check-pack-abc)"
