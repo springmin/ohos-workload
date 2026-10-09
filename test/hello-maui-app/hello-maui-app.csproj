@@ -67,6 +67,12 @@
     <!-- STARTUP: -p:StartupProbe=true compiles the one-shot start decomposition in
          (StartupProbe.cs). Off by default; the shipped sample is unaffected. -->
     <DefineConstants Condition=" '$(StartupProbe)' == 'true' ">$(DefineConstants);STARTUP_PROBE</DefineConstants>
+    <!-- WEB-AUTH: -p:WebAuthProbe=true compiles the WebAuthenticator device probe in
+         (WebAuthProbe.cs) and declares its callback route (myapp://callback) in the HAP
+         manifest, so the sample can drive the real redirect flow from activation triggers.
+         Off by default: the shipped sample and its module.json are unaffected. -->
+    <DefineConstants Condition=" '$(WebAuthProbe)' == 'true' ">$(DefineConstants);WEBAUTH_PROBE</DefineConstants>
+    <OpenHarmonyWebAuthenticatorCallbackUrls Condition=" '$(WebAuthProbe)' == 'true' ">myapp://callback</OpenHarmonyWebAuthenticatorCallbackUrls>
   </PropertyGroup>
   <PropertyGroup Condition=" '$(OpenHarmonyAotApp)' == 'true' ">
     <DefineConstants>$(DefineConstants);OPENHARMONY_AOT</DefineConstants>

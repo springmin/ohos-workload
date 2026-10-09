@@ -13,7 +13,7 @@ using Microsoft.Maui.Platform;
 // after the fuzz tail) instead of letting every caller repeat its own threshold constant.
 VerifyLineCountingWriter verifyStdout = new(Console.Out);
 Console.SetOut(verifyStdout);
-const int verifyCheckTotal = 744;                     // +5 MULTIWINDOW-L3 B6: the child navigation veto (the ask/approval wire route with the one-shot started suppression, the cancelled decision with no approval, the fail-closed shapes incl. the primary window tag/bad slot/H-C2 spellings, window isolation with the approval to the asking window only, and the shell/slice source pins) // +8 MULTIWINDOW-L3 M4: the per-window child web pools (the window-tagged wire + tag validation, the window-index mirror, two windows' independent claims/capacity/pending/release, the hybrid window codec, the window-filtered hybrid dispatch with the fail-closed wrong window, and the shell/host/transport source pins) // +7 MULTIWINDOW-L3 M3: per-window IME/overlay/Back isolation with two concurrent secondaries (two shadow frames + release isolation, action ownership, two coexisting alerts + per-surface geometry + per-window modal frames + Hide one/all, tagged-text prompt ownership + submit completion, the production child prompt with the op-6 focus wire and its own-state completion, Back modal consumption + window Back routing, and the four-pack shell + slice + partition-cap source pins) // +15 MULTIWINDOW-L3 M2: the per-window identity handshake (an out-of-order claim buffered then acked by its Created, duplicate ready without a second ack, an unknown id closed fail-closed, a retired generation declined, reopen with a fresh generation, churn x20) and the two-window lifecycle closure (suspend/resume exactly once per child, focus isolation, focus ignored while stopped, targeted close, late events after close) plus the four-pack shell and slice source pins // +3 MULTIWINDOW-L3: the child hybrid-invoke codec (flag encode/decode, primary decode unchanged), the child-window dispatch (real invoke round trip on the owning handler) and the fail-closed unclaimed slot // +11 MULTIWINDOW-L3 M1: two managed subwindow sessions coexist (the second deferred OpenWindow on the free sub-2, per-window input/frame isolation, the shell-Closed and app-close targeted to one session, the capacity bound rejecting a third, and the shell/slice source pins) // +2 SEC-SCAN-6 C: the window close hook drops the child pool state and the a11y shadow frame + first-publish marker // +1 A11Y-SELFCHECK: a provider attached after the window's last frame repaints once on the next frame tick (the publish gate reads the export call directly; the shell 3s self-check must see nodes>0) // +7 MULTIWINDOW-L2 a W1: per-window a11y frame lookup/view ownership, window-routed actions (sub vs primary vs unknown), the per-instance listener thunk, the provider-gate local degrade, the subwindow password pin, the per-window modal gate and the host/shell/slice source pins // +18 MULTIWINDOW-L2 b: the child capacity wire (state-carried and URL-carried count shapes), the subwindow ArkWeb second host (the window-scoped OpenHarmonyChildWeb pool + transport + ready gate, a real child-window WebView routed through it, the primary pool/transport isolation, and the four-pack shell/host/slice source pins) and the SEC-SCAN-6 primary-window-tag rejection pin // +2 MULTIWINDOW-L M4-04: the per-window pinch channel (a child-tagged stream reaches the child renderer only; main/unknown/empty ids never do) // +16 MULTIWINDOW-L M4 first wave: the per-window focus/suspend-resume state machine (Activated/Deactivated/Stopped/Resumed, idempotent, primary untouched, the shell-Closed session belt), the per-window keyboard/IME wire (child Entry focus -> op 6 surface-tagged payload, text/composition/submit routed to the child only, window-tagged keys, per-window Back, text ports, the primary-to-child global-text isolation pin (SEC-SCAN-5c)) and the per-window accessibility frame + alert ownership partition, plus the four-pack shell/slice source pins // +14 MULTIWINDOW-L M3 shell subwindow XComponent + production consumption: the app host consumes the tagged channel itself, a deferred OpenWindow asks the shell for the subwindow surface and RouteSurface binds/first-frames/adopts it, its input/frame/close/reopen are window-id routed with no main-window interference, plus the four-pack shell source pins (XComponent id = surface id, register/unregister lifecycle, drawn fallback) and the host/slice per-window draw-target pins // +22 MULTIWINDOW-L M2 per-window renderer: the dual-window headless pin (the mw-l/m2 scratch assertions, driven through the hosting bridge's window-id tagged thunks and the slice's RouteSurface/RouteTouch/RouteFrame adapters, with one CanvasFactory recording canvas per window) plus the bridge id and late-subscriber replay contract // +6 MULTIWINDOW-M in-app subwindow: the create/move/resize/show/close command set and its JSON payloads, the lifecycle/geometry state machine, the routed touch event, malformed/unknown payload robustness, the off-device degradation, and the shell/host/slice source+pack-identity contract // +1 SEC-SCAN-4 a11y password masking (plaintext must not be published to the shadow tree; bullets mirror the drawn text) // +1 SEC-SCAN-4 off-surface cull boundary (zero-size frame draws, shadow extent rescues, off-surface Image keeps the decode pipeline) // +1 CG2-R2R host interp R2R opt-out pin (DOTNET_ReadyToRun=0 inside the mode-3 block; the runtime already forces it for InterpMode>=2, the host makes it explicit and the device retest holds IL parity) // +1 AOT-STARTUP first-use ArkWeb overlay mount gate (state flag + ensureWebSlot flip/log + build gate order) protects the -262 ms AOT startup fix + host identical-context replay skip pin // +2 MULTIWINDOW-S surface resize: the Created/Changed arrange gate (Destroyed/0x0 rejected) + the Changed replay re-arranging the window frame while Destroyed keeps it (A0 form adaptation)                     // +2 WASM-MIME .wasm -> application/wasm mapping in every pack shell + the standalone rawfile host / the host's `wasm mime:` + `wasm fallback:` instrumentation and the pack-host.sh --bad-mime negative control                     // +2 FIX-A11YFLYOUT a11y walk FlyoutPage Detail/presented-Flyout subtree pins (device nodeCount=1 root cause)                     // +1 FIX-A11YBUTTON shell self-check absolute position + z-order-above-overlays pin (button reachable with/without a live web control)                     // +3 AUTODISCONNECT layout-removal detach (dynamic slot destroy + claim release + handler kept) / re-add rebuild (ensure + registration replay on the reclaimed slot) / slice watcher-and-owner wiring pins                     // +6 SLOTS-DYNAMIC dynamic slot growth (ensure/destroy commands), capacity downgrade/event, configurable 2/4 limits, shell lazy/defer pins, 3rd-overlay sample                     // documented full [verify] line count (+3 FIX-SLICERACE concurrent connect/host storm/ pins, +5 L6 screenshot Jpeg format/quality capture/fallback/helper + title heartbeat behavior/source, +6 LEGACY toolbar primary/overflow/icon/events/shell/source, +3 SAMPLE-FIX hybrid bootstrap pack staging / read-only payload handler / stock-script demo, +4 MULTI-OVERLAY-FULL LRU pool/invoke slot codec/per-slot hybrid shell/slice owner wiring, +4 MULTI-OVL slot pool/wire codec/two-overlay shell/slice wiring, +4 FIX-BACKSIZE Back-press forwarding/drawer drill/ shell drawer/BlazorWebView desired size, +4 FIX-WVP overlay px->vp/degenerate-frame/hybrid-overlay arbitration/suspend-restore (shell+slice), +2 FIX-DISMISS flyout drawer dismiss under the device display conditions, +4 FIX-HOME home page arrange/draw (NavigationPage-in-TabbedPage descent), +4 MS-MODE runtime mode switch, +10 P2c-DEEPLINK, +4 P2b-IMG, +16 P1b-LIST, +10 P1a-ANIM, +2 SEC3 storage/deep-link pins, +5 W-series WebView wiring, +3 T1 InputView mapping, +4 T2 WebView gaps, +4 T3 GraphicsView interaction, +7 T10 modal accessibility, +4 T4 Label formatted text, +4 T5 layout semantics, +6 T7 DatePicker calendar/min-max, +4 T9 window title bar, +4 T11 diagnostics overlay, +1 N2 empty ContentPage arrangement, +6 T8 TableView, +5 T8 uneven rows, +7 T6 RTL flow direction, +5 T22 MainThread bridge, +2 FIX-TABBED tabbed CurrentPage, +4 T13 group footer view/N3 picker IsOpen, +5 T21 system font scale, +3 T21 font scale source wiring, +2 A11Y-TABBED tabbed accessibility, +3 N1 host multi-pointer, +5 T12 CarouselView group slides, +7 T14 rich shell flyout, +10 T14 flyout leftovers (MenuItemTemplate/FlyoutContent/AsMultipleItems), +2 FIX-SHELL shell CurrentPage, +2 A11Y-SHELL shell accessibility, +7 T15 rich Shell.TitleView, +8 T16 structured menus, +3 N4 TitleBar accessibility row, +3 T18 Essentials Map, +4 N5 overlay passthrough suppression, +5 N6 window decorations, +4 T20 media bridge, +3 B2 wasm site in a MAUI WebView, +2 W10 NativeAOT managed entry (host libs-dir resolution + shell AOT payload probe), +1 FIX-JSCALL Blazor IPC enum/struct AOT roots (JSCallResultType/JSCallType/NavigationOptions in the slice context + handler static-ctor touch + stub click-probe removed), +3 INTERP-DRAW2 draw-cost seam kinds / off-surface cull / translated-node rescue)) // +1 PREPROBE-SWEEP: the slice sources stay free of the retired raw NativeLibrary loader (the top-level slice files are scanned for the NativeLibrary. API marker, so prose mentions of the pre-probe family stay allowed) // +1 E4-CAPACITY8: every per-slot table derives from WEB_SLOT_MAX (hardcoded 4s forbidden), the served capacity keeps the 4-slot default and the OHOS_OVERLAY_MAX env/rawfile switch raises it to 8 (E4 root-cause fix) // +2 C5-L3 + SEC7-F-L4: the data op encodes '#'->'%23' on both the primary and the child path (helper + loadData wiring pinned per pack) and the child navigation asks gain the per-slot burst/window cap with the fail-closed drop and the bounded pending table kept
+const int verifyCheckTotal = 752;                     // +8 WEB-AUTH: the real WebAuthenticator flow (source + manifest-injection pins, query and fragment completion with the non-matching guard, caller cancel, caller timeout via the token, one-at-a-time + duplicate drop, option validation, launch failure, platform-less degrade) // +5 MULTIWINDOW-L3 B6: the child navigation veto (the ask/approval wire route with the one-shot started suppression, the cancelled decision with no approval, the fail-closed shapes incl. the primary window tag/bad slot/H-C2 spellings, window isolation with the approval to the asking window only, and the shell/slice source pins) // +8 MULTIWINDOW-L3 M4: the per-window child web pools (the window-tagged wire + tag validation, the window-index mirror, two windows' independent claims/capacity/pending/release, the hybrid window codec, the window-filtered hybrid dispatch with the fail-closed wrong window, and the shell/host/transport source pins) // +7 MULTIWINDOW-L3 M3: per-window IME/overlay/Back isolation with two concurrent secondaries (two shadow frames + release isolation, action ownership, two coexisting alerts + per-surface geometry + per-window modal frames + Hide one/all, tagged-text prompt ownership + submit completion, the production child prompt with the op-6 focus wire and its own-state completion, Back modal consumption + window Back routing, and the four-pack shell + slice + partition-cap source pins) // +15 MULTIWINDOW-L3 M2: the per-window identity handshake (an out-of-order claim buffered then acked by its Created, duplicate ready without a second ack, an unknown id closed fail-closed, a retired generation declined, reopen with a fresh generation, churn x20) and the two-window lifecycle closure (suspend/resume exactly once per child, focus isolation, focus ignored while stopped, targeted close, late events after close) plus the four-pack shell and slice source pins // +3 MULTIWINDOW-L3: the child hybrid-invoke codec (flag encode/decode, primary decode unchanged), the child-window dispatch (real invoke round trip on the owning handler) and the fail-closed unclaimed slot // +11 MULTIWINDOW-L3 M1: two managed subwindow sessions coexist (the second deferred OpenWindow on the free sub-2, per-window input/frame isolation, the shell-Closed and app-close targeted to one session, the capacity bound rejecting a third, and the shell/slice source pins) // +2 SEC-SCAN-6 C: the window close hook drops the child pool state and the a11y shadow frame + first-publish marker // +1 A11Y-SELFCHECK: a provider attached after the window's last frame repaints once on the next frame tick (the publish gate reads the export call directly; the shell 3s self-check must see nodes>0) // +7 MULTIWINDOW-L2 a W1: per-window a11y frame lookup/view ownership, window-routed actions (sub vs primary vs unknown), the per-instance listener thunk, the provider-gate local degrade, the subwindow password pin, the per-window modal gate and the host/shell/slice source pins // +18 MULTIWINDOW-L2 b: the child capacity wire (state-carried and URL-carried count shapes), the subwindow ArkWeb second host (the window-scoped OpenHarmonyChildWeb pool + transport + ready gate, a real child-window WebView routed through it, the primary pool/transport isolation, and the four-pack shell/host/slice source pins) and the SEC-SCAN-6 primary-window-tag rejection pin // +2 MULTIWINDOW-L M4-04: the per-window pinch channel (a child-tagged stream reaches the child renderer only; main/unknown/empty ids never do) // +16 MULTIWINDOW-L M4 first wave: the per-window focus/suspend-resume state machine (Activated/Deactivated/Stopped/Resumed, idempotent, primary untouched, the shell-Closed session belt), the per-window keyboard/IME wire (child Entry focus -> op 6 surface-tagged payload, text/composition/submit routed to the child only, window-tagged keys, per-window Back, text ports, the primary-to-child global-text isolation pin (SEC-SCAN-5c)) and the per-window accessibility frame + alert ownership partition, plus the four-pack shell/slice source pins // +14 MULTIWINDOW-L M3 shell subwindow XComponent + production consumption: the app host consumes the tagged channel itself, a deferred OpenWindow asks the shell for the subwindow surface and RouteSurface binds/first-frames/adopts it, its input/frame/close/reopen are window-id routed with no main-window interference, plus the four-pack shell source pins (XComponent id = surface id, register/unregister lifecycle, drawn fallback) and the host/slice per-window draw-target pins // +22 MULTIWINDOW-L M2 per-window renderer: the dual-window headless pin (the mw-l/m2 scratch assertions, driven through the hosting bridge's window-id tagged thunks and the slice's RouteSurface/RouteTouch/RouteFrame adapters, with one CanvasFactory recording canvas per window) plus the bridge id and late-subscriber replay contract // +6 MULTIWINDOW-M in-app subwindow: the create/move/resize/show/close command set and its JSON payloads, the lifecycle/geometry state machine, the routed touch event, malformed/unknown payload robustness, the off-device degradation, and the shell/host/slice source+pack-identity contract // +1 SEC-SCAN-4 a11y password masking (plaintext must not be published to the shadow tree; bullets mirror the drawn text) // +1 SEC-SCAN-4 off-surface cull boundary (zero-size frame draws, shadow extent rescues, off-surface Image keeps the decode pipeline) // +1 CG2-R2R host interp R2R opt-out pin (DOTNET_ReadyToRun=0 inside the mode-3 block; the runtime already forces it for InterpMode>=2, the host makes it explicit and the device retest holds IL parity) // +1 AOT-STARTUP first-use ArkWeb overlay mount gate (state flag + ensureWebSlot flip/log + build gate order) protects the -262 ms AOT startup fix + host identical-context replay skip pin // +2 MULTIWINDOW-S surface resize: the Created/Changed arrange gate (Destroyed/0x0 rejected) + the Changed replay re-arranging the window frame while Destroyed keeps it (A0 form adaptation)                     // +2 WASM-MIME .wasm -> application/wasm mapping in every pack shell + the standalone rawfile host / the host's `wasm mime:` + `wasm fallback:` instrumentation and the pack-host.sh --bad-mime negative control                     // +2 FIX-A11YFLYOUT a11y walk FlyoutPage Detail/presented-Flyout subtree pins (device nodeCount=1 root cause)                     // +1 FIX-A11YBUTTON shell self-check absolute position + z-order-above-overlays pin (button reachable with/without a live web control)                     // +3 AUTODISCONNECT layout-removal detach (dynamic slot destroy + claim release + handler kept) / re-add rebuild (ensure + registration replay on the reclaimed slot) / slice watcher-and-owner wiring pins                     // +6 SLOTS-DYNAMIC dynamic slot growth (ensure/destroy commands), capacity downgrade/event, configurable 2/4 limits, shell lazy/defer pins, 3rd-overlay sample                     // documented full [verify] line count (+3 FIX-SLICERACE concurrent connect/host storm/ pins, +5 L6 screenshot Jpeg format/quality capture/fallback/helper + title heartbeat behavior/source, +6 LEGACY toolbar primary/overflow/icon/events/shell/source, +3 SAMPLE-FIX hybrid bootstrap pack staging / read-only payload handler / stock-script demo, +4 MULTI-OVERLAY-FULL LRU pool/invoke slot codec/per-slot hybrid shell/slice owner wiring, +4 MULTI-OVL slot pool/wire codec/two-overlay shell/slice wiring, +4 FIX-BACKSIZE Back-press forwarding/drawer drill/ shell drawer/BlazorWebView desired size, +4 FIX-WVP overlay px->vp/degenerate-frame/hybrid-overlay arbitration/suspend-restore (shell+slice), +2 FIX-DISMISS flyout drawer dismiss under the device display conditions, +4 FIX-HOME home page arrange/draw (NavigationPage-in-TabbedPage descent), +4 MS-MODE runtime mode switch, +10 P2c-DEEPLINK, +4 P2b-IMG, +16 P1b-LIST, +10 P1a-ANIM, +2 SEC3 storage/deep-link pins, +5 W-series WebView wiring, +3 T1 InputView mapping, +4 T2 WebView gaps, +4 T3 GraphicsView interaction, +7 T10 modal accessibility, +4 T4 Label formatted text, +4 T5 layout semantics, +6 T7 DatePicker calendar/min-max, +4 T9 window title bar, +4 T11 diagnostics overlay, +1 N2 empty ContentPage arrangement, +6 T8 TableView, +5 T8 uneven rows, +7 T6 RTL flow direction, +5 T22 MainThread bridge, +2 FIX-TABBED tabbed CurrentPage, +4 T13 group footer view/N3 picker IsOpen, +5 T21 system font scale, +3 T21 font scale source wiring, +2 A11Y-TABBED tabbed accessibility, +3 N1 host multi-pointer, +5 T12 CarouselView group slides, +7 T14 rich shell flyout, +10 T14 flyout leftovers (MenuItemTemplate/FlyoutContent/AsMultipleItems), +2 FIX-SHELL shell CurrentPage, +2 A11Y-SHELL shell accessibility, +7 T15 rich Shell.TitleView, +8 T16 structured menus, +3 N4 TitleBar accessibility row, +3 T18 Essentials Map, +4 N5 overlay passthrough suppression, +5 N6 window decorations, +4 T20 media bridge, +3 B2 wasm site in a MAUI WebView, +2 W10 NativeAOT managed entry (host libs-dir resolution + shell AOT payload probe), +1 FIX-JSCALL Blazor IPC enum/struct AOT roots (JSCallResultType/JSCallType/NavigationOptions in the slice context + handler static-ctor touch + stub click-probe removed), +3 INTERP-DRAW2 draw-cost seam kinds / off-surface cull / translated-node rescue)) // +1 E4-CAPACITY8: every per-slot table derives from WEB_SLOT_MAX (hardcoded 4s forbidden), the served capacity keeps the 4-slot default and the OHOS_OVERLAY_MAX env/rawfile switch raises it to 8 (E4 root-cause fix) // +2 C5-L3 + SEC7-F-L4: the data op encodes '#'->'%23' on both the primary and the child path (helper + loadData wiring pinned per pack) and the child navigation asks gain the per-slot burst/window cap with the fail-closed drop and the bounded pending table kept
 const int verifyCheckFloor = verifyCheckTotal - 20;   // documented floor convention (total - 20)
 
 // A small image file for the Image handler.
@@ -10885,29 +10885,211 @@ if (!n13SettingsBundleOk)
         $"the settings/bundle/PostNotifications contract drifted: settings={n13SettingsOk} bundle={n13BundleOk} notifications={n13NotificationsOk} shell={n13ShellOk}");
 }
 
-// Audit2-5: WebAuthenticator degrade. The slice implementation is installed both as
-// WebAuthenticator.Default (ModuleInitializer + reflection on the internal defaultImplementation
-// field) and in DI, and AuthenticateAsync fails fast with FeatureNotSupportedException (the
-// documented missing callback-skill/want-forward diagnosis), never the reference-assembly
-// exception.
+// Audit2-5 (WEB-AUTH real flow). The slice implements the full browser redirect flow: the
+// authorize URL opens through the ability bridge (or the internal test seam off-device), the
+// matching activation completes the await with the parsed WebAuthenticatorResult (query and
+// fragment), a stale/non-matching delivery is ignored, caller cancellation (MAUI's only timeout
+// mechanism) releases the single active request, and the platform-less host keeps the documented
+// FeatureNotSupportedException degrade.
 string? n14WebAuthPath = FindHostSource("OpenHarmonyWebAuthenticator.cs");
 string n14WebAuth = n14WebAuthPath is null ? string.Empty : File.ReadAllText(n14WebAuthPath);
 string? n14ExtensionsPath = FindHostSource("MauiOpenHarmonyExtensions.cs");
 string n14Extensions = n14ExtensionsPath is null ? string.Empty : File.ReadAllText(n14ExtensionsPath);
 bool n14TypeOk = n14WebAuth.Contains("public sealed class OpenHarmonyWebAuthenticator : IWebAuthenticator") &&
     n14WebAuth.Contains("public static readonly OpenHarmonyWebAuthenticator Instance = new();") &&
-    n14WebAuth.Contains("new Microsoft.Maui.ApplicationModel.FeatureNotSupportedException(UnsupportedMessage));") &&
-    n14WebAuth.Contains("if (cancellationToken.IsCancellationRequested)") &&
-    n14WebAuth.Contains("return Task.FromCanceled<WebAuthenticatorResult>(cancellationToken);");
+    n14WebAuth.Contains("OpenHarmonyBridge.Activation += s_onActivation;") &&
+    n14WebAuth.Contains("OpenHarmonyAbilityBridge.TryOpenUri(url.AbsoluteUri)") &&
+    n14WebAuth.Contains("new FeatureNotSupportedException(UnsupportedMessage)") &&
+    n14WebAuth.Contains("new InvalidOperationException(\"Failed to launch the browser for authentication.\")") &&
+    n14WebAuth.Contains("new WebAuthenticatorResult(callbackUri, request.ResponseDecoder)") &&
+    n14WebAuth.Contains("internal static bool CanHandleCallback(Uri expectedUrl, Uri callbackUrl)");
 bool n14InstallOk = n14WebAuth.Contains("[ModuleInitializer]") &&
     n14WebAuth.Contains("internal static void Initialize() => InstallDefault();") &&
     n14WebAuth.Contains("field.SetValue(null, Instance);") &&
     n14Extensions.Contains("builder.Services.AddSingleton<Microsoft.Maui.Authentication.IWebAuthenticator>(OpenHarmonyWebAuthenticator.Instance);");
-bool n14WebAuthOk = n14TypeOk && n14InstallOk;
-Console.WriteLine($"[verify] audit2 webauth type={n14TypeOk} install={n14InstallOk} source='{n14WebAuthPath ?? "<missing>"}' assert={n14WebAuthOk}");
+// The manifest side of the contract: the packaging task appends the callback skill from
+// OpenHarmonyWebAuthenticatorCallbackUrls, and every pack target passes the property through.
+string? n14TaskPath = FindHostSource("src/Microsoft.OpenHarmony.Tasks/OpenHarmonyGenerateModuleJson.cs");
+string n14Task = n14TaskPath is null ? string.Empty : File.ReadAllText(n14TaskPath);
+string? n14HapTargetsPath = FindHostSource("packs/Microsoft.OpenHarmony.Sdk/1.0.0-preview.28/targets/OpenHarmony.Hap.targets");
+string n14HapTargets = n14HapTargetsPath is null ? string.Empty : File.ReadAllText(n14HapTargetsPath);
+bool n14ManifestOk = n14Task.Contains("public string WebAuthenticatorCallbackUrls { get; set; }") &&
+    n14Task.Contains("OpenHarmony module.json: OpenHarmonyWebAuthenticatorCallbackUrls needs a module.abilities[0].skills array") &&
+    n14HapTargets.Contains("<OpenHarmonyWebAuthenticatorCallbackUrls Condition=") &&
+    n14HapTargets.Contains("WebAuthenticatorCallbackUrls=\"$(OpenHarmonyWebAuthenticatorCallbackUrls)\"");
+bool n14WebAuthOk = n14TypeOk && n14InstallOk && n14ManifestOk;
+Console.WriteLine($"[verify] audit2 webauth real flow source type={n14TypeOk} install={n14InstallOk} manifest={n14ManifestOk} source='{n14WebAuthPath ?? "<missing>"}' assert={n14WebAuthOk}");
 if (!n14WebAuthOk)
 {
-    throw new InvalidOperationException($"the WebAuthenticator contract drifted: type={n14TypeOk} install={n14InstallOk}");
+    throw new InvalidOperationException($"the WebAuthenticator contract drifted: type={n14TypeOk} install={n14InstallOk} manifest={n14ManifestOk}");
+}
+
+var n14Authenticator = OpenHarmonyWebAuthenticator.Instance;
+var n14Options = new Microsoft.Maui.Authentication.WebAuthenticatorOptions
+{
+    Url = new Uri("https://auth.example.test/authorize?client_id=probe"),
+    CallbackUrl = new Uri("myapp://callback"),
+};
+static bool N14Faults<TException>(Task task) where TException : Exception
+{
+    try
+    {
+        task.GetAwaiter().GetResult();
+        return false;
+    }
+    catch (TException)
+    {
+        return true;
+    }
+    catch
+    {
+        return false;
+    }
+}
+
+OpenHarmonyWebAuthenticator.OpenBrowserOverride = _ => true;
+try
+{
+    // Query callback: the matching activation completes the await and parses the query.
+    Task<Microsoft.Maui.Authentication.WebAuthenticatorResult> n14Query = n14Authenticator.AuthenticateAsync(n14Options);
+    Microsoft.OpenHarmony.Hosting.OpenHarmonyBridge.CompleteActivation(P2cPayload(910, "myapp://callback?code=CODE1&state=ST1"));
+    var n14QueryResult = n14Query.GetAwaiter().GetResult();
+    bool n14QueryOk = n14QueryResult.CallbackUri.Scheme == "myapp" &&
+        n14QueryResult.CallbackUri.Host == "callback" &&
+        n14QueryResult.Get("code") == "CODE1" && n14QueryResult.Get("state") == "ST1";
+    Console.WriteLine($"[verify] webauth query callback code='{n14QueryResult.Get("code")}' state='{n14QueryResult.Get("state")}' assert={n14QueryOk}");
+    if (!n14QueryOk)
+    {
+        throw new InvalidOperationException("the WebAuthenticator query callback did not complete with the parsed query");
+    }
+
+    // Fragment callback (an implicit-flow token) and the negative path around it: a foreign
+    // route and a same-scheme wrong host stay pending until the matching delivery arrives.
+    Task<Microsoft.Maui.Authentication.WebAuthenticatorResult> n14Fragment = n14Authenticator.AuthenticateAsync(n14Options);
+    Microsoft.OpenHarmony.Hosting.OpenHarmonyBridge.CompleteActivation(P2cPayload(911, "other://callback?code=NOPE"));
+    Microsoft.OpenHarmony.Hosting.OpenHarmonyBridge.CompleteActivation(P2cPayload(912, "myapp://elsewhere?code=NOPE"));
+    bool n14PendingOk = !n14Fragment.IsCompleted;
+    Microsoft.OpenHarmony.Hosting.OpenHarmonyBridge.CompleteActivation(P2cPayload(913, "myapp://callback#access_token=TOKEN1&token_type=bearer"));
+    var n14FragmentResult = n14Fragment.GetAwaiter().GetResult();
+    bool n14FragmentOk = n14PendingOk && n14FragmentResult.AccessToken == "TOKEN1" && n14FragmentResult.Get("token_type") == "bearer";
+    Console.WriteLine($"[verify] webauth fragment callback pending-on-mismatch={n14PendingOk} token='{n14FragmentResult.AccessToken}' assert={n14FragmentOk}");
+    if (!n14FragmentOk)
+    {
+        throw new InvalidOperationException("the WebAuthenticator fragment callback or the non-matching delivery guard is wrong");
+    }
+
+    // Caller cancellation and a caller timeout are the same mechanism in MAUI: the canceled
+    // await carries the caller's token and releases the active request for the next call.
+    using (var n14Cancel = new CancellationTokenSource())
+    {
+        Task<Microsoft.Maui.Authentication.WebAuthenticatorResult> n14Cancelled = n14Authenticator.AuthenticateAsync(n14Options, n14Cancel.Token);
+        n14Cancel.Cancel();
+        bool n14CancelOk = false;
+        try
+        {
+            n14Cancelled.GetAwaiter().GetResult();
+        }
+        catch (OperationCanceledException n14Ex)
+        {
+            n14CancelOk = n14Ex.CancellationToken == n14Cancel.Token;
+        }
+        Task<Microsoft.Maui.Authentication.WebAuthenticatorResult> n14AfterCancel = n14Authenticator.AuthenticateAsync(n14Options);
+        bool n14Released = !n14AfterCancel.IsCompleted;
+        Microsoft.OpenHarmony.Hosting.OpenHarmonyBridge.CompleteActivation(P2cPayload(914, "myapp://callback?code=AFTER-CANCEL"));
+        bool n14AfterCancelOk = n14AfterCancel.GetAwaiter().GetResult().Get("code") == "AFTER-CANCEL";
+        Console.WriteLine($"[verify] webauth cancel token-match={n14CancelOk} released={n14Released} next='{n14AfterCancelOk}' assert={n14CancelOk && n14Released && n14AfterCancelOk}");
+        if (!(n14CancelOk && n14Released && n14AfterCancelOk))
+        {
+            throw new InvalidOperationException("the WebAuthenticator cancellation did not cancel with the caller token or did not release the active request");
+        }
+    }
+    using (var n14Timeout = new CancellationTokenSource(TimeSpan.FromMilliseconds(50)))
+    {
+        Task<Microsoft.Maui.Authentication.WebAuthenticatorResult> n14TimedOut = n14Authenticator.AuthenticateAsync(n14Options, n14Timeout.Token);
+        bool n14TimeoutOk = false;
+        try
+        {
+            n14TimedOut.GetAwaiter().GetResult();
+        }
+        catch (OperationCanceledException n14Ex)
+        {
+            n14TimeoutOk = n14Ex.CancellationToken == n14Timeout.Token;
+        }
+        Task<Microsoft.Maui.Authentication.WebAuthenticatorResult> n14AfterTimeout = n14Authenticator.AuthenticateAsync(n14Options);
+        Microsoft.OpenHarmony.Hosting.OpenHarmonyBridge.CompleteActivation(P2cPayload(915, "myapp://callback?code=AFTER-TIMEOUT"));
+        bool n14TimeoutReleased = n14AfterTimeout.GetAwaiter().GetResult().Get("code") == "AFTER-TIMEOUT";
+        Console.WriteLine($"[verify] webauth timeout(cts) canceled={n14TimeoutOk} released={n14TimeoutReleased} assert={n14TimeoutOk && n14TimeoutReleased}");
+        if (!(n14TimeoutOk && n14TimeoutReleased))
+        {
+            throw new InvalidOperationException("the WebAuthenticator caller timeout did not cancel/release like a cancel");
+        }
+    }
+
+    // The process-wide single active request: a second concurrent call fails with
+    // InvalidOperationException; a duplicate callback for a completed request is dropped.
+    Task<Microsoft.Maui.Authentication.WebAuthenticatorResult> n14First = n14Authenticator.AuthenticateAsync(n14Options);
+    Task<Microsoft.Maui.Authentication.WebAuthenticatorResult> n14Second = n14Authenticator.AuthenticateAsync(n14Options);
+    bool n14SecondFaulted = N14Faults<InvalidOperationException>(n14Second);
+    Microsoft.OpenHarmony.Hosting.OpenHarmonyBridge.CompleteActivation(P2cPayload(916, "myapp://callback?code=FIRST"));
+    var n14FirstResult = n14First.GetAwaiter().GetResult();
+    Microsoft.OpenHarmony.Hosting.OpenHarmonyBridge.CompleteActivation(P2cPayload(917, "myapp://callback?code=DUPLICATE"));
+    bool n14DupOk = n14FirstResult.Get("code") == "FIRST" && n14SecondFaulted;
+    Console.WriteLine($"[verify] webauth one-at-a-time secondFaulted={n14SecondFaulted} first='{n14FirstResult.Get("code")}' duplicateDropped={n14DupOk}");
+    if (!n14DupOk)
+    {
+        throw new InvalidOperationException("the WebAuthenticator single-request guard or the duplicate-callback drop is wrong");
+    }
+
+    // Option validation (the platform implementations' exact argument contract).
+    bool n14ValidationOk = N14Faults<ArgumentNullException>(n14Authenticator.AuthenticateAsync(null!)) &&
+        N14Faults<ArgumentNullException>(n14Authenticator.AuthenticateAsync(new Microsoft.Maui.Authentication.WebAuthenticatorOptions { Url = null, CallbackUrl = new Uri("myapp://callback") })) &&
+        N14Faults<ArgumentNullException>(n14Authenticator.AuthenticateAsync(new Microsoft.Maui.Authentication.WebAuthenticatorOptions { Url = new Uri("https://auth.example.test"), CallbackUrl = null })) &&
+        N14Faults<ArgumentException>(n14Authenticator.AuthenticateAsync(new Microsoft.Maui.Authentication.WebAuthenticatorOptions { Url = new Uri("rel", UriKind.Relative), CallbackUrl = new Uri("myapp://callback") })) &&
+        N14Faults<ArgumentException>(n14Authenticator.AuthenticateAsync(new Microsoft.Maui.Authentication.WebAuthenticatorOptions { Url = new Uri("https://auth.example.test"), CallbackUrl = new Uri("rel", UriKind.Relative) }));
+    Console.WriteLine($"[verify] webauth options validation nulls/relative rejected assert={n14ValidationOk}");
+    if (!n14ValidationOk)
+    {
+        throw new InvalidOperationException("the WebAuthenticator option validation drifted from the platform argument contract");
+    }
+
+    // Launch failure: the contract's InvalidOperationException, and the request is released.
+    OpenHarmonyWebAuthenticator.OpenBrowserOverride = _ => false;
+    bool n14LaunchOk = N14Faults<InvalidOperationException>(n14Authenticator.AuthenticateAsync(n14Options));
+    OpenHarmonyWebAuthenticator.OpenBrowserOverride = _ => true;
+    Task<Microsoft.Maui.Authentication.WebAuthenticatorResult> n14AfterLaunch = n14Authenticator.AuthenticateAsync(n14Options);
+    Microsoft.OpenHarmony.Hosting.OpenHarmonyBridge.CompleteActivation(P2cPayload(918, "myapp://callback?code=AFTER-LAUNCH"));
+    bool n14LaunchReleased = n14AfterLaunch.GetAwaiter().GetResult().Get("code") == "AFTER-LAUNCH";
+    Console.WriteLine($"[verify] webauth launch failure contract={n14LaunchOk} released={n14LaunchReleased} assert={n14LaunchOk && n14LaunchReleased}");
+    if (!(n14LaunchOk && n14LaunchReleased))
+    {
+        throw new InvalidOperationException("the WebAuthenticator launch-failure contract or the release path is wrong");
+    }
+}
+finally
+{
+    OpenHarmonyWebAuthenticator.OpenBrowserOverride = null;
+}
+
+// Platform-less host (this suite's default): no ability bridge -> the documented
+// FeatureNotSupportedException degrade, and the request is not left claimed.
+bool n14DegradeOk = false;
+try
+{
+    n14Authenticator.AuthenticateAsync(n14Options).GetAwaiter().GetResult();
+}
+catch (Microsoft.Maui.ApplicationModel.FeatureNotSupportedException n14Ex)
+{
+    n14DegradeOk = n14Ex.Message == OpenHarmonyWebAuthenticator.UnsupportedMessage;
+}
+OpenHarmonyWebAuthenticator.OpenBrowserOverride = _ => true;
+Task<Microsoft.Maui.Authentication.WebAuthenticatorResult> n14AfterDegrade = n14Authenticator.AuthenticateAsync(n14Options);
+Microsoft.OpenHarmony.Hosting.OpenHarmonyBridge.CompleteActivation(P2cPayload(919, "myapp://callback?code=AFTER-DEGRADE"));
+bool n14DegradeReleased = n14AfterDegrade.GetAwaiter().GetResult().Get("code") == "AFTER-DEGRADE";
+OpenHarmonyWebAuthenticator.OpenBrowserOverride = null;
+Console.WriteLine($"[verify] webauth platform-less degrade={n14DegradeOk} released={n14DegradeReleased} assert={n14DegradeOk && n14DegradeReleased}");
+if (!(n14DegradeOk && n14DegradeReleased))
+{
+    throw new InvalidOperationException("the WebAuthenticator platform-less degrade did not keep the FeatureNotSupportedException contract");
 }
 
 // Audit2-6: soft-input inset + ConnectionProfiles push. The host stores the shell's keyboard

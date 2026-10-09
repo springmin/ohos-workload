@@ -33,6 +33,13 @@ public class OpenHarmonyGenerateModuleJson : Task
     // then dispatches an https link only after the host passed the AGC App Linking domain
     // verification. Any other value omits the member (the conservative pre-registration form).
     public string AppLinkDomainVerify { get; set; }
+    // WebAuthenticator: the ';'-separated callback routes of the app's browser redirect flow
+    // (a full absolute URL like "myapp://callback" or a bare scheme name). Non-empty appends a
+    // browsable/viewData skill element carrying one uri per route to module.abilities[0].skills,
+    // so the system can dispatch the browser's redirect back to the ability; the managed
+    // OpenHarmonyWebAuthenticator then matches scheme/host/port/path against the app's callback
+    // URL. Empty leaves the template bytes untouched.
+    public string WebAuthenticatorCallbackUrls { get; set; }
     [Output] public bool Changed { get; set; }
 
     private sealed class JsonNode
@@ -270,6 +277,16 @@ public class OpenHarmonyGenerateModuleJson : Task
             edits.Add(new Edit { Start = at, End = at, Text = fragment.ToString() });
         }
 
+        // Skills appends: the app-link skill element and the WebAuthenticator callback-route
+        // skill element are collected here and inserted with ONE edit at the skills array's
+        // closing bracket. Two separate same-offset edits would both apply, but the edit sort
+        // does not define the order of equal keys, so the combined insertion keeps the generated
+        // module.json deterministic when both properties are set. The home skill element stays
+        // untouched; with neither property set there is no edit here.
+        var skillElements = new List<string>();
+        int skillAnchor = -1;
+        bool skillsNeedComma = false;
+
         // Deep links: append the app-link skill element to module.abilities[0].skills so the
         // manifest declares the same https hosts the managed side accepts through app.json
         // linkHosts. The home skill element stays untouched; unset AppLinkHosts adds no edit.
@@ -324,28 +341,137 @@ public class OpenHarmonyGenerateModuleJson : Task
                 Log.LogError("OpenHarmony module.json: OpenHarmonyAppLinkHosts needs a module.abilities[0].skills array to append the app-link skill to.");
                 return false;
             }
+            skillsNeedComma = skills.Elements.Count > 0;
+            skillAnchor = skills.End - 1;   // before the skills array's closing bracket
+            var element = new StringBuilder();
+            element.Append("{\"entities\":[\"entity.system.browsable\"],\"actions\":[\"ohos.want.action.viewData\"],\"uris\":[");
+            for (int n = 0; n < hosts.Count; n++)
+            {
+                if (n > 0)
+                {
+                    element.Append(',');
+                }
+                element.Append("{\"scheme\":\"https\",\"host\":\"").Append(EscapeJsonString(hosts[n])).Append("\"}");
+            }
+            element.Append(']');
+            if (string.Equals(AppLinkDomainVerify, "true", StringComparison.OrdinalIgnoreCase))
+            {
+                element.Append(",\"domainVerify\":true");
+            }
+            element.Append('}');
+            skillElements.Add(element.ToString());
+        }
+
+        // WebAuthenticator: append a browsable/viewData skill element carrying one uri per
+        // callback route, so the browser's redirect to the callback scheme/host is dispatched
+        // back to this ability. A bare scheme declares a scheme-only uri (any host); a full
+        // absolute URL contributes scheme + host (+ an explicit port). The managed side still
+        // matches the app's exact callback URL before completing the flow.
+        if (!string.IsNullOrEmpty(WebAuthenticatorCallbackUrls))
+        {
+            var routes = new List<string>();   // canonical "scheme|host|port" (lower-case, port empty when default)
+            foreach (string raw in WebAuthenticatorCallbackUrls.Split(';'))
+            {
+                string route = (raw ?? "").Trim();
+                if (route.Length == 0)
+                {
+                    continue;
+                }
+                string scheme;
+                string host = "";
+                int port = 0;
+                if (Uri.TryCreate(route, UriKind.Absolute, out Uri parsed) && parsed.Scheme.Length > 0)
+                {
+                    scheme = parsed.Scheme;
+                    host = parsed.Host;
+                    if (!parsed.IsDefaultPort && parsed.Port > 0)
+                    {
+                        port = parsed.Port;
+                    }
+                }
+                else if (IsValidSchemeToken(route))
+                {
+                    scheme = route;
+                }
+                else
+                {
+                    Log.LogError("OpenHarmony module.json: OpenHarmonyWebAuthenticatorCallbackUrls value '{0}' is not a callback route (an absolute URL like \"myapp://callback\" or a bare scheme name); pass a ';'-separated list like -p:OpenHarmonyWebAuthenticatorCallbackUrls=\"myapp://callback\".", route);
+                    return false;
+                }
+                if (!IsValidSchemeToken(scheme))
+                {
+                    Log.LogError("OpenHarmony module.json: OpenHarmonyWebAuthenticatorCallbackUrls route '{0}' has an invalid scheme '{1}' (a letter followed by letters, digits, '+', '-' or '.').", route, scheme);
+                    return false;
+                }
+                if (host.Length > 0 && !IsValidCallbackHost(host))
+                {
+                    Log.LogError("OpenHarmony module.json: OpenHarmonyWebAuthenticatorCallbackUrls route '{0}' has an invalid host '{1}' (letters, digits, '.', '-' and '_' only).", route, host);
+                    return false;
+                }
+                string key = scheme.ToLowerInvariant() + "|" + host.ToLowerInvariant() + "|" + (port > 0 ? port.ToString() : "");
+                if (!routes.Contains(key))
+                {
+                    routes.Add(key);
+                }
+            }
+            if (routes.Count == 0)
+            {
+                Log.LogError("OpenHarmony module.json: OpenHarmonyWebAuthenticatorCallbackUrls carries no route after splitting '{0}' on ';'.", WebAuthenticatorCallbackUrls);
+                return false;
+            }
+            var abilities = FindMember(module, "abilities");
+            JsonNode ability = abilities != null && abilities.Elements != null && abilities.Elements.Count > 0 ? abilities.Elements[0] : null;
+            var skills = ability == null ? null : FindMember(ability, "skills");
+            if (skills == null || skills.Elements == null)
+            {
+                Log.LogError("OpenHarmony module.json: OpenHarmonyWebAuthenticatorCallbackUrls needs a module.abilities[0].skills array to append the callback skill to.");
+                return false;
+            }
+            if (skillAnchor < 0)
+            {
+                skillsNeedComma = skills.Elements.Count > 0;
+                skillAnchor = skills.End - 1;   // before the skills array's closing bracket
+            }
+            var element = new StringBuilder();
+            element.Append("{\"entities\":[\"entity.system.browsable\"],\"actions\":[\"ohos.want.action.viewData\"],\"uris\":[");
+            for (int n = 0; n < routes.Count; n++)
+            {
+                if (n > 0)
+                {
+                    element.Append(',');
+                }
+                string[] parts = routes[n].Split('|');
+                element.Append("{\"scheme\":\"").Append(EscapeJsonString(parts[0])).Append('"');
+                if (parts[1].Length > 0)
+                {
+                    element.Append(",\"host\":\"").Append(EscapeJsonString(parts[1])).Append('"');
+                }
+                if (parts[2].Length > 0)
+                {
+                    element.Append(",\"port\":").Append(parts[2]);
+                }
+                element.Append('}');
+            }
+            element.Append("]}");
+            skillElements.Add(element.ToString());
+        }
+
+        if (skillElements.Count > 0)
+        {
             var fragment = new StringBuilder();
-            if (skills.Elements.Count > 0)
+            if (skillsNeedComma)
             {
                 fragment.Append(',');
             }
-            fragment.Append("{\"entities\":[\"entity.system.browsable\"],\"actions\":[\"ohos.want.action.viewData\"],\"uris\":[");
-            for (int n = 0; n < hosts.Count; n++)
+            for (int n = 0; n < skillElements.Count; n++)
             {
                 if (n > 0)
                 {
                     fragment.Append(',');
                 }
-                fragment.Append("{\"scheme\":\"https\",\"host\":\"").Append(EscapeJsonString(hosts[n])).Append("\"}");
+                fragment.Append(skillElements[n]);
             }
-            fragment.Append(']');
-            if (string.Equals(AppLinkDomainVerify, "true", StringComparison.OrdinalIgnoreCase))
-            {
-                fragment.Append(",\"domainVerify\":true");
-            }
-            fragment.Append('}');
-            int at = skills.End - 1;   // before the skills array's closing bracket
-            edits.Add(new Edit { Start = at, End = at, Text = fragment.ToString() });
+            edits.Add(new Edit { Start = skillAnchor, End = skillAnchor, Text = fragment.ToString() });
         }
 
         if (edits.Count > 0)
@@ -475,6 +601,38 @@ public class OpenHarmonyGenerateModuleJson : Task
             }
         }
         return sb.ToString();
+    }
+
+    // A URI scheme per RFC 3986: a letter followed by letters, digits, '+', '-' or '.'.
+    private static bool IsValidSchemeToken(string value)
+    {
+        if (string.IsNullOrEmpty(value) || !char.IsLetter(value[0]))
+        {
+            return false;
+        }
+        for (int i = 1; i < value.Length; i++)
+        {
+            char c = value[i];
+            if (!char.IsLetterOrDigit(c) && c != '+' && c != '-' && c != '.')
+            {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    // The host name forms a callback route may carry into the skill uri: letters, digits, '.',
+    // '-' and '_' (covers DNS names and IPv4 literals; a bracketed IPv6 literal is rejected).
+    private static bool IsValidCallbackHost(string value)
+    {
+        foreach (char c in value)
+        {
+            if (!char.IsLetterOrDigit(c) && c != '.' && c != '-' && c != '_')
+            {
+                return false;
+            }
+        }
+        return value.Length > 0;
     }
 
     private static void SkipWhitespace(string text, ref int pos)
