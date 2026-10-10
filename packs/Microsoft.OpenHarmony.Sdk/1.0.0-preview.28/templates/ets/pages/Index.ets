@@ -1041,6 +1041,14 @@ struct Index {
   // Sessions whose create is in flight (same keys): a repeated create for one key is ignored and
   // the capacity check counts them so two concurrent creates cannot overshoot the served limit.
   private subWindowCreating: Map<string, boolean> = new Map();
+  // L7-M2: creates that arrived while the main window was suspended, keyed like the session
+  // tables. A create is not a display command: the managed side asked for a window and the shell
+  // simply cannot build it under a hidden parent, so the request is replayed once the main window
+  // is shown again instead of being dropped (M1 device finding: the drop forced the app to
+  // re-issue the whole open). Replay re-enters createSubWindow, whose live-session/in-flight/
+  // capacity checks already dedupe, and a close of a deferred key drops the request (create +
+  // close while hidden nets to nothing).
+  private subWindowPendingCreates: Map<string, SubWindowCommand> = new Map();
   // N-SUBWINDOW served session limit (SUB_WINDOW_MAX is the ceiling the switch may raise it
   // to): starts at the 2-session default and is raised only by the explicit switch.
   // subWindowLimitEnvChecked gates the deferred env read (the managed app may set
@@ -2842,6 +2850,9 @@ struct Index {
       this.logInfo(`[maui] main window hidden: subwindow suspended (${source})`);
     } else {
       this.logInfo(`[maui] main window shown: subwindow resumed (${source})`);
+      // L7-M2: the creates deferred during the hidden gap are replayed now (idempotent; the
+      // drain clears first so a nested suspension defers into the next replay).
+      this.replayPendingSubWindowCreates(source);
     }
   }
 
@@ -2896,6 +2907,40 @@ struct Index {
     }
   }
 
+  // L7-M2: parks one create that arrived while the main window was suspended. The surface id is
+  // the key; a repeat keeps the newest command (the last rect/title wins), and a key that already
+  // has a live session or an in-flight create is dropped exactly like the immediate path would
+  // drop it. The log marker is the device-round anchor for the deferral.
+  private deferSubWindowCreate(cmd: SubWindowCommand): void {
+    const key: string = cmd.surfaceId !== undefined ? cmd.surfaceId : '';
+    if (this.subWindows.has(key) || this.subWindowCreating.has(key)) {
+      return;
+    }
+    this.subWindowPendingCreates.set(key, cmd);
+    const label: string = key.length > 0 ? key : '<shell-drawn>';
+    this.logInfo(`[maui] subwindow create deferred until the main window is shown: surface=${label} pending=${this.subWindowPendingCreates.size}`);
+  }
+
+  // L7-M2: replays the deferred creates after the main window is shown. The drain copies and
+  // clears the table first, so a create deferred by a nested suspension lands in the next replay
+  // instead of being lost; each entry re-enters the normal create path, which owns all the
+  // idempotency (a live session reports its state, an in-flight create is ignored, capacity
+  // answers 801) and therefore never builds the same window twice.
+  private replayPendingSubWindowCreates(source: string): void {
+    if (this.subWindowPendingCreates.size === 0) {
+      return;
+    }
+    const pending: SubWindowCommand[] = [];
+    this.subWindowPendingCreates.forEach((cmd: SubWindowCommand, _key: string): void => {
+      pending.push(cmd);
+    });
+    this.subWindowPendingCreates.clear();
+    this.logInfo(`[maui] subwindow create replay after resume (${source}): ${pending.length} deferred`);
+    for (let i = 0; i < pending.length; i++) {
+      this.createSubWindow(pending[i]);
+    }
+  }
+
   // Dispatches one managed command. A malformed payload or an unknown op is reported as Failed
   // instead of silently dropping, so the managed side can record the degradation.
   private handleSubWindowCommand(op: number, payload: string): void {
@@ -2908,9 +2953,15 @@ struct Index {
       this.reportSubWindowFailure(-1, 'malformed subwindow command payload');
       return;
     }
-    // While the main window is hidden, only close/hide/identity are meaningful: the child is
-    // suspended with its parent and a forced show/move would be applied to a hidden window.
+    // While the main window is hidden, display commands are skipped: the child is suspended with
+    // its parent and a forced show/move would be applied to a hidden window. A create is not a
+    // display command: it is deferred and replayed once the main window is shown again (L7-M2),
+    // so an open issued during a long hidden gap is not lost (M1 device finding).
     if (this.subWindowSuspended && op !== SUB_CMD_CLOSE && op !== SUB_CMD_HIDE && op !== SUB_CMD_IDENTITY) {
+      if (op === SUB_CMD_CREATE) {
+        this.deferSubWindowCreate(cmd);
+        return;
+      }
       this.logInfo(`[maui] subwindow command ${op} skipped: the main window is suspended`);
       return;
     }
@@ -2945,6 +2996,9 @@ struct Index {
   // one session keyed ''.
   private async createSubWindow(cmd: SubWindowCommand): Promise<void> {
     const surfaceId: string = cmd.surfaceId !== undefined ? cmd.surfaceId : '';
+    // L7-M2: an immediate (foreground) create supersedes any deferred copy of the same key, so a
+    // managed re-send and the resume replay can race without a second window.
+    this.subWindowPendingCreates.delete(surfaceId);
     const existing: SubWindowSession | undefined = this.subWindows.get(surfaceId);
     if (existing !== undefined) {
       this.reportSubWindowState(SUB_EVENT_CREATED, existing);
@@ -3134,6 +3188,9 @@ struct Index {
 
   private closeSubWindow(cmd: SubWindowCommand): void {
     const requested: string = cmd.surfaceId !== undefined ? cmd.surfaceId : '';
+    // L7-M2: a close cancels a deferred create of the same key (create + close while hidden nets
+    // to nothing), so the resume replay cannot build a window the app already withdrew.
+    this.subWindowPendingCreates.delete(requested);
     const session: SubWindowSession | null = this.findSubWindowSession(requested);
     if (session === null) {
       // Idempotent close: a second close (or an unknown session key) is a state no-op, not a
@@ -3266,6 +3323,8 @@ struct Index {
     // M3: no forwarded IME request may survive the page teardown either.
     this.subWindowImeSurfaceId = '';
     AppStorage.setOrCreate(SUB_WINDOW_FOCUS_REQUEST_KEY, '');
+    // L7-M2: a deferred create references a managed request this page can no longer serve.
+    this.subWindowPendingCreates.clear();
     // M2: no claim/ack may survive the page teardown; a later page instance must handshake from
     // scratch.
     sessions.forEach((session: SubWindowSession, _surfaceId: string): void => {
