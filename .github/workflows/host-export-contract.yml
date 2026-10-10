@@ -22,7 +22,7 @@ on:
         description: 'maui-ohos commit SHA to cross-check (defaults to the pinned slice tip)'
         required: false
         type: string
-        default: '14cc245902a9ce7260f49664ea80d020cbe2ad4a'
+        default: '625177750fb15bf4739ca3453614592bfe22476b'
   push:
     branches: [ master ]
   pull_request:
@@ -32,7 +32,12 @@ permissions:
 
 # Reproducible cross-repo check: the slice is checked out at an exact commit, not the mutable
 # feature/openharmony branch, so a push to the fork cannot change what this gate verifies.
-# Current tip: 14cc245902 (MERGE-BATCH-2: DEEPLINK-REGRESSION (RequestNavigation marks the
+# Current tip: 625177750f (MERGE-BATCH-3: L8-REMAINDER renders/arranges the modal-aware
+# RootView and subscribes ModalPushed/ModalPopped to mark the compositor layout gate and
+# request a redraw, so a PushModalAsync page is arranged and its handlers connect on the next
+# frame - the windowopen "modal push ok" that never landed; managed-only with no new
+# DllImport, so the export set stays 164/164 and the shell abc stays 576,664 (the L7-M2
+# deferred-create shell, rebuilt byte-identical); suite 768/771 floor 751) on 14cc245902 (MERGE-BATCH-2: DEEPLINK-REGRESSION (RequestNavigation marks the
 # compositor layout gate so a pushed page is arranged and its handlers connect on the next
 # frame) + HARMONY-FLAVOR (the API-22 free-window members are read through a runtime-probed
 # structural view, so the HarmonyOS 6.0.1 SDK compiles) + L8-POPUP (window.open answers
@@ -163,7 +168,7 @@ permissions:
 # 151/151).
 # Advance the pin deliberately, in lockstep with the interaction/pixel gates.
 env:
-  MAUI_OHOS_REF: ${{ github.event.inputs.maui_ohos_ref || '14cc245902a9ce7260f49664ea80d020cbe2ad4a' }}
+  MAUI_OHOS_REF: ${{ github.event.inputs.maui_ohos_ref || '625177750fb15bf4739ca3453614592bfe22476b' }}
 
 jobs:
   contract:

@@ -40,7 +40,7 @@ on:
         description: 'maui-ohos commit SHA to compile (defaults to the pinned feature/openharmony tip)'
         required: false
         type: string
-        default: '14cc245902a9ce7260f49664ea80d020cbe2ad4a'
+        default: '625177750fb15bf4739ca3453614592bfe22476b'
   push:
     branches: [ master ]
   pull_request:
@@ -52,7 +52,15 @@ permissions:
 
 # Reproducible cross-repo compile: the MAUI slice is checked out at an exact commit, not the
 # mutable feature/openharmony branch, so a push to the fork cannot change what this gate compiles.
-# The default is the MERGE-BATCH-2 slice tip: 14cc245902 (DEEPLINK-REGRESSION: a navigation
+# The default is the MERGE-BATCH-3 slice tip: 625177750f (L8-REMAINDER: Render()/Arrange()
+# follow the modal-aware RootView and ModalPushed/ModalPopped mark the layout gate +
+# RequestRedraw, so a PushModalAsync page is arranged and its handlers connect on the next
+# frame - the windowopen "modal push ok" that never landed; managed-only with no new host
+# DllImport, so the export/abc pins stay 164/164 and the shell abc stays 576,664 - the L7-M2
+# deferred-create shell, rebuilt byte-identical; the suite below moves to 768/771 floor 751 -
+# the L7-M2 +3 deferred-create pins and the L8 +2 (the modal push and the windowopenseq
+# writer) on top of the MERGE-BATCH-2 766; merged into feature/openharmony as
+# 625177750f) on 14cc245902 (DEEPLINK-REGRESSION: a navigation
 # request marks the compositor's layout gate so the pushed page is arranged and its handlers
 # connect on the next frame - the deep-link push lands in a quiet app; managed-only with no
 # new host DllImport, so the export/abc pins stay 164/164 and the shell abc moves to 574,336
@@ -236,11 +244,11 @@ permissions:
 # IME/text/Back wire with the SEC-SCAN-5c primary->child isolation pin, the per-window a11y
 # frame/alert partition and the pinch routing (child-tagged only; main/unknown/empty ids rejected),
 # plus the four-pack shell source pins) and the full run
-# is green at this compiled tree (local verification: 756/759, floor 739, both perf lines within
+# is green at this compiled tree (local verification: 768/771, floor 751, both perf lines within
 # budget); advance the pin deliberately and refresh this comment when the harness pins or the
 # tip move (workflow_dispatch can compile any commit).
 env:
-  MAUI_OHOS_REF: ${{ github.event.inputs.maui_ohos_ref || '14cc245902a9ce7260f49664ea80d020cbe2ad4a' }}
+  MAUI_OHOS_REF: ${{ github.event.inputs.maui_ohos_ref || '625177750fb15bf4739ca3453614592bfe22476b' }}
   # setup-dotnet installs the requested 11.0.x preview into DOTNET_INSTALL_DIR; on Linux that
   # defaults to /usr/share/dotnet, which a per-user cache cannot persist. Point it at ~/.dotnet
   # (the action resolves the ~ prefix against $HOME) so the cache step below actually avoids the
