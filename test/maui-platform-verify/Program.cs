@@ -6441,11 +6441,16 @@ string l8RemainderSample = l8RemainderSamplePath is null ? string.Empty : File.R
 bool l8RemainderWriter = l8RemainderSample.Contains("<title>L8POP-__L8N__</title>") &&
     l8RemainderSample.Contains("L8 POPUP __L8N__ READY</div>") &&
     l8RemainderSample.Contains("p.textContent=\\\"L8 POPUP __L8N__ GOT \\\"+e.data;") &&
+    l8RemainderSample.Contains("h.textContent=\"L8 POPUP __L8N__ GOT \" + e.data;") &&
     l8RemainderSample.Contains("window.opener.postMessage(\\\"PONG-__L8N__ \\\"+e.data,\\\"*\\\");") &&
+    l8RemainderSample.Contains("window.opener.postMessage(\"PONG-__L8N__ \" + e.data,\"*\");") &&
     l8RemainderSample.Contains("document.getElementById(\\\"hud\\\").textContent=\\\"L8 POPUP __L8N__ CLOSING\\\";") &&
-    l8RemainderSample.Contains("').split('__L8N__').join(n);}") &&
+    l8RemainderSample.Contains("document.getElementById(\"hud\").textContent=\"L8 POPUP __L8N__ CLOSING\";window.close();},20000);") &&
+    l8RemainderSample.Split("split('__L8N__').join(n)").Length - 1 >= 2 &&
     !l8RemainderSample.Contains("L8 POPUP \\\"+n+\\\" GOT") &&
+    !l8RemainderSample.Contains("L8 POPUP \" + n + \" GOT") &&
     !l8RemainderSample.Contains("PONG-\\\"+n+\\\" ") &&
+    !l8RemainderSample.Contains("PONG-\" + n + \" ") &&
     l8RemainderSample.Contains("H('A TITLE='+a.document.title);") &&
     l8RemainderSample.Contains("H('MAIN GOT '+e.data);");
 Console.WriteLine($"[verify] l8 remainder windowopenseq popup writer placeholder={l8RemainderWriter} assert={l8RemainderWriter}");

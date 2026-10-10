@@ -659,20 +659,23 @@ public sealed class App : Application
     // after load; a name-reuse rewrite makes the reused child carry the second name in its HUD.
     // The title carries the name too, so the opener can read the popup's DOM state back through
     // the window proxy (the deterministic bidirectional check).
+    // The __L8N__ placeholder is substituted at PD() call time: a bare `n` inside the written
+    // <script> made the popup throw "Uncaught ReferenceError: n is not defined" on the first
+    // message (no PONG, no auto-close; device round 2026-10-10 confirmed this writer too).
     // The '<\/script>' spelling keeps the HTML parser from ending the opener's script block at
     // the literal (it becomes a plain closing tag after JS unescaping).
     private const string PopupWriterJs = """
 function PD(n) {
-  return '<html><head><meta charset="utf-8"><title>L8POP-' + n + '</title></head>'
+  return ('<html><head><meta charset="utf-8"><title>L8POP-__L8N__</title></head>'
     + '<body style="font-family:sans-serif">'
-    + '<div id="hud" style="font-size:30px">L8 POPUP ' + n + ' READY</div>'
+    + '<div id="hud" style="font-size:30px">L8 POPUP __L8N__ READY</div>'
     + '<script>'
     + 'window.addEventListener("message",function(e){'
-    + 'var h=document.getElementById("hud");h.textContent="L8 POPUP " + n + " GOT " + e.data;'
-    + 'try{if(window.opener){window.opener.postMessage("PONG-" + n + " " + e.data,"*");}}catch(err){}'
+    + 'var h=document.getElementById("hud");h.textContent="L8 POPUP __L8N__ GOT " + e.data;'
+    + 'try{if(window.opener){window.opener.postMessage("PONG-__L8N__ " + e.data,"*");}}catch(err){}'
     + '});'
-    + 'setTimeout(function(){document.getElementById("hud").textContent="L8 POPUP " + n + " CLOSING";window.close();},20000);'
-    + '<\/script></body></html>';
+    + 'setTimeout(function(){document.getElementById("hud").textContent="L8 POPUP __L8N__ CLOSING";window.close();},20000);'
+    + '<\/script></body></html>').split('__L8N__').join(n);
 }
 """;
 
