@@ -1,0 +1,115 @@
+<!DOCTYPE html>
+<!--
+  Main-window HybridWebView page (wwwroot/hybrid-main.html), the main-window counterpart of
+  child-hybrid.html: served by the primary-page asset bridge from the extracted payload on
+  https://0.0.1/ after OpenHarmonyHybridWebViewHandler registers the main window's hybrid slot.
+
+  The document loads the stock _framework/hybridwebview.js and then:
+    * records api/framework/origin/document-id into #probe,
+    * sends __hwvSendMessage raw messages (2/4/6 s) via window.HybridWebView.SendRawMessage,
+    * awaits one __hwvInvokeDotNet('Echo', ...) call and records the MAIN-echo result into #result,
+    * flips document.title to MAIN-HYBRID-INVOKED (or MAIN-HYBRID-ERROR).
+
+  Host -> page direction: the managed probe sends one raw message once the shell stamped the
+  document id; the receiveMessage shim dispatches it into #hostmsg.
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MAIN-HYBRID</title>
+<style>
+  html, body { min-height: 100%; }
+  body { font-family: system-ui, sans-serif; margin: 10px; font-size: 15px; background: #e4eef8; box-sizing: border-box; }
+  h1 { font-size: 20px; margin: 0 0 6px; }
+  p { margin: 4px 0; }
+  #probe, #result, #hostmsg { font-family: ui-monospace, monospace; font-size: 13px; overflow-wrap: anywhere; }
+</style>
+</head>
+<body>
+<h1>main hybrid page</h1>
+<p id="probe">boot</p>
+<p id="result">invoke-pending</p>
+<p id="hostmsg">host-pending</p>
+<script src="_framework/hybridwebview.js"></script>
+<script>
+(async function () {
+  const probe = document.getElementById('probe');
+  const result = document.getElementById('result');
+  const hostmsg = document.getElementById('hostmsg');
+  window.addEventListener('HybridWebViewMessageReceived', function (event) {
+    try {
+      const message = event && event.detail ? event.detail.message : '';
+      hostmsg.textContent = 'host-received:' + (message || 'empty');
+    } catch (listenError) {
+      hostmsg.textContent = 'host-listen-error';
+    }
+  });
+  const api = (window.HybridWebView &&
+    typeof window.HybridWebView.SendRawMessage === 'function' &&
+    typeof window.HybridWebView.InvokeDotNet === 'function') ? 'api-ok' : 'api-missing';
+  let framework = 'fw-unknown';
+  let rawEndpoint = 'raw-endpoint-pending';
+  try {
+    const response = await fetch('_framework/hybridwebview.js');
+    framework = 'fw-' + response.status + '-' + (response.headers.get('content-type') || 'no-ct');
+  } catch (frameworkError) {
+    framework = 'fw-error:' + frameworkError.message;
+  }
+  function describe() {
+    return api + ' ' + framework + ' origin=' + window.location.origin +
+      ' id=' + (window.__ohHybridId || 'none') + ' ' + rawEndpoint;
+  }
+  probe.textContent = describe();
+  document.title = 'MAIN-HYBRID-READY';
+  let probeRefreshes = 0;
+  const probeTimer = setInterval(function () {
+    probe.textContent = describe();
+    if (++probeRefreshes >= 10) {
+      clearInterval(probeTimer);
+    }
+  }, 1000);
+  if (api !== 'api-ok') {
+    document.title = 'MAIN-HYBRID-ERROR';
+    return;
+  }
+  // Endpoint-level raw probe: one __hwvSendMessage-shaped POST recorded with the shell's HTTP
+  // answer (204 = forwarded through notifyJsMessage, 400 = endpoint guard refused).
+  try {
+    const rawResponse = await fetch('__hwvSendMessage', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'text/plain',
+        'X-Maui-Invoke-Token': 'HybridWebView',
+        'X-Maui-Request-Body': '__RawMessage|main-hybrid-endpoint'
+      },
+      body: '__RawMessage|main-hybrid-endpoint'
+    });
+    rawEndpoint = 'raw-endpoint-' + rawResponse.status;
+  } catch (rawEndpointError) {
+    rawEndpoint = 'raw-endpoint-error:' + rawEndpointError.message;
+  }
+  let rawAttempts = 0;
+  const rawTimer = setInterval(function () {
+    rawAttempts++;
+    try {
+      window.HybridWebView.SendRawMessage('main-hybrid-raw-' + rawAttempts);
+    } catch (rawError) {
+      probe.textContent += ' raw-error:' + rawError.message;
+    }
+    if (rawAttempts >= 3) {
+      clearInterval(rawTimer);
+    }
+  }, 2000);
+  try {
+    const value = await window.HybridWebView.InvokeDotNet('Echo', ['main-hybrid']);
+    result.textContent = 'invoke-result:' + JSON.stringify(value);
+    document.title = 'MAIN-HYBRID-INVOKED';
+  } catch (invokeError) {
+    result.textContent = 'invoke-error:' + (invokeError && invokeError.message ? invokeError.message : String(invokeError));
+    document.title = 'MAIN-HYBRID-ERROR';
+  }
+})();
+</script>
+</body>
+</html>
