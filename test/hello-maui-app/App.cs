@@ -657,11 +657,13 @@ public sealed class App : Application
     // document.write is the no-network form the probe used). The popup answers opener PINGs
     // with PONG, shows every message in its HUD and closes itself with window.close() 20 s
     // after load; a name-reuse rewrite makes the reused child carry the second name in its HUD.
+    // The title carries the name too, so the opener can read the popup's DOM state back through
+    // the window proxy (the deterministic bidirectional check).
     // The '<\/script>' spelling keeps the HTML parser from ending the opener's script block at
     // the literal (it becomes a plain closing tag after JS unescaping).
     private const string PopupWriterJs = """
 function PD(n) {
-  return '<html><head><meta charset="utf-8"><title>L8POP</title></head>'
+  return '<html><head><meta charset="utf-8"><title>L8POP-' + n + '</title></head>'
     + '<body style="font-family:sans-serif">'
     + '<div id="hud" style="font-size:30px">L8 POPUP ' + n + ' READY</div>'
     + '<script>'
@@ -713,6 +715,14 @@ function PD(n) {
     // The complete opener sequence as one JS IIFE: on-page HUD + raw-message reporting + the
     // PD() popup writer + the timed open/ping/reuse/open/close/closed-check (or the capacity
     // C1/C2 pair for the full-session reject).
+    //
+    // PD(n) returns the popup document as one string. Every popup-side reference to the name
+    // goes through the __L8N__ placeholder substituted at call time: an earlier revision embedded
+    // a bare `n` inside the generated <script> (the fragments were assembled as literal JS
+    // strings), so the popup answered the opener's PING with "Uncaught ReferenceError: n is not
+    // defined" - the HUD stayed on READY, no PONG came back and the auto-close never ran (device
+    // console log 2026-10-09, L8 product round). The placeholder keeps the written script bound
+    // to the real name for every form (A/B/capacity names and the name-reuse rewrite).
     private static string WindowOpenSequenceScript(bool capacityProbe)
     {
         const string head =
@@ -722,16 +732,16 @@ function PD(n) {
             + "h.style.cssText='position:fixed;top:0;left:0;right:0;background:#000;color:#0f0;font:30px monospace;z-index:99999;padding:6px';"
             + "document.body.appendChild(h);"
             + "function H(t){h.textContent='L8 MAIN '+t;send(t);}"
-            + "function PD(n){return '<html><head><meta charset=\"utf-8\"><title>L8POP</title></head>'"
+            + "function PD(n){return ('<html><head><meta charset=\"utf-8\"><title>L8POP-__L8N__</title></head>'"
             + "+'<body style=\"font-family:sans-serif\">'"
-            + "+'<div id=\"hud\" style=\"font-size:30px\">L8 POPUP '+n+' READY</div>'"
+            + "+'<div id=\"hud\" style=\"font-size:30px\">L8 POPUP __L8N__ READY</div>'"
             + "+'<scr'+'ipt>'"
             + "+'window.addEventListener(\"message\",function(e){'"
-            + "+'var p=document.getElementById(\"hud\");p.textContent=\"L8 POPUP \"+n+\" GOT \"+e.data;'"
-            + "+'try{if(window.opener){window.opener.postMessage(\"PONG-\"+n+\" \"+e.data,\"*\");p.textContent=p.textContent+\" PONG-SENT\";}}catch(err){}'"
+            + "+'var p=document.getElementById(\"hud\");p.textContent=\"L8 POPUP __L8N__ GOT \"+e.data;'"
+            + "+'try{if(window.opener){window.opener.postMessage(\"PONG-__L8N__ \"+e.data,\"*\");p.textContent=p.textContent+\" PONG-SENT\";}}catch(err){}'"
             + "+'});'"
-            + "+'setTimeout(function(){document.getElementById(\"hud\").textContent=\"L8 POPUP \"+n+\" CLOSING\";window.close();},20000);'"
-            + "+'</scr'+'ipt></body></html>';}"
+            + "+'setTimeout(function(){document.getElementById(\"hud\").textContent=\"L8 POPUP __L8N__ CLOSING\";window.close();},20000);'"
+            + "+'</scr'+'ipt></body></html>').split('__L8N__').join(n);}"
             + "window.addEventListener('message',function(e){H('GOT '+e.data);});"
             + "H('READY');";
         const string tailTimed =
@@ -739,6 +749,7 @@ function PD(n) {
             + "setTimeout(function(){a=window.open('about:blank','l8pop_a');"
             + "if(a){H('A OPEN');try{a.document.write(PD('A'));a.document.close();}catch(e){H('A WRITE-ERR '+e);}}else{H('A NULL');}},3000);"
             + "setTimeout(function(){if(a){try{a.postMessage('PING-A','*');H('A PING SENT');}catch(e){H('A PING-ERR '+e);}}},5000);"
+            + "setTimeout(function(){if(a){try{H('A TITLE='+a.document.title);}catch(e){H('A TITLE-ERR '+e);}}},7000);"
             + "setTimeout(function(){if(a){try{a.document.write(PD('A2-REUSE'));a.document.close();H('A REUSE WRITE');}catch(e){H('A REUSE-ERR '+e);}}},12000);"
             + "setTimeout(function(){b=window.open('about:blank','l8pop_b');"
             + "if(b){H('B OPEN');try{b.document.write(PD('B'));b.document.close();}catch(e){H('B WRITE-ERR '+e);}}else{H('B NULL');}},24000);"
@@ -756,9 +767,10 @@ function PD(n) {
         return head + (capacityProbe ? tailCapacity : tailTimed);
     }
 
-    // The opener document: 3 s open A + write, 6 s PING-A, 10 s same-name reuse write into A,
-    // 20 s open B + write, 32 s report A's closed flag. Every step lands in the HUD; the managed
-    // poller mirrors it into the status file.
+    // The opener document: 3 s open A + write, 5 s PING-A, 7 s read A's title back through the
+    // window proxy, 12 s same-name reuse write into A, 24 s open B + write, 38 s report A's
+    // closed flag. Every step lands in the HUD; the managed poller mirrors it into the status
+    // file.
     private static string WindowOpenDoc()
     {
         return "<html><head><meta charset=\"utf-8\"><title>L8MAIN</title></head>"
@@ -772,6 +784,7 @@ function PD(n) {
             + "setTimeout(function(){a=window.open('about:blank','l8pop_a');"
             + "if(a){H('A OPEN');try{a.document.write(PD('A'));a.document.close();}catch(e){H('A WRITE-ERR '+e);}}else{H('A NULL');}},3000);"
             + "setTimeout(function(){if(a){try{a.postMessage('PING-A','*');H('A PING SENT');}catch(e){H('A PING-ERR '+e);}}},6000);"
+            + "setTimeout(function(){if(a){try{H('A TITLE='+a.document.title);}catch(e){H('A TITLE-ERR '+e);}}},8000);"
             + "setTimeout(function(){if(a){try{a.document.write(PD('A2-REUSE'));a.document.close();H('A REUSE WRITE');}catch(e){H('A REUSE-ERR '+e);}}},10000);"
             + "setTimeout(function(){b=window.open('about:blank','l8pop_b');"
             + "if(b){H('B OPEN');try{b.document.write(PD('B'));b.document.close();}catch(e){H('B WRITE-ERR '+e);}}else{H('B NULL');}},20000);"
