@@ -798,6 +798,42 @@ check_subwindow_capacity_contract() { # <templates-dir>
     return 0
 }
 
+# L7-M2: a create that arrives while the main window is suspended is deferred and replayed when
+# the main window is shown again, instead of being dropped (M1 device finding: during a long
+# hidden gap the create was discarded with no retry, so the app had to re-issue the open). The
+# gate pins the pending table, the defer/replay methods and their four wiring points (dispatch
+# branch, resume replay, immediate-create supersede, close cancellation); the red control rejects
+# the pre-M2 drop shape.
+check_subwindow_defer_contract() { # <templates-dir>
+    _index="$1/ets/pages/Index.ets"
+    _missing=""
+    for _marker in \
+        "private subWindowPendingCreates: Map<string, SubWindowCommand> = new Map();" \
+        "private deferSubWindowCreate(cmd: SubWindowCommand): void {" \
+        "this.subWindowPendingCreates.set(key, cmd);" \
+        "subwindow create deferred until the main window is shown" \
+        "this.deferSubWindowCreate(cmd);" \
+        "private replayPendingSubWindowCreates(source: string): void {" \
+        "this.subWindowPendingCreates.clear();" \
+        "this.replayPendingSubWindowCreates(source);" \
+        "this.subWindowPendingCreates.delete(surfaceId);" \
+        "this.subWindowPendingCreates.delete(requested);" \
+        "subwindow create replay after resume"; do
+        grep -Fq -- "$_marker" "$_index" 2>/dev/null || _missing="$_missing
+  $_marker"
+    done
+    if [ -n "$_missing" ]; then
+        printf 'ERROR: the L7-M2 deferred-create replay contract is missing from %s:%s\n' "$_index" "$_missing" >&2
+        return 1
+    fi
+    # Red control: the pre-M2 suspension comment/shape dropped every non-close op with no replay.
+    if grep -Fq -- "only close/hide/identity are meaningful" "$_index"; then
+        printf 'ERROR: %s still drops creates during suspension (pre-M2 shape); defer them and replay on resume (L7-M2)\n' "$_index" >&2
+        return 1
+    fi
+    return 0
+}
+
 
 # C5 loadData encoding (L3): ArkWeb loadData builds a data: URL, so a bare '#' in the body is
 # parsed as the URL fragment and the rest of the document is dropped. The main page and the
@@ -891,7 +927,8 @@ check_sources_contract() { # [<templates-dir>]
         check_slot_capacity_contract "$1" || return 1
         check_loaddata_encoding_contract "$1" || return 1
         check_child_nav_rate_contract "$1" || return 1
-        check_subwindow_capacity_contract "$1"
+        check_subwindow_capacity_contract "$1" || return 1
+        check_subwindow_defer_contract "$1"
         return $?
     fi
     _hash=""
@@ -904,6 +941,7 @@ check_sources_contract() { # [<templates-dir>]
         check_loaddata_encoding_contract "$_tpl" || return 1
         check_child_nav_rate_contract "$_tpl" || return 1
         check_subwindow_capacity_contract "$_tpl" || return 1
+        check_subwindow_defer_contract "$_tpl" || return 1
         _h="$(pack_sources_hash "$_tpl")" || return 1
         if [ -z "$_hash" ]; then
             _hash="$_h"
@@ -913,7 +951,7 @@ check_sources_contract() { # [<templates-dir>]
             return 1
         fi
     done
-    printf '    shell sources clean (no @ohos import, getContext(), decodeWithStream() or focusControl), AOT-STARTUP mount gate, E4-CAPACITY8 derived-slot-table/switch, C5 loadData-encoding, SEC7-F ask-rate/pending and N-SUBWINDOW capacity-switch contracts present, and byte-identical across preview.22/23/24 (sources %s)\n' "$_hash"
+    printf '    shell sources clean (no @ohos import, getContext(), decodeWithStream() or focusControl), AOT-STARTUP mount gate, E4-CAPACITY8 derived-slot-table/switch, C5 loadData-encoding, SEC7-F ask-rate/pending, N-SUBWINDOW capacity-switch and L7-M2 deferred-create-replay contracts present, and byte-identical across preview.22/23/24 (sources %s)\n' "$_hash"
 }
 
 # pack_abc_provenance_json <dist-dir>: prints the provenance document for the two dist
