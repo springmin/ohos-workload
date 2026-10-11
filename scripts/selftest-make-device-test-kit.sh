@@ -9,7 +9,10 @@
 #                 recipe (PublishAot/PublishAotUsingRuntimePack/NativeLib=Shared/
 #                 OpenHarmonyRuntimeMode=aot/InvariantGlobalization) plus the mandatory
 #                 OpenHarmonyUIPage; the 20.0 band uses the TargetFrameworks override and the
-#                 permissions variant carries OpenHarmonyExtraPermissions
+#                 permissions variant carries OpenHarmonyExtraPermissions; the default recipe
+#                 carries no WebAuthProbe
+#   T2b webauth   DEVICE_TEST_KIT_WEBAUTH_PROBE=1 adds -p:WebAuthProbe=true to all four
+#                 publishes (aot and jit) - the kit #54 rev2 callback/probe opt-in
 #   T3 jit        --runtime-mode jit keeps the JIT publish (-p:OpenHarmonyRuntimeMode=jit, no
 #                 PublishAot), appends -jit to the default kit dir/out, and --kit-dir/--out
 #                 win verbatim
@@ -21,7 +24,7 @@
 # Exit: 0 = all checks passed; 1 = at least one check failed (work dir kept for triage).
 set -u
 
-SELFTEST_VERSION="1 (2026-10-03)"
+SELFTEST_VERSION="2 (2026-10-11; +T2b WebAuthProbe opt-in)"
 
 log()     { printf '[%s] %s\n' "$(date '+%H:%M:%S')" "$*"; }
 section() { printf '\n=== %s ===\n' "$*"; }
@@ -116,11 +119,35 @@ do
     fi
 done
 assert_not_contains "T2 no JIT-mode property in the AOT recipe" "OpenHarmonyRuntimeMode=jit" "$WORK/aot.log"
+assert_not_contains "T2 default carries no WebAuthProbe" "-p:WebAuthProbe=true" "$WORK/aot.log"
 assert_contains "T2 20.0 band keeps the band override" "-p:TargetFrameworks=net11.0-openharmony20.0" "$WORK/aot.log"
 assert_contains "T2 permissions variant carries the permission list" "OpenHarmonyExtraPermissions=" "$WORK/aot.log"
 assert_contains "T2 command shape is dotnet publish" "+ dotnet publish" "$WORK/aot.log"
 assert_contains "T2 dry-run announces no real publish" "nothing published, nothing assembled" "$WORK/aot.log"
 [ ! -d "$KD" ] && pass_ "T2 dry-run created no kit dir" || fail_ "T2 dry-run created $KD"
+
+# ---- T2b: the WebAuth probe/callback opt-in ---------------------------------------------
+section "T2b DEVICE_TEST_KIT_WEBAUTH_PROBE=1"
+export DEVICE_TEST_KIT_WEBAUTH_PROBE=1
+run_kit "$WORK/aot-webauth.log" --dry-run --kit-dir "$WORK/kit-webauth"
+assert_rc 0 $? "T2b webauth dry-run exits 0"
+unset DEVICE_TEST_KIT_WEBAUTH_PROBE
+_n="$(count_contains "-p:WebAuthProbe=true" "$WORK/aot-webauth.log")"
+if [ "$_n" = "4" ]; then
+    pass_ "T2b all 4 publishes carry -p:WebAuthProbe=true"
+else
+    fail_ "T2b -p:WebAuthProbe=true appears ${_n:-0} times, expected 4"
+fi
+export DEVICE_TEST_KIT_WEBAUTH_PROBE=1
+run_kit "$WORK/jit-webauth.log" --dry-run --runtime-mode jit --kit-dir "$WORK/kit-jit-webauth"
+assert_rc 0 $? "T2b jit webauth dry-run exits 0"
+unset DEVICE_TEST_KIT_WEBAUTH_PROBE
+_n="$(count_contains "-p:WebAuthProbe=true" "$WORK/jit-webauth.log")"
+if [ "$_n" = "4" ]; then
+    pass_ "T2b jit publishes carry -p:WebAuthProbe=true too"
+else
+    fail_ "T2b jit -p:WebAuthProbe=true appears ${_n:-0} times, expected 4"
+fi
 
 # ---- T3: the JIT variant stays available ------------------------------------------------
 section "T3 jit dry-run"

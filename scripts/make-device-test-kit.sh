@@ -53,6 +53,9 @@
 #      DEVICE_TEST_KIT_RUNTIME_MODE (same as --runtime-mode, default aot), OHOS_AOT_HOOKS
 #      (optional CustomAfterMicrosoftCommonTargets hook for the rc.2 Exec workaround on
 #      HarmonyOS hosts; see test/hello-maui-app/publish-aot.sh).
+#      DEVICE_TEST_KIT_WEBAUTH_PROBE=1 adds -p:WebAuthProbe=true to every MAUI publish: the haps
+#      then carry the myapp://callback module.json route and the app://webauth/* device probe
+#      triggers (the kit #54 rev2 shape; off by default).
 # The kit dir is rebuilt from scratch in a staging dir and swapped in, so stale files cannot
 # leak into SHA256SUMS. verify-kit.sh always comes from the repo; 自签说明.md and
 # README-交付说明.md come from runtime-ohos docs/plans (2026-09-21-ohos-tester-selfsign.md,
@@ -355,6 +358,14 @@ publish_variant() {
             -p:InvariantGlobalization=true -p:OpenHarmonyRuntimeMode=aot
     else
         set -- "$@" -p:OpenHarmonyRuntimeMode=jit
+    fi
+    # WEB-AUTH (kit #54 rev2, 2026-10-11): the csproj ties the myapp://callback route to
+    # -p:WebAuthProbe=true, so a plain kit build ships haps whose module.json carries only the
+    # home skill and the round docs' explicit `aa start -U myapp://callback` step cannot
+    # complete (the WebAuth probe triggers app://webauth/* need the same flag). Opt in with
+    # DEVICE_TEST_KIT_WEBAUTH_PROBE=1; off by default so the shipped sample shape is explicit.
+    if [ "${DEVICE_TEST_KIT_WEBAUTH_PROBE:-0}" = 1 ]; then
+        set -- "$@" -p:WebAuthProbe=true
     fi
     if [ "$DRY" = 1 ]; then
         print_cmd "$DOTNET" publish "$@"
