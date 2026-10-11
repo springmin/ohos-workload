@@ -34,7 +34,7 @@
 #                    expectation).
 #   abc header       ets/modules.abc must be a PANDA file whose 4-byte version field at 0x0c is
 #                    13.0.1.0 (FAIL otherwise), and its size must be one of the current
-#                    expectations - 623732 for the ui/shell shell, 24324 for the headless shell
+#                    expectations - 623784 for the ui/shell shell, 24324 for the headless shell
 #                    (--expected-abc <bytes[,bytes]> / KIT_EXPECTED_ABC pins the set; a size
 #                    outside it then FAILs instead of warning, so a historical kit's old abc
 #                    does not kill the run).
@@ -194,16 +194,19 @@ OH_LOG_
 HOST_DEPS_EOF
 )"
 
-# Current abc size expectations: the ui/shell ArkTS shell (623732 B, the MEDIA-MICRO
-# shell: the B-M1 tree plus the /__src__ single-range answers, the registered playlist's
+# Current abc size expectations: the ui/shell ArkTS shell (623784 B, the FINAL-BATCH
+# shell: the MEDIA-MICRO tree - the /__src__ single-range answers, the registered playlist's
 # sibling serving, the rawfile-playlist HLS query/stamp and the popup Web's media gesture
-# opt-out; the previous shell was 602744 B; the batch tree itself
+# opt-out - plus SUBWINDOW-DEFAULT4 (the managed subwindow default 2 -> 4 with the two-way
+# capacity switch and the absent-switch guard, +52 B; the MODAL-OVERLAY drawer-suspension
+# lift is slice-side and carries no shell delta); the previous shells were 623732 B
+# (MEDIA-MICRO) and 602744 B before it; the batch tree itself
 # is E4-CAPACITY8 + C5/SEC7-F + WEB-AUTH Want fix + N-SUBWINDOW + the shipped 8-slot overlay
 # default + L8-POPUP + HARMONY-FLAVOR free-window probe)
 # and the headless shell (24324 B, unchanged). --expected-abc <bytes[,bytes]> / KIT_EXPECTED_ABC replaces
 # the set and turns a mismatch from a historical-kit WARN into a FAIL (the kit builder uses that
 # strict form).
-EXPECT_ABC="${KIT_EXPECTED_ABC:-623732,24324}"
+EXPECT_ABC="${KIT_EXPECTED_ABC:-623784,24324}"
 EXPECT_ABC_PINNED="${KIT_EXPECTED_ABC:+1}"
 HOST_DEPS_FILE="${KIT_HOST_DEPS:-}"
 
@@ -302,7 +305,7 @@ Without an argument the current directory is used (it must contain SHA256SUMS).
                         fail unless the extracted tree matches this digest (the value comes
                         with the delivery, e.g. the release notes)
   --expected-abc <bytes[,bytes]>
-                        abc size expectation (default: 623732,24324 = the ui/shell and the
+                        abc size expectation (default: 623784,24324 = the ui/shell and the
                         headless ArkTS shell); a size outside the set warns by default and
                         fails when this option pins the set
   --host-deps <path>    read the host dependency policy from this file instead of the
@@ -371,7 +374,7 @@ while [ $# -gt 0 ]; do
             ;;
         --expected-abc)
             shift
-            [ $# -gt 0 ] || { warn "--expected-abc 需要逗号分隔的字节数（如 602744,24324）"; usage >&2; exit 2; }
+            [ $# -gt 0 ] || { warn "--expected-abc 需要逗号分隔的字节数（如 623784,24324）"; usage >&2; exit 2; }
             EXPECT_ABC="$1"
             EXPECT_ABC_PINNED=1
             ;;
@@ -414,7 +417,7 @@ KIT="$(cd "$KIT" && pwd)"
 EXPECT_ABC="$(printf '%s' "$EXPECT_ABC" | tr ',' ' ')"
 for _abc in $EXPECT_ABC; do
     case "$_abc" in
-        ''|*[!0-9]*) warn "--expected-abc 需要逗号/空格分隔的字节数（如 602744,24324），得到: $EXPECT_ABC"; usage >&2; exit 2 ;;
+        ''|*[!0-9]*) warn "--expected-abc 需要逗号/空格分隔的字节数（如 623784,24324），得到: $EXPECT_ABC"; usage >&2; exit 2 ;;
     esac
 done
 [ -n "$EXPECT_ABC" ] || { warn "--expected-abc 不能为空"; usage >&2; exit 2; }
