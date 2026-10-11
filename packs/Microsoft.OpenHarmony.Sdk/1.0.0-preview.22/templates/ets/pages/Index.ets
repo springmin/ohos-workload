@@ -780,6 +780,9 @@ const MEDIA_ORIGIN: string = 'https://media.local/';
 // ships its own rawfile of the same name replaces it); a HAP without the rawfile answers the
 // page request 404 and the managed element degrades to Failed.
 const MEDIA_PAGE_RAWFILE: string = 'media.html';
+// HLS (B-M1): the vendored hls.js runtime the media page loads lazily for an .m3u8 source
+// (same origin, served from this rawfile; hls.js 1.7.3, Apache-2.0 — see hls.LICENSE.txt).
+const MEDIA_HLS_RAWFILE: string = 'hls.min.js';
 // One served source is read whole into the WebResourceResponse (the payload server does the
 // same); the cap keeps a huge/hostile registered file from exhausting the app process.
 const MEDIA_SOURCE_MAX_BYTES: number = 64 * 1024 * 1024;
@@ -7512,6 +7515,9 @@ struct Index {
     if (path === '' || path === '/') {
       return this.serveMediaPage();
     }
+    if (path === `/${MEDIA_HLS_RAWFILE}`) {
+      return this.serveMediaHls();
+    }
     if (path === '/__src__') {
       return this.serveMediaSource(slot);
     }
@@ -7521,16 +7527,27 @@ struct Index {
   // The media page: HAP rawfile "media.html". A missing or unreadable rawfile answers 404, and
   // the managed element reports Failed (the page is part of the shell contract).
   private serveMediaPage(): WebResourceResponse {
+    return this.serveMediaRawFile(MEDIA_PAGE_RAWFILE, 'text/html');
+  }
+
+  // The HLS runtime: HAP rawfile "hls.min.js" (B-M1), loaded lazily by the media page only when
+  // an .m3u8 source arrives. A missing rawfile answers 404 and the page falls back to the
+  // native src path (the managed element then reports whatever the platform answers).
+  private serveMediaHls(): WebResourceResponse {
+    return this.serveMediaRawFile(MEDIA_HLS_RAWFILE, 'text/javascript');
+  }
+
+  private serveMediaRawFile(name: string, mime: string): WebResourceResponse {
     try {
-      const bytes: Uint8Array = this.hostContext().resourceManager.getRawFileContentSync(MEDIA_PAGE_RAWFILE);
+      const bytes: Uint8Array = this.hostContext().resourceManager.getRawFileContentSync(name);
       const response: WebResourceResponse = new WebResourceResponse();
       response.setResponseCode(200);
-      response.setResponseMimeType('text/html');
+      response.setResponseMimeType(mime);
       response.setResponseEncoding('utf-8');
       response.setResponseData(this.mediaBytesBuffer(bytes));
       return response;
     } catch (pageError) {
-      this.logError(`[maui] media page unavailable: ${(pageError as Error).message}`);
+      this.logError(`[maui] media rawfile unavailable: ${name} (${(pageError as Error).message})`);
       return this.hybridErrorResponse(404);
     }
   }

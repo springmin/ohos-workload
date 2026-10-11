@@ -13,22 +13,30 @@
 <video id="ohMedia" playsinline webkit-playsinline preload="metadata"></video>
 <script>
 // ---------------------------------------------------------------------------------------------
-// MEDIA-ELEMENT (A-M1): the shell-served media page. The shell loads this document on the
-// element's overlay slot (https://media.local/?s=<slot>) and injects window.__ohMediaSlot /
-// window.__ohMediaId at page end; the query parameter is the early source of the slot.
+// MEDIA-ELEMENT (A-M1) + HLS (B-M1): the shell-served media page. The shell loads this document
+// on the element's overlay slot (https://media.local/?s=<slot>) and injects window.__ohMediaSlot
+// / window.__ohMediaId at page end; the query parameter is the early source of the slot.
 //
 // JS API (all calls answer a JSON object; every asynchronous outcome is pushed as an event):
 //   load(url, {aspect, volume, muted, loop})  set the source (does not start playback)
 //   play() pause() stop() seek(seconds)       transport
 //   setVolume(0..1) setMuted(bool)            audio
 //   setAspect('fit'|'fill')                   video sizing (object-fit)
-//   snapshot() size() state()                 synchronous state read
+//   snapshot() size() state() hlsState()      synchronous state read
+//
+// HLS (B-M1): the platform ArkWeb cannot play an .m3u8 natively (MEDIA-Q1), so a path ending in
+// .m3u8 is played through MSE with the hls.js runtime the shell serves under this same origin
+// (rawfile "hls.min.js", hls.js 1.7.3, Apache-2.0; see hls.LICENSE.txt). The runtime is loaded
+// lazily on the first HLS source; when hls.js or MediaSource is unavailable the page falls back
+// to the native video src and lets the platform answer (its error maps to the managed Failed
+// path). A fatal HLS error after the bounded recoveries is reported as an error event.
 //
 // Events (window.dotnetHost.postMessage("__OHMEDIA|s<slot>|<kind>|<json>"), consumed by
 // OpenHarmonyMediaElementSurface):
 //   ready {slot} | opened {duration,width,height} | duration {duration} | size {width,height}
 //   position {position,duration,ended} | playing {} | paused {} | stopped {} | seeked {position}
 //   ended {} | error {code,message,videoCode} | playfailed {name,message}
+//   hls {event,...} diagnostics only (manifest-parsed/fallback-native/error)
 // ---------------------------------------------------------------------------------------------
 (function () {
   var video = document.getElementById('ohMedia');
@@ -41,6 +49,24 @@
   }
   if (slot < 0 && typeof window.__ohMediaSlot === 'number') { slot = window.__ohMediaSlot; }
   var lastPositionPost = 0;
+
+  // -------------------------------------------------------------------------------------------
+  // HLS (B-M1): the lazy hls.js runtime + the MSE playback branch.
+  // -------------------------------------------------------------------------------------------
+  var HLS_RUNTIME = 'hls.min.js';
+  var HLS_FATAL_RETRIES = 2;
+  var HLS_SCRIPT_IDLE = 0;
+  var HLS_SCRIPT_LOADING = 1;
+  var HLS_SCRIPT_READY = 2;
+  var HLS_SCRIPT_FAILED = 3;
+  var hls = null;
+  var hlsScriptState = HLS_SCRIPT_IDLE;
+  var hlsScriptWaiters = [];
+  var hlsPendingPlay = false;
+  var hlsManifestReady = false;
+  var pendingHlsUrl = '';
+  var hlsRetries = 0;
+  var loadSeq = 0;
 
   function post(kind, detail) {
     try {
@@ -95,6 +121,170 @@
     return JSON.stringify({ ok: false, message: what });
   }
 
+  // True for a source path ending in .m3u8 (scheme/authority, query and fragment stripped).
+  function isHlsUrl(url) {
+    try {
+      var path = String(url);
+      var scheme = path.indexOf('://');
+      if (scheme >= 0) {
+        var slash = path.indexOf('/', scheme + 3);
+        path = slash >= 0 ? path.substring(slash) : '/';
+      }
+      var query = path.indexOf('?');
+      if (query >= 0) { path = path.substring(0, query); }
+      var fragment = path.indexOf('#');
+      if (fragment >= 0) { path = path.substring(0, fragment); }
+      return /\.m3u8$/i.test(path);
+    } catch (isHlsError) {
+      return false;
+    }
+  }
+
+  // A URL safe for a diagnostic event (query and fragment are dropped: they may carry tokens).
+  function logUrl(url) {
+    var text = String(url);
+    var query = text.indexOf('?');
+    if (query >= 0) { text = text.substring(0, query); }
+    var fragment = text.indexOf('#');
+    if (fragment >= 0) { text = text.substring(0, fragment); }
+    return text.length > 200 ? text.substring(0, 197) + '...' : text;
+  }
+
+  function destroyHls() {
+    if (hls) {
+      try { hls.destroy(); } catch (destroyError) { }
+      hls = null;
+    }
+    hlsPendingPlay = false;
+    hlsManifestReady = false;
+  }
+
+  function hlsUsable(runtime) {
+    return !!runtime && typeof runtime.isSupported === 'function' && runtime.isSupported();
+  }
+
+  function flushHlsWaiters(runtime) {
+    var waiters = hlsScriptWaiters;
+    hlsScriptWaiters = [];
+    for (var i = 0; i < waiters.length; i++) {
+      try { waiters[i](runtime); } catch (waiterError) { }
+    }
+  }
+
+  // Loads the hls.js runtime from this page's own origin once; concurrent callers queue.
+  function loadHlsRuntime(callback) {
+    if (hlsUsable(window.Hls)) { callback(window.Hls); return; }
+    if (hlsScriptState === HLS_SCRIPT_FAILED) { callback(null); return; }
+    hlsScriptWaiters.push(callback);
+    if (hlsScriptState === HLS_SCRIPT_LOADING) { return; }
+    hlsScriptState = HLS_SCRIPT_LOADING;
+    var script = document.createElement('script');
+    script.src = HLS_RUNTIME;
+    script.onload = function () {
+      hlsScriptState = hlsUsable(window.Hls) ? HLS_SCRIPT_READY : HLS_SCRIPT_FAILED;
+      flushHlsWaiters(hlsScriptState === HLS_SCRIPT_READY ? window.Hls : null);
+    };
+    script.onerror = function () {
+      hlsScriptState = HLS_SCRIPT_FAILED;
+      flushHlsWaiters(null);
+    };
+    try {
+      (document.head || document.documentElement).appendChild(script);
+    } catch (appendError) {
+      hlsScriptState = HLS_SCRIPT_FAILED;
+      flushHlsWaiters(null);
+    }
+  }
+
+  // Starts the MSE playback of one HLS source; false when hls.js/MSE cannot take it.
+  function tryStartHls(url) {
+    if (!hlsUsable(window.Hls)) { return false; }
+    var instance = null;
+    try {
+      instance = new window.Hls({ enableWorker: false });
+    } catch (createError) {
+      return false;
+    }
+    hls = instance;
+    hlsRetries = 0;
+    instance.on(window.Hls.Events.MANIFEST_PARSED, function (eventName, data) {
+      if (hls !== instance) { return; }
+      hlsManifestReady = true;
+      post('hls', {
+        event: 'manifest-parsed',
+        url: logUrl(url),
+        levels: data && data.levels ? data.levels.length : 0
+      });
+      if (hlsPendingPlay) {
+        hlsPendingPlay = false;
+        requestPlay();
+      }
+    });
+    instance.on(window.Hls.Events.ERROR, function (eventName, data) {
+      if (hls !== instance || !data) { return; }
+      if (data.fatal !== true) {
+        post('hls', { event: 'error', details: data.details || '', fatal: false });
+        return;
+      }
+      if (data.type === 'networkError' && hlsRetries < HLS_FATAL_RETRIES) {
+        hlsRetries++;
+        post('hls', { event: 'recover-network', details: data.details || '' });
+        try { instance.startLoad(); } catch (recoverError) { }
+        return;
+      }
+      if (data.type === 'mediaError' && hlsRetries < HLS_FATAL_RETRIES) {
+        hlsRetries++;
+        post('hls', { event: 'recover-media', details: data.details || '' });
+        try { instance.recoverMediaError(); } catch (recoverError) { }
+        return;
+      }
+      destroyHls();
+      post('error', {
+        code: 4,
+        message: 'hls fatal: ' + String(data.details || data.type || 'unknown'),
+        videoCode: video.error ? video.error.code : 0
+      });
+    });
+    try {
+      instance.attachMedia(video);
+      instance.loadSource(url);
+      return true;
+    } catch (attachError) {
+      destroyHls();
+      return false;
+    }
+  }
+
+  function nativeLoad(url) {
+    try {
+      video.pause();
+      video.removeAttribute('src');
+      video.load();
+      video.src = url;
+      video.load();
+      return ack();
+    } catch (loadError) {
+      return fail('load failed: ' + String(loadError && loadError.message ? loadError.message : loadError));
+    }
+  }
+
+  function requestPlay() {
+    try {
+      var promise = video.play();
+      if (promise && typeof promise.then === 'function') {
+        promise.then(function () { post('playing', snapshot()); }, function (playError) {
+          post('playfailed', {
+            name: playError && playError.name ? String(playError.name) : 'Error',
+            message: playError && playError.message ? String(playError.message) : 'play rejected'
+          });
+        });
+      }
+      return ack();
+    } catch (playException) {
+      return fail('play failed: ' + String(playException && playException.message ? playException.message : playException));
+    }
+  }
+
   video.addEventListener('loadedmetadata', function () {
     post('opened', { duration: num(video.duration, 0), width: num(video.videoWidth, 0), height: num(video.videoHeight, 0) });
     post('size', { width: num(video.videoWidth, 0), height: num(video.videoHeight, 0) });
@@ -132,32 +322,42 @@
       video.loop = opts.loop === true;
       video.muted = opts.muted === true;
       video.volume = Math.max(0, Math.min(1, num(opts.volume, 1)));
+      destroyHls();
+      pendingHlsUrl = '';
+      loadSeq++;
+      var token = loadSeq;
       try {
         video.pause();
+      } catch (pauseError) {
+        // Resetting the superseded source is best effort.
+      }
+      if (!isHlsUrl(url)) {
+        return nativeLoad(url);
+      }
+      pendingHlsUrl = url;
+      try {
         video.removeAttribute('src');
         video.load();
-        video.src = url;
-        video.load();
-        return ack();
-      } catch (loadError) {
-        return fail('load failed: ' + String(loadError && loadError.message ? loadError.message : loadError));
+      } catch (resetError) {
+        // A stream without seekable ranges may refuse the reset; the source assignment below wins.
       }
+      loadHlsRuntime(function (runtime) {
+        if (token !== loadSeq || pendingHlsUrl !== url) { return; }
+        if (hlsUsable(runtime) && tryStartHls(url)) { return; }
+        pendingHlsUrl = '';
+        post('hls', { event: 'fallback-native', url: logUrl(url) });
+        nativeLoad(url);
+      });
+      return ack();
     },
     play: function () {
-      try {
-        var promise = video.play();
-        if (promise && typeof promise.then === 'function') {
-          promise.then(function () { post('playing', snapshot()); }, function (playError) {
-            post('playfailed', {
-              name: playError && playError.name ? String(playError.name) : 'Error',
-              message: playError && playError.message ? String(playError.message) : 'play rejected'
-            });
-          });
-        }
+      if (pendingHlsUrl.length > 0 && !hlsManifestReady) {
+        // The runtime/manifest is not up yet: play on MANIFEST_PARSED instead of rejecting on
+        // an empty MSE element.
+        hlsPendingPlay = true;
         return ack();
-      } catch (playException) {
-        return fail('play failed: ' + String(playException && playException.message ? playException.message : playException));
       }
+      return requestPlay();
     },
     pause: function () {
       try {
@@ -171,6 +371,9 @@
       try {
         video.pause();
         try { video.currentTime = 0; } catch (seekError) { /* a stream without seekable ranges */ }
+        destroyHls();
+        pendingHlsUrl = '';
+        loadSeq++;
         video.removeAttribute('src');
         video.load();
         post('stopped', snapshot());
@@ -209,6 +412,14 @@
     },
     state: function () {
       return JSON.stringify(snapshot());
+    },
+    hlsState: function () {
+      return JSON.stringify({
+        active: hls !== null,
+        runtime: hlsScriptState,
+        pending: pendingHlsUrl.length > 0,
+        retries: hlsRetries
+      });
     }
   };
 
