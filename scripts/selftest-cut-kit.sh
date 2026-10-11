@@ -25,14 +25,18 @@
 #                 fixture gets an abc-only refresh; a missing doc or a doc without any current
 #                 abc refuses with rc!=0 and zero partial writes; a mid-apply write failure
 #                 (read-only README) rolls the already-written docs back; the bumped docs pass
-#                 a fixture P0 docs gate (checked count: 77)
+#                 a fixture P0 docs gate. --abc-sha refreshes the sha adjacent to the grouped
+#                 ui abc in the zh `（`sha…`）` and the en ` / `sha…`` styles (target lines
+#                 only; headless + historical shas stay), a doc without an adjacent ui sha
+#                 refuses with zero writes, an invalid --abc-sha is a usage error, and the
+#                 sha refresh is idempotent (checked count: 101)
 #
 # Env: SELFTEST_TMPDIR=<dir>  work dir base (default: the approved opencode tmp dir)
 #      SELFTEST_KEEP=1       keep the work dir even when all checks pass
 # Exit: 0 = all checks passed; 1 = at least one check failed (work dir kept for triage).
 set -u
 
-SELFTEST_VERSION="3 (2026-10-10; 77 checks, was 52)"
+SELFTEST_VERSION="4 (2026-10-10; 101 checks, was 77)"
 
 log()     { printf '[%s] %s\n' "$(date '+%H:%M:%S')" "$*"; }
 section() { printf '\n=== %s ===\n' "$*"; }
@@ -396,6 +400,71 @@ else
     check "T6g rollback restores every file" $?
 fi
 chmod 644 "$F6G/docs/README.md"
+
+# T6i: --abc-sha refreshes the sha adjacent to the grouped ui abc on the bumped blocks and the
+# README date line: zh `（`sha…`）` and en ` / `sha…`` styles, dry-run zero writes; the headless
+# and historical sha references stay untouched
+F6I="$T/fixture-sha"; make_fixture "$F6I" 98 987654 54321 || exit 1
+fixture_docs "$F6I/docs" 98 987654 54321 en
+DQI="$F6I/docs/2026-09-20-ohos-tester-quickstart.md"
+DEI="$F6I/docs/2026-09-18-ohos-device-validation-checklist.md"
+printf '> #97 口径：abc **987,654（`0123abcd…`）** historical\n' >> "$DQI"
+_sum6i() { find "$F6I/docs" -name '*.md' -exec sha256sum {} \; | sort; }
+_sum6i > "$T/t6i-before"
+sh "$BUMP" --kit 99 --docs-dir "$F6I/docs" --abc 111111,55555 --abc-sha aabbccdd --dry-run > "$T/t6i-dry.out" 2>&1
+check_rc "T6i dry-run rc=0" "$?" 0
+assert_contains "T6i dry-run plan (19 files)" "$T/t6i-dry.out" '19 file\(s\) would change'
+assert_contains "T6i dry-run names the sha" "$T/t6i-dry.out" 'sha aabbccdd'
+_sum6i > "$T/t6i-after-dry"
+cmp -s "$T/t6i-before" "$T/t6i-after-dry"
+check "T6i dry-run writes nothing" $?
+sh "$BUMP" --kit 99 --docs-dir "$F6I/docs" --abc 111111,55555 --abc-sha aabbccdd > "$T/t6i.out" 2>&1
+check_rc "T6i apply rc=0" "$?" 0
+grep -qF '111,111（`aabbccdd…`）' "$DQI"; check "T6i zh （sha…） refreshed" $?
+grep -qF 'abc **111,111 / `aabbccdd…`' "$DEI"; check "T6i en / sha… refreshed" $?
+grep -qF '111,111（`aabbccdd…`）' "$F6I/docs/README.md"; check "T6i README date-line sha refreshed" $?
+grep -qF 'feedbeef' "$DQI"; check "T6i headless sha kept" $?
+grep -qF '0123abcd' "$DQI"; check "T6i historical sha kept" $?
+grep -qF '987,654（`0123abcd…`）' "$DQI"; check "T6i historical abc+sha intact" $?
+
+# T6j: --abc-sha with a doc whose current block carries no adjacent ui sha -> refuse, zero writes
+F6J="$T/fixture-no-sha"; make_fixture "$F6J" 98 987654 54321 || exit 1
+sed -i 's/（`deadbeef…`）//' "$F6J/docs/2026-09-20-ohos-tester-quickstart.md"
+_sum6j() { find "$F6J/docs" -name '*.md' -exec sha256sum {} \; | sort; }
+_sum6j > "$T/t6j-before"
+sh "$BUMP" --kit 99 --docs-dir "$F6J/docs" --abc 111111,55555 --abc-sha aabbccdd > "$T/t6j.out" 2>&1
+check_neg "T6j missing sha refuses" "$?"
+assert_contains "T6j names the missing sha" "$T/t6j.out" 'missing the current shell abc sha aabbccdd'
+_sum6j > "$T/t6j-after"
+cmp -s "$T/t6j-before" "$T/t6j-after"
+check "T6j refusal writes nothing" $?
+
+# T6k: the sha refresh is idempotent (second run byte-identical)
+F6K="$T/fixture-sha-idem"; make_fixture "$F6K" 98 987654 54321 || exit 1
+sh "$BUMP" --kit 99 --docs-dir "$F6K/docs" --abc 111111,55555 --abc-sha aabbccdd >/dev/null 2>&1
+check_rc "T6k first sha bump rc=0" "$?" 0
+_sum6k() { find "$F6K/docs" -name '*.md' -exec sha256sum {} \; | sort; }
+_sum6k > "$T/t6k-before"
+sh "$BUMP" --kit 99 --docs-dir "$F6K/docs" --abc 111111,55555 --abc-sha aabbccdd > "$T/t6k.out" 2>&1
+check_rc "T6k sha idempotent rc=0" "$?" 0
+assert_contains "T6k already message" "$T/t6k.out" 'already at kit #99'
+_sum6k > "$T/t6k-after"
+cmp -s "$T/t6k-before" "$T/t6k-after"
+check "T6k sha idempotent (bytes unchanged)" $?
+
+# T6l: an invalid --abc-sha is a usage error (rc=2, nothing runs)
+sh "$BUMP" --kit 99 --docs-dir "$F6K/docs" --abc 111111,55555 --abc-sha zz123456 >/dev/null 2>&1
+check_rc "T6l bad --abc-sha rc=2" "$?" 2
+
+# T6m: kit already current + old abc/sha -> abc+sha-only refresh, no marker churn
+F6M="$T/fixture-sha-refresh"; make_fixture "$F6M" 99 987654 54321 || exit 1
+sh "$BUMP" --kit 99 --docs-dir "$F6M/docs" --abc 111111,55555 --abc-sha aabbccdd > "$T/t6m.out" 2>&1
+check_rc "T6m abc+sha-only refresh rc=0" "$?" 0
+assert_contains "T6m refresh message" "$T/t6m.out" 'refresh 2026-09-20-ohos-tester-quickstart.md: abc -> 111111,55555'
+DQIM="$F6M/docs/2026-09-20-ohos-tester-quickstart.md"
+grep -qF 'kit #99，当前）' "$DQIM"; check "T6m marker kept at kit #99" $?
+grep -qF '111,111（`aabbccdd…`）' "$DQIM"; check "T6m sha refreshed in place" $?
+grep -qF 'deadbeef' "$DQIM"; check_neg "T6m old sha gone" "$?"
 
 # ------------------------------------------------------------------ summary
 section "summary"
