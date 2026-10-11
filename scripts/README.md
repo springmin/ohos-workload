@@ -20,3 +20,10 @@ Rescued from the working scratch on 2026-10-03 (see the inventory in
 | --- | --- |
 | `cut-kit.sh` | Scripted cut of the device-test kit: phases P0 preflight, P1 build, P2 strict verify, P3 bundle + sdk anchor, P4 F4 controlled clobber, P5 values/presign/manifest, P6 CI re-check. Dry-run is the default; `--execute` writes, P4-P6 need `--execute --i-know`, P4 asks for a typed confirmation, and the tester-docs gate fails closed before the build. Resume state lives in `<scratch>/state.env`. |
 | `selftest-cut-kit.sh` | Fixture selftest for `cut-kit.sh` (P0 pass/fail, pack drift, stale-docs fail-closed, resume, F4 confirmation gate with no write/network); wired into `preflight.sh` step 1. |
+
+## csc livelock watchdog (2026-10-10)
+
+| Script | Purpose |
+| --- | --- |
+| `run-with-csc-watchdog.sh` | Wraps a managed build in the runtime-ohos csc livelock watchdog (`scripts/ohos-csc-watchdog.sh`): a csc spinning with frozen I/O is SIGKILLed and the command is rerun once with `DOTNET_PROCESSOR_COUNT=1`; a second stall fails closed. Used by `preflight.sh` steps 4/5 (interaction build, pixel builds); `CSC_WATCHDOG=0` disables it; thresholds default to spin 480 s / idle 300 s. |
+| `selftest-csc-watchdog.sh` | Fixture selftest for the wrapper (first-stall rerun, second-stall fail-closed, `CSC_WATCHDOG=0`, no-kill no-retry, missing-rescue passthrough) plus two real-watchdog scenarios with a fixture spun `csc` when the sibling runtime-ohos checkout is present; wired into `preflight.sh` step 1. |
