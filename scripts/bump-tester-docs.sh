@@ -14,6 +14,10 @@
 #     together, while an `--abc A` without H leaves the headless references as written;
 #   * README.md gets its top `kit #N 日期口径` line (the cut-kit index rule) and its abc bits
 #     are refreshed on that line; current markers inside README are normalized like the docs.
+#   * with --abc-sha <sha8>, the sha fragment written directly next to the current ui abc on
+#     those same lines (`abc **A / `sha…`` and `abc **A（`sha…`）` styles, plain or grouped A)
+#     is refreshed to <sha8>…; historical sha references stay; the headless sha is untouched,
+#     and a doc whose current block has no adjacent ui-abc sha refuses the whole wave.
 #   * every doc must end up carrying the current shell abc (plain A or grouped A,B); --abc
 #     pins it, otherwise the default EXPECT_ABC of scripts/verify-kit.sh is used; a doc left
 #     without any current abc refuses the whole wave.
@@ -29,7 +33,7 @@
 # (cut-kit.sh P0 --bump-docs calls it without extra flags).
 #
 # Usage:
-#   sh scripts/bump-tester-docs.sh --kit <N> [--abc <A[,H]>] [--docs-dir <dir>]
+#   sh scripts/bump-tester-docs.sh --kit <N> [--abc <A[,H]>] [--abc-sha <sha8>] [--docs-dir <dir>]
 #                                  [--dry-run] [--quiet] [-h|--help]
 #
 # Env: CUT_KIT_DOCS_DIR   docs-dir fallback (then ../runtime-ohos/docs/plans, then
@@ -53,6 +57,7 @@ usage() {
 # ------------------------------------------------------------------------- options
 KIT=""
 ABC=""
+ABC_SHA=""
 DOCS_DIR=""
 DRY=0
 QUIET=0
@@ -60,6 +65,7 @@ while [ $# -gt 0 ]; do
     case "$1" in
         --kit)      shift; [ $# -ge 1 ] || die "--kit needs a value" 2; KIT="$1" ;;
         --abc)      shift; [ $# -ge 1 ] || die "--abc needs a value" 2; ABC="$1" ;;
+        --abc-sha)  shift; [ $# -ge 1 ] || die "--abc-sha needs a value" 2; ABC_SHA="$1" ;;
         --docs-dir) shift; [ $# -ge 1 ] || die "--docs-dir needs a dir" 2; DOCS_DIR="$1" ;;
         --dry-run)  DRY=1 ;;
         --quiet)    QUIET=1 ;;
@@ -107,6 +113,13 @@ if [ -n "$ABC_HL" ]; then
 else
     ABC_MSG="$ABC_UI"
 fi
+# --abc-sha: optional 8-hex prefix of the shell abc sha (case-normalized to lowercase when set).
+if [ -n "$ABC_SHA" ]; then
+    case "$ABC_SHA" in *[!0-9a-fA-F]*) die "--abc-sha must be 8 hex digits, got: $ABC_SHA" 2 ;; esac
+    [ "${#ABC_SHA}" = 8 ] || die "--abc-sha must be 8 hex digits, got: $ABC_SHA" 2
+    ABC_SHA="$(printf '%s' "$ABC_SHA" | tr 'A-F' 'a-f')"
+    ABC_MSG="$ABC_MSG sha $ABC_SHA"
+fi
 abc_forms() { # plain + thousands-grouped (the cut-kit.sh gate checks both)
     _p="$1"
     _c="$(printf '%s' "$_p" | sed -e 's/^\([0-9]\{1,\}\)\([0-9][0-9][0-9]\)$/\1,\2/')"
@@ -115,6 +128,13 @@ abc_forms() { # plain + thousands-grouped (the cut-kit.sh gate checks both)
     return 0
 }
 ABC_COMMA="$(abc_forms "$ABC_UI" | tail -n 1)"
+
+# Adjacent-sha patterns for the --abc-sha checks (target lines only, see sha_check):
+#   <ui-abc><gap>`<sha>…`  with the zh （ and the en " / " gap styles.
+ABC_SHA_UI_RE="$ABC_UI"
+[ "$ABC_COMMA" != "$ABC_UI" ] && ABC_SHA_UI_RE="$ABC_UI|$ABC_COMMA"
+SHA_NEW_RE="(${ABC_SHA_UI_RE})[ /（(]*\`${ABC_SHA}…\`"
+SHA_ANY_RE="(${ABC_SHA_UI_RE})[ /（(]*\`[0-9a-f]+…\`"
 
 TMPD="$(mktemp -d "${TMPDIR:-/tmp}/bump-tester-docs.XXXXXX" 2>/dev/null)" || die "cannot create a temp dir"
 trap 'rm -rf "$TMPD"' 0 1 2 3 15
@@ -133,6 +153,30 @@ abc_ok() { # <file> -> 0 when the ui abc is present in any accepted form
     return 1
 }
 issue() { printf '%s\n' "$1" >> "$TMPD/issues"; err "$1"; }
+
+# sha_check <file> <doc|readme>: with --abc-sha, the target lines (current block / README date
+# line) must carry the refreshed sha right next to the current ui abc, and no other adjacent sha.
+sha_check() {
+    _slf="$TMPD/shalines.$$.$2"
+    if [ "$2" = readme ]; then
+        grep -E "kit #$KIT[ ]*日期口径|当前口径 ?= kit #$KIT" "$1" 2>/dev/null > "$_slf"
+    else
+        grep -E "kit #$KIT，当前）|kit #$KIT — current\)" "$1" 2>/dev/null > "$_slf"
+    fi
+    if ! grep -qE "$SHA_NEW_RE" "$_slf"; then
+        rm -f "$_slf"
+        printf 'missing the current shell abc sha %s (no `%s…` adjacent to %s on a %s line)' \
+            "$ABC_SHA" "$ABC_SHA" "$ABC_UI" "$2"
+        return 1
+    fi
+    _bad="$(grep -oE "$SHA_ANY_RE" "$_slf" | grep -vE "^(${ABC_SHA_UI_RE})[ /（(]*\`${ABC_SHA}…\`$" | head -n 1)"
+    rm -f "$_slf"
+    if [ -n "$_bad" ]; then
+        printf 'a sha adjacent to %s was not refreshed: %s' "$ABC_UI" "$_bad"
+        return 1
+    fi
+    return 0
+}
 
 # The abc-aware rewriter lives in awk (toybox awk: no capture arrays): it runs only on the
 # lines whose current marker it renumbers, keeps the plain/grouped writing style per value and
@@ -190,6 +234,29 @@ function rewr(s, ctx, tail, hlrole,   out, i, p, c, tok, nt, sep) {
     }
     return out s
 }
+function shafix(tok,   p, c, h, j, c2) {
+    # tok = line remainder right after an ui-abc occurrence; refresh `sha…` only when it is
+    # directly adjacent (zh `（` / en ` / ` style gaps), leaving every other shape alone.
+    if (nsha == "") return tok
+    p = 0; c = substr(tok, p + 1, 1)
+    while (c == " " || c == "\t" || c == "/" || c == "（" || c == "(") { p++; c = substr(tok, p + 1, 1) }
+    if (c != "`") return tok
+    j = p + 2; h = ""
+    c2 = substr(tok, j, 1)
+    while (c2 ~ /^[0-9a-fA-F]$/) { h = h c2; j++; c2 = substr(tok, j, 1) }
+    if (h == "" || c2 != "…") return tok
+    if (h == nsha) return tok
+    return substr(tok, 1, p) "`" nsha substr(tok, j)
+}
+function shascan(s, form,   out, i) {
+    out = ""
+    while ((i = index(s, form)) > 0) {
+        out = out substr(s, 1, i + length(form) - 1)
+        s = substr(s, i + length(form))
+        s = shafix(s)
+    }
+    return out s
+}
 function refresh_line(s) {
     s = rewr(s, "重锚 **", "", 0)
     s = rewr(s, "re-anchored ", "", 0)
@@ -199,6 +266,10 @@ function refresh_line(s) {
     s = rewr(s, "abc ", "", 0)
     s = rewr(s, "headless ", "", 1)
     s = rewr(s, "）**/", "（", 1)
+    if (nsha != "") {
+        s = shascan(s, nui)
+        if (group3(nui) != nui) s = shascan(s, group3(nui))
+    }
     return s
 }
 BEGIN { done = 0 }
@@ -219,7 +290,7 @@ BEGIN { done = 0 }
 '
 
 refresh_wave_file() { # <file> <doc|readme> <renum 0|1> -> stdout
-    awk -v kit="$KIT" -v nui="$ABC_UI" -v nhl="$ABC_HL" -v mode="$2" -v renum="$3" "$ABC_AWK" "$1"
+    awk -v kit="$KIT" -v nui="$ABC_UI" -v nhl="$ABC_HL" -v nsha="$ABC_SHA" -v mode="$2" -v renum="$3" "$ABC_AWK" "$1"
 }
 
 # process_wave_doc <file> <label>: validates and stages the candidate when a bump is needed.
@@ -262,6 +333,9 @@ process_wave_doc() {
             "$_label" "$_k" "$KIT" "$ABC_MSG" "$(grep -cE 'kit #[0-9]+，当前[）)]|kit #[0-9]+ — current[）)]' "$_f")"
     fi
     abc_ok "$_cand" || issue "$_label: missing the current shell abc $ABC_UI (plain) / $ABC_COMMA (grouped)"
+    if [ -n "$ABC_SHA" ]; then
+        _smsg="$(sha_check "$_cand" doc)" || issue "$_label: $_smsg"
+    fi
 }
 
 # process_readme: the index rule of the cut-kit docs gate (kit #N 日期口径 + markers).
@@ -293,6 +367,9 @@ process_readme() {
     if ! grep -qE "kit #$KIT[ ]*日期口径|当前口径 ?= kit #$KIT" "$_cand"; then
         issue "$_label: no 'kit #$KIT 日期口径' line (and the first 'kit #M 日期口径' rewrite did not land)"
         return
+    fi
+    if [ -n "$ABC_SHA" ]; then
+        _smsg="$(sha_check "$_cand" readme)" || issue "$_label: $_smsg"
     fi
     if cmp -s "$_f" "$_cand"; then
         [ "$QUIET" = 1 ] || printf '   keep %s: already kit #%s\n' "$_label" "$KIT"
