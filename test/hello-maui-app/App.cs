@@ -148,7 +148,12 @@ public sealed class App : Application
 #if MEDIAELEMENT_PROBE
         // MEDIAELEMENT-ARKWEB A-M1 device probe (MediaElementProbe.cs): a modal MAUI page whose
         // media element plays the rawfile sample through the ArkWeb HTML5 path.
-        if (uri.StartsWith("app://media/element/long", StringComparison.OrdinalIgnoreCase) &&
+        if (uri.StartsWith("app://media/element/hls", StringComparison.OrdinalIgnoreCase) &&
+            CurrentWindow() is { } hlsElementWindow)
+        {
+            MediaElementProbe.StartHls(hlsElementWindow);
+        }
+        else if (uri.StartsWith("app://media/element/long", StringComparison.OrdinalIgnoreCase) &&
             CurrentWindow() is { } longElementWindow)
         {
             MediaElementProbe.Start(longElementWindow, longClip: true);
@@ -183,6 +188,12 @@ public sealed class App : Application
         if (uri.StartsWith("app://subwindow/demo", StringComparison.OrdinalIgnoreCase))
         {
             RunSubWindowDemo();
+        }
+        // MEDIA-SUBWIN (B-M1) device trigger: the managed child window carries a media element
+        // whose source plays through the child ArkWeb slot (the shell's child media service).
+        else if (uri.StartsWith("app://subwindow/openmedia", StringComparison.OrdinalIgnoreCase))
+        {
+            OpenManagedSubWindow(withMedia: true);
         }
         // MULTIWINDOW-L2 device trigger: the managed child window carries a WebView whose
         // ArkWeb component is hosted by the subwindow page's own child pool (the second host).
@@ -312,7 +323,7 @@ public sealed class App : Application
     /// shell sink or an older host), the M shell-drawn child is created instead so the trigger
     /// never leaves the user with nothing.
     /// </summary>
-    private static void OpenManagedSubWindow(bool withWeb = false, bool hashDoc = false, bool stormDoc = false)
+    private static void OpenManagedSubWindow(bool withWeb = false, bool hashDoc = false, bool stormDoc = false, bool withMedia = false)
     {
         var application = Application.Current;
         if (application is null)
@@ -325,13 +336,13 @@ public sealed class App : Application
             OpenHarmonyBridge.WriteStatus($"[hello-maui-app] subwindow open: managed child windows already open (max {MaxManagedChildren()})");
             return;
         }
-        var child = new Window(BuildChildWindowPage(withWeb, s_childWindows.Count + 1, hashDoc, stormDoc)) { Title = $"MAUI child {s_childWindows.Count + 1}" };
+        var child = new Window(BuildChildWindowPage(withWeb, s_childWindows.Count + 1, hashDoc, stormDoc, withMedia)) { Title = $"MAUI child {s_childWindows.Count + 1}" };
         s_childWindows.Add(child);
         application.OpenWindow(child);
         var result = (application.Handler as OpenHarmonyApplicationHandler)?.LastOpenWindowResult
             ?? OpenHarmonyOpenWindowResult.None;
         OpenHarmonyBridge.WriteStatus(
-            $"[hello-maui-app] subwindow open(managed){((withWeb) ? " web" : string.Empty)}: supported={OpenHarmonySubWindow.IsSupported} children={s_childWindows.Count} result={result}");
+            $"[hello-maui-app] subwindow open(managed){((withWeb) ? " web" : string.Empty)}{((withMedia) ? " media" : string.Empty)}: supported={OpenHarmonySubWindow.IsSupported} children={s_childWindows.Count} result={result}");
         if (result != OpenHarmonyOpenWindowResult.OpenedWindow)
         {
             s_childWindows.Remove(child);
@@ -379,7 +390,7 @@ public sealed class App : Application
     /// hosted by the subwindow page's own child pool (the second web host). MULTIWINDOW-L3 M4:
     /// <paramref name="ordinal"/> names this child in its document (title/heading/tap text), so
     /// the two subwindows' eval read-backs prove which window's controller ran the script.</summary>
-    private static ContentPage BuildChildWindowPage(bool withWeb = false, int ordinal = 1, bool hashDoc = false, bool stormDoc = false)
+    private static ContentPage BuildChildWindowPage(bool withWeb = false, int ordinal = 1, bool hashDoc = false, bool stormDoc = false, bool withMedia = false)
     {
         var title = new Label { Text = "MAUI child window", FontSize = 30, HorizontalOptions = LayoutOptions.Center };
         var counter = new Label { Text = "child taps: 0", FontSize = 26, HorizontalOptions = LayoutOptions.Center };
@@ -509,6 +520,18 @@ public sealed class App : Application
             var webFirst = new List<View> { webStatus, web };
             webFirst.AddRange(children);
             children = webFirst;
+        }
+        if (withMedia)
+        {
+            // MEDIA-SUBWIN (B-M1) device probe: a media element on the child window's own page;
+            // the probe (MediaElementProbe.RunChildAsync) plays the short rawfile sample, checks
+            // the child ArkWeb slot claim and closes the child to prove the release path.
+            var mediaStatus = new Label { Text = "child media: loading", FontSize = 22, HorizontalOptions = LayoutOptions.Center };
+            var mediaElement = MediaElementProbe.CreateElement(OpenHarmonyMediaSource.FromRawFile(MediaElementProbe.SampleRawFileName));
+            var mediaFirst = new List<View> { mediaStatus, mediaElement };
+            mediaFirst.AddRange(children);
+            children = mediaFirst;
+            MediaElementProbe.StartChild(mediaStatus, mediaElement);
         }
         var childLayout = new VerticalStackLayout { Padding = 32, Spacing = 24 };
         foreach (var element in children)

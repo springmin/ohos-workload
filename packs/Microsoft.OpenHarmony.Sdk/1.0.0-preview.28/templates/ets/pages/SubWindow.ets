@@ -108,6 +108,10 @@ interface SubWindowReadyPayload {
 // child-window HybridWebView or BlazorWebView gets its documents and JS -> .NET messages. The
 // hybrid __hwvInvokeDotNet response channel completes through the child result sink
 // (host.registerChildHybridInvokeResultSink) with the child-tagged request id.
+// MEDIA-SUBWIN (B-M1): the media element service runs on the same child slot host (op "media"):
+// the media page/HLS runtime/source are served from the shared media origin and the page's
+// __OHMEDIA events echo the registered document id back through the child dotnetHost proxy,
+// so the managed surface's trusted route reaches the secondary window's element.
 const SUB_WEB_SLOT_MAX: number = 2;
 const SUB_WEB_SLOT_PENDING_MAX: number = 32;
 // SEC7-F: ask rate limit. The B6 pending table is already bounded (8 entries / TTL 5 s), but a
@@ -129,6 +133,20 @@ const SUB_WEB_NAV_ASK_PREFIX: string = 'navask|';
 // Blazor origin. Both always carry a trailing '/'.
 const SUB_HYBRID_ORIGIN: string = 'https://0.0.0.1/';
 const SUB_BLAZOR_ORIGIN_DEFAULT: string = 'https://0.0.0.0/';
+
+// MEDIA-SUBWIN (B-M1): the child window's media element service. A managed media element in a
+// secondary window claims one of this page's child ArkWeb slots and registers its source
+// through the child "media" command; this page then serves the shared media page (and the HLS
+// runtime next to it) plus the registered rawfile/file source under the media origin, exactly
+// like the primary page's A-M1 service (see pages/Index.ets). The page posts its events back
+// through this page's dotnetHost proxy with the media document id, so the managed surface's
+// trusted route resolves the window by the document, not by a second sink.
+const SUB_MEDIA_ORIGIN: string = 'https://media.local/';
+const SUB_MEDIA_PAGE_RAWFILE: string = 'media.html';
+// HLS (B-M1): the vendored hls.js runtime the media page lazily loads for an .m3u8 source.
+const SUB_MEDIA_HLS_RAWFILE: string = 'hls.min.js';
+// One served source is read whole (the primary page's cap): a huge/hostile file stays bounded.
+const SUB_MEDIA_SOURCE_MAX_BYTES: number = 64 * 1024 * 1024;
 
 // One deferred child-web command: replayed from onControllerAttached when the ArkWeb of its
 // slot was still being created (mirrors the main page's WebPendingOp, without the eval case:
@@ -175,6 +193,18 @@ interface SubBlazorAssetsConfig {
   defaultFile: string;
   id: string;
   mode?: string;
+  slot?: number;
+}
+
+// MEDIA-SUBWIN (B-M1): the media registration payload (op "media"), mirroring pages/Index.ets
+// MediaAssetsConfig and the slice's OpenHarmonyMediaElementSurface.MediaAssetsConfig. kind 0
+// is a URL the page loads itself, kind 1 a HAP rawfile name and kind 2 an absolute sandbox
+// path, both served under SUB_MEDIA_ORIGIN + '__src__'. The registration names the target
+// child slot and the per-registration document id the page echoes back in its events.
+interface SubMediaAssetsConfig {
+  kind?: number;
+  location?: string;
+  id?: string;
   slot?: number;
 }
 
@@ -384,6 +414,12 @@ struct SubWindow {
   private subBlazorWasmMode: boolean = false;
   private subBlazorBootstrapped: boolean[] = [false, false];
   private subBlazorServeLogs: number = 0;
+  // MEDIA-SUBWIN (B-M1): per-slot media registration (one managed media element per child slot).
+  private subMediaRegistered: boolean[] = [false, false];
+  private subMediaDocId: string[] = ['', ''];
+  private subMediaSourceKind: number[] = [0, 0];
+  private subMediaSourceLocation: string[] = ['', ''];
+  private subMediaServeLogs: number[] = [0, 0];
   // The hybrid __hwvInvokeDotNet responses held open until the managed handler answers through
   // host.registerChildHybridInvokeResultSink (or the local timeout fires).
   private subHybridInvokeSeq: number = 0;
@@ -1082,6 +1118,12 @@ struct SubWindow {
       this.registerChildBlazorAssets(arg);
       return;
     }
+    if (op === 'media') {
+      // MEDIA-SUBWIN (B-M1): accept the media element asset registration for this child slot
+      // and load the shared media page on it; the source is served under /__src__.
+      this.registerChildMediaAssets(arg);
+      return;
+    }
     if (op === 'hide' && !this.childWebSlotTagged(arg)) {
       // A legacy untagged hide still clears every child overlay; the managed child pool always
       // tags its per-slot commands.
@@ -1234,6 +1276,13 @@ struct SubWindow {
     this.subHybridRegistered[slot] = false;
     this.subHybridServeLogs[slot] = 0;
     this.subBlazorBootstrapped[slot] = false;
+    // MEDIA-SUBWIN (B-M1): the destroyed slot's media registration goes with its ArkWeb; the
+    // next claim starts without media and re-registers from the managed surface.
+    this.subMediaRegistered[slot] = false;
+    this.subMediaDocId[slot] = '';
+    this.subMediaSourceKind[slot] = 0;
+    this.subMediaSourceLocation[slot] = '';
+    this.subMediaServeLogs[slot] = 0;
     // B6: the destroyed slot's navigation markers/pending decisions go with its ArkWeb, so a
     // delayed approval for the old owner can never reload on the slot's next claim.
     this.subNavProgrammatic[slot] = null;
@@ -1346,6 +1395,232 @@ struct SubWindow {
       return;
     }
     this.deferChildWebOp(slot, 'load', `s${slot}\n${url}`);
+  }
+
+  // ---------------------------------------------------------------------------------------------
+  // MEDIA-SUBWIN (B-M1): the child media element service. The managed
+  // OpenHarmonyMediaElementSurface registers through the child command channel ("media", already
+  // routed by the slice's OpenHarmonyChildWeb), this page serves the shared media page and the
+  // registered source under the media origin, and the page's events travel back through the
+  // child dotnetHost proxy with the media document id stamped into the envelope.
+  // ---------------------------------------------------------------------------------------------
+
+  // Accepts the media element registration for its child slot (op "media"). The slot's ArkWeb is
+  // ensured and the media page loads through loadChildWebOrigin, so a registration that arrives
+  // before the Web component attaches is replayed like every child load. Mirrors pages/Index.ets
+  // registerMediaAssets/isSafeMediaSource.
+  private registerChildMediaAssets(arg: string): void {
+    const slot: number = this.childWebRegistrationSlot(arg);
+    try {
+      const config = JSON.parse(arg) as SubMediaAssetsConfig;
+      const docId: string = config.id !== undefined && config.id.length > 0 ? config.id : '';
+      const kind: number = config.kind === 1 || config.kind === 2 ? config.kind : 0;
+      const location: string = config.location !== undefined ? config.location : '';
+      const safeLocation: boolean = this.childIsSafeMediaSource(kind, location);
+      if (docId.length === 0 || !safeLocation) {
+        hilog.error(DOMAIN, TAG, 'child media assets rejected (slot %{public}d)', slot);
+        this.subMediaRegistered[slot] = false;
+        return;
+      }
+      this.subMediaRegistered[slot] = true;
+      this.subMediaDocId[slot] = docId;
+      this.subMediaSourceKind[slot] = kind;
+      this.subMediaSourceLocation[slot] = location;
+      this.subMediaServeLogs[slot] = 0;
+      hilog.info(DOMAIN, TAG, 'child media assets: slot=%{public}d kind=%{public}d location=%{public}s',
+        slot, kind, this.childMediaLocationForLog(kind, location));
+      this.loadChildWebOrigin(slot, `${SUB_MEDIA_ORIGIN}?s=${slot}`);
+    } catch (mediaError) {
+      hilog.error(DOMAIN, TAG, 'child media assets registration failed: %{public}s', (mediaError as Error).message);
+      this.subMediaRegistered[slot] = false;
+    }
+  }
+
+  // The accepted source shapes (mirror of the primary page's isSafeMediaSource): a rawfile name
+  // must be an ordinary relative path so it can only name a resources/rawfile entry; a sandbox
+  // path must be absolute and '..'/'\'-free; a URL must be non-empty and control-character free.
+  private childIsSafeMediaSource(kind: number, location: string): boolean {
+    if (location.length === 0 || location.length > 4096) {
+      return false;
+    }
+    if (location.indexOf('\n') >= 0 || location.indexOf('\r') >= 0) {
+      return false;
+    }
+    if (kind === 1) {
+      if (location.startsWith('/') || location.indexOf('\\') >= 0) {
+        return false;
+      }
+      const segments: string[] = location.split('/');
+      for (const segment of segments) {
+        if (segment.length === 0 || segment === '.' || segment === '..') {
+          return false;
+        }
+      }
+      return true;
+    }
+    if (kind === 2) {
+      return location.startsWith('/') && location.indexOf('..') < 0 && location.indexOf('\\') < 0;
+    }
+    return location.startsWith('http://') || location.startsWith('https://')
+      || location.startsWith('file:') || location.startsWith('data:')
+      || location.startsWith('blob:') || location.startsWith('about:');
+  }
+
+  private childMediaLocationForLog(kind: number, location: string): string {
+    if (kind !== 0) {
+      return location;
+    }
+    const cut: number = location.indexOf('?');
+    const head: string = cut >= 0 ? location.substring(0, cut) : location;
+    return head.length > 96 ? `${head.substring(0, 93)}...` : head;
+  }
+
+  // Serves one intercepted SUB_MEDIA_ORIGIN request on the slot: the page for "/", the vendored
+  // HLS runtime for "/hls.min.js", the registered source for "/__src__", 404 otherwise.
+  private serveChildMedia(url: string, slot: number): WebResourceResponse {
+    let path: string = url;
+    const scheme: number = path.indexOf('://');
+    if (scheme >= 0) {
+      const slash: number = path.indexOf('/', scheme + 3);
+      path = slash >= 0 ? path.substring(slash) : '/';
+    }
+    const query: number = path.indexOf('?');
+    if (query >= 0) {
+      path = path.substring(0, query);
+    }
+    const fragment: number = path.indexOf('#');
+    if (fragment >= 0) {
+      path = path.substring(0, fragment);
+    }
+    if (this.subMediaServeLogs[slot] < 3) {
+      this.subMediaServeLogs[slot]++;
+      hilog.info(DOMAIN, TAG, 'child media serve (slot %{public}d): %{public}s', slot, path);
+    }
+    if (path === '' || path === '/') {
+      return this.childServeMediaRawFile(SUB_MEDIA_PAGE_RAWFILE, 'text/html');
+    }
+    if (path === `/${SUB_MEDIA_HLS_RAWFILE}`) {
+      return this.childServeMediaRawFile(SUB_MEDIA_HLS_RAWFILE, 'text/javascript');
+    }
+    if (path === '/__src__') {
+      return this.childServeMediaSource(slot);
+    }
+    return this.childHybridErrorResponse(404);
+  }
+
+  private childServeMediaRawFile(name: string, mime: string): WebResourceResponse {
+    try {
+      const bytes: Uint8Array = this.childHostContext().resourceManager.getRawFileContentSync(name);
+      const response: WebResourceResponse = new WebResourceResponse();
+      response.setResponseCode(200);
+      response.setResponseMimeType(mime);
+      response.setResponseEncoding('utf-8');
+      response.setResponseData(this.childMediaBytesBuffer(bytes));
+      return response;
+    } catch (pageError) {
+      hilog.error(DOMAIN, TAG, 'child media rawfile unavailable: %{public}s (%{public}s)',
+        name, (pageError as Error).message);
+      return this.childHybridErrorResponse(404);
+    }
+  }
+
+  // WebResourceResponse.setResponseData accepts an ArrayBuffer; a rawfile read returns a
+  // Uint8Array whose exact window is copied (the primary page's mediaBytesBuffer).
+  private childMediaBytesBuffer(bytes: Uint8Array): ArrayBuffer {
+    const start: number = bytes.byteOffset;
+    const end: number = start + bytes.byteLength;
+    return bytes.buffer.slice(start, end) as ArrayBuffer;
+  }
+
+  // The registered rawfile/file source, read whole and answered with a media MIME type (kind 0
+  // has nothing to serve). A missing/oversized file answers 404/413; the page's video element
+  // then reports a media error, which the managed element maps to Failed.
+  private childServeMediaSource(slot: number): WebResourceResponse {
+    const kind: number = this.subMediaSourceKind[slot];
+    const location: string = this.subMediaSourceLocation[slot];
+    if (!this.subMediaRegistered[slot] || kind === 0 || location.length === 0) {
+      return this.childHybridErrorResponse(404);
+    }
+    let fd: number = -1;
+    try {
+      let data: ArrayBuffer;
+      if (kind === 1) {
+        data = this.childMediaBytesBuffer(this.childHostContext().resourceManager.getRawFileContentSync(location));
+      } else {
+        const stat = fs.statSync(location);
+        if (!stat.isFile() || stat.size <= 0 || stat.size > SUB_MEDIA_SOURCE_MAX_BYTES) {
+          return this.childHybridErrorResponse(413);
+        }
+        const file = fs.openSync(location, fs.OpenMode.READ_ONLY);
+        fd = file.fd;
+        const buffer = new ArrayBuffer(stat.size);
+        fs.readSync(fd, buffer);
+        data = buffer;
+      }
+      const size: number = data.byteLength;
+      if (size <= 0 || size > SUB_MEDIA_SOURCE_MAX_BYTES) {
+        return this.childHybridErrorResponse(413);
+      }
+      const response: WebResourceResponse = new WebResourceResponse();
+      response.setResponseCode(200);
+      response.setResponseMimeType(this.childMediaMimeType(location));
+      response.setResponseEncoding('utf-8');
+      response.setResponseData(data);
+      return response;
+    } catch (sourceError) {
+      hilog.warn(DOMAIN, TAG, 'child media source read failed (slot %{public}d, kind %{public}d): %{public}s',
+        slot, kind, (sourceError as Error).message);
+      return this.childHybridErrorResponse(404);
+    } finally {
+      if (fd >= 0) {
+        try {
+          fs.closeSync(fd);
+        } catch {
+          // The handle is released with the response in the worst case.
+        }
+      }
+    }
+  }
+
+  // Media MIME type by extension (the primary page's mapping).
+  private childMediaMimeType(location: string): string {
+    const lower: string = location.toLowerCase();
+    if (lower.endsWith('.mp4') || lower.endsWith('.m4v')) {
+      return 'video/mp4';
+    }
+    if (lower.endsWith('.webm')) {
+      return 'video/webm';
+    }
+    if (lower.endsWith('.ogv') || lower.endsWith('.ogg')) {
+      return 'video/ogg';
+    }
+    if (lower.endsWith('.m3u8')) {
+      return 'application/vnd.apple.mpegurl';
+    }
+    if (lower.endsWith('.mp3')) {
+      return 'audio/mpeg';
+    }
+    if (lower.endsWith('.m4a')) {
+      return 'audio/mp4';
+    }
+    if (lower.endsWith('.aac')) {
+      return 'audio/aac';
+    }
+    if (lower.endsWith('.wav')) {
+      return 'audio/wav';
+    }
+    if (lower.endsWith('.opus')) {
+      return 'audio/opus';
+    }
+    if (lower.endsWith('.flac')) {
+      return 'audio/flac';
+    }
+    return 'application/octet-stream';
+  }
+
+  // Page context helper for the rawfile reads (the primary page's hostContext()).
+  private childHostContext(): common.UIAbilityContext {
+    return this.getUIContext().getHostContext() as common.UIAbilityContext;
   }
 
   // Resolves an app-origin URL to an absolute file below the payload directory (mirrors the
@@ -1663,6 +1938,8 @@ struct SubWindow {
       documentId = this.subHybridDocId[slot];
     } else if (this.subBlazorRegistered && this.subBlazorDocId.length > 0 && url.startsWith(this.subBlazorOrigin)) {
       documentId = this.subBlazorDocId;
+    } else if (this.subMediaRegistered[slot] && this.subMediaDocId[slot].length > 0 && url.startsWith(SUB_MEDIA_ORIGIN)) {
+      documentId = this.subMediaDocId[slot];
     }
     return `__OHORIGIN|${url}|${documentId}\n${payload}`;
   }
@@ -1677,6 +1954,9 @@ struct SubWindow {
     }
     if (this.subBlazorRegistered && this.subBlazorDocId.length > 0 && pageUrl.startsWith(this.subBlazorOrigin)) {
       markers += `window.__ohBlazorId = ${JSON.stringify(this.subBlazorDocId)};`;
+    }
+    if (this.subMediaRegistered[slot] && this.subMediaDocId[slot].length > 0 && pageUrl.startsWith(SUB_MEDIA_ORIGIN)) {
+      markers += `window.__ohMediaId = ${JSON.stringify(this.subMediaDocId[slot])};window.__ohMediaSlot = ${slot};`;
     }
     try {
       this.childWebController(slot).runJavaScript(
@@ -2179,6 +2459,9 @@ struct SubWindow {
     if (this.subBlazorRegistered && url.startsWith(this.subBlazorOrigin)) {
       return true;
     }
+    if (this.subMediaRegistered[slot] && url.startsWith(SUB_MEDIA_ORIGIN)) {
+      return true;
+    }
     return false;
   }
 
@@ -2312,6 +2595,9 @@ struct SubWindow {
   subWebOverlay(slot: number): void {
     Web({ src: '', controller: this.childWebController(slot) })
       .domStorageAccess(true)
+      // MEDIA-SUBWIN (B-M1): the same platform gesture-gate opt-out the primary overlays carry,
+      // so a programmatic play() of an unmuted child media stream is not rejected (MEDIA-Q1).
+      .mediaPlayGestureAccess(false)
       .visibility(this.subWebVisible[slot] ? Visibility.Visible : Visibility.None)
       .zIndex(this.subWebZOrder[slot])
       .width(this.subWebFrameW[slot] > 0 ? `${this.subWebFrameW[slot]}vp` : '100%')
@@ -2376,6 +2662,11 @@ struct SubWindow {
         // handler; every other URL is left to the engine.
         try {
           const url: string = event.request.getRequestUrl();
+          // MEDIA-SUBWIN (B-M1): the child slot's media origin - the page for "/", the vendored
+          // HLS runtime and the registered source for "/__src__", 404 otherwise.
+          if (this.subMediaRegistered[slot] && url.startsWith(SUB_MEDIA_ORIGIN)) {
+            return this.serveChildMedia(url, slot);
+          }
           if (this.subBlazorRegistered && url.startsWith(this.subBlazorOrigin)) {
             if (this.subBlazorServeLogs < 3) {
               this.subBlazorServeLogs++;
