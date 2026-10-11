@@ -4,7 +4,8 @@
 #   1. repository gates, scripts/selftest-ridgraph.sh + scripts/selftest-packs.sh +
 #      scripts/selftest-repo-hygiene.sh + scripts/selftest-tasks.sh +
 #      scripts/selftest-host-registry.sh + scripts/selftest-host-window-bridge.sh +
-#      scripts/selftest-host-a11y-table.sh + scripts/selftest-cut-kit.sh: the pack RID
+#      scripts/selftest-host-a11y-table.sh + scripts/selftest-cut-kit.sh +
+#      scripts/selftest-csc-watchdog.sh: the pack RID
 #      graph copies
 #      must match sdk-ohos/eng/PortableRuntimeIdentifierGraph.openharmony.json (byte-level when
 #      the sibling checkout is present, digest-level otherwise), the packed UseRidGraph branch
@@ -14,8 +15,9 @@
 #      tasks must pass their unit tests and the packs must ship the built assembly, the build
 #      inputs must carry no machine-specific absolute paths (test/Directory.Build.props relative
 #      roots), the host window registry's + per-window bridge's off-device unit tests must
-#      pass (MULTIWINDOW-L M1/M2), and the kit-cutting automation's fixture selftest (cut-kit.sh
-#      P0 pass/fail, stale-docs fail-closed, resume, F4 confirmation gate) must pass
+#      pass (MULTIWINDOW-L M1/M2), the kit-cutting automation's fixture selftest (cut-kit.sh
+#      P0 pass/fail, stale-docs fail-closed, resume, F4 confirmation gate) must pass, and the
+#      csc-watchdog wrapper's fixture selftest must pass
 #   2. sh -n over scripts/*.sh
 #   3. markdownlint-cli2@0.23.3 (skipped when npx is missing)
 #   4. interaction suite, test/maui-platform-verify: rebuilt from this tree before it runs; its
@@ -23,12 +25,18 @@
 #      literal), so a stale harness fails loudly instead of checking an old threshold
 #   5. pixel suite, test/headless-render: requires "PIXEL ASSERTIONS PASSED"
 #
+# The managed builds in steps 4/5 run through scripts/run-with-csc-watchdog.sh: the csc
+# livelock watchdog kills a spun compiler with frozen I/O and the wrapper reruns the build
+# once with DOTNET_PROCESSOR_COUNT=1 (fail-closed on a second stall). CSC_WATCHDOG=0 disables
+# the wrapper.
+#
 # The suites need the Release hosting assemblies CI builds first; this script checks their
 # usual locations and prints the build commands when they are missing.
 #
 # Usage: scripts/preflight.sh [--skip-lint] [--skip-interaction] [--skip-pixel] [--quick]
 #   --skip-* narrows the run (--quick = both suites skipped); never use it to hide a failure.
-# Env: DOTNET (default: dotnet), PREFLIGHT_LOG_DIR (logs are kept and the path is printed).
+# Env: DOTNET (default: dotnet), PREFLIGHT_LOG_DIR (logs are kept and the path is printed),
+#      CSC_WATCHDOG (default on; 0 disables the csc watchdog wrapper in steps 4/5).
 #      scripts/lib-dotnet-env.sh supplies the overridable dotnet defaults (MSBuild server off,
 #      TMPDIR off /tmp); see the "Known environment quirks" section of
 #      docs/openharmony-hap-packaging.md.
@@ -42,6 +50,9 @@ W="$(cd "$(dirname "$0")/.." && pwd)"
 DOTNET="${DOTNET:-dotnet}"
 PROJ_INTERACTION="$W/test/maui-platform-verify"
 PROJ_PIXEL="$W/test/headless-render"
+# Managed builds run through the csc livelock wrapper: a spun csc with frozen I/O is killed
+# and the command is rerun once with DOTNET_PROCESSOR_COUNT=1 (CSC_WATCHDOG=0 disables it).
+WATCHDOG="$W/scripts/run-with-csc-watchdog.sh"
 # Shared, overridable dotnet environment (MSBuild server/node reuse off, TMPDIR off /tmp) for
 # every dotnet call below and for the selftests/step scripts this run starts.
 . "$W/scripts/lib-dotnet-env.sh" "$W"
@@ -81,6 +92,10 @@ if [ -z "$LOG_DIR" ]; then
     LOG_DIR="/data/storage/el2/base/tmp/opencode/preflight.$$"
 fi
 mkdir -p "$LOG_DIR" || { warn "cannot create log dir: $LOG_DIR"; exit 1; }
+# Watchdog evidence and the two attempt logs land under the preflight log dir (per-run
+# subdirectory); an explicit CSC_WATCHDOG_LOG_DIR still wins.
+CSC_WATCHDOG_LOG_DIR="${CSC_WATCHDOG_LOG_DIR:-$LOG_DIR/csc-watchdog}"
+export CSC_WATCHDOG_LOG_DIR
 
 # status accumulators: PASS / FAIL / SKIP (+ a short detail for the summary)
 ST_RIDGRAPH="SKIP"
@@ -118,7 +133,7 @@ fi
 log "== step 1/5: repository gates (RID graph, pack lint, hap module.json, task unit tests, host window registry + bridge, absolute paths) =="
 PACK_GATE_DETAIL=""
 PACK_GATE_FAILED=0
-for gate in selftest-ridgraph.sh selftest-packs.sh selftest-hap-targets.sh selftest-tasks.sh selftest-repo-hygiene.sh selftest-host-registry.sh selftest-host-window-bridge.sh selftest-host-a11y-table.sh selftest-cut-kit.sh; do
+for gate in selftest-ridgraph.sh selftest-packs.sh selftest-hap-targets.sh selftest-tasks.sh selftest-repo-hygiene.sh selftest-host-registry.sh selftest-host-window-bridge.sh selftest-host-a11y-table.sh selftest-cut-kit.sh selftest-csc-watchdog.sh; do
     if [ ! -f "$W/scripts/$gate" ]; then
         warn "missing scripts/$gate"
         PACK_GATE_FAILED=1
@@ -205,7 +220,7 @@ elif [ ! -f "$PROJ_INTERACTION/verify.csproj" ]; then
     ST_INTERACTION="FAIL (project missing)"
     FAILED=$((FAILED + 1))
 else
-    if ! (cd "$PROJ_INTERACTION" && "$DOTNET" build -m:1 -v:q) > "$LOG_DIR/interaction-build.log" 2>&1; then
+    if ! (cd "$PROJ_INTERACTION" && "$WATCHDOG" "$DOTNET" build -m:1 -v:q) > "$LOG_DIR/interaction-build.log" 2>&1; then
         sed 's/^/   /' "$LOG_DIR/interaction-build.log" | tail -30 >&2
         warn "interaction build failed (full log: $LOG_DIR/interaction-build.log)"
         ST_INTERACTION="FAIL (build)"
@@ -296,7 +311,7 @@ else
     # denied" on a second run. Remove the outputs so the apphost is always signed exactly once.
     rm -rf "$PROJ_PIXEL/bin"
     PIXEL_LOG="$LOG_DIR/pixel.log"
-    (cd "$PROJ_PIXEL" && "$DOTNET" run -c Release) > "$PIXEL_LOG" 2>&1
+    (cd "$PROJ_PIXEL" && "$WATCHDOG" "$DOTNET" run -c Release) > "$PIXEL_LOG" 2>&1
     PIXEL_RC=$?
     PIXEL_MODE="dotnet run -c Release"
     if [ "$PIXEL_RC" -ne 0 ] || ! grep -q 'PIXEL ASSERTIONS PASSED' "$PIXEL_LOG"; then
@@ -308,7 +323,7 @@ else
         PIXEL_LOG="$LOG_DIR/pixel-fallback.log"
         PIXEL_MODE="dotnet build --no-restore + dll (host fallback)"
         rm -rf "$PROJ_PIXEL/bin"
-        (cd "$PROJ_PIXEL" && "$DOTNET" build -c Release --no-restore -m:1) > "$LOG_DIR/pixel-fallback-build.log" 2>&1
+        (cd "$PROJ_PIXEL" && "$WATCHDOG" "$DOTNET" build -c Release --no-restore -m:1) > "$LOG_DIR/pixel-fallback-build.log" 2>&1
         PIXEL_BUILD_RC=$?
         PIXEL_DLL="$PROJ_PIXEL/bin/Release/net11.0/headless-render.dll"
         if [ "$PIXEL_BUILD_RC" -eq 0 ] && [ -f "$PIXEL_DLL" ]; then
