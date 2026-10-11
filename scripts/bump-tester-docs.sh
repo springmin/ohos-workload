@@ -1,24 +1,35 @@
 #!/bin/sh
-# bump-tester-docs.sh - mechanical kit-number bump for the tester-docs wave contract that
-# scripts/cut-kit.sh validates in P0 (the "current block" gate).
+# bump-tester-docs.sh - mechanical kit-number + shell-abc bump for the tester-docs wave contract
+# that scripts/cut-kit.sh validates in P0 (the "current block" gate).
 #
 # For kit <N> the helper rewrites, across the 18 tester docs + docs/plans/README.md:
 #   * every "current block" marker `kit #M，当前）` / `kit #M — current)` (the exact shapes
 #     cut-kit.sh P0 matches) from the old kit M to N - all markers in a doc must agree, a
 #     missing/ambiguous marker or a downgrade (M > N) refuses;
-#   * each doc must carry the current shell abc (plain A or grouped A,B); --abc pins it,
-#     otherwise the default EXPECT_ABC of scripts/verify-kit.sh is used;
-#   * README.md gets its top `kit #N 日期口径` line (the cut-kit index rule); current markers
-#     inside README are normalized the same way as in the docs.
+#   * on exactly those renumbered lines, the current-shell abc references are refreshed to the
+#     target EXPECT_ABC: `expected-abc A` / `重锚 **A,H**` / `re-anchored A,H` / `abc **A` /
+#     `abc A` (the un-bolded second block) / `headless H` / `EXPECT_ABC=A,H` and the zh
+#     `）**/H（` headless slot. Plain (576664) and thousands-grouped (576,664) forms are both
+#     understood and the written style is kept per value; a pair refreshes ui+headless
+#     together, while an `--abc A` without H leaves the headless references as written;
+#   * README.md gets its top `kit #N 日期口径` line (the cut-kit index rule) and its abc bits
+#     are refreshed on that line; current markers inside README are normalized like the docs.
+#   * every doc must end up carrying the current shell abc (plain A or grouped A,B); --abc
+#     pins it, otherwise the default EXPECT_ABC of scripts/verify-kit.sh is used; a doc left
+#     without any current abc refuses the whole wave.
+#
+# Scope: the abc refresh only ever edits the lines whose markers it renumbers (plus the README
+# index line). Historical references such as `#52=534192` and any shape the helper does not
+# recognize are left untouched.
 #
 # Idempotent: a second run with the same --kit reports "already at kit #N" and writes nothing.
-# Fail-closed / transactional: any missing file, ambiguous marker or missing abc aborts the
-# whole wave before the first write; on an apply error the files already written are restored
-# from the backups. --dry-run prints the plan and writes nothing. Writes by default (cut-kit.sh
-# P0 --bump-docs calls it without extra flags).
+# Fail-closed / transactional: any missing file, ambiguous marker, downgrade or missing abc
+# aborts the whole wave before the first write; on an apply error the files already written are
+# restored from the backups. --dry-run prints the plan and writes nothing. Writes by default
+# (cut-kit.sh P0 --bump-docs calls it without extra flags).
 #
 # Usage:
-#   sh scripts/bump-tester-docs.sh --kit <N> [--abc <A[,B]>] [--docs-dir <dir>]
+#   sh scripts/bump-tester-docs.sh --kit <N> [--abc <A[,H]>] [--docs-dir <dir>]
 #                                  [--dry-run] [--quiet] [-h|--help]
 #
 # Env: CUT_KIT_DOCS_DIR   docs-dir fallback (then ../runtime-ohos/docs/plans, then
@@ -81,12 +92,21 @@ fi
     die "docs dir not found: ${DOCS_DIR:-<unresolved>} (pass --docs-dir / set CUT_KIT_DOCS_DIR)"
 
 # abc: --abc wins; else the verify-kit.sh default (same parse as cut-kit.sh expect_abc).
+# The value is `A` or `A,H` (ui [, headless]); both halves must be numeric.
 if [ -z "$ABC" ] && [ -f "$SCRIPT_DIR/verify-kit.sh" ]; then
     ABC="$(sed -n 's/^EXPECT_ABC="\${KIT_EXPECTED_ABC:-\(.*\)}"/\1/p' "$SCRIPT_DIR/verify-kit.sh" | head -n 1)"
 fi
 ABC_UI="${ABC%%,*}"
-[ -n "$ABC_UI" ] || die "no shell abc: pass --abc <A[,B]> or set EXPECT_ABC in $SCRIPT_DIR/verify-kit.sh"
+ABC_HL=""
+case "$ABC" in *,*) ABC_HL="${ABC#*,}" ;; esac
+[ -n "$ABC_UI" ] || die "no shell abc: pass --abc <A[,H]> or set EXPECT_ABC in $SCRIPT_DIR/verify-kit.sh"
 case "$ABC_UI" in *[!0-9]*) die "abc must be numeric, got: $ABC_UI" 2 ;; esac
+if [ -n "$ABC_HL" ]; then
+    case "$ABC_HL" in *[!0-9]*) die "headless abc must be numeric, got: $ABC_HL" 2 ;; esac
+    ABC_MSG="$ABC_UI,$ABC_HL"
+else
+    ABC_MSG="$ABC_UI"
+fi
 abc_forms() { # plain + thousands-grouped (the cut-kit.sh gate checks both)
     _p="$1"
     _c="$(printf '%s' "$_p" | sed -e 's/^\([0-9]\{1,\}\)\([0-9][0-9][0-9]\)$/\1,\2/')"
@@ -106,10 +126,6 @@ marker_kits() { # <file> -> sorted unique kit numbers of the current-block marke
     grep -oE 'kit #[0-9]+，当前[）)]|kit #[0-9]+ — current[）)]' "$1" 2>/dev/null \
         | sed 's/kit #\([0-9][0-9]*\).*/\1/' | sort -u
 }
-rewrite_markers() { # <file> -> stdout with every current marker renumbered to $KIT
-    sed -e "s/kit #\([0-9][0-9]*\)，当前）/kit #$KIT，当前）/g" \
-        -e "s/kit #\([0-9][0-9]*\) — current)/kit #$KIT — current)/g" "$1"
-}
 abc_ok() { # <file> -> 0 when the ui abc is present in any accepted form
     for _form in $(abc_forms "$ABC_UI"); do
         grep -qF "$_form" "$1" 2>/dev/null && return 0
@@ -117,6 +133,94 @@ abc_ok() { # <file> -> 0 when the ui abc is present in any accepted form
     return 1
 }
 issue() { printf '%s\n' "$1" >> "$TMPD/issues"; err "$1"; }
+
+# The abc-aware rewriter lives in awk (toybox awk: no capture arrays): it runs only on the
+# lines whose current marker it renumbers, keeps the plain/grouped writing style per value and
+# leaves every unrecognized token alone.
+ABC_AWK='
+function group3(v,   out, n) {
+    out = ""; n = length(v)
+    while (n > 3) { out = "," substr(v, n - 2) out; v = substr(v, 1, n - 3); n = length(v) }
+    return v out
+}
+function xform(tok, hlrole,   t, ui, hl, g1, g2, i, a) {
+    if (tok == "") return ""
+    t = tok; ui = ""; hl = ""; g1 = 0; g2 = 0
+    if (t ~ /^[0-9]+$/) {
+        ui = t
+    } else if (t ~ /^[0-9]{1,3}(,[0-9]{3})+$/) {
+        gsub(/,/, "", t); ui = t; g1 = 1
+    } else if (t ~ /^[0-9]{4,},[0-9]{4,}$/) {
+        i = index(t, ","); ui = substr(t, 1, i - 1); hl = substr(t, i + 1)
+    } else if (t ~ /^[0-9]{1,3},[0-9]{3},[0-9]{4,}$/) {
+        i = index(t, ",")
+        ui = substr(t, 1, i - 1) substr(t, i + 1, 3); g1 = 1
+        hl = substr(t, i + 5)
+    } else if (t ~ /^[0-9]{1,3},[0-9]{3},[0-9]{1,3},[0-9]{3}$/) {
+        split(t, a, ",")
+        ui = a[1] a[2]; hl = a[3] a[4]; g1 = 1; g2 = 1
+    } else {
+        return ""
+    }
+    if (length(ui) < 4 || (hl != "" && length(hl) < 4)) return ""
+    if (hl == "") {
+        if (hlrole) return (nhl == "" ? "" : (g1 ? group3(nhl) : nhl))
+        return (g1 ? group3(nui) : nui)
+    }
+    return (g1 ? group3(nui) : nui) "," (nhl != "" ? (g2 ? group3(nhl) : nhl) : (g2 ? group3(hl) : hl))
+}
+function rewr(s, ctx, tail, hlrole,   out, i, p, c, tok, nt, sep) {
+    out = ""
+    while ((i = index(s, ctx)) > 0) {
+        out = out substr(s, 1, i + length(ctx) - 1)
+        s = substr(s, i + length(ctx))
+        p = 0; sep = ""; c = substr(s, p + 1, 1)
+        while (c == " " || c == "\t" || c == "*" || c == "=" || c == "(" || c == "（") {
+            sep = sep c; p++; c = substr(s, p + 1, 1)
+        }
+        tok = ""
+        while (c ~ /^[0-9,]$/) { tok = tok c; p++; c = substr(s, p + 1, 1) }
+        while (tok != "" && substr(tok, length(tok), 1) == ",") {
+            tok = substr(tok, 1, length(tok) - 1); p--
+        }
+        nt = ""
+        if (tok != "" && (tail == "" || substr(s, p + 1, length(tail)) == tail)) nt = xform(tok, hlrole)
+        out = out sep (nt != "" ? nt : tok)
+        s = substr(s, p + 1)
+    }
+    return out s
+}
+function refresh_line(s) {
+    s = rewr(s, "重锚 **", "", 0)
+    s = rewr(s, "re-anchored ", "", 0)
+    s = rewr(s, "EXPECT_ABC=", "", 0)
+    s = rewr(s, "expected-abc", "", 0)
+    s = rewr(s, "abc **", "", 0)
+    s = rewr(s, "abc ", "", 0)
+    s = rewr(s, "headless ", "", 1)
+    s = rewr(s, "）**/", "（", 1)
+    return s
+}
+BEGIN { done = 0 }
+{
+    if (mode == "readme") {
+        if (!done && $0 ~ /kit #[0-9]+ 日期口径/) {
+            $0 = refresh_line($0)
+            if (renum == 1) sub(/kit #[0-9]+ 日期口径/, "kit #" kit " 日期口径", $0)
+            done = 1
+        }
+    } else if ($0 ~ /kit #[0-9]+，当前）|kit #[0-9]+ — current\)/) {
+        $0 = refresh_line($0)
+        gsub(/kit #[0-9]+，当前）/, "kit #" kit "，当前）", $0)
+        gsub(/kit #[0-9]+ — current\)/, "kit #" kit " — current)", $0)
+    }
+    print
+}
+'
+
+refresh_wave_file() { # <file> <doc|readme> <renum 0|1> -> stdout
+    awk -v kit="$KIT" -v nui="$ABC_UI" -v nhl="$ABC_HL" -v mode="$2" -v renum="$3" "$ABC_AWK" "$1"
+}
 
 # process_wave_doc <file> <label>: validates and stages the candidate when a bump is needed.
 process_wave_doc() {
@@ -138,16 +242,24 @@ process_wave_doc() {
         return
     fi
     _cand="$TMPD/cand.$(printf '%s' "$_label" | tr -c 'A-Za-z0-9._' '_')"
-    if [ "$_k" = "$KIT" ]; then
-        cp "$_f" "$_cand" || { issue "$_label: cannot stage"; return; }
+    refresh_wave_file "$_f" doc 0 > "$_cand" || { issue "$_label: rewrite failed"; return; }
+    _mk="$(marker_kits "$_cand")"
+    [ "$_mk" = "$KIT" ] || { issue "$_label: rewrite did not converge (got [$_mk])"; return; }
+    # the abc refresh must be its own fixed point (a second pass is a byte-level no-op)
+    refresh_wave_file "$_cand" doc 0 > "$_cand.fp" || { issue "$_label: refresh failed"; return; }
+    if ! cmp -s "$_cand" "$_cand.fp"; then
+        issue "$_label: abc refresh is not a fixed point (unhandled shape?)"
+        return
+    fi
+    if [ "$_k" = "$KIT" ] && cmp -s "$_f" "$_cand"; then
         [ "$QUIET" = 1 ] || printf '   keep %s: already kit #%s\n' "$_label" "$KIT"
-    else
-        rewrite_markers "$_f" > "$_cand" || { issue "$_label: rewrite failed"; return; }
-        _mk="$(marker_kits "$_cand")"
-        [ "$_mk" = "$KIT" ] || { issue "$_label: rewrite did not converge (got [$_mk])"; return; }
+    elif [ "$_k" = "$KIT" ]; then
         printf '%s|%s\n' "$_f" "$_cand" >> "$TMPD/plan"
-        [ "$QUIET" = 1 ] || printf '   bump %s: kit #%s -> #%s (%s marker(s))\n' \
-            "$_label" "$_k" "$KIT" "$(grep -cE 'kit #[0-9]+，当前[）)]|kit #[0-9]+ — current[）)]' "$_f")"
+        [ "$QUIET" = 1 ] || printf '   refresh %s: abc -> %s (kit #%s already)\n' "$_label" "$ABC_MSG" "$KIT"
+    else
+        printf '%s|%s\n' "$_f" "$_cand" >> "$TMPD/plan"
+        [ "$QUIET" = 1 ] || printf '   bump %s: kit #%s -> #%s (abc -> %s; %s marker(s))\n' \
+            "$_label" "$_k" "$KIT" "$ABC_MSG" "$(grep -cE 'kit #[0-9]+，当前[）)]|kit #[0-9]+ — current[）)]' "$_f")"
     fi
     abc_ok "$_cand" || issue "$_label: missing the current shell abc $ABC_UI (plain) / $ABC_COMMA (grouped)"
 }
@@ -168,18 +280,16 @@ process_readme() {
         return
     fi
     if [ "$_n" = 1 ] && [ "$_kits" != "$KIT" ]; then
-        rewrite_markers "$_f" > "$_cand" || { issue "$_label: rewrite failed"; return; }
+        refresh_wave_file "$_f" doc 0 > "$_cand" || { issue "$_label: rewrite failed"; return; }
     else
         cp "$_f" "$_cand" || { issue "$_label: cannot stage"; return; }
     fi
-    # the top `kit #N 日期口径` line: bump the first bare occurrence
-    if ! grep -qE "kit #$KIT[ ]*日期口径|当前口径 ?= kit #$KIT" "$_cand"; then
-        awk -v n="$KIT" 'BEGIN { done = 0 }
-            { if (!done && match($0, /kit #[0-9]+ 日期口径/)) {
-                  sub(/kit #[0-9]+ 日期口径/, "kit #" n " 日期口径", $0); done = 1 } }
-            { print }' "$_cand" > "$_cand.awk" || { issue "$_label: date-line rewrite failed"; return; }
-        mv "$_cand.awk" "$_cand" || { issue "$_label: date-line stage failed"; return; }
-    fi
+    # the top `kit #N 日期口径` line: renumber the first bare occurrence (when still missing)
+    # and refresh its abc bits in the same pass
+    _renum=1
+    if grep -qE "kit #$KIT[ ]*日期口径|当前口径 ?= kit #$KIT" "$_cand"; then _renum=0; fi
+    refresh_wave_file "$_cand" readme "$_renum" > "$_cand.date" || { issue "$_label: date-line rewrite failed"; return; }
+    mv "$_cand.date" "$_cand" || { issue "$_label: date-line stage failed"; return; }
     if ! grep -qE "kit #$KIT[ ]*日期口径|当前口径 ?= kit #$KIT" "$_cand"; then
         issue "$_label: no 'kit #$KIT 日期口径' line (and the first 'kit #M 日期口径' rewrite did not land)"
         return
@@ -188,12 +298,12 @@ process_readme() {
         [ "$QUIET" = 1 ] || printf '   keep %s: already kit #%s\n' "$_label" "$KIT"
     else
         printf '%s|%s\n' "$_f" "$_cand" >> "$TMPD/plan"
-        [ "$QUIET" = 1 ] || printf '   bump %s: index date line -> kit #%s\n' "$_label" "$KIT"
+        [ "$QUIET" = 1 ] || printf '   bump %s: index date line -> kit #%s (abc -> %s)\n' "$_label" "$KIT" "$ABC_MSG"
     fi
 }
 
 # ------------------------------------------------------------------------- validate whole wave
-log "bump-tester-docs: kit #$KIT (docs $DOCS_DIR; abc $ABC_UI/$ABC_COMMA; dry=$DRY)"
+log "bump-tester-docs: kit #$KIT (docs $DOCS_DIR; abc $ABC_MSG; dry=$DRY)"
 for _d in $DOC_LIST; do
     process_wave_doc "$DOCS_DIR/$_d" "$_d"
 done
