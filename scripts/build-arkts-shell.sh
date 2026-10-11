@@ -763,14 +763,15 @@ check_slot_capacity_contract() { # <templates-dir>
 }
 
 # N-SUBWINDOW: the application subwindow capacity is served from the explicit switch (default
-# 2, ceiling 8) instead of a hardcoded constant. The gate pins the switch constants, the served
-# limit field and the capacity check the create path uses; it also rejects the old hardcoded
+# 4, floor 2, ceiling 8) instead of a hardcoded constant. The gate pins the switch constants, the
+# served limit field, the capacity check the create path uses and the two-way apply (the switch
+# may lower the served limit to the floor as well as raise it); it also rejects the old hardcoded
 # shape so a future edit cannot silently pin the product back to two sessions or beyond the
 # supported ceiling.
 check_subwindow_capacity_contract() { # <templates-dir>
     _index="$1/ets/pages/Index.ets"
     _missing=""
-    for _marker in "const SUB_WINDOW_DEFAULT_MAX: number = 2;" \
+    for _marker in "const SUB_WINDOW_DEFAULT_MAX: number = 4;" \
                    "const SUB_WINDOW_MAX: number = 8;" \
                    "const SUB_WINDOW_MIN_MAX: number = 2;" \
                    "const SUB_WINDOW_MAX_ENV: string = 'OHOS_SUBWINDOW_MAX';" \
@@ -779,7 +780,9 @@ check_subwindow_capacity_contract() { # <templates-dir>
                    "this.subWindows.size + this.subWindowCreating.size >= this.subWindowLimit" \
                    "private readSubWindowLimitFromRawFile(): number {" \
                    "private resolveSubWindowLimitEnv(): void {" \
-                   "this.applySubWindowLimit(this.readSubWindowLimitFromRawFile());"; do
+                   "this.applySubWindowLimit(this.readSubWindowLimitFromRawFile());" \
+                   "if (requested <= 0) {" \
+                   "if (clamped !== this.subWindowLimit) {"; do
         grep -Fq -- "$_marker" "$_index" 2>/dev/null || _missing="$_missing
   $_marker"
     done
