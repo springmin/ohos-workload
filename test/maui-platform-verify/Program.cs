@@ -7,13 +7,14 @@ using Microsoft.Maui.Controls;
 using Microsoft.Maui.Controls.Internals;
 using Microsoft.Maui.Hosting;
 using Microsoft.Maui.Platform;
+using Microsoft.OpenHarmony.Hosting;
 
 // The suite's [verify] line total is part of its contract: the CI job and scripts/preflight.sh
 // gate on the floor declared here, so count the lines actually printed (see the [suite] summary
 // after the fuzz tail) instead of letting every caller repeat its own threshold constant.
 VerifyLineCountingWriter verifyStdout = new(Console.Out);
 Console.SetOut(verifyStdout);
-const int verifyCheckTotal = 771;                     // +3 L7-M2: the deferred-create replay (pending table, defer/replay methods and the dispatch/resume/supersede/close/teardown wiring pinned in all four packs) plus the duplicate-Created idempotency on the session table (a replay racing a managed re-send must not double the session) // +8 WEB-AUTH: the real WebAuthenticator flow (source + manifest-injection pins, query and fragment completion with the non-matching guard, caller cancel, caller timeout via the token, one-at-a-time + duplicate drop, option validation, launch failure, platform-less degrade) // +5 MULTIWINDOW-L3 B6: the child navigation veto (the ask/approval wire route with the one-shot started suppression, the cancelled decision with no approval, the fail-closed shapes incl. the primary window tag/bad slot/H-C2 spellings, window isolation with the approval to the asking window only, and the shell/slice source pins) // +8 MULTIWINDOW-L3 M4: the per-window child web pools (the window-tagged wire + tag validation, the window-index mirror, two windows' independent claims/capacity/pending/release, the hybrid window codec, the window-filtered hybrid dispatch with the fail-closed wrong window, and the shell/host/transport source pins) // +7 MULTIWINDOW-L3 M3: per-window IME/overlay/Back isolation with two concurrent secondaries (two shadow frames + release isolation, action ownership, two coexisting alerts + per-surface geometry + per-window modal frames + Hide one/all, tagged-text prompt ownership + submit completion, the production child prompt with the op-6 focus wire and its own-state completion, Back modal consumption + window Back routing, and the four-pack shell + slice + partition-cap source pins) // +15 MULTIWINDOW-L3 M2: the per-window identity handshake (an out-of-order claim buffered then acked by its Created, duplicate ready without a second ack, an unknown id closed fail-closed, a retired generation declined, reopen with a fresh generation, churn x20) and the two-window lifecycle closure (suspend/resume exactly once per child, focus isolation, focus ignored while stopped, targeted close, late events after close) plus the four-pack shell and slice source pins // +3 MULTIWINDOW-L3: the child hybrid-invoke codec (flag encode/decode, primary decode unchanged), the child-window dispatch (real invoke round trip on the owning handler) and the fail-closed unclaimed slot // +11 MULTIWINDOW-L3 M1: two managed subwindow sessions coexist (the second deferred OpenWindow on the free sub-2, per-window input/frame isolation, the shell-Closed and app-close targeted to one session, the capacity bound rejecting a third, and the shell/slice source pins) // +2 SEC-SCAN-6 C: the window close hook drops the child pool state and the a11y shadow frame + first-publish marker // +1 A11Y-SELFCHECK: a provider attached after the window's last frame repaints once on the next frame tick (the publish gate reads the export call directly; the shell 3s self-check must see nodes>0) // +7 MULTIWINDOW-L2 a W1: per-window a11y frame lookup/view ownership, window-routed actions (sub vs primary vs unknown), the per-instance listener thunk, the provider-gate local degrade, the subwindow password pin, the per-window modal gate and the host/shell/slice source pins // +18 MULTIWINDOW-L2 b: the child capacity wire (state-carried and URL-carried count shapes), the subwindow ArkWeb second host (the window-scoped OpenHarmonyChildWeb pool + transport + ready gate, a real child-window WebView routed through it, the primary pool/transport isolation, and the four-pack shell/host/slice source pins) and the SEC-SCAN-6 primary-window-tag rejection pin // +2 MULTIWINDOW-L M4-04: the per-window pinch channel (a child-tagged stream reaches the child renderer only; main/unknown/empty ids never do) // +16 MULTIWINDOW-L M4 first wave: the per-window focus/suspend-resume state machine (Activated/Deactivated/Stopped/Resumed, idempotent, primary untouched, the shell-Closed session belt), the per-window keyboard/IME wire (child Entry focus -> op 6 surface-tagged payload, text/composition/submit routed to the child only, window-tagged keys, per-window Back, text ports, the primary-to-child global-text isolation pin (SEC-SCAN-5c)) and the per-window accessibility frame + alert ownership partition, plus the four-pack shell/slice source pins // +14 MULTIWINDOW-L M3 shell subwindow XComponent + production consumption: the app host consumes the tagged channel itself, a deferred OpenWindow asks the shell for the subwindow surface and RouteSurface binds/first-frames/adopts it, its input/frame/close/reopen are window-id routed with no main-window interference, plus the four-pack shell source pins (XComponent id = surface id, register/unregister lifecycle, drawn fallback) and the host/slice per-window draw-target pins // +22 MULTIWINDOW-L M2 per-window renderer: the dual-window headless pin (the mw-l/m2 scratch assertions, driven through the hosting bridge's window-id tagged thunks and the slice's RouteSurface/RouteTouch/RouteFrame adapters, with one CanvasFactory recording canvas per window) plus the bridge id and late-subscriber replay contract // +6 MULTIWINDOW-M in-app subwindow: the create/move/resize/show/close command set and its JSON payloads, the lifecycle/geometry state machine, the routed touch event, malformed/unknown payload robustness, the off-device degradation, and the shell/host/slice source+pack-identity contract // +1 SEC-SCAN-4 a11y password masking (plaintext must not be published to the shadow tree; bullets mirror the drawn text) // +1 SEC-SCAN-4 off-surface cull boundary (zero-size frame draws, shadow extent rescues, off-surface Image keeps the decode pipeline) // +1 CG2-R2R host interp R2R opt-out pin (DOTNET_ReadyToRun=0 inside the mode-3 block; the runtime already forces it for InterpMode>=2, the host makes it explicit and the device retest holds IL parity) // +1 AOT-STARTUP first-use ArkWeb overlay mount gate (state flag + ensureWebSlot flip/log + build gate order) protects the -262 ms AOT startup fix + host identical-context replay skip pin // +2 MULTIWINDOW-S surface resize: the Created/Changed arrange gate (Destroyed/0x0 rejected) + the Changed replay re-arranging the window frame while Destroyed keeps it (A0 form adaptation)                     // +2 WASM-MIME .wasm -> application/wasm mapping in every pack shell + the standalone rawfile host / the host's `wasm mime:` + `wasm fallback:` instrumentation and the pack-host.sh --bad-mime negative control                     // +2 FIX-A11YFLYOUT a11y walk FlyoutPage Detail/presented-Flyout subtree pins (device nodeCount=1 root cause)                     // +1 FIX-A11YBUTTON shell self-check absolute position + z-order-above-overlays pin (button reachable with/without a live web control)                     // +3 AUTODISCONNECT layout-removal detach (dynamic slot destroy + claim release + handler kept) / re-add rebuild (ensure + registration replay on the reclaimed slot) / slice watcher-and-owner wiring pins                     // +6 SLOTS-DYNAMIC dynamic slot growth (ensure/destroy commands), capacity downgrade/event, configurable 2/4 limits, shell lazy/defer pins, 3rd-overlay sample                     // documented full [verify] line count (+3 FIX-SLICERACE concurrent connect/host storm/ pins, +5 L6 screenshot Jpeg format/quality capture/fallback/helper + title heartbeat behavior/source, +6 LEGACY toolbar primary/overflow/icon/events/shell/source, +3 SAMPLE-FIX hybrid bootstrap pack staging / read-only payload handler / stock-script demo, +4 MULTI-OVERLAY-FULL LRU pool/invoke slot codec/per-slot hybrid shell/slice owner wiring, +4 MULTI-OVL slot pool/wire codec/two-overlay shell/slice wiring, +4 FIX-BACKSIZE Back-press forwarding/drawer drill/ shell drawer/BlazorWebView desired size, +4 FIX-WVP overlay px->vp/degenerate-frame/hybrid-overlay arbitration/suspend-restore (shell+slice), +2 FIX-DISMISS flyout drawer dismiss under the device display conditions, +4 FIX-HOME home page arrange/draw (NavigationPage-in-TabbedPage descent), +4 MS-MODE runtime mode switch, +10 P2c-DEEPLINK, +4 P2b-IMG, +16 P1b-LIST, +10 P1a-ANIM, +2 SEC3 storage/deep-link pins, +5 W-series WebView wiring, +3 T1 InputView mapping, +4 T2 WebView gaps, +4 T3 GraphicsView interaction, +7 T10 modal accessibility, +4 T4 Label formatted text, +4 T5 layout semantics, +6 T7 DatePicker calendar/min-max, +4 T9 window title bar, +4 T11 diagnostics overlay, +1 N2 empty ContentPage arrangement, +6 T8 TableView, +5 T8 uneven rows, +7 T6 RTL flow direction, +5 T22 MainThread bridge, +2 FIX-TABBED tabbed CurrentPage, +4 T13 group footer view/N3 picker IsOpen, +5 T21 system font scale, +3 T21 font scale source wiring, +2 A11Y-TABBED tabbed accessibility, +3 N1 host multi-pointer, +5 T12 CarouselView group slides, +7 T14 rich shell flyout, +10 T14 flyout leftovers (MenuItemTemplate/FlyoutContent/AsMultipleItems), +2 FIX-SHELL shell CurrentPage, +2 A11Y-SHELL shell accessibility, +7 T15 rich Shell.TitleView, +8 T16 structured menus, +3 N4 TitleBar accessibility row, +3 T18 Essentials Map, +4 N5 overlay passthrough suppression, +5 N6 window decorations, +4 T20 media bridge, +3 B2 wasm site in a MAUI WebView, +2 W10 NativeAOT managed entry (host libs-dir resolution + shell AOT payload probe), +1 FIX-JSCALL Blazor IPC enum/struct AOT roots (JSCallResultType/JSCallType/NavigationOptions in the slice context + handler static-ctor touch + stub click-probe removed), +3 INTERP-DRAW2 draw-cost seam kinds / off-surface cull / translated-node rescue)) // +1 E4-CAPACITY8: every per-slot table derives from WEB_SLOT_MAX (hardcoded 4s forbidden), the served capacity keeps the shipped 8-slot default and the OHOS_OVERLAY_MAX env/rawfile switch can lower it (E4 root-cause fix) // +2 C5-L3 + SEC7-F-L4: the data op encodes '#'->'%23' on both the primary and the child path (helper + loadData wiring pinned per pack) and the child navigation asks gain the per-slot burst/window cap with the fail-closed drop and the bounded pending table kept // +7 SEC-SCAN-5c E/F: the pinch finiteness/bounds guards (non-finite centre/scale dropped before the walk and the dispatch; a finite extreme running scale clamped into [1e-3, 1e3]; normal reports unchanged) and the secondary a11y shadow-frame bounds (the frame table capped with the released slot reusable, a secondary walk truncated at the node cap into a well-formed prefix, and an empty/unknown frame publishing nothing - no baseline, no provider probe, no counters - while a null-root refresh keeps the last frame) // +1 N-SUBWINDOW: the subwindow cap is served from the explicit OHOS_SUBWINDOW_MAX/rawfile switch (default 2, ceiling 8; the host reads the same name) with the four-pack shell + host + sample source pins // +1 DEEPLINK-REGRESSION: a navigation request marks the compositor layout gate (a pushed page is arranged and its handlers connect on the next frame without an unrelated window/layout event) // +6 L8: the popup subwindow path (onWindowNew -> synchronous controller bind through ShellPopupBridge -> dedicated subwindow; close/name-reuse callbacks; capacity/URL null rejects; kind=popup isolation) with the four-pack shell source pins // +1 MODAL-DEEPLINK: a modal push/pop marks the compositor layout gate and requests a redraw (the modal page is arranged and its handlers connect on the next frame without an unrelated window/layout event) // +1 L8-REMAINDER: the windowopenseq popup writer substitutes the popup name through the __L8N__ placeholder (no bare `n` in the written script; the title read-back and the PONG flow stay pinned)
+const int verifyCheckTotal = 779;                     // +3 L7-M2: the deferred-create replay (pending table, defer/replay methods and the dispatch/resume/supersede/close/teardown wiring pinned in all four packs) plus the duplicate-Created idempotency on the session table (a replay racing a managed re-send must not double the session) // +8 WEB-AUTH: the real WebAuthenticator flow (source + manifest-injection pins, query and fragment completion with the non-matching guard, caller cancel, caller timeout via the token, one-at-a-time + duplicate drop, option validation, launch failure, platform-less degrade) // +5 MULTIWINDOW-L3 B6: the child navigation veto (the ask/approval wire route with the one-shot started suppression, the cancelled decision with no approval, the fail-closed shapes incl. the primary window tag/bad slot/H-C2 spellings, window isolation with the approval to the asking window only, and the shell/slice source pins) // +8 MULTIWINDOW-L3 M4: the per-window child web pools (the window-tagged wire + tag validation, the window-index mirror, two windows' independent claims/capacity/pending/release, the hybrid window codec, the window-filtered hybrid dispatch with the fail-closed wrong window, and the shell/host/transport source pins) // +7 MULTIWINDOW-L3 M3: per-window IME/overlay/Back isolation with two concurrent secondaries (two shadow frames + release isolation, action ownership, two coexisting alerts + per-surface geometry + per-window modal frames + Hide one/all, tagged-text prompt ownership + submit completion, the production child prompt with the op-6 focus wire and its own-state completion, Back modal consumption + window Back routing, and the four-pack shell + slice + partition-cap source pins) // +15 MULTIWINDOW-L3 M2: the per-window identity handshake (an out-of-order claim buffered then acked by its Created, duplicate ready without a second ack, an unknown id closed fail-closed, a retired generation declined, reopen with a fresh generation, churn x20) and the two-window lifecycle closure (suspend/resume exactly once per child, focus isolation, focus ignored while stopped, targeted close, late events after close) plus the four-pack shell and slice source pins // +3 MULTIWINDOW-L3: the child hybrid-invoke codec (flag encode/decode, primary decode unchanged), the child-window dispatch (real invoke round trip on the owning handler) and the fail-closed unclaimed slot // +11 MULTIWINDOW-L3 M1: two managed subwindow sessions coexist (the second deferred OpenWindow on the free sub-2, per-window input/frame isolation, the shell-Closed and app-close targeted to one session, the capacity bound rejecting a third, and the shell/slice source pins) // +2 SEC-SCAN-6 C: the window close hook drops the child pool state and the a11y shadow frame + first-publish marker // +1 A11Y-SELFCHECK: a provider attached after the window's last frame repaints once on the next frame tick (the publish gate reads the export call directly; the shell 3s self-check must see nodes>0) // +7 MULTIWINDOW-L2 a W1: per-window a11y frame lookup/view ownership, window-routed actions (sub vs primary vs unknown), the per-instance listener thunk, the provider-gate local degrade, the subwindow password pin, the per-window modal gate and the host/shell/slice source pins // +18 MULTIWINDOW-L2 b: the child capacity wire (state-carried and URL-carried count shapes), the subwindow ArkWeb second host (the window-scoped OpenHarmonyChildWeb pool + transport + ready gate, a real child-window WebView routed through it, the primary pool/transport isolation, and the four-pack shell/host/slice source pins) and the SEC-SCAN-6 primary-window-tag rejection pin // +2 MULTIWINDOW-L M4-04: the per-window pinch channel (a child-tagged stream reaches the child renderer only; main/unknown/empty ids never do) // +16 MULTIWINDOW-L M4 first wave: the per-window focus/suspend-resume state machine (Activated/Deactivated/Stopped/Resumed, idempotent, primary untouched, the shell-Closed session belt), the per-window keyboard/IME wire (child Entry focus -> op 6 surface-tagged payload, text/composition/submit routed to the child only, window-tagged keys, per-window Back, text ports, the primary-to-child global-text isolation pin (SEC-SCAN-5c)) and the per-window accessibility frame + alert ownership partition, plus the four-pack shell/slice source pins // +14 MULTIWINDOW-L M3 shell subwindow XComponent + production consumption: the app host consumes the tagged channel itself, a deferred OpenWindow asks the shell for the subwindow surface and RouteSurface binds/first-frames/adopts it, its input/frame/close/reopen are window-id routed with no main-window interference, plus the four-pack shell source pins (XComponent id = surface id, register/unregister lifecycle, drawn fallback) and the host/slice per-window draw-target pins // +22 MULTIWINDOW-L M2 per-window renderer: the dual-window headless pin (the mw-l/m2 scratch assertions, driven through the hosting bridge's window-id tagged thunks and the slice's RouteSurface/RouteTouch/RouteFrame adapters, with one CanvasFactory recording canvas per window) plus the bridge id and late-subscriber replay contract // +6 MULTIWINDOW-M in-app subwindow: the create/move/resize/show/close command set and its JSON payloads, the lifecycle/geometry state machine, the routed touch event, malformed/unknown payload robustness, the off-device degradation, and the shell/host/slice source+pack-identity contract // +1 SEC-SCAN-4 a11y password masking (plaintext must not be published to the shadow tree; bullets mirror the drawn text) // +1 SEC-SCAN-4 off-surface cull boundary (zero-size frame draws, shadow extent rescues, off-surface Image keeps the decode pipeline) // +1 CG2-R2R host interp R2R opt-out pin (DOTNET_ReadyToRun=0 inside the mode-3 block; the runtime already forces it for InterpMode>=2, the host makes it explicit and the device retest holds IL parity) // +1 AOT-STARTUP first-use ArkWeb overlay mount gate (state flag + ensureWebSlot flip/log + build gate order) protects the -262 ms AOT startup fix + host identical-context replay skip pin // +2 MULTIWINDOW-S surface resize: the Created/Changed arrange gate (Destroyed/0x0 rejected) + the Changed replay re-arranging the window frame while Destroyed keeps it (A0 form adaptation)                     // +2 WASM-MIME .wasm -> application/wasm mapping in every pack shell + the standalone rawfile host / the host's `wasm mime:` + `wasm fallback:` instrumentation and the pack-host.sh --bad-mime negative control                     // +2 FIX-A11YFLYOUT a11y walk FlyoutPage Detail/presented-Flyout subtree pins (device nodeCount=1 root cause)                     // +1 FIX-A11YBUTTON shell self-check absolute position + z-order-above-overlays pin (button reachable with/without a live web control)                     // +3 AUTODISCONNECT layout-removal detach (dynamic slot destroy + claim release + handler kept) / re-add rebuild (ensure + registration replay on the reclaimed slot) / slice watcher-and-owner wiring pins                     // +6 SLOTS-DYNAMIC dynamic slot growth (ensure/destroy commands), capacity downgrade/event, configurable 2/4 limits, shell lazy/defer pins, 3rd-overlay sample                     // documented full [verify] line count (+3 FIX-SLICERACE concurrent connect/host storm/ pins, +5 L6 screenshot Jpeg format/quality capture/fallback/helper + title heartbeat behavior/source, +6 LEGACY toolbar primary/overflow/icon/events/shell/source, +3 SAMPLE-FIX hybrid bootstrap pack staging / read-only payload handler / stock-script demo, +4 MULTI-OVERLAY-FULL LRU pool/invoke slot codec/per-slot hybrid shell/slice owner wiring, +4 MULTI-OVL slot pool/wire codec/two-overlay shell/slice wiring, +4 FIX-BACKSIZE Back-press forwarding/drawer drill/ shell drawer/BlazorWebView desired size, +4 FIX-WVP overlay px->vp/degenerate-frame/hybrid-overlay arbitration/suspend-restore (shell+slice), +2 FIX-DISMISS flyout drawer dismiss under the device display conditions, +4 FIX-HOME home page arrange/draw (NavigationPage-in-TabbedPage descent), +4 MS-MODE runtime mode switch, +10 P2c-DEEPLINK, +4 P2b-IMG, +16 P1b-LIST, +10 P1a-ANIM, +2 SEC3 storage/deep-link pins, +5 W-series WebView wiring, +3 T1 InputView mapping, +4 T2 WebView gaps, +4 T3 GraphicsView interaction, +7 T10 modal accessibility, +4 T4 Label formatted text, +4 T5 layout semantics, +6 T7 DatePicker calendar/min-max, +4 T9 window title bar, +4 T11 diagnostics overlay, +1 N2 empty ContentPage arrangement, +6 T8 TableView, +5 T8 uneven rows, +7 T6 RTL flow direction, +5 T22 MainThread bridge, +2 FIX-TABBED tabbed CurrentPage, +4 T13 group footer view/N3 picker IsOpen, +5 T21 system font scale, +3 T21 font scale source wiring, +2 A11Y-TABBED tabbed accessibility, +3 N1 host multi-pointer, +5 T12 CarouselView group slides, +7 T14 rich shell flyout, +10 T14 flyout leftovers (MenuItemTemplate/FlyoutContent/AsMultipleItems), +2 FIX-SHELL shell CurrentPage, +2 A11Y-SHELL shell accessibility, +7 T15 rich Shell.TitleView, +8 T16 structured menus, +3 N4 TitleBar accessibility row, +3 T18 Essentials Map, +4 N5 overlay passthrough suppression, +5 N6 window decorations, +4 T20 media bridge, +3 B2 wasm site in a MAUI WebView, +2 W10 NativeAOT managed entry (host libs-dir resolution + shell AOT payload probe), +1 FIX-JSCALL Blazor IPC enum/struct AOT roots (JSCallResultType/JSCallType/NavigationOptions in the slice context + handler static-ctor touch + stub click-probe removed), +3 INTERP-DRAW2 draw-cost seam kinds / off-surface cull / translated-node rescue)) // +1 E4-CAPACITY8: every per-slot table derives from WEB_SLOT_MAX (hardcoded 4s forbidden), the served capacity keeps the shipped 8-slot default and the OHOS_OVERLAY_MAX env/rawfile switch can lower it (E4 root-cause fix) // +2 C5-L3 + SEC7-F-L4: the data op encodes '#'->'%23' on both the primary and the child path (helper + loadData wiring pinned per pack) and the child navigation asks gain the per-slot burst/window cap with the fail-closed drop and the bounded pending table kept // +7 SEC-SCAN-5c E/F: the pinch finiteness/bounds guards (non-finite centre/scale dropped before the walk and the dispatch; a finite extreme running scale clamped into [1e-3, 1e3]; normal reports unchanged) and the secondary a11y shadow-frame bounds (the frame table capped with the released slot reusable, a secondary walk truncated at the node cap into a well-formed prefix, and an empty/unknown frame publishing nothing - no baseline, no provider probe, no counters - while a null-root refresh keeps the last frame) // +1 N-SUBWINDOW: the subwindow cap is served from the explicit OHOS_SUBWINDOW_MAX/rawfile switch (default 2, ceiling 8; the host reads the same name) with the four-pack shell + host + sample source pins // +1 DEEPLINK-REGRESSION: a navigation request marks the compositor layout gate (a pushed page is arranged and its handlers connect on the next frame without an unrelated window/layout event) // +6 L8: the popup subwindow path (onWindowNew -> synchronous controller bind through ShellPopupBridge -> dedicated subwindow; close/name-reuse callbacks; capacity/URL null rejects; kind=popup isolation) with the four-pack shell source pins // +1 MODAL-DEEPLINK: a modal push/pop marks the compositor layout gate and requests a redraw (the modal page is arranged and its handlers connect on the next frame without an unrelated window/layout event) // +1 L8-REMAINDER: the windowopenseq popup writer substitutes the popup name through the __L8N__ placeholder (no bare `n` in the written script; the title read-back and the PONG flow stay pinned) // +8 MEDIAELEMENT-ARKWEB A-M1: the ArkWeb HTML5 media element around the missing Media Kit (the four-pack shell media service/page/gesture opt-out + the pack rawfile staging + the slice surface/handler/registration + source normalization + effective URL/ack + off-device degrade/slot release + the trusted event route)
 const int verifyCheckFloor = verifyCheckTotal - 20;   // documented floor convention (total - 20)
 
 // A small image file for the Image handler.
@@ -14520,6 +14521,342 @@ Console.WriteLine($"[verify] t20 media status parse state={OpenHarmonyMediaPlaye
 if (!t20StatusParseOk)
 {
     throw new InvalidOperationException("the T20 media status parser drifted");
+}
+
+// AMEDIA (MEDIAELEMENT-ARKWEB A-M1): the ArkWeb HTML5 media element around the missing Media
+// Kit. Eight checks pin the four-pack shell service + media page + pack staging + slice surface
+// + source normalization + ack/URL mapping + off-device degrade/slot lifecycle + the trusted
+// event route. Red-control aspect: the gesture opt-out must be the ENABLED form
+// (mediaPlayGestureAccess(false)) and no pack may carry the gated form.
+string[] amediaShellVersions = { "1.0.0-preview.22", "1.0.0-preview.23", "1.0.0-preview.24", "1.0.0-preview.28" };
+bool amediaShellPinsOk = true;
+bool amediaShellIdentical = true;
+bool amediaGestureEnabled = true;
+string amediaShellFirst = string.Empty;
+foreach (string amediaShellVersion in amediaShellVersions)
+{
+    string? amediaIndexPath = FindHostSource($"packs/Microsoft.OpenHarmony.Sdk/{amediaShellVersion}/templates/ets/pages/Index.ets");
+    string amediaIndex = amediaIndexPath is null ? string.Empty : File.ReadAllText(amediaIndexPath);
+    if (amediaShellFirst.Length == 0)
+    {
+        amediaShellFirst = amediaIndex;
+    }
+    else if (!string.Equals(amediaShellFirst, amediaIndex, StringComparison.Ordinal))
+    {
+        amediaShellIdentical = false;
+    }
+    amediaShellPinsOk &= amediaIndex.Contains("const MEDIA_ORIGIN: string = 'https://media.local/';") &&
+        amediaIndex.Contains("const MEDIA_PAGE_RAWFILE: string = 'media.html';") &&
+        amediaIndex.Contains("const MEDIA_SOURCE_MAX_BYTES: number = 64 * 1024 * 1024;") &&
+        amediaIndex.Contains("interface MediaAssetsConfig {") &&
+        amediaIndex.Contains("op === 'hybrid' || op === 'blazor' || op === 'media'") &&
+        amediaIndex.Contains("} else if (op === 'media') {") &&
+        amediaIndex.Contains("private registerMediaAssets(slot: number, arg: string): void {") &&
+        amediaIndex.Contains("private isSafeMediaSource(kind: number, location: string): boolean {") &&
+        amediaIndex.Contains("private serveMedia(url: string, slot: number): WebResourceResponse {") &&
+        amediaIndex.Contains("if (path === '/__src__')") &&
+        amediaIndex.Contains("private serveMediaPage(): WebResourceResponse {") &&
+        amediaIndex.Contains("private serveMediaSource(slot: number): WebResourceResponse {") &&
+        amediaIndex.Contains("private mediaMimeType(location: string): string {") &&
+        amediaIndex.Contains("private anyMediaRegistered(): boolean {") &&
+        amediaIndex.Contains("this.mediaRegistered[slot] = false;") &&
+        amediaIndex.Contains("url.startsWith(MEDIA_ORIGIN)") &&
+        amediaIndex.Contains("documentId = this.mediaDocId[slot];") &&
+        amediaIndex.Contains("window.__ohMediaId = ${JSON.stringify(this.mediaDocId[slot])};window.__ohMediaSlot = ${slot};");
+    // Red control: the shell must opt the overlays out of the platform gesture gate (text form)
+    // and must not carry the enabled/gated spelling.
+    amediaGestureEnabled &= amediaIndex.Contains(".mediaPlayGestureAccess(false)") &&
+        !amediaIndex.Contains(".mediaPlayGestureAccess(true)");
+}
+bool amediaShellOk = amediaShellPinsOk && amediaShellIdentical && amediaGestureEnabled;
+Console.WriteLine($"[verify] amedia shell pins packs={amediaShellVersions.Length} pins={amediaShellPinsOk} identical={amediaShellIdentical} gestureOptOut={amediaGestureEnabled} assert={amediaShellOk}");
+if (!amediaShellOk)
+{
+    throw new InvalidOperationException($"the A-M1 shell media service drifted: pins={amediaShellPinsOk} identical={amediaShellIdentical} gesture={amediaGestureEnabled}");
+}
+
+// the media page itself: the JS API, the event wire and the per-pack identity.
+bool amediaPagePinsOk = true;
+bool amediaPageIdentical = true;
+string amediaPageFirst = string.Empty;
+foreach (string amediaShellVersion in amediaShellVersions)
+{
+    string? amediaPagePath = FindHostSource($"packs/Microsoft.OpenHarmony.Sdk/{amediaShellVersion}/templates/resources/rawfile/media.html");
+    string amediaPage = amediaPagePath is null ? string.Empty : File.ReadAllText(amediaPagePath);
+    if (amediaPageFirst.Length == 0)
+    {
+        amediaPageFirst = amediaPage;
+    }
+    else if (!string.Equals(amediaPageFirst, amediaPage, StringComparison.Ordinal))
+    {
+        amediaPageIdentical = false;
+    }
+    amediaPagePinsOk &= amediaPage.Contains("window.__ohMedia = {") &&
+        amediaPage.Contains("'__OHMEDIA|s' + slot + '|'") &&
+        amediaPage.Contains("load: function (url, options)") &&
+        amediaPage.Contains("play: function ()") &&
+        amediaPage.Contains("pause: function ()") &&
+        amediaPage.Contains("stop: function ()") &&
+        amediaPage.Contains("seek: function (seconds)") &&
+        amediaPage.Contains("setVolume: function (value)") &&
+        amediaPage.Contains("setMuted: function (muted)") &&
+        amediaPage.Contains("setAspect: function (aspect)") &&
+        amediaPage.Contains("snapshot: function ()") &&
+        amediaPage.Contains("post('ready', { slot: slot })") &&
+        amediaPage.Contains("post('opened'") &&
+        amediaPage.Contains("post('position'") &&
+        amediaPage.Contains("post('ended'") &&
+        amediaPage.Contains("post('playfailed'") &&
+        amediaPage.Contains("post('error'") &&
+        amediaPage.Contains("video.addEventListener('seeked'") &&
+        amediaPage.Contains("video.addEventListener('ended'");
+}
+bool amediaPageOk = amediaPagePinsOk && amediaPageIdentical && amediaPageFirst.Length > 0;
+Console.WriteLine($"[verify] amedia page pins api={amediaPagePinsOk} identical={amediaPageIdentical} bytes={amediaPageFirst.Length} assert={amediaPageOk}");
+if (!amediaPageOk)
+{
+    throw new InvalidOperationException($"the A-M1 media page drifted: pins={amediaPagePinsOk} identical={amediaPageIdentical}");
+}
+
+// Pack staging: every HAP gets the shell rawfile through the pack targets; the media page is the
+// one shell-owned rawfile today.
+string? amediaTargetsPath = FindHostSource("packs/Microsoft.OpenHarmony.Sdk/1.0.0-preview.28/targets/OpenHarmony.Hap.targets");
+string amediaTargets = amediaTargetsPath is null ? string.Empty : File.ReadAllText(amediaTargetsPath);
+bool amediaStagingOk = amediaTargets.Contains("_OpenHarmonyHapShellRawfile Include=\"$(_OpenHarmonyTemplatesDir)resources/rawfile/**/*\"") &&
+    amediaTargets.Contains("'$(_OpenHarmonyHapStageDir)resources/rawfile/%(RecursiveDir)%(Filename)%(Extension)'") &&
+    FindHostSource("packs/Microsoft.OpenHarmony.Sdk/1.0.0-preview.28/templates/resources/rawfile/media.html") is not null;
+Console.WriteLine($"[verify] amedia staging pins targets={amediaTargetsPath is not null} assert={amediaStagingOk}");
+if (!amediaStagingOk)
+{
+    throw new InvalidOperationException("the A-M1 shell rawfile staging drifted");
+}
+
+// Slice: the surface/handler pair, its registration, the JSON context entry and the router hook.
+string? amediaSurfacePath = FindHostSource("OpenHarmonyMediaElement.cs");
+string amediaSurfaceSource = amediaSurfacePath is null ? string.Empty : File.ReadAllText(amediaSurfacePath);
+string? amediaHandlerPath = FindHostSource("OpenHarmonyMediaElementHandler.cs");
+string amediaHandlerSource = amediaHandlerPath is null ? string.Empty : File.ReadAllText(amediaHandlerPath);
+string? amediaExtensionsPath = FindHostSource("MauiOpenHarmonyExtensions.cs");
+string amediaExtensionsSource = amediaExtensionsPath is null ? string.Empty : File.ReadAllText(amediaExtensionsPath);
+string? amediaJsonContextPath = FindHostSource("OpenHarmonySliceJsonContext.cs");
+string amediaJsonContextSource = amediaJsonContextPath is null ? string.Empty : File.ReadAllText(amediaJsonContextPath);
+string? amediaWebViewPath = FindHostSource("OpenHarmonyWebViewHandler.cs");
+string amediaWebViewSource = amediaWebViewPath is null ? string.Empty : File.ReadAllText(amediaWebViewPath);
+bool amediaSliceOk = amediaSurfaceSource.Contains("public sealed class OpenHarmonyMediaElementSurface") &&
+    amediaSurfaceSource.Contains("internal const string MediaOrigin = \"https://media.local/\";") &&
+    amediaSurfaceSource.Contains("internal static bool NormalizeSource") &&
+    amediaSurfaceSource.Contains("internal static void OnJsMessage(string payload)") &&
+    amediaSurfaceSource.Contains("public void DetachOverlay()") &&
+    amediaSurfaceSource.Contains("public void AttachOverlay()") &&
+    amediaSurfaceSource.Contains("public void Arrange(Rect frame)") &&
+    !amediaSurfaceSource.Contains("OpenHarmonyViewHandler<IOpenHarmonyMediaElementView>") &&
+    amediaHandlerSource.Contains("OpenHarmonyViewHandler<IOpenHarmonyMediaElementView>") &&
+    amediaHandlerSource.Contains("public static void MapSource") &&
+    amediaHandlerSource.Contains("public static void MapAspect") &&
+    amediaHandlerSource.Contains("public static void MapVolume") &&
+    amediaHandlerSource.Contains("public static void MapMuted") &&
+    amediaHandlerSource.Contains("Surface.Attach();") &&
+    amediaHandlerSource.Contains("Surface.Detach();") &&
+    amediaHandlerSource.Contains("Surface.Arrange(frame);") &&
+    amediaExtensionsSource.Contains("[typeof(IOpenHarmonyMediaElementView)] = new(typeof(OpenHarmonyMediaElementHandler)),") &&
+    amediaJsonContextSource.Contains("[JsonSerializable(typeof(OpenHarmonyMediaElementSurface.MediaAssetsConfig))]") &&
+    amediaWebViewSource.Contains("OpenHarmonyMediaElementSurface.OnJsMessage(payload);");
+Console.WriteLine($"[verify] amedia slice pins surface={amediaSurfacePath is not null} handler={amediaHandlerPath is not null} registration={amediaExtensionsSource.Contains("OpenHarmonyMediaElementHandler")} assert={amediaSliceOk}");
+if (!amediaSliceOk)
+{
+    throw new InvalidOperationException($"the A-M1 slice surface drifted: surface='{amediaSurfacePath ?? "<missing>"}' handler='{amediaHandlerPath ?? "<missing>"}'");
+}
+
+// Source normalization: URL/rawfile/sandbox file classification with the fail-closed shapes.
+OpenHarmonyMediaSourceKind amediaK1 = default;
+OpenHarmonyMediaSourceKind amediaK2 = default;
+OpenHarmonyMediaSourceKind amediaK3 = default;
+OpenHarmonyMediaSourceKind amediaK4 = default;
+OpenHarmonyMediaSourceKind amediaK5 = default;
+string amediaL1 = string.Empty;
+string amediaL2 = string.Empty;
+string amediaL3 = string.Empty;
+string amediaL4 = string.Empty;
+bool amediaN1 = OpenHarmonyMediaElementSurface.NormalizeSource(OpenHarmonyMediaSource.FromUrl("https://host/a.mp4"), out amediaK1, out amediaL1, out _);
+bool amediaN2 = OpenHarmonyMediaElementSurface.NormalizeSource(OpenHarmonyMediaSource.FromUrl("file:///data/a%20b.mp4"), out amediaK2, out amediaL2, out _);
+bool amediaN3 = OpenHarmonyMediaElementSurface.NormalizeSource(OpenHarmonyMediaSource.FromUrl("/data/c.mp4"), out amediaK3, out amediaL3, out _);
+bool amediaN4 = OpenHarmonyMediaElementSurface.NormalizeSource(OpenHarmonyMediaSource.FromUrl("media/a.mp4"), out amediaK4, out amediaL4, out _);
+bool amediaN5 = OpenHarmonyMediaElementSurface.NormalizeSource(OpenHarmonyMediaSource.FromRawFile("sample.mp4"), out amediaK5, out _, out _);
+bool amediaNormalizeOk = amediaN1 && amediaK1 == OpenHarmonyMediaSourceKind.Url && amediaL1 == "https://host/a.mp4" &&
+    amediaN2 && amediaK2 == OpenHarmonyMediaSourceKind.File && amediaL2 == "/data/a b.mp4" &&
+    amediaN3 && amediaK3 == OpenHarmonyMediaSourceKind.File && amediaL3 == "/data/c.mp4" &&
+    amediaN4 && amediaK4 == OpenHarmonyMediaSourceKind.RawFile && amediaL4 == "media/a.mp4" &&
+    amediaN5 && amediaK5 == OpenHarmonyMediaSourceKind.RawFile &&
+    !OpenHarmonyMediaElementSurface.NormalizeSource(OpenHarmonyMediaSource.FromRawFile("../escape.mp4"), out _, out _, out _) &&
+    !OpenHarmonyMediaElementSurface.NormalizeSource(OpenHarmonyMediaSource.FromRawFile("/abs.mp4"), out _, out _, out _) &&
+    !OpenHarmonyMediaElementSurface.NormalizeSource(OpenHarmonyMediaSource.FromFile("relative.mp4"), out _, out _, out _) &&
+    !OpenHarmonyMediaElementSurface.NormalizeSource(OpenHarmonyMediaSource.FromFile("/data/../escape.mp4"), out _, out _, out _) &&
+    !OpenHarmonyMediaElementSurface.NormalizeSource(OpenHarmonyMediaSource.FromUrl("ftp://host/a.mp4"), out _, out _, out _) &&
+    !OpenHarmonyMediaElementSurface.NormalizeSource(OpenHarmonyMediaSource.FromUrl(string.Empty), out _, out _, out _);
+Console.WriteLine($"[verify] amedia source normalize url={amediaK1}/file={amediaK2}/rel={amediaK4} assert={amediaNormalizeOk}");
+if (!amediaNormalizeOk)
+{
+    throw new InvalidOperationException("the A-M1 source normalization drifted");
+}
+
+// Effective URL + the ack parser the transport commands depend on.
+bool amediaUrlOk = OpenHarmonyMediaElementSurface.EffectiveUrl(OpenHarmonyMediaSourceKind.Url, "https://host/a.mp4") == "https://host/a.mp4" &&
+    OpenHarmonyMediaElementSurface.EffectiveUrl(OpenHarmonyMediaSourceKind.RawFile, "a.mp4") == "https://media.local/__src__" &&
+    OpenHarmonyMediaElementSurface.EffectiveUrl(OpenHarmonyMediaSourceKind.File, "/data/a.mp4") == "https://media.local/__src__";
+bool amediaAckOk = OpenHarmonyMediaElementSurface.TryParseAck("{\"ok\":true,\"state\":\"playing\"}", out bool amediaOkTrue, out _) && amediaOkTrue &&
+    OpenHarmonyMediaElementSurface.TryParseAck("{\"ok\":false,\"message\":\"empty media source\"}", out bool amediaOkFalse, out string amediaAckMessage) &&
+    !amediaOkFalse && amediaAckMessage == "empty media source" &&
+    !OpenHarmonyMediaElementSurface.TryParseAck("not json", out _, out _) &&
+    !OpenHarmonyMediaElementSurface.TryParseAck("[1,2]", out _, out _);
+bool amediaUrlAckOk = amediaUrlOk && amediaAckOk;
+Console.WriteLine($"[verify] amedia url/ack effective={amediaUrlOk} ack={amediaAckOk} assert={amediaUrlAckOk}");
+if (!amediaUrlAckOk)
+{
+    throw new InvalidOperationException("the A-M1 URL mapping or ack parser drifted");
+}
+
+// Off-device degrade and slot lifecycle: attach claims, SetSource registers on the wire, a
+// command before the page is ready answers Unavailable, detach releases the claim.
+bool amediaDegradeOk = false;
+string amediaDegradeDetail = string.Empty;
+int amediaSlot = -1;
+OpenHarmonyMediaElementSurface? amediaSurface = null;
+try
+{
+    OpenHarmonyMediaElementSurface.ResetForTests();
+    amediaSurface = new OpenHarmonyMediaElementSurface();
+    bool amediaUnsupportedBefore = !amediaSurface.IsSupported;
+    amediaSurface.Attach();
+    amediaSlot = amediaSurface.OverlaySlot;
+    bool amediaSupported = amediaSurface.IsSupported && amediaSlot >= 0;
+    var amediaCommands = new List<string>();
+    Action<string, string?> amediaOnCommand = (op, arg) =>
+    {
+        if (op == "media" && arg is not null)
+        {
+            amediaCommands.Add(arg);
+        }
+    };
+    OpenHarmonyBridge.WebCommandSent += amediaOnCommand;
+    try
+    {
+        amediaSurface.SetSource(OpenHarmonyMediaSource.FromRawFile("media/sample.mp4"));
+    }
+    finally
+    {
+        OpenHarmonyBridge.WebCommandSent -= amediaOnCommand;
+    }
+    bool amediaRegistered = amediaCommands.Count == 1 &&
+        amediaCommands[0].Contains("\"kind\":1", StringComparison.Ordinal) &&
+        amediaCommands[0].Contains("\"location\":\"media/sample.mp4\"", StringComparison.Ordinal) &&
+        amediaCommands[0].Contains($"\"slot\":{amediaSlot}", StringComparison.Ordinal) &&
+        amediaCommands[0].Contains($"\"id\":\"{amediaSurface.PageDocumentId}\"", StringComparison.Ordinal);
+    OpenHarmonyMediaResult amediaEarlyPlay = amediaSurface.PlayAsync().GetAwaiter().GetResult();
+    OpenHarmonyMediaResult amediaBadSeek = amediaSurface.SeekAsync(TimeSpan.FromSeconds(-1)).GetAwaiter().GetResult();
+    bool amediaDeferred = amediaEarlyPlay.Status == OpenHarmonyMediaStatus.Unavailable &&
+        amediaBadSeek.Status == OpenHarmonyMediaStatus.Failed;
+    amediaDegradeOk = amediaUnsupportedBefore && amediaSupported && amediaRegistered && amediaDeferred;
+    amediaDegradeDetail = $"before={!amediaUnsupportedBefore} supported={amediaSupported} slot={amediaSlot} registers={amediaCommands.Count} registered={amediaRegistered} earlyPlay={amediaEarlyPlay.Status} badSeek={amediaBadSeek.Status}";
+}
+finally
+{
+    if (amediaSurface is not null)
+    {
+        amediaSurface.Detach();
+    }
+}
+bool amediaReleased = amediaSlot < 0 || !OpenHarmonyOverlays.IsClaimed(amediaSlot);
+amediaDegradeOk &= amediaReleased;
+Console.WriteLine($"[verify] amedia degrade {amediaDegradeDetail} released={amediaReleased} assert={amediaDegradeOk}");
+if (!amediaDegradeOk)
+{
+    throw new InvalidOperationException($"the A-M1 media degrade/lifecycle drifted: {amediaDegradeDetail} released={amediaReleased}");
+}
+
+// Trusted event route: only the shell envelope for the media origin + this surface's document id
+// reaches the events; each page event maps onto the mirrored state.
+bool amediaEventsOk = false;
+string amediaEventsDetail = string.Empty;
+var amediaRoute = new OpenHarmonyMediaElementSurface();
+try
+{
+    amediaRoute.Attach();
+    int amediaRouteSlot = amediaRoute.OverlaySlot;
+    string amediaDoc = amediaRoute.PageDocumentId;
+    int amediaOpened = 0;
+    int amediaEnded = 0;
+    int amediaFailed = 0;
+    int amediaPositions = 0;
+    int amediaProgress = 0;
+    TimeSpan amediaEventDuration = TimeSpan.Zero;
+    TimeSpan amediaEventPosition = TimeSpan.Zero;
+    int amediaEventWidth = 0;
+    string amediaEventError = string.Empty;
+    void amediaOnOpened(object? sender, OpenHarmonyMediaOpenedEventArgs args)
+    {
+        amediaOpened++;
+        amediaEventDuration = args.Duration;
+        amediaEventWidth = args.Width;
+    }
+    void amediaOnPosition(object? sender, OpenHarmonyMediaPositionChangedEventArgs args)
+    {
+        amediaPositions++;
+        amediaEventPosition = args.Position;
+    }
+    void amediaOnEnded(object? sender, OpenHarmonyMediaEndedEventArgs args)
+    {
+        amediaEnded++;
+    }
+    void amediaOnFailed(object? sender, OpenHarmonyMediaFailedEventArgs args)
+    {
+        amediaFailed++;
+        amediaEventError = args.Message;
+    }
+    void amediaOnState(object? sender, OpenHarmonyMediaStateChangedEventArgs args)
+    {
+        amediaProgress++;
+    }
+    amediaRoute.MediaOpened += amediaOnOpened;
+    amediaRoute.PositionChanged += amediaOnPosition;
+    amediaRoute.Ended += amediaOnEnded;
+    amediaRoute.Failed += amediaOnFailed;
+    amediaRoute.StateChanged += amediaOnState;
+    string amediaEnvelope(string state, string json, string origin, string document) =>
+        $"__OHORIGIN|{origin}|{document}\n__OHMEDIA|s{amediaRouteSlot}|{state}|{json}";
+    OpenHarmonyMediaElementSurface.OnJsMessage(amediaEnvelope("opened", "{\"duration\":1.5,\"width\":360,\"height\":240}", $"https://media.local/?s={amediaRouteSlot}", amediaDoc));
+    OpenHarmonyMediaElementSurface.OnJsMessage(amediaEnvelope("position", "{\"position\":0.75,\"duration\":1.5,\"ended\":false}", $"https://media.local/?s={amediaRouteSlot}", amediaDoc));
+    OpenHarmonyMediaElementSurface.OnJsMessage(amediaEnvelope("ended", "{\"position\":1.5,\"duration\":1.5}", $"https://media.local/?s={amediaRouteSlot}", amediaDoc));
+    OpenHarmonyMediaElementSurface.OnJsMessage(amediaEnvelope("error", "{\"code\":3,\"message\":\"decode\"}", $"https://media.local/?s={amediaRouteSlot}", amediaDoc));
+    // Rejections: a foreign origin, a foreign document id and a page-tagged slot that does not
+    // match. None may reach the events (counted below).
+    int amediaEventsBefore = amediaOpened + amediaEnded + amediaFailed + amediaPositions + amediaProgress;
+    OpenHarmonyMediaElementSurface.OnJsMessage(amediaEnvelope("ended", "{}", "https://0.0.0.1/", amediaDoc));
+    OpenHarmonyMediaElementSurface.OnJsMessage(amediaEnvelope("ended", "{}", $"https://media.local/?s={amediaRouteSlot}", "not-this-document"));
+    // A page-tagged slot that does not match the surface's claim must not route either (the
+    // message tag is forged independently of the shell-written envelope).
+    OpenHarmonyMediaElementSurface.OnJsMessage($"__OHORIGIN|https://media.local/?s={amediaRouteSlot}|{amediaDoc}\n__OHMEDIA|s{amediaRouteSlot + 1}|ended|{{}}");
+    int amediaEventsAfter = amediaOpened + amediaEnded + amediaFailed + amediaPositions + amediaProgress;
+    amediaRoute.MediaOpened -= amediaOnOpened;
+    amediaRoute.PositionChanged -= amediaOnPosition;
+    amediaRoute.Ended -= amediaOnEnded;
+    amediaRoute.Failed -= amediaOnFailed;
+    amediaRoute.StateChanged -= amediaOnState;
+    amediaEventsOk = amediaOpened == 1 && amediaEventDuration == TimeSpan.FromMilliseconds(1500) && amediaEventWidth == 360 &&
+        amediaPositions == 1 && amediaEventPosition == TimeSpan.FromMilliseconds(750) &&
+        amediaEnded == 1 && amediaFailed == 1 && amediaEventError.Contains("decode", StringComparison.Ordinal) &&
+        amediaRoute.Position == TimeSpan.FromMilliseconds(1500) &&
+        amediaRoute.State == OpenHarmonyMediaPlaybackState.Error &&
+        amediaEventsAfter == amediaEventsBefore;
+    amediaEventsDetail = $"opened={amediaOpened} positions={amediaPositions} ended={amediaEnded} failed={amediaFailed} states={amediaProgress} rejectedEvents={amediaEventsAfter - amediaEventsBefore}";
+}
+finally
+{
+    amediaRoute.Detach();
+}
+Console.WriteLine($"[verify] amedia event route {amediaEventsDetail} assert={amediaEventsOk}");
+if (!amediaEventsOk)
+{
+    throw new InvalidOperationException($"the A-M1 trusted event route drifted: {amediaEventsDetail}");
 }
 
 // ---- FIX-SLICERACE: handler wiring must be serialized ----------------------------------------

@@ -73,6 +73,11 @@
          Off by default: the shipped sample and its module.json are unaffected. -->
     <DefineConstants Condition=" '$(WebAuthProbe)' == 'true' ">$(DefineConstants);WEBAUTH_PROBE</DefineConstants>
     <OpenHarmonyWebAuthenticatorCallbackUrls Condition=" '$(WebAuthProbe)' == 'true' ">myapp://callback</OpenHarmonyWebAuthenticatorCallbackUrls>
+    <!-- MEDIAELEMENT (A-M1): -p:MediaElementProbe=true compiles the ArkWeb media-element device
+         probe trigger in (MediaElementProbe.cs itself always compiles; it is inert until the
+         app://media/element activation arrives). Off by default: the shipped sample and its
+         module.json are unaffected. -->
+    <DefineConstants Condition=" '$(MediaElementProbe)' == 'true' ">$(DefineConstants);MEDIAELEMENT_PROBE</DefineConstants>
   </PropertyGroup>
   <PropertyGroup Condition=" '$(OpenHarmonyAotApp)' == 'true' ">
     <DefineConstants>$(DefineConstants);OPENHARMONY_AOT</DefineConstants>

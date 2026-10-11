@@ -1,0 +1,219 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,user-scalable=no">
+<title>OpenHarmony media page</title>
+<style>
+  html, body { margin: 0; padding: 0; width: 100%; height: 100%; background: #000; overflow: hidden; }
+  video { display: block; width: 100%; height: 100%; background: #000; object-fit: contain; }
+</style>
+</head>
+<body>
+<video id="ohMedia" playsinline webkit-playsinline preload="metadata"></video>
+<script>
+// ---------------------------------------------------------------------------------------------
+// MEDIA-ELEMENT (A-M1): the shell-served media page. The shell loads this document on the
+// element's overlay slot (https://media.local/?s=<slot>) and injects window.__ohMediaSlot /
+// window.__ohMediaId at page end; the query parameter is the early source of the slot.
+//
+// JS API (all calls answer a JSON object; every asynchronous outcome is pushed as an event):
+//   load(url, {aspect, volume, muted, loop})  set the source (does not start playback)
+//   play() pause() stop() seek(seconds)       transport
+//   setVolume(0..1) setMuted(bool)            audio
+//   setAspect('fit'|'fill')                   video sizing (object-fit)
+//   snapshot() size() state()                 synchronous state read
+//
+// Events (window.dotnetHost.postMessage("__OHMEDIA|s<slot>|<kind>|<json>"), consumed by
+// OpenHarmonyMediaElementSurface):
+//   ready {slot} | opened {duration,width,height} | duration {duration} | size {width,height}
+//   position {position,duration,ended} | playing {} | paused {} | stopped {} | seeked {position}
+//   ended {} | error {code,message,videoCode} | playfailed {name,message}
+// ---------------------------------------------------------------------------------------------
+(function () {
+  var video = document.getElementById('ohMedia');
+  var slot = -1;
+  try {
+    var match = /[?&]s=(\d+)/.exec(window.location.search || '');
+    if (match) { slot = parseInt(match[1], 10); }
+  } catch (parseError) {
+    slot = -1;
+  }
+  if (slot < 0 && typeof window.__ohMediaSlot === 'number') { slot = window.__ohMediaSlot; }
+  var lastPositionPost = 0;
+
+  function post(kind, detail) {
+    try {
+      var payload = '__OHMEDIA|s' + slot + '|' + kind + '|' + JSON.stringify(detail || {});
+      var proxy = window.dotnetHost || window.__ohosDotNet;
+      if (proxy && typeof proxy.postMessage === 'function') {
+        proxy.postMessage(payload);
+      }
+    } catch (postError) {
+      // The bridge is best effort; the page keeps playing without it.
+    }
+  }
+
+  function num(value, fallback) {
+    return typeof value === 'number' && isFinite(value) ? value : fallback;
+  }
+
+  function stateName() {
+    if (video.error) { return 'failed'; }
+    if (video.ended) { return 'ended'; }
+    if (video.paused) { return video.readyState > 0 ? (video.currentTime > 0 ? 'paused' : 'opened') : 'idle'; }
+    return 'playing';
+  }
+
+  function snapshot() {
+    var duration = num(video.duration, 0);
+    var position = num(video.currentTime, 0);
+    return {
+      state: stateName(),
+      position: position,
+      duration: duration,
+      paused: video.paused === true,
+      ended: video.ended === true,
+      muted: video.muted === true,
+      volume: num(video.volume, 1),
+      width: num(video.videoWidth, 0),
+      height: num(video.videoHeight, 0),
+      error: video.error ? video.error.code : 0
+    };
+  }
+
+  function ack() {
+    return JSON.stringify({ ok: true, state: stateName() });
+  }
+
+  function fail(what, extra) {
+    var detail = { message: what };
+    if (extra) {
+      for (var key in extra) { if (Object.prototype.hasOwnProperty.call(extra, key)) { detail[key] = extra[key]; } }
+    }
+    post('error', detail);
+    return JSON.stringify({ ok: false, message: what });
+  }
+
+  video.addEventListener('loadedmetadata', function () {
+    post('opened', { duration: num(video.duration, 0), width: num(video.videoWidth, 0), height: num(video.videoHeight, 0) });
+    post('size', { width: num(video.videoWidth, 0), height: num(video.videoHeight, 0) });
+  });
+  video.addEventListener('durationchange', function () {
+    post('duration', { duration: num(video.duration, 0) });
+  });
+  video.addEventListener('resize', function () {
+    post('size', { width: num(video.videoWidth, 0), height: num(video.videoHeight, 0) });
+  });
+  video.addEventListener('timeupdate', function () {
+    var now = Date.now();
+    if (now - lastPositionPost < 250) { return; }
+    lastPositionPost = now;
+    post('position', { position: num(video.currentTime, 0), duration: num(video.duration, 0), ended: video.ended === true });
+  });
+  video.addEventListener('playing', function () { post('playing', snapshot()); });
+  video.addEventListener('pause', function () { post('paused', snapshot()); });
+  video.addEventListener('seeked', function () { post('seeked', { position: num(video.currentTime, 0) }); });
+  video.addEventListener('ended', function () { post('ended', snapshot()); });
+  video.addEventListener('error', function () {
+    var mediaError = video.error;
+    post('error', {
+      code: mediaError ? mediaError.code : 0,
+      message: mediaError && mediaError.message ? String(mediaError.message) : 'media element error',
+      videoCode: mediaError ? mediaError.code : 0
+    });
+  });
+
+  window.__ohMedia = {
+    load: function (url, options) {
+      if (typeof url !== 'string' || url.length === 0) { return fail('empty media source'); }
+      var opts = options || {};
+      if (opts.aspect === 'fill') { video.style.objectFit = 'cover'; } else { video.style.objectFit = 'contain'; }
+      video.loop = opts.loop === true;
+      video.muted = opts.muted === true;
+      video.volume = Math.max(0, Math.min(1, num(opts.volume, 1)));
+      try {
+        video.pause();
+        video.removeAttribute('src');
+        video.load();
+        video.src = url;
+        video.load();
+        return ack();
+      } catch (loadError) {
+        return fail('load failed: ' + String(loadError && loadError.message ? loadError.message : loadError));
+      }
+    },
+    play: function () {
+      try {
+        var promise = video.play();
+        if (promise && typeof promise.then === 'function') {
+          promise.then(function () { post('playing', snapshot()); }, function (playError) {
+            post('playfailed', {
+              name: playError && playError.name ? String(playError.name) : 'Error',
+              message: playError && playError.message ? String(playError.message) : 'play rejected'
+            });
+          });
+        }
+        return ack();
+      } catch (playException) {
+        return fail('play failed: ' + String(playException && playException.message ? playException.message : playException));
+      }
+    },
+    pause: function () {
+      try {
+        video.pause();
+        return ack();
+      } catch (pauseError) {
+        return fail('pause failed');
+      }
+    },
+    stop: function () {
+      try {
+        video.pause();
+        try { video.currentTime = 0; } catch (seekError) { /* a stream without seekable ranges */ }
+        video.removeAttribute('src');
+        video.load();
+        post('stopped', snapshot());
+        return ack();
+      } catch (stopError) {
+        return fail('stop failed');
+      }
+    },
+    seek: function (seconds) {
+      var target = num(seconds, -1);
+      if (target < 0) { return fail('negative seek'); }
+      try {
+        video.currentTime = target;
+        return ack();
+      } catch (seekException) {
+        return fail('seek failed: ' + String(seekException && seekException.message ? seekException.message : seekException));
+      }
+    },
+    setVolume: function (value) {
+      video.volume = Math.max(0, Math.min(1, num(value, 1)));
+      return ack();
+    },
+    setMuted: function (muted) {
+      video.muted = muted === true;
+      return ack();
+    },
+    setAspect: function (aspect) {
+      video.style.objectFit = aspect === 'fill' ? 'cover' : 'contain';
+      return ack();
+    },
+    snapshot: function () {
+      return JSON.stringify(snapshot());
+    },
+    size: function () {
+      return JSON.stringify({ width: num(video.videoWidth, 0), height: num(video.videoHeight, 0) });
+    },
+    state: function () {
+      return JSON.stringify(snapshot());
+    }
+  };
+
+  post('ready', { slot: slot });
+})();
+</script>
+</body>
+</html>

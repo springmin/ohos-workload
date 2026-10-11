@@ -624,6 +624,18 @@
       <_OpenHarmonyHapResource Include="$(_OpenHarmonyTemplatesDir)resources/base/**/*" />
     </ItemGroup>
     <Copy SourceFiles="@(_OpenHarmonyHapResource)" DestinationFiles="@(_OpenHarmonyHapResource->'$(_OpenHarmonyHapStageDir)resources/base/%(RecursiveDir)%(Filename)%(Extension)')" />
+    <!-- Shell rawfiles (MEDIA-ELEMENT, A-M1): the SDK pack ships the ArkWeb media page as
+         templates/resources/rawfile/media.html and every app HAP carries it under
+         resources/rawfile/. The shell serves it on the media origin through
+         getRawFileContentSync when a media element registers its slot; a HAP built without the
+         shell rawfile degrades that element to Failed (the page is part of the shell
+         contract). The /resources/base copy above never covers rawfile/, so this is the one
+         place shell-owned rawfiles enter the stage. An empty list (no rawfile directory in a
+         trimmed pack) copies nothing and does not fail. -->
+    <ItemGroup>
+      <_OpenHarmonyHapShellRawfile Include="$(_OpenHarmonyTemplatesDir)resources/rawfile/**/*" />
+    </ItemGroup>
+    <Copy SourceFiles="@(_OpenHarmonyHapShellRawfile)" DestinationFiles="@(_OpenHarmonyHapShellRawfile->'$(_OpenHarmonyHapStageDir)resources/rawfile/%(RecursiveDir)%(Filename)%(Extension)')" />
     <Copy SourceFiles="$(_OpenHarmonyHostDir)libopenharmonyhost.so" DestinationFolder="$(_OpenHarmonyHapStageDir)libs/$(OpenHarmonyAbi)/" />
 
     <!-- C++ runtime staging: see "C++ runtime" in the packaging doc. Candidates are ordered by

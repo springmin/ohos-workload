@@ -145,6 +145,20 @@ public sealed class App : Application
         {
             MediaProbe.Start(probeWindow);
         }
+#if MEDIAELEMENT_PROBE
+        // MEDIAELEMENT-ARKWEB A-M1 device probe (MediaElementProbe.cs): a modal MAUI page whose
+        // media element plays the rawfile sample through the ArkWeb HTML5 path.
+        if (uri.StartsWith("app://media/element/long", StringComparison.OrdinalIgnoreCase) &&
+            CurrentWindow() is { } longElementWindow)
+        {
+            MediaElementProbe.Start(longElementWindow, longClip: true);
+        }
+        else if (uri.StartsWith("app://media/element", StringComparison.OrdinalIgnoreCase) &&
+            CurrentWindow() is { } elementWindow)
+        {
+            MediaElementProbe.Start(elementWindow);
+        }
+#endif
 #if WEBAUTH_PROBE
         // WEB-AUTH device probe (see WebAuthProbe.cs): the flow triggers ride the same warm
         // activation path; the callback want (myapp://callback) is consumed by the
