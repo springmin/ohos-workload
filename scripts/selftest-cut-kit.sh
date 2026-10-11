@@ -5,8 +5,11 @@
 #
 #   T0 usage      sh -n passes; --help lists the phases; an unknown option exits 2;
 #                 --print-docs-list prints the 18 wave + 8 packed docs contract
-#   T1 p0-pass    a fixture whose pins/packs/EXPECT/suite/exports/docs all match -> P0 PASS,
+#   T1 p0-pass    a fixture whose pins/packs/EXPECT/suite/exports/docs all match and whose
+#                 build-use install pack (--dotnet fixture root) mirrors the repo pack -> P0 PASS,
 #                 state.env records P0_rc=0, and nothing outside --scratch is written
+#   T1b install   the build-use install pack gate is fail-closed: a drifted install pack file
+#                 (abc) and a missing install pack both fail P0 and name the group
 #   T2 p0-fail    one pack abc drifts from EXPECT_ABC -> P0 FAIL (packs abc group)
 #   T3 docs       stale docs fail closed: the block still marks kit #98 current (T3a) or the
 #                 block is #99 but the current abc is missing (T3b) -> P0 rc=3 + --bump-docs hint;
@@ -36,7 +39,7 @@
 # Exit: 0 = all checks passed; 1 = at least one check failed (work dir kept for triage).
 set -u
 
-SELFTEST_VERSION="4 (2026-10-10; 101 checks, was 77)"
+SELFTEST_VERSION="5 (2026-10-11; 109 checks, was 101)"
 
 log()     { printf '[%s] %s\n' "$(date '+%H:%M:%S')" "$*"; }
 section() { printf '\n=== %s ===\n' "$*"; }
@@ -113,6 +116,17 @@ fixture_docs() { # <docs-dir> <kit#> <ui-plain> <hl-plain> [<style:zh|en>]
     printf '# final status fixture\n' > "$_dd/2026-09-21-ohos-final-status.md"
 }
 
+# fixture_install_sync <fx>: mirror the fixture repo's .28 SDK pack into the fixture install
+# root (the --dotnet root the P0 install-pack gate resolves). The gate checks the last
+# PACK_VERSIONS entry (.28) - the fixture has no manifests dir, so the fallback applies.
+fixture_install_sync() {
+    _fx="$1"
+    _dst="$_fx/installroot/packs/Microsoft.OpenHarmony.Sdk/1.0.0-preview.28"
+    rm -rf "$_dst"
+    mkdir -p "$(dirname "$_dst")"
+    cp -R "$_fx/ow/packs/Microsoft.OpenHarmony.Sdk/1.0.0-preview.28" "$_dst"
+}
+
 make_fixture() { # <dir> <docs-kit> <docs-ui> <docs-hl>
     _fx="$1"; _dkit="$2"; _dui="$3"; _dhl="$4"
     rm -rf "$_fx"; mkdir -p "$_fx"
@@ -133,7 +147,21 @@ EOF
         mkdir -p "$_pd"
         head -c 987654 /dev/zero > "$_pd/modules.ui.abc" 2>/dev/null || return 1
         head -c 54321 /dev/zero > "$_pd/modules.abc" 2>/dev/null || return 1
+        mkdir -p "$_ow/packs/Microsoft.OpenHarmony.Sdk/1.0.0-preview.$_v/targets" \
+                 "$_ow/packs/Microsoft.OpenHarmony.Sdk/1.0.0-preview.$_v/tools" \
+                 "$_ow/packs/Microsoft.OpenHarmony.Sdk/1.0.0-preview.$_v/templates/resources/rawfile"
+        printf 'fixture hap targets %s\n' "$_v" > "$_ow/packs/Microsoft.OpenHarmony.Sdk/1.0.0-preview.$_v/targets/OpenHarmony.Hap.targets"
+        printf 'fixture tasks %s\n' "$_v" > "$_ow/packs/Microsoft.OpenHarmony.Sdk/1.0.0-preview.$_v/tools/Microsoft.OpenHarmony.Tasks.dll"
+        for _rf in media.html hls.min.js hls.LICENSE.txt; do
+            printf 'fixture rawfile %s %s\n' "$_v" "$_rf" > "$_ow/packs/Microsoft.OpenHarmony.Sdk/1.0.0-preview.$_v/templates/resources/rawfile/$_rf"
+        done
     done
+    # build-use install root (the P0 install-pack gate compares against this; the manifest is
+    # absent in the fixture so the gate falls back to the last PACK_VERSIONS entry = .28)
+    mkdir -p "$_fx/installroot"
+    printf '#!/bin/sh\nexit 1\n' > "$_fx/installroot/dotnet"
+    chmod +x "$_fx/installroot/dotnet"
+    fixture_install_sync "$_fx"
     cat > "$_ow/test/maui-platform-verify/Program.cs" <<'EOF'
 class Program {
     private const int verifyCheckTotal = 100;
@@ -190,13 +218,39 @@ F1="$T/fixture-pass"; make_fixture "$F1" 99 987654 54321 || { echo "fixture fail
 S1="$T/scratch-pass"
 OUT1="$T/t1.out"
 sh "$CUT" --kit 99 --phase P0 --skip-selftests --execute --scratch "$S1" \
-    --ow-repo "$F1/ow" --maui-repo "$F1/maui" --runtime-repo "$F1/runtime" --docs-dir "$F1/docs" > "$OUT1" 2>&1
+    --ow-repo "$F1/ow" --maui-repo "$F1/maui" --runtime-repo "$F1/runtime" --docs-dir "$F1/docs" \
+    --dotnet "$F1/installroot/dotnet" > "$OUT1" 2>&1
 check_rc "T1 rc=0" "$?" 0
 assert_contains "T1 P0 PASS" "$OUT1" 'P0 PASS'
 assert_contains "T1 pins check" "$OUT1" 'pins +PASS'
 assert_contains "T1 docs check" "$OUT1" 'docs kit #99 +PASS'
+assert_contains "T1 install pack check" "$OUT1" 'install pack +PASS'
 grep -q '^P0_rc=0$' "$S1/state.env" 2>/dev/null
 check "T1 state P0_rc=0" $?
+grep -q '^install_pack_ver=1.0.0-preview.28$' "$S1/state.env" 2>/dev/null
+check "T1 state install_pack_ver recorded" $?
+
+# T1b: the install-pack gate is fail-closed: a drifted install abc fails P0 and names the file
+F1B="$T/fixture-install-drift"; make_fixture "$F1B" 99 987654 54321 || exit 1
+head -c 424242 /dev/zero > "$F1B/installroot/packs/Microsoft.OpenHarmony.Sdk/1.0.0-preview.28/templates/ets/modules.ui.abc"
+S1B="$T/scratch-install-drift"
+OUT1B="$T/t1b.out"
+sh "$CUT" --kit 99 --phase P0 --skip-selftests --execute --scratch "$S1B" \
+    --ow-repo "$F1B/ow" --maui-repo "$F1B/maui" --runtime-repo "$F1B/runtime" --docs-dir "$F1B/docs" \
+    --dotnet "$F1B/installroot/dotnet" > "$OUT1B" 2>&1
+check_neg "T1b drifted install pack rc!=0" "$?"
+assert_contains "T1b gate names the drifted file" "$OUT1B" 'install pack +FAIL templates/ets/modules.ui.abc'
+assert_contains "T1b P0 FAIL" "$OUT1B" 'P0 FAIL'
+# T1c: a missing install pack also fails closed (never silently skipped)
+F1C="$T/fixture-install-missing"; make_fixture "$F1C" 99 987654 54321 || exit 1
+rm -rf "$F1C/installroot/packs"
+S1C="$T/scratch-install-missing"
+OUT1C="$T/t1c.out"
+sh "$CUT" --kit 99 --phase P0 --skip-selftests --execute --scratch "$S1C" \
+    --ow-repo "$F1C/ow" --maui-repo "$F1C/maui" --runtime-repo "$F1C/runtime" --docs-dir "$F1C/docs" \
+    --dotnet "$F1C/installroot/dotnet" > "$OUT1C" 2>&1
+check_neg "T1c missing install pack rc!=0" "$?"
+assert_contains "T1c missing pack named" "$OUT1C" 'install pack FAIL: cannot resolve the build-use dotnet pack root'
 
 # ------------------------------------------------------------------ T2 P0 fail (pack drift)
 section "T2 P0 fail on pack abc drift"
@@ -205,7 +259,8 @@ head -c 111111 /dev/zero > "$F2/ow/packs/Microsoft.OpenHarmony.Sdk/1.0.0-preview
 S2="$T/scratch-drift"
 OUT2="$T/t2.out"
 sh "$CUT" --kit 99 --phase P0 --skip-selftests --execute --scratch "$S2" \
-    --ow-repo "$F2/ow" --maui-repo "$F2/maui" --runtime-repo "$F2/runtime" --docs-dir "$F2/docs" > "$OUT2" 2>&1
+    --ow-repo "$F2/ow" --maui-repo "$F2/maui" --runtime-repo "$F2/runtime" --docs-dir "$F2/docs" \
+    --dotnet "$F2/installroot/dotnet" > "$OUT2" 2>&1
 check_neg "T2 rc!=0" "$?"
 assert_contains "T2 packs abc FAIL" "$OUT2" 'packs abc +FAIL preview\.23'
 assert_contains "T2 P0 FAIL" "$OUT2" 'P0 FAIL'
@@ -216,7 +271,8 @@ F3="$T/fixture-stale"; make_fixture "$F3" 98 987654 54321 || exit 1
 S3="$T/scratch-stale"
 OUT3="$T/t3.out"
 sh "$CUT" --kit 99 --phase P0 --skip-selftests --execute --scratch "$S3" \
-    --ow-repo "$F3/ow" --maui-repo "$F3/maui" --runtime-repo "$F3/runtime" --docs-dir "$F3/docs" > "$OUT3" 2>&1
+    --ow-repo "$F3/ow" --maui-repo "$F3/maui" --runtime-repo "$F3/runtime" --docs-dir "$F3/docs" \
+    --dotnet "$F3/installroot/dotnet" > "$OUT3" 2>&1
 check_rc "T3a stale docs rc=3" "$?" 3
 assert_contains "T3a bump-docs hint" "$OUT3" 'bump-docs'
 assert_contains "T3a current block mismatch" "$OUT3" 'current kit block is \[98\]'
@@ -225,7 +281,8 @@ F3B="$T/fixture-abc"; make_fixture "$F3B" 99 111111 54321 || exit 1
 S3B="$T/scratch-abc"
 OUT3B="$T/t3b.out"
 sh "$CUT" --kit 99 --phase P0 --skip-selftests --execute --scratch "$S3B" \
-    --ow-repo "$F3B/ow" --maui-repo "$F3B/maui" --runtime-repo "$F3B/runtime" --docs-dir "$F3B/docs" > "$OUT3B" 2>&1
+    --ow-repo "$F3B/ow" --maui-repo "$F3B/maui" --runtime-repo "$F3B/runtime" --docs-dir "$F3B/docs" \
+    --dotnet "$F3B/installroot/dotnet" > "$OUT3B" 2>&1
 check_rc "T3b stale abc rc=3" "$?" 3
 assert_contains "T3b abc mismatch named" "$OUT3B" 'missing the current shell abc 987654'
 # P1 alone must also refuse (fail-closed) and print no build command
@@ -341,12 +398,15 @@ for _v in 22 23 24 28; do
     head -c 55555 /dev/zero > "$_pd/modules.abc"
 done
 sed -i 's/987654,54321/111111,55555/' "$F6/ow/scripts/verify-kit.sh"
+fixture_install_sync "$F6"
 OUT6H="$T/t6h.out"
 sh "$CUT" --kit 99 --phase P0 --dry-run --skip-selftests --scratch "$T/scratch-bump-p0" \
-    --ow-repo "$F6/ow" --maui-repo "$F6/maui" --runtime-repo "$F6/runtime" --docs-dir "$F6/docs" > "$OUT6H" 2>&1
+    --ow-repo "$F6/ow" --maui-repo "$F6/maui" --runtime-repo "$F6/runtime" --docs-dir "$F6/docs" \
+    --dotnet "$F6/installroot/dotnet" > "$OUT6H" 2>&1
 check_rc "T6h P0 rc=0 after the bump" "$?" 0
 assert_contains "T6h P0 PASS" "$OUT6H" 'P0 PASS'
 assert_contains "T6h docs gate carries the new abc" "$OUT6H" 'docs kit #99 +PASS \(18 wave docs; abc 111111; index ok\)'
+assert_contains "T6h install pack check" "$OUT6H" 'install pack +PASS'
 
 # T6d: a missing doc refuses the whole wave with zero partial writes
 sed -i 's/kit #99，当前）/kit #98，当前）/' "$F6/docs/2026-09-22-ohos-tester-runner.md"

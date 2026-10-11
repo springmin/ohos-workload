@@ -4,9 +4,11 @@
 #
 # Phases (each one can run alone; a run without --phase resumes at the first phase whose rc is
 # not yet 0 in <scratch>/state.env):
-#   P0 preflight  repos + pins (worktrees/workflow MAUI_OHOS_REF) + four-pack abc + verify-kit
-#                 EXPECT_ABC + suite/host-export counts + worktree cleanliness + repo selftests
-#                 + the tester-docs gate (kit #N current block + current abc, fail-closed)
+#   P0 preflight  repos + pins (worktrees/workflow MAUI_OHOS_REF) + four-pack abc + the
+#                 build-use installed pack == repo pack check (targets/tasks/abc/shell rawfile;
+#                 fail-closed) + verify-kit EXPECT_ABC + suite/host-export counts + worktree
+#                 cleanliness + repo selftests + the tester-docs gate (kit #N current block +
+#                 current abc, fail-closed)
 #   P1 build      release worktrees at the pin (git-ignored dist/ets + .arkts-build materialized
 #                 from the main checkout) + hosting/graphics Release prep +
 #                 make-device-test-kit.sh --runtime-mode aot --with-blazor (7 haps, no --publish);
@@ -548,6 +550,95 @@ p0_packs() {
     return "$_f"
 }
 
+# The build-use installed pack gate: kit #54 shipped haps without resources/rawfile/media.html
+# /hls.min.js and without the WebAuth callback injection because P1 built with a stale
+# ~/.dotnet.rc2-fix preview.28 pack while the repo packs had moved on (verify doc
+# 2026-10-11-ohos-kit54-hap-verify.md). The check below compares the payload the build actually
+# uses (the pack under the build-use dotnet root) with the repo pack for the manifest-pinned
+# version; targets/tasks/abc/shell-rawfile drift fails P0 closed so a re-cut can never ship the
+# stale-generation haps again.
+install_pack_root() { # echo the build-use dotnet root; rc 1 when it cannot be resolved
+    _d="${DOTNET:-}"
+    if [ -z "$_d" ] && [ -f "$BUILD_ENV" ]; then
+        . "$BUILD_ENV" >/dev/null 2>&1
+        _d="${DOTNET:-}"
+    fi
+    [ -n "$_d" ] || _d="$HOME/.dotnet.rc2-fix/dotnet"
+    case "$_d" in
+        /*) _bin="$_d" ;;
+        *)
+            _bin="$(command -v "$_d" 2>/dev/null)" || return 1
+            case "$_bin" in
+                /*) ;;
+                *) return 1 ;;
+            esac
+            ;;
+    esac
+    _root="$(cd "$(dirname "$_bin")" 2>/dev/null && pwd)" || return 1
+    [ -d "$_root/packs/Microsoft.OpenHarmony.Sdk" ] || return 1
+    printf '%s\n' "$_root"
+}
+
+p0_install_pack() {
+    _f=0
+    _src="$(src_ow)"
+    _root="$(install_pack_root)" || {
+        printf '   install pack FAIL: cannot resolve the build-use dotnet pack root (DOTNET=%s; %s)\n' \
+            "${DOTNET:-<default>}" "$HOME/.dotnet.rc2-fix/dotnet" >&2
+        return 1
+    }
+    _band="${SDK_BAND:-11.0.100-rc.1}"
+    _mf="$_src/manifests/$_band/microsoft.net.sdk.openharmony/WorkloadManifest.json"
+    _ver=""
+    [ -f "$_mf" ] && _ver="$(python3 -c 'import json,sys;print(json.load(open(sys.argv[1])).get("version",""))' "$_mf" 2>/dev/null)"
+    if [ -z "$_ver" ]; then
+        _ver="1.0.0-preview.$(printf '%s\n' $PACK_VERSIONS | tail -n 1)"
+    fi
+    _repo="$_src/packs/Microsoft.OpenHarmony.Sdk/$_ver"
+    _inst="$_root/packs/Microsoft.OpenHarmony.Sdk/$_ver"
+    if [ ! -d "$_repo" ]; then
+        printf '   install pack FAIL: repo pack missing: %s\n' "$_repo" >&2
+        return 1
+    fi
+    if [ ! -d "$_inst" ]; then
+        printf '   install pack FAIL: build-use install pack missing: %s\n' "$_inst" >&2
+        return 1
+    fi
+    _checked=0
+    for _rel in \
+        targets/OpenHarmony.Hap.targets \
+        tools/Microsoft.OpenHarmony.Tasks.dll \
+        templates/ets/modules.ui.abc \
+        templates/ets/modules.abc \
+        templates/resources/rawfile/media.html \
+        templates/resources/rawfile/hls.min.js \
+        templates/resources/rawfile/hls.LICENSE.txt; do
+        if [ ! -f "$_repo/$_rel" ]; then
+            printf '   install pack FAIL repo missing %s\n' "$_rel" >&2
+            _f=$((_f + 1))
+            continue
+        fi
+        _a="$(sha256_of "$_repo/$_rel")"
+        _b="$(sha256_of "$_inst/$_rel" 2>/dev/null || true)"
+        if [ -z "$_b" ]; then
+            printf '   install pack FAIL install missing %s (%s)\n' "$_rel" "$_inst" >&2
+            _f=$((_f + 1))
+        elif [ "$_a" != "$_b" ]; then
+            printf '   install pack FAIL %s: repo %s != install %s (%s)\n' \
+                "$_rel" "$(printf '%s' "$_a" | cut -c1-8)" "$(printf '%s' "$_b" | cut -c1-8)" "$_inst" >&2
+            _f=$((_f + 1))
+        fi
+        _checked=$((_checked + 1))
+    done
+    st_set install_pack_root "$_root"
+    st_set install_pack_ver "$_ver"
+    if [ "$_f" = 0 ]; then
+        printf '   install pack         PASS (%s == repo %s; %s files)\n' \
+            "$(printf '%s' "$_root" | sed "s|$HOME|~|")" "$_ver" "$_checked"
+    fi
+    return "$_f"
+}
+
 p0_suite() {
     _f=0
     _src="$(src_ow)"
@@ -648,6 +739,7 @@ phase_P0() {
     p0_repos || _pf=$((_pf + 1))
     p0_pins || _pf=$((_pf + 1))
     p0_packs || _pf=$((_pf + 1))
+    p0_install_pack || _pf=$((_pf + 1))
     p0_suite || _pf=$((_pf + 1))
     p0_worktrees || _pf=$((_pf + 1))
     p0_selftests || _pf=$((_pf + 1))
