@@ -257,21 +257,23 @@ public sealed class App : Application
         }
     }
 
-    // MULTIWINDOW-L3 M1/N-SUBWINDOW: the live managed children in open order (default max 2,
-    // raised by OHOS_SUBWINDOW_MAX up to the supported ceiling). The app host binds each to its
-    // own shell session (sub-1, sub-2, ...) on the subwindow XComponent; the shell-drawn child
-    // stays the degradation path when the managed path is unavailable.
+    // MULTIWINDOW-L3 M1/N-SUBWINDOW: the live managed children in open order (default max 4,
+    // adjusted by OHOS_SUBWINDOW_MAX within [2, 8]). The app host binds each to its own shell
+    // session (sub-1, sub-2, ...) on the subwindow XComponent; the shell-drawn child stays the
+    // degradation path when the managed path is unavailable.
     private static readonly List<Window> s_childWindows = new();
-    private const int DefaultMaxManagedChildren = 2;
+    private const int MinManagedChildren = 2;
+    private const int DefaultMaxManagedChildren = 4;
     private const int MaxSupportedManagedChildren = 8;
 
     /// <summary>The demo's own open guard: the same OHOS_SUBWINDOW_MAX switch the host and the
-    /// shell read (default 2, ceiling 8), so the round's ?max=N triggers N child windows.</summary>
+    /// shell read (default 4, floor 2, ceiling 8), so the round's ?max=N triggers N child
+    /// windows.</summary>
     private static int MaxManagedChildren()
     {
         string? raw = Environment.GetEnvironmentVariable("OHOS_SUBWINDOW_MAX");
         return int.TryParse(raw, out int value)
-            ? Math.Clamp(value, DefaultMaxManagedChildren, MaxSupportedManagedChildren)
+            ? Math.Clamp(value, MinManagedChildren, MaxSupportedManagedChildren)
             : DefaultMaxManagedChildren;
     }
 
@@ -309,7 +311,7 @@ public sealed class App : Application
         }
         if (digits.Length > 0 && int.TryParse(digits, out int value))
         {
-            int clamped = Math.Clamp(value, DefaultMaxManagedChildren, MaxSupportedManagedChildren);
+            int clamped = Math.Clamp(value, MinManagedChildren, MaxSupportedManagedChildren);
             Environment.SetEnvironmentVariable("OHOS_SUBWINDOW_MAX", clamped.ToString());
             OpenHarmonyBridge.WriteStatus($"[hello-maui-app] subwindow max switch: OHOS_SUBWINDOW_MAX={clamped}");
         }
@@ -319,9 +321,9 @@ public sealed class App : Application
     /// MULTIWINDOW-L M3 entry / L3-M1: opens a real MAUI child window. Application.OpenWindow
     /// routes through the slice's application handler, which asks the shell for a subwindow
     /// XComponent (deferred surface) and binds the window when the surface reports in; the shell
-    /// session registry carries up to two children. When the managed path is unavailable (no
-    /// shell sink or an older host), the M shell-drawn child is created instead so the trigger
-    /// never leaves the user with nothing.
+    /// session registry carries the served limit (default 4). When the managed path is
+    /// unavailable (no shell sink or an older host), the M shell-drawn child is created instead
+    /// so the trigger never leaves the user with nothing.
     /// </summary>
     private static void OpenManagedSubWindow(bool withWeb = false, bool hashDoc = false, bool stormDoc = false, bool withMedia = false)
     {

@@ -837,12 +837,12 @@ const SUB_WINDOW_NAME: string = 'ohos_dotnet_subwindow';
 // sessions the shell carries. SubWindowSession entries live in a dynamically sized Map, so
 // SUB_WINDOW_MAX is only the ceiling the explicit switch may raise the served limit to (the
 // platform itself allows far more, 255 per L2CAP). The served limit defaults to
-// SUB_WINDOW_DEFAULT_MAX (2, the product default) and is raised only through the explicit
+// SUB_WINDOW_DEFAULT_MAX (4, the product default) and is changed only through the explicit
 // switch, mirroring the E4 overlay pattern: the OHOS_SUBWINDOW_MAX environment variable (the
 // managed host reads the same name) or the HAP rawfile "ohos-subwindow-max.txt" for pairings
 // that cannot set the process environment. A create beyond the served limit is answered with an
 // honest 801.
-const SUB_WINDOW_DEFAULT_MAX: number = 2;
+const SUB_WINDOW_DEFAULT_MAX: number = 4;
 const SUB_WINDOW_MAX: number = 8;
 const SUB_WINDOW_MIN_MAX: number = 2;
 const SUB_WINDOW_MAX_ENV: string = 'OHOS_SUBWINDOW_MAX';
@@ -2945,12 +2945,17 @@ struct Index {
     }
   }
 
-  // Applies a requested limit: only a raise matters (the default is the floor); the value
-  // clamps into [SUB_WINDOW_MIN_MAX, SUB_WINDOW_MAX] and is logged so the device round can
-  // anchor the effective capacity.
+  // Applies a requested limit: the switch can lower the served limit (down to
+  // SUB_WINDOW_MIN_MAX) or raise it (up to SUB_WINDOW_MAX); a non-positive request (the
+  // absent/invalid sentinel the readers return) keeps the default, and the value clamps into
+  // [SUB_WINDOW_MIN_MAX, SUB_WINDOW_MAX] and is logged so the device round can anchor the
+  // effective capacity.
   private applySubWindowLimit(requested: number): void {
+    if (requested <= 0) {
+      return;
+    }
     const clamped: number = Math.min(Math.max(requested, SUB_WINDOW_MIN_MAX), SUB_WINDOW_MAX);
-    if (clamped > this.subWindowLimit) {
+    if (clamped !== this.subWindowLimit) {
       this.subWindowLimit = clamped;
       this.logInfo(`[maui] subwindow capacity: ${this.subWindowLimit}`);
     }
@@ -3040,7 +3045,7 @@ struct Index {
 
   // Creates one child under the main window and loads the shell page. Sessions are keyed by the
   // managed surface id: a repeated create reports the live session instead of leaking a second
-  // child, and a create beyond the served session limit (SUB_WINDOW_DEFAULT_MAX, raised only by
+  // child, and a create beyond the served session limit (SUB_WINDOW_DEFAULT_MAX, changed by
   // the explicit switch) is answered honestly (801). The shell-drawn M path (no surfaceId) is
   // one session keyed ''.
   private async createSubWindow(cmd: SubWindowCommand): Promise<void> {
