@@ -208,6 +208,13 @@ interface SubMediaAssetsConfig {
   slot?: number;
 }
 
+// MEDIA-MICRO (Range): one resolved single child-source byte range (the primary page's
+// MediaByteRange lives in pages/Index.ets, a separate module; this page keeps its own copy).
+interface SubMediaByteRange {
+  start: number;
+  end: number;
+}
+
 // The stock hybridwebview.js __hwvInvokeDotNet body.
 interface SubHybridInvokeRequest {
   MethodName?: string;
@@ -420,6 +427,8 @@ struct SubWindow {
   private subMediaSourceKind: number[] = [0, 0];
   private subMediaSourceLocation: string[] = ['', ''];
   private subMediaServeLogs: number[] = [0, 0];
+  // MEDIA-MICRO (Range): bounded per-slot counter for the ranged child-source log lines.
+  private subMediaRangeLogs: number[] = [0, 0];
   // The hybrid __hwvInvokeDotNet responses held open until the managed handler answers through
   // host.registerChildHybridInvokeResultSink (or the local timeout fires).
   private subHybridInvokeSeq: number = 0;
@@ -1283,6 +1292,7 @@ struct SubWindow {
     this.subMediaSourceKind[slot] = 0;
     this.subMediaSourceLocation[slot] = '';
     this.subMediaServeLogs[slot] = 0;
+    this.subMediaRangeLogs[slot] = 0;
     // B6: the destroyed slot's navigation markers/pending decisions go with its ArkWeb, so a
     // delayed approval for the old owner can never reload on the slot's next claim.
     this.subNavProgrammatic[slot] = null;
@@ -1429,7 +1439,9 @@ struct SubWindow {
       this.subMediaServeLogs[slot] = 0;
       hilog.info(DOMAIN, TAG, 'child media assets: slot=%{public}d kind=%{public}d location=%{public}s',
         slot, kind, this.childMediaLocationForLog(kind, location));
-      this.loadChildWebOrigin(slot, `${SUB_MEDIA_ORIGIN}?s=${slot}`);
+      // MEDIA-MICRO: a registered child playlist carries hls=1 in the page query (the child page
+      // routes the extension-less /__src__ source through hls.js from its first script run).
+      this.loadChildWebOrigin(slot, `${SUB_MEDIA_ORIGIN}?s=${slot}${this.childMediaIsHls(slot) ? '&hls=1' : ''}`);
     } catch (mediaError) {
       hilog.error(DOMAIN, TAG, 'child media assets registration failed: %{public}s', (mediaError as Error).message);
       this.subMediaRegistered[slot] = false;
@@ -1476,8 +1488,10 @@ struct SubWindow {
   }
 
   // Serves one intercepted SUB_MEDIA_ORIGIN request on the slot: the page for "/", the vendored
-  // HLS runtime for "/hls.min.js", the registered source for "/__src__", 404 otherwise.
-  private serveChildMedia(url: string, slot: number): WebResourceResponse {
+  // HLS runtime for "/hls.min.js", the registered source for "/__src__", a registered playlist's
+  // sibling files, 404 otherwise. MEDIA-MICRO: the request's Range header rides into every
+  // source answer (single range -> 206, invalid/multi/unsatisfiable -> 416).
+  private serveChildMedia(url: string, slot: number, rangeHeader: string): WebResourceResponse {
     let path: string = url;
     const scheme: number = path.indexOf('://');
     if (scheme >= 0) {
@@ -1503,9 +1517,63 @@ struct SubWindow {
       return this.childServeMediaRawFile(SUB_MEDIA_HLS_RAWFILE, 'text/javascript');
     }
     if (path === '/__src__') {
-      return this.childServeMediaSource(slot);
+      return this.childServeMediaSource(slot, rangeHeader);
+    }
+    // MEDIA-MICRO: a registered child playlist resolves its relative variant/segment/media
+    // references against the media origin; serve them from the playlist's own directory.
+    if (this.childMediaIsHls(slot)) {
+      return this.childServeMediaSibling(path, slot, rangeHeader);
     }
     return this.childHybridErrorResponse(404);
+  }
+
+  // MEDIA-MICRO: true while the child slot's registered location is an m3u8 playlist.
+  private childMediaIsHls(slot: number): boolean {
+    return this.subMediaRegistered[slot] && this.subMediaSourceKind[slot] !== 0
+      && this.subMediaSourceLocation[slot].toLowerCase().endsWith('.m3u8');
+  }
+
+  // MEDIA-MICRO: one same-origin path of a registered child playlist, decoded and validated,
+  // then resolved below the playlist's own directory (see mediaSiblingPath on the primary page).
+  private childServeMediaSibling(path: string, slot: number, rangeHeader: string): WebResourceResponse {
+    const relative: string = this.childMediaSiblingPath(path);
+    if (relative.length === 0) {
+      return this.childHybridErrorResponse(404);
+    }
+    const location: string = this.childMediaSiblingLocation(this.subMediaSourceLocation[slot], relative);
+    this.logChildMediaSibling(slot, relative);
+    return this.childServeMediaPayload(location, slot, rangeHeader);
+  }
+
+  private childMediaSiblingPath(path: string): string {
+    let relative: string = path;
+    while (relative.startsWith('/')) {
+      relative = relative.substring(1);
+    }
+    if (relative.length === 0 || relative.length > 1024 || relative.indexOf('\\') >= 0) {
+      return '';
+    }
+    try {
+      relative = decodeURIComponent(relative);
+    } catch {
+      return '';
+    }
+    if (relative.length === 0 || relative.indexOf('\n') >= 0 || relative.indexOf('\r') >= 0) {
+      return '';
+    }
+    const segments: string[] = relative.split('/');
+    for (const segment of segments) {
+      if (segment.length === 0 || segment === '.' || segment === '..') {
+        return '';
+      }
+    }
+    return relative;
+  }
+
+  private childMediaSiblingLocation(location: string, relative: string): string {
+    const cut: number = location.lastIndexOf('/');
+    const dir: string = cut >= 0 ? location.substring(0, cut + 1) : '';
+    return dir + relative;
   }
 
   private childServeMediaRawFile(name: string, mime: string): WebResourceResponse {
@@ -1532,15 +1600,24 @@ struct SubWindow {
     return bytes.buffer.slice(start, end) as ArrayBuffer;
   }
 
-  // The registered rawfile/file source, read whole and answered with a media MIME type (kind 0
-  // has nothing to serve). A missing/oversized file answers 404/413; the page's video element
-  // then reports a media error, which the managed element maps to Failed.
-  private childServeMediaSource(slot: number): WebResourceResponse {
+  // The registered child rawfile/file source for /__src__, answered with a media MIME type
+  // (kind 0 has nothing to serve). A missing/oversized file answers 404/413; the page's video
+  // element then reports a media error, which the managed element maps to Failed.
+  private childServeMediaSource(slot: number, rangeHeader: string): WebResourceResponse {
     const kind: number = this.subMediaSourceKind[slot];
     const location: string = this.subMediaSourceLocation[slot];
     if (!this.subMediaRegistered[slot] || kind === 0 || location.length === 0) {
       return this.childHybridErrorResponse(404);
     }
+    return this.childServeMediaPayload(location, slot, rangeHeader);
+  }
+
+  // Serves one child source payload (the registered /__src__ file or a playlist's sibling file)
+  // with the shared ≤64MB + MIME semantics. MEDIA-MICRO: no Range header -> 200 +
+  // Accept-Ranges; one valid single range -> 206 + Content-Range; invalid/multi/unsatisfiable
+  // -> 416.
+  private childServeMediaPayload(location: string, slot: number, rangeHeader: string): WebResourceResponse {
+    const kind: number = this.subMediaSourceKind[slot];
     let fd: number = -1;
     try {
       let data: ArrayBuffer;
@@ -1562,10 +1639,28 @@ struct SubWindow {
         return this.childHybridErrorResponse(413);
       }
       const response: WebResourceResponse = new WebResourceResponse();
-      response.setResponseCode(200);
       response.setResponseMimeType(this.childMediaMimeType(location));
       response.setResponseEncoding('utf-8');
-      response.setResponseData(data);
+      if (rangeHeader.length === 0) {
+        response.setResponseCode(200);
+        response.setResponseData(data);
+        const wholeHeaders: Header[] = [{ headerKey: 'Accept-Ranges', headerValue: 'bytes' }];
+        response.setResponseHeader(wholeHeaders);
+        return response;
+      }
+      const range: SubMediaByteRange | null = this.childParseMediaByteRange(rangeHeader, size);
+      if (range === null) {
+        this.logChildMediaRange(slot, rangeHeader, -1, -1, size, false);
+        return this.childMediaRangeNotSatisfiable(size);
+      }
+      response.setResponseCode(206);
+      response.setResponseData(data.slice(range.start, range.end + 1));
+      const rangeHeaders: Header[] = [
+        { headerKey: 'Content-Range', headerValue: `bytes ${range.start}-${range.end}/${size}` },
+        { headerKey: 'Accept-Ranges', headerValue: 'bytes' },
+      ];
+      response.setResponseHeader(rangeHeaders);
+      this.logChildMediaRange(slot, rangeHeader, range.start, range.end, size, true);
       return response;
     } catch (sourceError) {
       hilog.warn(DOMAIN, TAG, 'child media source read failed (slot %{public}d, kind %{public}d): %{public}s',
@@ -1580,6 +1675,118 @@ struct SubWindow {
         }
       }
     }
+  }
+
+  // MEDIA-MICRO (Range): the single-range grammar of the primary page (see
+  // parseMediaByteRange): "bytes=start-end", "bytes=start-" and "bytes=-suffix" only; anything
+  // else - a foreign unit, a multi-range list, a malformed number, a start beyond the payload -
+  // answers null and is refused with 416.
+  private childParseMediaByteRange(header: string, size: number): SubMediaByteRange | null {
+    if (size <= 0) {
+      return null;
+    }
+    const text: string = header.trim();
+    if (!text.toLowerCase().startsWith('bytes=')) {
+      return null;
+    }
+    const spec: string = text.substring(6).trim();
+    if (spec.length === 0 || spec.indexOf(',') >= 0) {
+      return null;
+    }
+    const dash: number = spec.indexOf('-');
+    if (dash < 0) {
+      return null;
+    }
+    const startText: string = spec.substring(0, dash).trim();
+    const endText: string = spec.substring(dash + 1).trim();
+    if (startText.length === 0) {
+      if (endText.length === 0 || !this.childIsDecimalDigits(endText)) {
+        return null;
+      }
+      const suffix: number = parseInt(endText, 10);
+      if (!Number.isFinite(suffix) || suffix <= 0) {
+        return null;
+      }
+      return { start: Math.max(0, size - suffix), end: size - 1 };
+    }
+    if (!this.childIsDecimalDigits(startText) || (endText.length > 0 && !this.childIsDecimalDigits(endText))) {
+      return null;
+    }
+    const start: number = parseInt(startText, 10);
+    if (!Number.isFinite(start) || start >= size) {
+      return null;
+    }
+    if (endText.length === 0) {
+      return { start: start, end: size - 1 };
+    }
+    const parsedEnd: number = parseInt(endText, 10);
+    if (!Number.isFinite(parsedEnd) || parsedEnd < start) {
+      return null;
+    }
+    return { start: start, end: Math.min(parsedEnd, size - 1) };
+  }
+
+  private childIsDecimalDigits(text: string): boolean {
+    if (text.length === 0 || text.length > 15) {
+      return false;
+    }
+    for (let index = 0; index < text.length; index++) {
+      const code: number = text.charCodeAt(index);
+      if (code < 0x30 || code > 0x39) {
+        return false;
+      }
+    }
+    return true;
+  }
+
+  // The fail-closed answer for an invalid/multi-range/unsatisfiable child request.
+  private childMediaRangeNotSatisfiable(size: number): WebResourceResponse {
+    const response: WebResourceResponse = new WebResourceResponse();
+    response.setResponseCode(416);
+    response.setResponseMimeType('text/plain');
+    response.setResponseEncoding('utf-8');
+    const headers: Header[] = [
+      { headerKey: 'Content-Range', headerValue: `bytes */${size}` },
+      { headerKey: 'Accept-Ranges', headerValue: 'bytes' },
+    ];
+    response.setResponseHeader(headers);
+    return response;
+  }
+
+  // MEDIA-MICRO (Range): the Range header of one intercepted child request ('' = whole-file).
+  private childMediaRequestRange(request: WebResourceRequest): string {
+    try {
+      const headers: Header[] = request.getRequestHeader();
+      for (const header of headers) {
+        if (header.headerKey.toLowerCase() === 'range') {
+          return header.headerValue !== undefined ? header.headerValue : '';
+        }
+      }
+    } catch {
+      // An unreadable header set is treated as a whole-file request.
+    }
+    return '';
+  }
+
+  // MEDIA-MICRO (Range): bounded per-slot hilog evidence for the child source answers; sibling
+  // serves share the same budget.
+  private logChildMediaRange(slot: number, header: string, start: number, end: number, size: number, served: boolean): void {
+    if (this.subMediaRangeLogs[slot] >= 16) {
+      return;
+    }
+    this.subMediaRangeLogs[slot]++;
+    const detail: string = served ? `bytes ${start}-${end}/${size}` : `416 size=${size}`;
+    const text: string = header.length > 96 ? `${header.substring(0, 93)}...` : header;
+    hilog.info(DOMAIN, TAG, 'child media range (slot %{public}d): %{public}s -> %{public}s',
+      slot, text.split('\n').join(' ').split('\r').join(' '), detail);
+  }
+
+  private logChildMediaSibling(slot: number, relative: string): void {
+    if (this.subMediaRangeLogs[slot] >= 16) {
+      return;
+    }
+    this.subMediaRangeLogs[slot]++;
+    hilog.info(DOMAIN, TAG, 'child media sibling (slot %{public}d): %{public}s', slot, relative);
   }
 
   // Media MIME type by extension (the primary page's mapping).
@@ -1957,6 +2164,9 @@ struct SubWindow {
     }
     if (this.subMediaRegistered[slot] && this.subMediaDocId[slot].length > 0 && pageUrl.startsWith(SUB_MEDIA_ORIGIN)) {
       markers += `window.__ohMediaId = ${JSON.stringify(this.subMediaDocId[slot])};window.__ohMediaSlot = ${slot};`;
+      // MEDIA-MICRO: the registered child playlist is served under the extension-less /__src__
+      // URL; stamp the registration shape the page routes through hls.js.
+      markers += `window.__ohMediaHls = ${this.childMediaIsHls(slot)};`;
     }
     try {
       this.childWebController(slot).runJavaScript(
@@ -2663,9 +2873,10 @@ struct SubWindow {
         try {
           const url: string = event.request.getRequestUrl();
           // MEDIA-SUBWIN (B-M1): the child slot's media origin - the page for "/", the vendored
-          // HLS runtime and the registered source for "/__src__", 404 otherwise.
+          // HLS runtime, the registered source for "/__src__" and a playlist's sibling files,
+          // 404 otherwise. MEDIA-MICRO: the request's Range header rides along.
           if (this.subMediaRegistered[slot] && url.startsWith(SUB_MEDIA_ORIGIN)) {
-            return this.serveChildMedia(url, slot);
+            return this.serveChildMedia(url, slot, this.childMediaRequestRange(event.request));
           }
           if (this.subBlazorRegistered && url.startsWith(this.subBlazorOrigin)) {
             if (this.subBlazorServeLogs < 3) {
@@ -2746,6 +2957,13 @@ struct SubWindow {
         if (this.popupBound) {
           Web({ src: '', controller: this.popupController !== null ? this.popupController : this.popupFallbackController })
             .multiWindowAccess(false)
+            // L8-POPUP (MEDIA-MICRO): the popup is a user-opened web window whose content owns
+            // its own media (HTML5 video/audio, player pages). Opt it out of the platform
+            // gesture gate like every other shell Web surface, so a popup page can start an
+            // unmuted/programmatic stream without a second in-popup gesture. The popup stays
+            // outside the managed media wire: no media command, no media origin service, no
+            // managed identity/state (kind=popup isolation is unchanged).
+            .mediaPlayGestureAccess(false)
             .domStorageAccess(true)
             .javaScriptAccess(true)
             .onWindowExit((): void => {

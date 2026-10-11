@@ -14,7 +14,7 @@ using Microsoft.OpenHarmony.Hosting;
 // after the fuzz tail) instead of letting every caller repeat its own threshold constant.
 VerifyLineCountingWriter verifyStdout = new(Console.Out);
 Console.SetOut(verifyStdout);
-const int verifyCheckTotal = 791;                     // +3 L7-M2: the deferred-create replay (pending table, defer/replay methods and the dispatch/resume/supersede/close/teardown wiring pinned in all four packs) plus the duplicate-Created idempotency on the session table (a replay racing a managed re-send must not double the session) // +8 WEB-AUTH: the real WebAuthenticator flow (source + manifest-injection pins, query and fragment completion with the non-matching guard, caller cancel, caller timeout via the token, one-at-a-time + duplicate drop, option validation, launch failure, platform-less degrade) // +5 MULTIWINDOW-L3 B6: the child navigation veto (the ask/approval wire route with the one-shot started suppression, the cancelled decision with no approval, the fail-closed shapes incl. the primary window tag/bad slot/H-C2 spellings, window isolation with the approval to the asking window only, and the shell/slice source pins) // +8 MULTIWINDOW-L3 M4: the per-window child web pools (the window-tagged wire + tag validation, the window-index mirror, two windows' independent claims/capacity/pending/release, the hybrid window codec, the window-filtered hybrid dispatch with the fail-closed wrong window, and the shell/host/transport source pins) // +7 MULTIWINDOW-L3 M3: per-window IME/overlay/Back isolation with two concurrent secondaries (two shadow frames + release isolation, action ownership, two coexisting alerts + per-surface geometry + per-window modal frames + Hide one/all, tagged-text prompt ownership + submit completion, the production child prompt with the op-6 focus wire and its own-state completion, Back modal consumption + window Back routing, and the four-pack shell + slice + partition-cap source pins) // +15 MULTIWINDOW-L3 M2: the per-window identity handshake (an out-of-order claim buffered then acked by its Created, duplicate ready without a second ack, an unknown id closed fail-closed, a retired generation declined, reopen with a fresh generation, churn x20) and the two-window lifecycle closure (suspend/resume exactly once per child, focus isolation, focus ignored while stopped, targeted close, late events after close) plus the four-pack shell and slice source pins // +3 MULTIWINDOW-L3: the child hybrid-invoke codec (flag encode/decode, primary decode unchanged), the child-window dispatch (real invoke round trip on the owning handler) and the fail-closed unclaimed slot // +11 MULTIWINDOW-L3 M1: two managed subwindow sessions coexist (the second deferred OpenWindow on the free sub-2, per-window input/frame isolation, the shell-Closed and app-close targeted to one session, the capacity bound rejecting a third, and the shell/slice source pins) // +2 SEC-SCAN-6 C: the window close hook drops the child pool state and the a11y shadow frame + first-publish marker // +1 A11Y-SELFCHECK: a provider attached after the window's last frame repaints once on the next frame tick (the publish gate reads the export call directly; the shell 3s self-check must see nodes>0) // +7 MULTIWINDOW-L2 a W1: per-window a11y frame lookup/view ownership, window-routed actions (sub vs primary vs unknown), the per-instance listener thunk, the provider-gate local degrade, the subwindow password pin, the per-window modal gate and the host/shell/slice source pins // +18 MULTIWINDOW-L2 b: the child capacity wire (state-carried and URL-carried count shapes), the subwindow ArkWeb second host (the window-scoped OpenHarmonyChildWeb pool + transport + ready gate, a real child-window WebView routed through it, the primary pool/transport isolation, and the four-pack shell/host/slice source pins) and the SEC-SCAN-6 primary-window-tag rejection pin // +2 MULTIWINDOW-L M4-04: the per-window pinch channel (a child-tagged stream reaches the child renderer only; main/unknown/empty ids never do) // +16 MULTIWINDOW-L M4 first wave: the per-window focus/suspend-resume state machine (Activated/Deactivated/Stopped/Resumed, idempotent, primary untouched, the shell-Closed session belt), the per-window keyboard/IME wire (child Entry focus -> op 6 surface-tagged payload, text/composition/submit routed to the child only, window-tagged keys, per-window Back, text ports, the primary-to-child global-text isolation pin (SEC-SCAN-5c)) and the per-window accessibility frame + alert ownership partition, plus the four-pack shell/slice source pins // +14 MULTIWINDOW-L M3 shell subwindow XComponent + production consumption: the app host consumes the tagged channel itself, a deferred OpenWindow asks the shell for the subwindow surface and RouteSurface binds/first-frames/adopts it, its input/frame/close/reopen are window-id routed with no main-window interference, plus the four-pack shell source pins (XComponent id = surface id, register/unregister lifecycle, drawn fallback) and the host/slice per-window draw-target pins // +22 MULTIWINDOW-L M2 per-window renderer: the dual-window headless pin (the mw-l/m2 scratch assertions, driven through the hosting bridge's window-id tagged thunks and the slice's RouteSurface/RouteTouch/RouteFrame adapters, with one CanvasFactory recording canvas per window) plus the bridge id and late-subscriber replay contract // +6 MULTIWINDOW-M in-app subwindow: the create/move/resize/show/close command set and its JSON payloads, the lifecycle/geometry state machine, the routed touch event, malformed/unknown payload robustness, the off-device degradation, and the shell/host/slice source+pack-identity contract // +1 SEC-SCAN-4 a11y password masking (plaintext must not be published to the shadow tree; bullets mirror the drawn text) // +1 SEC-SCAN-4 off-surface cull boundary (zero-size frame draws, shadow extent rescues, off-surface Image keeps the decode pipeline) // +1 CG2-R2R host interp R2R opt-out pin (DOTNET_ReadyToRun=0 inside the mode-3 block; the runtime already forces it for InterpMode>=2, the host makes it explicit and the device retest holds IL parity) // +1 AOT-STARTUP first-use ArkWeb overlay mount gate (state flag + ensureWebSlot flip/log + build gate order) protects the -262 ms AOT startup fix + host identical-context replay skip pin // +2 MULTIWINDOW-S surface resize: the Created/Changed arrange gate (Destroyed/0x0 rejected) + the Changed replay re-arranging the window frame while Destroyed keeps it (A0 form adaptation)                     // +2 WASM-MIME .wasm -> application/wasm mapping in every pack shell + the standalone rawfile host / the host's `wasm mime:` + `wasm fallback:` instrumentation and the pack-host.sh --bad-mime negative control                     // +2 FIX-A11YFLYOUT a11y walk FlyoutPage Detail/presented-Flyout subtree pins (device nodeCount=1 root cause)                     // +1 FIX-A11YBUTTON shell self-check absolute position + z-order-above-overlays pin (button reachable with/without a live web control)                     // +3 AUTODISCONNECT layout-removal detach (dynamic slot destroy + claim release + handler kept) / re-add rebuild (ensure + registration replay on the reclaimed slot) / slice watcher-and-owner wiring pins                     // +6 SLOTS-DYNAMIC dynamic slot growth (ensure/destroy commands), capacity downgrade/event, configurable 2/4 limits, shell lazy/defer pins, 3rd-overlay sample                     // documented full [verify] line count (+3 FIX-SLICERACE concurrent connect/host storm/ pins, +5 L6 screenshot Jpeg format/quality capture/fallback/helper + title heartbeat behavior/source, +6 LEGACY toolbar primary/overflow/icon/events/shell/source, +3 SAMPLE-FIX hybrid bootstrap pack staging / read-only payload handler / stock-script demo, +4 MULTI-OVERLAY-FULL LRU pool/invoke slot codec/per-slot hybrid shell/slice owner wiring, +4 MULTI-OVL slot pool/wire codec/two-overlay shell/slice wiring, +4 FIX-BACKSIZE Back-press forwarding/drawer drill/ shell drawer/BlazorWebView desired size, +4 FIX-WVP overlay px->vp/degenerate-frame/hybrid-overlay arbitration/suspend-restore (shell+slice), +2 FIX-DISMISS flyout drawer dismiss under the device display conditions, +4 FIX-HOME home page arrange/draw (NavigationPage-in-TabbedPage descent), +4 MS-MODE runtime mode switch, +10 P2c-DEEPLINK, +4 P2b-IMG, +16 P1b-LIST, +10 P1a-ANIM, +2 SEC3 storage/deep-link pins, +5 W-series WebView wiring, +3 T1 InputView mapping, +4 T2 WebView gaps, +4 T3 GraphicsView interaction, +7 T10 modal accessibility, +4 T4 Label formatted text, +4 T5 layout semantics, +6 T7 DatePicker calendar/min-max, +4 T9 window title bar, +4 T11 diagnostics overlay, +1 N2 empty ContentPage arrangement, +6 T8 TableView, +5 T8 uneven rows, +7 T6 RTL flow direction, +5 T22 MainThread bridge, +2 FIX-TABBED tabbed CurrentPage, +4 T13 group footer view/N3 picker IsOpen, +5 T21 system font scale, +3 T21 font scale source wiring, +2 A11Y-TABBED tabbed accessibility, +3 N1 host multi-pointer, +5 T12 CarouselView group slides, +7 T14 rich shell flyout, +10 T14 flyout leftovers (MenuItemTemplate/FlyoutContent/AsMultipleItems), +2 FIX-SHELL shell CurrentPage, +2 A11Y-SHELL shell accessibility, +7 T15 rich Shell.TitleView, +8 T16 structured menus, +3 N4 TitleBar accessibility row, +3 T18 Essentials Map, +4 N5 overlay passthrough suppression, +5 N6 window decorations, +4 T20 media bridge, +3 B2 wasm site in a MAUI WebView, +2 W10 NativeAOT managed entry (host libs-dir resolution + shell AOT payload probe), +1 FIX-JSCALL Blazor IPC enum/struct AOT roots (JSCallResultType/JSCallType/NavigationOptions in the slice context + handler static-ctor touch + stub click-probe removed), +3 INTERP-DRAW2 draw-cost seam kinds / off-surface cull / translated-node rescue)) // +1 E4-CAPACITY8: every per-slot table derives from WEB_SLOT_MAX (hardcoded 4s forbidden), the served capacity keeps the shipped 8-slot default and the OHOS_OVERLAY_MAX env/rawfile switch can lower it (E4 root-cause fix) // +2 C5-L3 + SEC7-F-L4: the data op encodes '#'->'%23' on both the primary and the child path (helper + loadData wiring pinned per pack) and the child navigation asks gain the per-slot burst/window cap with the fail-closed drop and the bounded pending table kept // +7 SEC-SCAN-5c E/F: the pinch finiteness/bounds guards (non-finite centre/scale dropped before the walk and the dispatch; a finite extreme running scale clamped into [1e-3, 1e3]; normal reports unchanged) and the secondary a11y shadow-frame bounds (the frame table capped with the released slot reusable, a secondary walk truncated at the node cap into a well-formed prefix, and an empty/unknown frame publishing nothing - no baseline, no provider probe, no counters - while a null-root refresh keeps the last frame) // +1 N-SUBWINDOW: the subwindow cap is served from the explicit OHOS_SUBWINDOW_MAX/rawfile switch (default 2, ceiling 8; the host reads the same name) with the four-pack shell + host + sample source pins // +1 DEEPLINK-REGRESSION: a navigation request marks the compositor layout gate (a pushed page is arranged and its handlers connect on the next frame without an unrelated window/layout event) // +6 L8: the popup subwindow path (onWindowNew -> synchronous controller bind through ShellPopupBridge -> dedicated subwindow; close/name-reuse callbacks; capacity/URL null rejects; kind=popup isolation) with the four-pack shell source pins // +1 MODAL-DEEPLINK: a modal push/pop marks the compositor layout gate and requests a redraw (the modal page is arranged and its handlers connect on the next frame without an unrelated window/layout event) // +1 L8-REMAINDER: the windowopenseq popup writer substitutes the popup name through the __L8N__ placeholder (no bare `n` in the written script; the title read-back and the PONG flow stay pinned) // +8 MEDIAELEMENT-ARKWEB A-M1: the ArkWeb HTML5 media element around the missing Media Kit (the four-pack shell media service/page/gesture opt-out + the pack rawfile staging + the slice surface/handler/registration + source normalization + effective URL/ack + off-device degrade/slot release + the trusted event route) // +12 MEDIA-SUBWIN+HLS (B-M1): the child window media service (the four-pack SubWindow.ets child "media" op + page/HLS/source serving + document-id bridge + gesture opt-out + slot reset pins, the slice's window-resolved claim/close-hook pins and the real secondary-window drill: child-pool claim, child-wire registration/frame, trusted event route, close release+destroy, primary transport untouched) and the HLS path (the media page's isHlsUrl/lazy hls.js/MSE branch/fatal recovery/native fallback + the vendored hls.js 1.7.3 runtime identity across the four packs + the primary/child rawfile serving wiring)
+const int verifyCheckTotal = 796;                     // +5 MEDIA-MICRO: the /__src__ single-range answers + playlist-sibling serving + the popup media gesture opt-out + the rawfile playlist HLS stamp + the device probes // +3 L7-M2: the deferred-create replay (pending table, defer/replay methods and the dispatch/resume/supersede/close/teardown wiring pinned in all four packs) plus the duplicate-Created idempotency on the session table (a replay racing a managed re-send must not double the session) // +8 WEB-AUTH: the real WebAuthenticator flow (source + manifest-injection pins, query and fragment completion with the non-matching guard, caller cancel, caller timeout via the token, one-at-a-time + duplicate drop, option validation, launch failure, platform-less degrade) // +5 MULTIWINDOW-L3 B6: the child navigation veto (the ask/approval wire route with the one-shot started suppression, the cancelled decision with no approval, the fail-closed shapes incl. the primary window tag/bad slot/H-C2 spellings, window isolation with the approval to the asking window only, and the shell/slice source pins) // +8 MULTIWINDOW-L3 M4: the per-window child web pools (the window-tagged wire + tag validation, the window-index mirror, two windows' independent claims/capacity/pending/release, the hybrid window codec, the window-filtered hybrid dispatch with the fail-closed wrong window, and the shell/host/transport source pins) // +7 MULTIWINDOW-L3 M3: per-window IME/overlay/Back isolation with two concurrent secondaries (two shadow frames + release isolation, action ownership, two coexisting alerts + per-surface geometry + per-window modal frames + Hide one/all, tagged-text prompt ownership + submit completion, the production child prompt with the op-6 focus wire and its own-state completion, Back modal consumption + window Back routing, and the four-pack shell + slice + partition-cap source pins) // +15 MULTIWINDOW-L3 M2: the per-window identity handshake (an out-of-order claim buffered then acked by its Created, duplicate ready without a second ack, an unknown id closed fail-closed, a retired generation declined, reopen with a fresh generation, churn x20) and the two-window lifecycle closure (suspend/resume exactly once per child, focus isolation, focus ignored while stopped, targeted close, late events after close) plus the four-pack shell and slice source pins // +3 MULTIWINDOW-L3: the child hybrid-invoke codec (flag encode/decode, primary decode unchanged), the child-window dispatch (real invoke round trip on the owning handler) and the fail-closed unclaimed slot // +11 MULTIWINDOW-L3 M1: two managed subwindow sessions coexist (the second deferred OpenWindow on the free sub-2, per-window input/frame isolation, the shell-Closed and app-close targeted to one session, the capacity bound rejecting a third, and the shell/slice source pins) // +2 SEC-SCAN-6 C: the window close hook drops the child pool state and the a11y shadow frame + first-publish marker // +1 A11Y-SELFCHECK: a provider attached after the window's last frame repaints once on the next frame tick (the publish gate reads the export call directly; the shell 3s self-check must see nodes>0) // +7 MULTIWINDOW-L2 a W1: per-window a11y frame lookup/view ownership, window-routed actions (sub vs primary vs unknown), the per-instance listener thunk, the provider-gate local degrade, the subwindow password pin, the per-window modal gate and the host/shell/slice source pins // +18 MULTIWINDOW-L2 b: the child capacity wire (state-carried and URL-carried count shapes), the subwindow ArkWeb second host (the window-scoped OpenHarmonyChildWeb pool + transport + ready gate, a real child-window WebView routed through it, the primary pool/transport isolation, and the four-pack shell/host/slice source pins) and the SEC-SCAN-6 primary-window-tag rejection pin // +2 MULTIWINDOW-L M4-04: the per-window pinch channel (a child-tagged stream reaches the child renderer only; main/unknown/empty ids never do) // +16 MULTIWINDOW-L M4 first wave: the per-window focus/suspend-resume state machine (Activated/Deactivated/Stopped/Resumed, idempotent, primary untouched, the shell-Closed session belt), the per-window keyboard/IME wire (child Entry focus -> op 6 surface-tagged payload, text/composition/submit routed to the child only, window-tagged keys, per-window Back, text ports, the primary-to-child global-text isolation pin (SEC-SCAN-5c)) and the per-window accessibility frame + alert ownership partition, plus the four-pack shell/slice source pins // +14 MULTIWINDOW-L M3 shell subwindow XComponent + production consumption: the app host consumes the tagged channel itself, a deferred OpenWindow asks the shell for the subwindow surface and RouteSurface binds/first-frames/adopts it, its input/frame/close/reopen are window-id routed with no main-window interference, plus the four-pack shell source pins (XComponent id = surface id, register/unregister lifecycle, drawn fallback) and the host/slice per-window draw-target pins // +22 MULTIWINDOW-L M2 per-window renderer: the dual-window headless pin (the mw-l/m2 scratch assertions, driven through the hosting bridge's window-id tagged thunks and the slice's RouteSurface/RouteTouch/RouteFrame adapters, with one CanvasFactory recording canvas per window) plus the bridge id and late-subscriber replay contract // +6 MULTIWINDOW-M in-app subwindow: the create/move/resize/show/close command set and its JSON payloads, the lifecycle/geometry state machine, the routed touch event, malformed/unknown payload robustness, the off-device degradation, and the shell/host/slice source+pack-identity contract // +1 SEC-SCAN-4 a11y password masking (plaintext must not be published to the shadow tree; bullets mirror the drawn text) // +1 SEC-SCAN-4 off-surface cull boundary (zero-size frame draws, shadow extent rescues, off-surface Image keeps the decode pipeline) // +1 CG2-R2R host interp R2R opt-out pin (DOTNET_ReadyToRun=0 inside the mode-3 block; the runtime already forces it for InterpMode>=2, the host makes it explicit and the device retest holds IL parity) // +1 AOT-STARTUP first-use ArkWeb overlay mount gate (state flag + ensureWebSlot flip/log + build gate order) protects the -262 ms AOT startup fix + host identical-context replay skip pin // +2 MULTIWINDOW-S surface resize: the Created/Changed arrange gate (Destroyed/0x0 rejected) + the Changed replay re-arranging the window frame while Destroyed keeps it (A0 form adaptation)                     // +2 WASM-MIME .wasm -> application/wasm mapping in every pack shell + the standalone rawfile host / the host's `wasm mime:` + `wasm fallback:` instrumentation and the pack-host.sh --bad-mime negative control                     // +2 FIX-A11YFLYOUT a11y walk FlyoutPage Detail/presented-Flyout subtree pins (device nodeCount=1 root cause)                     // +1 FIX-A11YBUTTON shell self-check absolute position + z-order-above-overlays pin (button reachable with/without a live web control)                     // +3 AUTODISCONNECT layout-removal detach (dynamic slot destroy + claim release + handler kept) / re-add rebuild (ensure + registration replay on the reclaimed slot) / slice watcher-and-owner wiring pins                     // +6 SLOTS-DYNAMIC dynamic slot growth (ensure/destroy commands), capacity downgrade/event, configurable 2/4 limits, shell lazy/defer pins, 3rd-overlay sample                     // documented full [verify] line count (+3 FIX-SLICERACE concurrent connect/host storm/ pins, +5 L6 screenshot Jpeg format/quality capture/fallback/helper + title heartbeat behavior/source, +6 LEGACY toolbar primary/overflow/icon/events/shell/source, +3 SAMPLE-FIX hybrid bootstrap pack staging / read-only payload handler / stock-script demo, +4 MULTI-OVERLAY-FULL LRU pool/invoke slot codec/per-slot hybrid shell/slice owner wiring, +4 MULTI-OVL slot pool/wire codec/two-overlay shell/slice wiring, +4 FIX-BACKSIZE Back-press forwarding/drawer drill/ shell drawer/BlazorWebView desired size, +4 FIX-WVP overlay px->vp/degenerate-frame/hybrid-overlay arbitration/suspend-restore (shell+slice), +2 FIX-DISMISS flyout drawer dismiss under the device display conditions, +4 FIX-HOME home page arrange/draw (NavigationPage-in-TabbedPage descent), +4 MS-MODE runtime mode switch, +10 P2c-DEEPLINK, +4 P2b-IMG, +16 P1b-LIST, +10 P1a-ANIM, +2 SEC3 storage/deep-link pins, +5 W-series WebView wiring, +3 T1 InputView mapping, +4 T2 WebView gaps, +4 T3 GraphicsView interaction, +7 T10 modal accessibility, +4 T4 Label formatted text, +4 T5 layout semantics, +6 T7 DatePicker calendar/min-max, +4 T9 window title bar, +4 T11 diagnostics overlay, +1 N2 empty ContentPage arrangement, +6 T8 TableView, +5 T8 uneven rows, +7 T6 RTL flow direction, +5 T22 MainThread bridge, +2 FIX-TABBED tabbed CurrentPage, +4 T13 group footer view/N3 picker IsOpen, +5 T21 system font scale, +3 T21 font scale source wiring, +2 A11Y-TABBED tabbed accessibility, +3 N1 host multi-pointer, +5 T12 CarouselView group slides, +7 T14 rich shell flyout, +10 T14 flyout leftovers (MenuItemTemplate/FlyoutContent/AsMultipleItems), +2 FIX-SHELL shell CurrentPage, +2 A11Y-SHELL shell accessibility, +7 T15 rich Shell.TitleView, +8 T16 structured menus, +3 N4 TitleBar accessibility row, +3 T18 Essentials Map, +4 N5 overlay passthrough suppression, +5 N6 window decorations, +4 T20 media bridge, +3 B2 wasm site in a MAUI WebView, +2 W10 NativeAOT managed entry (host libs-dir resolution + shell AOT payload probe), +1 FIX-JSCALL Blazor IPC enum/struct AOT roots (JSCallResultType/JSCallType/NavigationOptions in the slice context + handler static-ctor touch + stub click-probe removed), +3 INTERP-DRAW2 draw-cost seam kinds / off-surface cull / translated-node rescue)) // +1 E4-CAPACITY8: every per-slot table derives from WEB_SLOT_MAX (hardcoded 4s forbidden), the served capacity keeps the shipped 8-slot default and the OHOS_OVERLAY_MAX env/rawfile switch can lower it (E4 root-cause fix) // +2 C5-L3 + SEC7-F-L4: the data op encodes '#'->'%23' on both the primary and the child path (helper + loadData wiring pinned per pack) and the child navigation asks gain the per-slot burst/window cap with the fail-closed drop and the bounded pending table kept // +7 SEC-SCAN-5c E/F: the pinch finiteness/bounds guards (non-finite centre/scale dropped before the walk and the dispatch; a finite extreme running scale clamped into [1e-3, 1e3]; normal reports unchanged) and the secondary a11y shadow-frame bounds (the frame table capped with the released slot reusable, a secondary walk truncated at the node cap into a well-formed prefix, and an empty/unknown frame publishing nothing - no baseline, no provider probe, no counters - while a null-root refresh keeps the last frame) // +1 N-SUBWINDOW: the subwindow cap is served from the explicit OHOS_SUBWINDOW_MAX/rawfile switch (default 2, ceiling 8; the host reads the same name) with the four-pack shell + host + sample source pins // +1 DEEPLINK-REGRESSION: a navigation request marks the compositor layout gate (a pushed page is arranged and its handlers connect on the next frame without an unrelated window/layout event) // +6 L8: the popup subwindow path (onWindowNew -> synchronous controller bind through ShellPopupBridge -> dedicated subwindow; close/name-reuse callbacks; capacity/URL null rejects; kind=popup isolation) with the four-pack shell source pins // +1 MODAL-DEEPLINK: a modal push/pop marks the compositor layout gate and requests a redraw (the modal page is arranged and its handlers connect on the next frame without an unrelated window/layout event) // +1 L8-REMAINDER: the windowopenseq popup writer substitutes the popup name through the __L8N__ placeholder (no bare `n` in the written script; the title read-back and the PONG flow stay pinned) // +8 MEDIAELEMENT-ARKWEB A-M1: the ArkWeb HTML5 media element around the missing Media Kit (the four-pack shell media service/page/gesture opt-out + the pack rawfile staging + the slice surface/handler/registration + source normalization + effective URL/ack + off-device degrade/slot release + the trusted event route) // +12 MEDIA-SUBWIN+HLS (B-M1): the child window media service (the four-pack SubWindow.ets child "media" op + page/HLS/source serving + document-id bridge + gesture opt-out + slot reset pins, the slice's window-resolved claim/close-hook pins and the real secondary-window drill: child-pool claim, child-wire registration/frame, trusted event route, close release+destroy, primary transport untouched) and the HLS path (the media page's isHlsUrl/lazy hls.js/MSE branch/fatal recovery/native fallback + the vendored hls.js 1.7.3 runtime identity across the four packs + the primary/child rawfile serving wiring)
 const int verifyCheckFloor = verifyCheckTotal - 20;   // documented floor convention (total - 20)
 
 // A small image file for the Image handler.
@@ -14553,10 +14553,10 @@ foreach (string amediaShellVersion in amediaShellVersions)
         amediaIndex.Contains("} else if (op === 'media') {") &&
         amediaIndex.Contains("private registerMediaAssets(slot: number, arg: string): void {") &&
         amediaIndex.Contains("private isSafeMediaSource(kind: number, location: string): boolean {") &&
-        amediaIndex.Contains("private serveMedia(url: string, slot: number): WebResourceResponse {") &&
+        amediaIndex.Contains("private serveMedia(url: string, slot: number, rangeHeader: string): WebResourceResponse {") &&
         amediaIndex.Contains("if (path === '/__src__')") &&
         amediaIndex.Contains("private serveMediaPage(): WebResourceResponse {") &&
-        amediaIndex.Contains("private serveMediaSource(slot: number): WebResourceResponse {") &&
+        amediaIndex.Contains("private serveMediaSource(slot: number, rangeHeader: string): WebResourceResponse {") &&
         amediaIndex.Contains("private mediaMimeType(location: string): string {") &&
         amediaIndex.Contains("private anyMediaRegistered(): boolean {") &&
         amediaIndex.Contains("this.mediaRegistered[slot] = false;") &&
@@ -14893,8 +14893,8 @@ foreach (string bm1ShellVersion in bm1ShellVersions)
         && bm1Sub.Contains("if (op === 'media') {")
         && bm1Sub.Contains("private registerChildMediaAssets(arg: string): void {")
         && bm1Sub.Contains("private childIsSafeMediaSource(kind: number, location: string): boolean {")
-        && bm1Sub.Contains("private serveChildMedia(url: string, slot: number): WebResourceResponse {")
-        && bm1Sub.Contains("private childServeMediaSource(slot: number): WebResourceResponse {")
+        && bm1Sub.Contains("private serveChildMedia(url: string, slot: number, rangeHeader: string): WebResourceResponse {")
+        && bm1Sub.Contains("private childServeMediaSource(slot: number, rangeHeader: string): WebResourceResponse {")
         && bm1Sub.Contains("private childMediaMimeType(location: string): string {")
         && bm1Sub.Contains("if (path === '/__src__')")
         && bm1Sub.Contains("url.startsWith(SUB_MEDIA_ORIGIN)")
@@ -15016,6 +15016,184 @@ Console.WriteLine($"[verify] submedia hls serve primary={bm1Index.Contains("serv
 if (!bm1ServeOk)
 {
     throw new InvalidOperationException("the B-M1 HLS rawfile serving wiring drifted");
+}
+
+// MEDIA-MICRO (2026-10-11): the /__src__ Range answers and the local-playlist enablement. Five
+// checks pin (1) the primary page's single-range parser/206/416 + the registered playlist's
+// sibling serving + the HLS stamp, (2) the child page's mirror, (3) the popup Web's gesture
+// opt-out inside its L8 isolation, (4) the media page routing the stamped rawfile playlist
+// through hls.js, and (5) the device probe triggers the round drives. Red-control aspects: a
+// multi-range or malformed Range must stay refused (no comma branch removal), the popup Web
+// must never gain a media intercept/serve call, and the HLS stamp must not replace the .m3u8
+// URL-path detection.
+string[] mediamicroShellVersions = bm1ShellVersions;
+bool mmRangePrimaryPins = true;
+bool mmRangePrimaryIdentical = true;
+bool mmRangeParser = true;
+bool mmRangeRelease = true;
+string mmPrimaryFirst = string.Empty;
+foreach (string mmVersion in mediamicroShellVersions)
+{
+    string? mmIndexPath = FindHostSource($"packs/Microsoft.OpenHarmony.Sdk/{mmVersion}/templates/ets/pages/Index.ets");
+    string mmIndex = mmIndexPath is null ? string.Empty : File.ReadAllText(mmIndexPath);
+    if (mmPrimaryFirst.Length == 0)
+    {
+        mmPrimaryFirst = mmIndex;
+    }
+    else if (!string.Equals(mmPrimaryFirst, mmIndex, StringComparison.Ordinal))
+    {
+        mmRangePrimaryIdentical = false;
+    }
+    mmRangePrimaryPins &= mmIndex.Contains("interface MediaByteRange {")
+        && mmIndex.Contains("private mediaRangeLogs: number[] = slotNumbers(0);")
+        && mmIndex.Contains("private serveMedia(url: string, slot: number, rangeHeader: string): WebResourceResponse {")
+        && mmIndex.Contains("return this.serveMediaSource(slot, rangeHeader);")
+        && mmIndex.Contains("private mediaSourceIsHls(slot: number): boolean {")
+        && mmIndex.Contains("return this.serveMediaSibling(path, slot, rangeHeader);")
+        && mmIndex.Contains("private serveMediaSibling(path: string, slot: number, rangeHeader: string): WebResourceResponse {")
+        && mmIndex.Contains("private mediaSiblingPath(path: string): string {")
+        && mmIndex.Contains("private mediaSiblingLocation(location: string, relative: string): string {")
+        && mmIndex.Contains("private serveMediaPayload(location: string, slot: number, rangeHeader: string): WebResourceResponse {")
+        && mmIndex.Contains("private parseMediaByteRange(header: string, size: number): MediaByteRange | null {")
+        && mmIndex.Contains("private mediaRangeNotSatisfiable(size: number): WebResourceResponse {")
+        && mmIndex.Contains("private mediaRequestRange(request: WebResourceRequest): string {")
+        && mmIndex.Contains("return this.serveMedia(url, slot, this.mediaRequestRange(event.request));")
+        && mmIndex.Contains("window.__ohMediaHls = ${this.mediaSourceIsHls(slot)};")
+        && mmIndex.Contains("${MEDIA_ORIGIN}?s=${slot}${this.mediaSourceIsHls(slot) ? '&hls=1' : ''}")
+        && mmIndex.Contains("private logMediaSibling(slot: number, relative: string): void {")
+        && mmIndex.Contains("this.logMediaSibling(slot, relative);")
+        && mmIndex.Contains("headerKey: 'Content-Range', headerValue: `bytes ${range.start}-${range.end}/${size}`")
+        && mmIndex.Contains("headerKey: 'Accept-Ranges', headerValue: 'bytes'");
+    mmRangeParser &= mmIndex.Contains("spec.indexOf(',') >= 0")
+        && mmIndex.Contains("start >= size")
+        && mmIndex.Contains("suffix <= 0")
+        && mmIndex.Contains("Math.min(parsedEnd, size - 1)");
+    mmRangeRelease &= mmIndex.Contains("fs.closeSync(fd);");
+}
+bool mmRangePrimaryOk = mmRangePrimaryPins && mmRangePrimaryIdentical && mmRangeParser && mmRangeRelease;
+Console.WriteLine($"[verify] mediamicro range primary packs={mediamicroShellVersions.Length} pins={mmRangePrimaryPins} identical={mmRangePrimaryIdentical} parser={mmRangeParser} release={mmRangeRelease} assert={mmRangePrimaryOk}");
+if (!mmRangePrimaryOk)
+{
+    throw new InvalidOperationException($"the MEDIA-MICRO primary range/sibling wiring drifted: pins={mmRangePrimaryPins} identical={mmRangePrimaryIdentical} parser={mmRangeParser} release={mmRangeRelease}");
+}
+
+bool mmRangeChildPins = true;
+bool mmRangeChildIdentical = true;
+string mmChildFirst = string.Empty;
+foreach (string mmVersion in mediamicroShellVersions)
+{
+    string? mmSubPath = FindHostSource($"packs/Microsoft.OpenHarmony.Sdk/{mmVersion}/templates/ets/pages/SubWindow.ets");
+    string mmSub = mmSubPath is null ? string.Empty : File.ReadAllText(mmSubPath);
+    if (mmChildFirst.Length == 0)
+    {
+        mmChildFirst = mmSub;
+    }
+    else if (!string.Equals(mmChildFirst, mmSub, StringComparison.Ordinal))
+    {
+        mmRangeChildIdentical = false;
+    }
+    mmRangeChildPins &= mmSub.Contains("interface SubMediaByteRange {")
+        && mmSub.Contains("private subMediaRangeLogs: number[] = [0, 0];")
+        && mmSub.Contains("private serveChildMedia(url: string, slot: number, rangeHeader: string): WebResourceResponse {")
+        && mmSub.Contains("return this.childServeMediaSource(slot, rangeHeader);")
+        && mmSub.Contains("private childMediaIsHls(slot: number): boolean {")
+        && mmSub.Contains("return this.childServeMediaSibling(path, slot, rangeHeader);")
+        && mmSub.Contains("private childServeMediaSibling(path: string, slot: number, rangeHeader: string): WebResourceResponse {")
+        && mmSub.Contains("private childMediaSiblingPath(path: string): string {")
+        && mmSub.Contains("private childServeMediaPayload(location: string, slot: number, rangeHeader: string): WebResourceResponse {")
+        && mmSub.Contains("private childParseMediaByteRange(header: string, size: number): SubMediaByteRange | null {")
+        && mmSub.Contains("private childMediaRangeNotSatisfiable(size: number): WebResourceResponse {")
+        && mmSub.Contains("private childMediaRequestRange(request: WebResourceRequest): string {")
+        && mmSub.Contains("return this.serveChildMedia(url, slot, this.childMediaRequestRange(event.request));")
+        && mmSub.Contains("window.__ohMediaHls = ${this.childMediaIsHls(slot)};")
+        && mmSub.Contains("${SUB_MEDIA_ORIGIN}?s=${slot}${this.childMediaIsHls(slot) ? '&hls=1' : ''}")
+        && mmSub.Contains("private logChildMediaSibling(slot: number, relative: string): void {")
+        && mmSub.Contains("this.logChildMediaSibling(slot, relative);")
+        && mmSub.Contains("this.subMediaRangeLogs[slot] = 0;")
+        && mmSub.Contains("headerKey: 'Content-Range', headerValue: `bytes ${range.start}-${range.end}/${size}`");
+}
+bool mmRangeChildOk = mmRangeChildPins && mmRangeChildIdentical;
+Console.WriteLine($"[verify] mediamicro range child pins={mmRangeChildPins} identical={mmRangeChildIdentical} assert={mmRangeChildOk}");
+if (!mmRangeChildOk)
+{
+    throw new InvalidOperationException($"the MEDIA-MICRO child range/sibling wiring drifted: pins={mmRangeChildPins} identical={mmRangeChildIdentical}");
+}
+
+// The popup Web (L8-POPUP) gains the same gesture-gate opt-out the other shell Web surfaces
+// carry, so a popup page can play its own web media; the block itself must keep its isolation -
+// no media origin interception and no child media service on the popup path.
+bool mmPopupGesture = true;
+bool mmPopupIsolated = true;
+foreach (string mmVersion in mediamicroShellVersions)
+{
+    string? mmSubPath = FindHostSource($"packs/Microsoft.OpenHarmony.Sdk/{mmVersion}/templates/ets/pages/SubWindow.ets");
+    string mmSub = mmSubPath is null ? string.Empty : File.ReadAllText(mmSubPath);
+    int mmPopupStart = mmSub.IndexOf(
+        "controller: this.popupController !== null ? this.popupController : this.popupFallbackController", StringComparison.Ordinal);
+    int mmPopupEnd = mmPopupStart >= 0 ? mmSub.IndexOf(".onActivateContent", mmPopupStart, StringComparison.Ordinal) : -1;
+    string mmPopupBlock = mmPopupStart >= 0 && mmPopupEnd > mmPopupStart
+        ? mmSub.Substring(mmPopupStart, mmPopupEnd - mmPopupStart) : string.Empty;
+    mmPopupGesture &= mmSub.Contains("L8-POPUP (MEDIA-MICRO): the popup is a user-opened web window")
+        && mmPopupBlock.Contains(".mediaPlayGestureAccess(false)")
+        && !mmSub.Contains(".mediaPlayGestureAccess(true)");
+    mmPopupIsolated &= mmPopupBlock.Length > 0
+        && !mmPopupBlock.Contains(".onInterceptRequest")
+        && !mmPopupBlock.Contains("serveChildMedia")
+        && !mmPopupBlock.Contains("subMediaRegistered");
+}
+bool mmPopupOk = mmPopupGesture && mmPopupIsolated;
+Console.WriteLine($"[verify] mediamicro popup media gesture={mmPopupGesture} isolated={mmPopupIsolated} assert={mmPopupOk}");
+if (!mmPopupOk)
+{
+    throw new InvalidOperationException($"the MEDIA-MICRO popup media path drifted: gesture={mmPopupGesture} isolated={mmPopupIsolated}");
+}
+
+// The media page routes the stamped rawfile/file playlist (served under the extension-less
+// /__src__ URL) through hls.js without losing the .m3u8 URL-path detection.
+bool mmPagePins = true;
+bool mmPageIdentical = true;
+string mmPageFirst = string.Empty;
+foreach (string mmVersion in mediamicroShellVersions)
+{
+    string? mmPagePath = FindHostSource($"packs/Microsoft.OpenHarmony.Sdk/{mmVersion}/templates/resources/rawfile/media.html");
+    string mmPage = mmPagePath is null ? string.Empty : File.ReadAllText(mmPagePath);
+    if (mmPageFirst.Length == 0)
+    {
+        mmPageFirst = mmPage;
+    }
+    else if (!string.Equals(mmPageFirst, mmPage, StringComparison.Ordinal))
+    {
+        mmPageIdentical = false;
+    }
+    mmPagePins &= mmPage.Contains("(hlsFromQuery || window.__ohMediaHls === true) && path === '/__src__'")
+        && mmPage.Contains("hlsFromQuery = /[?&]hls=1(?:&|$)/.test(window.location.search || '');")
+        && mmPage.Contains("if (/\\.m3u8$/i.test(path)) { return true; }")
+        && mmPage.Contains("MEDIA-MICRO: a registered rawfile/file playlist is served under /__src__");
+}
+bool mmPageOk = mmPagePins && mmPageIdentical && mmPageFirst.Length > 0;
+Console.WriteLine($"[verify] mediamicro hls page stamp={mmPagePins} identical={mmPageIdentical} assert={mmPageOk}");
+if (!mmPageOk)
+{
+    throw new InvalidOperationException($"the MEDIA-MICRO media page HLS stamp routing drifted: pins={mmPagePins} identical={mmPageIdentical}");
+}
+
+// The device probes the round drives: the local playlist sources (segmented + byte-range) and
+// the popup-media trigger (the loopback popup page).
+string? mmProbePath = FindHostSource("test/hello-maui-app/MediaElementProbe.cs");
+string mmProbe = mmProbePath is null ? string.Empty : File.ReadAllText(mmProbePath);
+string? mmAppPath = FindHostSource("test/hello-maui-app/App.cs");
+string mmApp = mmAppPath is null ? string.Empty : File.ReadAllText(mmAppPath);
+bool mmProbesOk = mmProbe.Contains("internal const string HlsLocalRawFileName = \"hlslocal/video.m3u8\";")
+    && mmProbe.Contains("internal const string HlsRangeRawFileName = \"hlsrange/byte.m3u8\";")
+    && mmProbe.Contains("public static void StartHlsLocal(Window window, string rawFileName)")
+    && mmApp.Contains("app://media/element/hlsrange")
+    && mmApp.Contains("app://media/element/hlslocal")
+    && mmApp.Contains("app://web/popupmedia")
+    && mmApp.Contains("window.open('http://127.0.0.1:8791/popmedia.html','pmedia_1')");
+Console.WriteLine($"[verify] mediamicro probes local={mmProbe.Contains("HlsLocalRawFileName")} range={mmProbe.Contains("HlsRangeRawFileName")} popup={mmApp.Contains("app://web/popupmedia")} assert={mmProbesOk}");
+if (!mmProbesOk)
+{
+    throw new InvalidOperationException("the MEDIA-MICRO device probe sources drifted");
 }
 
 // ---- FIX-SLICERACE: handler wiring must be serialized ----------------------------------------

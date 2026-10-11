@@ -20,6 +20,12 @@
 //     It logs the child pool claim, plays the short rawfile sample, then closes its own child
 //     window and asserts the child ArkWeb slot was released (the B-M1 release path).
 //
+// MEDIA-MICRO additions (app://media/element/hlslocal and /hlsrange):
+//   * StartHlsLocal: the same modal page with a local rawfile playlist - a segmented playlist
+//     whose variant/segment files are served as siblings, or a single-file byte-range playlist
+//     whose segment fetches exercise the shell's single-range 206/Content-Range answers. The
+//     probe reports the same opened/ended/transport chain, so hilog carries the whole story.
+//
 // Every step is mirrored into the managed status file (hilog) as [media-element]/[media-child]
 // lines and the window title, so a device round reads the outcome without a debugger; a
 // mid-play screenshot supplies the "picture" evidence. The probe never throws: a failure logs
@@ -45,6 +51,14 @@ internal static class MediaElementProbe
     // loads hls.js from its own origin and plays the playlist through MSE.
     internal const string HlsProbeUrl = "http://127.0.0.1:8791/hls/master.m3u8";
 
+    // MEDIA-MICRO: the local-playlist variants. The round stages the B-M1 CMAF sample as HAP
+    // rawfiles before packing the probe hap: hlslocal/video.m3u8 + its segment/media siblings
+    // (the segmented shape) and hlsrange/byte.m3u8 referencing the concatenated all.mp4 with
+    // #EXT-X-BYTERANGE (the single-file byte-range shape whose segment fetches exercise the
+    // shell's 206/Content-Range answers). No repo binary: scratch staging only.
+    internal const string HlsLocalRawFileName = "hlslocal/video.m3u8";
+    internal const string HlsRangeRawFileName = "hlsrange/byte.m3u8";
+
     private static int s_running;
 
     /// <summary>Starts the primary-window probe once; a second start while it runs is ignored.</summary>
@@ -66,6 +80,16 @@ internal static class MediaElementProbe
             return;
         }
         _ = RunAsync(window, OpenHarmonyMediaSource.FromUrl(HlsProbeUrl), "hls:" + HlsProbeUrl);
+    }
+
+    /// <summary>MEDIA-MICRO: the local rawfile playlist variant (segmented or byte-range).</summary>
+    public static void StartHlsLocal(Window window, string rawFileName)
+    {
+        if (!Begin())
+        {
+            return;
+        }
+        _ = RunAsync(window, OpenHarmonyMediaSource.FromRawFile(rawFileName), "hls:" + rawFileName);
     }
 
     /// <summary>B-M1: starts the child-window probe over the element mounted on the child page.</summary>
