@@ -263,6 +263,24 @@ interface BlazorAssetsConfig {
   slot?: number;
 }
 
+// MEDIA-ELEMENT (A-M1): the media element registration. The managed handler owns one overlay
+// slot per media control and sends this object through the "media" web command; the shell loads
+// the media page on that slot and serves the registered source under MEDIA_ORIGIN + '__src__'.
+interface MediaAssetsConfig {
+  // kind: 0 URL (the page streams it directly; the shell serves nothing), 1 HAP rawfile,
+  // 2 absolute path in the app sandbox. Captured by the managed OpenHarmonyMediaSourceKind.
+  kind: number;
+  // The URL / rawfile name / sandbox path (see kind); the shell validates rawfile names and
+  // sandbox paths and answers 404/413 for anything outside the accepted shape.
+  location: string;
+  // Per-registration document id: stamped into the served media page and echoed in every
+  // message envelope, so the managed side rejects messages from any other document.
+  id: string;
+  // MULTI-OVL: the overlay slot this media element owns; the shell loads the media page on that
+  // slot's WebviewController. Absent/-1 keeps the legacy first overlay.
+  slot?: number;
+}
+
 // JS -> .NET invocation payload the stock hybridwebview.js POSTs to __hwvInvokeDotNet:
 // { "MethodName": "...", "ParamValues": ["<json>", ...] }.
 interface HybridInvokeRequest {
@@ -751,6 +769,21 @@ const WEB_SLOT_MAX_RAWFILE: string = 'ohos-overlay-max.txt';
 // Bound on the per-slot deferral queue (see pendingWebOps).
 const WEB_SLOT_PENDING_MAX: number = 32;
 
+// MEDIA-ELEMENT (A-M1): the ArkWeb HTML5 media page. A MediaElement-shaped control claims an
+// overlay slot and registers its source through the web command op "media"
+// ({ slot, id, kind, location }); the shell then loads this origin on that slot and serves the
+// page plus the registered rawfile/file bytes from it. kind 0 (URL) keeps the URL with the page
+// (the element's src), so the shell serves only the page and the page streams the network URL
+// itself; kind 1 (rawfile) and kind 2 (sandbox file) are read here and answered under /__src__.
+const MEDIA_ORIGIN: string = 'https://media.local/';
+// The media page is the HAP rawfile the packaging stages from the SDK templates (an app that
+// ships its own rawfile of the same name replaces it); a HAP without the rawfile answers the
+// page request 404 and the managed element degrades to Failed.
+const MEDIA_PAGE_RAWFILE: string = 'media.html';
+// One served source is read whole into the WebResourceResponse (the payload server does the
+// same); the cap keeps a huge/hostile registered file from exhausting the app process.
+const MEDIA_SOURCE_MAX_BYTES: number = 64 * 1024 * 1024;
+
 // MULTIWINDOW-M subwindow bridge.
 // Commands (managed -> shell; handleSubWindowCommand): 0 create, 1 move, 2 resize, 3 show,
 // 4 hide (not supported by the public subwindow API: answered with a Failed event), 5 close.
@@ -1020,6 +1053,19 @@ struct Index {
   // JavaScript bridge: set once the dotnetHost proxy was registered on the attached controller,
   // per overlay slot (the proxy is registered on each Web component's controller).
   private dotNetHostRegistered: boolean[] = slotBooleans(false);
+  // MEDIA-ELEMENT (A-M1): per-slot media registration state, owned by one managed
+  // OpenHarmonyMediaElementSurface per slot. mediaRegistered arms the MEDIA_ORIGIN interception;
+  // mediaDocId is the per-registration id stamped into the served page (validated back in the
+  // __OHORIGIN envelope of every page message); mediaSourceKind/Location name the source the
+  // shell serves under MEDIA_ORIGIN + '__src__' (kind 1 rawfile name / kind 2 absolute path;
+  // kind 0 has the URL on the page and nothing to serve). A media page is loaded on registration
+  // and every re-registration reloads it (a source change resets the element, like every
+  // platform); the per-slot fields are cleared by resetWebSlotState on slot destroy.
+  private mediaRegistered: boolean[] = slotBooleans(false);
+  private mediaDocId: string[] = slotStrings();
+  private mediaSourceKind: number[] = slotNumbers(0);
+  private mediaSourceLocation: string[] = slotStrings();
+  private mediaServeLogs: number[] = slotNumbers(0);
   // App theme: 'colorMode' is an ArkUI environment property that the framework keeps in
   // AppStorage and refreshes when the device switches between light and dark. The watch
   // forwards every change to the managed side through host.notifyTheme(isDark).
@@ -4230,6 +4276,8 @@ struct Index {
       documentId = this.hybridDocId[slot];
     } else if (this.blazorRegistered && this.blazorDocId.length > 0 && url.startsWith(this.blazorOrigin)) {
       documentId = this.blazorDocId;
+    } else if (this.mediaRegistered[slot] && this.mediaDocId[slot].length > 0 && url.startsWith(MEDIA_ORIGIN)) {
+      documentId = this.mediaDocId[slot];
     }
     return `__OHORIGIN|${url}|${documentId}\n${payload}`;
   }
@@ -4277,6 +4325,11 @@ struct Index {
       }
     }
     if (this.blazorRegistered && url.startsWith(this.blazorOrigin)) {
+      return true;
+    }
+    if (this.anyMediaRegistered() && url.startsWith(MEDIA_ORIGIN)) {
+      // MEDIA-ELEMENT: the media page origin is app content; its loads never take the B6
+      // round trip (registration marks its own load programmatic; this covers reloads).
       return true;
     }
     return false;
@@ -4523,6 +4576,12 @@ struct Index {
     this.dotNetHostRegistered[slot] = false;
     this.navProgrammatic[slot] = null;
     this.navApproved[slot] = null;
+    // MEDIA-ELEMENT: a re-created slot must not inherit the previous owner's registration.
+    this.mediaRegistered[slot] = false;
+    this.mediaDocId[slot] = '';
+    this.mediaSourceKind[slot] = 0;
+    this.mediaSourceLocation[slot] = '';
+    this.mediaServeLogs[slot] = 0;
   }
 
   // True when the slot's ArkWeb exists and its controller is attached, i.e. a controller call
@@ -4570,6 +4629,17 @@ struct Index {
   private anyHybridRegistered(): boolean {
     for (let slot = 0; slot < WEB_SLOT_MAX; slot++) {
       if (this.hybridRegistered[slot]) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  // MEDIA-ELEMENT: true when any overlay slot carries a media registration (the media page
+  // origin is app content for as long as one does).
+  private anyMediaRegistered(): boolean {
+    for (let slot = 0; slot < WEB_SLOT_MAX; slot++) {
+      if (this.mediaRegistered[slot]) {
         return true;
       }
     }
@@ -4664,10 +4734,11 @@ struct Index {
       });
       return;
     }
-    // Per-overlay command: the slot comes from the registration JSON for hybrid/blazor and from
-    // the "s<slot>" first line otherwise. A command for a not-yet-attached overlay is deferred
-    // and replayed when its Web component attaches.
-    const commandSlot: number = op === 'hybrid' || op === 'blazor' ? this.registrationSlot(arg) : this.webSlotOf(arg);
+    // Per-overlay command: the slot comes from the registration JSON for hybrid/blazor/media and
+    // from the "s<slot>" first line otherwise. A command for a not-yet-attached overlay is
+    // deferred and replayed when its Web component attaches.
+    const commandSlot: number = op === 'hybrid' || op === 'blazor' || op === 'media'
+      ? this.registrationSlot(arg) : this.webSlotOf(arg);
     if (!this.webSlotReady(commandSlot)) {
       this.deferWebOp(commandSlot, op, arg);
       return;
@@ -4718,6 +4789,11 @@ struct Index {
     } else if (op === 'blazor') {
       // BlazorWebView asset root registration from the managed handler (milestone 3).
       this.registerBlazorAssets(arg);
+    } else if (op === 'media') {
+      // MEDIA-ELEMENT (A-M1): the managed media element registers its slot, its per-registration
+      // document id and the source the shell has to serve. Registration loads the media page on
+      // that slot (every re-registration reloads it, which is also the element's source reset).
+      this.registerMediaAssets(commandSlot, arg);
     }
   }
 
@@ -4946,6 +5022,9 @@ struct Index {
     }
     if (this.blazorRegistered && this.blazorDocId.length > 0 && pageUrl.startsWith(this.blazorOrigin)) {
       markers += `window.__ohBlazorId = ${JSON.stringify(this.blazorDocId)};`;
+    }
+    if (this.mediaRegistered[slot] && this.mediaDocId[slot].length > 0 && pageUrl.startsWith(MEDIA_ORIGIN)) {
+      markers += `window.__ohMediaId = ${JSON.stringify(this.mediaDocId[slot])};window.__ohMediaSlot = ${slot};`;
     }
     try {
       this.slotController(slot).runJavaScript(
@@ -7312,6 +7391,244 @@ struct Index {
     }
   }
 
+  // ---------------------------------------------------------------------------------------------
+  // MEDIA-ELEMENT (A-M1): the HTML5 media page of one overlay slot.
+  //
+  // The managed OpenHarmonyMediaElementSurface owns one slot per media control and keeps it
+  // registered here: "media" carries { id, kind, location, slot }, the shell loads
+  // MEDIA_ORIGIN?s=<slot> on that slot (every re-registration reloads, which is the element's
+  // source reset) and serves two request kinds from the origin:
+  //   * "/"       -> the media page, read from the HAP rawfile "media.html" (staged by the SDK
+  //                  pack; an app may override it with its own rawfile of the same name);
+  //   * "/__src__" -> the registered source for kind 1/2 (rawfile bytes through the resource
+  //                  manager, sandbox file through @kit.CoreFileKit), with a media MIME type
+  //                  from the location's extension. kind 0 keeps the URL on the page itself.
+  // The page's JS API and events live in media.html; the shell only stamps the document id and
+  // the slot into the page (injectPageBridge) and forwards messages (originEnvelope), so the
+  // managed side validates every event exactly like the hybrid/Blazor channels.
+  // ---------------------------------------------------------------------------------------------
+
+  // Registers one media element slot. See MediaAssetsConfig. A malformed registration, an empty
+  // document id or an unsafe source is rejected with one log and clears the slot state.
+  private registerMediaAssets(slot: number, arg: string): void {
+    try {
+      const config = JSON.parse(arg) as MediaAssetsConfig;
+      if (config.slot !== undefined && config.slot >= 0 && config.slot < this.webSlotLimit) {
+        slot = config.slot;
+      }
+      const docId: string = config.id !== undefined && config.id.length > 0 ? config.id : '';
+      const kind: number = config.kind === 1 || config.kind === 2 ? config.kind : 0;
+      const location: string = config.location !== undefined ? config.location : '';
+      const safeLocation: boolean = this.isSafeMediaSource(kind, location);
+      if (docId.length === 0 || !safeLocation) {
+        this.logError(`[maui] media assets registration rejected (slot ${slot})`);
+        this.mediaRegistered[slot] = false;
+        return;
+      }
+      this.mediaRegistered[slot] = true;
+      this.mediaDocId[slot] = docId;
+      this.mediaSourceKind[slot] = kind;
+      this.mediaSourceLocation[slot] = location;
+      this.mediaServeLogs[slot] = 0;
+      this.webVisible[slot] = !this.webSuspended;
+      this.noteWebActivation(slot);
+      this.logInfo(`[maui] media assets: slot=${slot} kind=${kind} location=${this.mediaLocationForLog(kind, location)}`);
+      // B6: the page load is app-requested; the one-shot marker lets it pass onLoadIntercept
+      // without a managed round trip (same shape the "load" command uses).
+      const pageUrl: string = `${MEDIA_ORIGIN}?s=${slot}`;
+      this.navProgrammatic[slot] = { url: pageUrl, expires: Date.now() + this.navPendingTtlMs };
+      this.slotController(slot).loadUrl(pageUrl);
+    } catch (mediaError) {
+      this.logError(`[maui] media assets registration failed: ${(mediaError as Error).message}`);
+    }
+  }
+
+  // The accepted source shapes: a rawfile name must be an ordinary relative path (no leading
+  // '/', no '\', no empty/'.'/'..' segment) so it can only name a resources/rawfile entry; a
+  // sandbox path must be absolute and free of '..'/'\' so it stays inside the app sandbox; a
+  // URL must be non-empty and control-character free (the page loads it directly, so the shell
+  // never resolves it).
+  private isSafeMediaSource(kind: number, location: string): boolean {
+    if (location.length === 0 || location.length > 4096) {
+      return false;
+    }
+    if (location.indexOf('\n') >= 0 || location.indexOf('\r') >= 0) {
+      return false;
+    }
+    if (kind === 1) {
+      if (location.startsWith('/') || location.indexOf('\\') >= 0) {
+        return false;
+      }
+      const segments: string[] = location.split('/');
+      for (const segment of segments) {
+        if (segment.length === 0 || segment === '.' || segment === '..') {
+          return false;
+        }
+      }
+      return true;
+    }
+    if (kind === 2) {
+      return location.startsWith('/') && location.indexOf('..') < 0 && location.indexOf('\\') < 0;
+    }
+    // kind 0: the page loads the URL itself (video.src). Only app-internal or well-formed
+    // web spellings are registered; the page never executes the URL as script.
+    return location.startsWith('http://') || location.startsWith('https://')
+      || location.startsWith('file:') || location.startsWith('data:')
+      || location.startsWith('blob:') || location.startsWith('about:');
+  }
+
+  // One-line status form of a registered source (URLs are truncated; rawfile names/paths are
+  // shown whole - they are app-controlled and carry no secrets of their own).
+  private mediaLocationForLog(kind: number, location: string): string {
+    if (kind !== 0) {
+      return location;
+    }
+    const cut: number = location.indexOf('?');
+    const head: string = cut >= 0 ? location.substring(0, cut) : location;
+    return head.length > 96 ? `${head.substring(0, 93)}...` : head;
+  }
+
+  // Serves one intercepted MEDIA_ORIGIN request on <paramref name="slot"/>: the page for "/",
+  // the registered source for "/__src__", 404 for anything else.
+  private serveMedia(url: string, slot: number): WebResourceResponse {
+    let path: string = url;
+    const scheme: number = path.indexOf('://');
+    if (scheme >= 0) {
+      const slash: number = path.indexOf('/', scheme + 3);
+      path = slash >= 0 ? path.substring(slash) : '/';
+    }
+    const query: number = path.indexOf('?');
+    if (query >= 0) {
+      path = path.substring(0, query);
+    }
+    const fragment: number = path.indexOf('#');
+    if (fragment >= 0) {
+      path = path.substring(0, fragment);
+    }
+    if (this.mediaServeLogs[slot] < 3) {
+      this.mediaServeLogs[slot]++;
+      this.logInfo(`[maui] media serve (slot ${slot}): ${path}`);
+    }
+    if (path === '' || path === '/') {
+      return this.serveMediaPage();
+    }
+    if (path === '/__src__') {
+      return this.serveMediaSource(slot);
+    }
+    return this.hybridErrorResponse(404);
+  }
+
+  // The media page: HAP rawfile "media.html". A missing or unreadable rawfile answers 404, and
+  // the managed element reports Failed (the page is part of the shell contract).
+  private serveMediaPage(): WebResourceResponse {
+    try {
+      const bytes: Uint8Array = this.hostContext().resourceManager.getRawFileContentSync(MEDIA_PAGE_RAWFILE);
+      const response: WebResourceResponse = new WebResourceResponse();
+      response.setResponseCode(200);
+      response.setResponseMimeType('text/html');
+      response.setResponseEncoding('utf-8');
+      response.setResponseData(this.mediaBytesBuffer(bytes));
+      return response;
+    } catch (pageError) {
+      this.logError(`[maui] media page unavailable: ${(pageError as Error).message}`);
+      return this.hybridErrorResponse(404);
+    }
+  }
+
+  // WebResourceResponse.setResponseData accepts an ArrayBuffer (not a Uint8Array). A rawfile
+  // read returns a Uint8Array, so its exact window is copied into one.
+  private mediaBytesBuffer(bytes: Uint8Array): ArrayBuffer {
+    const start: number = bytes.byteOffset;
+    const end: number = start + bytes.byteLength;
+    return bytes.buffer.slice(start, end) as ArrayBuffer;
+  }
+
+  // The registered rawfile/file source, read whole and answered with a media MIME type. kind 0
+  // (URL) has nothing to serve here. A missing/oversized file answers 404/413; the page's video
+  // element then reports a media error, which the managed element maps to Failed.
+  private serveMediaSource(slot: number): WebResourceResponse {
+    const kind: number = this.mediaSourceKind[slot];
+    const location: string = this.mediaSourceLocation[slot];
+    if (!this.mediaRegistered[slot] || kind === 0 || location.length === 0) {
+      return this.hybridErrorResponse(404);
+    }
+    let fd: number = -1;
+    try {
+      let data: ArrayBuffer;
+      if (kind === 1) {
+        data = this.mediaBytesBuffer(this.hostContext().resourceManager.getRawFileContentSync(location));
+      } else {
+        const stat = fs.statSync(location);
+        if (!stat.isFile() || stat.size <= 0 || stat.size > MEDIA_SOURCE_MAX_BYTES) {
+          return this.hybridErrorResponse(413);
+        }
+        const file = fs.openSync(location, fs.OpenMode.READ_ONLY);
+        fd = file.fd;
+        const buffer = new ArrayBuffer(stat.size);
+        fs.readSync(fd, buffer);
+        data = buffer;
+      }
+      const size: number = data.byteLength;
+      if (size <= 0 || size > MEDIA_SOURCE_MAX_BYTES) {
+        return this.hybridErrorResponse(413);
+      }
+      const response: WebResourceResponse = new WebResourceResponse();
+      response.setResponseCode(200);
+      response.setResponseMimeType(this.mediaMimeType(location));
+      response.setResponseEncoding('utf-8');
+      response.setResponseData(data);
+      return response;
+    } catch (sourceError) {
+      this.logWarn(`[maui] media source read failed (slot ${slot}, kind ${kind}): ${(sourceError as Error).message}`);
+      return this.hybridErrorResponse(404);
+    } finally {
+      if (fd >= 0) {
+        try {
+          fs.closeSync(fd);
+        } catch {
+          // The handle is released with the response in the worst case.
+        }
+      }
+    }
+  }
+
+  // Media MIME type by extension. ArkWeb sniffs most containers, but the correct type keeps the
+  // media load deterministic; the fallback is octet-stream (the video element still tries).
+  private mediaMimeType(location: string): string {
+    const lower: string = location.toLowerCase();
+    if (lower.endsWith('.mp4') || lower.endsWith('.m4v')) {
+      return 'video/mp4';
+    }
+    if (lower.endsWith('.webm')) {
+      return 'video/webm';
+    }
+    if (lower.endsWith('.ogv') || lower.endsWith('.ogg')) {
+      return 'video/ogg';
+    }
+    if (lower.endsWith('.m3u8')) {
+      return 'application/vnd.apple.mpegurl';
+    }
+    if (lower.endsWith('.mp3')) {
+      return 'audio/mpeg';
+    }
+    if (lower.endsWith('.m4a')) {
+      return 'audio/mp4';
+    }
+    if (lower.endsWith('.aac')) {
+      return 'audio/aac';
+    }
+    if (lower.endsWith('.wav')) {
+      return 'audio/wav';
+    }
+    if (lower.endsWith('.opus')) {
+      return 'audio/opus';
+    }
+    if (lower.endsWith('.flac')) {
+      return 'audio/flac';
+    }
+    return 'application/octet-stream';
+  }
+
   // Resolves an app-origin URL to an absolute file below the payload directory. Unknown and
   // malformed paths (including traversal attempts) resolve to '' and are answered with 404.
   // MULTI-OVERLAY-FULL: the layout (base/root/defaultFile) is read from the requesting overlay's
@@ -7856,6 +8173,13 @@ struct Index {
   webOverlay(slot: number): void {
     Web({ src: '', controller: this.slotController(slot) })
       .domStorageAccess(true)
+      // MEDIA-ELEMENT (A-M1): without this the platform gesture gate rejects a programmatic
+      // play() of an unmuted audio/video stream (Q1: NotAllowedError on audio-only). The
+      // element's Play() is exactly such a programmatic play, so the shell opts every overlay
+      // out of the gate; muted video played either way (mediaPlayGestureAccess(false) keeps
+      // that). Pages reachable here are the app's own (hybrid/Blazor/media) or allow-listed
+      // navigations, so one app cannot unlock another's playback with this.
+      .mediaPlayGestureAccess(false)
       .visibility(this.webVisibility(slot))
       .zIndex(this.webZOrder[slot])
       .onTouch((event: TouchEvent) => {
@@ -7908,6 +8232,11 @@ struct Index {
       .onInterceptRequest((event) => {
         try {
           const url: string = event.request.getRequestUrl();
+          // MEDIA-ELEMENT (A-M1): the media origin of this slot - the page for "/", the
+          // registered rawfile/file source for "/__src__", 404 otherwise.
+          if (this.mediaRegistered[slot] && url.startsWith(MEDIA_ORIGIN)) {
+            return this.serveMedia(url, slot);
+          }
           // Blazor origin (https://0.0.0.0/): every app asset, _framework/blazor.webview.js
           // included, is served from <base>/<root>. The hybrid __hwv* endpoints do not exist
           // here: blazor.webview.js talks through window.external (the dotnetHost proxy).
