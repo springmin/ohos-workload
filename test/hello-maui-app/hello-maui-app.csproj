@@ -67,12 +67,15 @@
     <!-- STARTUP: -p:StartupProbe=true compiles the one-shot start decomposition in
          (StartupProbe.cs). Off by default; the shipped sample is unaffected. -->
     <DefineConstants Condition=" '$(StartupProbe)' == 'true' ">$(DefineConstants);STARTUP_PROBE</DefineConstants>
-    <!-- WEB-AUTH: -p:WebAuthProbe=true compiles the WebAuthenticator device probe in
-         (WebAuthProbe.cs) and declares its callback route (myapp://callback) in the HAP
-         manifest, so the sample can drive the real redirect flow from activation triggers.
-         Off by default: the shipped sample and its module.json are unaffected. -->
+    <!-- WEB-AUTH (WEBAUTH-DECOUPLE): the redirect callback route is declared
+         UNCONDITIONALLY. A shipped hap must route the browser's myapp://callback redirect
+         without the probe: kit #54 rev2 tied this property to -p:WebAuthProbe=true, so a
+         plain kit cut shipped haps whose module.json carried only the home skill. -->
+    <OpenHarmonyWebAuthenticatorCallbackUrls>myapp://callback</OpenHarmonyWebAuthenticatorCallbackUrls>
+    <!-- WEB-AUTH probe (opt-in): -p:WebAuthProbe=true compiles the device probe UI/triggers in
+         (WebAuthProbe.cs, app://webauth/*), so a round can drive the flow from activation
+         triggers. It no longer owns the callback route above; off by default. -->
     <DefineConstants Condition=" '$(WebAuthProbe)' == 'true' ">$(DefineConstants);WEBAUTH_PROBE</DefineConstants>
-    <OpenHarmonyWebAuthenticatorCallbackUrls Condition=" '$(WebAuthProbe)' == 'true' ">myapp://callback</OpenHarmonyWebAuthenticatorCallbackUrls>
     <!-- MEDIAELEMENT (A-M1): -p:MediaElementProbe=true compiles the ArkWeb media-element device
          probe trigger in (MediaElementProbe.cs itself always compiles; it is inert until the
          app://media/element activation arrives). Off by default: the shipped sample and its

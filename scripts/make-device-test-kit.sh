@@ -53,9 +53,11 @@
 #      DEVICE_TEST_KIT_RUNTIME_MODE (same as --runtime-mode, default aot), OHOS_AOT_HOOKS
 #      (optional CustomAfterMicrosoftCommonTargets hook for the rc.2 Exec workaround on
 #      HarmonyOS hosts; see test/hello-maui-app/publish-aot.sh).
-#      DEVICE_TEST_KIT_WEBAUTH_PROBE=1 adds -p:WebAuthProbe=true to every MAUI publish: the haps
-#      then carry the myapp://callback module.json route and the app://webauth/* device probe
-#      triggers (the kit #54 rev2 shape; off by default).
+#      DEVICE_TEST_KIT_WEBAUTH_PROBE=1 adds -p:WebAuthProbe=true to every MAUI publish, which
+#      compiles only the app://webauth/* device probe triggers/UI into the sample (kit #54 rev2
+#      shape). The myapp://callback module.json route is declared by hello-maui-app.csproj
+#      unconditionally (WEBAUTH-DECOUPLE, 2026-10-11) and ships in every kit; check_webauth
+#      fails assembly if a hap ever loses it again.
 # The kit dir is rebuilt from scratch in a staging dir and swapped in, so stale files cannot
 # leak into SHA256SUMS. verify-kit.sh always comes from the repo; 自签说明.md and
 # README-交付说明.md come from runtime-ohos docs/plans (2026-09-21-ohos-tester-selfsign.md,
@@ -359,11 +361,11 @@ publish_variant() {
     else
         set -- "$@" -p:OpenHarmonyRuntimeMode=jit
     fi
-    # WEB-AUTH (kit #54 rev2, 2026-10-11): the csproj ties the myapp://callback route to
-    # -p:WebAuthProbe=true, so a plain kit build ships haps whose module.json carries only the
-    # home skill and the round docs' explicit `aa start -U myapp://callback` step cannot
-    # complete (the WebAuth probe triggers app://webauth/* need the same flag). Opt in with
-    # DEVICE_TEST_KIT_WEBAUTH_PROBE=1; off by default so the shipped sample shape is explicit.
+    # WEB-AUTH (WEBAUTH-DECOUPLE, 2026-10-11): the myapp://callback route is unconditional in
+    # hello-maui-app.csproj, so every kit hap routes the redirect (check_webauth below gates
+    # it). This opt-in only compiles the app://webauth/* device probe triggers/UI for a round
+    # that drives the flow from activations; the round docs' explicit `aa start -U
+    # myapp://callback?...` step needs no flag any more.
     if [ "${DEVICE_TEST_KIT_WEBAUTH_PROBE:-0}" = 1 ]; then
         set -- "$@" -p:WebAuthProbe=true
     fi
@@ -419,6 +421,23 @@ if missing:
 PY
 }
 
+# WEB-AUTH (WEBAUTH-DECOUPLE, 2026-10-11): the default haps must carry the myapp://callback
+# route even without DEVICE_TEST_KIT_WEBAUTH_PROBE - the route ships from the sample csproj, so
+# a kit that lost it fails assembly here instead of silently shipping a hap where the round
+# docs' `aa start -U myapp://callback?...` step cannot complete (the kit #54 rev2 miss).
+check_webauth() { # <hap> <label>
+    python3 - "$1" <<'PY' || { warn "webauth route check failed: $1"; exit 1; }
+import json, sys, zipfile
+hap = sys.argv[1]
+with zipfile.ZipFile(hap) as z:
+    skills = json.loads(z.read('module.json'))['module']['abilities'][0].get('skills', [])
+routes = [(u.get('scheme'), u.get('host')) for s in skills for u in s.get('uris', [])]
+if ('myapp', 'callback') not in routes:
+    print('module.json carries no myapp://callback skill: %r' % (routes,), file=sys.stderr)
+    sys.exit(1)
+PY
+}
+
 copy_hap() {
     need_file "$1"
     cp -f "$1" "$STAGE/$2"
@@ -455,8 +474,10 @@ log "runtime-mode: $RUNTIME_MODE (kit-root runtime-mode.txt; haps carry libs/<ab
 publish_variant net11.0-openharmony26.0 ""
 copy_hap "$BIN26/hello-maui-app.hap" "hello-maui-app.hap"
 check_mode_hap "$BIN26/hello-maui-app.hap"
+check_webauth "$BIN26/hello-maui-app.hap"
 copy_hap "$BIN26/hello-maui-app-unsigned.hap" "hello-maui-app-unsigned.hap"
 check_mode_hap "$BIN26/hello-maui-app-unsigned.hap"
+check_webauth "$BIN26/hello-maui-app-unsigned.hap"
 
 publish_variant net11.0-openharmony26.0 "$PERMS"
 check_permissions "$BIN26/hello-maui-app.hap"

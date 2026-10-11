@@ -11,8 +11,12 @@
 #                 OpenHarmonyUIPage; the 20.0 band uses the TargetFrameworks override and the
 #                 permissions variant carries OpenHarmonyExtraPermissions; the default recipe
 #                 carries no WebAuthProbe
+#   T2c webauth   WEBAUTH-DECOUPLE static: hello-maui-app.csproj declares the myapp://callback
+#                 route unconditionally (no WebAuthProbe condition) while the WEBAUTH_PROBE
+#                 define and WebAuthProbe.cs stay behind -p:WebAuthProbe=true
 #   T2b webauth   DEVICE_TEST_KIT_WEBAUTH_PROBE=1 adds -p:WebAuthProbe=true to all four
-#                 publishes (aot and jit) - the kit #54 rev2 callback/probe opt-in
+#                 publishes (aot and jit) - now the probe UI/trigger opt-in only (the callback
+#                 route always ships; the kit #54 rev2 opt-in was the pre-decouple shape)
 #   T3 jit        --runtime-mode jit keeps the JIT publish (-p:OpenHarmonyRuntimeMode=jit, no
 #                 PublishAot), appends -jit to the default kit dir/out, and --kit-dir/--out
 #                 win verbatim
@@ -24,13 +28,15 @@
 # Exit: 0 = all checks passed; 1 = at least one check failed (work dir kept for triage).
 set -u
 
-SELFTEST_VERSION="2 (2026-10-11; +T2b WebAuthProbe opt-in)"
+SELFTEST_VERSION="3 (2026-10-11; +T2c WEBAUTH-DECOUPLE static)"
 
 log()     { printf '[%s] %s\n' "$(date '+%H:%M:%S')" "$*"; }
 section() { printf '\n=== %s ===\n' "$*"; }
 
 W="$(cd "$(dirname "$0")/.." && pwd)"
 MK="$W/scripts/make-device-test-kit.sh"
+CSPROJ="$W/test/hello-maui-app/hello-maui-app.csproj"
+PROBES="$W/test/hello-maui-app/WebAuthProbe.cs"
 WORK_BASE="${SELFTEST_TMPDIR:-}"
 if [ -z "$WORK_BASE" ]; then
     if [ -d /data/storage/el2/base/tmp/opencode ]; then
@@ -125,6 +131,34 @@ assert_contains "T2 permissions variant carries the permission list" "OpenHarmon
 assert_contains "T2 command shape is dotnet publish" "+ dotnet publish" "$WORK/aot.log"
 assert_contains "T2 dry-run announces no real publish" "nothing published, nothing assembled" "$WORK/aot.log"
 [ ! -d "$KD" ] && pass_ "T2 dry-run created no kit dir" || fail_ "T2 dry-run created $KD"
+
+# ---- T2c: WEBAUTH-DECOUPLE static shape -------------------------------------------------
+section "T2c WEBAUTH-DECOUPLE (callback route unconditional, probe stays opt-in)"
+if grep -qF '<OpenHarmonyWebAuthenticatorCallbackUrls>myapp://callback</OpenHarmonyWebAuthenticatorCallbackUrls>' "$CSPROJ"; then
+    pass_ "T2c csproj declares the myapp://callback route unconditionally"
+else
+    fail_ "T2c csproj lost the unconditional OpenHarmonyWebAuthenticatorCallbackUrls declaration"
+fi
+if grep -qF '<OpenHarmonyWebAuthenticatorCallbackUrls Condition' "$CSPROJ"; then
+    fail_ "T2c the callback route declaration is conditional again (a default build could drop it)"
+else
+    pass_ "T2c the callback route carries no Condition"
+fi
+if grep -qF '<DefineConstants Condition=" '"'"'$(WebAuthProbe)'"'"' == '"'"'true'"'"' ">$(DefineConstants);WEBAUTH_PROBE</DefineConstants>' "$CSPROJ"; then
+    pass_ "T2c the WEBAUTH_PROBE define stays behind -p:WebAuthProbe=true"
+else
+    fail_ "T2c the WEBAUTH_PROBE define is no longer conditioned on WebAuthProbe"
+fi
+if grep -qF '#if WEBAUTH_PROBE' "$PROBES"; then
+    pass_ "T2c WebAuthProbe.cs keeps its #if WEBAUTH_PROBE guard (probe UI opt-in)"
+else
+    fail_ "T2c WebAuthProbe.cs lost its #if WEBAUTH_PROBE guard"
+fi
+if grep -qF 'check_webauth' "$MK"; then
+    pass_ "T2c make-device-test-kit gates every kit on the callback route (check_webauth)"
+else
+    fail_ "T2c make-device-test-kit no longer hard-checks the callback route"
+fi
 
 # ---- T2b: the WebAuth probe/callback opt-in ---------------------------------------------
 section "T2b DEVICE_TEST_KIT_WEBAUTH_PROBE=1"
