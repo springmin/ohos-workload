@@ -148,7 +148,20 @@ public sealed class App : Application
 #if MEDIAELEMENT_PROBE
         // MEDIAELEMENT-ARKWEB A-M1 device probe (MediaElementProbe.cs): a modal MAUI page whose
         // media element plays the rawfile sample through the ArkWeb HTML5 path.
-        if (uri.StartsWith("app://media/element/hls", StringComparison.OrdinalIgnoreCase) &&
+        // MEDIA-MICRO: "hlslocal" plays a locally staged segmented rawfile playlist and
+        // "hlsrange" a single-file byte-range playlist (the shell's sibling serving + 206 path).
+        // Both are checked before "hls" (their shared prefix would otherwise match it).
+        if (uri.StartsWith("app://media/element/hlsrange", StringComparison.OrdinalIgnoreCase) &&
+            CurrentWindow() is { } rangeElementWindow)
+        {
+            MediaElementProbe.StartHlsLocal(rangeElementWindow, MediaElementProbe.HlsRangeRawFileName);
+        }
+        else if (uri.StartsWith("app://media/element/hlslocal", StringComparison.OrdinalIgnoreCase) &&
+            CurrentWindow() is { } localElementWindow)
+        {
+            MediaElementProbe.StartHlsLocal(localElementWindow, MediaElementProbe.HlsLocalRawFileName);
+        }
+        else if (uri.StartsWith("app://media/element/hls", StringComparison.OrdinalIgnoreCase) &&
             CurrentWindow() is { } hlsElementWindow)
         {
             MediaElementProbe.StartHls(hlsElementWindow);
@@ -230,6 +243,13 @@ public sealed class App : Application
         else if (uri.StartsWith("app://web/windowopenseq", StringComparison.OrdinalIgnoreCase))
         {
             RunWindowOpenSequence(capacityProbe: false);
+        }
+        // MEDIA-MICRO: "app://web/popupmedia" opens the loopback popup-media page in a popup
+        // (the shell's popup Web, which now carries the media gesture opt-out); the page reports
+        // its video's playing/ended state to the loopback server.
+        else if (uri.StartsWith("app://web/popupmedia", StringComparison.OrdinalIgnoreCase))
+        {
+            RunPopupMediaSequence();
         }
         else if (uri.StartsWith("app://web/windowopen/cap", StringComparison.OrdinalIgnoreCase))
         {
@@ -751,6 +771,41 @@ function PD(n) {
             }
         });
     }
+
+    // MEDIA-MICRO device trigger (app://web/popupmedia): opens the loopback popup-media page
+    // through window.open from the already-mounted hybrid A page. The shell binds the popup's
+    // controller synchronously (L8) and the dedicated popup Web carries the media gesture
+    // opt-out; the popup page itself reports its video's playing/ended events to the loopback
+    // server, which is the device round's evidence channel. The opener only records whether
+    // window.open returned a window.
+    private static void RunPopupMediaSequence()
+    {
+        HybridWebView? web = s_windowOpenHybrid;
+        if (web is null)
+        {
+            OpenHarmonyBridge.WriteStatus("[hello-maui-app] popupmedia: no hybrid webview");
+            return;
+        }
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                string? result = await web.EvaluateJavaScriptAsync(PopupMediaScript);
+                OpenHarmonyBridge.WriteStatus($"[hello-maui-app] popupmedia started: {result ?? "null"}");
+            }
+            catch (Exception jsEx)
+            {
+                OpenHarmonyBridge.WriteStatus($"[hello-maui-app] popupmedia failed: {jsEx.GetType().Name}: {jsEx.Message}");
+            }
+        });
+    }
+
+    // The popup-media opener: one window.open to the loopback page (http is allow-listed by the
+    // shell's popup URL gate). The result is read back synchronously; the page streams its own
+    // video evidence to the server.
+    private const string PopupMediaScript =
+        "(function(){try{var w=window.open('http://127.0.0.1:8791/popmedia.html','pmedia_1');"
+        + "return w?'opened':'null';}catch(e){return 'ERR '+e;}})()";
 
     // The complete opener sequence as one JS IIFE: on-page HUD + raw-message reporting + the
     // PD() popup writer + the timed open/ping/reuse/open/close/closed-check (or the capacity

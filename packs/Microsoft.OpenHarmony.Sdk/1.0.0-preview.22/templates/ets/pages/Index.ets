@@ -281,6 +281,15 @@ interface MediaAssetsConfig {
   slot?: number;
 }
 
+// MEDIA-MICRO (Range): one resolved single byte range of a served media source. The /__src__
+// endpoint (and a registered playlist's sibling sources) answers one valid single range with
+// 206; anything else (a foreign unit, a multi-range list, a malformed or unsatisfiable range)
+// is refused with 416, so a byte-range client never receives a wrong slice.
+interface MediaByteRange {
+  start: number;
+  end: number;
+}
+
 // JS -> .NET invocation payload the stock hybridwebview.js POSTs to __hwvInvokeDotNet:
 // { "MethodName": "...", "ParamValues": ["<json>", ...] }.
 interface HybridInvokeRequest {
@@ -1069,6 +1078,10 @@ struct Index {
   private mediaSourceKind: number[] = slotNumbers(0);
   private mediaSourceLocation: string[] = slotStrings();
   private mediaServeLogs: number[] = slotNumbers(0);
+  // MEDIA-MICRO (Range): bounded per-slot counter for the ranged-source log lines (the device
+  // round greps the 206/416 evidence from hilog); derived from WEB_SLOT_MAX like every other
+  // per-slot table.
+  private mediaRangeLogs: number[] = slotNumbers(0);
   // App theme: 'colorMode' is an ArkUI environment property that the framework keeps in
   // AppStorage and refreshes when the device switches between light and dark. The watch
   // forwards every change to the managed side through host.notifyTheme(isDark).
@@ -4585,6 +4598,7 @@ struct Index {
     this.mediaSourceKind[slot] = 0;
     this.mediaSourceLocation[slot] = '';
     this.mediaServeLogs[slot] = 0;
+    this.mediaRangeLogs[slot] = 0;
   }
 
   // True when the slot's ArkWeb exists and its controller is attached, i.e. a controller call
@@ -5028,6 +5042,10 @@ struct Index {
     }
     if (this.mediaRegistered[slot] && this.mediaDocId[slot].length > 0 && pageUrl.startsWith(MEDIA_ORIGIN)) {
       markers += `window.__ohMediaId = ${JSON.stringify(this.mediaDocId[slot])};window.__ohMediaSlot = ${slot};`;
+      // MEDIA-MICRO: the registered rawfile/file playlist is served under the extension-less
+      // /__src__ URL, so the page cannot detect HLS from the URL path; stamp the registration
+      // shape the page routes through hls.js.
+      markers += `window.__ohMediaHls = ${this.mediaSourceIsHls(slot)};`;
     }
     try {
       this.slotController(slot).runJavaScript(
@@ -7438,7 +7456,10 @@ struct Index {
       this.logInfo(`[maui] media assets: slot=${slot} kind=${kind} location=${this.mediaLocationForLog(kind, location)}`);
       // B6: the page load is app-requested; the one-shot marker lets it pass onLoadIntercept
       // without a managed round trip (same shape the "load" command uses).
-      const pageUrl: string = `${MEDIA_ORIGIN}?s=${slot}`;
+      // MEDIA-MICRO: a registered playlist carries hls=1 in the page query, so the page knows to
+      // route the extension-less /__src__ source through hls.js before its first script runs
+      // (the injected window.__ohMediaHls stays as the second signal).
+      const pageUrl: string = `${MEDIA_ORIGIN}?s=${slot}${this.mediaSourceIsHls(slot) ? '&hls=1' : ''}`;
       this.navProgrammatic[slot] = { url: pageUrl, expires: Date.now() + this.navPendingTtlMs };
       this.slotController(slot).loadUrl(pageUrl);
     } catch (mediaError) {
@@ -7492,8 +7513,10 @@ struct Index {
   }
 
   // Serves one intercepted MEDIA_ORIGIN request on <paramref name="slot"/>: the page for "/",
-  // the registered source for "/__src__", 404 for anything else.
-  private serveMedia(url: string, slot: number): WebResourceResponse {
+  // the vendored HLS runtime, the registered source for "/__src__", a registered playlist's
+  // sibling files (see below), 404 for anything else. MEDIA-MICRO: the request's Range header
+  // travels into every source answer (single range -> 206, invalid/multi/unsatisfiable -> 416).
+  private serveMedia(url: string, slot: number, rangeHeader: string): WebResourceResponse {
     let path: string = url;
     const scheme: number = path.indexOf('://');
     if (scheme >= 0) {
@@ -7519,7 +7542,13 @@ struct Index {
       return this.serveMediaHls();
     }
     if (path === '/__src__') {
-      return this.serveMediaSource(slot);
+      return this.serveMediaSource(slot, rangeHeader);
+    }
+    // MEDIA-MICRO: a registered playlist resolves its relative variant/segment/media references
+    // against the media origin, so the same-origin sibling files are served from the playlist's
+    // own directory (rawfile name / sandbox path) with the same ≤64MB + MIME + Range semantics.
+    if (this.mediaSourceIsHls(slot)) {
+      return this.serveMediaSibling(path, slot, rangeHeader);
     }
     return this.hybridErrorResponse(404);
   }
@@ -7560,15 +7589,80 @@ struct Index {
     return bytes.buffer.slice(start, end) as ArrayBuffer;
   }
 
-  // The registered rawfile/file source, read whole and answered with a media MIME type. kind 0
-  // (URL) has nothing to serve here. A missing/oversized file answers 404/413; the page's video
-  // element then reports a media error, which the managed element maps to Failed.
-  private serveMediaSource(slot: number): WebResourceResponse {
+  // The registered rawfile/file source for /__src__, answered with a media MIME type (kind 0 has
+  // nothing to serve). A missing/oversized file answers 404/413; the page's video element then
+  // reports a media error, which the managed element maps to Failed.
+  private serveMediaSource(slot: number, rangeHeader: string): WebResourceResponse {
     const kind: number = this.mediaSourceKind[slot];
     const location: string = this.mediaSourceLocation[slot];
     if (!this.mediaRegistered[slot] || kind === 0 || location.length === 0) {
       return this.hybridErrorResponse(404);
     }
+    return this.serveMediaPayload(location, slot, rangeHeader);
+  }
+
+  // MEDIA-MICRO: true while the slot's registered location is an m3u8 playlist. The page then
+  // routes the extension-less /__src__ URL through hls.js (the stamped window.__ohMediaHls) and
+  // the shell serves the playlist's sibling sources; a non-playlist registration keeps the 404
+  // for every other path.
+  private mediaSourceIsHls(slot: number): boolean {
+    return this.mediaRegistered[slot] && this.mediaSourceKind[slot] !== 0
+      && this.mediaSourceLocation[slot].toLowerCase().endsWith('.m3u8');
+  }
+
+  // MEDIA-MICRO: one same-origin path of a registered playlist (a variant playlist, an init or
+  // media file, a segment). The path is decoded and validated, then resolved below the
+  // playlist's own directory, so a playlist can only name files next to itself.
+  private serveMediaSibling(path: string, slot: number, rangeHeader: string): WebResourceResponse {
+    const relative: string = this.mediaSiblingPath(path);
+    if (relative.length === 0) {
+      return this.hybridErrorResponse(404);
+    }
+    const location: string = this.mediaSiblingLocation(this.mediaSourceLocation[slot], relative);
+    this.logMediaSibling(slot, relative);
+    return this.serveMediaPayload(location, slot, rangeHeader);
+  }
+
+  // The accepted shape of a playlist's relative reference: a decoded relative path without
+  // backslashes, traversal or empty/'.'/'..' segments (the rawfile name grammar). '' refuses.
+  private mediaSiblingPath(path: string): string {
+    let relative: string = path;
+    while (relative.startsWith('/')) {
+      relative = relative.substring(1);
+    }
+    if (relative.length === 0 || relative.length > 1024 || relative.indexOf('\\') >= 0) {
+      return '';
+    }
+    try {
+      relative = decodeURIComponent(relative);
+    } catch {
+      return '';
+    }
+    if (relative.length === 0 || relative.indexOf('\n') >= 0 || relative.indexOf('\r') >= 0) {
+      return '';
+    }
+    const segments: string[] = relative.split('/');
+    for (const segment of segments) {
+      if (segment.length === 0 || segment === '.' || segment === '..') {
+        return '';
+      }
+    }
+    return relative;
+  }
+
+  // The playlist's directory + the validated relative path. A root-level playlist keeps the
+  // reference root-relative (rawfile root / sandbox-absolute root as validated).
+  private mediaSiblingLocation(location: string, relative: string): string {
+    const cut: number = location.lastIndexOf('/');
+    const dir: string = cut >= 0 ? location.substring(0, cut + 1) : '';
+    return dir + relative;
+  }
+
+  // Serves one source payload (the registered /__src__ file or a playlist's sibling file) with
+  // the shared ≤64MB + MIME semantics. MEDIA-MICRO: no Range header -> 200 + Accept-Ranges; one
+  // valid single range -> 206 + Content-Range; an invalid/multi/unsatisfiable range -> 416.
+  private serveMediaPayload(location: string, slot: number, rangeHeader: string): WebResourceResponse {
+    const kind: number = this.mediaSourceKind[slot];
     let fd: number = -1;
     try {
       let data: ArrayBuffer;
@@ -7590,10 +7684,28 @@ struct Index {
         return this.hybridErrorResponse(413);
       }
       const response: WebResourceResponse = new WebResourceResponse();
-      response.setResponseCode(200);
       response.setResponseMimeType(this.mediaMimeType(location));
       response.setResponseEncoding('utf-8');
-      response.setResponseData(data);
+      if (rangeHeader.length === 0) {
+        response.setResponseCode(200);
+        response.setResponseData(data);
+        const wholeHeaders: Header[] = [{ headerKey: 'Accept-Ranges', headerValue: 'bytes' }];
+        response.setResponseHeader(wholeHeaders);
+        return response;
+      }
+      const range: MediaByteRange | null = this.parseMediaByteRange(rangeHeader, size);
+      if (range === null) {
+        this.logMediaRange(slot, rangeHeader, -1, -1, size, false);
+        return this.mediaRangeNotSatisfiable(size);
+      }
+      response.setResponseCode(206);
+      response.setResponseData(data.slice(range.start, range.end + 1));
+      const rangeHeaders: Header[] = [
+        { headerKey: 'Content-Range', headerValue: `bytes ${range.start}-${range.end}/${size}` },
+        { headerKey: 'Accept-Ranges', headerValue: 'bytes' },
+      ];
+      response.setResponseHeader(rangeHeaders);
+      this.logMediaRange(slot, rangeHeader, range.start, range.end, size, true);
       return response;
     } catch (sourceError) {
       this.logWarn(`[maui] media source read failed (slot ${slot}, kind ${kind}): ${(sourceError as Error).message}`);
@@ -7607,6 +7719,125 @@ struct Index {
         }
       }
     }
+  }
+
+  // MEDIA-MICRO (Range): resolves one single-range request against a known payload size. Only
+  // the "bytes" unit with exactly one range is accepted: "bytes=start-end", "bytes=start-" and
+  // the suffix form "bytes=-suffix". Anything else - a foreign unit, a multi-range list, a
+  // malformed number, a start beyond the payload - answers null and is refused by the caller.
+  private parseMediaByteRange(header: string, size: number): MediaByteRange | null {
+    if (size <= 0) {
+      return null;
+    }
+    const text: string = header.trim();
+    if (!text.toLowerCase().startsWith('bytes=')) {
+      return null;
+    }
+    const spec: string = text.substring(6).trim();
+    if (spec.length === 0 || spec.indexOf(',') >= 0) {
+      return null;
+    }
+    const dash: number = spec.indexOf('-');
+    if (dash < 0) {
+      return null;
+    }
+    const startText: string = spec.substring(0, dash).trim();
+    const endText: string = spec.substring(dash + 1).trim();
+    if (startText.length === 0) {
+      if (endText.length === 0 || !this.isDecimalDigits(endText)) {
+        return null;
+      }
+      const suffix: number = parseInt(endText, 10);
+      if (!Number.isFinite(suffix) || suffix <= 0) {
+        return null;
+      }
+      return { start: Math.max(0, size - suffix), end: size - 1 };
+    }
+    if (!this.isDecimalDigits(startText) || (endText.length > 0 && !this.isDecimalDigits(endText))) {
+      return null;
+    }
+    const start: number = parseInt(startText, 10);
+    if (!Number.isFinite(start) || start >= size) {
+      return null;
+    }
+    if (endText.length === 0) {
+      return { start: start, end: size - 1 };
+    }
+    const parsedEnd: number = parseInt(endText, 10);
+    if (!Number.isFinite(parsedEnd) || parsedEnd < start) {
+      return null;
+    }
+    return { start: start, end: Math.min(parsedEnd, size - 1) };
+  }
+
+  // A plain decimal run (at most 15 digits, so the parseInt result is exact).
+  private isDecimalDigits(text: string): boolean {
+    if (text.length === 0 || text.length > 15) {
+      return false;
+    }
+    for (let index = 0; index < text.length; index++) {
+      const code: number = text.charCodeAt(index);
+      if (code < 0x30 || code > 0x39) {
+        return false;
+      }
+    }
+    return true;
+  }
+
+  // The fail-closed answer for an invalid/multi-range/unsatisfiable request: 416 with the total
+  // size, never a wrong slice.
+  private mediaRangeNotSatisfiable(size: number): WebResourceResponse {
+    const response: WebResourceResponse = new WebResourceResponse();
+    response.setResponseCode(416);
+    response.setResponseMimeType('text/plain');
+    response.setResponseEncoding('utf-8');
+    const headers: Header[] = [
+      { headerKey: 'Content-Range', headerValue: `bytes */${size}` },
+      { headerKey: 'Accept-Ranges', headerValue: 'bytes' },
+    ];
+    response.setResponseHeader(headers);
+    return response;
+  }
+
+  // MEDIA-MICRO (Range): the Range header of one intercepted request ('' = whole-file answer
+  // when the header is absent or unreadable). Header names are compared case-insensitively.
+  private mediaRequestRange(request: WebResourceRequest): string {
+    try {
+      const headers: Header[] = request.getRequestHeader();
+      for (const header of headers) {
+        if (header.headerKey.toLowerCase() === 'range') {
+          return header.headerValue !== undefined ? header.headerValue : '';
+        }
+      }
+    } catch {
+      // An unreadable header set is treated as a whole-file request.
+    }
+    return '';
+  }
+
+  // MEDIA-MICRO (Range): the bounded per-slot hilog evidence (the device round greps the 206
+  // lines); 16 lines per slot keep a segment burst from flooding the log. Sibling serves share
+  // the same budget (their names are the evidence that a local playlist resolved its references).
+  private logMediaRange(slot: number, header: string, start: number, end: number, size: number, served: boolean): void {
+    if (this.mediaRangeLogs[slot] >= 16) {
+      return;
+    }
+    this.mediaRangeLogs[slot]++;
+    const detail: string = served ? `bytes ${start}-${end}/${size}` : `416 size=${size}`;
+    this.logInfo(`[maui] media range (slot ${slot}): ${this.mediaRangeForLog(header)} -> ${detail}`);
+  }
+
+  private logMediaSibling(slot: number, relative: string): void {
+    if (this.mediaRangeLogs[slot] >= 16) {
+      return;
+    }
+    this.mediaRangeLogs[slot]++;
+    this.logInfo(`[maui] media sibling (slot ${slot}): ${relative}`);
+  }
+
+  private mediaRangeForLog(header: string): string {
+    const text: string = header.length > 96 ? `${header.substring(0, 93)}...` : header;
+    return text.split('\n').join(' ').split('\r').join(' ');
   }
 
   // Media MIME type by extension. ArkWeb sniffs most containers, but the correct type keeps the
@@ -8250,9 +8481,10 @@ struct Index {
         try {
           const url: string = event.request.getRequestUrl();
           // MEDIA-ELEMENT (A-M1): the media origin of this slot - the page for "/", the
-          // registered rawfile/file source for "/__src__", 404 otherwise.
+          // registered rawfile/file source for "/__src__", a playlist's sibling files, 404
+          // otherwise. MEDIA-MICRO: the request's Range header rides along.
           if (this.mediaRegistered[slot] && url.startsWith(MEDIA_ORIGIN)) {
-            return this.serveMedia(url, slot);
+            return this.serveMedia(url, slot, this.mediaRequestRange(event.request));
           }
           // Blazor origin (https://0.0.0.0/): every app asset, _framework/blazor.webview.js
           // included, is served from <base>/<root>. The hybrid __hwv* endpoints do not exist

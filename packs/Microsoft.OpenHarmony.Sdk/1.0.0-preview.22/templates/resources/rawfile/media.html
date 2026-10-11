@@ -30,6 +30,10 @@
 // lazily on the first HLS source; when hls.js or MediaSource is unavailable the page falls back
 // to the native video src and lets the platform answer (its error maps to the managed Failed
 // path). A fatal HLS error after the bounded recoveries is reported as an error event.
+// MEDIA-MICRO: a registered rawfile/file playlist is served under /__src__ and stamped with
+// window.__ohMediaHls, so it enters the same hls.js path even though the URL has no extension;
+// the shell serves the playlist's sibling variant/segment/media files from the playlist's own
+// directory and answers their Range requests (single range -> 206).
 //
 // Events (window.dotnetHost.postMessage("__OHMEDIA|s<slot>|<kind>|<json>"), consumed by
 // OpenHarmonyMediaElementSurface):
@@ -48,6 +52,15 @@
     slot = -1;
   }
   if (slot < 0 && typeof window.__ohMediaSlot === 'number') { slot = window.__ohMediaSlot; }
+  // MEDIA-MICRO: the shell marks a registered playlist in the page query (hls=1) and stamps
+  // window.__ohMediaHls; either signal routes the extension-less /__src__ source through hls.js
+  // (the query is available from the first script run, the stamp needs the page-end injection).
+  var hlsFromQuery = false;
+  try {
+    hlsFromQuery = /[?&]hls=1(?:&|$)/.test(window.location.search || '');
+  } catch (hlsQueryError) {
+    hlsFromQuery = false;
+  }
   var lastPositionPost = 0;
 
   // -------------------------------------------------------------------------------------------
@@ -122,6 +135,9 @@
   }
 
   // True for a source path ending in .m3u8 (scheme/authority, query and fragment stripped).
+  // MEDIA-MICRO: a registered rawfile/file playlist is served under the extension-less source
+  // path (/__src__); the shell's hls=1 query flag (or the page-end window.__ohMediaHls stamp)
+  // routes it through hls.js although the served URL carries no .m3u8 suffix.
   function isHlsUrl(url) {
     try {
       var path = String(url);
@@ -134,7 +150,8 @@
       if (query >= 0) { path = path.substring(0, query); }
       var fragment = path.indexOf('#');
       if (fragment >= 0) { path = path.substring(0, fragment); }
-      return /\.m3u8$/i.test(path);
+      if (/\.m3u8$/i.test(path)) { return true; }
+      return (hlsFromQuery || window.__ohMediaHls === true) && path === '/__src__';
     } catch (isHlsError) {
       return false;
     }

@@ -21,14 +21,14 @@
     },
     "ui": {
       "abcVersion": "13.0.1.0",
-      "bytes": 602744,
+      "bytes": 623732,
       "dist": "modules.abc",
       "file": "modules.ui.abc",
-      "sha256": "d32981e633752e951b82127f531d3e700c809b3f9ca86d51c48edbc57772095f",
+      "sha256": "98aa6e7a89cb767922a83a06b39f6f9040b524caed0c0711de8fa126c795bf07",
       "sources": {
         "entryability/EntryAbility.ui.ets": "eff19968215fecca3a3800165cabf4ec85c519500c2fb8d7e524aca9d206f565",
-        "pages/Index.ets": "9adb2682cde55474f56104dd3d06477e0a824e10f24ea4615ea67838dcd74495",
-        "pages/SubWindow.ets": "5dc113f191bb93dfe0efe366a466feace1c76f55abf8761cd6580fd1ede68474"
+        "pages/Index.ets": "c8cef0724a7787e8879ccd373b57b5cd9604eeed9ef5765b6a1a7187255db542",
+        "pages/SubWindow.ets": "4a584ba10f71b09cbc21f948eb5aa99867f7d7f2189de36efb54ce3cf2624ca9"
       }
     }
   }
