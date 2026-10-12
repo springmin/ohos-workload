@@ -30,6 +30,12 @@
 // lazily on the first HLS source; when hls.js or MediaSource is unavailable the page falls back
 // to the native video src and lets the platform answer (its error maps to the managed Failed
 // path). A fatal HLS error after the bounded recoveries is reported as an error event.
+// MEDIA-RESIDUALS (hlsrange): a same-origin fragment fetch that carries a non-zero byte-range
+// offset is served by fetching the whole file once and slicing locally (see LocalSliceLoader).
+// ArkWeb's intercepted ArrayBuffer responses cannot skip bytes for CEF (NWebResourceHandler::Skip
+// offsets only file/resource responses), so the shell's correct 206 answer for a non-zero range
+// offset dies in the CEF input stream with net::ERR_REQUEST_RANGE_NOT_SATISFIABLE (-328) and
+// surfaces as fragLoadError; the local slice carries exactly the bytes a used 206 would have.
 // MEDIA-MICRO: a registered rawfile/file playlist is served under /__src__ and stamped with
 // window.__ohMediaHls, so it enters the same hls.js path even though the URL has no extension;
 // the shell serves the playlist's sibling variant/segment/media files from the playlist's own
@@ -80,6 +86,11 @@
   var pendingHlsUrl = '';
   var hlsRetries = 0;
   var loadSeq = 0;
+  // MEDIA-RESIDUALS (hlsrange): the whole-file payload of the current same-origin fragment
+  // source. A registered playlist can name one file through many byte ranges; fetching it once
+  // and slicing per fragment avoids both the platform skip failure and a refetch per fragment.
+  // destroyHls() drops it, so it never spans two sources.
+  var localSliceCache = { url: '', data: null };
 
   function post(kind, detail) {
     try {
@@ -167,6 +178,119 @@
     return text.length > 200 ? text.substring(0, 197) + '...' : text;
   }
 
+  // -------------------------------------------------------------------------------------------
+  // MEDIA-RESIDUALS (hlsrange): the same-origin fragment loader.
+  //
+  // hls.js asks for the fragments of a #EXT-X-BYTERANGE playlist with a Range header. For a
+  // same-origin URL that Range reaches the shell's intercepted response, and CEF then tries to
+  // skip to the range's first offset before it even reads the headers: NWebResourceHandler::Skip
+  // understands only the file/resource response types, an ArrayBuffer (the shell's sliced 206)
+  // falls through to the refusing base implementation, and the request dies with
+  // net::ERR_REQUEST_RANGE_NOT_SATISFIABLE (-328) -> hls.js fragLoadError. The fix lives on the
+  // page because the platform behaviour is below the app: fetch the source once WITHOUT a Range
+  // header (the shell answers the whole file with 200), keep it in localSliceCache, and hand
+  // hls.js the exact byte slice the range named. Remote origins keep the stock loader and its
+  // real range requests - this loader only short-circuits a same-origin arraybuffer range.
+  // -------------------------------------------------------------------------------------------
+  function LocalSliceLoader(config) {
+    this.inner = new window.Hls.DefaultConfig.loader(config);
+    this.stats = this.inner.stats;
+  }
+
+  LocalSliceLoader.prototype.load = function (context, config, callbacks) {
+    var ranged = !!context && context.responseType === 'arraybuffer'
+      && context.rangeEnd > 0 && context.rangeEnd > context.rangeStart;
+    var sameOrigin = false;
+    if (ranged) {
+      try {
+        sameOrigin = new URL(String(context.url), window.location.href).origin === window.location.origin;
+      } catch (originError) {
+        sameOrigin = false;
+      }
+    }
+    if (!sameOrigin) {
+      this.inner.load(context, config, callbacks);
+      return;
+    }
+    var url = String(context.url);
+    var start = context.rangeStart > 0 ? context.rangeStart : 0;
+    var end = context.rangeEnd;
+    if (localSliceCache.data !== null && localSliceCache.url === url) {
+      this.emitSlice(callbacks, context, start, end, null, this.stats, null);
+      return;
+    }
+    var self = this;
+    var whole = {};
+    for (var key in context) {
+      if (Object.prototype.hasOwnProperty.call(context, key)) { whole[key] = context[key]; }
+    }
+    whole.rangeStart = 0;
+    whole.rangeEnd = 0;
+    var slicedCallbacks = {
+      onSuccess: function (response, stats, innerContext, networkDetails) {
+        if (response && response.data !== null && response.data !== undefined) {
+          localSliceCache.url = url;
+          localSliceCache.data = response.data;
+        }
+        self.emitSlice(callbacks, context, start, end, response, stats, networkDetails);
+      },
+      onError: function (response, innerContext, networkDetails, stats) {
+        callbacks.onError(response, context, networkDetails, stats);
+      },
+      onTimeout: function (stats, innerContext, networkDetails) {
+        callbacks.onTimeout(stats, context, networkDetails);
+      },
+      onAbort: function (stats, innerContext, networkDetails) {
+        callbacks.onAbort(stats, context, networkDetails);
+      }
+    };
+    if (typeof callbacks.onProgress === 'function') {
+      slicedCallbacks.onProgress = callbacks.onProgress;
+    }
+    self.inner.load(whole, config, slicedCallbacks);
+  };
+
+  // Answers one fragment from the cached whole-file payload with the exact range slice. The
+  // stats mirror the local slice (length, timings), so hls.js sees a completed load of the
+  // range length rather than the whole file.
+  LocalSliceLoader.prototype.emitSlice = function (callbacks, context, start, end, response, stats, networkDetails) {
+    var data = localSliceCache.data;
+    var total = data && typeof data.byteLength === 'number' ? data.byteLength : 0;
+    var sliced = data && typeof data.slice === 'function' ? data.slice(start, Math.min(end, total)) : null;
+    var now = window.performance && window.performance.now ? window.performance.now() : Date.now();
+    var target = stats || this.stats;
+    if (target && target.loading) {
+      if (!target.loading.start) { target.loading.start = now; }
+      target.loading.first = target.loading.first || now;
+      target.loading.end = now;
+      target.loaded = sliced ? sliced.byteLength : 0;
+      target.total = sliced ? sliced.byteLength : 0;
+      target.aborted = false;
+    }
+    if (!sliced) {
+      callbacks.onError(
+        { code: response && response.code ? response.code : 0, text: 'local slice source unavailable' },
+        context, networkDetails || null, target);
+      return;
+    }
+    callbacks.onSuccess(
+      { url: (response && response.url) || context.url, data: sliced, code: (response && response.code) || 206 },
+      target, context, networkDetails || null);
+    try {
+      post('hls', { event: 'local-slice', url: logUrl(context.url), start: start, end: end, bytes: sliced.byteLength });
+    } catch (sliceLogError) {
+      // Diagnostics only.
+    }
+  };
+
+  LocalSliceLoader.prototype.abort = function () {
+    this.inner.abort();
+  };
+
+  LocalSliceLoader.prototype.destroy = function () {
+    this.inner.destroy();
+  };
+
   function destroyHls() {
     if (hls) {
       try { hls.destroy(); } catch (destroyError) { }
@@ -174,6 +298,8 @@
     }
     hlsPendingPlay = false;
     hlsManifestReady = false;
+    localSliceCache.url = '';
+    localSliceCache.data = null;
   }
 
   function hlsUsable(runtime) {
@@ -218,7 +344,7 @@
     if (!hlsUsable(window.Hls)) { return false; }
     var instance = null;
     try {
-      instance = new window.Hls({ enableWorker: false });
+      instance = new window.Hls({ enableWorker: false, fLoader: LocalSliceLoader });
     } catch (createError) {
       return false;
     }

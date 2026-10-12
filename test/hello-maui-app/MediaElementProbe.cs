@@ -216,7 +216,7 @@ internal static class MediaElementProbe
             {
                 // 1) load + play + natural end (the currentTime/ended/size evidence).
                 OpenHarmonyMediaResult play = await handler.PlayAsync();
-                Mark(window, $"play status={play.Status}");
+                Mark(window, $"play status={play.Status} message='{play.Message}'");
                 var deadline = DateTime.UtcNow + TimeSpan.FromSeconds(label.StartsWith("hls:", StringComparison.Ordinal) ? 45 : 10);
                 while (DateTime.UtcNow < deadline && !ended.Task.IsCompleted && surface.State != OpenHarmonyMediaPlaybackState.Error)
                 {
