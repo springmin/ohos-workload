@@ -890,6 +890,26 @@ for name, purpose in haps:
                     if len(idx) > INDEX_SANE_MAX:
                         grade("WARN", "%s: resources.index %d B 超出预期 ≤%d B — 资源/权限增加时正常，确认后更新本检查"
                                       % (name, len(idx), INDEX_SANE_MAX))
+                    # LAUNCHER-IDENTITY: only the RestoolV2 index loads on a current device; the
+                    # legacy V1 header (produced when module.json minAPIVersion < 60000020) makes
+                    # every $string:/$media: reference resolve to nothing.
+                    if idx[:9] != b"RestoolV2":
+                        print("      index  头 %r（非 RestoolV2）" % idx[:12])
+                        grade("FAIL", "%s: resources.index 非 RestoolV2（头 %r）— 设备 ResourceManager 加载不了 legacy V1："
+                                      "launcher 只渲染 bundle 名与空白图标，$string: 查询报 9001001（LAUNCHER-IDENTITY）；"
+                                      "按 OpenHarmonyMinApiVersion>=60000020 重打包" % (name, idx[:12]))
+                    else:
+                        print("      index  格式 RestoolV2")
+
+        # LAUNCHER-IDENTITY: the packed manifest must carry restool's resolved app ids (DevEco
+        # PackageHap writes them); without them the launcher cannot resolve the app label/icon.
+        label_id, icon_id = app.get("labelId"), app.get("iconId")
+        if isinstance(label_id, int) and label_id > 0 and isinstance(icon_id, int) and icon_id > 0:
+            print("      标识   app labelId=%d iconId=%d" % (label_id, icon_id))
+        else:
+            print("      标识   app labelId=%r iconId=%r（缺解析字段）" % (label_id, icon_id))
+            grade("FAIL", "%s: module.json 缺 app.labelId/app.iconId（labelId=%r iconId=%r）— DevEco PackageHap 会从资源 id 表解析"
+                          " $string:/$media: 引用，缺了 launcher 显示 bundle 名与空白图标（LAUNCHER-IDENTITY）；需重打包" % (name, label_id, icon_id))
 
         # --- abc: PANDA format version + current shell size -----------------------------------
         if "ets/modules.abc" not in names:

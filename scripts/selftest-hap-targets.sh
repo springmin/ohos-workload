@@ -19,7 +19,9 @@
 #                  reason/usedScene, an unknown feature id and the strict request-point mode fail,
 #                  'all' emits the ten unique permissions (the webview-media camera/microphone
 #                  pair joined in 7cb1f31), and the raw extra-permission path
-#                  keeps its minimal form plus the raw-permission warning
+#                  keeps its minimal form plus the raw-permission warning (the default feature
+#                  set is 'network' - INTERNET - and -p:OpenHarmonyFeatures=none restores the
+#                  declare-nothing behaviour)
 #   T6 device      hdc-gated install + grant integration: installs OHOS_TEST_HAP, reads the
 #                  installed requestPermissions back through bm dump and checks that each entry
 #                  carries name/reason/usedScene; SKIPs without a device or the hap (no device
@@ -53,6 +55,13 @@
 #                  route (full URL -> scheme+host, bare scheme -> scheme-only) next to the
 #                  app-link skill; an invalid route fails the build naming the route rule and
 #                  leaves no hap.
+#   T11 identity  the active preview.28 pack packs the launcher identity end to end: the
+#                  packed resources.index carries the RestoolV2 header (the legacy V1 index is
+#                  unreadable on current devices), the packed module.json is restool's
+#                  id-resolved manifest (app labelId/iconId, module/ability descriptionId,
+#                  startWindow*Id), resources.index/resources/** are STORED with no directory
+#                  entries, and the default feature set declares INTERNET with reason/usedScene.
+#                  Same conditions as T9 (OHOS_SDK_ROOT + OpenHarmony-enabled dotnet).
 #
 # The fixture imports the real pack targets (so the UsingTask under test is the shipped one) and
 # calls the task directly. Needs a dotnet SDK; when dotnet is unavailable the functional half is
@@ -406,13 +415,23 @@ PY
     grep -qF 'unknown feature id' "$WORK/T5-case.log" && pass_ "T5 names the unknown feature" \
         || fail_ "T5 does not name the unknown feature"
     run_perm
-    assert_rc 0 $? "T5 no features keeps the legacy build working"
-    python3 - "$PERMFIX/out.json" <<'PY' && pass_ "T5 no features emits no requestPermissions" || fail_ "T5 no-feature module.json carries requestPermissions"
+    assert_rc 0 $? "T5 no -p keeps the default feature set working"
+    python3 - "$PERMFIX/out.json" <<'PY' && pass_ "T5 the default set declares INTERNET (network; LAUNCHER-IDENTITY / A)" || fail_ "T5 the default module.json does not declare INTERNET"
+import json, sys
+perms = json.load(open(sys.argv[1]))['module']['requestPermissions']
+assert [p['name'] for p in perms] == ['ohos.permission.INTERNET'], perms
+entry = perms[0]
+assert entry['reason'] == '$string:permission_reason_internet', entry
+assert entry['usedScene'] == {'abilities': ['EntryAbility'], 'when': 'inuse'}, entry
+PY
+    run_perm -p:OpenHarmonyFeatures=none
+    assert_rc 0 $? "T5 the none sentinel keeps the legacy build working"
+    python3 - "$PERMFIX/out.json" <<'PY' && pass_ "T5 none emits no requestPermissions (the pre-default behaviour)" || fail_ "T5 the none module.json carries requestPermissions"
 import json, sys
 assert 'requestPermissions' not in json.load(open(sys.argv[1]))['module']
 PY
     grep -qF 'the shipped shell can request permission(s) the app does not declare' "$WORK/T5-case.log" \
-        && pass_ "T5 no features warns about the shell request points" \
+        && pass_ "T5 the default set warns about the remaining shell request points" \
         || fail_ "T5 no request-point warning"
     run_perm -p:OpenHarmonyFeatures=all
     assert_rc 0 $? "T5 the 'all' feature selection resolves"
@@ -435,10 +454,14 @@ PY
     assert_rc 0 $? "T5 the raw extra-permission escape hatch still works"
     grep -qF 'raw permission' "$WORK/T5-case.log" && pass_ "T5 flags a raw permission without a reason" \
         || fail_ "T5 does not flag the raw permission"
-    python3 - "$PERMFIX/out.json" <<'PY' && pass_ "T5 the raw extra keeps the minimal entry form" || fail_ "T5 the raw extra entry changed"
+    python3 - "$PERMFIX/out.json" <<'PY' && pass_ "T5 the raw extra keeps the minimal entry form next to the default INTERNET" || fail_ "T5 the raw extra entry changed"
 import json, sys
 perms = json.load(open(sys.argv[1]))['module']['requestPermissions']
-assert perms == [{'name': 'ohos.permission.VIBRATE'}], perms
+assert perms == [
+    {'name': 'ohos.permission.INTERNET', 'reason': '$string:permission_reason_internet',
+     'usedScene': {'abilities': ['EntryAbility'], 'when': 'inuse'}},
+    {'name': 'ohos.permission.VIBRATE'},
+], perms
 PY
 fi
 
@@ -938,6 +961,89 @@ PY
             || fail_ "T10 the invalid-route error does not name the route rule"
         [ ! -e "$HAP" ] && pass_ "T10 the failed build leaves no hap behind" \
                         || fail_ "T10 the failed build left a hap behind"
+
+        # ---- T11: launcher identity (LAUNCHER-IDENTITY, 2026-10-12) ----------------------
+        # The active pack (preview.28) must pack the identity a device launcher can resolve:
+        # the resources.index is compiled on the V2 path (RestoolV2 header - the legacy V1
+        # index a minAPIVersion below 60000020 produced is unreadable on current devices),
+        # restool's id-resolved manifest replaces the staged module.json (app labelId/iconId
+        # plus the ability/module id fields the launcher needs), resources.index/resources/**
+        # stay STORED with no directory entries, and the default feature set declares
+        # INTERNET. The fixture drives the real preview.28 targets end to end (restool +
+        # ohos_packing_tool) and inspects the packed hap.
+        section "T11 launcher identity: V2 index + resolved ids + STORED resources (fixture)"
+        PACK28="$W/packs/Microsoft.OpenHarmony.Sdk/1.0.0-preview.28/"
+        IDFIX="$WORK/idfix"
+        rm -rf "$IDFIX"
+        mkdir -p "$IDFIX/publish"
+        printf 'probe payload' > "$IDFIX/publish/probe.dll"
+        cp "$PACK28/hosts/arm64-v8a/libopenharmonyhost.so" "$IDFIX/publish/libprobe.so"
+        python3 - "$IDFIX" "$PACK28/targets/OpenHarmony.Hap.targets" "$PACK28" <<'PY'
+import os, sys
+fix, targets, packdir = sys.argv[1:4]
+proj = f'''<Project>
+  <PropertyGroup>
+    <AssemblyName>idprobe</AssemblyName>
+    <OutputPath>bin/e2e/</OutputPath>
+    <RuntimeIdentifier>openharmony-arm64</RuntimeIdentifier>
+    <TargetFileName>probe.dll</TargetFileName>
+    <PublishDir>publish/</PublishDir>
+    <OpenHarmonyHapPackage>true</OpenHarmonyHapPackage>
+    <TargetPlatformIdentifier>openharmony</TargetPlatformIdentifier>
+    <OpenHarmonyHapSigning>false</OpenHarmonyHapSigning>
+    <OpenHarmonyBundleName>com.example.idprobe</OpenHarmonyBundleName>
+    <OpenHarmonyAppName>IdentityProbe</OpenHarmonyAppName>
+    <OpenHarmonyHapStageDir>stage/</OpenHarmonyHapStageDir>
+    <_OpenHarmonySdkPackDir>{packdir}</_OpenHarmonySdkPackDir>
+  </PropertyGroup>
+  <Import Project="{targets}" />
+  <!-- T11 fixture-only: the Microsoft.Maui.dll embedded-resource staging needs a MAUI
+       reference; replace it with an empty target like T9. -->
+  <Target Name="_OpenHarmonyStageHybridWebViewScript" />
+  <!-- Optional host Exec workaround (see T9); absent on healthy hosts. -->
+  <Import Project="$(ExecHook)" Condition=" '$(ExecHook)' != '' and Exists('$(ExecHook)') " />
+</Project>
+'''
+open(os.path.join(fix, 'idfix.proj'), 'w').write(proj)
+PY
+        ( cd "$IDFIX" && "$DOTNET" msbuild idfix.proj -t:_OpenHarmonyPackHap -nologo -v:m \
+            -p:OpenHarmonySdkRoot="$SDK_ROOT" -p:MicrosoftNETBuildTasksAssembly="$TASKS_DLL" \
+            -p:ExecHook="$EXEC_HOOK" ) > "$WORK/T11-build.log" 2>&1
+        rc=$?
+        IDHAP="$IDFIX/bin/e2e/openharmony-arm64/idprobe-unsigned.hap"
+        [ "$rc" -eq 0 ] && [ -f "$IDHAP" ] && pass_ "T11 the preview.28 fixture packs an unsigned hap (exit 0)" \
+            || fail_ "T11 the fixture hap build failed (exit $rc; see $WORK/T11-build.log)"
+        if [ -f "$IDHAP" ]; then
+            grep -qF 'RestoolV2' "$WORK/T11-build.log" && pass_ "T11 the build reports the RestoolV2 index" \
+                || fail_ "T11 the build did not report a RestoolV2 index"
+            python3 - "$IDHAP" "$IDFIX/stage/module.json" <<'PY' && pass_ "T11 the packed hap: RestoolV2 index + resolved ids + STORED resources + default INTERNET" || fail_ "T11 the packed hap misses the launcher-identity contract (traceback above names the field)"
+import json, sys, zipfile
+hap, staged = sys.argv[1:3]
+z = zipfile.ZipFile(hap)
+names = z.namelist()
+assert not any(n.endswith('/') for n in names), 'directory entries present'
+idx = z.read('resources.index')
+assert idx[:9] == b'RestoolV2', idx[:12]
+assert z.getinfo('resources.index').compress_type == zipfile.ZIP_STORED, 'index is deflated'
+for n in names:
+    if n == 'resources.index' or n.startswith('resources/'):
+        assert z.getinfo(n).compress_type == zipfile.ZIP_STORED, n
+assert b'IdentityProbe' in idx, 'app name string missing from the index'
+module = json.loads(z.read('module.json'))
+app = module['app']
+assert isinstance(app.get('labelId'), int) and app['labelId'] > 0, app
+assert isinstance(app.get('iconId'), int) and app['iconId'] > 0, app
+assert app.get('minAPIVersion') >= 60000020, app
+assert isinstance(module['module'].get('descriptionId'), int) and module['module']['descriptionId'] > 0
+ability = module['module']['abilities'][0]
+for field in ('labelId', 'iconId', 'descriptionId', 'startWindowIconId', 'startWindowBackgroundId'):
+    assert isinstance(ability.get(field), int) and ability[field] > 0, (field, ability)
+perms = module['module'].get('requestPermissions') or []
+assert [p['name'] for p in perms] == ['ohos.permission.INTERNET'], perms
+assert perms[0].get('reason') == '$string:permission_reason_internet', perms[0]
+assert module == json.load(open(staged)), 'packed module.json differs from the staged manifest'
+PY
+        fi
     fi
 fi
 

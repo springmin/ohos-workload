@@ -43,6 +43,10 @@
 #                 library, aot marker on a libcoreclr-carrying payload, unknown marker value,
 #                 kit-root mode disagreeing with the hap markers, stripped marker -> JIT
 #                 fallback refuses the 3-lib shape)
+#   S17 identity  LAUNCHER-IDENTITY (2026-10-12): a legacy V1 resources.index (Restool 6 header)
+#                 -> exit 1 naming the OpenHarmonyMinApiVersion>=60000020 floor; a manifest
+#                 without the resolved app.labelId/app.iconId -> exit 1 naming the launcher
+#                 fallback; the good kit's RestoolV2 index + ids pass S1
 #
 # The kit fixture mirrors the real one: five haps (module.json / ets/modules.abc /
 # resources.index / resources/rawfile/dotnet.zip / libs/arm64-v8a/*.so + the payload-in-libs
@@ -171,8 +175,11 @@ NEEDED = ["libace_napi.z.so", "libace_ndk.z.so", "libnative_drawing.so",
           "libc++_shared.so", "libc.so"]
 MODULE = {
     "app": {"bundleName": "com.example.hellomauiapp", "versionName": "1.0.0",
-            "minAPIVersion": 50002014, "targetAPIVersion": 60101024, "apiReleaseType": "Release"},
-    "module": {"name": "entry", "type": "entry", "requestPermissions": []},
+            "minAPIVersion": 60000020, "targetAPIVersion": 60101024, "apiReleaseType": "Release",
+            "labelId": 16777218, "iconId": 16777231},
+    "module": {"name": "entry", "type": "entry", "requestPermissions": [],
+               "descriptionId": 16777216,
+               "abilities": [{"name": "EntryAbility", "labelId": 16777217, "iconId": 16777231}]},
 }
 ABC_SIZE = 623784
 ABC_VERSION = (13, 0, 1, 0)
@@ -244,8 +251,10 @@ def good_abc(size=ABC_SIZE, version=ABC_VERSION):
     return b"PANDA\0\0\0" + b"\0\0\0\0" + bytes(version) + b"\0" * (size - 16)
 
 
-def good_index(size=INDEX_SIZE):
-    return (b"RI\x01" + bytes(range(256)) * ((size // 256) + 1))[:size]
+def good_index(size=INDEX_SIZE, magic=b"RestoolV2 "):
+    # The RestoolV2 header is what a current device's ResourceManager loads (LAUNCHER-IDENTITY);
+    # the legacy V1 header starts with b"Restool 6." instead.
+    return (magic + bytes(range(256)) * ((size // 256) + 1))[:size]
 
 
 def good_dotnet(entries=DOTNET_ENTRIES, extra_so=()):
@@ -503,6 +512,19 @@ def patch(kit, op, arg=None):
             items = [(n, b"" if n == "resources.index" else d) for n, d in items]
         elif op == "big-index":
             items = [(n, good_index(int(arg)) if n == "resources.index" else d) for n, d in items]
+        elif op == "legacy-index":
+            # The pre-LAUNCHER-IDENTITY shape: restool's legacy V1 header (same size, different
+            # magic) - the device's ResourceManager cannot load it.
+            items = [(n, b"Restool 6." + d[10:] if n == "resources.index" else d) for n, d in items]
+        elif op == "drop-app-ids":
+            # A manifest without restool's resolved app ids (the pre-LAUNCHER-IDENTITY ow build):
+            # the launcher cannot resolve the app label/icon.
+            data = dict(items)
+            module = json.loads(data["module.json"])
+            module["app"].pop("labelId", None)
+            module["app"].pop("iconId", None)
+            data["module.json"] = json.dumps(module).encode()
+            items = [(n, data[n]) for n, _ in items]
         elif op == "abc-size":
             items = [(n, good_abc(int(arg)) if n == "ets/modules.abc" else d) for n, d in items]
         elif op == "abc-version":
@@ -990,6 +1012,22 @@ python3 "$WORK/fixture.py" patch "$K" mode-drop
 run_verify "$K"
 assert_rc 1 "$RC" "S16 stripped marker falls back to JIT and refuses the 3-lib shape"
 assert_contains "S16 sees the JIT fallback expectation" "只有 3 个 .so（期望 15）" "$LOG_FILE"
+
+# ---- S17: launcher identity (LAUNCHER-IDENTITY, 2026-10-12) ---------------------------
+section "S17 launcher identity: legacy V1 index / missing resolved app ids -> FAIL"
+K="$(new_kit kit-legacyindex)"
+python3 "$WORK/fixture.py" patch "$K" legacy-index
+run_verify "$K"
+assert_rc 1 "$RC" "S17 a legacy V1 resources.index fails"
+assert_contains "S17 names the V1 header" "非 RestoolV2" "$LOG_FILE"
+assert_contains "S17 points at the minAPIVersion floor" "OpenHarmonyMinApiVersion>=60000020" "$LOG_FILE"
+
+K="$(new_kit kit-noids)"
+python3 "$WORK/fixture.py" patch "$K" drop-app-ids
+run_verify "$K"
+assert_rc 1 "$RC" "S17 a manifest without resolved app ids fails"
+assert_contains "S17 names the missing app ids" "缺 app.labelId/app.iconId" "$LOG_FILE"
+assert_contains "S17 points at LAUNCHER-IDENTITY" "LAUNCHER-IDENTITY" "$LOG_FILE"
 
 # ---- summary -------------------------------------------------------------------------
 section "summary"

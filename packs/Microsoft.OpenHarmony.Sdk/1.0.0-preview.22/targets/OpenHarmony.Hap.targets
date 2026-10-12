@@ -25,12 +25,18 @@
     <!-- API band per target framework; the decode rule, the device constraints and the
          overrides are in the packaging doc. openharmony20.0 is the platform 6.0.0 / API 20
          release band; the device band (every other TFM, e.g. net11.0-openharmony26.0)
-         defaults to the profile the tester's device family accepted. All values stay
-         overridable. -->
+         defaults to the same platform 6.0.0 / API 20 floor (LAUNCHER-IDENTITY, 2026-10-12).
+         The floor is not cosmetic: the resource compiler keys the resources.index format off
+         minAPIVersion, and a value below 60000020 emits the legacy V1 index that a current
+         device's ResourceManager cannot load - every $string:/$media: reference then resolves
+         to nothing (the launcher shows the bundle name with a blank icon and in-app lookups
+         fail with 9001001). See "API band" and "Resource index" in the packaging doc. All
+         values stay overridable; only a system older than platform 6.0.0 needs the previous
+         50002014 value (and it is the only case that needs the V1 index). -->
     <OpenHarmonyMinApiVersion Condition=" '$(OpenHarmonyMinApiVersion)' == '' and '$(TargetPlatformVersion)' == '20.0' ">60000020</OpenHarmonyMinApiVersion>
     <OpenHarmonyTargetApiVersion Condition=" '$(OpenHarmonyTargetApiVersion)' == '' and '$(TargetPlatformVersion)' == '20.0' ">60000020</OpenHarmonyTargetApiVersion>
     <OpenHarmonyApiReleaseType Condition=" '$(OpenHarmonyApiReleaseType)' == '' and '$(TargetPlatformVersion)' == '20.0' ">Release</OpenHarmonyApiReleaseType>
-    <OpenHarmonyMinApiVersion Condition=" '$(OpenHarmonyMinApiVersion)' == '' ">50002014</OpenHarmonyMinApiVersion>
+    <OpenHarmonyMinApiVersion Condition=" '$(OpenHarmonyMinApiVersion)' == '' ">60000020</OpenHarmonyMinApiVersion>
     <OpenHarmonyTargetApiVersion Condition=" '$(OpenHarmonyTargetApiVersion)' == '' ">60101024</OpenHarmonyTargetApiVersion>
     <OpenHarmonyApiReleaseType Condition=" '$(OpenHarmonyApiReleaseType)' == '' ">Release</OpenHarmonyApiReleaseType>
     <!-- compileSdkType/compileSdkVersion are emitted into module.json when the type is set
@@ -43,14 +49,18 @@
     <!-- Feature-driven module.json requestPermissions (see "Feature permissions" in the
          packaging doc). OpenHarmonyFeatures is a ';'/',' separated list of feature ids (or
          'all'); every selected feature declares its permission(s) with the reason resource and
-         the usedScene the platform requires. OpenHarmonyExtraPermissions stays for arbitrary raw
-         permission names (minimal entry, no reason/usedScene). OpenHarmonyPermissionsOptOut
-         lists request points the app deliberately does not declare;
+         the usedScene the platform requires. The default feature set is 'network'
+         (LAUNCHER-IDENTITY / A, 2026-10-12): the shipped shells and the managed network stack
+         open sockets as soon as an app talks to a real endpoint (WebAuth, HTTP), and without
+         ohos.permission.INTERNET every socket call fails with EPERM. Pass
+         -p:OpenHarmonyFeatures=none for the previous declare-nothing behaviour; a value that
+         combines features (e.g. "network;bluetooth") stays a plain list. OpenHarmonyExtraPermissions
+         stays for arbitrary raw permission names (minimal entry, no reason/usedScene).
+         OpenHarmonyPermissionsOptOut lists request points the app deliberately does not declare;
          OpenHarmonyRequireDeclaredRequestPoints upgrades the undeclared-request-point warning to
-         an error. All empty/false defaults keep the generated module.json byte-identical to the
-         raw-name behaviour for the same inputs. -->
+         an error. -->
     <OpenHarmonyExtraPermissions Condition=" '$(OpenHarmonyExtraPermissions)' == '' "></OpenHarmonyExtraPermissions>
-    <OpenHarmonyFeatures Condition=" '$(OpenHarmonyFeatures)' == '' "></OpenHarmonyFeatures>
+    <OpenHarmonyFeatures Condition=" '$(OpenHarmonyFeatures)' == '' ">network</OpenHarmonyFeatures>
     <OpenHarmonyPermissionsOptOut Condition=" '$(OpenHarmonyPermissionsOptOut)' == '' "></OpenHarmonyPermissionsOptOut>
     <OpenHarmonyRequireDeclaredRequestPoints Condition=" '$(OpenHarmonyRequireDeclaredRequestPoints)' == '' ">false</OpenHarmonyRequireDeclaredRequestPoints>
     <!-- Payload-in-libs (see "Payload in libs" in the packaging doc): stage the whole managed
@@ -427,6 +437,11 @@
           Condition=" '$(OpenHarmonyHapPackage)' == 'true' and '$(TargetPlatformIdentifier)' == 'openharmony' ">
     <PropertyGroup>
       <_OpenHarmonyTemplatesDir>$(_OpenHarmonySdkPackDir)templates/</_OpenHarmonyTemplatesDir>
+      <!-- 'none' is the explicit opt-out of the default 'network' feature set (see the
+           OpenHarmonyFeatures comment above); it resolves to the empty list, the previous
+           declare-nothing behaviour. -->
+      <_OpenHarmonyFeaturesResolved>$(OpenHarmonyFeatures)</_OpenHarmonyFeaturesResolved>
+      <_OpenHarmonyFeaturesResolved Condition=" '$(_OpenHarmonyFeaturesResolved)' == 'none' "></_OpenHarmonyFeaturesResolved>
     </PropertyGroup>
     <ItemGroup>
       <!-- Feature -> permission matrix. Feature is the id selected through OpenHarmonyFeatures;
@@ -507,7 +522,7 @@
       <_OpenHarmonyShellSource Include="$(_OpenHarmonyTemplatesDir)ets/**/*.ets" />
     </ItemGroup>
     <OpenHarmonyResolvePermissions FeatureTable="@(_OpenHarmonyFeaturePermission)"
-                                   Features="$(OpenHarmonyFeatures)"
+                                   Features="$(_OpenHarmonyFeaturesResolved)"
                                    ExtraPermissions="$(OpenHarmonyExtraPermissions)"
                                    ShellSources="@(_OpenHarmonyShellSource)"
                                    AbilityName="$(OpenHarmonyAbilityName)"
@@ -517,7 +532,7 @@
       <Output TaskParameter="RequestedPoints" PropertyName="_OpenHarmonyRequestedPermissions" />
       <Output TaskParameter="UndeclaredPoints" PropertyName="_OpenHarmonyUndeclaredPermissions" />
     </OpenHarmonyResolvePermissions>
-    <Message Importance="high" Text="OpenHarmony: permissions features='$(OpenHarmonyFeatures)' declared=@(_OpenHarmonyModuleJsonPermission->Count()) shellRequests='$(_OpenHarmonyRequestedPermissions)' undeclared='$(_OpenHarmonyUndeclaredPermissions)'" />
+    <Message Importance="high" Text="OpenHarmony: permissions features='$(_OpenHarmonyFeaturesResolved)' (requested='$(OpenHarmonyFeatures)') declared=@(_OpenHarmonyModuleJsonPermission->Count()) shellRequests='$(_OpenHarmonyRequestedPermissions)' undeclared='$(_OpenHarmonyUndeclaredPermissions)'" />
   </Target>
 
   <!-- Runtime mode switch (MS-MODE; see "Runtime mode switch" in the packaging doc): validates
@@ -588,7 +603,9 @@
          OpenHarmonyAppLinkHosts is set - the app-link skill element (browsable/viewData + one
          https uri per host + domainVerify per OpenHarmonyAppLinkDomainVerify) into
          module.abilities[0].skills, then validates the result. The bytes are unchanged for the
-         previous single-line template and API-band values. -->
+         previous single-line template and API-band values. The staged file is later replaced by
+         restool's id-resolved copy (see _OpenHarmonyGenerateResourceIndex): this target writes
+         the symbolic references, the resource compile resolves them into labelId/iconId/... . -->
     <ItemGroup>
       <_OpenHarmonyModuleJsonReplacement Include="BUNDLE_NAME"><Value>$(OpenHarmonyBundleName)</Value></_OpenHarmonyModuleJsonReplacement>
       <_OpenHarmonyModuleJsonReplacement Include="VENDOR"><Value>$(OpenHarmonyVendor)</Value></_OpenHarmonyModuleJsonReplacement>
@@ -810,13 +827,21 @@
     </ItemGroup>
   </Target>
 
-  <!-- resources.index: the device ResourceManager resolves this hap's resources (resources/rawfile
-       included) through the index, and a hap without one fails the rawfile read with
-       "GetRawFileContent failed, name is empty" (see "Resource index" in the packaging doc). The
-       index is compiled by the SDK's restool from the staged resources with the same module.json
-       that is packed, so the resource ids match the module.json/resource declarations. restool
-       also copies the whole resources/ tree into its output directory; the index is
-       self-contained, so the copy is dropped again and only resources.index is kept. -->
+  <!-- resources.index + resolved resource ids: the device ResourceManager resolves this hap's
+       resources (resources/rawfile included) through the index, and a hap without one fails the
+       rawfile read with "GetRawFileContent failed, name is empty" (see "Resource index" in the
+       packaging doc). The index is compiled by the SDK's restool from the staged resources with
+       the same module.json that is staged, so the resource ids match the module.json/resource
+       declarations. restool also copies the whole resources/ tree into its output directory and
+       writes an id-resolved copy of the manifest (the DevEco PackageHap equivalent): that copy
+       carries the numeric labelId/iconId/descriptionId/startWindow*Id fields the launcher needs
+       to resolve `$string:`/`$media:` references (LAUNCHER-IDENTITY, 2026-10-12). It replaces the
+       staged module.json before packing; without it the launcher falls back to the bundle name
+       with a blank icon and in-app lookups fail with 9001001. The index format follows the
+       manifest's minAPIVersion: the V2 header is asserted below, because a legacy V1 index is
+       unreadable on a current device (see "API band" in the packaging doc). restool's copied
+       resources/ tree is dropped again (the staged one is packed); the index and the resolved
+       manifest are kept. -->
   <Target Name="_OpenHarmonyGenerateResourceIndex"
           DependsOnTargets="_OpenHarmonyResolveHapStageDir;_OpenHarmonyStageHap;_OpenHarmonyResolveRestool"
           Condition=" '$(OpenHarmonyHapPackage)' == 'true' and '$(TargetPlatformIdentifier)' == 'openharmony' ">
@@ -826,6 +851,7 @@
       <_OpenHarmonyResourceIndexDir>$(_OpenHarmonyHapStageDirSlash)res-index/</_OpenHarmonyResourceIndexDir>
       <_OpenHarmonyResourceIndex>$(_OpenHarmonyResourceIndexDir)resources.index</_OpenHarmonyResourceIndex>
       <_OpenHarmonyResourceIndexConfig>$(_OpenHarmonyResourceIndexDir)resConfig.json</_OpenHarmonyResourceIndexConfig>
+      <_OpenHarmonyResourceIndexResolved>$(_OpenHarmonyResourceIndexDir)module.json</_OpenHarmonyResourceIndexResolved>
       <!-- The module name is fixed by the pack's module.json template ("name":"entry"). -->
       <_OpenHarmonyResourceIndexJson>{"configPath":"$(_OpenHarmonyHapStageDirSlash)module.json","packageName":"$(OpenHarmonyBundleName)","output":"$(_OpenHarmonyResourceIndexDir)","moduleNames":"entry","ResourceTable":["$(_OpenHarmonyResourceIndexDir)ResourceTable.h","$(_OpenHarmonyResourceIndexDir)ResourceTable.ts"],"applicationResource":"$(_OpenHarmonyHapStageDirSlash)resources","moduleResources":[],"iconCheck":false}</_OpenHarmonyResourceIndexJson>
     </PropertyGroup>
@@ -836,10 +862,23 @@
     <RemoveDir Directories="$(_OpenHarmonyResourceIndexDir)resources" />
     <Error Condition=" !Exists('$(_OpenHarmonyResourceIndex)') "
            Text="restool did not produce $(_OpenHarmonyResourceIndex); see the Resource index section in the packaging doc." />
+    <!-- The index format must be RestoolV2: the legacy V1 header parses nowhere on a current
+         device, so the build fails here instead of shipping an app whose label/icon vanish
+         (module.json minAPIVersion >= 60000020 selects it; see "API band" in the packaging doc). -->
     <PropertyGroup>
-      <_OpenHarmonyResourceIndexBytes>$([System.IO.File]::ReadAllBytes('$(_OpenHarmonyResourceIndex)').Length)</_OpenHarmonyResourceIndexBytes>
+      <_OpenHarmonyResourceIndexBytes Condition=" Exists('$(_OpenHarmonyResourceIndex)') ">$([System.IO.File]::ReadAllBytes('$(_OpenHarmonyResourceIndex)').Length)</_OpenHarmonyResourceIndexBytes>
+      <_OpenHarmonyResourceIndexText Condition=" Exists('$(_OpenHarmonyResourceIndex)') ">$([System.IO.File]::ReadAllText('$(_OpenHarmonyResourceIndex)'))</_OpenHarmonyResourceIndexText>
     </PropertyGroup>
-    <Message Importance="high" Text="OpenHarmony: compiled $(_OpenHarmonyResourceIndex) ($(_OpenHarmonyResourceIndexBytes) bytes) with restool from $(_OpenHarmonyHapStageDir)resources" />
+    <Error Condition=" !$(_OpenHarmonyResourceIndexText.StartsWith('RestoolV2')) "
+           Text="restool produced a legacy resources.index (no RestoolV2 header) for minAPIVersion=$(OpenHarmonyMinApiVersion): a current device cannot load it (the launcher drops the app name/icon; $string:/$media: lookups fail with 9001001). Keep OpenHarmonyMinApiVersion at or above 60000020 (the default) or raise an explicit override; only a pre-6.0.0 system needs the legacy value 50002014. See &quot;Resource index&quot; in docs/openharmony-hap-packaging.md." />
+    <!-- DevEco-style resolved-id manifest: restool writes the staged manifest back with the
+         numeric app.labelId/iconId, module.descriptionId and the ability id fields added from
+         the resource table it just compiled. Replace the staged module.json with it so the
+         packed manifest and the index agree and the launcher can resolve the identity. -->
+    <Error Condition=" !Exists('$(_OpenHarmonyResourceIndexResolved)') "
+           Text="restool did not write the resolved-id module.json ($(_OpenHarmonyResourceIndexResolved)); without its labelId/iconId fields the launcher shows the bundle name with a blank icon and $string:/$media: lookups fail. Keep the restool invocation as configured (the resolved manifest is restool's own output) and see &quot;Resource index&quot; in docs/openharmony-hap-packaging.md." />
+    <Copy SourceFiles="$(_OpenHarmonyResourceIndexResolved)" DestinationFiles="$(_OpenHarmonyHapStageDir)module.json" />
+    <Message Importance="high" Text="OpenHarmony: compiled $(_OpenHarmonyResourceIndex) ($(_OpenHarmonyResourceIndexBytes) bytes, RestoolV2) with restool from $(_OpenHarmonyHapStageDir)resources; packed module.json carries the resolved labelId/iconId/descriptionId fields" />
 
     <!-- Clean contract: restool's output tree lives under the staging directory; register it so
          `dotnet clean` removes it too. -->

@@ -382,10 +382,63 @@ if [ ! -d "$LIBS" ]; then
     LIBS="$WORK/empty-libs"
 fi
 UNSIGNED="$WORK/entry-default-unsigned.hap"
+# ---- V2 resources.index (LAUNCHER-IDENTITY, 2026-10-12) ---------------------
+# hvigor's CompileResource emits the legacy V1 resources.index (its restool config carries the
+# `compression` option and an OpenHarmony SDK profile), and a current device's ResourceManager
+# cannot load it: the launcher shows the bundle name with a blank icon and $string:/$media:
+# lookups fail. Re-run restool from hvigor's own resConfig with `compression` removed and the
+# manifest coordinates raised to the API 20 floor restool keys the V2 format off, keeping
+# hvigor's `ids`/`definedIds` table so the resource ids stay those the compiled ArkTS bytecode
+# references; assert the RestoolV2 header before packing (use the index, keep hvigor's
+# resources tree and packaged manifest).
+RES_CFG="$B/intermediates/res/default/resConfig.json"
+[ -f "$RES_CFG" ] || die "hvigor resConfig.json not found ($RES_CFG); cannot re-compile the V2 resources.index"
+RES_V2="$WORK/res-v2"
+rm -rf "$RES_V2"
+mkdir -p "$RES_V2"
+python3 - "$RES_CFG" "$RES_V2" <<'PY'
+import json, sys
+cfg_path, out = sys.argv[1], sys.argv[2]
+with open(cfg_path, encoding='utf-8') as f:
+    cfg = json.load(f)
+cfg.pop("compression", None)  # the option also forces the legacy index layout
+cfg["output"] = out + "/"
+cfg["ResourceTable"] = [out + "/ResourceTable.h", out + "/ResourceTable.ts"]
+with open(cfg["configPath"], encoding='utf-8') as f:
+    manifest = json.load(f)
+module = manifest.setdefault("module", {})
+# restool validates a stage-model manifest and expects a distro node; hvigor's process
+# profile may have dropped it (the module.json that ships is the packaged one, untouched).
+module.setdefault("distro", {
+    "moduleName": module.get("name", "entry"),
+    "deliveryWithInstall": module.get("deliveryWithInstall", True),
+    "installationFree": module.get("installationFree", False),
+})
+app = manifest["app"]
+# Only this re-compile copy is raised to the V2 floor; --json-path keeps hvigor's packaged
+# manifest (with its own minAPIVersion and the resolved ids).
+app["minAPIVersion"] = max(int(app.get("minAPIVersion") or 0), 60000020)
+app["targetAPIVersion"] = max(int(app.get("targetAPIVersion") or 0), 60101024)
+with open(out + "/module.json", "w", encoding='utf-8') as f:
+    json.dump(manifest, f)
+cfg["configPath"] = out + "/module.json"
+with open(out + "/resConfig.json", "w", encoding='utf-8') as f:
+    json.dump(cfg, f)
+PY
+"$OHOS_SDK_ROOT/toolchains/restool" -l "$RES_V2/resConfig.json" > "$WORK/restool-v2.log" 2>&1 || {
+    tail -5 "$WORK/restool-v2.log" >&2
+    die "restool (V2 resources.index) failed; full log: $WORK/restool-v2.log"
+}
+[ -f "$RES_V2/resources.index" ] || die "restool produced no resources.index ($RES_V2)"
+head -c 9 "$RES_V2/resources.index" | grep -q "RestoolV2" \
+    || die "restool produced a legacy resources.index (the device cannot load it; LAUNCHER-IDENTITY)"
+RES_INDEX="$RES_V2/resources.index"
+info "V2 resources.index: $RES_INDEX ($(stat -c%s "$RES_INDEX") bytes, RestoolV2)"
+
 PACK_ARGS="--mode hap --force true --lib-path $LIBS \
  --json-path $B/intermediates/package/default/module.json \
  --resources-path $B/intermediates/res/default/resources \
- --index-path $B/intermediates/res/default/resources.index \
+ --index-path $RES_INDEX \
  --pack-info-path $B/outputs/default/pack.info \
  --out-path $UNSIGNED \
  --ets-path $B/intermediates/loader_out/default/ets"

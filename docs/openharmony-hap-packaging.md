@@ -34,26 +34,36 @@ the lines, so a template with any other formatting silently produced invalid JSO
 ## Resource index
 
 `resources.index` is compiled by the SDK's `restool` from the staged `resources/` tree and the
-same `module.json` that is packed (`_OpenHarmonyGenerateResourceIndex` in the targets file), then
+same `module.json` that is staged (`_OpenHarmonyGenerateResourceIndex` in the targets file), then
 handed to `ohos_packing_tool pack` with `--index-path`. The device `ResourceManager` resolves the
 hap's resources through that index; without it the ArkTS shell's rawfile read fails with
 `GetRawFileContent failed, name is empty` and the managed bootstrap never starts, so the index is
-not optional. The resource ids follow the module.json declarations (`requestPermissions` and the
-compileSdk fields included), and restool itself picks the index format from
-`module.json`'s `minAPIVersion` (`RestoolV2` for API >= 20, the legacy `Restool` format for the
-older bands), so no format flag is needed.
+not optional. restool also writes an **id-resolved copy of the manifest** (the DevEco PackageHap
+equivalent), and the target replaces the staged `module.json` with it before packing: that is what
+adds the numeric `app.labelId`/`app.iconId`, `module.descriptionId` and the per-ability
+`labelId`/`iconId`/`descriptionId`/`startWindow*Id` fields the launcher resolves (LAUNCHER-IDENTITY,
+2026-10-12). Without them the launcher shows the bundle name with a blank icon and in-app
+`$r()`/`getStringSync` lookups fail with 9001001.
+
+The index format follows `module.json`'s `minAPIVersion`: `RestoolV2` for API >= 20 (the device
+band default 60000020), the legacy `Restool` format below it - a format flag does not exist. A
+current device's ResourceManager cannot load the legacy V1 index, so the target asserts the
+`RestoolV2` header and fails the build when an explicit `-p:OpenHarmonyMinApiVersion` override
+falls below 60000020. The resolved ids and the index come from the same restool run, so they agree
+by construction; the `requestPermissions` and compileSdk fields are part of the manifest restool
+compiles.
 
 `OpenHarmonyRestool` overrides the restool binary; the default resolution follows the resolved
 packing tool (`<toolchain dir>/../restool`, then `<OpenHarmonySdkRoot>/toolchains/restool`). A
 missing restool is a build error: a hap without the index installs but cannot read its rawfile
-payload. restool also copies the whole `resources/` tree into its output directory
-(`<stage>/res-index/`); the index is self-contained, so the copy is deleted and only
-`resources.index` is kept. The device-test kit's `verify-kit.sh` asserts the packed index
-(present, non-empty, ≤ 1 KiB), the abc header/size, the `libs/arm64-v8a` set, the
-payload-in-libs marker (entry assembly, staged file count, dotnet.zip identity) and the
-`dotnet.zip` composition per hap, plus the host ELF dependency discipline against
-`src/OpenHarmonyHost/host-deps.conf`; `scripts/selftest-verify-kit.sh` drives those
-assertions locally without a device (kit #23+).
+payload. restool's output tree lives under `<stage>/res-index/`; its copied `resources/` tree is
+deleted (the staged tree is packed) and only the index and the id-resolved manifest are kept. The
+device-test kit's `verify-kit.sh` asserts the packed index (present, non-empty, ≤ 2560 B, the
+`RestoolV2` header) and the packed manifest's resolved `labelId`/`iconId`, the abc header/size, the
+`libs/arm64-v8a` set, the payload-in-libs marker (entry assembly, staged file count, dotnet.zip
+identity) and the `dotnet.zip` composition per hap, plus the host ELF dependency discipline against
+`src/OpenHarmonyHost/host-deps.conf`; `scripts/selftest-verify-kit.sh` drives those assertions
+locally without a device (kit #23+).
 
 ## Staging directory
 
@@ -584,8 +594,10 @@ defaults follow the target framework; the numeric band encodes
 - `net11.0-openharmony20.0` -> platform 6.0.0 / API 20 -> min = target = 60000020 (Release); no
   compileSdk fields (BMS then keeps its OpenHarmony default).
 - device band (every other TFM, e.g. `net11.0-openharmony26.0`) -> the profile the tester's 2in1
-  device family accepted:
-  - min 50002014 (platform 5.0.2 / API 14)
+  device family accepted (the floor raised to API 20 in LAUNCHER-IDENTITY, 2026-10-12):
+  - min 60000020 (platform 6.0.0 / API 20 - the lowest value whose `minAPIVersion` makes
+    restool emit the `RestoolV2` resources.index; below it the legacy V1 index is emitted, which
+    a current device cannot load and which drops the app's label/icon)
   - target 60101024 (platform 6.1.1 / API 24)
   - apiReleaseType Release
   - compileSdkType HarmonyOS, compileSdkVersion 6.0.2.130
@@ -598,9 +610,10 @@ keeps `compileSdkType` OpenHarmony).
 
 `minAPIVersion` is checked at install: it must be <= the device's `apiCompatibleVersion` or the
 install fails with bm 9568297 `ERR_APPEXECFWK_INSTALL_SDK_INCOMPATIBLE`. The tester device family
-reports `apiCompatibleVersion 50002014`, so the device band defaults to exactly that value; change
-it per device with `-p:OpenHarmonyMinApiVersion=<value>`, but never raise it above the target
-device's `apiCompatibleVersion`.
+(the `HAD-W32` 2in1, 7.0.0.111 / API 26) accepts the API 20 floor; change it per device with
+`-p:OpenHarmonyMinApiVersion=<value>`, but never raise it above the target device's
+`apiCompatibleVersion`. Lowering it below 60000020 is only meaningful for a pre-6.0.0 system and
+re-selects the legacy V1 index (the build's RestoolV2 assertion then fails, by design).
 
 ## Bundle name
 
@@ -615,8 +628,11 @@ explicit `-p:OpenHarmonyBundleName=<name>` is validated too.
 `module.json` `requestPermissions` is generated from a feature matrix, so a feature the app turns
 on always ships with the declaration, the request reason and the `usedScene` the platform
 requires. Set `OpenHarmonyFeatures` to a `;` or `,` separated list of feature ids (or `all`);
-each selected feature expands to the permission entries below. Unset/empty (the default) declares
-nothing and leaves `module.json` byte-identical to a build without the property.
+each selected feature expands to the permission entries below. The default feature set is
+`network` (LAUNCHER-IDENTITY / A, 2026-10-12): every build declares `ohos.permission.INTERNET`,
+because an app that talks to a real endpoint (WebAuth, HTTP) fails every socket call with EPERM
+without it. `-p:OpenHarmonyFeatures=none` restores the previous declare-nothing behaviour; a
+value that combines features (e.g. `network;bluetooth`) stays a plain list.
 
 | Feature | Permission | Grant mode | Request point in the shell |
 | --- | --- | --- | --- |
@@ -671,9 +687,14 @@ declare. The manifest describes the shipped shell; an app that passes a custom
 Verification status (2026-09-25, no device attached to the build host):
 
 - `scripts/selftest-hap-targets.sh` T5 drives the real pack targets: the bluetooth feature
-  resolves to the asserted `module.json` bytes (name/reason/usedScene), `all` emits the eight
+  resolves to the asserted `module.json` bytes (name/reason/usedScene), `all` emits the ten
   unique permissions once each, an unknown feature id and the strict mode fail, and the raw
-  `OpenHarmonyExtraPermissions` path keeps its minimal form plus the warning.
+  `OpenHarmonyExtraPermissions` path keeps its minimal form plus the warning. The default
+  feature set (`network`, no `-p`) declares INTERNET with reason/usedScene and
+  `-p:OpenHarmonyFeatures=none` restores the declare-nothing manifest; T11 additionally packs a
+  fixture hap through the real targets and asserts the `RestoolV2` index, the resolved
+  `labelId`/`iconId` fields, STORED `resources**` entries and the default INTERNET declaration
+  on the packed manifest (LAUNCHER-IDENTITY, 2026-10-12).
 - The generated `module.json` and the `permission_reason_*` strings compile through the SDK
   `restool` (a `resources.index` is produced), so the resource side of the chain accepts the
   feature declarations.

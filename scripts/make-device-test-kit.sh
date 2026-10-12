@@ -435,6 +435,26 @@ if missing:
 PY
 }
 
+# LAUNCHER-IDENTITY / A (2026-10-12): the pack's default feature set is 'network', so every kit
+# hap must declare ohos.permission.INTERNET with reason/usedScene; a kit built without it fails
+# on the first real socket call (WebAuth/HTTP) with EPERM. The Blazor host hap is packed by
+# hvigor (pack-host.sh), not by the pack targets, and is excluded here.
+check_internet() { # <hap> <label>
+    python3 - "$1" <<'PY' || { warn "internet permission check failed: $1"; exit 1; }
+import json, sys, zipfile
+hap = sys.argv[1]
+with zipfile.ZipFile(hap) as z:
+    perms = {p.get('name'): p for p in json.loads(z.read('module.json'))['module'].get('requestPermissions', [])}
+entry = perms.get('ohos.permission.INTERNET')
+if entry is None:
+    print('module.json declares no ohos.permission.INTERNET', file=sys.stderr)
+    sys.exit(1)
+if entry.get('reason') != '$string:permission_reason_internet' or not entry.get('usedScene'):
+    print('INTERNET declaration lacks reason/usedScene: %r' % (entry,), file=sys.stderr)
+    sys.exit(1)
+PY
+}
+
 # WEB-AUTH (WEBAUTH-DECOUPLE, 2026-10-11): the default haps must carry the myapp://callback
 # route even without DEVICE_TEST_KIT_WEBAUTH_PROBE - the route ships from the sample csproj, so
 # a kit that lost it fails assembly here instead of silently shipping a hap where the round
@@ -489,21 +509,26 @@ publish_variant net11.0-openharmony26.0 ""
 copy_hap "$BIN26/hello-maui-app.hap" "hello-maui-app.hap"
 check_mode_hap "$BIN26/hello-maui-app.hap"
 check_webauth "$BIN26/hello-maui-app.hap"
+check_internet "$BIN26/hello-maui-app.hap"
 copy_hap "$BIN26/hello-maui-app-unsigned.hap" "hello-maui-app-unsigned.hap"
 check_mode_hap "$BIN26/hello-maui-app-unsigned.hap"
 check_webauth "$BIN26/hello-maui-app-unsigned.hap"
+check_internet "$BIN26/hello-maui-app-unsigned.hap"
 
 publish_variant net11.0-openharmony26.0 "$PERMS"
 check_permissions "$BIN26/hello-maui-app.hap"
+check_internet "$BIN26/hello-maui-app.hap"
 copy_hap "$BIN26/hello-maui-app.hap" "hello-maui-app-permissions.hap"
 check_mode_hap "$BIN26/hello-maui-app.hap"
 
 publish_variant net11.0-openharmony20.0 ""
 copy_hap "$BIN20/hello-maui-app.hap" "hello-maui-app-api20.hap"
 check_mode_hap "$BIN20/hello-maui-app.hap"
+check_internet "$BIN20/hello-maui-app.hap"
 
 publish_variant net11.0-openharmony20.0 "$PERMS"
 check_permissions "$BIN20/hello-maui-app.hap"
+check_internet "$BIN20/hello-maui-app.hap"
 copy_hap "$BIN20/hello-maui-app.hap" "hello-maui-app-api20-permissions.hap"
 check_mode_hap "$BIN20/hello-maui-app.hap"
 
