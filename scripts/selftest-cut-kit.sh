@@ -33,13 +33,25 @@
 #                 only; headless + historical shas stay), a doc without an adjacent ui sha
 #                 refuses with zero writes, an invalid --abc-sha is a usage error, and the
 #                 sha refresh is idempotent (checked count: 101)
+#   T7 p3-anchor  P3 with synthetic pack stubs + sdk fixtures: the dry run prints the seed plan
+#                 and writes nothing; the `=`, `:=` and JSON anchor spellings are each replaced
+#                 with the freshly built bundle sha end to end; the cumulative seed is
+#                 auto-resolved from the sdk versions.env anchor via a local candidate and
+#                 staged into .feed; a missing anchor, an ambiguous file (two anchors), a
+#                 missing seed and an explicit --seed-bundle (with the mismatch warning) all
+#                 follow the documented fail-closed / explicit paths; a resumed anchor is a
+#                 no-op with no extra commit
+#   T8 p4-p6-dry  `--phase P4,P5,P6 --dry-run`: prints the upload clobber plan and the Integrity
+#                 notes template, previews RELEASE-VALUES, parses the upload/presign/manifest
+#                 hooks (a syntax-broken hook fails closed) and asserts zero writes: no scratch
+#                 dir, no curl call, no hook run, byte-identical fixture tree
 #
 # Env: SELFTEST_TMPDIR=<dir>  work dir base (default: the approved opencode tmp dir)
 #      SELFTEST_KEEP=1       keep the work dir even when all checks pass
 # Exit: 0 = all checks passed; 1 = at least one check failed (work dir kept for triage).
 set -u
 
-SELFTEST_VERSION="5 (2026-10-11; 109 checks, was 101)"
+SELFTEST_VERSION="6 (2026-10-12; 185 checks, was 109)"
 
 log()     { printf '[%s] %s\n' "$(date '+%H:%M:%S')" "$*"; }
 section() { printf '\n=== %s ===\n' "$*"; }
@@ -195,6 +207,91 @@ EOF
     for _rid in 11 22 33 44; do printf '[]\n' > "$_fx/assets/assets-$_rid.json"; done
     printf 'fixture-token\n' > "$_fx/token"
     return 0
+}
+
+# p3_ow_fixture <dir>: make_fixture plus the four P3 pack stubs (each records its call in
+# $PWD/.p3-calls) and a deterministic "fixed" bundle the pack-workload-bundle stub copies, so
+# every P3 run produces the same bundle sha.
+p3_ow_fixture() {
+    _fx="$1"
+    make_fixture "$_fx" 99 987654 54321 || return 1
+    _ow="$_fx/ow"
+    mkdir -p "$_fx/bundle-src/openharmony-workload-1.0.0-preview.99/feed"
+    printf 'fixture fixed bundle pack\n' > "$_fx/bundle-src/openharmony-workload-1.0.0-preview.99/feed/fixed-fixture.nupkg"
+    ( cd "$_fx/bundle-src" && tar -czf "$_ow/bundle-fixed.tar.gz" openharmony-workload-1.0.0-preview.99 ) || return 1
+    cat > "$_ow/scripts/prepare-packs.sh" <<'EOF'
+#!/bin/sh
+echo "prepare-packs" >> "$PWD/.p3-calls"
+EOF
+    cat > "$_ow/scripts/pack-local-workload.sh" <<'EOF'
+#!/bin/sh
+echo "pack-local $1" >> "$PWD/.p3-calls"
+mkdir -p "$PWD/.feed"
+printf 'fixture manifest pack\n' > "$PWD/.feed/local-fixture.nupkg"
+EOF
+    cat > "$_ow/scripts/pack-workload-bundle.sh" <<'EOF'
+#!/bin/sh
+echo "pack-workload-bundle" >> "$PWD/.p3-calls"
+mkdir -p "$PWD/dist"
+rm -f "$PWD"/dist/openharmony-workload-*.tar.gz
+cp "$PWD/bundle-fixed.tar.gz" "$PWD/dist/openharmony-workload-1.0.0-preview.99.tar.gz"
+EOF
+    cat > "$_ow/scripts/release-checksums.sh" <<'EOF'
+#!/bin/sh
+echo "release-checksums" >> "$PWD/.p3-calls"
+( cd "$PWD/dist" && sha256sum openharmony-workload-1.0.0-preview.99.tar.gz > SHA256SUMS )
+EOF
+    chmod +x "$_ow"/scripts/*.sh
+    commit_repo "$_ow"
+    return 0
+}
+
+# p3_sdk_fixture <dir> <sha> <form>: a minimal sdk-ohos fixture whose versions.env carries the
+# anchor in the requested spelling (colon|plain|json|none|double) plus stub installer tests;
+# origin/feature/openharmony points at the commit (worktree add resolves it offline).
+p3_sdk_fixture() {
+    _fx="$1"; _sha="$2"; _form="$3"
+    new_repo "$_fx" || return 1
+    mkdir -p "$_fx/eng/ohos-install/tests"
+    case "$_form" in
+        colon)
+            {
+                printf ': "${WORKLOAD_BUNDLE_VERSION:=1.0.0-preview.99}"\n'
+                printf ': "${WORKLOAD_BUNDLE_SHA256:=%s}"\n' "$_sha"
+                printf ': "${GH_USER:=springmin}"\n'
+            } > "$_fx/eng/ohos-install/versions.env" ;;
+        plain)
+            {
+                printf 'WORKLOAD_BUNDLE_VERSION=1.0.0-preview.99\n'
+                printf 'WORKLOAD_BUNDLE_SHA256=%s\n' "$_sha"
+            } > "$_fx/eng/ohos-install/versions.env" ;;
+        json)
+            printf '{\n  "WORKLOAD_BUNDLE_VERSION": "1.0.0-preview.99",\n  "WORKLOAD_BUNDLE_SHA256": "%s"\n}\n' "$_sha" \
+                > "$_fx/eng/ohos-install/versions.env" ;;
+        none)
+            printf '# no bundle anchor in this fixture\nWORKLOAD_BUNDLE_VERSION=1.0.0-preview.99\n' \
+                > "$_fx/eng/ohos-install/versions.env" ;;
+        double)
+            {
+                printf 'WORKLOAD_BUNDLE_SHA256=%s\n' "$_sha"
+                printf ': "${WORKLOAD_BUNDLE_SHA256:=%s}"\n' "$_sha"
+            } > "$_fx/eng/ohos-install/versions.env" ;;
+        *) return 1 ;;
+    esac
+    for _t in test-installer-verification test-hostfeed-verification test-codesign-filewrites; do
+        printf '#!/bin/sh\necho %s >> "$PWD/.sdk-tests"\n' "$_t" > "$_fx/eng/ohos-install/tests/$_t.sh"
+    done
+    commit_repo "$_fx"
+    git -C "$_fx" update-ref refs/remotes/origin/feature/openharmony "$(git -C "$_fx" rev-parse HEAD)"
+    return 0
+}
+
+# p3_seed_tar <out> <nupkg-name>: a previous-bundle seed carrying one feed/*.nupkg member.
+p3_seed_tar() {
+    _out="$1"; _name="$2"
+    mkdir -p "$T/p3-seed-src/feed"
+    printf 'fixture seed pack %s\n' "$_name" > "$T/p3-seed-src/feed/$_name"
+    tar -czf "$_out" -C "$T/p3-seed-src" feed
 }
 
 # ------------------------------------------------------------------ T0 usage
@@ -525,6 +622,178 @@ DQIM="$F6M/docs/2026-09-20-ohos-tester-quickstart.md"
 grep -qF 'kit #99，当前）' "$DQIM"; check "T6m marker kept at kit #99" $?
 grep -qF '111,111（`aabbccdd…`）' "$DQIM"; check "T6m sha refreshed in place" $?
 grep -qF 'deadbeef' "$DQIM"; check_neg "T6m old sha gone" "$?"
+
+# ------------------------------------------------------------------ T7 P3 anchor + seed
+# KIT54: P3 must match the `:=` anchor spelling, auto-resolve the previous published bundle as
+# the cumulative seed (from the sdk versions.env anchor) and refuse when neither is available.
+section "T7 P3 anchor forms + cumulative seed"
+P3OW="$T/p3-ow"; p3_ow_fixture "$P3OW" || { echo "p3 ow fixture failed" >&2; exit 1; }
+NEW_SHA="$(sha256sum "$P3OW/ow/bundle-fixed.tar.gz" | cut -d' ' -f1)"
+SEED="$T/p3-seed.tar.gz"; p3_seed_tar "$SEED" seed-old.nupkg || { echo "seed fixture failed" >&2; exit 1; }
+SEED_SHA="$(sha256sum "$SEED" | cut -d' ' -f1)"
+SEED_ASSET="openharmony-workload-1.0.0-preview.99.tar.gz"
+SEEDDIR="$T/p3-seeddir"; mkdir -p "$SEEDDIR"; cp "$SEED" "$SEEDDIR/$SEED_ASSET"
+SDK_COLON="$T/p3-sdk-colon"; p3_sdk_fixture "$SDK_COLON" "$SEED_SHA" colon || exit 1
+
+# T7a: P3 dry-run prints the pack steps + the seed plan, zero writes
+S7A="$T/p3-scratch-dry"; OUT7A="$T/t7a.out"
+CUT_KIT_SEED_DIR="$SEEDDIR" CUT_KIT_SEED_OFFLINE=1 sh "$CUT" --kit 99 --phase P3 --dry-run --scratch "$S7A" \
+    --ow-repo "$P3OW/ow" --maui-repo "$P3OW/maui" --runtime-repo "$P3OW/runtime" --docs-dir "$P3OW/docs" \
+    --sdk-repo "$SDK_COLON" --no-push > "$OUT7A" 2>&1
+check_rc "T7a P3 dry-run rc=0" "$?" 0
+assert_contains "T7a prints the pack steps" "$OUT7A" 'pack-workload-bundle'
+assert_contains "T7a seed plan names the anchor" "$OUT7A" "auto: anchor $(printf '%s' "$SEED_SHA" | cut -c1-8)"
+assert_contains "T7a seed plan picks the local candidate" "$OUT7A" "local $SEEDDIR/$SEED_ASSET"
+[ ! -e "$S7A" ]; check "T7a dry-run created no scratch" $?
+[ ! -e "$P3OW/ow/.p3-calls" ]; check "T7a dry-run ran no pack script" $?
+
+# T7b: the three anchor spellings (=, :=, JSON) replace exactly the anchor value end to end,
+# and the cumulative seed is auto-resolved from the local candidate and staged into .feed
+for _form in colon plain json; do
+    SDK="$T/p3-sdk-$_form"; p3_sdk_fixture "$SDK" "$SEED_SHA" "$_form" || exit 1
+    S="$T/p3-scratch-$_form"; O="$T/t7-$_form.out"
+    CUT_KIT_SEED_DIR="$SEEDDIR" CUT_KIT_SEED_OFFLINE=1 sh "$CUT" --kit 99 --phase P3 --execute \
+        --scratch "$S" --ow-repo "$P3OW/ow" --maui-repo "$P3OW/maui" --runtime-repo "$P3OW/runtime" \
+        --docs-dir "$P3OW/docs" --sdk-repo "$SDK" --no-push > "$O" 2>&1
+    check_rc "T7 $_form execute rc=0" "$?" 0
+    assert_contains "T7 $_form resolve is auto" "$O" 'seed: auto '
+    grep -qF "$NEW_SHA" "$S/sdk-anchor-wt/eng/ohos-install/versions.env" 2>/dev/null
+    check "T7 $_form anchor replaced with the built bundle sha" $?
+    grep -qF "$SEED_SHA" "$S/sdk-anchor-wt/eng/ohos-install/versions.env" 2>/dev/null
+    check_neg "T7 $_form old anchor gone" $?
+    [ -f "$P3OW/ow/.feed/seed-old.nupkg" ]; check "T7 $_form seed nupkg staged into .feed" $?
+    [ "$(wc -l < "$S/sdk-anchor-wt/.sdk-tests" 2>/dev/null | tr -d ' ')" = 3 ]
+    check "T7 $_form installer tests ran (3)" $?
+    git -C "$S/sdk-anchor-wt" log -1 --format=%s 2>/dev/null | grep -q "kit #99"
+    check "T7 $_form anchor commit created" $?
+    grep -q '^P3_rc=0$' "$S/state.env" 2>/dev/null
+    check "T7 $_form state P3_rc=0" $?
+    grep -q "^bundle_sha256=$NEW_SHA\$" "$S/state.env" 2>/dev/null
+    check "T7 $_form state records the built bundle sha" $?
+    grep -q '^seed_source=auto$' "$S/state.env" 2>/dev/null
+    check "T7 $_form state records the auto seed" $?
+done
+
+# T7c: a missing anchor refuses the re-anchor (fail closed, no commit; explicit seed so the
+# bundle step itself is satisfied)
+SDK_NONE="$T/p3-sdk-none"; p3_sdk_fixture "$SDK_NONE" "$SEED_SHA" none || exit 1
+S7C="$T/p3-scratch-none"; OUT7C="$T/t7c.out"
+CUT_KIT_SEED_OFFLINE=1 sh "$CUT" --kit 99 --phase P3 --execute --scratch "$S7C" \
+    --ow-repo "$P3OW/ow" --maui-repo "$P3OW/maui" --runtime-repo "$P3OW/runtime" --docs-dir "$P3OW/docs" \
+    --sdk-repo "$SDK_NONE" --seed-bundle "$SEED" --no-push > "$OUT7C" 2>&1
+check_neg "T7c missing anchor rc!=0" "$?"
+assert_contains "T7c names the accepted forms" "$OUT7C" 'expected exactly one WORKLOAD_BUNDLE_SHA256 anchor \(=, := or JSON form\), found 0'
+[ "$(git -C "$SDK_NONE" rev-list --count HEAD)" = 1 ]
+check "T7c no anchor commit created" $?
+
+# T7d: an ambiguous file (two anchors) refuses too and stays untouched
+SDK_DOUBLE="$T/p3-sdk-double"; p3_sdk_fixture "$SDK_DOUBLE" "$SEED_SHA" double || exit 1
+S7D="$T/p3-scratch-double"; OUT7D="$T/t7d.out"
+CUT_KIT_SEED_OFFLINE=1 sh "$CUT" --kit 99 --phase P3 --execute --scratch "$S7D" \
+    --ow-repo "$P3OW/ow" --maui-repo "$P3OW/maui" --runtime-repo "$P3OW/runtime" --docs-dir "$P3OW/docs" \
+    --sdk-repo "$SDK_DOUBLE" --seed-bundle "$SEED" --no-push > "$OUT7D" 2>&1
+check_neg "T7d ambiguous anchor rc!=0" "$?"
+assert_contains "T7d reports both matches" "$OUT7D" 'found 2'
+[ "$(grep -cF "$SEED_SHA" "$S7D/sdk-anchor-wt/eng/ohos-install/versions.env" 2>/dev/null)" = 2 ]
+check "T7d both anchors left untouched" $?
+
+# T7e: a missing seed (no explicit, no local match, offline) fails closed before any pack step
+SDK_MISS="$T/p3-sdk-miss"; p3_sdk_fixture "$SDK_MISS" "$SEED_SHA" colon || exit 1
+S7E="$T/p3-scratch-miss"; OUT7E="$T/t7e.out"
+_calls_before="$(wc -l < "$P3OW/ow/.p3-calls" 2>/dev/null | tr -d ' ')"
+CUT_KIT_SEED_OFFLINE=1 sh "$CUT" --kit 99 --phase P3 --execute --scratch "$S7E" \
+    --ow-repo "$P3OW/ow" --maui-repo "$P3OW/maui" --runtime-repo "$P3OW/runtime" --docs-dir "$P3OW/docs" \
+    --sdk-repo "$SDK_MISS" --no-push > "$OUT7E" 2>&1
+check_rc "T7e missing seed rc=4" "$?" 4
+assert_contains "T7e names the seed failure" "$OUT7E" 'no cumulative seed'
+assert_contains "T7e points at --seed-bundle" "$OUT7E" 'pass --seed-bundle'
+_calls_after="$(wc -l < "$P3OW/ow/.p3-calls" 2>/dev/null | tr -d ' ')"
+[ "$_calls_before" = "$_calls_after" ]; check "T7e no pack script ran" $?
+[ ! -e "$S7E/sdk-anchor-wt" ]; check "T7e no sdk worktree created" $?
+
+# T7f: an explicit --seed-bundle wins over the auto path and warns on an anchor mismatch
+SDK_X="$T/p3-sdk-explicit"; p3_sdk_fixture "$SDK_X" "$(python3 -c 'print("c"*64)')" colon || exit 1
+S7F="$T/p3-scratch-explicit"; OUT7F="$T/t7f.out"
+CUT_KIT_SEED_OFFLINE=1 sh "$CUT" --kit 99 --phase P3 --execute --scratch "$S7F" \
+    --ow-repo "$P3OW/ow" --maui-repo "$P3OW/maui" --runtime-repo "$P3OW/runtime" --docs-dir "$P3OW/docs" \
+    --sdk-repo "$SDK_X" --seed-bundle "$SEED" --no-push > "$OUT7F" 2>&1
+check_rc "T7f explicit seed rc=0" "$?" 0
+assert_contains "T7f seed source is explicit" "$OUT7F" 'seed: explicit '
+assert_contains "T7f mismatch warning names the anchor" "$OUT7F" '!= versions.env anchor'
+grep -qF "$NEW_SHA" "$S7F/sdk-anchor-wt/eng/ohos-install/versions.env" 2>/dev/null
+check "T7f anchor replaced" $?
+grep -q '^seed_source=explicit$' "$S7F/state.env" 2>/dev/null
+check "T7f state records the explicit seed" $?
+
+# T7g: resume - the anchor already current is a no-op (no extra commit, rc=0)
+S7G="$T/p3-scratch-colon"
+git -C "$T/p3-sdk-colon" update-ref refs/remotes/origin/feature/openharmony "$(git -C "$S7G/sdk-anchor-wt" rev-parse HEAD)"
+_count_before="$(git -C "$T/p3-sdk-colon" rev-list --count origin/feature/openharmony)"
+OUT7G="$T/t7g.out"
+CUT_KIT_SEED_DIR="$SEEDDIR" CUT_KIT_SEED_OFFLINE=1 sh "$CUT" --kit 99 --phase P3 --execute --force \
+    --scratch "$S7G" --ow-repo "$P3OW/ow" --maui-repo "$P3OW/maui" --runtime-repo "$P3OW/runtime" \
+    --docs-dir "$P3OW/docs" --sdk-repo "$T/p3-sdk-colon" --no-push > "$OUT7G" 2>&1
+check_rc "T7g resumed P3 rc=0" "$?" 0
+assert_contains "T7g already-current message" "$OUT7G" 'already current'
+[ "$(git -C "$T/p3-sdk-colon" rev-list --count origin/feature/openharmony)" = "$_count_before" ]
+check "T7g no extra anchor commit" $?
+
+# ------------------------------------------------------------------ T8 P4-P6 dry-run
+# KIT54: P4-P6 were never exercised; the dry run must parse/print the upload plan and notes
+# template, parse the hooks and still write nothing / call nothing.
+section "T8 P4-P6 dry-run previews (zero writes)"
+F8="$T/fixture-p456"; make_fixture "$F8" 99 987654 54321 || exit 1
+S8="$T/scratch-p456"
+mkdir -p "$T/pathstub-p456"
+cat > "$T/pathstub-p456/curl" <<EOF
+#!/bin/sh
+echo "curl \$*" >> "$T/curl-calls-p456.log"
+exit 77
+EOF
+chmod +x "$T/pathstub-p456/curl"
+for _h in upload presign manifest; do
+    printf '#!/bin/sh\necho "%s hook $*" >> "%s/hook-calls.log"\n' "$_h" "$T" > "$T/hook-$_h.sh"
+done
+chmod +x "$T"/hook-*.sh
+_p456_sum() { find "$F8" -type f -exec sha256sum {} \; | sort; }
+_p456_sum > "$T/t8-before"
+OUT8="$T/t8.out"
+PATH="$T/pathstub-p456:$PATH" sh "$CUT" --kit 99 --phase P4,P5,P6 --dry-run --scratch "$S8" \
+    --ow-repo "$F8/ow" --maui-repo "$F8/maui" --runtime-repo "$F8/runtime" --docs-dir "$F8/docs" \
+    --release-ids "dtk=11 latest=22 versioned=33 sdkrc2=44" --assets-dir "$F8/assets" \
+    --token-file "$F8/token" --upload-hook "$T/hook-upload.sh" --presign-hook "$T/hook-presign.sh" \
+    --manifest-hook "$T/hook-manifest.sh" > "$OUT8" 2>&1
+check_rc "T8 dry rc=0" "$?" 0
+assert_contains "T8 prints the clobber plan" "$OUT8" 'clobber plan'
+assert_contains "T8 plan lists the kit asset" "$OUT8" 'device-test-kit.tar.gz'
+assert_contains "T8 prints the notes template" "$OUT8" 'notes template'
+assert_contains "T8 notes template carries the kit number" "$OUT8" 'Integrity \(kit #99\)'
+assert_contains "T8 P5 prints the value block" "$OUT8" 'kit=99'
+assert_contains "T8 P5 announces the no-write" "$OUT8" 'RELEASE-VALUES\.txt \+ release-values\.env \(no write in dry-run\)'
+assert_contains "T8 upload hook parses" "$OUT8" 'upload hook parses'
+assert_contains "T8 presign hook parses" "$OUT8" 'presign hook parses'
+assert_contains "T8 manifest hook parses" "$OUT8" 'manifest hook parses'
+assert_contains "T8 presign hook preview command" "$OUT8" "sh $T/hook-presign.sh --kit 99"
+assert_contains "T8 P6 queries the ow runs" "$OUT8" 'repos/springmin/ohos-workload/actions/runs'
+assert_contains "T8 P6 announces the no-API dry-run" "$OUT8" 'no API call, no state write'
+[ ! -e "$S8" ]; check "T8 dry created no scratch dir" $?
+[ ! -s "$T/curl-calls-p456.log" ]; check "T8 dry made no curl call" $?
+[ ! -f "$T/hook-calls.log" ]; check "T8 dry ran no hook" $?
+_p456_sum > "$T/t8-after"
+cmp -s "$T/t8-before" "$T/t8-after"; check "T8 dry wrote nothing under the fixture" $?
+
+# T8b: a hook with a shell syntax error fails the dry run closed, still zero writes
+printf '#!/bin/sh\nif then fi\n' > "$T/hook-broken.sh"; chmod +x "$T/hook-broken.sh"
+S8B="$T/scratch-p456-broken"; OUT8B="$T/t8b.out"
+sh "$CUT" --kit 99 --phase P4 --dry-run --scratch "$S8B" \
+    --ow-repo "$F8/ow" --maui-repo "$F8/maui" --runtime-repo "$F8/runtime" --docs-dir "$F8/docs" \
+    --release-ids "dtk=11 latest=22 versioned=33 sdkrc2=44" --assets-dir "$F8/assets" \
+    --token-file "$F8/token" --upload-hook "$T/hook-broken.sh" > "$OUT8B" 2>&1
+check_neg "T8b broken hook rc!=0" "$?"
+assert_contains "T8b names the syntax error" "$OUT8B" 'shell syntax error'
+[ ! -e "$S8B" ]; check "T8b zero writes with a broken hook" $?
+_p456_sum > "$T/t8b-after"
+cmp -s "$T/t8-before" "$T/t8b-after"; check "T8b wrote nothing under the fixture" $?
 
 # ------------------------------------------------------------------ summary
 section "summary"

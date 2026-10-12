@@ -15,12 +15,20 @@
 #                 the docs gate runs again first and refuses to build on stale docs
 #   P2 verify     the shipped verify-kit.sh in strict mode (rc=0, 0 FAIL, 0 WARN) on the built
 #                 kit, the transfer sidecar, and the tree digest anchor
-#   P3 bundle     prepare-packs / pack-local-workload / pack-workload-bundle / release-checksums
-#                 then the sdk-ohos WORKLOAD_BUNDLE_SHA256 re-anchor + installer tests (+ push)
+#   P3 bundle     prepare-packs / pack-local-workload / pack-workload-bundle / release-checksums.
+#                 The bundle is cumulative: the previous published bundle is auto-resolved from
+#                 the sdk-ohos versions.env WORKLOAD_BUNDLE_SHA256 anchor (the =, := and JSON
+#                 spellings; local copy first, sdk-ohos release download otherwise) and staged
+#                 into .feed before packing - --seed-bundle overrides it, a missing/unverifiable
+#                 seed fails closed (rc 4). Then the sdk-ohos re-anchor (same three forms,
+#                 exactly one occurrence) + installer tests (+ push)
 #   P4 release    F4 controlled clobber: prints the asset list it will replace, requires the typed
 #                 confirmation, uploads through --upload-hook, re-checks by id and prints the
 #                 zero-change list per release, then patches the Integrity notes on four releases
-#   P5 values     RELEASE-VALUES + release-values.env + the presign/manifest hooks
+#                 (--dry-run prints the upload plan + the notes template and parses the hook; no
+#                 writes, no API call)
+#   P5 values     RELEASE-VALUES + release-values.env + the presign/manifest hooks (--dry-run
+#                 prints the value block and parses the hooks; no writes)
 #   P6 ci         CI re-check for the ow pin (five workflows) and the sdk anchor commit
 #
 # Safety: DRY-RUN IS THE DEFAULT - nothing is written or executed without --execute.
@@ -51,6 +59,9 @@
 #   scripts/cut-kit.sh --kit 54 --phase P0,P1,P2 --execute
 #   # rehearsal of the release phase (prints the clobber plan, no writes)
 #   scripts/cut-kit.sh --kit 54 --phase P4 --dry-run --release-ids "..."
+#   # P3 seed control: explicit bundle, or an offline/local-only auto resolution
+#   scripts/cut-kit.sh --kit 55 --phase P3 --execute --seed-bundle /path/prev-bundle.tar.gz
+#   CUT_KIT_SEED_DIR=/path/cache CUT_KIT_SEED_OFFLINE=1 scripts/cut-kit.sh --kit 55 --phase P3 --execute
 #
 # Exit code: 0 = every requested phase passed (dry-run plans count as passed); 1 = a check or
 # step failed; 2 = usage error; 3 = a safety gate refused (docs stale / confirmation declined /
@@ -374,6 +385,22 @@ require_execute_iknow() { # <phase>; returns 0 only in --execute --i-know mode, 
         return 3
     fi
     return 0
+}
+
+hook_selfcheck() { # <label> <hook>; 0 = ok or not configured; 1 = missing / shell syntax error
+    _label="$1"; _hook="$2"
+    [ -n "$_hook" ] || return 0
+    if [ ! -f "$_hook" ]; then
+        err "$_label hook not found: $_hook"
+        return 1
+    fi
+    if sh -n "$_hook" >/dev/null 2>&1; then
+        log "$_label hook parses: $_hook"
+        return 0
+    fi
+    err "$_label hook has a shell syntax error: $_hook"
+    sh -n "$_hook" 2>&1 | sed 's/^/   /' >&2 || true
+    return 1
 }
 
 # ------------------------------------------------------------------------- P0
@@ -928,6 +955,149 @@ phase_P2() {
 }
 
 # ------------------------------------------------------------------------- P3
+# ---- sdk-ohos anchor + cumulative seed helpers --------------------------------
+# The WORKLOAD_BUNDLE_SHA256 anchor has three existing spellings (KIT54 exposed the miss: the
+# real versions.env uses the `:=` default-wins form while the old matcher only knew `=`):
+#   WORKLOAD_BUNDLE_SHA256=<hex>
+#   : "${WORKLOAD_BUNDLE_SHA256:=<hex>}"
+#   "WORKLOAD_BUNDLE_SHA256": "<hex>"      (JSON manifest shape)
+# Keep this anchor regex in sync between sdk_pins() and the replace step in p3_sdk_anchor().
+sdk_versions_file() { # cat the sdk-ohos versions.env (origin ref first, then the checkout)
+    if git -C "$SDK_REPO" rev-parse --verify -q origin/feature/openharmony >/dev/null 2>&1; then
+        git -C "$SDK_REPO" show origin/feature/openharmony:eng/ohos-install/versions.env 2>/dev/null && return 0
+    fi
+    [ -f "$SDK_REPO/eng/ohos-install/versions.env" ] && cat "$SDK_REPO/eng/ohos-install/versions.env"
+}
+
+sdk_pins() { # <versions.env content> -> sha (line 1) + WORKLOAD_BUNDLE_VERSION (line 2); rc 1 unless exactly one anchor
+    CUT_KIT_VERSIONS_ENV="$1" python3 - <<'PY'
+import os, re
+src = os.environ.get("CUT_KIT_VERSIONS_ENV", "")
+sha = re.findall(r'WORKLOAD_BUNDLE_SHA256"?\s*(?::=|:?\s*=|:\s*)\s*"?([0-9a-f]{64})', src)
+if len(sha) != 1:
+    raise SystemExit(1)
+ver = re.findall(r'WORKLOAD_BUNDLE_VERSION"?\s*(?::=|:?\s*=|:\s*)\s*"?([^}"\s]+)', src)
+print(sha[0])
+print(ver[0] if len(ver) == 1 else "")
+PY
+}
+
+p3_bundle_version() { # <ow-src> -> the manifest bundle version (seed asset-name fallback)
+    python3 -c "import json;print(json.load(open('$1/manifests/${SDK_BAND:-11.0.100-rc.1}/microsoft.net.sdk.openharmony/WorkloadManifest.json'))['version'])" 2>/dev/null
+}
+
+seed_verify() { # <file> <sha256>
+    [ -f "$1" ] && [ "$(sha256_of "$1")" = "$2" ]
+}
+
+seed_find_local() { # <asset> <sha> -> first local candidate whose digest matches the anchor
+    for _d in "${CUT_KIT_SEED_DIR:-}" "$SDK_REPO/dist" "$SDK_REPO/workload" "$OW_REPO/dist" "$(src_ow)/dist" "$SCRATCH/seed"; do
+        [ -n "$_d" ] || continue
+        if seed_verify "$_d/$1" "$2"; then printf '%s\n' "$_d/$1"; return 0; fi
+    done
+    return 1
+}
+
+seed_fetch() { # <out> <url> -> 0/1 (HTTP/1.1 first, then the pinned github.com IPs like git_push)
+    curl -fSL --http1.1 --connect-timeout 20 --max-time 900 -o "$1" "$2" 2>/dev/null && return 0
+    for _ip in 140.82.112.3 20.26.156.215 20.27.177.113; do
+        curl -fSL --http1.1 --connect-timeout 20 --max-time 900 --resolve "github.com:443:$_ip" \
+            -o "$1" "$2" 2>/dev/null && return 0
+    done
+    return 1
+}
+
+seed_download() { # <asset> <sha> <url...> -> cached seed path under <scratch>/seed
+    _asset="$1"; _sha="$2"; shift 2
+    _dest="$SCRATCH/seed/$_asset"
+    mkdir -p "$SCRATCH/seed" || return 1
+    for _url in "$@"; do
+        [ -n "$_url" ] || continue
+        log "seed: fetching $_url"
+        rm -f "$_dest.part"
+        if seed_fetch "$_dest.part" "$_url" && seed_verify "$_dest.part" "$_sha"; then
+            mv -f "$_dest.part" "$_dest"
+            printf '%s\n' "$_dest"
+            return 0
+        fi
+        warn "seed: fetch failed or digest mismatch: $_url"
+        rm -f "$_dest.part"
+    done
+    return 1
+}
+
+# Auto seed: the previous published bundle is pinned by the sdk-ohos versions.env anchor; the
+# digest check makes local candidates unambiguous (a newer local cut is skipped, the exact
+# published bytes win) and the release download is the fallback. CUT_KIT_SEED_OFFLINE=1 keeps
+# the host offline; a missing/unmatched seed is the caller's error (fail closed).
+seed_auto() { # -> seed path; rc 1 (with a warn) when the anchor cannot be satisfied
+    _src="$(sdk_versions_file)" || { warn "seed: sdk-ohos versions.env not reachable (pass --sdk-repo)"; return 1; }
+    _pins="$(sdk_pins "$_src")" || { warn "seed: no single WORKLOAD_BUNDLE_SHA256 anchor in the sdk versions.env"; return 1; }
+    _asha="$(printf '%s\n' "$_pins" | sed -n '1p')"
+    _aver="$(printf '%s\n' "$_pins" | sed -n '2p')"
+    [ -n "$_aver" ] || _aver="$(p3_bundle_version "$(src_ow)")"
+    [ -n "$_aver" ] || { warn "seed: cannot resolve the bundle version (sdk versions.env/manifest)"; return 1; }
+    _asset="openharmony-workload-$_aver.tar.gz"
+    if _local="$(seed_find_local "$_asset" "$_asha")"; then
+        printf '%s\n' "$_local"
+        return 0
+    fi
+    if [ "${CUT_KIT_SEED_OFFLINE:-0}" = 1 ]; then
+        warn "seed: offline and no local $_asset matching anchor $(printf '%s' "$_asha" | cut -c1-8)"
+        return 1
+    fi
+    _gh="$(printf '%s\n' "$_src" | sed -n 's/^: "${GH_USER:=\([^}]*\)}"/\1/p' | head -n 1)"
+    _gh="${_gh:-springmin}"
+    _urls="https://github.com/$_gh/sdk-ohos/releases/download/workload-$_aver/$_asset
+https://github.com/$_gh/sdk-ohos/releases/download/workload-latest/$_asset
+https://github.com/$_gh/sdk-ohos/releases/download/workload-latest/openharmony-workload-latest.tar.gz
+https://gh-proxy.com/https://github.com/$_gh/sdk-ohos/releases/download/workload-$_aver/$_asset"
+    # shellcheck disable=SC2086
+    seed_download "$_asset" "$_asha" $_urls || {
+        warn "seed: no download of $_asset matched anchor $(printf '%s' "$_asha" | cut -c1-8)"
+        return 1
+    }
+}
+
+P3_SEED_SRC=""
+p3_seed_resolve() { # -> seed path; rc 1 (the explicit/auto source is decided by the caller)
+    if [ -n "$SEED_BUNDLE" ]; then
+        [ -f "$SEED_BUNDLE" ] || { err "seed: --seed-bundle not found: $SEED_BUNDLE"; return 1; }
+        _apins="$(sdk_pins "$(sdk_versions_file 2>/dev/null || true)" 2>/dev/null || true)"
+        if [ -n "$_apins" ]; then
+            _asha="$(printf '%s\n' "$_apins" | sed -n '1p')"
+            seed_verify "$SEED_BUNDLE" "$_asha" || \
+                warn "seed: explicit bundle digest $(sha256_of "$SEED_BUNDLE" | cut -c1-8) != versions.env anchor $(printf '%s' "$_asha" | cut -c1-8); using it anyway"
+        fi
+        printf '%s\n' "$SEED_BUNDLE"
+        return 0
+    fi
+    _auto="$(seed_auto)" || return 1
+    printf '%s\n' "$_auto"
+    return 0
+}
+
+p3_seed_plan() { # dry-run only: print how the seed would resolve (no download, no write)
+    if [ -n "$SEED_BUNDLE" ]; then
+        _st=missing
+        [ -f "$SEED_BUNDLE" ] && _st="$(sha256_of "$SEED_BUNDLE" | cut -c1-8)"
+        printf 'explicit --seed-bundle %s [%s]\n' "$SEED_BUNDLE" "$_st"
+        return 0
+    fi
+    _src="$(sdk_versions_file)" || { printf 'auto: no sdk versions.env reachable (execute fails closed; pass --seed-bundle)\n'; return 0; }
+    _pins="$(sdk_pins "$_src")" || { printf 'auto: no single WORKLOAD_BUNDLE_SHA256 anchor (execute fails closed)\n'; return 0; }
+    _asha="$(printf '%s\n' "$_pins" | sed -n '1p')"
+    _aver="$(printf '%s\n' "$_pins" | sed -n '2p')"
+    [ -n "$_aver" ] || _aver="$(p3_bundle_version "$(src_ow)")"
+    _plan="download (sdk-ohos workload-$_aver / workload-latest)"
+    if _cl="$(seed_find_local "openharmony-workload-$_aver.tar.gz" "$_asha")"; then
+        _plan="local $_cl"
+    elif [ "${CUT_KIT_SEED_OFFLINE:-0}" = 1 ]; then
+        _plan="none locally (CUT_KIT_SEED_OFFLINE=1; execute fails closed)"
+    fi
+    printf 'auto: anchor %s version %s -> %s\n' "$(printf '%s' "$_asha" | cut -c1-8)" "${_aver:-?}" "$_plan"
+}
+
 p3_bundle() {
     _oww="$(src_ow)"
     _band="${SDK_BAND:-11.0.100-rc.1}"
@@ -936,16 +1106,33 @@ p3_bundle() {
         printf '   [dry-run] (cd %s && sh scripts/pack-local-workload.sh %s/.feed)\n' "$_oww" "$_oww"
         printf '   [dry-run] (cd %s && sh scripts/pack-workload-bundle.sh)\n' "$_oww"
         printf '   [dry-run] (cd %s && sh scripts/release-checksums.sh)\n' "$_oww"
+        printf '   [dry-run] seed: %s\n' "$(p3_seed_plan)"
+        printf '   [dry-run] no feed seed copy, no pack run, no file written (dry run)\n'
         return 0
     fi
     [ -d "$_oww" ] || { err "ow worktree missing: $_oww"; return 4; }
     mkdir -p "$LOGDIR"
-    if [ -n "$SEED_BUNDLE" ] && [ -f "$SEED_BUNDLE" ]; then
-        mkdir -p "$SCRATCH/old-bundle"
-        tar -xzf "$SEED_BUNDLE" -C "$SCRATCH/old-bundle" 2>/dev/null || true
-        _oldfeed="$(find "$SCRATCH/old-bundle" -maxdepth 2 -type d -name feed | head -n 1)"
-        [ -n "$_oldfeed" ] && { mkdir -p "$_oww/.feed"; cp -f "$_oldfeed"/*.nupkg "$_oww/.feed/" 2>/dev/null || true; }
-    fi
+    if [ -n "$SEED_BUNDLE" ]; then P3_SEED_SRC=explicit; else P3_SEED_SRC=auto; fi
+    _seed="$(p3_seed_resolve)" || {
+        err "P3 bundle: no cumulative seed; packing the fresh manifest feed alone would shrink the published bundle (KIT54)"
+        err "  pass --seed-bundle <previous published bundle.tar.gz>, or make the sdk versions.env anchor resolvable"
+        return 4
+    }
+    st_set seed_path "$_seed"
+    st_set seed_sha256 "$(sha256_of "$_seed")"
+    st_set seed_source "$P3_SEED_SRC"
+    log "seed: $P3_SEED_SRC $_seed ($(sha256_of "$_seed" | cut -c1-8), $(size_of "$_seed") B)"
+    rm -rf "$SCRATCH/old-bundle"
+    mkdir -p "$SCRATCH/old-bundle"
+    tar -xzf "$_seed" -C "$SCRATCH/old-bundle" 2>/dev/null || \
+        { err "seed: cannot extract $_seed"; return 4; }
+    _oldfeed="$(find "$SCRATCH/old-bundle" -maxdepth 2 -type d -name feed | head -n 1)"
+    [ -n "$_oldfeed" ] || { err "seed: no feed/ directory inside $_seed"; return 4; }
+    _nseed="$(ls -1 "$_oldfeed"/*.nupkg 2>/dev/null | wc -l | tr -d ' ')"
+    [ "$_nseed" -gt 0 ] 2>/dev/null || { err "seed: feed/ carries no nupkg: $_oldfeed"; return 4; }
+    mkdir -p "$_oww/.feed"
+    cp -f "$_oldfeed"/*.nupkg "$_oww/.feed/" 2>/dev/null || true
+    log "seed: $_nseed nupkg(s) staged into $_oww/.feed"
     ( cd "$_oww" && sh scripts/prepare-packs.sh ) >> "$LOGDIR/p3-bundle.log" 2>&1 || \
         { err "prepare-packs failed (log $LOGDIR/p3-bundle.log)"; return 1; }
     ( cd "$_oww" && sh scripts/pack-local-workload.sh "$_oww/.feed" ) >> "$LOGDIR/p3-bundle.log" 2>&1 || \
@@ -975,11 +1162,20 @@ p3_sdk_anchor() {
     fi
     if [ "$DRY" = 1 ]; then
         printf '   [dry-run] git -C %s worktree add --detach %s origin/feature/openharmony\n' "$SDK_REPO" "$WT_SDK"
-        printf '   [dry-run] replace WORKLOAD_BUNDLE_SHA256 ... -> %s (exactly one occurrence)\n' "$(printf '%s' "$_new" | cut -c1-8)"
+        _pins="$(sdk_pins "$(sdk_versions_file 2>/dev/null || true)" 2>/dev/null || true)"
+        if [ -n "$_pins" ]; then
+            printf '   [dry-run] replace WORKLOAD_BUNDLE_SHA256 %s -> %s (=, := or JSON form; exactly one)\n' \
+                "$(printf '%s' "$(printf '%s\n' "$_pins" | sed -n '1p')" | cut -c1-8)" \
+                "$(printf '%s' "$_new" | cut -c1-8)"
+        else
+            printf '   [dry-run] replace WORKLOAD_BUNDLE_SHA256 ... -> %s (=, := or JSON form; exactly one)\n' \
+                "$(printf '%s' "$_new" | cut -c1-8)"
+        fi
         printf '   [dry-run] (cd %s && sh eng/ohos-install/tests/test-installer-verification.sh)\n' "$WT_SDK"
         printf '   [dry-run] (cd %s && sh eng/ohos-install/tests/test-hostfeed-verification.sh)\n' "$WT_SDK"
         printf '   [dry-run] (cd %s && sh eng/ohos-install/tests/test-codesign-filewrites.sh)\n' "$WT_SDK"
         printf '   [dry-run] git commit + push origin HEAD:feature/openharmony\n'
+        printf '   [dry-run] no worktree, no versions.env write (dry run)\n'
         return 0
     fi
     [ -d "$SDK_REPO" ] || { err "sdk-ohos repo missing: $SDK_REPO (pass --sdk-repo)"; return 4; }
@@ -994,19 +1190,34 @@ p3_sdk_anchor() {
     fi
     _venv="$WT_SDK/eng/ohos-install/versions.env"
     [ -f "$_venv" ] || { err "missing $_venv"; return 4; }
-    python3 - "$_venv" "$_new" <<'PY' || return 1
-import sys
+    _anchor_out="$(python3 - "$_venv" "$_new" <<'PY'
+import re, sys
 path, new = sys.argv[1:3]
 src = open(path, encoding="utf-8").read()
-if new in src:
-    print("already anchored:", new); sys.exit(0)
-import re
-m = re.findall(r"WORKLOAD_BUNDLE_SHA256=([0-9a-f]{64})", src)
+# Supported existing anchor forms (KIT54 fix): plain `=`, the default-wins `:=` inside
+# ${...}, and the JSON `"WORKLOAD_BUNDLE_SHA256": "<hex>"` shape. Same regex as sdk_pins().
+m = list(re.finditer(r'WORKLOAD_BUNDLE_SHA256"?\s*(?::=|:?\s*=|:\s*)\s*"?([0-9a-f]{64})', src))
 if len(m) != 1:
-    print(f"FAIL: expected exactly one WORKLOAD_BUNDLE_SHA256, found {len(m)}"); sys.exit(1)
-open(path, "w", encoding="utf-8").write(src.replace(m[0], new))
-print(f"WORKLOAD_BUNDLE_SHA256 {m[0][:8]} -> {new[:8]}")
+    print(f"FAIL: expected exactly one WORKLOAD_BUNDLE_SHA256 anchor (=, := or JSON form), found {len(m)}")
+    sys.exit(1)
+mo = m[0]
+old = mo.group(1)
+if old == new:
+    print(f"already anchored: {new}")
+    sys.exit(0)
+open(path, "w", encoding="utf-8").write(src[:mo.start(1)] + new + src[mo.end(1):])
+print(f"WORKLOAD_BUNDLE_SHA256 {old[:8]} -> {new[:8]}")
 PY
+)" || { printf '%s\n' "$_anchor_out" | sed 's/^/   /' >&2; return 1; }
+    printf '%s\n' "$_anchor_out" | sed 's/^/   /'
+    if git -C "$WT_SDK" diff --quiet -- eng/ohos-install/versions.env; then
+        # Resume case: the anchor already equals the built bundle (nothing to commit). Keep the
+        # installer tests optional and just make sure the commit (if any) is on the remote.
+        log "sdk anchor already current (no versions.env change to commit)"
+        st_set sdk_anchor_commit "$(git -C "$WT_SDK" rev-parse HEAD)"
+        git_push "$WT_SDK" HEAD:feature/openharmony || return 1
+        return 0
+    fi
     _f=0
     for _t in test-installer-verification test-hostfeed-verification test-codesign-filewrites; do
         _testpath="$WT_SDK/eng/ohos-install/tests/$_t.sh"
@@ -1119,8 +1330,8 @@ p4_confirm() {
     return 0
 }
 
-p4_notes() { # append the Integrity block per release (idempotent)
-    _block="$(cat <<EOF
+p4_integrity_block() { # the "## Integrity (kit #N)" notes block (state values, '?' when absent)
+    cat <<EOF
 
 ## Integrity (kit #$KIT)
 
@@ -1129,7 +1340,15 @@ p4_notes() { # append the Integrity block per release (idempotent)
 - bundle: $(st_get bundle_size_B || echo '?') B / \`$(st_get bundle_sha256 || echo '?')\`
 - pins: ow \`$(st_get pin_ow || echo '?')\` / maui \`$(st_get pin_maui || echo '?')\` / runtime \`$(st_get pin_runtime || echo '?')\`
 EOF
-)"
+}
+
+p4_notes_preview() { # dry-run: show the exact block p4_notes would append (no API call, no write)
+    printf '   notes template (appended to the four release bodies by --execute; not written in dry-run):\n'
+    p4_integrity_block | sed 's/^/     /'
+}
+
+p4_notes() { # append the Integrity block per release (idempotent)
+    _block="$(p4_integrity_block)"
     for _rid in $(release_id_of dtk) $(release_id_of latest) $(release_id_of versioned) $(release_id_of sdkrc2); do
         _body="$(api_get "repos/$API_REPO/releases/$_rid" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("body") or "")' 2>/dev/null)"
         case "$_body" in
@@ -1155,12 +1374,23 @@ phase_P4() {
     _planfile="$SCRATCH/p4-upload-plan.txt"
     if [ "$DRY" = 1 ]; then
         p4_plan_file | p4_print_plan
+        p4_notes_preview
         printf '   [dry-run] confirmation gate: "clobber kit %s" required before any upload\n' "$KIT"
-        printf '   [dry-run] upload via --upload-hook <script> (receives the plan file) or the repo uploader\n'
+        if [ -n "$UPLOAD_HOOK" ]; then
+            hook_selfcheck upload "$UPLOAD_HOOK" || return 1
+            printf '   [dry-run] upload: sh %s %s (plan file printed above, not written in dry-run)\n' \
+                "$UPLOAD_HOOK" "$_planfile"
+        else
+            printf '   [dry-run] uploader: %s/scripts/publish-workload-release.sh (default) or --upload-hook <script>\n' "$OW_REPO"
+        fi
         printf '   [dry-run] by-id re-check + zero-change list after the upload; notes x4\n'
+        printf '   [dry-run] no snapshot, no upload, no notes patch, no API call, no file written (dry run)\n'
         return 0
     fi
     require_execute_iknow P4 || return $?
+    if [ -n "$UPLOAD_HOOK" ]; then
+        hook_selfcheck upload "$UPLOAD_HOOK" || return 1
+    fi
     mkdir -p "$SCRATCH" "$LOGDIR"
     p4_plan_file > "$_planfile"
     [ -s "$_planfile" ] || { err "empty upload plan (bundle/kit artifacts missing)"; return 4; }
@@ -1243,38 +1473,45 @@ PY
 }
 
 # ------------------------------------------------------------------------- P5
+p5_values_block() { # the RELEASE-VALUES key=value record (no writes; dry-run preview uses it)
+    printf 'kit=%s\n' "$KIT"
+    printf 'date=%s\n' "$(date '+%F %T %z')"
+    printf 'kit_size_B=%s\n' "$(st_get kit_size_B || echo '')"
+    printf 'kit_sha256=%s\n' "$(st_get kit_sha256 || echo '')"
+    printf 'kit_tree_digest=%s\n' "$(st_get kit_tree_digest || echo '')"
+    printf 'kit_sidecar_sha256=%s\n' "$(st_get kit_sidecar_sha256 || echo '')"
+    printf 'bundle_path=%s\n' "$(st_get bundle_path || echo '')"
+    printf 'bundle_size_B=%s\n' "$(st_get bundle_size_B || echo '')"
+    printf 'bundle_sha256=%s\n' "$(st_get bundle_sha256 || echo '')"
+    printf 'bundle_sums_sha256=%s\n' "$(st_get bundle_sums_sha256 || echo '')"
+    printf 'pin_ow=%s\n' "$(st_get pin_ow || echo '')"
+    printf 'pin_maui=%s\n' "$(st_get pin_maui || echo '')"
+    printf 'pin_runtime=%s\n' "$(st_get pin_runtime || echo '')"
+    printf 'sdk_anchor_commit=%s\n' "$(st_get sdk_anchor_commit || echo '')"
+}
+
 p5_values() {
     if [ "$DRY" = 1 ]; then
-        printf '   [dry-run] write %s/RELEASE-VALUES.txt + release-values.env (kit/bundle/sums/pins)\n' "$SCRATCH"
+        printf '   [dry-run] would write %s/RELEASE-VALUES.txt + release-values.env (no write in dry-run):\n' "$SCRATCH"
+        p5_values_block | sed 's/^/     /'
         return 0
     fi
     mkdir -p "$SCRATCH"
     _out="$SCRATCH/RELEASE-VALUES.txt"
-    {
-        printf 'kit=%s\n' "$KIT"
-        printf 'date=%s\n' "$(date '+%F %T %z')"
-        printf 'kit_size_B=%s\n' "$(st_get kit_size_B || echo '')"
-        printf 'kit_sha256=%s\n' "$(st_get kit_sha256 || echo '')"
-        printf 'kit_tree_digest=%s\n' "$(st_get kit_tree_digest || echo '')"
-        printf 'kit_sidecar_sha256=%s\n' "$(st_get kit_sidecar_sha256 || echo '')"
-        printf 'bundle_path=%s\n' "$(st_get bundle_path || echo '')"
-        printf 'bundle_size_B=%s\n' "$(st_get bundle_size_B || echo '')"
-        printf 'bundle_sha256=%s\n' "$(st_get bundle_sha256 || echo '')"
-        printf 'bundle_sums_sha256=%s\n' "$(st_get bundle_sums_sha256 || echo '')"
-        printf 'pin_ow=%s\n' "$(st_get pin_ow || echo '')"
-        printf 'pin_maui=%s\n' "$(st_get pin_maui || echo '')"
-        printf 'pin_runtime=%s\n' "$(st_get pin_runtime || echo '')"
-        printf 'sdk_anchor_commit=%s\n' "$(st_get sdk_anchor_commit || echo '')"
-    } | tee "$_out" | grep -E '^(kit|bundle|pin_|sdk_)' | sed 's/^/   /'
+    p5_values_block > "$_out"
     cp "$_out" "$SCRATCH/release-values.env"
+    grep -E '^(kit|bundle|pin_|sdk_)' "$_out" | sed 's/^/   /'
     return 0
 }
 
 p5_hook() { # <label> <hook>
     _label="$1"; _hook="$2"
-    if [ -n "$_hook" ] && [ -f "$_hook" ]; then
+    if [ -n "$_hook" ]; then
+        # fail closed on a missing or syntax-broken hook before anything else; dry-run only
+        # parses and prints (no hook run, no write)
+        hook_selfcheck "$_label" "$_hook" || return 1
         if [ "$DRY" = 1 ]; then
-            printf '   [dry-run] sh %s --kit %s --scratch %s\n' "$_hook" "$KIT" "$SCRATCH"
+            printf '   [dry-run] sh %s --kit %s --scratch %s (not run in dry-run)\n' "$_hook" "$KIT" "$SCRATCH"
             return 0
         fi
         sh "$_hook" --kit "$KIT" --scratch "$SCRATCH" >> "$LOGDIR/p5-$_label.log" 2>&1 || \
@@ -1294,9 +1531,10 @@ phase_P5() {
     log "== P5 VALUES / presign / manifest / push (kit #$KIT) =="
     if [ "$DRY" = 1 ]; then
         p5_values
-        p5_hook presign "$PRESIGN_HOOK"
-        p5_hook manifest "$MANIFEST_HOOK"
+        p5_hook presign "$PRESIGN_HOOK" || return 1
+        p5_hook manifest "$MANIFEST_HOOK" || return 1
         printf '   [dry-run] push of the sdk anchor commit is done in P3 (git_push, normal push first)\n'
+        printf '   [dry-run] no values file, no hook run, no write (dry run)\n'
         return 0
     fi
     require_execute_iknow P5 || return $?
@@ -1319,6 +1557,7 @@ phase_P6() {
     if [ "$DRY" = 1 ]; then
         printf '   [dry-run] curl api.github.com/repos/%s/actions/runs?head_sha=%s (five workflows must be success)\n' "$_owrepo" "$_owpin"
         printf '   [dry-run] curl api.github.com/repos/%s/actions/runs?head_sha=%s (sdk run must be success)\n' "$API_REPO" "${_anchor:-<anchor>}"
+        printf '   [dry-run] no API call, no state write (dry run)\n'
         return 0
     fi
     require_execute_iknow P6 || return $?
