@@ -399,6 +399,30 @@ internal static class Program
         var (dedupeOk, _) = Harness.Run(dedupe);
         Check("permissions duplicate feature ids collapse", dedupeOk && dedupe.Permissions.Length == 1);
 
+        // 2b. 'all' skips ACL-level features: an ordinary bundle cannot be granted their
+        //     system_basic permissions and declaring one fails the installer ("grant request
+        //     permissions failed"). An explicitly named ACL feature is still declared, with a
+        //     warning naming the declaration hazard (PASTEBOARD-FIX).
+        var contactsAcl = Permission("ohos.permission.READ_CONTACTS", "contacts", "$string:permission_reason_contacts", "inuse");
+        contactsAcl.SetMetadata("Acl", "true");
+        var allSkip = Resolver(new[] { bluetooth, contactsAcl }, "all");
+        var (allSkipOk, allSkipEngine) = Harness.Run(allSkip);
+        Check("permissions 'all' resolves next to an ACL feature", allSkipOk);
+        CheckEqual("permissions 'all' skips the ACL feature", 1, allSkip.Permissions.Length);
+        CheckEqual("permissions 'all' keeps the non-ACL feature", "ohos.permission.ACCESS_BLUETOOTH", allSkip.Permissions[0].ItemSpec);
+        Check("permissions 'all' names the skipped ACL feature", allSkipEngine.HasMessageContaining("skips the ACL-level feature(s) contacts"));
+        var explicitAcl = Resolver(new[] { bluetooth, contactsAcl }, "contacts");
+        var (explicitAclOk, explicitAclEngine) = Harness.Run(explicitAcl);
+        Check("permissions explicit ACL feature resolves", explicitAclOk);
+        CheckEqual("permissions explicit ACL feature declares", 1, explicitAcl.Permissions.Length);
+        CheckEqual("permissions explicit ACL feature keeps the name", "ohos.permission.READ_CONTACTS", explicitAcl.Permissions[0].ItemSpec);
+        Check("permissions explicit ACL feature warns", explicitAclEngine.HasWarningContaining("ACL-level permission 'ohos.permission.READ_CONTACTS'"));
+        var caseInsensitiveAcl = Permission("ohos.permission.X", "aclcase", "r", "inuse");
+        caseInsensitiveAcl.SetMetadata("Acl", "TRUE");
+        var caseInsensitive = Resolver(new[] { bluetooth, caseInsensitiveAcl }, "all");
+        var (caseInsensitiveOk, _) = Harness.Run(caseInsensitive);
+        Check("permissions Acl metadata is case-insensitive", caseInsensitiveOk && caseInsensitive.Permissions.Length == 1);
+
         // 3. Unknown feature id names the known ids.
         var unknown = Resolver(new[] { bluetooth }, "bogus");
         var (unknownOk, unknownEngine) = Harness.Run(unknown);

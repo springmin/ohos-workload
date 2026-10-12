@@ -187,6 +187,15 @@ public sealed class App : Application
             return;
         }
 #endif
+#if CLIPBOARD_PROBE
+        // CLIPBOARD-FIX device probe (see ClipboardProbe.cs): read/has exercise the host
+        // pasteboard NDK read; write/roundtrip go through the shell @ohos.pasteboard write.
+        if (uri.StartsWith("app://clipboard/", StringComparison.OrdinalIgnoreCase))
+        {
+            ClipboardProbe.Handle(uri);
+            return;
+        }
+#endif
         // MULTIWINDOW-M/L device triggers (documented in the M/L plans): "demo" drives the
         // shell-drawn child create -> move -> resize -> close, "open" opens a real second MAUI
         // window on the subwindow XComponent (M3; falls back to the drawn child when the

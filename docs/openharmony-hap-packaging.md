@@ -638,12 +638,30 @@ value that combines features (e.g. `network;bluetooth`) stays a plain list.
 | --- | --- | --- | --- |
 | `bluetooth` | `ohos.permission.ACCESS_BLUETOOTH` | user_grant | Bluetooth adapter/discovery/GATT sinks |
 | `location` | `ohos.permission.APPROXIMATELY_LOCATION` | user_grant | reverse geocoding |
-| `clipboard` | `ohos.permission.READ_PASTEBOARD` | user_grant | clipboard get/read (prompt on explicit get only) |
-| `contacts` | `ohos.permission.READ_CONTACTS` | user_grant | contacts query sink |
+| `contacts` | `ohos.permission.READ_CONTACTS` (**ACL**; `all` skips it) | user_grant | contacts query sink |
 | `calendar-read` | `ohos.permission.READ_CALENDAR` | user_grant | calendar list sink |
 | `calendar` | `ohos.permission.READ_CALENDAR` + `ohos.permission.WRITE_CALENDAR` | user_grant | calendar list + add sinks |
 | `print` | `ohos.permission.PRINT` | system_grant | print sink (`canIUse('SystemCapability.Print.PrintFramework')` gate) |
 | `network` | `ohos.permission.INTERNET` | system_grant | scenario permission: declare it when the app loads network content or calls web services (the shell's network observer and the managed network stack need it) |
+
+> **Clipboard (PASTEBOARD-FIX, 2026-10-12)**: there is deliberately **no `clipboard` feature**
+> any more. `ohos.permission.READ_PASTEBOARD` is ACL-level (`availableLevel system_basic`), so a
+> bundle that declares it **fails to install** ("grant request permissions failed") and the
+> permission cannot be granted to an ordinary bundle at runtime. The clipboard read is attempted
+> in the host through the pasteboard NDK (`OH_Pasteboard` + UDMF plain text; no ArkTS request
+> point), and the shell only writes (`@ohos.pasteboard setDataSync`). Device evidence
+> (HAD-W24 / OH 7.0.0.111) shows the pasteboard **service** still enforces the ACL for the NDK
+> read (`cmd 200: GetPasteDataInner# check permission failed`), so an unauthorized read keeps the
+> managed null/empty shape; only a user-mediated paste (Ctrl+V window) or an ACL profile reads.
+> Never map a feature to `READ_PASTEBOARD` - `OpenHarmonyFeatures=all` must not declare it either.
+> `-p:OpenHarmonyExtraPermissions` remains the explicit escape hatch for an app that really has
+> the ACL profile.
+
+> **ACL subset (PASTEBOARD-FIX, 2026-10-12)**: a feature-table entry may carry `<Acl>true</Acl>`
+> for a `system_basic` permission. `OpenHarmonyFeatures=all` **skips** those features (an
+> ordinary bundle fails the install with them) and names them on the build log; naming the
+> feature id explicitly still declares its permission and logs a warning about the install
+> hazard. `contacts` (`ohos.permission.READ_CONTACTS`) is the remaining ACL entry.
 
 ```sh
 # contacts + calendar read/write + bluetooth (quotes keep MSBuild from splitting at ';')
@@ -687,8 +705,11 @@ declare. The manifest describes the shipped shell; an app that passes a custom
 Verification status (2026-09-25, no device attached to the build host):
 
 - `scripts/selftest-hap-targets.sh` T5 drives the real pack targets: the bluetooth feature
-  resolves to the asserted `module.json` bytes (name/reason/usedScene), `all` emits the ten
-  unique permissions once each, an unknown feature id and the strict mode fail, and the raw
+  resolves to the asserted `module.json` bytes (name/reason/usedScene), `all` emits the eight
+  non-ACL permissions once each (the ACL feature `contacts` is skipped and named; an explicit
+  `contacts` still declares READ_CONTACTS with the install-hazard warning, PASTEBOARD-FIX), the
+  removed `clipboard` id fails as unknown, an unknown feature
+  id and the strict mode fail, and the raw
   `OpenHarmonyExtraPermissions` path keeps its minimal form plus the warning. The default
   feature set (`network`, no `-p`) declares INTERNET with reason/usedScene and
   `-p:OpenHarmonyFeatures=none` restores the declare-nothing manifest; T11 additionally packs a

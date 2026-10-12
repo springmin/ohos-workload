@@ -460,15 +460,22 @@
         <Reason>$string:permission_reason_location</Reason>
         <UsedSceneWhen>inuse</UsedSceneWhen>
       </_OpenHarmonyFeaturePermission>
-      <_OpenHarmonyFeaturePermission Include="ohos.permission.READ_PASTEBOARD">
-        <Feature>clipboard</Feature>
-        <GrantMode>user_grant</GrantMode>
-        <Reason>$string:permission_reason_clipboard</Reason>
-        <UsedSceneWhen>inuse</UsedSceneWhen>
-      </_OpenHarmonyFeaturePermission>
+      <!-- READ_PASTEBOARD is deliberately NOT in the matrix (PASTEBOARD-FIX): it is
+           ACL-level (availableLevel system_basic), so an app bundle that declares it is
+           rejected by the installer ("grant request permissions failed") and the permission
+           cannot be granted to an ordinary bundle at runtime. The clipboard read is attempted
+           through the pasteboard NDK in the host (no ArkTS request point); the service still
+           enforces the ACL for the read, so an unauthorized read keeps the managed
+           null/empty shape. Never map a feature to it; OpenHarmonyFeatures=all must not
+           declare it either. -->
+      <!-- contacts: READ_CONTACTS is ACL-level (system_basic) as well, so the entry is
+           marked Acl - OpenHarmonyFeatures=all skips it (an ordinary bundle fails the install
+           with it) while an explicit -p:OpenHarmonyFeatures=contacts still declares it and
+           warns. -->
       <_OpenHarmonyFeaturePermission Include="ohos.permission.READ_CONTACTS">
         <Feature>contacts</Feature>
         <GrantMode>user_grant</GrantMode>
+        <Acl>true</Acl>
         <Reason>$string:permission_reason_contacts</Reason>
         <UsedSceneWhen>inuse</UsedSceneWhen>
       </_OpenHarmonyFeaturePermission>

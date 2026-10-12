@@ -1,7 +1,11 @@
 // Migrated from the inline RoslynCodeTaskFactory task 'OpenHarmonyResolvePermissions' in OpenHarmony.Hap.targets.
 // The body is the inline code verbatim (task-assembly migration, audit V8 / RELEASE-25), so the
-// task parameters, the log/error strings and the resulting bytes are unchanged. The assembly is
-// built by scripts/prepare-packs.sh and shipped in packs/*/tools/; the targets import it with a
+// task parameters, the log/error strings and the resulting bytes are unchanged.
+// PASTEBOARD-FIX (2026-10-12) adds one behavior: a feature-table entry may carry <Acl>true</Acl>
+// (an availableLevel system_basic permission whose declaration makes the installer reject an
+// ordinary bundle). 'all' skips ACL-level features and names them; an explicitly selected ACL
+// feature is still declared and warns. Entry-less behavior is unchanged.
+// The assembly is built by scripts/prepare-packs.sh and shipped in packs/*/tools/; the targets import it with a
 // UsingTask AssemblyFile instead of compiling this file at project-evaluation time.
 //
 // #nullable disable: the MSBuild engine assigns every [Required] parameter before Execute(), and
@@ -41,6 +45,7 @@ public class OpenHarmonyResolvePermissions : Task
         public string GrantMode;
         public string Reason;
         public string When;
+        public bool Acl;
     }
 
     public override bool Execute()
@@ -55,6 +60,7 @@ public class OpenHarmonyResolvePermissions : Task
                 GrantMode = (item.GetMetadata("GrantMode") ?? "").Trim(),
                 Reason = (item.GetMetadata("Reason") ?? "").Trim(),
                 When = (item.GetMetadata("UsedSceneWhen") ?? "").Trim(),
+                Acl = string.Equals((item.GetMetadata("Acl") ?? "").Trim(), "true", StringComparison.OrdinalIgnoreCase),
             };
             if (entry.Name.Length == 0 || entry.Feature.Length == 0)
             {
@@ -80,7 +86,20 @@ public class OpenHarmonyResolvePermissions : Task
         }
         if (selected.Contains("all"))
         {
-            selected = known.ToList();
+            // 'all' is "every feature an ordinary bundle can be granted": entries marked Acl
+            // (availableLevel system_basic, e.g. READ_PASTEBOARD/READ_CONTACTS) make the
+            // installer reject the bundle ("grant request permissions failed"), so they are
+            // skipped here and only declared when their feature id is named explicitly (with a
+            // warning). A build that needs the permission uses an ACL-signed profile or the
+            // OpenHarmonyExtraPermissions escape hatch.
+            var aclFeatures = new HashSet<string>(table.Where(e => e.Acl).Select(e => e.Feature), StringComparer.Ordinal);
+            if (aclFeatures.Count > 0)
+            {
+                Log.LogMessage(MessageImportance.High,
+                    "OpenHarmony permissions: 'all' skips the ACL-level feature(s) {0}; name one explicitly to declare its permission (an ordinary bundle fails the install with it)",
+                    string.Join(";", aclFeatures.OrderBy(f => f, StringComparer.Ordinal)));
+            }
+            selected = known.Where(f => !aclFeatures.Contains(f)).ToList();
         }
 
         var optOut = new HashSet<string>(Split(OptOut), StringComparer.Ordinal);
@@ -104,6 +123,11 @@ public class OpenHarmonyResolvePermissions : Task
                     Log.LogError("OpenHarmony permissions: feature '{0}' permission '{1}' has usedScene when='{2}'; use 'inuse' or 'always'",
                         feature, entry.Name, entry.When);
                     return false;
+                }
+                if (entry.Acl)
+                {
+                    Log.LogWarning("OpenHarmony permissions: feature '{0}' declares the ACL-level permission '{1}'; a bundle without that permission in its signing profile fails the install ('grant request permissions failed')",
+                        feature, entry.Name);
                 }
                 if (declaredNames.Add(entry.Name))
                 {

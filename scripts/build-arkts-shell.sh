@@ -674,7 +674,8 @@ check_source_tokens() { # <templates-dir>
     # (an invalid pattern makes grep exit 2, which must never be mistaken for "no match").
     for _spec in "from '@ohos|a module import from '@ohos" "import\('@ohos|a dynamic import from '@ohos" \
                  "getContext\(|the global getContext()" "decodeWithStream\(|the deprecated decodeWithStream()" \
-                 "focusControl\.|the global focusControl"; do
+                 "focusControl\.|the global focusControl" \
+                 "'ohos\.permission\.READ_PASTEBOARD'|the ACL-level READ_PASTEBOARD request point (PASTEBOARD-FIX: an install failure; the host reads through the pasteboard NDK instead)"; do
         _re="$(printf '%s' "$_spec" | sed 's/|.*//')"
         _label="$(printf '%s' "$_spec" | sed 's/^[^|]*|//')"
         _probe=0
@@ -954,7 +955,7 @@ check_sources_contract() { # [<templates-dir>]
             return 1
         fi
     done
-    printf '    shell sources clean (no @ohos import, getContext(), decodeWithStream() or focusControl), AOT-STARTUP mount gate, E4-CAPACITY8 derived-slot-table/switch, C5 loadData-encoding, SEC7-F ask-rate/pending, N-SUBWINDOW capacity-switch and L7-M2 deferred-create-replay contracts present, and byte-identical across preview.22/23/24 (sources %s)\n' "$_hash"
+    printf '    shell sources clean (no @ohos import, getContext(), decodeWithStream() or focusControl, no READ_PASTEBOARD request point), AOT-STARTUP mount gate, E4-CAPACITY8 derived-slot-table/switch, C5 loadData-encoding, SEC7-F ask-rate/pending, N-SUBWINDOW capacity-switch and L7-M2 deferred-create-replay contracts present, and byte-identical across preview.22/23/24 (sources %s)\n' "$_hash"
 }
 
 # pack_abc_provenance_json <dist-dir>: prints the provenance document for the two dist

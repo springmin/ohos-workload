@@ -43,8 +43,9 @@
 #   T15 sources   `--check-sources` accepts the shipped packs (token gate + AOT-STARTUP mount
 #                 gate + E4-CAPACITY8 derived tables/switch + C5 loadData '#'->'%23' encoding +
 #                 SEC7-F child ask-rate/pending bounds + cross-pack source identity) and rejects
-#                 an injected @ohos import, getContext() call, decodeWithStream() call or
-#                 focusControl call, naming the pattern; a copy with the first-use overlay mount
+#                 an injected @ohos import, getContext() call, decodeWithStream() call,
+#                 focusControl call or the ACL-level READ_PASTEBOARD request point (the
+#                 PASTEBOARD-FIX red control), naming the pattern; a copy with the first-use overlay mount
 #                 gate stripped (the @State webOverlaysMounted flag removed) is also rejected and
 #                 the missing marker is named; the red controls strip the L3 encoding helper
 #                 (Index) / revert the child data wiring, and strip the L4 admission branch /
@@ -430,7 +431,8 @@ assert_rc 0 $? "T15 an unmodified source copy passes the token gate"
 # the %%|* parameter forms reliably.
 for _case in "getContext():|getContext(this)" "kit import:|from '@ohos.file.fs'" \
              "dynamic kit import:|import('@ohos.file.fs')" "decodeWithStream():|decodeWithStream(raw)" \
-             "focusControl:|focusControl.requestFocus('x')"; do
+             "focusControl:|focusControl.requestFocus('x')" \
+             "READ_PASTEBOARD request point:|'ohos.permission.READ_PASTEBOARD'"; do
     _re="$(printf '%s' "$_case" | sed 's/|.*//')"
     _snippet="$(printf '%s' "$_case" | sed 's/^[^|]*|//')"
     cp "$REAL_SOURCE" "$SRC_FAKE/ets/pages/Index.ets"

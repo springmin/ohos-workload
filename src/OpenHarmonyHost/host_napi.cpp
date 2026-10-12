@@ -4370,8 +4370,9 @@ napi_value NotifyNotificationPermissionResult(napi_env env, napi_callback_info i
     return undefined;
 }
 
-// Clipboard: the managed side sends (requestId, op, text) through ohos_host_clipboard_request;
-// the sink's handler runs the @ohos.pasteboard call and answers with
+// Clipboard: the managed side sends (requestId, op, text) through ohos_host_clipboard_request.
+// Reads (op 0/1) are answered inside the C core from the pasteboard NDK (host_clipboard.c), so
+// this sink carries writes (op 2) only; the shell's setDataSync answers with
 // host.clipboardResult(requestId, rc, text). The pasteboard 'update' observer pushes
 // host.notifyClipboardChanged() through the no-argument notify below.
 // (sink moved into the current HostBinding; see the g_* accessors above)

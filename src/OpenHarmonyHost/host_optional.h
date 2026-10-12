@@ -46,6 +46,7 @@
 #include <sensors/oh_sensor.h>
 #include <sensors/vibrator.h>
 
+#include "host_clipboard.h"
 #include "host_optional_log.h"
 
 #ifdef __cplusplus
@@ -201,6 +202,18 @@ typedef struct {
     bool available;
 } OhosHostOptionalHuksApi;
 
+// Pasteboard + UDMF plain text (clipboard read, PASTEBOARD-FIX): libpasteboard.so and
+// libudmf.so provide the permission-free NDK read the host uses instead of the shell's ArkTS
+// getDataSync (whose read needs the ACL-level ohos.permission.READ_PASTEBOARD and fails a
+// declared build at install). The API table is the pure-C one of host_clipboard.h, filled
+// here per symbol; a reduced image without the libraries leaves pointers NULL and
+// ohos_host_clipboard_read_plain_text answers the documented UNAVAILABLE failure.
+typedef struct {
+    ohos_host_pasteboard_api api;
+    bool available;
+} OhosHostOptionalPasteboardApi;
+
+
 typedef struct {
     OhosHostOptionalImeApi ime;
     OhosHostOptionalNativeWindowApi native_window;
@@ -211,6 +224,7 @@ typedef struct {
     OhosHostOptionalAbilityAccessApi ability_access;
     OhosHostOptionalImageApi image;
     OhosHostOptionalHuksApi huks;
+    OhosHostOptionalPasteboardApi pasteboard;
 } OhosHostOptionalApis;
 
 extern OhosHostOptionalApis g_ohos_host_optional;

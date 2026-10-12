@@ -463,13 +463,16 @@ void ohos_host_notification_permission_complete(int request_id, int granted);
 /// the symbol (FIX-INTEROP #1).
 int ohos_host_notification_show(int id, const char* title, const char* text);
 
-/// Clipboard: the managed side asks the ArkTS shell to run one pasteboard operation through
-/// host.registerClipboardSink. op: 0 has text, 1 get text, 2 set text; `text` carries the
-/// value for set (and for get the shell may ignore it). The answer comes back through
-/// ohos_host_clipboard_complete(request_id, rc, text) with rc 0 = success, -1 = unavailable
-/// (permission denied/pasteboard or sink missing); for op 0 the payload is "1"/"0", for op 1
-/// the clipboard text (possibly empty) and for op 2 empty. The shell's pasteboard 'update'
-/// observer reports changes through ohos_host_clipboard_notify_changed (no request id).
+/// Clipboard. The managed side asks one pasteboard operation through
+/// ohos_host_clipboard_request; op: 0 has text, 1 get text, 2 set text. Reads (op 0/1) are
+/// answered in the host from the pasteboard NDK (OH_Pasteboard + UDMF plain text,
+/// host_clipboard.c) and need no permission; writes (op 2) go to the ArkTS shell through
+/// host.registerClipboardSink (@ohos.pasteboard setDataSync, also permission-free). The answer
+/// comes back through ohos_host_clipboard_complete(request_id, rc, text) with rc 0 = success,
+/// -1 = unavailable/failed; for op 0 the payload is "1"/"0", for op 1 the clipboard text
+/// (possibly empty) and for op 2 empty. A read failure keeps the managed null/empty shape
+/// (GetTextAsync null, HasText false). The shell's pasteboard 'update' observer reports
+/// changes through ohos_host_clipboard_notify_changed (no request id).
 void ohos_host_clipboard_set_listener(void (*listener)(int request_id, int op, const char* text));
 void ohos_host_clipboard_request(int request_id, int op, const char* text);
 void ohos_host_clipboard_register_result(void* callback);

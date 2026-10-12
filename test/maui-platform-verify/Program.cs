@@ -9633,10 +9633,14 @@ if (!b3HandlersOk)
 //     registerPermissionSink (abilityAccessCtrl.requestPermissionsFromUser) ->
 //     host.permissionResult(id, granted) -> ohos_host_permission_complete -> the managed TCS
 //     (a timeout or a missing shell/host library answers Denied);
-//   IClipboard -> ohos_host_clipboard_request(id, op, text) (op 0 has / 1 get / 2 set) -> the
-//     shell's registerClipboardSink (@ohos.pasteboard; reads ask for READ_PASTEBOARD) ->
-//     host.clipboardResult(id, rc, text); ClipboardContentChanged rides the pasteboard 'update'
-//     observer -> host.notifyClipboardChanged -> ohos_host_clipboard_notify_changed;
+//   IClipboard -> ohos_host_clipboard_request(id, op, text) (op 0 has / 1 get / 2 set). Reads
+//     (op 0/1) are answered inside the host from the pasteboard NDK (OH_Pasteboard + UDMF plain
+//     text, host_clipboard.c) and need no permission: READ_PASTEBOARD is ACL-level, so a bundle
+//     that declares it is rejected by the installer ("grant request permissions failed"), and an
+//     undeclared ArkTS read answers null. The shell serves the write op only (@ohos.pasteboard
+//     setDataSync) and answers host.clipboardResult(id, rc, text); ClipboardContentChanged rides
+//     the pasteboard 'update' observer -> host.notifyClipboardChanged ->
+//     ohos_host_clipboard_notify_changed;
 //   IConnectivity.NetworkAccess -> ohos_host_network_access (0 unknown / 1 none / 2 local /
 //     3 internet); ConnectivityChanged rides the NetworkKit observer ->
 //     host.notifyNetworkAccess -> ohos_host_network_access_notify (the host re-reads the level).
@@ -9776,8 +9780,12 @@ if (!b1ClipboardOk)
     throw new InvalidOperationException("the IClipboard pasteboard bridge did not degrade off-device");
 }
 
-// BATCH1d: the clipboard bridge contract (managed P/Invoke ops + C/header + NAPI + shell,
-// including the pasteboard 'update' observer and the READ_PASTEBOARD request).
+// BATCH1d: the clipboard bridge contract (managed P/Invoke ops + C/header + NAPI + shell + the
+// PASTEBOARD-FIX NDK read path, including the pasteboard 'update' observer). Reads (op 0/1) are
+// answered inside the host from the pasteboard NDK (OH_Pasteboard + UDMF plain text,
+// host_clipboard.c) and need no permission; the shell keeps the write op only. The matrix pin
+// covers all four preview packs: READ_PASTEBOARD must never be mapped (ACL-level -> the
+// installer rejects a declared bundle) and the removed clipboard id must not resolve.
 bool b1ClipboardOps = OpenHarmonyClipboardBridge.HasOp == 0 &&
     OpenHarmonyClipboardBridge.GetOp == 1 && OpenHarmonyClipboardBridge.SetOp == 2;
 MethodInfo? b1ClipboardRequest = typeof(OpenHarmonyClipboardBridge).GetMethod("RequestNative", BindingFlags.NonPublic | BindingFlags.Static);
@@ -9795,8 +9803,35 @@ bool b1ClipboardNative = cSource?.Contains("void ohos_host_clipboard_request(int
     cSource.Contains("g_app->bridge_clipboard_result = (void (*)(int, int, const char*))callback;") &&
     cSource.Contains("g_app->bridge_clipboard_changed = (void (*)(void))callback;") &&
     cSource.Contains("g_app->bridge_clipboard_changed();") &&
+    cSource.Contains("ohos_host_clipboard_read_plain_text") &&
+    cSource.Contains("OHOS_HOST_CLIPBOARD_MAX_TEXT_BYTES") &&
     hSource?.Contains("void ohos_host_clipboard_request(int request_id, int op, const char* text);") == true &&
     hSource.Contains("void ohos_host_clipboard_register_changed(void* callback);") == true;
+// The NDK read wrapper, its dlopen resolution and the link policy: the read is pure C
+// (unit-tested by scripts/selftest-host-clipboard.sh), the entry points come from the two
+// on-demand libraries and a direct reference is denied by host-deps.conf.
+string ClipboardHostSource(string relativePath) =>
+    FindHostSource(relativePath) is { } clipboardHostPath ? File.ReadAllText(clipboardHostPath) : string.Empty;
+string b1ClipboardWrapperSource = ClipboardHostSource("src/OpenHarmonyHost/host_clipboard.c");
+string b1ClipboardHeaderSource = ClipboardHostSource("src/OpenHarmonyHost/host_clipboard.h");
+string b1ClipboardOptionalSource = ClipboardHostSource("src/OpenHarmonyHost/host_optional.c");
+string b1ClipboardPolicySource = ClipboardHostSource("src/OpenHarmonyHost/host-deps.conf");
+bool b1ClipboardNd = b1ClipboardWrapperSource.Contains("OHOS_HOST_CLIPBOARD_UNAVAILABLE") &&
+    b1ClipboardWrapperSource.Contains("Pasteboard_GetData") &&
+    b1ClipboardHeaderSource.Contains("ohos_host_clipboard_read_plain_text") &&
+    b1ClipboardOptionalSource.Contains("\"OH_Pasteboard_GetData\"") &&
+    b1ClipboardOptionalSource.Contains("\"libpasteboard.so\"") &&
+    b1ClipboardOptionalSource.Contains("\"libudmf.so\"") &&
+    b1ClipboardPolicySource.Contains("OH_Pasteboard_") &&
+    b1ClipboardPolicySource.Contains("OH_UdsPlainText_");
+bool b1ClipboardMatrix = true;
+foreach (string b1ClipboardVersion in new[] { "1.0.0-preview.22", "1.0.0-preview.23", "1.0.0-preview.24", "1.0.0-preview.28" })
+{
+    string b1ClipboardTargets = ClipboardHostSource($"packs/Microsoft.OpenHarmony.Sdk/{b1ClipboardVersion}/targets/OpenHarmony.Hap.targets");
+    b1ClipboardMatrix &= b1ClipboardTargets.Length > 0 &&
+        !b1ClipboardTargets.Contains("_OpenHarmonyFeaturePermission Include=\"ohos.permission.READ_PASTEBOARD\"") &&
+        !b1ClipboardTargets.Contains("<Feature>clipboard</Feature>");
+}
 bool b1ClipboardNapi = s2Napi.Contains("HostSink clipboard{\"clipboard\", false};") &&
     s2Napi.Contains("ohos_host_clipboard_set_listener(OnClipboardRequest);") &&
     s2Napi.Contains("ohos_host_clipboard_complete(requestId, rc, text.c_str());") &&
@@ -9806,18 +9841,21 @@ bool b1ClipboardNapi = s2Napi.Contains("HostSink clipboard{\"clipboard\", false}
 bool b1ClipboardShell = b1Shell.Contains("import { pasteboard } from '@kit.BasicServicesKit';") &&
     b1Shell.Contains("this.hostCall('registerClipboardSink', typeof host !== 'undefined' && typeof host.registerClipboardSink === 'function'") &&
     b1Shell.Contains("host.registerClipboardSink(async (requestId: number, op: number, text: string): Promise<void>") &&
-    b1Shell.Contains("systemPasteboard.setDataSync(pasteboard.createPlainTextData(text));") &&
-    b1Shell.Contains("host.clipboardResult(requestId, rc, value);") &&
+    b1Shell.Contains("if (op === 2) {") &&
+    b1Shell.Contains("pasteboard.getSystemPasteboard().setDataSync(pasteboard.createPlainTextData(text));") &&
+    b1Shell.Contains("host.clipboardResult(requestId, rc, '');") &&
     b1Shell.Contains("pasteboard.getSystemPasteboard().on('update'") &&
     b1Shell.Contains("host.notifyClipboardChanged();") &&
-    b1Shell.Contains("'ohos.permission.READ_PASTEBOARD'");
-bool b1ClipboardContract = b1ClipboardManaged && b1ClipboardNative && b1ClipboardNapi && b1ClipboardShell;
-Console.WriteLine($"[verify] clipboard bridge contract managed={b1ClipboardManaged} native={b1ClipboardNative} napi={b1ClipboardNapi} shell={b1ClipboardShell} ops={OpenHarmonyClipboardBridge.HasOp}/{OpenHarmonyClipboardBridge.GetOp}/{OpenHarmonyClipboardBridge.SetOp} assert={b1ClipboardContract}");
+    !b1Shell.Contains("'ohos.permission.READ_PASTEBOARD'") &&
+    !b1Shell.Contains("ensureClipboardReadPermission") &&
+    !b1Shell.Contains("clipboardReadGranted");
+bool b1ClipboardContract = b1ClipboardManaged && b1ClipboardNative && b1ClipboardNd && b1ClipboardMatrix && b1ClipboardNapi && b1ClipboardShell;
+Console.WriteLine($"[verify] clipboard bridge contract managed={b1ClipboardManaged} native={b1ClipboardNative} nd={b1ClipboardNd} matrix={b1ClipboardMatrix} napi={b1ClipboardNapi} shell={b1ClipboardShell} ops={OpenHarmonyClipboardBridge.HasOp}/{OpenHarmonyClipboardBridge.GetOp}/{OpenHarmonyClipboardBridge.SetOp} assert={b1ClipboardContract}");
 if (!b1ClipboardContract)
 {
     throw new InvalidOperationException(
         $"the clipboard bridge contract drifted: managed={b1ClipboardManaged} native={b1ClipboardNative} " +
-        $"napi={b1ClipboardNapi} shell={b1ClipboardShell}");
+        $"nd={b1ClipboardNd} matrix={b1ClipboardMatrix} napi={b1ClipboardNapi} shell={b1ClipboardShell}");
 }
 
 // BATCH1e: IConnectivity off-device. The level map covers the documented 0/1/2/3 encoding and
