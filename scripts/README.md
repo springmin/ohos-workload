@@ -18,8 +18,8 @@ Rescued from the working scratch on 2026-10-03 (see the inventory in
 
 | Script | Purpose |
 | --- | --- |
-| `cut-kit.sh` | Scripted cut of the device-test kit: phases P0 preflight, P1 build, P2 strict verify, P3 bundle + sdk anchor, P4 F4 controlled clobber, P5 values/presign/manifest, P6 CI re-check. Dry-run is the default; `--execute` writes, P4-P6 need `--execute --i-know`, P4 asks for a typed confirmation, and the tester-docs gate fails closed before the build. Resume state lives in `<scratch>/state.env`. |
-| `selftest-cut-kit.sh` | Fixture selftest for `cut-kit.sh` (P0 pass/fail, pack drift, stale-docs fail-closed, resume, F4 confirmation gate with no write/network); wired into `preflight.sh` step 1. |
+| `cut-kit.sh` | Scripted cut of the device-test kit: phases P0 preflight, P1 build, P2 strict verify, P3 bundle + sdk anchor, P4 F4 controlled clobber, P5 values/presign/manifest, P6 CI re-check. P3 builds the bundle cumulatively: it auto-resolves the previous published bundle from the sdk-ohos `versions.env` anchor (`=`, `:=` and JSON spellings; local candidate first, sdk-ohos release download otherwise) and fails closed without a seed; `--seed-bundle` overrides (`CUT_KIT_SEED_DIR`/`CUT_KIT_SEED_OFFLINE` tune the search); the sdk re-anchor matches the same three forms and is a no-op when already current. Dry-run is the default; `--execute` writes, P4-P6 need `--execute --i-know`, P4 asks for a typed confirmation, and the tester-docs gate fails closed before the build. P4-P6 dry-runs print the upload clobber plan, the Integrity notes template and the RELEASE-VALUES block and parse the upload/presign/manifest hooks without writing or calling the API. Resume state lives in `<scratch>/state.env`. |
+| `selftest-cut-kit.sh` | Fixture selftest for `cut-kit.sh` (P0 pass/fail, pack drift, stale-docs fail-closed, resume, F4 confirmation gate with no write/network, the P3 `=`/`:=`/JSON anchor spellings + cumulative-seed auto/explicit/missing paths, and the P4-P6 dry-run zero-write previews; 185 checks); wired into `preflight.sh` step 1. |
 
 ## csc livelock watchdog (2026-10-10)
 

@@ -306,7 +306,7 @@ running them.
 | mode | publish | assertion before the hap is kept |
 |---|---|---|
 | `jit` | the default publish | `libs/<abi>/runtime-mode.txt` reads `jit` |
-| `aot` | `-p:PublishAot=true -p:PublishAotUsingRuntimePack=true -p:NativeLib=Shared` (the aot-haps recipe) plus `-p:OpenHarmonyUIPage=pages/Index` unless `--property` supplies another page (the UI shell must be staged; see "NativeAOT HAP variant") | marker `aot` and `libs/<abi>/lib<stem>.so` present (`<stem>` = the `app.json` assembly without `.dll`) |
+| `aot` | `-p:PublishAot=true -p:PublishAotUsingRuntimePack=true -p:NativeLib=Shared` (the aot-haps recipe) plus `-p:OpenHarmonyUIPage=pages/Index` and `-p:InvariantGlobalization=true` unless `--property` supplies them (the UI shell must be staged and the image has no system ICU - an AOT publish without invariant mode FailFasts on the first hosting call; see "NativeAOT HAP variant") | marker `aot` and `libs/<abi>/lib<stem>.so` present (`<stem>` = the `app.json` assembly without `.dll`) |
 | `interp` | `-p:OpenHarmonyInterpreterPack=<dir>` (an extracted `ohos-interpreter-pack`) | marker `interp` and both swapped `libcoreclr.so` + `libclrinterpreter.so` present |
 
 A missing or mismatching marker, a missing AOT application library, a missing interpreter library
@@ -346,7 +346,7 @@ experimental independent pack.
 
 | `--runtime-mode` | what the kit carries | default kit dir / out |
 |---|---|---|
-| `aot` (default) | the 5 MAUI haps published with the NativeAOT recipe (`-p:PublishAot=true -p:PublishAotUsingRuntimePack=true -p:NativeLib=Shared -p:OpenHarmonyRuntimeMode=aot -p:InvariantGlobalization=true` + `OpenHarmonyUIPage`; DEVCOMPAT payload staging and static-web-asset/hybrid staging stay at their defaults). Every hap carries `libs/<abi>/lib<stem>.so` and the marker `libs/<abi>/runtime-mode.txt=aot` | `device-test-kit` / `device-test-kit.tar.gz` |
+| `aot` (default) | the 5 MAUI haps published with the NativeAOT recipe (`-p:PublishAot=true -p:PublishAotUsingRuntimePack=true -p:NativeLib=Shared -p:OpenHarmonyRuntimeMode=aot -p:InvariantGlobalization=true` + `OpenHarmonyUIPage`; DEVCOMPAT payload staging and static-web-asset/hybrid staging stay at their defaults; `DEVICE_TEST_KIT_INVARIANT_GLOBALIZATION=0` drops the invariant-mode property explicitly). Every hap carries `libs/<abi>/lib<stem>.so` and the marker `libs/<abi>/runtime-mode.txt=aot` | `device-test-kit` / `device-test-kit.tar.gz` |
 | `jit` | the previous JIT publish (marker `jit`), kept for the debug/ACL domain | `device-test-kit-jit` / `device-test-kit-jit.tar.gz` |
 | `interp` | refused by the kit builder: the interpreter is an independent pack (`ohos-interpreter-pack-*.tar.gz` release asset, or `scripts/make-mode-kit.sh --mode interp --interp-pack <dir>` for a standalone variant) and never rides the main delivery kit | - |
 

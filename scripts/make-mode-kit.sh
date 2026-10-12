@@ -93,6 +93,9 @@ subdirectory per mode plus a SHA256SUMS over every hap.
                           --mode aot also defaults OpenHarmonyUIPage=pages/Index (the prebuilt
                           UI shell's page) unless --property supplies one: an AOT hap without
                           a page ships the headless abc and shows a white window on device
+                          --mode aot also defaults InvariantGlobalization=true (this image has no
+                          system ICU; an AOT publish without it FailFasts on the first hosting
+                          call) unless --property InvariantGlobalization=... supplies one
   --dry-run               print the publish/sign commands without running them
   --sign <args...>        re-sign each mode hap in place via scripts/sign-for-device.sh; every
                           argument after --sign is passed through (device mode: a UDID;
@@ -396,7 +399,12 @@ publish_mode() {
                 # has no XComponent/loadContent and the device paints a white window (the
                 # aot-haps v1/v2 blank-window root cause). pages/Index is the prebuilt UI
                 # shell's page; a caller-supplied --property OpenHarmonyUIPage=... wins.
-                props_has OpenHarmonyUIPage || set -- "$@" -p:OpenHarmonyUIPage=pages/Index ;;
+                props_has OpenHarmonyUIPage || set -- "$@" -p:OpenHarmonyUIPage=pages/Index
+                # InvariantGlobalization: this image's AOT runtime cannot resolve an ICU
+                # provider, so the first hosting call FailFasts without it (KIT54 finding:
+                # make-mode-kit --mode aot was the one AOT recipe that missed the property).
+                # A caller-supplied --property InvariantGlobalization=... wins.
+                props_has InvariantGlobalization || set -- "$@" -p:InvariantGlobalization=true ;;
         interp) set -- "$@" -p:OpenHarmonyRuntimeMode=interp -p:OpenHarmonyInterpreterPack="$PACK" ;;
     esac
     if [ "$DRY" = 1 ]; then
