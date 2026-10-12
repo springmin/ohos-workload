@@ -5,12 +5,13 @@
 # Phases (each one can run alone; a run without --phase resumes at the first phase whose rc is
 # not yet 0 in <scratch>/state.env):
 #   P0 preflight  repos + pins (worktrees/workflow MAUI_OHOS_REF) + four-pack abc + the
-#                 build-use installed pack == repo pack check (targets/tasks/abc/shell rawfile;
-#                 fail-closed) + verify-kit EXPECT_ABC + suite/host-export counts + worktree
-#                 cleanliness + repo selftests + the tester-docs gate (kit #N current block +
-#                 current abc, fail-closed)
-#   P1 build      release worktrees at the pin (git-ignored dist/ets + .arkts-build materialized
-#                 from the main checkout) + hosting/graphics Release prep +
+#                 build-use installed pack == repo pack check (SDK targets/tasks/abc/shell
+#                 rawfile + the Ref/Runtime/BCL key dll/manifests; fail-closed) + verify-kit
+#                 EXPECT_ABC + suite/host-export counts + worktree cleanliness + repo selftests
+#                 + the tester-docs gate (kit #N current block + current abc, fail-closed)
+#   P1 build      release worktrees at the pin (git-ignored dist/ets + .arkts-build + the SDK
+#                 pack hosts/arm64-v8a/libopenharmonyhost.so materialized from the main checkout
+#                 or the build-use installed pack; fail-closed) + hosting/graphics Release prep +
 #                 make-device-test-kit.sh --runtime-mode aot --with-blazor (7 haps, no --publish);
 #                 the docs gate runs again first and refuses to build on stale docs
 #   P2 verify     the shipped verify-kit.sh in strict mode (rc=0, 0 FAIL, 0 WARN) on the built
@@ -606,6 +607,68 @@ install_pack_root() { # echo the build-use dotnet root; rc 1 when it cannot be r
     printf '%s\n' "$_root"
 }
 
+# The manifest-pinned Microsoft.OpenHarmony.Sdk version; the last PACK_VERSIONS entry is the
+# fixture fallback the install-pack gate has always used (no manifests dir in the selftest).
+sdk_pack_ver() {
+    _src="$(src_ow)"
+    _band="${SDK_BAND:-11.0.100-rc.1}"
+    _mf="$_src/manifests/$_band/microsoft.net.sdk.openharmony/WorkloadManifest.json"
+    _ver=""
+    [ -f "$_mf" ] && _ver="$(python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); p=d.get("packs",{}).get("Microsoft.OpenHarmony.Sdk",{}); print(p.get("version") or d.get("version",""))' "$_mf" 2>/dev/null)"
+    [ -n "$_ver" ] || _ver="1.0.0-preview.$(printf '%s\n' $PACK_VERSIONS | tail -n 1)"
+    printf '%s\n' "$_ver"
+}
+
+# family|version|rel rows for the Ref/Runtime/BCL key files the build consumes (KIT54 follow-up:
+# the installs sat at the #51-generation managed DLLs while the repo packs moved on; the SDK
+# targets/tasks/abc/rawfile check alone did not catch that). Versions come from the workload
+# manifest; without a manifest the four OpenHarmony families fall back to the last PACK_VERSIONS
+# entry while the two BCL families stay manifest-only (rc 1 -> the gate fails closed rather than
+# checking a guessed version).
+ref_runtime_bcl_matrix() { # <ow-src>
+    _src="$1"
+    _band="${SDK_BAND:-11.0.100-rc.1}"
+    _mf="$_src/manifests/$_band/microsoft.net.sdk.openharmony/WorkloadManifest.json"
+    _last="1.0.0-preview.$(printf '%s\n' $PACK_VERSIONS | tail -n 1)"
+    python3 - "$_mf" "$_last" <<'PY'
+import json, os, sys
+mf, last = sys.argv[1:3]
+packs = {}
+if os.path.isfile(mf):
+    packs = json.load(open(mf)).get("packs", {})
+def ver(fam, fallback=""):
+    return (packs.get(fam) or {}).get("version") or fallback
+rows = []
+def add(fam, fallback, rels):
+    v = ver(fam, fallback)
+    if not v:
+        print("cannot resolve the %s version from %s" % (fam, mf), file=sys.stderr)
+        sys.exit(1)
+    for rel in rels:
+        rows.append("%s|%s|%s" % (fam, v, rel))
+for _api in ("20.0", "26.0"):
+    add("Microsoft.OpenHarmony.Ref.%s" % _api, last, [
+        "ref/net11.0/Microsoft.OpenHarmony.dll",
+        "ref/net11.0/Microsoft.OpenHarmony.Hosting.dll",
+        "data/FrameworkList.xml"])
+for _api in ("20.0", "26.0"):
+    add("Microsoft.OpenHarmony.Runtime.%s.openharmony-arm64" % _api, last, [
+        "runtimes/openharmony-arm64/lib/net11.0/Microsoft.OpenHarmony.dll",
+        "runtimes/openharmony-arm64/lib/net11.0/Microsoft.OpenHarmony.Hosting.dll",
+        "runtimes/openharmony-arm64/lib/net11.0/Microsoft.OpenHarmony.Maui.Graphics.dll",
+        "data/RuntimeList.xml"])
+add("Microsoft.NETCore.App.Runtime.openharmony-arm64", "", [
+    "runtimes/openharmony-arm64/lib/net11.0/System.Private.CoreLib.dll",
+    "Microsoft.NETCore.App.versions.txt",
+    "data/RuntimeList.xml"])
+add("Microsoft.AspNetCore.App.Runtime.openharmony-arm64", "", [
+    "runtimes/openharmony-arm64/lib/net11.0/Microsoft.AspNetCore.Components.Web.dll",
+    "Microsoft.AspNetCore.App.versions.txt",
+    "data/RuntimeList.xml"])
+print("\n".join(rows))
+PY
+}
+
 p0_install_pack() {
     _f=0
     _src="$(src_ow)"
@@ -614,13 +677,7 @@ p0_install_pack() {
             "${DOTNET:-<default>}" "$HOME/.dotnet.rc2-fix/dotnet" >&2
         return 1
     }
-    _band="${SDK_BAND:-11.0.100-rc.1}"
-    _mf="$_src/manifests/$_band/microsoft.net.sdk.openharmony/WorkloadManifest.json"
-    _ver=""
-    [ -f "$_mf" ] && _ver="$(python3 -c 'import json,sys;print(json.load(open(sys.argv[1])).get("version",""))' "$_mf" 2>/dev/null)"
-    if [ -z "$_ver" ]; then
-        _ver="1.0.0-preview.$(printf '%s\n' $PACK_VERSIONS | tail -n 1)"
-    fi
+    _ver="$(sdk_pack_ver)"
     _repo="$_src/packs/Microsoft.OpenHarmony.Sdk/$_ver"
     _inst="$_root/packs/Microsoft.OpenHarmony.Sdk/$_ver"
     if [ ! -d "$_repo" ]; then
@@ -659,9 +716,45 @@ p0_install_pack() {
     done
     st_set install_pack_root "$_root"
     st_set install_pack_ver "$_ver"
+    # KIT54 full-sync follow-up: the installs' Ref/Runtime/BCL packs sat at the #51-generation
+    # managed DLLs while the repo packs moved on (targets/tasks/abc/rawfile alone never saw it).
+    _rrb="$(ref_runtime_bcl_matrix "$_src")" || {
+        printf '   install pack FAIL: cannot resolve the Ref/Runtime/BCL pack versions from %s/manifests/%s\n' \
+            "$_src" "${SDK_BAND:-11.0.100-rc.1}" >&2
+        _f=$((_f + 1))
+        return "$_f"
+    }
+    _rrb_n=0; _rrb_f=0
+    while IFS='|' read -r _fam _fver _frel; do
+        [ -n "$_fam" ] || continue
+        _rrb_n=$((_rrb_n + 1))
+        _fa="$_src/packs/$_fam/$_fver/$_frel"
+        _fb="$_root/packs/$_fam/$_fver/$_frel"
+        if [ ! -f "$_fa" ]; then
+            printf '   install pack FAIL %s/%s: repo missing (%s)\n' "$_fam" "$_frel" "$_fa" >&2
+            _f=$((_f + 1)); _rrb_f=$((_rrb_f + 1))
+            continue
+        fi
+        _fs="$(sha256_of "$_fa")"
+        _ft="$(sha256_of "$_fb" 2>/dev/null || true)"
+        if [ -z "$_ft" ]; then
+            printf '   install pack FAIL %s/%s: install missing (%s)\n' "$_fam" "$_frel" "$_fb" >&2
+            _f=$((_f + 1)); _rrb_f=$((_rrb_f + 1))
+        elif [ "$_fs" != "$_ft" ]; then
+            printf '   install pack FAIL %s/%s: repo %s != install %s (%s)\n' \
+                "$_fam" "$_frel" "$(printf '%s' "$_fs" | cut -c1-8)" "$(printf '%s' "$_ft" | cut -c1-8)" "$_root" >&2
+            _f=$((_f + 1)); _rrb_f=$((_rrb_f + 1))
+        fi
+    done <<EOF
+$_rrb
+EOF
+    st_set install_pack_rrb_files "$_rrb_n"
+    if [ "$_rrb_f" = 0 ]; then
+        printf '   install pack rrb     PASS (%s key files over 6 Ref/Runtime/BCL packs)\n' "$_rrb_n"
+    fi
     if [ "$_f" = 0 ]; then
-        printf '   install pack         PASS (%s == repo %s; %s files)\n' \
-            "$(printf '%s' "$_root" | sed "s|$HOME|~|")" "$_ver" "$_checked"
+        printf '   install pack         PASS (%s == repo %s; %s sdk + %s ref/runtime/bcl files)\n' \
+            "$(printf '%s' "$_root" | sed "s|$HOME|~|")" "$_ver" "$_checked" "$_rrb_n"
     fi
     return "$_f"
 }
@@ -837,16 +930,44 @@ p1_env() {
     return 0
 }
 
+# The SDK pack's native host (packs/Microsoft.OpenHarmony.Sdk/<ver>/hosts/arm64-v8a/
+# libopenharmonyhost.so) comes out of scripts/build-host.sh and is git-ignored, so a fresh
+# worktree never carries it. KIT54 finding 3: the first P3 Sdk nupkg was packed from such a
+# worktree and silently lost the host, so materialize it in the P1 prep (the phase that owns
+# the worktree) from the main checkout, falling back to the build-use installed pack; missing
+# in every source is an explicit fail-closed error - never a pack without the native host.
+materialize_sdk_hosts() { # <dst-root>
+    _mh_dst="$1"
+    _mh_rel="packs/Microsoft.OpenHarmony.Sdk/$(sdk_pack_ver)/hosts/arm64-v8a/libopenharmonyhost.so"
+    [ -e "$_mh_dst/$_mh_rel" ] && return 0
+    _mh_root="$(install_pack_root 2>/dev/null || true)"
+    for _mh_src in "$OW_REPO" "$_mh_root"; do
+        [ -n "$_mh_src" ] || continue
+        [ "$_mh_src" = "$_mh_dst" ] && continue
+        [ -f "$_mh_src/$_mh_rel" ] || continue
+        log "P1 prep: materialize SDK host payload: $_mh_src/$_mh_rel -> $_mh_dst/$_mh_rel"
+        mkdir -p "$(dirname "$_mh_dst/$_mh_rel")" || return 1
+        cp -f "$_mh_src/$_mh_rel" "$_mh_dst/$_mh_rel" || {
+            err "P1 prep: copy failed: $_mh_rel"; return 1; }
+        return 0
+    done
+    err "P1 prep: SDK host payload missing: $_mh_rel (not in $OW_REPO or ${_mh_root:-the build-use install} either)"
+    return 1
+}
+
 p1_prep() {
     if [ "$DRY" = 1 ]; then
         printf '   [dry-run] (materialize dist/ets + .arkts-build from the main checkout when missing)\n'
+        printf '   [dry-run] (materialize packs/Microsoft.OpenHarmony.Sdk/*/hosts/*.so from the main checkout or the installed pack)\n'
         printf '   [dry-run] (cd %s && $DOTNET build src/Microsoft.OpenHarmony.Hosting/... -c Release)\n' "$WT_OW"
         printf '   [dry-run] (cd %s && $DOTNET build src/Microsoft.OpenHarmony.Maui.Graphics/... -c Release)\n' "$WT_OW"
         return 0
     fi
-    # A fresh worktree never carries the two git-ignored inputs the kit build needs: the ArkTS
-    # shell (dist/ets/modules.abc) and the hvigor toolchain (.arkts-build, for --with-blazor).
-    # Copy them from the main checkout; both names are ignored, so the worktree stays clean.
+    # A fresh worktree never carries the git-ignored inputs the kit build needs: the ArkTS shell
+    # (dist/ets/modules.abc), the hvigor toolchain (.arkts-build, for --with-blazor) and the SDK
+    # pack hosts/*.so (build-host.sh output; P3 packs the worktree and used to lose it). Copy
+    # them from the main checkout / installed pack; every name is ignored, so the worktree stays
+    # clean.
     _p1_ignored() {
         _rel="$1"; _what="$2"
         if [ ! -e "$WT_OW/$_rel" ]; then
@@ -861,6 +982,7 @@ p1_prep() {
     }
     _p1_ignored dist/ets "ArkTS shell" || return 1
     _p1_ignored .arkts-build "hvigor toolchain" || return 1
+    materialize_sdk_hosts "$WT_OW" || return 1
     mkdir -p "$LOGDIR"
     ( cd "$WT_OW" && "$DOTNET" build src/Microsoft.OpenHarmony.Hosting/Microsoft.OpenHarmony.Hosting.csproj \
         -c Release -v:q --nologo ) >> "$LOGDIR/p1-prep.log" 2>&1 || return 1

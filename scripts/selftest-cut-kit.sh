@@ -6,10 +6,13 @@
 #   T0 usage      sh -n passes; --help lists the phases; an unknown option exits 2;
 #                 --print-docs-list prints the 18 wave + 8 packed docs contract
 #   T1 p0-pass    a fixture whose pins/packs/EXPECT/suite/exports/docs all match and whose
-#                 build-use install pack (--dotnet fixture root) mirrors the repo pack -> P0 PASS,
-#                 state.env records P0_rc=0, and nothing outside --scratch is written
+#                 build-use install pack (--dotnet fixture root) mirrors the repo pack (SDK + the
+#                 six Ref/Runtime/BCL families) -> P0 PASS, state.env records P0_rc=0, and
+#                 nothing outside --scratch is written
 #   T1b install   the build-use install pack gate is fail-closed: a drifted install pack file
-#                 (abc) and a missing install pack both fail P0 and name the group
+#                 (abc) and a missing install pack both fail P0 and name the group; T1d-T1f: a
+#                 drifted Ref payload, a missing BCL key file and a missing repo Ref/Runtime key
+#                 file fail closed too (KIT54 full-sync follow-up coverage)
 #   T2 p0-fail    one pack abc drifts from EXPECT_ABC -> P0 FAIL (packs abc group)
 #   T3 docs       stale docs fail closed: the block still marks kit #98 current (T3a) or the
 #                 block is #99 but the current abc is missing (T3b) -> P0 rc=3 + --bump-docs hint;
@@ -45,13 +48,18 @@
 #                 notes template, previews RELEASE-VALUES, parses the upload/presign/manifest
 #                 hooks (a syntax-broken hook fails closed) and asserts zero writes: no scratch
 #                 dir, no curl call, no hook run, byte-identical fixture tree
+#   T9 p1-hosts   P1 prep materializes the git-ignored SDK pack hosts/*.so (KIT54 finding 3):
+#                 the dry run prints the plan and writes nothing; an execute run copies it from
+#                 the main checkout (T9b) or from the build-use installed pack (T9c) into the
+#                 fresh worktree before any build; missing in every source fails closed with an
+#                 explicit message and no build attempt (T9d)
 #
 # Env: SELFTEST_TMPDIR=<dir>  work dir base (default: the approved opencode tmp dir)
 #      SELFTEST_KEEP=1       keep the work dir even when all checks pass
 # Exit: 0 = all checks passed; 1 = at least one check failed (work dir kept for triage).
 set -u
 
-SELFTEST_VERSION="6 (2026-10-12; 185 checks, was 109)"
+SELFTEST_VERSION="7 (2026-10-12; 208 checks, was 185)"
 
 log()     { printf '[%s] %s\n' "$(date '+%H:%M:%S')" "$*"; }
 section() { printf '\n=== %s ===\n' "$*"; }
@@ -128,15 +136,88 @@ fixture_docs() { # <docs-dir> <kit#> <ui-plain> <hl-plain> [<style:zh|en>]
     printf '# final status fixture\n' > "$_dd/2026-09-21-ohos-final-status.md"
 }
 
-# fixture_install_sync <fx>: mirror the fixture repo's .28 SDK pack into the fixture install
-# root (the --dotnet root the P0 install-pack gate resolves). The gate checks the last
-# PACK_VERSIONS entry (.28) - the fixture has no manifests dir, so the fallback applies.
+# fixture_packs_rrb <ow>: the six Ref/Runtime/BCL pack payload fixtures the extended P0
+# install-pack gate compares, plus the workload manifest that pins every family version (the
+# real repo carries the same manifest shape under manifests/<band>/microsoft.net.sdk.openharmony).
+fixture_packs_rrb() {
+    _ow="$1"
+    for _api in 20.0 26.0; do
+        _p="$_ow/packs/Microsoft.OpenHarmony.Ref.$_api/1.0.0-preview.28"
+        mkdir -p "$_p/ref/net11.0" "$_p/data"
+        printf 'fixture ref dll %s\n' "$_api" > "$_p/ref/net11.0/Microsoft.OpenHarmony.dll"
+        printf 'fixture ref hosting %s\n' "$_api" > "$_p/ref/net11.0/Microsoft.OpenHarmony.Hosting.dll"
+        printf 'fixture framework list %s\n' "$_api" > "$_p/data/FrameworkList.xml"
+        _p="$_ow/packs/Microsoft.OpenHarmony.Runtime.$_api.openharmony-arm64/1.0.0-preview.28"
+        mkdir -p "$_p/runtimes/openharmony-arm64/lib/net11.0" "$_p/data"
+        for _f in Microsoft.OpenHarmony.dll Microsoft.OpenHarmony.Hosting.dll Microsoft.OpenHarmony.Maui.Graphics.dll; do
+            printf 'fixture runtime %s %s\n' "$_api" "$_f" > "$_p/runtimes/openharmony-arm64/lib/net11.0/$_f"
+        done
+        printf 'fixture runtime list %s\n' "$_api" > "$_p/data/RuntimeList.xml"
+    done
+    _p="$_ow/packs/Microsoft.NETCore.App.Runtime.openharmony-arm64/11.0.0-rc.2.26451.112"
+    mkdir -p "$_p/runtimes/openharmony-arm64/lib/net11.0" "$_p/data"
+    printf 'fixture corelib\n' > "$_p/runtimes/openharmony-arm64/lib/net11.0/System.Private.CoreLib.dll"
+    printf 'fixture netcore versions\n' > "$_p/Microsoft.NETCore.App.versions.txt"
+    printf 'fixture netcore runtime list\n' > "$_p/data/RuntimeList.xml"
+    _p="$_ow/packs/Microsoft.AspNetCore.App.Runtime.openharmony-arm64/11.0.0-rc.1.26451.112"
+    mkdir -p "$_p/runtimes/openharmony-arm64/lib/net11.0" "$_p/data"
+    printf 'fixture aspnet web\n' > "$_p/runtimes/openharmony-arm64/lib/net11.0/Microsoft.AspNetCore.Components.Web.dll"
+    printf 'fixture aspnet versions\n' > "$_p/Microsoft.AspNetCore.App.versions.txt"
+    printf 'fixture aspnet runtime list\n' > "$_p/data/RuntimeList.xml"
+    for _band in 11.0.100-rc.1 11.0.100; do
+        _m="$_ow/manifests/$_band/microsoft.net.sdk.openharmony"
+        mkdir -p "$_m"
+        cat > "$_m/WorkloadManifest.json" <<'EOF'
+{
+  "version": "1.0.0-preview.28",
+  "workloads": {
+    "openharmony": {
+      "description": ".NET SDK for OpenHarmony (fixture)",
+      "packs": [
+        "Microsoft.OpenHarmony.Sdk",
+        "Microsoft.OpenHarmony.Ref.20.0",
+        "Microsoft.OpenHarmony.Runtime.20.0.openharmony-arm64",
+        "Microsoft.NETCore.App.Runtime.openharmony-arm64",
+        "Microsoft.AspNetCore.App.Runtime.openharmony-arm64",
+        "Microsoft.OpenHarmony.Ref.26.0",
+        "Microsoft.OpenHarmony.Runtime.26.0.openharmony-arm64"
+      ]
+    }
+  },
+  "packs": {
+    "Microsoft.OpenHarmony.Sdk": { "kind": "sdk", "version": "1.0.0-preview.28" },
+    "Microsoft.OpenHarmony.Ref.20.0": { "kind": "framework", "version": "1.0.0-preview.28" },
+    "Microsoft.OpenHarmony.Runtime.20.0.openharmony-arm64": { "kind": "framework", "version": "1.0.0-preview.28" },
+    "Microsoft.NETCore.App.Runtime.openharmony-arm64": { "kind": "framework", "version": "11.0.0-rc.2.26451.112" },
+    "Microsoft.AspNetCore.App.Runtime.openharmony-arm64": { "kind": "framework", "version": "11.0.0-rc.1.26451.112" },
+    "Microsoft.OpenHarmony.Ref.26.0": { "kind": "framework", "version": "1.0.0-preview.28" },
+    "Microsoft.OpenHarmony.Runtime.26.0.openharmony-arm64": { "kind": "framework", "version": "1.0.0-preview.28" }
+  }
+}
+EOF
+    done
+    return 0
+}
+
+# fixture_install_sync <fx>: mirror the fixture repo's pinned pack payload (SDK + the six
+# Ref/Runtime/BCL families, versions mirroring the fixture manifest) into the fixture install
+# root (the --dotnet root the P0 install-pack gate resolves).
 fixture_install_sync() {
     _fx="$1"
-    _dst="$_fx/installroot/packs/Microsoft.OpenHarmony.Sdk/1.0.0-preview.28"
+    _srcp="$_fx/ow/packs"; _dst="$_fx/installroot/packs"
     rm -rf "$_dst"
-    mkdir -p "$(dirname "$_dst")"
-    cp -R "$_fx/ow/packs/Microsoft.OpenHarmony.Sdk/1.0.0-preview.28" "$_dst"
+    for _p in \
+        Microsoft.OpenHarmony.Sdk/1.0.0-preview.28 \
+        Microsoft.OpenHarmony.Ref.20.0/1.0.0-preview.28 \
+        Microsoft.OpenHarmony.Ref.26.0/1.0.0-preview.28 \
+        Microsoft.OpenHarmony.Runtime.20.0.openharmony-arm64/1.0.0-preview.28 \
+        Microsoft.OpenHarmony.Runtime.26.0.openharmony-arm64/1.0.0-preview.28 \
+        Microsoft.NETCore.App.Runtime.openharmony-arm64/11.0.0-rc.2.26451.112 \
+        Microsoft.AspNetCore.App.Runtime.openharmony-arm64/11.0.0-rc.1.26451.112; do
+        mkdir -p "$_dst/$(dirname "$_p")"
+        cp -R "$_srcp/$_p" "$_dst/$_p" || return 1
+    done
+    return 0
 }
 
 make_fixture() { # <dir> <docs-kit> <docs-ui> <docs-hl>
@@ -168,8 +249,9 @@ EOF
             printf 'fixture rawfile %s %s\n' "$_v" "$_rf" > "$_ow/packs/Microsoft.OpenHarmony.Sdk/1.0.0-preview.$_v/templates/resources/rawfile/$_rf"
         done
     done
-    # build-use install root (the P0 install-pack gate compares against this; the manifest is
-    # absent in the fixture so the gate falls back to the last PACK_VERSIONS entry = .28)
+    fixture_packs_rrb "$_ow" || return 1
+    # build-use install root (the P0 install-pack gate compares against this; mirrors the
+    # fixture manifest's pinned families: SDK + six Ref/Runtime/BCL packs)
     mkdir -p "$_fx/installroot"
     printf '#!/bin/sh\nexit 1\n' > "$_fx/installroot/dotnet"
     chmod +x "$_fx/installroot/dotnet"
@@ -326,6 +408,9 @@ grep -q '^P0_rc=0$' "$S1/state.env" 2>/dev/null
 check "T1 state P0_rc=0" $?
 grep -q '^install_pack_ver=1.0.0-preview.28$' "$S1/state.env" 2>/dev/null
 check "T1 state install_pack_ver recorded" $?
+grep -q '^install_pack_rrb_files=20$' "$S1/state.env" 2>/dev/null
+check "T1 state install_pack_rrb_files recorded (20)" $?
+assert_contains "T1 Ref/Runtime/BCL key-file check ran" "$OUT1" 'install pack rrb +PASS'
 
 # T1b: the install-pack gate is fail-closed: a drifted install abc fails P0 and names the file
 F1B="$T/fixture-install-drift"; make_fixture "$F1B" 99 987654 54321 || exit 1
@@ -348,6 +433,38 @@ sh "$CUT" --kit 99 --phase P0 --skip-selftests --execute --scratch "$S1C" \
     --dotnet "$F1C/installroot/dotnet" > "$OUT1C" 2>&1
 check_neg "T1c missing install pack rc!=0" "$?"
 assert_contains "T1c missing pack named" "$OUT1C" 'install pack FAIL: cannot resolve the build-use dotnet pack root'
+
+# T1d: the extended gate covers the Ref/Runtime/BCL key files - a drifted Ref payload fails
+# closed and names the family/rel (KIT54 full-sync follow-up); T1e: a missing BCL key file in
+# the install; T1f: a missing repo key file (both flag the missing side explicitly)
+F1D="$T/fixture-ref-drift"; make_fixture "$F1D" 99 987654 54321 || exit 1
+printf 'drifted ref dll\n' > "$F1D/installroot/packs/Microsoft.OpenHarmony.Ref.20.0/1.0.0-preview.28/ref/net11.0/Microsoft.OpenHarmony.dll"
+S1D="$T/scratch-ref-drift"
+OUT1D="$T/t1d.out"
+sh "$CUT" --kit 99 --phase P0 --skip-selftests --execute --scratch "$S1D" \
+    --ow-repo "$F1D/ow" --maui-repo "$F1D/maui" --runtime-repo "$F1D/runtime" --docs-dir "$F1D/docs" \
+    --dotnet "$F1D/installroot/dotnet" > "$OUT1D" 2>&1
+check_neg "T1d drifted Ref payload rc!=0" "$?"
+assert_contains "T1d gate names the Ref family/file" "$OUT1D" 'install pack FAIL Microsoft.OpenHarmony.Ref.20.0/ref/net11.0/Microsoft.OpenHarmony.dll: repo'
+assert_contains "T1d P0 FAIL" "$OUT1D" 'P0 FAIL'
+F1E="$T/fixture-bcl-missing"; make_fixture "$F1E" 99 987654 54321 || exit 1
+rm -f "$F1E/installroot/packs/Microsoft.NETCore.App.Runtime.openharmony-arm64/11.0.0-rc.2.26451.112/runtimes/openharmony-arm64/lib/net11.0/System.Private.CoreLib.dll"
+S1E="$T/scratch-bcl-missing"
+OUT1E="$T/t1e.out"
+sh "$CUT" --kit 99 --phase P0 --skip-selftests --execute --scratch "$S1E" \
+    --ow-repo "$F1E/ow" --maui-repo "$F1E/maui" --runtime-repo "$F1E/runtime" --docs-dir "$F1E/docs" \
+    --dotnet "$F1E/installroot/dotnet" > "$OUT1E" 2>&1
+check_neg "T1e missing BCL install file rc!=0" "$?"
+assert_contains "T1e names the missing install file" "$OUT1E" 'install pack FAIL Microsoft.NETCore.App.Runtime.openharmony-arm64/runtimes/openharmony-arm64/lib/net11.0/System.Private.CoreLib.dll: install missing'
+F1F="$T/fixture-repo-missing"; make_fixture "$F1F" 99 987654 54321 || exit 1
+rm -f "$F1F/ow/packs/Microsoft.OpenHarmony.Runtime.20.0.openharmony-arm64/1.0.0-preview.28/runtimes/openharmony-arm64/lib/net11.0/Microsoft.OpenHarmony.Maui.Graphics.dll"
+S1F="$T/scratch-repo-missing"
+OUT1F="$T/t1f.out"
+sh "$CUT" --kit 99 --phase P0 --skip-selftests --execute --scratch "$S1F" \
+    --ow-repo "$F1F/ow" --maui-repo "$F1F/maui" --runtime-repo "$F1F/runtime" --docs-dir "$F1F/docs" \
+    --dotnet "$F1F/installroot/dotnet" > "$OUT1F" 2>&1
+check_neg "T1f missing repo key file rc!=0" "$?"
+assert_contains "T1f names the missing repo file" "$OUT1F" 'install pack FAIL Microsoft.OpenHarmony.Runtime.20.0.openharmony-arm64/runtimes/openharmony-arm64/lib/net11.0/Microsoft.OpenHarmony.Maui.Graphics.dll: repo missing'
 
 # ------------------------------------------------------------------ T2 P0 fail (pack drift)
 section "T2 P0 fail on pack abc drift"
@@ -794,6 +911,70 @@ assert_contains "T8b names the syntax error" "$OUT8B" 'shell syntax error'
 [ ! -e "$S8B" ]; check "T8b zero writes with a broken hook" $?
 _p456_sum > "$T/t8b-after"
 cmp -s "$T/t8-before" "$T/t8b-after"; check "T8b wrote nothing under the fixture" $?
+
+# ------------------------------------------------------------------ T9 P1 SDK host payload
+# KIT54 finding 3: a fresh worktree misses the git-ignored packs/**/hosts/**/*.so, so the P3
+# Sdk nupkg silently lost the native host. P1 prep now materializes it (main checkout first,
+# the build-use installed pack as fallback) and fails closed when no source carries it.
+section "T9 P1 SDK host payload materialization"
+F9="$T/fixture-hosts"; make_fixture "$F9" 99 987654 54321 || exit 1
+HOST_REL="packs/Microsoft.OpenHarmony.Sdk/1.0.0-preview.28/hosts/arm64-v8a/libopenharmonyhost.so"
+# the other two git-ignored P1 inputs (dist/ets + .arkts-build) live in the main checkout only
+mkdir -p "$F9/ow/dist/ets" "$F9/ow/.arkts-build"
+printf 'fixture shell abc\n' > "$F9/ow/dist/ets/modules.abc"
+printf 'fixture hvigor\n' > "$F9/ow/.arkts-build/tool.txt"
+mkdir -p "$(dirname "$F9/ow/$HOST_REL")"
+printf 'fixture host from main checkout\n' > "$F9/ow/$HOST_REL"
+
+# T9a: the dry run prints the hosts plan and writes nothing (no worktree)
+S9A="$T/scratch-hosts-dry"; OUT9A="$T/t9a.out"
+sh "$CUT" --kit 99 --phase P1 --skip-selftests --dry-run --scratch "$S9A" \
+    --ow-repo "$F9/ow" --maui-repo "$F9/maui" --runtime-repo "$F9/runtime" --docs-dir "$F9/docs" \
+    --dotnet "$F9/installroot/dotnet" > "$OUT9A" 2>&1
+check_rc "T9a P1 dry-run rc=0" "$?" 0
+assert_contains "T9a prints the hosts plan" "$OUT9A" 'materialize packs/Microsoft.OpenHarmony.Sdk/\*/hosts/\*\.so from the main checkout'
+[ ! -e "$S9A/ow" ]; check "T9a dry-run created no worktree" $?
+
+# T9b: an execute run materializes the host from the main checkout into the fresh worktree
+# before the builds (the fixture dotnet stub fails the hosting build right after, rc!=0)
+S9B="$T/scratch-hosts-main"; OUT9B="$T/t9b.out"
+sh "$CUT" --kit 99 --phase P1 --skip-selftests --execute --scratch "$S9B" \
+    --ow-repo "$F9/ow" --maui-repo "$F9/maui" --runtime-repo "$F9/runtime" --docs-dir "$F9/docs" \
+    --dotnet "$F9/installroot/dotnet" > "$OUT9B" 2>&1
+check_neg "T9b P1 stops at the fixture build (rc!=0)" "$?"
+assert_contains "T9b logs the main-checkout materialization" "$OUT9B" 'materialize SDK host payload'
+[ -f "$S9B/ow/$HOST_REL" ]; check "T9b host landed in the worktree" $?
+cmp -s "$F9/ow/$HOST_REL" "$S9B/ow/$HOST_REL"; check "T9b host bytes match the main checkout" $?
+
+# T9c: without a main-checkout host the installed pack is the fallback
+F9C="$T/fixture-hosts-install"; make_fixture "$F9C" 99 987654 54321 || exit 1
+mkdir -p "$F9C/ow/dist/ets" "$F9C/ow/.arkts-build"
+printf 'fixture shell abc\n' > "$F9C/ow/dist/ets/modules.abc"
+printf 'fixture hvigor\n' > "$F9C/ow/.arkts-build/tool.txt"
+mkdir -p "$(dirname "$F9C/installroot/$HOST_REL")"
+printf 'fixture host from the installed pack\n' > "$F9C/installroot/$HOST_REL"
+S9C="$T/scratch-hosts-install"; OUT9C="$T/t9c.out"
+sh "$CUT" --kit 99 --phase P1 --skip-selftests --execute --scratch "$S9C" \
+    --ow-repo "$F9C/ow" --maui-repo "$F9C/maui" --runtime-repo "$F9C/runtime" --docs-dir "$F9C/docs" \
+    --dotnet "$F9C/installroot/dotnet" > "$OUT9C" 2>&1
+check_neg "T9c P1 stops at the fixture build (rc!=0)" "$?"
+assert_contains "T9c materializes from the installed pack" "$OUT9C" 'installroot/packs/Microsoft.OpenHarmony.Sdk/1.0.0-preview.28/hosts'
+cmp -s "$F9C/installroot/$HOST_REL" "$S9C/ow/$HOST_REL"; check "T9c host bytes match the installed pack" $?
+
+# T9d: missing in every source fails closed with an explicit message and no build attempt
+F9D="$T/fixture-hosts-missing"; make_fixture "$F9D" 99 987654 54321 || exit 1
+mkdir -p "$F9D/ow/dist/ets" "$F9D/ow/.arkts-build"
+printf 'fixture shell abc\n' > "$F9D/ow/dist/ets/modules.abc"
+printf 'fixture hvigor\n' > "$F9D/ow/.arkts-build/tool.txt"
+rm -rf "$F9D/installroot/packs"
+S9D="$T/scratch-hosts-missing"; OUT9D="$T/t9d.out"
+sh "$CUT" --kit 99 --phase P1 --skip-selftests --execute --scratch "$S9D" \
+    --ow-repo "$F9D/ow" --maui-repo "$F9D/maui" --runtime-repo "$F9D/runtime" --docs-dir "$F9D/docs" \
+    --dotnet "$F9D/installroot/dotnet" > "$OUT9D" 2>&1
+check_neg "T9d missing host rc!=0" "$?"
+assert_contains "T9d names the missing host payload" "$OUT9D" 'SDK host payload missing: packs/Microsoft.OpenHarmony.Sdk/1.0.0-preview.28/hosts/arm64-v8a/libopenharmonyhost.so'
+assert_contains "T9d names both sources" "$OUT9D" 'not in .* or the build-use install either'
+[ ! -e "$S9D/logs" ]; check "T9d no build attempt (no logs dir)" $?
 
 # ------------------------------------------------------------------ summary
 section "summary"
