@@ -436,6 +436,17 @@ public sealed class App : Application
             entryStatus.Text = $"child entry: {entry.Text}";
             OpenHarmonyBridge.WriteStatus($"[hello-maui-app] child entry text '{entry.Text}'");
         };
+        // SUBWIN-COMPLETED: the child Entry's submit observable. The return key must raise
+        // Completed through the same MAUI path as the primary window's Entry (the shell's
+        // onSubmit -> SUB_EVENT_TEXT_SUBMITTED -> the per-window router -> IEntry.Completed,
+        // which also runs ReturnCommand). The label and the status line are the device evidence
+        // for the 2026-10-12 boundary: Enter committed the text into this Entry, but no
+        // completion was observable because this probe had no handler.
+        entry.Completed += (_, _) =>
+        {
+            entryStatus.Text = $"child entry completed: {entry.Text}";
+            OpenHarmonyBridge.WriteStatus($"[hello-maui-app] child entry completed '{entry.Text}'");
+        };
         // MULTIWINDOW-L M4-04 device probe: per-window pinch. The gesture can only fire through
         // the child window's own routed pinch stream (the shell computes it from the child
         // XComponent's two-finger touches, tagged with the child surface id).
