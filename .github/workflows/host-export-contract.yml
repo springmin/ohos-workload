@@ -22,7 +22,7 @@ on:
         description: 'maui-ohos commit SHA to cross-check (defaults to the pinned slice tip)'
         required: false
         type: string
-        default: '36da77cba492d2e694064b2080f5c53a18f4c19f'
+        default: '44dcef8d15eb8af568197cca6bb00a0bcca15725'
   push:
     branches: [ master ]
   pull_request:
@@ -32,7 +32,18 @@ permissions:
 
 # Reproducible cross-repo check: the slice is checked out at an exact commit, not the mutable
 # feature/openharmony branch, so a push to the fork cannot change what this gate verifies.
-# Current tip: 625177750f (MERGE-BATCH-3: L8-REMAINDER renders/arranges the modal-aware
+# Current tip: 44dcef8d15 (MEDIA-RESIDUALS: the slice's cold-start PlayAsync waits bounded
+# (1.5 s) for an already-registered media page so the first play ack is the page's own answer
+# and a dead bridge still answers Unavailable; managed-only with no new DllImport, so the
+# export set stays 164/164 and the shell abc stays 623,784 - the FINAL-BATCH shell; suite
+# 801/804 floor 784) on 36da77cba4 (FINAL-BATCH: MODAL-OVERLAY + SUBWINDOW-DEFAULT4 merged
+# with the sibling MEDIA-MICRO pins; managed + shell, no new DllImport, so the export set
+# stays 164/164 and the shell abc moves to 623,784; suite 796/799 floor 779) on 54631780a3
+# (B-M1: the child-window media service + the HLS/MSE path; managed/shell with no new
+# DllImport, so the export set stays 164/164; suite 788/791 floor 771) on fbd91e17bc
+# (MERGE-BATCH-4: MEDIAELEMENT-ARKWEB A-M1 - the ArkWeb HTML5 <video> hosted in an overlay
+# slot with the / + /__src__ serving; managed + shell, no new DllImport, so the export set
+# stays 164/164 and the shell abc moves to 589,700; suite 776/779 floor 759) on 625177750f (MERGE-BATCH-3: L8-REMAINDER renders/arranges the modal-aware
 # RootView and subscribes ModalPushed/ModalPopped to mark the compositor layout gate and
 # request a redraw, so a PushModalAsync page is arranged and its handlers connect on the next
 # frame - the windowopen "modal push ok" that never landed; managed-only with no new
@@ -168,7 +179,7 @@ permissions:
 # 151/151).
 # Advance the pin deliberately, in lockstep with the interaction/pixel gates.
 env:
-  MAUI_OHOS_REF: ${{ github.event.inputs.maui_ohos_ref || '36da77cba492d2e694064b2080f5c53a18f4c19f' }}
+  MAUI_OHOS_REF: ${{ github.event.inputs.maui_ohos_ref || '44dcef8d15eb8af568197cca6bb00a0bcca15725' }}
 
 jobs:
   contract:
