@@ -657,11 +657,11 @@ value that combines features (e.g. `network;bluetooth`) stays a plain list.
 > `-p:OpenHarmonyExtraPermissions` remains the explicit escape hatch for an app that really has
 > the ACL profile.
 
-> **ACL subset (PASTEBOARD-FIX, 2026-10-12)**: a feature-table entry may carry `<Acl>true</Acl>`
-> for a `system_basic` permission. `OpenHarmonyFeatures=all` **skips** those features (an
-> ordinary bundle fails the install with them) and names them on the build log; naming the
-> feature id explicitly still declares its permission and logs a warning about the install
-> hazard. `contacts` (`ohos.permission.READ_CONTACTS`) is the remaining ACL entry.
+**ACL subset (PASTEBOARD-FIX, 2026-10-12)**: a feature-table entry may carry `<Acl>true</Acl>`
+for a `system_basic` permission. `OpenHarmonyFeatures=all` **skips** those features (an
+ordinary bundle fails the install with them) and names them on the build log; naming the
+feature id explicitly still declares its permission and logs a warning about the install
+hazard. `contacts` (`ohos.permission.READ_CONTACTS`) is the remaining ACL entry.
 
 ```sh
 # contacts + calendar read/write + bluetooth (quotes keep MSBuild from splitting at ';')
