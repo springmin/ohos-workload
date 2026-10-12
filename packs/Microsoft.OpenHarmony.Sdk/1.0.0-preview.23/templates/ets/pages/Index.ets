@@ -1148,12 +1148,11 @@ struct Index {
   // page load from the bundle manager (see reportBundleInfo), guarded so a page reappearance
   // does not re-read it.
   private bundleInfoReported: boolean = false;
-  // Clipboard (Essentials): reading the pasteboard needs ohos.permission.READ_PASTEBOARD
-  // (user_grant); the grant is cached and only an explicit GetTextAsync (op 1) may prompt. A
-  // denied prompt is cached too, and the pasteboard 'update' observer (registered once, freed
-  // in aboutToDisappear) never prompts.
-  private clipboardReadGranted: boolean = false;
-  private clipboardReadDenied: boolean = false;
+  // Clipboard (Essentials): the read ops are answered in the host through the pasteboard NDK
+  // (OH_Pasteboard + UDMF plain text) and need no permission; ohos.permission.READ_PASTEBOARD
+  // is ACL-level and must never be declared (the installer rejects such a bundle). This page
+  // serves the write op only and pushes pasteboard 'update' notifications. The observer is
+  // registered once per page (freed in aboutToDisappear) and never prompts.
   private clipboardObserverRegistered: boolean = false;
   private clipboardObserver: (() => void) | null = null;
   // Connectivity (Essentials): the NetworkKit connection observer registers once per page
@@ -3733,61 +3732,6 @@ struct Index {
     });
   }
 
-  // Clipboard (Essentials): reading the pasteboard needs ohos.permission.READ_PASTEBOARD
-  // (user_grant). Only an explicit get (op 1, GetTextAsync) may raise the system prompt: the
-  // HasText path (op 0) and the pasteboard 'update' observer use the cached grant plus a
-  // non-prompting getSelfPermissionStatus query, and a denied prompt is cached so no background
-  // path can re-ask. The permission must be declared by the app (the pack's
-  // OpenHarmonyExtraPermissions switch appends it to requestPermissions).
-  private async ensureClipboardReadPermission(prompt: boolean): Promise<boolean> {
-    if (this.clipboardReadGranted || this.clipboardPermissionGranted()) {
-      this.clipboardReadGranted = true;
-      this.clipboardReadDenied = false;
-      return true;
-    }
-    if (!prompt || this.clipboardReadDenied) {
-      return false;
-    }
-    try {
-      const context = this.hostContext();
-      const permissions: Permissions[] = ['ohos.permission.READ_PASTEBOARD'];
-      const atManager = abilityAccessCtrl.createAtManager();
-      const granted = await atManager.requestPermissionsFromUser(context, permissions);
-      this.clipboardReadGranted = granted.authResults.length > 0 && granted.authResults[0] === 0;
-      this.clipboardReadDenied = !this.clipboardReadGranted;
-      return this.clipboardReadGranted;
-    } catch (clipboardPermissionError) {
-      this.clipboardReadDenied = true;
-      this.logError(`[maui] clipboard permission request failed: ${(clipboardPermissionError as Error).message}`);
-      return false;
-    }
-  }
-
-  // Clipboard (Essentials): non-prompting READ_PASTEBOARD query. getSelfPermissionStatus only
-  // reports the current state (API 20+), so a grant made in settings is seen without a prompt;
-  // any failure (including an older device without the query) leaves the cached grant in charge.
-  private clipboardPermissionGranted(): boolean {
-    try {
-      const atManager = abilityAccessCtrl.createAtManager();
-      return atManager.getSelfPermissionStatus('ohos.permission.READ_PASTEBOARD') ===
-        abilityAccessCtrl.PermissionStatus.GRANTED;
-    } catch {
-      return false;
-    }
-  }
-
-  // Reads the primary text of the pasteboard ('' when there is no data or no plain text).
-  private readClipboardText(systemPasteboard: pasteboard.SystemPasteboard): string {
-    if (!systemPasteboard.hasDataSync()) {
-      return '';
-    }
-    const data = systemPasteboard.getDataSync();
-    if (data.getPrimaryMimeType() !== pasteboard.MIMETYPE_TEXT_PLAIN) {
-      return '';
-    }
-    return data.getPrimaryText();
-  }
-
   // Keep screen on (DeviceDisplay): the managed setter asks through
   // ohos_host_keep_screen_on(on) (0 = release, 1 = keep on). The last window is resolved on
   // demand through the same getLastWindow path the avoid-area report uses and the
@@ -6282,32 +6226,26 @@ struct Index {
     });
 
     // Clipboard (Essentials IClipboard): the managed side sends (requestId, op, text) through
-    // ohos_host_clipboard_request (op 0 has / 1 get / 2 set); the shell runs the pasteboard
-    // call and answers with host.clipboardResult(id, rc, text). Only an explicit get (op 1,
-    // GetTextAsync) may raise the READ_PASTEBOARD prompt (op === 1 below); the has path never
-    // prompts, writing (op 2) needs no permission, and the 'update' observer below only pushes
-    // host.notifyClipboardChanged, so HasText/ClipboardContentChanged work without prompts.
+    // ohos_host_clipboard_request. Reads (op 0 has / 1 get) are answered inside the host from
+    // the pasteboard NDK (OH_Pasteboard + UDMF plain text) and never reach this page: the
+    // ArkTS read path needed the ACL-level READ_PASTEBOARD declaration (an install failure)
+    // and is not used any more. This sink serves the write op (op 2) only - setDataSync needs
+    // no permission - and answers host.clipboardResult(id, rc, ''). The 'update' observer
+    // below only pushes host.notifyClipboardChanged, so HasText/ClipboardContentChanged work
+    // without prompts.
     this.hostCall('registerClipboardSink', typeof host !== 'undefined' && typeof host.registerClipboardSink === 'function', (): void => {
       host.registerClipboardSink(async (requestId: number, op: number, text: string): Promise<void> => {
         let rc: number = -1;
-        let value: string = '';
         try {
-          const systemPasteboard = pasteboard.getSystemPasteboard();
-          if (op === 0 || op === 1) {
-            if (await this.ensureClipboardReadPermission(op === 1)) {
-              rc = 0;
-              const clipboardText: string = this.readClipboardText(systemPasteboard);
-              value = op === 0 ? (clipboardText.length > 0 ? '1' : '0') : clipboardText;
-            }
-          } else if (op === 2) {
-            systemPasteboard.setDataSync(pasteboard.createPlainTextData(text));
+          if (op === 2) {
+            pasteboard.getSystemPasteboard().setDataSync(pasteboard.createPlainTextData(text));
             rc = 0;
           }
         } catch (clipboardError) {
           this.logError(`[maui] clipboard op ${op} failed: ${(clipboardError as Error).message}`);
         }
         this.hostCall('clipboardResult', typeof host !== 'undefined' && typeof host.clipboardResult === 'function', (): void => {
-          host.clipboardResult(requestId, rc, value);
+          host.clipboardResult(requestId, rc, '');
         });
       });
     });

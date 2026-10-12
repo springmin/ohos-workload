@@ -3247,8 +3247,14 @@ void ohos_host_notification_permission_complete(int request_id, int granted) {
 }
 
 // ---------------------------------------------------------------------------
-// Clipboard: requests go to the ArkTS shell (@ohos.pasteboard); the shell answers through
-// host.clipboardResult and pushes change notifications through host.notifyClipboardChanged.
+// Clipboard. Reads (op 0 has / 1 get) are answered here from the pasteboard NDK
+// (OH_Pasteboard + UDMF plain text; host_clipboard.c), which needs no permission: the shell's
+// old ArkTS read required the ACL-level ohos.permission.READ_PASTEBOARD, and declaring that
+// permission makes the installer reject the bundle while leaving it undeclared made every
+// read answer null. Writes (op 2) still go to the ArkTS shell (@ohos.pasteboard setDataSync,
+// permission-free) and the shell's pasteboard 'update' observer pushes change notifications
+// through host.notifyClipboardChanged. A read failure completes with rc -1, so the managed
+// side keeps its null/empty shape (GetTextAsync null, HasText false).
 // ---------------------------------------------------------------------------
 
 static void (*g_clipboard_listener)(int request_id, int op, const char* text) = NULL;
@@ -3264,9 +3270,34 @@ void ohos_host_clipboard_register_result(void* callback) {
 }
 
 void ohos_host_clipboard_request(int request_id, int op, const char* text) {
-    if (g_clipboard_listener != NULL) {
-        g_clipboard_listener(request_id, op, text != NULL ? text : "");
+    if (op == 0 || op == 1) {
+        ohos_host_optional_ensure();
+        char* buffer = (char*)malloc(OHOS_HOST_CLIPBOARD_MAX_TEXT_BYTES);
+        int status = 0;
+        int rc = buffer != NULL
+                     ? ohos_host_clipboard_read_plain_text(&g_ohos_host_optional.pasteboard.api,
+                                                           buffer,
+                                                           OHOS_HOST_CLIPBOARD_MAX_TEXT_BYTES,
+                                                           &status)
+                     : OHOS_HOST_CLIPBOARD_FAILED;
+        if (rc == OHOS_HOST_CLIPBOARD_OK) {
+            ohos_host_clipboard_complete(request_id, 0,
+                                         op == 0 ? (buffer[0] != '\0' ? "1" : "0") : buffer);
+        } else {
+            OH_LOG_WARN(LOG_APP,
+                        "[openharmony-host] clipboard read unavailable (rc %{public}d, status "
+                        "%{public}d); answering the null/empty shape",
+                        rc, status);
+            ohos_host_clipboard_complete(request_id, -1, "");
+        }
+        free(buffer);
+        return;
     }
+    if (op == 2 && g_clipboard_listener != NULL) {
+        g_clipboard_listener(request_id, op, text != NULL ? text : "");
+        return;
+    }
+    ohos_host_clipboard_complete(request_id, -1, "");
 }
 
 void ohos_host_clipboard_complete(int request_id, int rc, const char* text) {

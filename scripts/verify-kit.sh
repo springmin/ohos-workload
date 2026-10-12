@@ -34,7 +34,7 @@
 #                    expectation).
 #   abc header       ets/modules.abc must be a PANDA file whose 4-byte version field at 0x0c is
 #                    13.0.1.0 (FAIL otherwise), and its size must be one of the current
-#                    expectations - 623784 for the ui/shell shell, 24324 for the headless shell
+#                    expectations - 620908 for the ui/shell shell, 24324 for the headless shell
 #                    (--expected-abc <bytes[,bytes]> / KIT_EXPECTED_ABC pins the set; a size
 #                    outside it then FAILs instead of warning, so a historical kit's old abc
 #                    does not kill the run).
@@ -191,22 +191,27 @@ OH_Huks_
 # hilog (hilog/log.h): libhilog_ndk.z.so absent on the reduced test image; OH_LOG_* falls
 # back to stderr via host_optional_log.h.
 OH_LOG_
+# Pasteboard + UDMF (database/pasteboard/oh_pasteboard.h, database/udmf/udmf.h;
+# host_clipboard.c): libpasteboard.so and libudmf.so are resolved on demand, and a missing
+# library degrades the clipboard read to the documented UNAVAILABLE failure.
+OH_Pasteboard_
+OH_Udmf
+OH_UdsPlainText_
 HOST_DEPS_EOF
 )"
 
-# Current abc size expectations: the ui/shell ArkTS shell (623784 B, the FINAL-BATCH
-# shell: the MEDIA-MICRO tree - the /__src__ single-range answers, the registered playlist's
-# sibling serving, the rawfile-playlist HLS query/stamp and the popup Web's media gesture
-# opt-out - plus SUBWINDOW-DEFAULT4 (the managed subwindow default 2 -> 4 with the two-way
-# capacity switch and the absent-switch guard, +52 B; the MODAL-OVERLAY drawer-suspension
-# lift is slice-side and carries no shell delta); the previous shells were 623732 B
-# (MEDIA-MICRO) and 602744 B before it; the batch tree itself
+# Current abc size expectations: the ui/shell ArkTS shell (620908 B, the PASTEBOARD-FIX
+# shell: the ACL-level READ_PASTEBOARD request point and its grant cache/read helpers are
+# gone - the clipboard read runs in the host through the pasteboard NDK, the shell keeps the
+# write op and the 'update' observer; -2,876 B from the FINAL-BATCH 623784 B tree
+# (MEDIA-MICRO + SUBWINDOW-DEFAULT4); earlier shells were 623732 B (MEDIA-MICRO) and 602744 B
+# before it; the batch tree itself
 # is E4-CAPACITY8 + C5/SEC7-F + WEB-AUTH Want fix + N-SUBWINDOW + the shipped 8-slot overlay
 # default + L8-POPUP + HARMONY-FLAVOR free-window probe)
 # and the headless shell (24324 B, unchanged). --expected-abc <bytes[,bytes]> / KIT_EXPECTED_ABC replaces
 # the set and turns a mismatch from a historical-kit WARN into a FAIL (the kit builder uses that
 # strict form).
-EXPECT_ABC="${KIT_EXPECTED_ABC:-623784,24324}"
+EXPECT_ABC="${KIT_EXPECTED_ABC:-620908,24324}"
 EXPECT_ABC_PINNED="${KIT_EXPECTED_ABC:+1}"
 HOST_DEPS_FILE="${KIT_HOST_DEPS:-}"
 
@@ -305,7 +310,7 @@ Without an argument the current directory is used (it must contain SHA256SUMS).
                         fail unless the extracted tree matches this digest (the value comes
                         with the delivery, e.g. the release notes)
   --expected-abc <bytes[,bytes]>
-                        abc size expectation (default: 623784,24324 = the ui/shell and the
+                        abc size expectation (default: 620908,24324 = the ui/shell and the
                         headless ArkTS shell); a size outside the set warns by default and
                         fails when this option pins the set
   --host-deps <path>    read the host dependency policy from this file instead of the
@@ -374,7 +379,7 @@ while [ $# -gt 0 ]; do
             ;;
         --expected-abc)
             shift
-            [ $# -gt 0 ] || { warn "--expected-abc 需要逗号分隔的字节数（如 623784,24324）"; usage >&2; exit 2; }
+            [ $# -gt 0 ] || { warn "--expected-abc 需要逗号分隔的字节数（如 620908,24324）"; usage >&2; exit 2; }
             EXPECT_ABC="$1"
             EXPECT_ABC_PINNED=1
             ;;
@@ -417,7 +422,7 @@ KIT="$(cd "$KIT" && pwd)"
 EXPECT_ABC="$(printf '%s' "$EXPECT_ABC" | tr ',' ' ')"
 for _abc in $EXPECT_ABC; do
     case "$_abc" in
-        ''|*[!0-9]*) warn "--expected-abc 需要逗号/空格分隔的字节数（如 623784,24324），得到: $EXPECT_ABC"; usage >&2; exit 2 ;;
+        ''|*[!0-9]*) warn "--expected-abc 需要逗号/空格分隔的字节数（如 620908,24324），得到: $EXPECT_ABC"; usage >&2; exit 2 ;;
     esac
 done
 [ -n "$EXPECT_ABC" ] || { warn "--expected-abc 不能为空"; usage >&2; exit 2; }

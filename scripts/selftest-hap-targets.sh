@@ -17,9 +17,12 @@
 #                  toolchains/lib, naming the property or the missing file (no $HOME probe)
 #   T5 features    the feature -> permission matrix resolves to module.json entries with
 #                  reason/usedScene, an unknown feature id and the strict request-point mode fail,
-#                  'all' emits the ten unique permissions (the webview-media camera/microphone
-#                  pair joined in 7cb1f31), and the raw extra-permission path
-#                  keeps its minimal form plus the raw-permission warning
+#                  'all' emits the eight non-ACL permissions (the webview-media camera/microphone
+#                  pair joined in 7cb1f31; READ_PASTEBOARD left the matrix in PASTEBOARD-FIX and
+#                  READ_CONTACTS is the Acl-marked entry 'all' skips - both are system_basic and
+#                  would fail the install), an explicitly named ACL feature still declares with a
+#                  warning, the removed clipboard id is no feature any more, and the raw
+#                  extra-permission path keeps its minimal form plus the raw-permission warning
 #   T6 device      hdc-gated install + grant integration: installs OHOS_TEST_HAP, reads the
 #                  installed requestPermissions back through bm dump and checks that each entry
 #                  carries name/reason/usedScene; SKIPs without a device or the hap (no device
@@ -416,17 +419,40 @@ PY
         || fail_ "T5 no request-point warning"
     run_perm -p:OpenHarmonyFeatures=all
     assert_rc 0 $? "T5 the 'all' feature selection resolves"
-    python3 - "$PERMFIX/out.json" <<'PY' && pass_ "T5 'all' declares the ten unique permissions once each" || fail_ "T5 'all' declaration set is wrong"
+    python3 - "$PERMFIX/out.json" <<'PY' && pass_ "T5 'all' declares the eight non-ACL permissions once each" || fail_ "T5 'all' declaration set is wrong"
 import json, sys
 names = [p['name'] for p in json.load(open(sys.argv[1]))['module']['requestPermissions']]
-assert len(names) == len(set(names)) == 10, names
+assert len(names) == len(set(names)) == 8, names
 for want in ('ohos.permission.ACCESS_BLUETOOTH', 'ohos.permission.APPROXIMATELY_LOCATION',
-             'ohos.permission.READ_PASTEBOARD', 'ohos.permission.READ_CONTACTS',
              'ohos.permission.READ_CALENDAR', 'ohos.permission.WRITE_CALENDAR',
              'ohos.permission.PRINT', 'ohos.permission.INTERNET',
              'ohos.permission.CAMERA', 'ohos.permission.MICROPHONE'):
     assert want in names, (want, names)
+assert 'ohos.permission.READ_PASTEBOARD' not in names, names
+assert 'ohos.permission.READ_CONTACTS' not in names, names
 PY
+    # PASTEBOARD-FIX / ACL subset: ACL-level permissions must not ride 'all'; an explicitly
+    # named ACL feature still declares its permission (with the warning pinned below).
+    grep -qF "skips the ACL-level feature(s) contacts" "$WORK/T5-case.log" && pass_ "T5 'all' names the skipped ACL feature" \
+        || fail_ "T5 'all' does not name the skipped ACL feature"
+    run_perm -p:OpenHarmonyFeatures=contacts
+    assert_rc 0 $? "T5 an explicitly named ACL feature resolves"
+    python3 - "$PERMFIX/out.json" <<'PY' && pass_ "T5 the explicit contacts feature declares READ_CONTACTS" || fail_ "T5 the explicit contacts declaration is wrong"
+import json, sys
+perms = json.load(open(sys.argv[1]))['module']['requestPermissions']
+assert [p['name'] for p in perms] == ['ohos.permission.READ_CONTACTS'], perms
+assert perms[0]['reason'] == '$string:permission_reason_contacts', perms
+assert perms[0]['usedScene'] == {'abilities': ['EntryAbility'], 'when': 'inuse'}, perms
+PY
+    grep -qF "feature 'contacts' declares the ACL-level permission 'ohos.permission.READ_CONTACTS'" "$WORK/T5-case.log" \
+        && pass_ "T5 the explicit ACL feature warns about the install hazard" \
+        || fail_ "T5 the explicit ACL feature does not warn"
+    # PASTEBOARD-FIX: READ_PASTEBOARD is ACL-level (an install failure) and the clipboard read
+    # needs no permission (host pasteboard NDK); the removed 'clipboard' id must not resolve.
+    run_perm -p:OpenHarmonyFeatures=clipboard
+    assert_rc 1 $? "T5 the removed clipboard feature id fails"
+    grep -qF 'unknown feature id' "$WORK/T5-case.log" && pass_ "T5 the clipboard id is no feature any more" \
+        || fail_ "T5 the clipboard id still resolves"
     run_perm -p:OpenHarmonyFeatures=bluetooth -p:OpenHarmonyRequireDeclaredRequestPoints=true
     assert_rc 1 $? "T5 the strict request-point mode fails on an undeclared point"
     grep -qF 'does not declare' "$WORK/T5-case.log" && pass_ "T5 strict mode names the undeclared points" \

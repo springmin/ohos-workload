@@ -315,6 +315,34 @@ static void OhosHostOptionalLoad(void) {
         }
     }
 
+    // Pasteboard + UDMF plain text (clipboard read; PASTEBOARD-FIX). The ArkTS read needs the
+    // ACL-level READ_PASTEBOARD permission, which makes the installer reject a bundle that
+    // declares it; the NDK read needs no permission on the observed images. A reduced image
+    // without the two libraries leaves the table NULL and the read answers UNAVAILABLE.
+    {
+        static const char *const sonames[] = {"libpasteboard.so", "libudmf.so"};
+        OhosHostOptionalLibSet libs = {sonames, 2, {NULL, NULL}, 0};
+        OhosHostOptionalOpen(&libs);
+        missing = false;
+        OHOS_HOST_OPTIONAL_RESOLVE(pasteboard.api, Pasteboard_Create, "OH_Pasteboard_Create");
+        OHOS_HOST_OPTIONAL_RESOLVE(pasteboard.api, Pasteboard_Destroy, "OH_Pasteboard_Destroy");
+        OHOS_HOST_OPTIONAL_RESOLVE(pasteboard.api, Pasteboard_GetData, "OH_Pasteboard_GetData");
+        OHOS_HOST_OPTIONAL_RESOLVE(pasteboard.api, UdmfData_Destroy, "OH_UdmfData_Destroy");
+        OHOS_HOST_OPTIONAL_RESOLVE(pasteboard.api, UdmfData_GetPrimaryPlainText,
+                                   "OH_UdmfData_GetPrimaryPlainText");
+        OHOS_HOST_OPTIONAL_RESOLVE(pasteboard.api, UdsPlainText_Create,
+                                   "OH_UdsPlainText_Create");
+        OHOS_HOST_OPTIONAL_RESOLVE(pasteboard.api, UdsPlainText_Destroy,
+                                   "OH_UdsPlainText_Destroy");
+        OHOS_HOST_OPTIONAL_RESOLVE(pasteboard.api, UdsPlainText_GetContent,
+                                   "OH_UdsPlainText_GetContent");
+        g_ohos_host_optional.pasteboard.available = !missing;
+        if (missing) {
+            OhosHostOptionalAppendMissing(missing_names, sizeof(missing_names), &missing_used,
+                                          "pasteboard");
+        }
+    }
+
     // hilog: resolved last so the single diagnostic line below reports it as well.
     {
         static const char *const sonames[] = {"libhilog_ndk.z.so"};
