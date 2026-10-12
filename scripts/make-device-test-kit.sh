@@ -50,7 +50,10 @@
 #   (fail closed), the app cert chain (*.cer next to the p7b, or OHOS_EXT_CERT) is required,
 #   and the password comes from the terminal or OHOS_KEY_PWD_FILE / stdin.
 # Env: DOTNET, RUNTIME_OHOS_PLANS (runtime-ohos docs/plans), OHOS_EXT_CERT, OHOS_KEY_PWD_FILE,
-#      DEVICE_TEST_KIT_RUNTIME_MODE (same as --runtime-mode, default aot), OHOS_AOT_HOOKS
+#      DEVICE_TEST_KIT_RUNTIME_MODE (same as --runtime-mode, default aot),
+#      DEVICE_TEST_KIT_INVARIANT_GLOBALIZATION (default on; 0/false/no/off drops the AOT
+#      -p:InvariantGlobalization=true - this image's AOT runtime has no system ICU and the
+#      first hosting call FailFasts without it), OHOS_AOT_HOOKS
 #      (optional CustomAfterMicrosoftCommonTargets hook for the rc.2 Exec workaround on
 #      HarmonyOS hosts; see test/hello-maui-app/publish-aot.sh).
 #      DEVICE_TEST_KIT_WEBAUTH_PROBE=1 adds -p:WebAuthProbe=true to every MAUI publish, which
@@ -121,7 +124,9 @@ and packs the kit tarball.
 
 --runtime-mode (default aot; env DEVICE_TEST_KIT_RUNTIME_MODE) selects the MS-MODE shape of the
 whole kit: aot publishes the 5 MAUI haps with the NativeAOT recipe (lib<stem>.so in the hap,
-marker libs/<abi>/runtime-mode.txt=aot, JIT runtime natives absent) and keeps the canonical kit
+marker libs/<abi>/runtime-mode.txt=aot, JIT runtime natives absent; the recipe injects
+-p:InvariantGlobalization=true by default because this image has no system ICU - explicit
+opt-out: DEVICE_TEST_KIT_INVARIANT_GLOBALIZATION=0) and keeps the canonical kit
 name; jit keeps the JIT publish and appends -jit to the default kit dir/out. interp is refused
 here: the interpreter ships as an independent pack (ohos-interpreter-pack-*.tar.gz + scripts/
 make-mode-kit.sh --mode interp --interp-pack <dir>), never inside the main delivery kit. The kit
@@ -180,6 +185,14 @@ done
 case "$RUNTIME_MODE" in
     aot|jit|interp) ;;
     *) warn "unknown --runtime-mode: $RUNTIME_MODE (use aot, jit or interp)"; exit 2 ;;
+esac
+# AOT publishes inject -p:InvariantGlobalization=true by default: this image's AOT runtime cannot
+# resolve an ICU provider and the first hosting call FailFasts without invariant mode (KIT54).
+# Any value except 0/false/no/off keeps the default; the opt-out drops the property entirely so
+# an ICU-carrying shape can be built deliberately.
+INVARIANT_GLOBALIZATION=1
+case "$(printf '%s' "${DEVICE_TEST_KIT_INVARIANT_GLOBALIZATION:-1}")" in
+    0|[Ff]alse|[Nn]o|[Oo]ff) INVARIANT_GLOBALIZATION=0 ;;
 esac
 if [ "$RUNTIME_MODE" = interp ]; then
     warn "--runtime-mode interp 不随主交付包：解释器以独立 pack 分发"
@@ -356,8 +369,9 @@ publish_variant() {
     # DEVCOMPAT rewrite + static-web-asset/hybrid staging) stays at its defaults.
     if [ "$RUNTIME_MODE" = aot ]; then
         set -- "$@" -p:PublishAot=true -p:PublishAotUsingRuntimePack=true -p:NativeLib=Shared \
-            -p:CopyOutputSymbolsToPublishDirectory=false -p:CompressSymbols=false \
-            -p:InvariantGlobalization=true -p:OpenHarmonyRuntimeMode=aot
+            -p:CopyOutputSymbolsToPublishDirectory=false -p:CompressSymbols=false
+        [ "$INVARIANT_GLOBALIZATION" = 0 ] || set -- "$@" -p:InvariantGlobalization=true
+        set -- "$@" -p:OpenHarmonyRuntimeMode=aot
     else
         set -- "$@" -p:OpenHarmonyRuntimeMode=jit
     fi

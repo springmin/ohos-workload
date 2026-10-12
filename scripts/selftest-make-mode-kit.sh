@@ -5,10 +5,11 @@
 #   T1 usage       sh -n passes; --help lists the three modes; an unknown option/mode exits 2
 #   T2 dry-run     one publish command per mode with the MS-MODE switch and the mode-specific
 #                  properties (aot: PublishAot/PublishAotUsingRuntimePack/NativeLib plus the
-#                  default OpenHarmonyUIPage=pages/Index, which a --property overrides; interp:
-#                  OpenHarmonyInterpreterPack); --mode restricts the run; --property passes
-#                  through; --sign prints the sign-for-device.sh invocations and never injects
-#                  a password; nothing is written
+#                  default OpenHarmonyUIPage=pages/Index and InvariantGlobalization=true
+#                  defaults, which --property overrides; interp: OpenHarmonyInterpreterPack);
+#                  --mode restricts the run; --property passes through; --sign prints the
+#                  sign-for-device.sh invocations and never injects a password; nothing is
+#                  written
 #   T3 fixture     a fake dotnet "publishes" the three shapes (hap zips with the mode marker
 #                  and libraries); the kit verifies each marker, keeps the per-mode dirs
 #                  (<stem>-<mode>.hap + -unsigned + publish.log) and writes a working
@@ -31,7 +32,7 @@
 # Exit: 0 = all checks passed; 1 = at least one check failed (work dir kept for triage).
 set -u
 
-SELFTEST_VERSION="1 (2026-09-27)"
+SELFTEST_VERSION="2 (2026-10-12; +aot InvariantGlobalization default/override; fixed a dead SHA256SUMS assertion)"
 
 log()     { printf '[%s] %s\n' "$(date '+%H:%M:%S')" "$*"; }
 section() { printf '\n=== %s ===\n' "$*"; }
@@ -248,6 +249,18 @@ assert_contains "T2 the aot default stages the UI shell page" "-p:OpenHarmonyUIP
 T2_UI_LINES="$(grep -c -- '-p:OpenHarmonyUIPage=' "$WORK/T2-aot-ui.out" || true)"
 [ "$T2_UI_LINES" = 1 ] && pass_ "T2 the aot default page appears exactly once" \
                        || fail_ "T2 printed $T2_UI_LINES OpenHarmonyUIPage properties (expected 1)"
+# KIT54: the aot publish must carry InvariantGlobalization=true by default (this image has no
+# system ICU; the first hosting call FailFasts without it) and --property must override it.
+assert_contains "T2 the aot publish defaults InvariantGlobalization" "-p:InvariantGlobalization=true" "$WORK/T2-aot-ui.out"
+T2_IG_LINES="$(grep -c -- '-p:InvariantGlobalization=' "$WORK/T2-aot-ui.out" || true)"
+[ "$T2_IG_LINES" = 1 ] && pass_ "T2 the aot InvariantGlobalization default appears exactly once" \
+                       || fail_ "T2 printed $T2_IG_LINES InvariantGlobalization properties (expected 1)"
+assert_not_contains "T2 the jit publish carries no InvariantGlobalization" "-p:InvariantGlobalization" "$WORK/T2-jit.line"
+run_mk T2-aot-ig-override --project "$FIX/FakeApp.csproj" --tfm t --out-dir "$WORK/out-t2" --mode aot \
+    --property InvariantGlobalization=false --dry-run
+assert_rc 0 $LAST_RC "T2 the InvariantGlobalization override exits 0"
+assert_contains "T2 --property wins over the aot InvariantGlobalization default" "-p:InvariantGlobalization=false" "$WORK/T2-aot-ig-override.out"
+assert_not_contains "T2 an overridden aot publish carries no InvariantGlobalization=true" "-p:InvariantGlobalization=true" "$WORK/T2-aot-ig-override.out"
 run_mk T2-aot-ui-override --project "$FIX/FakeApp.csproj" --tfm t --out-dir "$WORK/out-t2" --mode aot \
     --property OpenHarmonyUIPage=pages/Custom --dry-run
 assert_contains "T2 --property wins over the aot default page" "-p:OpenHarmonyUIPage=pages/Custom" "$WORK/T2-aot-ui-override.out"
@@ -301,7 +314,8 @@ fi
 hap_has "$OUT3/interp/FakeApp-interp.hap" "libs/arm64-v8a/libcoreclr.so" &&
     hap_has "$OUT3/interp/FakeApp-interp.hap" "libs/arm64-v8a/libclrinterpreter.so" \
     && pass_ "T3 the interp hap carries libcoreclr.so + libclrinterpreter.so" \
-    || fail_ "T3 the interp hap is missing a swapped library"assert_file "T3 SHA256SUMS exists" "$OUT3/SHA256SUMS"
+    || fail_ "T3 the interp hap is missing a swapped library"
+assert_file "T3 SHA256SUMS exists" "$OUT3/SHA256SUMS"
 T3_LINES="$(grep -c . "$OUT3/SHA256SUMS" || true)"
 [ "$T3_LINES" = 6 ] && pass_ "T3 SHA256SUMS lists all 6 haps" \
                    || fail_ "T3 SHA256SUMS lists $T3_LINES entries (expected 6)"

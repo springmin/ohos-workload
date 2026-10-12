@@ -11,6 +11,9 @@
 #                 OpenHarmonyUIPage; the 20.0 band uses the TargetFrameworks override and the
 #                 permissions variant carries OpenHarmonyExtraPermissions; the default recipe
 #                 carries no WebAuthProbe
+#   T2d ig        DEVICE_TEST_KIT_INVARIANT_GLOBALIZATION=0 drops only the injected
+#                 -p:InvariantGlobalization=true (the AOT recipe stays); an explicit true (or
+#                 any other value) keeps the default on all four publishes
 #   T2c webauth   WEBAUTH-DECOUPLE static: hello-maui-app.csproj declares the myapp://callback
 #                 route unconditionally (no WebAuthProbe condition) while the WEBAUTH_PROBE
 #                 define and WebAuthProbe.cs stay behind -p:WebAuthProbe=true
@@ -28,7 +31,7 @@
 # Exit: 0 = all checks passed; 1 = at least one check failed (work dir kept for triage).
 set -u
 
-SELFTEST_VERSION="3 (2026-10-11; +T2c WEBAUTH-DECOUPLE static)"
+SELFTEST_VERSION="4 (2026-10-12; +T2d InvariantGlobalization opt-out)"
 
 log()     { printf '[%s] %s\n' "$(date '+%H:%M:%S')" "$*"; }
 section() { printf '\n=== %s ===\n' "$*"; }
@@ -131,6 +134,25 @@ assert_contains "T2 permissions variant carries the permission list" "OpenHarmon
 assert_contains "T2 command shape is dotnet publish" "+ dotnet publish" "$WORK/aot.log"
 assert_contains "T2 dry-run announces no real publish" "nothing published, nothing assembled" "$WORK/aot.log"
 [ ! -d "$KD" ] && pass_ "T2 dry-run created no kit dir" || fail_ "T2 dry-run created $KD"
+
+# ---- T2d: explicit InvariantGlobalization opt-out ----------------------------------------
+section "T2d DEVICE_TEST_KIT_INVARIANT_GLOBALIZATION"
+export DEVICE_TEST_KIT_INVARIANT_GLOBALIZATION=0
+run_kit "$WORK/aot-noig.log" --dry-run --kit-dir "$WORK/kit-noig"
+assert_rc 0 $? "T2d opt-out dry-run exits 0"
+unset DEVICE_TEST_KIT_INVARIANT_GLOBALIZATION
+assert_contains "T2d the opt-out keeps the AOT recipe" "-p:PublishAot=true" "$WORK/aot-noig.log"
+assert_not_contains "T2d the opt-out drops InvariantGlobalization" "-p:InvariantGlobalization" "$WORK/aot-noig.log"
+export DEVICE_TEST_KIT_INVARIANT_GLOBALIZATION=true
+run_kit "$WORK/aot-igtrue.log" --dry-run --kit-dir "$WORK/kit-igtrue"
+assert_rc 0 $? "T2d explicit true dry-run exits 0"
+unset DEVICE_TEST_KIT_INVARIANT_GLOBALIZATION
+_n="$(count_contains "-p:InvariantGlobalization=true" "$WORK/aot-igtrue.log")"
+if [ "$_n" = "4" ]; then
+    pass_ "T2d explicit true keeps the default on all 4 publishes"
+else
+    fail_ "T2d explicit true lost the default InvariantGlobalization (${_n:-0} of 4)"
+fi
 
 # ---- T2c: WEBAUTH-DECOUPLE static shape -------------------------------------------------
 section "T2c WEBAUTH-DECOUPLE (callback route unconditional, probe stays opt-in)"
