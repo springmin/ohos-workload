@@ -53,13 +53,18 @@
 #                 the main checkout (T9b) or from the build-use installed pack (T9c) into the
 #                 fresh worktree before any build; missing in every source fails closed with an
 #                 explicit message and no build attempt (T9d)
+#   T10 p4-notes  P4 appends the Integrity block to the published release bodies (KIT55 notes
+#                 fix): a full --execute P4 against fixture artifacts, with a PATH curl stub for
+#                 the API GETs and a PYTHONPATH urllib.request stub recording every PATCH (no
+#                 network); each of the four fixture bodies keeps its published text and gains
+#                 the "## Integrity (kit #99)" block after it
 #
 # Env: SELFTEST_TMPDIR=<dir>  work dir base (default: the approved opencode tmp dir)
 #      SELFTEST_KEEP=1       keep the work dir even when all checks pass
 # Exit: 0 = all checks passed; 1 = at least one check failed (work dir kept for triage).
 set -u
 
-SELFTEST_VERSION="7 (2026-10-12; 208 checks, was 185)"
+SELFTEST_VERSION="8 (2026-10-13; 217 checks, was 208)"
 
 log()     { printf '[%s] %s\n' "$(date '+%H:%M:%S')" "$*"; }
 section() { printf '\n=== %s ===\n' "$*"; }
@@ -975,6 +980,133 @@ check_neg "T9d missing host rc!=0" "$?"
 assert_contains "T9d names the missing host payload" "$OUT9D" 'SDK host payload missing: packs/Microsoft.OpenHarmony.Sdk/1.0.0-preview.28/hosts/arm64-v8a/libopenharmonyhost.so'
 assert_contains "T9d names both sources" "$OUT9D" 'not in .* or the build-use install either'
 [ ! -e "$S9D/logs" ]; check "T9d no build attempt (no logs dir)" $?
+
+# ------------------------------------------------------------------ T10 P4 notes append
+# KIT55 (a4071cb): p4_notes used to PATCH {"body": <Integrity block>} alone, which would have
+# replaced the whole published release body with the few-line block; the fetched body must be
+# kept and the block appended. Full --execute P4 against fixture artifacts: a PATH curl stub
+# serves the asset snapshots + release bodies and a PYTHONPATH urllib.request stub records every
+# PATCH instead of hitting api.github.com (no network).
+section "T10 P4 notes append (published body kept)"
+F10="$T/fixture-p4notes"; make_fixture "$F10" 99 987654 54321 || exit 1
+S10="$T/scratch-p4notes"; mkdir -p "$S10"
+printf 'fixture kit payload\n' > "$S10/device-test-kit.tar.gz"
+( cd "$S10" && sha256sum device-test-kit.tar.gz > device-test-kit.tar.gz.sha256 )
+# the bundle name mirrors the preview.28 key the P4 by-id verifier's local map carries
+BUNDLE10="$F10/ow/dist/openharmony-workload-1.0.0-preview.28.tar.gz"
+printf 'fixture bundle payload\n' > "$BUNDLE10"
+printf 'fixture sums\n' > "$F10/ow/dist/SHA256SUMS"
+printf 'bundle_path=%s\n' "$BUNDLE10" > "$S10/state.env"
+T10STUB="$T/p4notes-stub"; mkdir -p "$T10STUB/pylib/urllib"
+rm -f "$T10STUB"/rid-*.n "$T10STUB/curl-calls.log" "$T10STUB/patches.jsonl"
+: > "$T10STUB/pylib/urllib/__init__.py"
+cat > "$T10STUB/pylib/urllib/request.py" <<'EOF'
+# selftest stub: record the PATCH this code sends instead of hitting api.github.com
+import json, os
+
+
+class Request:
+    def __init__(self, url, data=None, method=None, headers=None):
+        self.full_url = url
+        self.data = data
+        self.method = method
+        self.headers = headers or {}
+
+
+class _Response:
+    status = 200
+
+
+def urlopen(req, timeout=None):
+    with open(os.environ["CUT_KIT_STUB_PATCH_LOG"], "a", encoding="utf-8") as f:
+        f.write(json.dumps({"url": req.full_url, "method": req.method,
+                            "body": json.loads(req.data.decode("utf-8"))}) + "\n")
+    return _Response()
+EOF
+cat > "$T10STUB/curl" <<'EOF'
+#!/bin/sh
+_dir="$(cd "$(dirname "$0")" && pwd)"
+_url=""
+for _a in "$@"; do _url="$_a"; done
+printf '%s\n' "$_url" >> "$_dir/curl-calls.log"
+case "$_url" in
+    *assets*per_page=100*)
+        _rid="$(printf '%s' "$_url" | sed -n 's#.*/releases/\([0-9]*\)/assets.*#\1#p')"
+        _n="$(cat "$_dir/rid-$_rid.n" 2>/dev/null || echo 0)"
+        _n=$((_n + 1)); printf '%s\n' "$_n" > "$_dir/rid-$_rid.n"
+        _f="after-$_rid.json"; [ "$_n" = 1 ] && _f="before-$_rid.json"
+        cat "$_dir/$_f" ;;
+    */releases/[0-9]*)
+        _rid="$(printf '%s' "$_url" | sed -n 's#.*/releases/\([0-9]*\)$#\1#p')"
+        cat "$_dir/body-$_rid.json" ;;
+    *) printf '[]\n' ;;
+esac
+exit 0
+EOF
+chmod +x "$T10STUB/curl"
+python3 - "$T10STUB" "$S10/device-test-kit.tar.gz" "$S10/device-test-kit.tar.gz.sha256" \
+    "$BUNDLE10" "$F10/ow/dist/SHA256SUMS" <<'PY'
+import hashlib, json, os, sys
+stub, kit, side, bundle, sums = sys.argv[1:6]
+names = {
+    "11": ["device-test-kit.tar.gz", "device-test-kit.tar.gz.sha256"],
+    "22": ["openharmony-workload-latest.tar.gz", "SHA256SUMS",
+           "device-test-kit.tar.gz", "device-test-kit.tar.gz.sha256"],
+    "33": ["openharmony-workload-1.0.0-preview.28.tar.gz", "SHA256SUMS"],
+    "44": ["openharmony-workload-1.0.0-preview.28.tar.gz", "SHA256SUMS"],
+}
+files = {"device-test-kit.tar.gz": kit, "device-test-kit.tar.gz.sha256": side,
+         "openharmony-workload-1.0.0-preview.28.tar.gz": bundle,
+         "openharmony-workload-latest.tar.gz": bundle, "SHA256SUMS": sums}
+def record(name, path):
+    data = open(path, "rb").read()
+    return {"name": name, "size": len(data),
+            "digest": "sha256:" + hashlib.sha256(data).hexdigest()}
+stable = {"name": "stable.bin", "size": 7, "digest": "sha256:" + "9" * 64}
+for rid, rnames in names.items():
+    before = [{"name": n, "size": 1, "digest": "sha256:" + "0" * 64} for n in rnames]
+    after = [record(n, files[n]) for n in rnames]
+    json.dump(before + [dict(stable)], open(os.path.join(stub, "before-%s.json" % rid), "w"))
+    json.dump(after + [dict(stable)], open(os.path.join(stub, "after-%s.json" % rid), "w"))
+    json.dump({"body": "FIXTURE-RELEASE-%s body: keep me.\n\n## Notes\n- old line\n" % rid},
+              open(os.path.join(stub, "body-%s.json" % rid), "w"))
+PY
+printf '#!/bin/sh\necho "upload hook $*" >> "%s/upload-hook.log"\n' "$T10STUB" > "$T10STUB/upload-hook.sh"
+chmod +x "$T10STUB/upload-hook.sh"
+OUT10="$T/t10.out"
+CUT_KIT_STUB_PATCH_LOG="$T10STUB/patches.jsonl" PYTHONPATH="$T10STUB/pylib" \
+https_proxy=http://127.0.0.1:9 http_proxy=http://127.0.0.1:9 \
+PATH="$T10STUB:$PATH" sh "$CUT" --kit 99 --phase P4 --execute --i-know --yes --skip-selftests \
+    --scratch "$S10" --ow-repo "$F10/ow" --maui-repo "$F10/maui" --runtime-repo "$F10/runtime" \
+    --docs-dir "$F10/docs" --release-ids "dtk=11 latest=22 versioned=33 sdkrc2=44" \
+    --token-file "$F10/token" --upload-hook "$T10STUB/upload-hook.sh" > "$OUT10" 2>&1
+check_rc "T10 P4 execute rc=0" "$?" 0
+assert_contains "T10 P4 PASS" "$OUT10" 'P4 PASS'
+[ -f "$T10STUB/upload-hook.log" ]; check "T10 upload hook ran" $?
+[ "$(grep -c 'notes patched: release' "$OUT10")" = 4 ]; check "T10 notes patched for the four releases" $?
+python3 - "$T10STUB/patches.jsonl" <<'PY'
+import json, sys
+recs = [json.loads(line) for line in open(sys.argv[1], encoding="utf-8") if line.strip()]
+sys.exit(0 if len(recs) == 4 else 1)
+PY
+check "T10 four PATCH calls recorded (no network)" $?
+for _rid in 11 22 33 44; do
+    python3 - "$T10STUB/patches.jsonl" "$_rid" <<'PY'
+import json, sys
+log, rid = sys.argv[1:3]
+recs = [json.loads(line) for line in open(log, encoding="utf-8") if line.strip()]
+hit = [r for r in recs if r["url"].endswith("/releases/" + rid)]
+if len(hit) != 1 or hit[0]["method"] != "PATCH":
+    sys.exit(1)
+body = hit[0]["body"].get("body", "")
+marker = "FIXTURE-RELEASE-%s body: keep me." % rid
+ok = (marker in body and "## Notes\n- old line" in body
+      and "## Integrity (kit #99)" in body
+      and body.index(marker) < body.index("## Integrity (kit #99)"))
+sys.exit(0 if ok else 1)
+PY
+    check "T10 release $_rid body appended (published text kept)" $?
+done
 
 # ------------------------------------------------------------------ summary
 section "summary"
