@@ -1477,11 +1477,14 @@ p4_notes() { # append the Integrity block per release (idempotent)
             *"Integrity (kit #$KIT)"*) log "notes $_rid already carries kit #$KIT"; continue ;;
         esac
         _tok="$(api_token)" || { err "no API token (--token-file/GH_TOKEN)"; return 1; }
-        CUT_KIT_TOKEN="$_tok" python3 - "$API_REPO" "$_rid" "$_block" <<'PY' >> "$LOGDIR/p4-notes.log" 2>&1 || { err "notes patch failed for release $_rid"; return 1; }
+        CUT_KIT_TOKEN="$_tok" python3 - "$API_REPO" "$_rid" "$_block" "$_body" <<'PY' >> "$LOGDIR/p4-notes.log" 2>&1 || { err "notes patch failed for release $_rid"; return 1; }
 import json, os, sys, urllib.request
-repo, rid, block = sys.argv[1:4]
+repo, rid, block, existing = sys.argv[1:5]
 tok = os.environ.get("CUT_KIT_TOKEN", "")
-body = json.dumps({"body": block})
+# append to the published body (KIT55 fix: the original patched {"body": block} alone and
+# would have replaced the whole release body with just the Integrity section)
+merged = existing.rstrip() + "\n" + block if existing.strip() else block
+body = json.dumps({"body": merged})
 req = urllib.request.Request(f"https://api.github.com/repos/{repo}/releases/{rid}",
                              data=body.encode(), method="PATCH",
                              headers={"Authorization": f"token {tok}", "Content-Type": "application/json"})
