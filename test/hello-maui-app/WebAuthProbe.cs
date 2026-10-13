@@ -6,6 +6,11 @@
 //   aa start ... -U "app://webauth/start"    -> AuthenticateAsync opens the browser and awaits
 //   aa start ... -U "app://webauth/cancel"   -> cancels the pending await (caller cancellation)
 //   aa start ... -U "app://webauth/timeout"  -> starts with a 3 s caller timeout
+//   aa start ... -U "app://webauth/loopback" -> loopback flow on the default probe port: the
+//                                               browser is opened at the loopback callback URL
+//                                               so the system browser itself reaches the app's
+//                                               one-shot listener (no scheme chooser)
+//   aa start ... -U "app://webauth/loopback/53123" -> same on an explicit port
 //   aa start ... -U "myapp://callback?..."   -> the WebAuthenticator itself consumes this
 //
 // The state line goes to dotnet-status.txt and, because the status file is unreadable from a
@@ -23,10 +28,17 @@ internal static class WebAuthProbe
 {
     private static CancellationTokenSource? s_pending;
 
+    /// <summary>The port the loopback trigger listens on when the activation carries none.</summary>
+    private const int DefaultLoopbackPort = 53199;
+
     /// <summary>Handles one warm activation addressed to the probe (App.OnActivation calls it).</summary>
     public static void Handle(string uri)
     {
-        if (uri.StartsWith("app://webauth/start", StringComparison.OrdinalIgnoreCase))
+        if (uri.StartsWith("app://webauth/loopback", StringComparison.OrdinalIgnoreCase))
+        {
+            StartLoopback(uri);
+        }
+        else if (uri.StartsWith("app://webauth/start", StringComparison.OrdinalIgnoreCase))
         {
             Start(timeout: null);
         }
@@ -48,15 +60,43 @@ internal static class WebAuthProbe
         _ = RunAsync(cts.Token, timeout is not null);
     }
 
+    // The loopback synthetic flow: the callback route is a loopback URL and the authorize URL
+    // the probe hands to the browser is that same URL carrying the response, so the system
+    // browser's own GET reaches this process's listener and completes the await. On device the
+    // browser window shows the listener's success page while the title below reports the
+    // parsed result - both come from the same round trip.
+    private static void StartLoopback(string uri)
+    {
+        int port = DefaultLoopbackPort;
+        string[] segments = uri.Split('?')[0].Split('/');
+        if (segments.Length >= 5 && int.TryParse(segments[4], out int explicitPort) && explicitPort > 0 && explicitPort < 65536)
+        {
+            port = explicitPort;
+        }
+        var callback = new Uri($"http://127.0.0.1:{port}/callback");
+        var authorize = new Uri($"http://127.0.0.1:{port}/callback?code=LOOPBACK-{port}&state=lbstate");
+        var cts = new CancellationTokenSource();
+        s_pending = cts;
+        SetTitle($"webauth: pending (loopback {port})");
+        _ = RunAsync(authorize, callback, cts.Token);
+    }
+
     private static async Task RunAsync(CancellationToken token, bool timeoutCase)
+        => await RunAsync(
+            new Uri("https://example.invalid/authorize?probe=webauth"),
+            new Uri("myapp://callback"),
+            token,
+            timeoutCase).ConfigureAwait(false);
+
+    private static async Task RunAsync(Uri authorize, Uri callback, CancellationToken token, bool timeoutCase = false)
     {
         try
         {
             var result = await WebAuthenticator.Default.AuthenticateAsync(
                 new WebAuthenticatorOptions
                 {
-                    Url = new Uri("https://example.invalid/authorize?probe=webauth"),
-                    CallbackUrl = new Uri("myapp://callback"),
+                    Url = authorize,
+                    CallbackUrl = callback,
                 },
                 token).ConfigureAwait(false);
             SetTitle($"webauth: ok code={result.Get("code")} state={result.Get("state")} token={result.AccessToken}");

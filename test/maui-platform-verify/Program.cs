@@ -1,3 +1,5 @@
+using System.Net;
+using System.Net.Sockets;
 using System.Reflection;
 using System.Runtime.InteropServices;
 using System.Text.Json;
@@ -11339,6 +11341,228 @@ Console.WriteLine($"[verify] webauth platform-less degrade={n14DegradeOk} releas
 if (!(n14DegradeOk && n14DegradeReleased))
 {
     throw new InvalidOperationException("the WebAuthenticator platform-less degrade did not keep the FeatureNotSupportedException contract");
+}
+
+// Audit2-5b (WEB-AUTH loopback). The second redirect route: an http://127.0.0.1:<port>/...
+// (or localhost) callback is served by the app's one-shot loopback listener, so the system
+// browser hands the response back over the loopback interface with no callback skill and no
+// "open with" chooser. The checks pin the source contract first, then drive the real socket
+// path off-device with a browser-shaped HTTP client: a foreign path answers 404 without
+// completing, the matching request completes with the parsed query and the success page,
+// cancel tears the listener down and frees the port for the next attempt, and the routes that
+// cannot run (https loopback, foreign host, default/privileged port) fail with the platform
+// contract's InvalidOperationException while leaving the single-request claim free.
+string? n14bLoopbackPath = FindHostSource("OpenHarmonyWebAuthenticatorLoopback.cs");
+string n14bLoopback = n14bLoopbackPath is null ? string.Empty : File.ReadAllText(n14bLoopbackPath);
+bool n14bTypeOk = n14bLoopback.Contains("internal static class OpenHarmonyWebAuthenticatorLoopback") &&
+    n14bLoopback.Contains("internal sealed class OpenHarmonyLoopbackListener : IDisposable") &&
+    n14bLoopback.Contains("internal const int ReadTimeoutMs = 3000;") &&
+    n14bLoopback.Contains("new Socket(address.AddressFamily, SocketType.Stream, ProtocolType.Tcp)") &&
+    n14bLoopback.Contains("SocketOptionName.ReuseAddress, true") &&
+    n14bLoopback.Contains("socket.AcceptAsync(cancellationToken)") &&
+    n14bLoopback.Contains("Cache-Control: no-store") &&
+    n14bLoopback.Contains("Authentication complete") &&
+    n14bLoopback.Contains("https loopback callbacks are not supported") &&
+    n14bLoopback.Contains("must carry an explicit non-privileged port") &&
+    n14bLoopback.Contains("run only on the device loopback interface");
+bool n14bWiringOk = n14WebAuth.Contains("OpenHarmonyWebAuthenticatorLoopback.IsHttpCallback(callbackUrl)") &&
+    n14WebAuth.Contains("OpenHarmonyWebAuthenticatorLoopback.ValidateCallbackUrl(callbackUrl)") &&
+    n14WebAuth.Contains("loopbackListener = OpenHarmonyLoopbackListener.Start(callbackUrl);") &&
+    n14WebAuth.Contains("StartLoopbackPump(request, loopbackListener);") &&
+    n14WebAuth.Contains("loopbackListener?.Dispose();") &&
+    n14WebAuth.Contains("request.TryClaimCompletion()");
+bool n14bSourceOk = n14bTypeOk && n14bWiringOk;
+Console.WriteLine($"[verify] webauth loopback source type={n14bTypeOk} wiring={n14bWiringOk} source='{n14bLoopbackPath ?? "<missing>"}' assert={n14bSourceOk}");
+if (!n14bSourceOk)
+{
+    throw new InvalidOperationException($"the WebAuthenticator loopback contract drifted: type={n14bTypeOk} wiring={n14bWiringOk}");
+}
+
+static int N14bFreePort()
+{
+    var probe = new TcpListener(IPAddress.Loopback, 0);
+    probe.Start();
+    int port = ((IPEndPoint)probe.LocalEndpoint).Port;
+    probe.Stop();
+    return port;
+}
+
+static bool N14bPortBusy(int port)
+{
+    var probe = new TcpListener(IPAddress.Loopback, port);
+    try
+    {
+        probe.Start();
+        probe.Stop();
+        return false;
+    }
+    catch (SocketException)
+    {
+        return true;
+    }
+}
+
+int n14bPort = N14bFreePort();
+var n14bAuthorize = new Uri("https://auth.example.test/authorize?client_id=loopback");
+var n14bOptions = new Microsoft.Maui.Authentication.WebAuthenticatorOptions
+{
+    Url = n14bAuthorize,
+    CallbackUrl = new Uri($"http://127.0.0.1:{n14bPort}/callback"),
+};
+// The browser side runs on the launch thread; a completion source hands its observations back
+// in order, so the assertions below never read a half-written response (the listener completes
+// the await before it answers the browser, which is exactly the production order).
+Task<Microsoft.Maui.Authentication.WebAuthenticatorResult>? n14bFlow = null;
+var n14bBrowser = new TaskCompletionSource<(int Wrong, bool Pending, int Status, string Body)>(
+    TaskCreationOptions.RunContinuationsAsynchronously);
+OpenHarmonyWebAuthenticator.OpenBrowserOverride = _ =>
+{
+    using var browserClient = new HttpClient();
+    SpinWait.SpinUntil(() => n14bFlow is not null, 2000);
+    int wrong;
+    using (HttpResponseMessage wrongResponse = browserClient.GetAsync($"http://127.0.0.1:{n14bPort}/not-the-route").GetAwaiter().GetResult())
+    {
+        wrong = (int)wrongResponse.StatusCode;
+    }
+    Thread.Sleep(50);
+    bool pending = n14bFlow is { IsCompleted: false };
+    using HttpResponseMessage callback = browserClient.GetAsync($"http://127.0.0.1:{n14bPort}/callback?code=LOOP-1&state=LB1").GetAwaiter().GetResult();
+    string body = callback.Content.ReadAsStringAsync().GetAwaiter().GetResult();
+    n14bBrowser.TrySetResult((wrong, pending, (int)callback.StatusCode, body));
+    return true;
+};
+n14bFlow = n14Authenticator.AuthenticateAsync(n14bOptions);
+bool n14bFlowDone = Task.WhenAny(n14bFlow, Task.Delay(5000)).GetAwaiter().GetResult() == n14bFlow;
+bool n14bBrowserDone = Task.WhenAny(n14bBrowser.Task, Task.Delay(5000)).GetAwaiter().GetResult() == n14bBrowser.Task;
+var n14bResult = n14bFlowDone ? n14bFlow.GetAwaiter().GetResult() : null;
+(int Wrong, bool Pending, int Status, string Body) n14bSeen = n14bBrowserDone ? n14bBrowser.Task.Result : (0, false, 0, string.Empty);
+bool n14bFlowOk = n14bFlowDone && n14bResult is not null &&
+    n14bResult.CallbackUri.Scheme == "http" && n14bResult.CallbackUri.Host == "127.0.0.1" &&
+    n14bResult.CallbackUri.Port == n14bPort && n14bResult.CallbackUri.AbsolutePath == "/callback" &&
+    n14bResult.Get("code") == "LOOP-1" && n14bResult.Get("state") == "LB1" &&
+    n14bSeen.Wrong == 404 && n14bSeen.Pending && n14bSeen.Status == 200 &&
+    n14bSeen.Body.Contains("Authentication complete");
+Console.WriteLine($"[verify] webauth loopback live flow port={n14bPort} wrong={n14bSeen.Wrong} pendingGuard={n14bSeen.Pending} code='{n14bResult?.Get("code")}' state='{n14bResult?.Get("state")}' status={n14bSeen.Status} bodyMarker={n14bSeen.Body.Contains("Authentication complete")} callback='{n14bResult?.CallbackUri}' assert={n14bFlowOk}");
+if (!n14bFlowOk)
+{
+    throw new InvalidOperationException("the WebAuthenticator loopback flow did not serve the browser request on the registered route");
+}
+
+// Cancellation is the MAUI timeout mechanism: the listener holds the port while the flow is
+// pending, the cancel tears it down, and the very next attempt on the same port completes.
+using (var n14bCancel = new CancellationTokenSource())
+{
+    OpenHarmonyWebAuthenticator.OpenBrowserOverride = _ => true;
+    Task<Microsoft.Maui.Authentication.WebAuthenticatorResult> n14bPending = n14Authenticator.AuthenticateAsync(n14bOptions, n14bCancel.Token);
+    bool n14bPortHeld = N14bPortBusy(n14bPort);
+    n14bCancel.Cancel();
+    bool n14bCancelTokenOk = false;
+    try
+    {
+        n14bPending.GetAwaiter().GetResult();
+    }
+    catch (OperationCanceledException n14bEx)
+    {
+        n14bCancelTokenOk = n14bEx.CancellationToken == n14bCancel.Token;
+    }
+    bool n14bPortFreed = false;
+    for (int attempt = 0; attempt < 50 && !n14bPortFreed; attempt++)
+    {
+        n14bPortFreed = !N14bPortBusy(n14bPort);
+        if (!n14bPortFreed)
+        {
+            Thread.Sleep(20);
+        }
+    }
+    var n14bReuseBrowser = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+    OpenHarmonyWebAuthenticator.OpenBrowserOverride = _ =>
+    {
+        using var browserClient = new HttpClient();
+        using HttpResponseMessage callback = browserClient.GetAsync($"http://127.0.0.1:{n14bPort}/callback?code=AFTER-CANCEL-LB").GetAwaiter().GetResult();
+        n14bReuseBrowser.TrySetResult((int)callback.StatusCode == 200);
+        return true;
+    };
+    Task<Microsoft.Maui.Authentication.WebAuthenticatorResult> n14bAfterCancel = n14Authenticator.AuthenticateAsync(n14bOptions);
+    bool n14bAfterCancelDone = Task.WhenAny(n14bAfterCancel, Task.Delay(5000)).GetAwaiter().GetResult() == n14bAfterCancel;
+    string n14bAfterCancelCode = "<pending>";
+    if (n14bAfterCancelDone)
+    {
+        n14bAfterCancelCode = n14bAfterCancel.GetAwaiter().GetResult().Get("code");
+    }
+    // The completed attempt's last connection now sits in TIME_WAIT on this port; binding the
+    // same port again (a retry against the same provider) must work, so the listener sets
+    // SO_REUSEADDR before bind. This second reuse runs immediately after the first response.
+    var n14bRetryBrowser = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+    OpenHarmonyWebAuthenticator.OpenBrowserOverride = _ =>
+    {
+        using var browserClient = new HttpClient();
+        using HttpResponseMessage callback = browserClient.GetAsync($"http://127.0.0.1:{n14bPort}/callback?code=RETRY-SAME-PORT").GetAwaiter().GetResult();
+        n14bRetryBrowser.TrySetResult((int)callback.StatusCode == 200);
+        return true;
+    };
+    Task<Microsoft.Maui.Authentication.WebAuthenticatorResult> n14bRetry = n14Authenticator.AuthenticateAsync(n14bOptions);
+    bool n14bRetryDone = Task.WhenAny(n14bRetry, Task.Delay(5000)).GetAwaiter().GetResult() == n14bRetry;
+    string n14bRetryCode = "<pending>";
+    if (n14bRetryDone)
+    {
+        try
+        {
+            n14bRetryCode = n14bRetry.GetAwaiter().GetResult().Get("code");
+        }
+        catch (Exception n14bRetryEx)
+        {
+            n14bRetryCode = "error:" + n14bRetryEx.GetType().Name;
+        }
+    }
+    bool n14bCancelOk = n14bPortHeld && n14bCancelTokenOk && n14bPortFreed &&
+        n14bAfterCancelCode == "AFTER-CANCEL-LB" && n14bRetryCode == "RETRY-SAME-PORT";
+    Console.WriteLine($"[verify] webauth loopback cancel portHeld={n14bPortHeld} tokenMatch={n14bCancelTokenOk} freed={n14bPortFreed} reuse='{n14bAfterCancelCode}' retry='{n14bRetryCode}' assert={n14bCancelOk}");
+    if (!n14bCancelOk)
+    {
+        throw new InvalidOperationException("the WebAuthenticator loopback listener did not release the port on cancellation");
+    }
+}
+
+// The routes that cannot run fail synchronously with the platform contract and never claim the
+// single active request; a localhost route then proves the retained claim and the dual-stack
+// listener (whichever loopback address the name resolves to reaches the app).
+var n14bBadHttps = new Microsoft.Maui.Authentication.WebAuthenticatorOptions { Url = n14bAuthorize, CallbackUrl = new Uri("https://127.0.0.1:53199/callback") };
+var n14bBadHost = new Microsoft.Maui.Authentication.WebAuthenticatorOptions { Url = n14bAuthorize, CallbackUrl = new Uri("http://example.test:53199/callback") };
+var n14bBadDefaultPort = new Microsoft.Maui.Authentication.WebAuthenticatorOptions { Url = n14bAuthorize, CallbackUrl = new Uri("http://127.0.0.1/callback") };
+var n14bBadPrivilegedPort = new Microsoft.Maui.Authentication.WebAuthenticatorOptions { Url = n14bAuthorize, CallbackUrl = new Uri("http://127.0.0.1:80/callback") };
+bool n14bValidationOk = N14Faults<InvalidOperationException>(n14Authenticator.AuthenticateAsync(n14bBadHttps)) &&
+    N14Faults<InvalidOperationException>(n14Authenticator.AuthenticateAsync(n14bBadHost)) &&
+    N14Faults<InvalidOperationException>(n14Authenticator.AuthenticateAsync(n14bBadDefaultPort)) &&
+    N14Faults<InvalidOperationException>(n14Authenticator.AuthenticateAsync(n14bBadPrivilegedPort));
+int n14bLocalPort = N14bFreePort();
+Task<Microsoft.Maui.Authentication.WebAuthenticatorResult>? n14bLocalFlow = null;
+var n14bLocalBrowser = new TaskCompletionSource<(int Status, string Body)>(TaskCreationOptions.RunContinuationsAsynchronously);
+OpenHarmonyWebAuthenticator.OpenBrowserOverride = _ =>
+{
+    using var browserClient = new HttpClient();
+    SpinWait.SpinUntil(() => n14bLocalFlow is not null, 2000);
+    using HttpResponseMessage callback = browserClient.GetAsync($"http://localhost:{n14bLocalPort}/callback?code=LOCALHOST-1").GetAwaiter().GetResult();
+    string body = callback.Content.ReadAsStringAsync().GetAwaiter().GetResult();
+    n14bLocalBrowser.TrySetResult(((int)callback.StatusCode, body));
+    return true;
+};
+n14bLocalFlow = n14Authenticator.AuthenticateAsync(new Microsoft.Maui.Authentication.WebAuthenticatorOptions
+{
+    Url = n14bAuthorize,
+    CallbackUrl = new Uri($"http://localhost:{n14bLocalPort}/callback"),
+});
+bool n14bLocalDone = Task.WhenAny(n14bLocalFlow, Task.Delay(5000)).GetAwaiter().GetResult() == n14bLocalFlow;
+bool n14bLocalBrowserDone = Task.WhenAny(n14bLocalBrowser.Task, Task.Delay(5000)).GetAwaiter().GetResult() == n14bLocalBrowser.Task;
+var n14bLocalResult = n14bLocalDone ? n14bLocalFlow.GetAwaiter().GetResult() : null;
+(int Status, string Body) n14bLocalSeen = n14bLocalBrowserDone ? n14bLocalBrowser.Task.Result : (0, string.Empty);
+bool n14bValidateOk = n14bValidationOk && n14bLocalDone && n14bLocalResult is not null &&
+    n14bLocalResult.CallbackUri.Host == "localhost" && n14bLocalResult.Get("code") == "LOCALHOST-1" &&
+    n14bLocalSeen.Status == 200 && n14bLocalSeen.Body.Contains("Authentication complete");
+OpenHarmonyWebAuthenticator.OpenBrowserOverride = null;
+Console.WriteLine($"[verify] webauth loopback invalid routes rejected={n14bValidationOk} localhost='{n14bLocalResult?.Get("code")}' localStatus={n14bLocalSeen.Status} assert={n14bValidateOk}");
+if (!n14bValidateOk)
+{
+    throw new InvalidOperationException("the WebAuthenticator loopback route validation or the localhost route is wrong");
 }
 
 // Audit2-6: soft-input inset + ConnectionProfiles push. The host stores the shell's keyboard
