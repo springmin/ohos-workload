@@ -22,7 +22,7 @@ on:
         description: 'maui-ohos commit SHA to cross-check (defaults to the pinned slice tip)'
         required: false
         type: string
-        default: '44dcef8d15eb8af568197cca6bb00a0bcca15725'
+        default: '5cfb1b89916d17d2bb65406a4dae2f66cf773b33'
   push:
     branches: [ master ]
   pull_request:
@@ -32,7 +32,13 @@ permissions:
 
 # Reproducible cross-repo check: the slice is checked out at an exact commit, not the mutable
 # feature/openharmony branch, so a push to the fork cannot change what this gate verifies.
-# Current tip: 44dcef8d15 (MEDIA-RESIDUALS: the slice's cold-start PlayAsync waits bounded
+# Current tip: 5cfb1b8991 (WEBAUTH-LOOPBACK + SECURE-STORAGE-FAILCLOSED: the fail-closed
+# SecureStorage switch (a Set without a working HUKS refuses instead of the silent file-key
+# fallback; a sealed k1: read that cannot decrypt throws; opt-in, default off) and the http
+# loopback redirect route (the one-shot 127.0.0.1 listener serves the browser's redirect GET
+# with no scheme chooser); managed-only with no new DllImport, so the export set stays 164/164
+# and the shell abc stays 620,908 (c473b7be) - the kit #55 shell; suite 810/813 floor 793) on
+# 44dcef8d15 (MEDIA-RESIDUALS: the slice's cold-start PlayAsync waits bounded
 # (1.5 s) for an already-registered media page so the first play ack is the page's own answer
 # and a dead bridge still answers Unavailable; managed-only with no new DllImport, so the
 # export set stays 164/164 and the shell abc stays 623,784 - the FINAL-BATCH shell; suite
@@ -179,7 +185,7 @@ permissions:
 # 151/151).
 # Advance the pin deliberately, in lockstep with the interaction/pixel gates.
 env:
-  MAUI_OHOS_REF: ${{ github.event.inputs.maui_ohos_ref || '44dcef8d15eb8af568197cca6bb00a0bcca15725' }}
+  MAUI_OHOS_REF: ${{ github.event.inputs.maui_ohos_ref || '5cfb1b89916d17d2bb65406a4dae2f66cf773b33' }}
 
 jobs:
   contract:

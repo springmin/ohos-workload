@@ -40,7 +40,7 @@ on:
         description: 'maui-ohos commit SHA to compile (defaults to the pinned feature/openharmony tip)'
         required: false
         type: string
-        default: '44dcef8d15eb8af568197cca6bb00a0bcca15725'
+        default: '5cfb1b89916d17d2bb65406a4dae2f66cf773b33'
   push:
     branches: [ master ]
   pull_request:
@@ -52,7 +52,15 @@ permissions:
 
 # Reproducible cross-repo compile: the MAUI slice is checked out at an exact commit, not the
 # mutable feature/openharmony branch, so a push to the fork cannot change what this gate compiles.
-# The default is the MEDIA-RESIDUALS slice tip: 44dcef8d15 (the cold-start media race:
+# The default is the WEBAUTH-LOOPBACK + SECURE-STORAGE-FAILCLOSED merged slice tip: 5cfb1b8991
+# (the fail-closed SecureStorage switch: a Set without a working HUKS refuses instead of the
+# silent file-key fallback, and a sealed k1: read that cannot decrypt throws - opt-in with the
+# default off; the http loopback redirect route: the one-shot 127.0.0.1 listener serves the
+# browser's own redirect GET with no scheme chooser; managed-only with no new host DllImport,
+# so the export set stays 164/164 and the shell abc stays 620,908 (c473b7be) - the kit #55
+# shell; the suite below moves to 810/813 floor 793 - the SECURE-STORAGE-FAILCLOSED +5 and
+# WEBAUTH-LOOPBACK +4 on top of the MEDIA-RESIDUALS 801; merged into feature/openharmony as
+# 5cfb1b8991) on 44dcef8d15 (the cold-start media race:
 # PlayAsync waits bounded (50 ms poll, 1.5 s cap) for an already-registered page so the first
 # play ack is the page's own answer, and a dead bridge still answers Unavailable - the
 # off-device/degraded contract is unchanged; the hlsrange same-origin byte-range slicing is
@@ -253,7 +261,7 @@ permissions:
 # spans 043e6468, the T10 modal accessibility overlay c56bf0fa, the T1 InputView mapping dcc7eaac
 # and the T2 CookieContainer sync 8241f1b3, all on top of the W-series webview wiring d6325990,
 # the SEC-SCAN-3 S3-DL3 dot-dot route rejection and the HUKS/deep-link hardening. The suite pins
-# 801 checks / total 804 / floor 784 (the N1 host multi-pointer, W10 AOT-entry, FIX-BACKSIZE,
+# 810 checks / total 813 / floor 793 (the N1 host multi-pointer, W10 AOT-entry, FIX-BACKSIZE,
 # Back-press, MULTI-OVERLAY-FULL, SLOTS-DYNAMIC, L6/LEGACY, FIX-SLICERACE, the AUTODISCONNECT
 # detach/rebuild drill, the FIX-A11YBUTTON shell self-check, the FIX-A11YFLYOUT a11y-walk /
 # FIX-PREEMPT-RAW capacity-export lines, the MULTIWINDOW-M subwindow lines and the MULTIWINDOW-L
@@ -267,11 +275,11 @@ permissions:
 # IME/text/Back wire with the SEC-SCAN-5c primary->child isolation pin, the per-window a11y
 # frame/alert partition and the pinch routing (child-tagged only; main/unknown/empty ids rejected),
 # plus the four-pack shell source pins) and the full run
-# is green at this compiled tree (local verification: 801/804, floor 784, both perf lines within
+# is green at this compiled tree (local verification: 810/813, floor 793, both perf lines within
 # budget); advance the pin deliberately and refresh this comment when the harness pins or the
 # tip move (workflow_dispatch can compile any commit).
 env:
-  MAUI_OHOS_REF: ${{ github.event.inputs.maui_ohos_ref || '44dcef8d15eb8af568197cca6bb00a0bcca15725' }}
+  MAUI_OHOS_REF: ${{ github.event.inputs.maui_ohos_ref || '5cfb1b89916d17d2bb65406a4dae2f66cf773b33' }}
   # setup-dotnet installs the requested 11.0.x preview into DOTNET_INSTALL_DIR; on Linux that
   # defaults to /usr/share/dotnet, which a per-user cache cannot persist. Point it at ~/.dotnet
   # (the action resolves the ~ prefix against $HOME) so the cache step below actually avoids the
