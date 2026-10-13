@@ -8745,6 +8745,162 @@ if (!sec3Ok)
     throw new InvalidOperationException("the SEC3 SecureStorage/deep-link hardening contract drifted");
 }
 
+// FAILCLOSED (2026-10-13): the SecureStorage fail-closed switch (MAIL-LESSONS B). The store's
+// default stays the documented per-install file-key fallback; with OpenHarmonySecureStorage
+// .FailClosed set a value is only written through the HUKS-backed keystore - a missing keystore
+// or a rejected operation throws and nothing reaches the data file, and a sealed k1: value
+// whose decrypt fails throws instead of reading as absent. The keystore test modes (the slice
+// harness seam) give the two shapes a device cannot be asked for on demand: HUKS present but
+// rejecting every operation, and a working HUKS.
+int fcFailures = 0;
+void FcCheck(string name, bool ok)
+{
+    Console.WriteLine($"[verify] failclosed {name} assert={ok}");
+    if (!ok)
+    {
+        fcFailures++;
+    }
+}
+
+// The value a store actually persisted for a key, decoded through the store's own file codec
+// (used to tell the keystore format apart from the fallback format on disk).
+string? fcStoredValue(string dataPath, string keyPath, string keyName)
+{
+    byte[] key = File.ReadAllBytes(keyPath);
+    string fcDecode(string text)
+    {
+        byte[] bytes = Convert.FromBase64String(text);
+        for (int i = 0; i < bytes.Length; i++)
+        {
+            bytes[i] ^= key[i % key.Length];
+        }
+        return System.Text.Encoding.UTF8.GetString(bytes);
+    }
+    foreach (string line in File.ReadAllLines(dataPath))
+    {
+        string[] parts = line.Split('|', 2);
+        if (parts.Length == 2 && fcDecode(parts[0]) == keyName)
+        {
+            return fcDecode(parts[1]);
+        }
+    }
+    return null;
+}
+
+// Source + baseline contract: the switch, its public API entries, the keystore test seam and
+// the kept fallback warning. The behavioral half follows.
+bool fcSource = kit14StorageCs.Contains("public static bool FailClosed { get; set; }") &&
+    kit14KeystoreCs.Contains("internal static KeystoreTestMode TestMode") &&
+    kit14StorageCs.Contains("OpenHarmonyStatus.Once(\"securestorage.filekey\",") &&
+    kitPublicApi.Contains("Microsoft.Maui.Platform.OpenHarmonySecureStorage.FailClosed.get -> bool") &&
+    kitPublicApi.Contains("Microsoft.Maui.Platform.OpenHarmonySecureStorage.FailClosed.set -> void");
+FcCheck("source", fcSource);
+
+// Off-device (no keystore at all): the fail-closed write is refused and nothing lands under
+// the data path; the same store with the switch back off keeps the documented fallback round
+// trip and reads back.
+bool fcDefaultOff = !OpenHarmonySecureStorage.FailClosed;
+string fcColdPath = Path.Combine(Path.GetTempPath(), $"maui-fc-cold-{Guid.NewGuid():N}.dat");
+OpenHarmonySecureStorage.FailClosed = true;
+var fcColdStore = new OpenHarmonySecureStorage(fcColdPath);
+bool fcColdThrew = false;
+try
+{
+    await fcColdStore.SetAsync("fc-cold", "secret");
+}
+catch (InvalidOperationException)
+{
+    fcColdThrew = true;
+}
+bool fcColdNoData = !File.Exists(fcColdPath);
+OpenHarmonySecureStorage.FailClosed = false;
+await fcColdStore.SetAsync("fc-cold", "secret");
+string? fcColdRead = await fcColdStore.GetAsync("fc-cold");
+FcCheck("refused off-device", fcDefaultOff && fcColdThrew && fcColdNoData && fcColdRead == "secret");
+
+// A sealed k1: entry cannot be decrypted without the keystore: fail-closed throws instead of
+// answering null, while the malformed-base64 shape keeps the documented absent answer.
+byte[] fcSeedKey = File.ReadAllBytes(fcColdPath + ".key");
+string fcEncode(string text)
+{
+    byte[] bytes = System.Text.Encoding.UTF8.GetBytes(text);
+    for (int i = 0; i < bytes.Length; i++)
+    {
+        bytes[i] ^= fcSeedKey[i % fcSeedKey.Length];
+    }
+    return Convert.ToBase64String(bytes);
+}
+File.WriteAllText(
+    fcColdPath,
+    fcEncode("fc-sealed") + "|" + fcEncode("k1:" + Convert.ToBase64String(new byte[] { 1, 2, 3, 4 })) + "\n" +
+    fcEncode("fc-broken") + "|" + fcEncode("k1:not-base64!") + "\n");
+OpenHarmonySecureStorage.FailClosed = true;
+bool fcSealedThrew = false;
+try
+{
+    _ = await fcColdStore.GetAsync("fc-sealed");
+}
+catch (InvalidOperationException)
+{
+    fcSealedThrew = true;
+}
+string? fcBrokenRead = await fcColdStore.GetAsync("fc-broken");
+OpenHarmonySecureStorage.FailClosed = false;
+FcCheck("sealed read refused", fcSealedThrew && fcBrokenRead is null);
+
+// HUKS present but every operation rejected: the capability probe reports true while the
+// fail-closed write is refused and nothing lands; with the switch off the same backend falls
+// back, which is exactly the downgrade the switch exists to refuse.
+OpenHarmonyKeystore.TestMode = OpenHarmonyKeystore.KeystoreTestMode.OperationFailed;
+OpenHarmonySecureStorage.FailClosed = true;
+string fcOpPath = Path.Combine(Path.GetTempPath(), $"maui-fc-op-{Guid.NewGuid():N}.dat");
+var fcOpStore = new OpenHarmonySecureStorage(fcOpPath);
+bool fcOpThrew = false;
+try
+{
+    await fcOpStore.SetAsync("fc-op", "secret");
+}
+catch (InvalidOperationException)
+{
+    fcOpThrew = true;
+}
+bool fcOpRefused = fcOpThrew && !File.Exists(fcOpPath) && OpenHarmonySecureStorage.IsHardwareBacked;
+OpenHarmonySecureStorage.FailClosed = false;
+await fcOpStore.SetAsync("fc-op", "secret");
+string? fcOpRead = await fcOpStore.GetAsync("fc-op");
+FcCheck("op-failure refused", fcOpRefused && fcOpRead == "secret");
+
+// A working keystore: the switch does not interfere - the value is sealed through the
+// keystore (k1:) and reads back, and the capability getter reports true through the seam.
+OpenHarmonyKeystore.TestMode = OpenHarmonyKeystore.KeystoreTestMode.Working;
+OpenHarmonySecureStorage.FailClosed = true;
+string fcWorkPath = Path.Combine(Path.GetTempPath(), $"maui-fc-work-{Guid.NewGuid():N}.dat");
+var fcWorkStore = new OpenHarmonySecureStorage(fcWorkPath);
+bool fcWorkOk;
+try
+{
+    await fcWorkStore.SetAsync("fc-work", "hw-secret");
+    string? fcWorkRead = await fcWorkStore.GetAsync("fc-work");
+    string? fcWorkStored = fcStoredValue(fcWorkPath, fcWorkPath + ".key", "fc-work");
+    fcWorkOk = fcWorkRead == "hw-secret"
+        && fcWorkStored is not null
+        && fcWorkStored.StartsWith("k1:", StringComparison.Ordinal)
+        && OpenHarmonySecureStorage.IsHardwareBacked;
+}
+catch
+{
+    fcWorkOk = false;
+}
+OpenHarmonyKeystore.TestMode = OpenHarmonyKeystore.KeystoreTestMode.Off;
+OpenHarmonySecureStorage.FailClosed = false;
+FcCheck("working keystore", fcWorkOk);
+
+if (fcFailures > 0)
+{
+    throw new InvalidOperationException(
+        $"{fcFailures} FAILCLOSED assertion(s) failed (the fail-closed SecureStorage contract regressed: the switch, the refusal paths or the working keystore)");
+}
+
 // KIT5: the host and managed halves of the second batch: the C ABI declarations, the NAPI
 // sink/notify names, the napi module table entries, the managed P/Invoke entry points with their
 // kit error-code maps, and the public API baseline entries. Map (R2-3) carries the overlay
