@@ -11,6 +11,10 @@
 //                                               so the system browser itself reaches the app's
 //                                               one-shot listener (no scheme chooser)
 //   aa start ... -U "app://webauth/loopback/53123" -> same on an explicit port
+//   aa start ... -U "app://webauth/loopback-localhost[/<port>]" -> the same flow on a
+//                                               localhost route: the listener then also arms
+//                                               the IPv6 loopback socket (best-effort), so the
+//                                               browser's own localhost resolution reaches it
 //   aa start ... -U "myapp://callback?..."   -> the WebAuthenticator itself consumes this
 //
 // The state line goes to dotnet-status.txt and, because the status file is unreadable from a
@@ -34,9 +38,16 @@ internal static class WebAuthProbe
     /// <summary>Handles one warm activation addressed to the probe (App.OnActivation calls it).</summary>
     public static void Handle(string uri)
     {
-        if (uri.StartsWith("app://webauth/loopback", StringComparison.OrdinalIgnoreCase))
+        if (uri.StartsWith("app://webauth/loopback-localhost", StringComparison.OrdinalIgnoreCase))
         {
-            StartLoopback(uri);
+            // WEBAUTH-LOOPBACK v6 half (TOUCH-PASTE round): the same one-shot flow on a
+            // localhost route. The listener binds IPv4 and best-effort IPv6 loopback, so the
+            // browser's own localhost resolution (which may pick ::1) still reaches the app.
+            StartLoopback(uri, useLocalhost: true);
+        }
+        else if (uri.StartsWith("app://webauth/loopback", StringComparison.OrdinalIgnoreCase))
+        {
+            StartLoopback(uri, useLocalhost: false);
         }
         else if (uri.StartsWith("app://webauth/start", StringComparison.OrdinalIgnoreCase))
         {
@@ -65,7 +76,7 @@ internal static class WebAuthProbe
     // browser's own GET reaches this process's listener and completes the await. On device the
     // browser window shows the listener's success page while the title below reports the
     // parsed result - both come from the same round trip.
-    private static void StartLoopback(string uri)
+    private static void StartLoopback(string uri, bool useLocalhost)
     {
         int port = DefaultLoopbackPort;
         string[] segments = uri.Split('?')[0].Split('/');
@@ -73,11 +84,12 @@ internal static class WebAuthProbe
         {
             port = explicitPort;
         }
-        var callback = new Uri($"http://127.0.0.1:{port}/callback");
-        var authorize = new Uri($"http://127.0.0.1:{port}/callback?code=LOOPBACK-{port}&state=lbstate");
+        string host = useLocalhost ? "localhost" : "127.0.0.1";
+        var callback = new Uri($"http://{host}:{port}/callback");
+        var authorize = new Uri($"http://{host}:{port}/callback?code=LOOPBACK-{port}&state=lbstate");
         var cts = new CancellationTokenSource();
         s_pending = cts;
-        SetTitle($"webauth: pending (loopback {port})");
+        SetTitle($"webauth: pending (loopback {port}, {host})");
         _ = RunAsync(authorize, callback, cts.Token);
     }
 

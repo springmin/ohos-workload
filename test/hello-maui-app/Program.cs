@@ -24,6 +24,11 @@ public static class Program
 #if STARTUP_PROBE
         StartupProbe.Install();
 #endif
+#if TOUCH_PASTE_PROBE
+        // TOUCH-PASTE: opt the shell's long-press paste entry point in before the host starts
+        // (the shell reads OHOS_TOUCH_PASTE lazily on the first surface touch).
+        TouchPasteProbe.Install();
+#endif
         var builder = MauiApp.CreateBuilder();
         builder.UseOpenHarmony();
         builder.UseMauiApp<App>();

@@ -802,6 +802,53 @@ check_subwindow_capacity_contract() { # <templates-dir>
     return 0
 }
 
+# TOUCH-PASTE source contract: the opt-in touch paste entry point is a shell-side security
+# surface, so the shipped sources must keep every part of the contract - the opt-in latch, the
+# long-press observer gated on the shell being the live text sink, the floating PasteButton
+# security control, the grant-gated read inside the click callback and the delivery through the
+# existing notifyTextInput wire. The selftest drives each marker's removal as a red control.
+check_touch_paste_contract() { # <templates-dir>
+    _index="$1/ets/pages/Index.ets"
+    _missing=""
+    for _marker in "const TOUCH_PASTE_ENV: string = 'OHOS_TOUCH_PASTE';" \
+                   "const TOUCH_PASTE_MARKER: string = 'touch-paste.enabled';" \
+                   "const markerPath: string = \`\${this.hostContext().filesDir}/\${TOUCH_PASTE_MARKER}\`;" \
+                   "const TOUCH_PASTE_LONG_PRESS_MS: number = 550;" \
+                   "private touchPasteEnabled(): boolean {" \
+                   "private handleSurfaceTouch(event: TouchEvent): void {" \
+                   "private handleSurfaceLongPress(event: GestureEvent): void {" \
+                   "LongPressGesture({ repeat: false, duration: TOUCH_PASTE_LONG_PRESS_MS })" \
+                   "this.notePasteEvent('long press');" \
+                   "if (event.type === TouchType.Down) {" \
+                   "if (!this.pasteSinkActive || event.touches.length === 0) {" \
+                   "this.pasteTouchTimer = setTimeout((): void => {" \
+                   "private showPasteOverlay(x: number, y: number): void {" \
+                   "private dismissPasteOverlay(): void {" \
+                   "PasteButton({ icon: PasteIconStyle.LINES, text: PasteDescription.PASTE, buttonType: ButtonType.Capsule })" \
+                   "if (result !== PasteButtonOnClickResult.SUCCESS) {" \
+                   "const pasteData: pasteboard.PasteData = pasteboard.getSystemPasteboard().getDataSync();" \
+                   "const caret: number = start + pasted.length;" \
+                   "this.controller.setTextSelection(caret, caret);" \
+                   "host.notifyTextInput(updated);" \
+                   "this.pasteSinkActive = show === 1;"; do
+        grep -Fq -- "$_marker" "$_index" 2>/dev/null || _missing="$_missing
+  $_marker"
+    done
+    if [ -n "$_missing" ]; then
+        printf 'ERROR: the TOUCH-PASTE contract is missing from %s:%s\n' "$_index" "$_missing" >&2
+        return 1
+    fi
+    # Red control: exactly one pasteboard read, inside the security control's click path. A
+    # second read (an observer, the sink, a startup probe) would read outside the user gesture
+    # the system grants, which is exactly what the ACL denies.
+    _reads="$(grep -Fc 'pasteboard.getSystemPasteboard().getDataSync();' "$_index" 2>/dev/null || true)"
+    if [ "$_reads" != "1" ]; then
+        printf 'ERROR: %s carries %s pasteboard.getDataSync() call(s); TOUCH-PASTE allows exactly one, inside the PasteButton click callback\n' "$_index" "$_reads" >&2
+        return 1
+    fi
+    return 0
+}
+
 # L7-M2: a create that arrives while the main window is suspended is deferred and replayed when
 # the main window is shown again, instead of being dropped (M1 device finding: during a long
 # hidden gap the create was discarded with no retry, so the app had to re-issue the open). The
@@ -932,7 +979,8 @@ check_sources_contract() { # [<templates-dir>]
         check_loaddata_encoding_contract "$1" || return 1
         check_child_nav_rate_contract "$1" || return 1
         check_subwindow_capacity_contract "$1" || return 1
-        check_subwindow_defer_contract "$1"
+        check_subwindow_defer_contract "$1" || return 1
+        check_touch_paste_contract "$1"
         return $?
     fi
     _hash=""
@@ -946,6 +994,7 @@ check_sources_contract() { # [<templates-dir>]
         check_child_nav_rate_contract "$_tpl" || return 1
         check_subwindow_capacity_contract "$_tpl" || return 1
         check_subwindow_defer_contract "$_tpl" || return 1
+        check_touch_paste_contract "$_tpl" || return 1
         _h="$(pack_sources_hash "$_tpl")" || return 1
         if [ -z "$_hash" ]; then
             _hash="$_h"
@@ -955,7 +1004,7 @@ check_sources_contract() { # [<templates-dir>]
             return 1
         fi
     done
-    printf '    shell sources clean (no @ohos import, getContext(), decodeWithStream() or focusControl, no READ_PASTEBOARD request point), AOT-STARTUP mount gate, E4-CAPACITY8 derived-slot-table/switch, C5 loadData-encoding, SEC7-F ask-rate/pending, N-SUBWINDOW capacity-switch and L7-M2 deferred-create-replay contracts present, and byte-identical across preview.22/23/24 (sources %s)\n' "$_hash"
+    printf '    shell sources clean (no @ohos import, getContext(), decodeWithStream() or focusControl, no READ_PASTEBOARD request point), AOT-STARTUP mount gate, E4-CAPACITY8 derived-slot-table/switch, C5 loadData-encoding, SEC7-F ask-rate/pending, N-SUBWINDOW capacity-switch, L7-M2 deferred-create-replay and TOUCH-PASTE opt-in paste-entry contracts present, and byte-identical across preview.22/23/24 (sources %s)\n' "$_hash"
 }
 
 # pack_abc_provenance_json <dist-dir>: prints the provenance document for the two dist

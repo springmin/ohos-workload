@@ -1,7 +1,7 @@
 # Interaction regression suite (headless)
 
-The MAUI-on-OpenHarmony interaction harness (the current suite anchor: checks=810, total=813,
-floor=793 - the interaction checks, a 4-line fuzz tail, a frame-path performance budget and an
+The MAUI-on-OpenHarmony interaction harness (the current suite anchor: checks=814, total=817,
+floor=797 - the interaction checks, a 4-line fuzz tail, a frame-path performance budget and an
 accessibility publish-path budget). It builds the platform slice sources from the `maui-ohos`
 working tree and drives the app host without a device: touch/drag/pinch/pointer input,
 overlays, gestures (tap/pan/swipe/pinch/pointer/drag-and-drop), sensors/haptics/notification/picker
@@ -49,7 +49,7 @@ allocation and jitter) budgets are exceeded.
 # (or the MauiSliceDir / HostingDll / OpenHarmonyGraphicsDll MSBuild properties) before building
 # elsewhere; an explicit -p: value wins over the environment and the absolute fallbacks.
 dotnet build -v:q
-dotnet bin/Debug/net11.0/verify.dll | grep -c '\[verify\]'   # expect 810 (current anchor; declared total 813, floor 793)
+dotnet bin/Debug/net11.0/verify.dll | grep -c '\[verify\]'   # expect 814 (current anchor; declared total 817, floor 797)
 ```
 
 The `interaction-regression` workflow (`.github/workflows/interaction-regression.yml`) runs the
@@ -60,7 +60,7 @@ suite on a GitHub runner as a real gate (on push to `master`, on pull requests a
 points `MAUI_SLICE_DIR` / `HOSTING_DLL` / `OPENHARMONY_GRAPHICS_DLL` at those roots, and fails the
 job unless the run exits 0, the suite's own `[suite]` contract line reports `assert=True` with at
 least the floor declared in `Program.cs`, both perf lines report `within=True`, and no `Unhandled`
-line is logged. The floor (793 = 813 - 20, the documented convention) lives only in `Program.cs`;
+line is logged. The floor (797 = 817 - 20, the documented convention) lives only in `Program.cs`;
 the workflow and `scripts/preflight.sh` both read the printed `[suite] checks=... floor=...` line
 instead of repeating a literal, so the two local/CI thresholds cannot drift apart.
 
@@ -169,7 +169,7 @@ jitter ~1.08x and 72,056 B/frame, and the a11y block reported ~0.3/0.5 ms for th
 ~0.07/0.28 ms for the publish pass (skip/republish). The post-batch run (commit a10b73e) reported
 avg 0.488 ms, p95 0.698 ms, jitter 1.43x and 3,720 B/frame, i.e. the ceiling is 3.72x the CI
 baseline. Every run ends with the `[suite]` contract line
-(`checks=810 total=813 floor=793 assert=True`), which the workflow and `scripts/preflight.sh`
+(`checks=814 total=817 floor=797 assert=True`), which the workflow and `scripts/preflight.sh`
 parse.
 
 ## Notes
@@ -178,7 +178,7 @@ parse.
   blocks codesigned ELF apphosts on some machines).
 - The suite fails loudly (unhandled exception) when a slice change breaks startup or when an
   assertion for the gesture flows (including the drag-and-drop checks) does not hold; keep it at
-  the current anchor's 810 `[verify]` lines (declared total 813): the interaction checks plus the
+  the current anchor's 814 `[verify]` lines (declared total 817): the interaction checks plus the
   4 fuzz lines plus the 1 frame-perf line plus the 8 a11y-perf lines, when touching the platform
   slice. The total and the floor (total - 20) are declared in `Program.cs`; the run ends with a
   `[suite] checks=... floor=... assert=...` line and fails itself when the printed count is below

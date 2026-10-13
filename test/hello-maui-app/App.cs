@@ -187,6 +187,14 @@ public sealed class App : Application
             return;
         }
 #endif
+#if TOUCH_PASTE_PROBE
+        // TOUCH-PASTE device probe (see TouchPasteProbe.cs): focus/clear/report for the round's
+        // target Entry; the paste itself arrives through the shell's normal text wire.
+        if (TouchPasteProbe.TryHandle(uri))
+        {
+            return;
+        }
+#endif
 #if CLIPBOARD_PROBE
         // CLIPBOARD-FIX device probe (see ClipboardProbe.cs): read/has exercise the host
         // pasteboard NDK read; write/roundtrip go through the shell @ohos.pasteboard write.
@@ -1191,6 +1199,12 @@ function PD(n) {
         };
         // W22-1: soft-keyboard text input through the ArkTS shell's TextInput.
         var entry = new Entry { Placeholder = "type here (soft keyboard)", FontSize = 32 };
+#if TOUCH_PASTE_PROBE
+        // TOUCH-PASTE round hook: the probe focuses this Entry by deep link and reports the text
+        // it receives (entry.Focus() drives the shell's text-input sink, so the paste lands here
+        // even while the Entry sits below the visible page area).
+        TouchPasteProbe.Attach(entry);
+#endif
         entry.TextChanged += (_, e) => status.Text = $"text: '{e.NewTextValue}'";
         entry.Completed += (_, _) => status.Text = "entry completed";
 

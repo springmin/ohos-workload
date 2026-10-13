@@ -37,7 +37,11 @@ permissions:
 # fallback; a sealed k1: read that cannot decrypt throws; opt-in, default off) and the http
 # loopback redirect route (the one-shot 127.0.0.1 listener serves the browser's redirect GET
 # with no scheme chooser); managed-only with no new DllImport, so the export set stays 164/164
-# and the shell abc stays 620,908 (c473b7be) - the kit #55 shell; suite 810/813 floor 793) on
+# and the shell abc moves with the TOUCH-PASTE shell: the opt-in touch paste entry point
+# (OHOS_TOUCH_PASTE=1; a long press opens the floating ArkUI PasteButton security control, the
+# system grants a temporary pasteboard read on the tap and the shell inserts the text at the
+# input's selection, delivering through the existing notifyTextInput wire) - 637,224 (8503a3c2),
+# previously 620,908 (c473b7be), the kit #55 shell; suite 814/817 floor 797) on
 # 44dcef8d15 (MEDIA-RESIDUALS: the slice's cold-start PlayAsync waits bounded
 # (1.5 s) for an already-registered media page so the first play ack is the page's own answer
 # and a dead bridge still answers Unavailable; managed-only with no new DllImport, so the

@@ -42,7 +42,8 @@
 #                 is exit 2 and a missing argument is refused
 #   T15 sources   `--check-sources` accepts the shipped packs (token gate + AOT-STARTUP mount
 #                 gate + E4-CAPACITY8 derived tables/switch + C5 loadData '#'->'%23' encoding +
-#                 SEC7-F child ask-rate/pending bounds + cross-pack source identity) and rejects
+#                 SEC7-F child ask-rate/pending bounds + N-SUBWINDOW capacity switch + TOUCH-PASTE
+#                 opt-in paste-entry contract + cross-pack source identity) and rejects
 #                 an injected @ohos import, getContext() call, decodeWithStream() call,
 #                 focusControl call or the ACL-level READ_PASTEBOARD request point (the
 #                 PASTEBOARD-FIX red control), naming the pattern; a copy with the first-use overlay mount
@@ -50,6 +51,10 @@
 #                 the missing marker is named; the red controls strip the L3 encoding helper
 #                 (Index) / revert the child data wiring, and strip the L4 admission branch /
 #                 burst constant (SubWindow), each rejected with the missing marker named
+#   T15 touch-paste
+#                 red controls: the stripped opt-in constant, the stripped notifyTextInput
+#                 delivery, the stripped PasteButton grant check and a second pasteboard read
+#                 (outside the click gesture) are each rejected with the offending marker named
 #   T16 provenance `--check-pack-abc` accepts the shipped packs (size/sha/abc-version/literal/
 #                 source-hash provenance) and, on a self-contained pack copy, rejects a corrupted
 #                 abc, a source edit without a rebuild, a missing provenance record and a stale
@@ -508,6 +513,36 @@ printf '\nconst SUB_WINDOW_MAX: number = 2;\n' >> "$SRC_FAKE/ets/pages/Index.ets
 sh "$BUILD_SCRIPT" --check-sources "$SRC_FAKE" > "$WORK/T15-nsub-hardcoded.log" 2>&1 && _rc=0 || _rc=$?
 assert_rc 1 "$_rc" "T15 the gate rejects a hardcoded subwindow capacity (N-SUBWINDOW red control)"
 assert_contains "T15 the rejection names the hardcoded capacity" "hardcodes the subwindow capacity" "$WORK/T15-nsub-hardcoded.log"
+cp "$REAL_SOURCE" "$SRC_FAKE/ets/pages/Index.ets"
+
+# TOUCH-PASTE: the opt-in paste entry point's contract (the opt-in gate, the sink-active
+# long-press gate, the security control, the grant-gated read and the delivery through the
+# existing notifyTextInput wire). Red controls: a stripped opt-in constant, a stripped delivery
+# call, a stripped grant check and a second pasteboard read are all rejected.
+grep -v "const TOUCH_PASTE_ENV: string" "$REAL_SOURCE" > "$SRC_FAKE/ets/pages/Index.ets"
+sh "$BUILD_SCRIPT" --check-sources "$SRC_FAKE" > "$WORK/T15-tp-nogate.log" 2>&1 && _rc=0 || _rc=$?
+assert_rc 1 "$_rc" "T15 the gate rejects a stripped TOUCH-PASTE opt-in gate"
+assert_contains "T15 the rejection names the opt-in gate" "const TOUCH_PASTE_ENV" "$WORK/T15-tp-nogate.log"
+cp "$REAL_SOURCE" "$SRC_FAKE/ets/pages/Index.ets"
+grep -v "host.notifyTextInput(updated);" "$REAL_SOURCE" > "$SRC_FAKE/ets/pages/Index.ets"
+sh "$BUILD_SCRIPT" --check-sources "$SRC_FAKE" > "$WORK/T15-tp-nodelivery.log" 2>&1 && _rc=0 || _rc=$?
+assert_rc 1 "$_rc" "T15 the gate rejects a stripped TOUCH-PASTE delivery call"
+assert_contains "T15 the rejection names the delivery call" "host.notifyTextInput(updated);" "$WORK/T15-tp-nodelivery.log"
+cp "$REAL_SOURCE" "$SRC_FAKE/ets/pages/Index.ets"
+grep -v "if (result !== PasteButtonOnClickResult.SUCCESS) {" "$REAL_SOURCE" > "$SRC_FAKE/ets/pages/Index.ets"
+sh "$BUILD_SCRIPT" --check-sources "$SRC_FAKE" > "$WORK/T15-tp-nogrant.log" 2>&1 && _rc=0 || _rc=$?
+assert_rc 1 "$_rc" "T15 the gate rejects a stripped TOUCH-PASTE grant check"
+assert_contains "T15 the rejection names the grant check" "PasteButtonOnClickResult.SUCCESS" "$WORK/T15-tp-nogrant.log"
+cp "$REAL_SOURCE" "$SRC_FAKE/ets/pages/Index.ets"
+grep -v "LongPressGesture({ repeat: false, duration: TOUCH_PASTE_LONG_PRESS_MS })" "$REAL_SOURCE" > "$SRC_FAKE/ets/pages/Index.ets"
+sh "$BUILD_SCRIPT" --check-sources "$SRC_FAKE" > "$WORK/T15-tp-nogesture.log" 2>&1 && _rc=0 || _rc=$?
+assert_rc 1 "$_rc" "T15 the gate rejects a stripped TOUCH-PASTE long-press recognizer"
+assert_contains "T15 the rejection names the recognizer" "LongPressGesture" "$WORK/T15-tp-nogesture.log"
+cp "$REAL_SOURCE" "$SRC_FAKE/ets/pages/Index.ets"
+printf '\nconst tpExtraRead: pasteboard.PasteData = pasteboard.getSystemPasteboard().getDataSync();\n' >> "$SRC_FAKE/ets/pages/Index.ets"
+sh "$BUILD_SCRIPT" --check-sources "$SRC_FAKE" > "$WORK/T15-tp-extraread.log" 2>&1 && _rc=0 || _rc=$?
+assert_rc 1 "$_rc" "T15 the gate rejects a second pasteboard read (TOUCH-PASTE red control)"
+assert_contains "T15 the rejection names the single-read rule" "allows exactly one" "$WORK/T15-tp-extraread.log"
 cp "$REAL_SOURCE" "$SRC_FAKE/ets/pages/Index.ets"
 
 # ---- T16: the abc provenance gate ---------------------------------------------------------

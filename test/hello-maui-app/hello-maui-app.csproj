@@ -85,6 +85,11 @@
          (ClipboardProbe.cs, app://clipboard/*): read/has exercise the host pasteboard NDK read
          and write/roundtrip the shell write. Off by default; the shipped sample is unaffected. -->
     <DefineConstants Condition=" '$(ClipboardProbe)' == 'true' ">$(DefineConstants);CLIPBOARD_PROBE</DefineConstants>
+    <!-- TOUCH-PASTE: -p:TouchPasteProbe=true compiles the shell touch paste opt-in
+         (TouchPasteProbe.cs sets OHOS_TOUCH_PASTE=1 so the shell's long-press PasteButton
+         security-control path is enabled for the device round). Off by default; the shipped
+         sample is unaffected. -->
+    <DefineConstants Condition=" '$(TouchPasteProbe)' == 'true' ">$(DefineConstants);TOUCH_PASTE_PROBE</DefineConstants>
   </PropertyGroup>
   <PropertyGroup Condition=" '$(OpenHarmonyAotApp)' == 'true' ">
     <DefineConstants>$(DefineConstants);OPENHARMONY_AOT</DefineConstants>

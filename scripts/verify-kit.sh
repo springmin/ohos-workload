@@ -200,18 +200,21 @@ OH_UdsPlainText_
 HOST_DEPS_EOF
 )"
 
-# Current abc size expectations: the ui/shell ArkTS shell (620908 B, the PASTEBOARD-FIX
-# shell: the ACL-level READ_PASTEBOARD request point and its grant cache/read helpers are
-# gone - the clipboard read runs in the host through the pasteboard NDK, the shell keeps the
-# write op and the 'update' observer; -2,876 B from the FINAL-BATCH 623784 B tree
-# (MEDIA-MICRO + SUBWINDOW-DEFAULT4); earlier shells were 623732 B (MEDIA-MICRO) and 602744 B
-# before it; the batch tree itself
+# Current abc size expectations: the ui/shell ArkTS shell (637224 B, the TOUCH-PASTE shell:
+# the opt-in (OHOS_TOUCH_PASTE=1) long-press paste entry point - the floating ArkUI PasteButton
+# security control, the selection-replacing pasteboard insertion and the delivery through the
+# existing notifyTextInput wire; the long-press entry point uses an XComponent LongPressGesture recognizer plus a raw onTouch fallback; +16,316 B from the PASTEBOARD-FIX 620908 B tree, which had
+# dropped the ACL-level READ_PASTEBOARD request point and its grant cache/read helpers - the
+# clipboard read runs in the host through the pasteboard NDK, the shell keeps the write op and
+# the 'update' observer; earlier shells were 623784 B (FINAL-BATCH: MEDIA-MICRO +
+# SUBWINDOW-DEFAULT4), 623732 B (MEDIA-MICRO) and 602744 B before it; the FINAL-BATCH tree
+# itself
 # is E4-CAPACITY8 + C5/SEC7-F + WEB-AUTH Want fix + N-SUBWINDOW + the shipped 8-slot overlay
 # default + L8-POPUP + HARMONY-FLAVOR free-window probe)
 # and the headless shell (24324 B, unchanged). --expected-abc <bytes[,bytes]> / KIT_EXPECTED_ABC replaces
 # the set and turns a mismatch from a historical-kit WARN into a FAIL (the kit builder uses that
 # strict form).
-EXPECT_ABC="${KIT_EXPECTED_ABC:-620908,24324}"
+EXPECT_ABC="${KIT_EXPECTED_ABC:-637224,24324}"
 EXPECT_ABC_PINNED="${KIT_EXPECTED_ABC:+1}"
 HOST_DEPS_FILE="${KIT_HOST_DEPS:-}"
 

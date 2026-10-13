@@ -56,9 +56,13 @@ permissions:
 # silent file-key fallback, and a sealed k1: read that cannot decrypt throws - opt-in with the
 # default off; the http loopback redirect route: the one-shot 127.0.0.1 listener serves the
 # browser's own redirect GET with no scheme chooser; managed-only with no new host DllImport,
-# so the rasterizer output does not move and the export/abc pins stay 164/164 and 620,908
-# (c473b7be) - the kit #55 shell; the interaction harness moves to 810/813 floor 793 - the
-# SECURE-STORAGE-FAILCLOSED +5 and WEBAUTH-LOOPBACK +4 on top of the MEDIA-RESIDUALS 801;
+# so the rasterizer output does not move; the export pin stays 164/164 and the shell abc moves
+# with the TOUCH-PASTE shell (the opt-in touch paste entry point: a long press opens the floating
+# ArkUI PasteButton security control, the tap grants a temporary pasteboard read and the shell
+# inserts the text at the input's selection through the existing notifyTextInput wire) - 637,224
+# (8503a3c2), previously 620,908 (c473b7be), the kit #55 shell; the interaction harness moves to
+# 814/817 floor 797 - the TOUCH-PASTE +4, the SECURE-STORAGE-FAILCLOSED +5 and the
+# WEBAUTH-LOOPBACK +4 on top of the MEDIA-RESIDUALS 801;
 # merged into feature/openharmony as 5cfb1b8991) on 44dcef8d15 (the cold-start media race: the
 # slice's PlayAsync waits bounded (1.5 s) for an already-registered page so the first play ack
 # is the page's own answer, a dead bridge still answering Unavailable; the hlsrange

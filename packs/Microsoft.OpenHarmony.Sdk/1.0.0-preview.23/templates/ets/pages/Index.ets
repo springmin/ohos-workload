@@ -778,6 +778,25 @@ const WEB_SLOT_MAX_RAWFILE: string = 'ohos-overlay-max.txt';
 // Bound on the per-slot deferral queue (see pendingWebOps).
 const WEB_SLOT_PENDING_MAX: number = 32;
 
+// TOUCH-PASTE (opt-in): the shell-side touch paste entry point. The managed app opts in by
+// setting the process environment variable OHOS_TOUCH_PASTE=1 in its own startup before the
+// user interacts (the hello-maui-app sample does this behind -p:TouchPasteProbe=true); without
+// it the whole feature is inert and the shipped shell behaviour is unchanged. When enabled, a
+// long press on the managed surface opens a floating ArkUI PasteButton (security control): the
+// system grants a temporary pasteboard read on the user's tap, the shell inserts the plain text
+// at the input's selection and delivers the full text through the existing notifyTextInput
+// wire - the same path the input method's typing uses. The feature is gated on the shell input
+// being the live text sink (the input-method fallback path), because only there does the input
+// content mirror the focused managed Entry; on images with the API 12+ input-method NDK entry
+// points the read would target the wrong buffer, so the bubble stays absent.
+const TOUCH_PASTE_ENV: string = 'OHOS_TOUCH_PASTE';
+// The opt-in marker the managed app writes into its own files dir (filesDir/'touch-paste.enabled'):
+// the device round measured that a variable set by the managed runtime AFTER this page loaded is
+// not visible through the ArkTS process API, so the sandbox marker is the reliable channel (the
+// env read stays as a secondary source).
+const TOUCH_PASTE_MARKER: string = 'touch-paste.enabled';
+const TOUCH_PASTE_LONG_PRESS_MS: number = 550;
+const TOUCH_PASTE_MOVE_SLOP_VP: number = 24;
 // MEDIA-ELEMENT (A-M1): the ArkWeb HTML5 media page. A MediaElement-shaped control claims an
 // overlay slot and registers its source through the web command op "media"
 // ({ slot, id, kind, location }); the shell then loads this origin on that slot and serves the
@@ -948,6 +967,22 @@ struct Index {
   private content: NodeContent = new NodeContent();
 
   @State inputText: string = '';
+  // TOUCH-PASTE state (see TOUCH_PASTE_ENV): the opt-in is read lazily on the first surface
+  // touch (the managed app sets the variable at startup, after this page loads); pasteSinkActive
+  // is true only while the shell input is the live text sink (the input-method fallback path),
+  // which is when the input content mirrors the focused managed Entry; the overlay position is
+  // the long-press point clamped into the window.
+  @State pasteOverlayVisible: boolean = false;
+  @State pasteOverlayX: number = 0;
+  @State pasteOverlayY: number = 0;
+  private pasteOptIn: number = -1;
+  private pasteSinkActive: boolean = false;
+  private pasteDiagCount: number = 0;
+  private pasteTouchTimer: number = -1;
+  private pasteTouchX: number = 0;
+  private pasteTouchY: number = 0;
+  private pasteSelectionStart: number = 0;
+  private pasteSelectionEnd: number = 0;
   // MULTI-OVL: the shell declares two ArkWeb overlays and every per-overlay state is indexed by
   // slot (0/1). The managed web handlers claim a slot when they connect (the HybridWebView is
   // created before the BlazorWebView on the sample page, so hybrid -> 0, Blazor -> 1), tag their
@@ -6918,10 +6953,19 @@ struct Index {
     // the input control so IME composition and typing use the managed cursor offset.
     this.hostCall('registerTextInputSink', typeof host !== 'undefined' && typeof host.registerTextInputSink === 'function', (): void => {
       host.registerTextInputSink((show: number, caret: number) => {
+        // TOUCH-PASTE: the sink running at all means the shell input is the live text path
+        // (the input-method fallback); the touch paste feature is only correct there, so the
+        // long-press entry point is gated on this flag. Focus/unfocus also dismisses an open
+        // paste bubble: the paste target is gone.
+        this.pasteSinkActive = show === 1;
         if (show === 1) {
           this.controller.caretPosition(caret >= 0 ? caret : 0);
+          // The focus-time caret is also the paste position until the user moves the selection.
+          this.pasteSelectionStart = caret >= 0 ? caret : 0;
+          this.pasteSelectionEnd = caret >= 0 ? caret : 0;
           this.getUIContext().getFocusController().requestFocus('ohos_dotnet_input');
         } else {
+          this.dismissPasteOverlay();
           this.getUIContext().getFocusController().requestFocus('ohos_dotnet_surface');
         }
       });
@@ -7157,6 +7201,8 @@ struct Index {
   // extra) are closed for the same reason: their kit listeners are bound to this page instance.
   // The soft-input avoid-area listener is window-scoped and is unregistered the same way.
   aboutToDisappear(): void {
+    // TOUCH-PASTE: a pending long-press timer must not outlive the page.
+    this.clearPasteTouchTimer();
     // Map overlay (R2-3): release the MapComponent/BuilderNode with the page so the kit's map
     // view and its listeners do not outlive it (the proxy also drops late callbacks).
     this.destroyMapOverlay();
@@ -8606,6 +8652,200 @@ struct Index {
     return previewText !== undefined ? previewText.offset : 0;
   }
 
+  // TOUCH-PASTE (opt-in, see TOUCH_PASTE_ENV): the opt-in latch, the surface long-press
+  // observation, the floating paste bubble and the delivery helper.
+  //
+  // The latch: read once on the first surface touch (the managed app sets the variable in its
+  // own startup, after this page loads) and cached; a missing variable or an environment API
+  // failure keeps the feature off for the process.
+  private touchPasteEnabled(): boolean {
+    if (this.pasteOptIn >= 0) {
+      return this.pasteOptIn === 1;
+    }
+    this.pasteOptIn = 0;
+    // Primary source: the app's own sandbox marker (the managed side writes
+    // <filesDir>/touch-paste.enabled at startup). Measured on device: a process environment
+    // variable set by the managed runtime after this page loaded is not visible through
+    // process.ProcessManager, so the marker is the reliable channel; the environment read stays
+    // as a secondary source where it does propagate. Either way the feature is app opt-in only.
+    try {
+      const markerPath: string = `${this.hostContext().filesDir}/${TOUCH_PASTE_MARKER}`;
+      const markerStat = fs.statSync(markerPath);
+      if (markerStat !== undefined && markerStat.size > 0) {
+        this.pasteOptIn = 1;
+      }
+    } catch (pasteMarkerError) {
+      // No marker is the shipped default.
+    }
+    if (this.pasteOptIn === 0) {
+      try {
+        const value: string | undefined = new process.ProcessManager().getEnvironmentVar(TOUCH_PASTE_ENV);
+        if (value !== undefined && value !== null && value.trim() === '1') {
+          this.pasteOptIn = 1;
+        }
+      } catch (pasteEnvError) {
+        // Environment API unavailable: the marker remains the only source.
+      }
+    }
+    if (this.pasteOptIn === 1) {
+      this.logInfo('[maui] touch paste: enabled (sandbox marker / OHOS_TOUCH_PASTE=1)');
+    } else {
+      this.logInfo('[maui] touch paste: opt-in unset');
+    }
+    return this.pasteOptIn === 1;
+  }
+
+  // Long-press detection on the managed surface. Two observers feed the same entry point:
+  // a LongPressGesture on the XComponent (a recognizer; the surface's native touch delivery is
+  // untouched, the gesture only observes) and a raw onTouch timer as the fallback for builds
+  // whose XComponent does not surface JS touch callbacks. Both only open the bubble; taps,
+  // drags and flings are never consumed and the timer clears on move/up.
+  private handleSurfaceTouch(event: TouchEvent): void {
+    this.notePasteEvent('surface touch');
+    if (!this.touchPasteEnabled()) {
+      return;
+    }
+    if (event.type === TouchType.Down) {
+      this.dismissPasteOverlay();
+      this.clearPasteTouchTimer();
+      if (!this.pasteSinkActive || event.touches.length === 0) {
+        return;
+      }
+      this.pasteTouchX = event.touches[0].x;
+      this.pasteTouchY = event.touches[0].y;
+      this.pasteTouchTimer = setTimeout((): void => {
+        this.pasteTouchTimer = -1;
+        this.showPasteOverlay(this.pasteTouchX, this.pasteTouchY);
+      }, TOUCH_PASTE_LONG_PRESS_MS);
+      return;
+    }
+    if (event.type === TouchType.Move) {
+      if (this.pasteTouchTimer < 0 || event.touches.length === 0) {
+        return;
+      }
+      const dx: number = event.touches[0].x - this.pasteTouchX;
+      const dy: number = event.touches[0].y - this.pasteTouchY;
+      if (dx * dx + dy * dy > TOUCH_PASTE_MOVE_SLOP_VP * TOUCH_PASTE_MOVE_SLOP_VP) {
+        this.clearPasteTouchTimer();
+      }
+      return;
+    }
+    this.clearPasteTouchTimer();
+  }
+
+  // The recognizer path: the same long press, delivered as a gesture with the finger list.
+  private handleSurfaceLongPress(event: GestureEvent): void {
+    if (!this.touchPasteEnabled()) {
+      return;
+    }
+    this.notePasteEvent('long press');
+    if (!this.pasteSinkActive) {
+      this.dismissPasteOverlay();
+      return;
+    }
+    const fingers = event.fingerList;
+    if (fingers.length === 0) {
+      return;
+    }
+    this.showPasteOverlay(fingers[0].localX, fingers[0].localY);
+  }
+
+  // Diagnostics for the opt-in path: the first few surface events log the latch and sink state,
+  // so a device round can tell "the touch never reached the page" from "the opt-in is unset".
+  private notePasteEvent(stage: string): void {
+    if (this.pasteDiagCount >= 3) {
+      return;
+    }
+    this.pasteDiagCount++;
+    this.logInfo(`[maui] touch paste: ${stage} optin=${this.pasteOptIn} sink=${this.pasteSinkActive}`);
+  }
+
+  private clearPasteTouchTimer(): void {
+    if (this.pasteTouchTimer >= 0) {
+      clearTimeout(this.pasteTouchTimer);
+      this.pasteTouchTimer = -1;
+    }
+  }
+
+  // Shows the paste bubble at the long-press point, clamped into the display so the security
+  // control is fully visible (a partially off-screen control is not a valid click target).
+  private showPasteOverlay(x: number, y: number): void {
+    const bubbleWidth: number = 148;
+    const bubbleHeight: number = 64;
+    let overlayX: number = x - bubbleWidth / 2;
+    let overlayY: number = y - bubbleHeight - 12;
+    try {
+      const displayInfo = display.getDefaultDisplaySync();
+      const widthVp: number = px2vp(displayInfo.width);
+      const heightVp: number = px2vp(displayInfo.height);
+      overlayX = Math.min(Math.max(overlayX, 8), Math.max(8, widthVp - bubbleWidth - 8));
+      overlayY = Math.min(Math.max(overlayY, 8), Math.max(8, heightVp - bubbleHeight - 8));
+    } catch (pasteDisplayError) {
+      overlayX = Math.max(overlayX, 8);
+      overlayY = Math.max(overlayY, 8);
+    }
+    this.pasteOverlayX = overlayX;
+    this.pasteOverlayY = overlayY;
+    this.pasteOverlayVisible = true;
+    this.logInfo(`[maui] touch paste: bubble shown at ${Math.round(overlayX)},${Math.round(overlayY)}`);
+  }
+
+  private dismissPasteOverlay(): void {
+    this.clearPasteTouchTimer();
+    if (this.pasteOverlayVisible) {
+      this.pasteOverlayVisible = false;
+      this.logInfo('[maui] touch paste: bubble dismissed');
+    }
+  }
+
+  // The security control's click callback. SUCCESS means the system granted the application a
+  // temporary pasteboard read; the read and the insertion happen inside the callback (a read
+  // outside the user gesture is what the ACL denies). The paste replaces the input's current
+  // selection - the ordinary paste shape - and the full text goes to the focused managed Entry
+  // through the existing notifyTextInput wire, the same path typing uses.
+  private applyTouchPaste(result: PasteButtonOnClickResult): void {
+    if (result !== PasteButtonOnClickResult.SUCCESS) {
+      this.logError(`[maui] touch paste: PasteButton click result=${result} (no temporary grant)`);
+      this.dismissPasteOverlay();
+      return;
+    }
+    let pasted: string = '';
+    try {
+      const pasteData: pasteboard.PasteData = pasteboard.getSystemPasteboard().getDataSync();
+      const text: string | null = pasteData.getPrimaryText();
+      pasted = text !== null && text !== undefined ? text : '';
+    } catch (pasteReadError) {
+      this.logError(`[maui] touch paste: read failed: ${(pasteReadError as Error).message}`);
+      this.dismissPasteOverlay();
+      return;
+    }
+    if (pasted.length === 0) {
+      this.logInfo('[maui] touch paste: no plain text in the pasteboard');
+      this.dismissPasteOverlay();
+      return;
+    }
+    const current: string = this.inputText;
+    let start: number = Math.min(this.pasteSelectionStart, this.pasteSelectionEnd);
+    let end: number = Math.max(this.pasteSelectionStart, this.pasteSelectionEnd);
+    start = Math.min(Math.max(start, 0), current.length);
+    end = Math.min(Math.max(end, start), current.length);
+    const updated: string = `${current.substring(0, start)}${pasted}${current.substring(end)}`;
+    const caret: number = start + pasted.length;
+    this.inputText = updated;
+    this.pasteSelectionStart = caret;
+    this.pasteSelectionEnd = caret;
+    try {
+      this.controller.setTextSelection(caret, caret);
+    } catch (pasteCaretError) {
+      this.logError(`[maui] touch paste: selection update failed: ${(pasteCaretError as Error).message}`);
+    }
+    this.hostCall('notifyTextInput', typeof host !== 'undefined' && typeof host.notifyTextInput === 'function', (): void => {
+      host.notifyTextInput(updated);
+    });
+    this.logInfo(`[maui] touch paste: pasted ${pasted.length} chars, text ${updated.length} chars, caret ${caret}`);
+    this.dismissPasteOverlay();
+  }
+
   build() {
     Stack() {
       // Text entry bridge: the managed Entry reads what is typed here. The input method's
@@ -8633,6 +8873,16 @@ struct Index {
             host.notifyTextSubmitted(this.inputText);
           });
         })
+        .onBlur((): void => {
+          // TOUCH-PASTE: focus left the input, so an open paste bubble has no target any more.
+          this.dismissPasteOverlay();
+        })
+        .onTextSelectionChange((selectionStart: number, selectionEnd: number): void => {
+          // TOUCH-PASTE: the paste replaces the current selection; keep it current as the user
+          // taps or drags inside the input.
+          this.pasteSelectionStart = selectionStart;
+          this.pasteSelectionEnd = selectionEnd;
+        })
 
       XComponent({
         id: 'ohos_dotnet_surface',
@@ -8640,6 +8890,22 @@ struct Index {
         libraryname: 'openharmonyhost',
       })
         .focusable(true)
+        .onTouch((event: TouchEvent): void => {
+          // TOUCH-PASTE: observe the surface's touches for the long-press paste entry point.
+          // The listener never consumes the event and clears its timer on move/up, so taps,
+          // drags and flings reach the native host exactly as before (the feature is inert
+          // unless the managed app opted in through OHOS_TOUCH_PASTE).
+          this.handleSurfaceTouch(event);
+        })
+        .gesture(
+          // TOUCH-PASTE: the recognizer path for the same long press (an XComponent whose JS
+          // touch callback stays silent still routes gesture recognizers). The recognizer only
+          // observes; the surface's native touch delivery is untouched.
+          LongPressGesture({ repeat: false, duration: TOUCH_PASTE_LONG_PRESS_MS })
+            .onAction((event: GestureEvent): void => {
+              this.handleSurfaceLongPress(event);
+            })
+        )
         .onKeyEvent((event: KeyEvent): void => {
           // Hardware keys pressed while the .NET surface holds focus: forward the raw ArkUI key
           // code and the down/up type (KeyType.Down = 0, KeyType.Up = 1) to host.keyEvent ->
@@ -8690,6 +8956,25 @@ struct Index {
           .visibility(this.mapOverlayVisible ? Visibility.Visible : Visibility.None)
           .width('100%')
           .height('100%')
+      }
+
+      // TOUCH-PASTE (opt-in, see TOUCH_PASTE_ENV): the floating paste bubble. It holds the
+      // ArkUI security control, so the user's tap is the gesture the system grants a temporary
+      // pasteboard read for. It composites above the managed surface and every web overlay
+      // (the a11y button's rule, +2), sits at the long-press point, and disappears after the
+      // paste, on the next surface press, or when the input loses focus.
+      if (this.pasteOverlayVisible) {
+        Column() {
+          PasteButton({ icon: PasteIconStyle.LINES, text: PasteDescription.PASTE, buttonType: ButtonType.Capsule })
+            .onClick((event: ClickEvent, result: PasteButtonOnClickResult): void => {
+              this.applyTouchPaste(result);
+            })
+        }
+        .padding(4)
+        .backgroundColor('#CC101010')
+        .borderRadius(10)
+        .position({ x: this.pasteOverlayX, y: this.pasteOverlayY })
+        .zIndex(this.webZOrderSeq + 2)
       }
 
       // Shell panel (Shell handler extras): the flyout header/footer text and the managed
