@@ -16,7 +16,11 @@
 #                 the docs gate runs again first and refuses to build on stale docs
 #   P2 verify     the shipped verify-kit.sh in strict mode (rc=0, 0 FAIL, 0 WARN) on the built
 #                 kit, the transfer sidecar, and the tree digest anchor
-#   P3 bundle     prepare-packs / pack-local-workload / pack-workload-bundle / release-checksums.
+#   P3 bundle     prepare-packs / pack-local-workload / pack-workload-bundle / release-checksums,
+#                 after materializing the pack payloads a fresh worktree lacks (the SDK native
+#                 host; the AspNetCore runtime pack DLLs are git-ignored): main checkout ->
+#                 build-use installed pack (-> the release mirror for the AspNetCore payload);
+#                 missing in every source fails closed (rc 4)
 #                 The bundle is cumulative: the previous published bundle is auto-resolved from
 #                 the sdk-ohos versions.env WORKLOAD_BUNDLE_SHA256 anchor (the =, := and JSON
 #                 spellings; local copy first, sdk-ohos release download otherwise) and staged
@@ -63,6 +67,10 @@
 #   # P3 seed control: explicit bundle, or an offline/local-only auto resolution
 #   scripts/cut-kit.sh --kit 55 --phase P3 --execute --seed-bundle /path/prev-bundle.tar.gz
 #   CUT_KIT_SEED_DIR=/path/cache CUT_KIT_SEED_OFFLINE=1 scripts/cut-kit.sh --kit 55 --phase P3 --execute
+#   # P3 known-payload release source override (tests / custom mirrors; pins file rows:
+#   # <family>|<version>|<release-tag>|<sha256>)
+#   CUT_KIT_PAYLOAD_RELEASE_BASE=file:///path/mirror CUT_KIT_PAYLOAD_PINS=/path/pins.tsv \
+#       scripts/cut-kit.sh --kit 55 --phase P3 --execute
 #
 # Exit code: 0 = every requested phase passed (dry-run plans count as passed); 1 = a check or
 # step failed; 2 = usage error; 3 = a safety gate refused (docs stale / confirmation declined /
@@ -933,9 +941,10 @@ p1_env() {
 # The SDK pack's native host (packs/Microsoft.OpenHarmony.Sdk/<ver>/hosts/arm64-v8a/
 # libopenharmonyhost.so) comes out of scripts/build-host.sh and is git-ignored, so a fresh
 # worktree never carries it. KIT54 finding 3: the first P3 Sdk nupkg was packed from such a
-# worktree and silently lost the host, so materialize it in the P1 prep (the phase that owns
-# the worktree) from the main checkout, falling back to the build-use installed pack; missing
-# in every source is an explicit fail-closed error - never a pack without the native host.
+# worktree and silently lost the host, so materialize it before any phase packs the worktree
+# (P1 owns the worktree; a P3-only run has no P1, so P3 calls this too) from the main
+# checkout, falling back to the build-use installed pack; missing in every source is an
+# explicit fail-closed error - never a pack without the native host.
 materialize_sdk_hosts() { # <dst-root>
     _mh_dst="$1"
     _mh_rel="packs/Microsoft.OpenHarmony.Sdk/$(sdk_pack_ver)/hosts/arm64-v8a/libopenharmonyhost.so"
@@ -945,13 +954,13 @@ materialize_sdk_hosts() { # <dst-root>
         [ -n "$_mh_src" ] || continue
         [ "$_mh_src" = "$_mh_dst" ] && continue
         [ -f "$_mh_src/$_mh_rel" ] || continue
-        log "P1 prep: materialize SDK host payload: $_mh_src/$_mh_rel -> $_mh_dst/$_mh_rel"
+        log "payload prep: materialize SDK host payload: $_mh_src/$_mh_rel -> $_mh_dst/$_mh_rel"
         mkdir -p "$(dirname "$_mh_dst/$_mh_rel")" || return 1
         cp -f "$_mh_src/$_mh_rel" "$_mh_dst/$_mh_rel" || {
-            err "P1 prep: copy failed: $_mh_rel"; return 1; }
+            err "payload prep: copy failed: $_mh_rel"; return 1; }
         return 0
     done
-    err "P1 prep: SDK host payload missing: $_mh_rel (not in $OW_REPO or ${_mh_root:-the build-use install} either)"
+    err "payload prep: SDK host payload missing: $_mh_rel (not in $OW_REPO or ${_mh_root:-the build-use install} either)"
     return 1
 }
 
@@ -1220,10 +1229,185 @@ p3_seed_plan() { # dry-run only: print how the seed would resolve (no download, 
     printf 'auto: anchor %s version %s -> %s\n' "$(printf '%s' "$_asha" | cut -c1-8)" "${_aver:-?}" "$_plan"
 }
 
+# ---- known payload materialization (P3) --------------------------------------
+# KIT57 finding: a fresh worktree carries only the *committed skeleton* of the
+# AspNetCore runtime pack (packs/Microsoft.AspNetCore.App.Runtime.openharmony-arm64/
+# <ver>); the payload (*.dll under runtimes/) is git-ignored, so
+# pack-local-workload.sh packed a 14,862 B stub and the rebuilt .29 bundle lost
+# the full 4,772,511 B feed member (the round reused the published bundle
+# instead). P3 materializes such payloads before prepare-packs from, in order,
+# the main checkout, the build-use installed pack and the release mirror;
+# missing in every source is an explicit fail-closed error (rc 4) - never a stub
+# in the packed bundle.
+#
+# Known-payload rows: <family>|<sentinel-rel>|<release-repo>. The sentinel is a
+# file only the full payload carries (the committed stub skeleton does not).
+# Adding a family costs one row plus the per-version release tag + sha256 pins.
+known_payload_families() {
+    cat <<'EOF'
+Microsoft.AspNetCore.App.Runtime.openharmony-arm64|runtimes/openharmony-arm64/lib/net11.0/Microsoft.AspNetCore.Components.Web.dll|springmin/aspnetcore-ohos
+EOF
+}
+
+known_payload_release_tag() { # <family> <version> -> release tag ("" = unpinned)
+    case "$1/$2" in
+        Microsoft.AspNetCore.App.Runtime.openharmony-arm64/11.0.0-rc.1.26504.105) printf '%s' "v11.0.0-rc.2.26504.105-openharmony" ;;
+        Microsoft.AspNetCore.App.Runtime.openharmony-arm64/11.0.0-rc.1.26451.112) printf '%s' "v11.0.0-rc.2.26451.112-openharmony" ;;
+        *) printf '%s' "" ;;
+    esac
+}
+
+known_payload_release_sha256() { # <family> <version> -> nupkg sha256 ("" = unpinned)
+    case "$1/$2" in
+        Microsoft.AspNetCore.App.Runtime.openharmony-arm64/11.0.0-rc.1.26504.105) printf '%s' "e6af31609d77b7e1d1d8af3988238577f70d8aefd35e31ba55f0dd2abd1d3e10" ;;
+        Microsoft.AspNetCore.App.Runtime.openharmony-arm64/11.0.0-rc.1.26451.112) printf '%s' "4f0d9b61d954047bb6ecb82c929af970de13489768d77d7bc687bc94536d6c5d" ;;
+        *) printf '%s' "" ;;
+    esac
+}
+
+# Extra pins for tests / custom mirrors: a file with <family>|<version>|<tag>|<sha256>
+# rows, consulted only when the built-in tables have no row (CUT_KIT_PAYLOAD_PINS).
+known_payload_pin_row() { # <family> <version> -> "tag|sha" or ""
+    [ -n "${CUT_KIT_PAYLOAD_PINS:-}" ] && [ -f "${CUT_KIT_PAYLOAD_PINS:-}" ] || return 0
+    awk -F'|' -v f="$1" -v v="$2" '$1 == f && $2 == v { print $3 "|" $4; exit }' "$CUT_KIT_PAYLOAD_PINS"
+}
+
+manifest_pack_version() { # <ow-src> <family> -> version the target manifest pins
+    _mpv_mf="$1/manifests/${SDK_BAND:-11.0.100-rc.1}/microsoft.net.sdk.openharmony/WorkloadManifest.json"
+    [ -f "$_mpv_mf" ] || return 1
+    python3 -c "import json,sys; print((json.load(open(sys.argv[1])).get('packs',{}).get(sys.argv[2]) or {}).get('version',''))" \
+        "$_mpv_mf" "$2" 2>/dev/null
+}
+
+payload_fetch() { # <out> <url> -> 0/1 (HTTP/1.1, then the pinned github.com IPs)
+    curl -fSL --http1.1 --connect-timeout 20 --max-time 600 -o "$1" "$2" 2>/dev/null && return 0
+    case "$2" in
+        https://github.com/*)
+            for _ip in 140.82.112.3 20.26.156.215 20.27.177.113; do
+                curl -fSL --http1.1 --connect-timeout 20 --max-time 600 \
+                    --resolve "github.com:443:$_ip" -o "$1" "$2" 2>/dev/null && return 0
+            done ;;
+    esac
+    return 1
+}
+
+payload_extract() { # <nupkg> <dest-dir>
+    python3 - "$1" "$2" <<'PY'
+import sys, zipfile
+zipfile.ZipFile(sys.argv[1]).extractall(sys.argv[2])
+PY
+}
+
+payload_copy_missing() { # <src-dir> <dst-dir> -> prints the copied-file count; rc 0 when the copy completed
+    _pc_n=0
+    mkdir -p "$SCRATCH/payload-cache" || return 1
+    find "$1" -type f > "$SCRATCH/payload-cache/.kp-files" 2>/dev/null || return 1
+    while IFS= read -r _pc_file; do
+        _pc_rel="${_pc_file#"$1"/}"
+        [ -n "$_pc_rel" ] || continue
+        [ -f "$2/$_pc_rel" ] && continue
+        mkdir -p "$(dirname "$2/$_pc_rel")" || return 1
+        cp -f "$_pc_file" "$2/$_pc_rel" || return 1
+        _pc_n=$((_pc_n + 1))
+    done < "$SCRATCH/payload-cache/.kp-files"
+    printf '%s' "$_pc_n"
+}
+
+materialize_known_payloads() { # <dst-root>; rc 1 when a payload stays missing
+    _kp_dst="$1"
+    _kp_f=0
+    _kp_root="$(install_pack_root 2>/dev/null || true)"
+    while IFS='|' read -r _kp_fam _kp_sentinel _kp_repo; do
+        [ -n "$_kp_fam" ] || continue
+        _kp_ver="$(manifest_pack_version "$_kp_dst" "$_kp_fam" || true)"
+        if [ -z "$_kp_ver" ]; then
+            log "P3 prep: known payload $_kp_fam is not pinned by the target manifest; skipped"
+            continue
+        fi
+        _kp_pack="$_kp_dst/packs/$_kp_fam/$_kp_ver"
+        [ -f "$_kp_pack/$_kp_sentinel" ] && continue
+        _kp_done=0
+        for _kp_src in "$OW_REPO" "$_kp_root"; do
+            [ -n "$_kp_src" ] || continue
+            [ "$_kp_src" = "$_kp_dst" ] && continue
+            _kp_srcpack="$_kp_src/packs/$_kp_fam/$_kp_ver"
+            [ -f "$_kp_srcpack/$_kp_sentinel" ] || continue
+            log "P3 prep: materialize $_kp_fam $_kp_ver payload: $_kp_src -> $_kp_dst"
+            mkdir -p "$_kp_pack" || break
+            _kp_copied="$(payload_copy_missing "$_kp_srcpack" "$_kp_pack")" || {
+                warn "P3 prep: payload copy incomplete from $_kp_srcpack"; continue; }
+            if [ -f "$_kp_pack/$_kp_sentinel" ]; then
+                log "P3 prep: $_kp_fam $_kp_ver materialized ($_kp_copied file(s) copied)"
+                _kp_done=1
+                break
+            fi
+            warn "P3 prep: $_kp_srcpack yielded no complete payload (missing $kp_sentinel)"
+        done
+        if [ "$_kp_done" != 1 ]; then
+            _kp_tag="$(known_payload_release_tag "$_kp_fam" "$_kp_ver")"
+            _kp_sha="$(known_payload_release_sha256 "$_kp_fam" "$_kp_ver")"
+            if [ -z "$_kp_tag" ] || [ -z "$_kp_sha" ]; then
+                _kp_extra="$(known_payload_pin_row "$_kp_fam" "$_kp_ver")"
+                if [ -n "$_kp_extra" ]; then
+                    # not ${x%%|*}: this platform's /bin/sh eats `|` patterns
+                    _kp_tag="$(printf '%s' "$_kp_extra" | cut -d'|' -f1)"
+                    _kp_sha="$(printf '%s' "$_kp_extra" | cut -d'|' -f2-)"
+                fi
+            fi
+            _kp_asset="$_kp_fam.$_kp_ver.nupkg"
+            if [ -n "$_kp_tag" ] && [ -n "$_kp_sha" ]; then
+                _kp_cache="$SCRATCH/payload-cache/$_kp_asset"
+                mkdir -p "$SCRATCH/payload-cache" || return 1
+                if [ ! -f "$_kp_cache" ] || [ "$(sha256_of "$_kp_cache")" != "$_kp_sha" ]; then
+                    _kp_url="${CUT_KIT_PAYLOAD_RELEASE_BASE:-https://github.com}/$_kp_repo/releases/download/$_kp_tag/$_kp_asset"
+                    log "P3 prep: fetching known payload $_kp_asset ($_kp_url)"
+                    rm -f "$_kp_cache.part"
+                    if payload_fetch "$_kp_cache.part" "$_kp_url" && \
+                       [ "$(sha256_of "$_kp_cache.part")" = "$_kp_sha" ]; then
+                        mv -f "$_kp_cache.part" "$_kp_cache"
+                    else
+                        rm -f "$_kp_cache.part"
+                        warn "P3 prep: payload download failed or digest mismatch: $_kp_url"
+                    fi
+                fi
+                if [ -f "$_kp_cache" ]; then
+                    _kp_ext="$SCRATCH/payload-cache/$_kp_fam.$_kp_ver.extract"
+                    rm -rf "$_kp_ext"
+                    mkdir -p "$_kp_ext" || return 1
+                    if payload_extract "$_kp_cache" "$_kp_ext" && [ -f "$_kp_ext/$_kp_sentinel" ]; then
+                        log "P3 prep: materialize $_kp_fam $_kp_ver payload: release $_kp_tag -> $_kp_dst"
+                        _kp_copied="$(payload_copy_missing "$_kp_ext" "$_kp_pack")" || _kp_copied="?"
+                        if [ -f "$_kp_pack/$_kp_sentinel" ]; then
+                            log "P3 prep: $_kp_fam $_kp_ver materialized from the release ($_kp_copied file(s) copied)"
+                            _kp_done=1
+                        fi
+                    else
+                        warn "P3 prep: release payload unusable: $_kp_cache (missing $kp_sentinel)"
+                    fi
+                fi
+            fi
+        fi
+        if [ "$_kp_done" != 1 ]; then
+            err "P3 prep: known payload missing: $_kp_fam $_kp_ver"
+            err "  sentinel $_kp_sentinel is not under $_kp_pack; sources tried:"
+            err "    main checkout: $OW_REPO"
+            err "    build-use install: ${_kp_root:-<unresolved>}"
+            err "    release mirror: ${_kp_repo} ${_kp_tag:-<no release tag pinned for this version>}"
+            err "  fix: build the bundle in the main checkout, install the current bundle, or add"
+            err "  the release tag + sha256 pins (known_payload_release_tag/sha256) in scripts/cut-kit.sh"
+            _kp_f=1
+        fi
+    done <<EOF
+$(known_payload_families)
+EOF
+    [ "$_kp_f" = 0 ]
+}
+
 p3_bundle() {
     _oww="$(src_ow)"
     _band="${SDK_BAND:-11.0.100-rc.1}"
     if [ "$DRY" = 1 ]; then
+        printf '   [dry-run] (materialize known pack payloads a fresh worktree lacks: the SDK native host + e.g. AspNetCore DLLs, from the main checkout / the build-use install / the release mirror)\n'
         printf '   [dry-run] (cd %s && sh scripts/prepare-packs.sh)\n' "$_oww"
         printf '   [dry-run] (cd %s && sh scripts/pack-local-workload.sh %s/.feed)\n' "$_oww" "$_oww"
         printf '   [dry-run] (cd %s && sh scripts/pack-workload-bundle.sh)\n' "$_oww"
@@ -1255,6 +1439,14 @@ p3_bundle() {
     mkdir -p "$_oww/.feed"
     cp -f "$_oldfeed"/*.nupkg "$_oww/.feed/" 2>/dev/null || true
     log "seed: $_nseed nupkg(s) staged into $_oww/.feed"
+    materialize_sdk_hosts "$_oww" || {
+        err "P3 bundle: SDK native host payload missing; refusing to pack a Sdk nupkg without it (fail closed)"
+        return 4
+    }
+    materialize_known_payloads "$_oww" || {
+        err "P3 bundle: known payload materialization failed; refusing to pack a bundle with a stub payload (fail closed)"
+        return 4
+    }
     ( cd "$_oww" && sh scripts/prepare-packs.sh ) >> "$LOGDIR/p3-bundle.log" 2>&1 || \
         { err "prepare-packs failed (log $LOGDIR/p3-bundle.log)"; return 1; }
     ( cd "$_oww" && sh scripts/pack-local-workload.sh "$_oww/.feed" ) >> "$LOGDIR/p3-bundle.log" 2>&1 || \

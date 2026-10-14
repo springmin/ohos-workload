@@ -16,6 +16,11 @@
 #   T8 task DLL    every pack ships the same tools/Microsoft.OpenHarmony.Tasks.dll and a scratch
 #                  pack without it fails the lint (the UsingTask AssemblyFile reference must
 #                  resolve inside the pack)
+#   T9 known-payload mirror coverage: P3 materializes the packs whose binary payload is not in
+#                  git (the AspNetCore runtime pack); scripts/cut-kit.sh pins the release that
+#                  carries each family/version, so the workload manifests and the cut-kit table
+#                  must stay in sync. The real pair passes; a scratch manifest with an unpinned
+#                  version is refused with the version named.
 #
 # T2-T4/T8 tamper with scratch copies; T5/T6/T7 run `dotnet msbuild` on a fixture (skipped with a
 # [SKIP] line when dotnet is unavailable, so the lint half still gates offline).
@@ -26,7 +31,7 @@
 # Exit: 0 = all checks passed; 1 = at least one check failed (work dir kept for triage).
 set -u
 
-SELFTEST_VERSION="2 (2026-09-26)"
+SELFTEST_VERSION="3 (2026-10-15)"
 
 log()     { printf '[%s] %s\n' "$(date '+%H:%M:%S')" "$*"; }
 section() { printf '\n=== %s ===\n' "$*"; }
@@ -294,6 +299,72 @@ LINT_PACKS_ROOTS="$S8" sh "$LINT" > "$WORK/T8.log" 2>&1
 assert_rc 1 $? "T8 a pack without the task assembly fails the lint"
 assert_contains "T8 names the missing task assembly reference" "MISSING task assembly referenced by" "$WORK/T8.log"
 assert_contains "T8 names the missing DLL" "Microsoft.OpenHarmony.Tasks.dll" "$WORK/T8.log"
+
+# ---- T9: the known-payload mirror table covers the manifests ---------------------------
+# KIT57: P3 materializes the packs whose binary payload is not in git (the AspNetCore
+# runtime pack), from the main checkout / the installed pack / a release mirror pinned
+# in scripts/cut-kit.sh. A manifest version bump must come with that mirror pin,
+# otherwise P3 fails closed at cut time; this gate catches the drift in CI.
+section "T9 known-payload mirror coverage"
+COVER="$WORK/known-payload-coverage.py"
+cat > "$COVER" <<'PY'
+import glob, json, os, re, sys
+
+cutkit, manifests_root = sys.argv[1:3]
+src = open(cutkit, encoding="utf-8").read()
+
+fam_block = re.search(r"known_payload_families\(\) \{\n    cat <<'EOF'\n(.*?)\nEOF", src, re.S)
+if not fam_block:
+    print("cannot parse known_payload_families() from " + cutkit, file=sys.stderr)
+    sys.exit(2)
+families = [line.split("|")[0] for line in fam_block.group(1).splitlines() if line.strip()]
+
+pins = {}
+for fn, key in (("known_payload_release_tag", "tag"), ("known_payload_release_sha256", "sha")):
+    block = re.search(fn + r"\(\) \{[^}]*case \"\$1/\$2\" in\n(.*?)\n    esac", src, re.S)
+    if not block:
+        print("cannot parse " + fn + "() from " + cutkit, file=sys.stderr)
+        sys.exit(2)
+    for fam, ver, val in re.findall(r"([^\s/]+)/([^\s)]+)\)\s*printf '%s' \"([^\"]*)\"", block.group(1)):
+        pins.setdefault((fam, ver), {})[key] = val
+
+problems = []
+checked = 0
+for mf in sorted(glob.glob(os.path.join(manifests_root, "*", "microsoft.net.sdk.openharmony",
+                                        "WorkloadManifest.json"))):
+    data = json.load(open(mf, encoding="utf-8"))
+    for fam in families:
+        ver = (data.get("packs", {}).get(fam) or {}).get("version")
+        if not ver:
+            continue
+        checked += 1
+        pin = pins.get((fam, ver)) or {}
+        if not pin.get("tag") or not re.fullmatch(r"[0-9a-f]{64}", pin.get("sha", "")):
+            problems.append("%s: %s %s has no complete cut-kit mirror pin" % (mf, fam, ver))
+if problems:
+    print("\n".join(problems), file=sys.stderr)
+    sys.exit(1)
+print("%d manifest pin(s) over %d known-payload family/families are covered"
+      % (checked, len(families)))
+PY
+python3 "$COVER" "$W/scripts/cut-kit.sh" "$W/manifests" > "$WORK/T9.log" 2>&1
+assert_rc 0 $? "T9 the repo manifests and the cut-kit mirror table agree"
+assert_contains "T9 reports the covered pins" "are covered" "$WORK/T9.log"
+NEG="$WORK/manifest-unpinned"
+mkdir -p "$NEG/11.0.100-rc.1/microsoft.net.sdk.openharmony"
+cp "$W/manifests/11.0.100-rc.1/microsoft.net.sdk.openharmony/WorkloadManifest.json" \
+    "$NEG/11.0.100-rc.1/microsoft.net.sdk.openharmony/"
+python3 - "$NEG/11.0.100-rc.1/microsoft.net.sdk.openharmony/WorkloadManifest.json" <<'PY'
+import json, sys
+path = sys.argv[1]
+data = json.load(open(path, encoding="utf-8"))
+data["packs"]["Microsoft.AspNetCore.App.Runtime.openharmony-arm64"]["version"] = "11.0.0-rc.1.99999.999"
+json.dump(data, open(path, "w", encoding="utf-8"), indent=2)
+PY
+python3 "$COVER" "$W/scripts/cut-kit.sh" "$NEG" > "$WORK/T9-neg.log" 2>&1
+assert_rc 1 $? "T9 an unpinned manifest version is refused"
+assert_contains "T9 names the unpinned version" "11.0.0-rc.1.99999.999" "$WORK/T9-neg.log"
+assert_contains "T9 points at the missing pin" "no complete cut-kit mirror pin" "$WORK/T9-neg.log"
 
 # ---- summary ---------------------------------------------------------------------------
 section "summary"

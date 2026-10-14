@@ -58,13 +58,20 @@
 #                 the API GETs and a PYTHONPATH urllib.request stub recording every PATCH (no
 #                 network); each of the four fixture bodies keeps its published text and gains
 #                 the "## Integrity (kit #99)" block after it
+#   T11 p3-payload P3 materializes the known pack payloads a fresh worktree lacks (KIT57: the
+#                 AspNetCore pack DLLs are git-ignored, so the pack was a 14,862 B stub): the
+#                 dry run prints the plan and writes nothing; an execute run fills the payload
+#                 from the main checkout (T11b) or the build-use installed pack (T11c) before
+#                 prepare-packs; missing in every source fails closed with rc=4, explains all
+#                 three sources and runs no pack step (T11d); the release mirror source is
+#                 exercised offline through a file:// mirror + a CUT_KIT_PAYLOAD_PINS row (T11e)
 #
 # Env: SELFTEST_TMPDIR=<dir>  work dir base (default: the approved opencode tmp dir)
 #      SELFTEST_KEEP=1       keep the work dir even when all checks pass
 # Exit: 0 = all checks passed; 1 = at least one check failed (work dir kept for triage).
 set -u
 
-SELFTEST_VERSION="8 (2026-10-13; 217 checks, was 208)"
+SELFTEST_VERSION="9 (2026-10-15; 238 checks, was 217)"
 
 log()     { printf '[%s] %s\n' "$(date '+%H:%M:%S')" "$*"; }
 section() { printf '\n=== %s ===\n' "$*"; }
@@ -297,12 +304,16 @@ EOF
 }
 
 # p3_ow_fixture <dir>: make_fixture plus the four P3 pack stubs (each records its call in
-# $PWD/.p3-calls) and a deterministic "fixed" bundle the pack-workload-bundle stub copies, so
-# every P3 run produces the same bundle sha.
+# $PWD/.p3-calls), a deterministic "fixed" bundle the pack-workload-bundle stub copies, and
+# the manifest-pinned SDK native host payload P3 materializes when a target worktree lacks
+# it (materialize_sdk_hosts; the fresh worktrees the P3 payload tests build from copy this).
 p3_ow_fixture() {
     _fx="$1"
     make_fixture "$_fx" 99 987654 54321 || return 1
     _ow="$_fx/ow"
+    mkdir -p "$_ow/packs/Microsoft.OpenHarmony.Sdk/1.0.0-preview.28/hosts/arm64-v8a"
+    printf 'fixture sdk host payload\n' > \
+        "$_ow/packs/Microsoft.OpenHarmony.Sdk/1.0.0-preview.28/hosts/arm64-v8a/libopenharmonyhost.so"
     mkdir -p "$_fx/bundle-src/openharmony-workload-1.0.0-preview.99/feed"
     printf 'fixture fixed bundle pack\n' > "$_fx/bundle-src/openharmony-workload-1.0.0-preview.99/feed/fixed-fixture.nupkg"
     ( cd "$_fx/bundle-src" && tar -czf "$_ow/bundle-fixed.tar.gz" openharmony-workload-1.0.0-preview.99 ) || return 1
@@ -1107,6 +1118,117 @@ sys.exit(0 if ok else 1)
 PY
     check "T10 release $_rid body appended (published text kept)" $?
 done
+
+# ------------------------------------------------------------------ T11 P3 payload materialization
+# KIT57: a fresh worktree carries only the committed AspNetCore pack skeleton
+# (its DLL payload is git-ignored), so P3 packed a 14,862 B stub and the rebuilt
+# bundle lost the full feed member. P3 now materializes the known payloads
+# before prepare-packs: main checkout -> the build-use installed pack -> the
+# release mirror; missing in every source fails closed (rc 4, no pack step).
+# The release transport runs against a file:// mirror plus a fixture pin row
+# (CUT_KIT_PAYLOAD_PINS), so the whole path is exercised offline.
+section "T11 P3 known-payload materialization"
+F11="$T/fixture-p11-main"; p3_ow_fixture "$F11" || { echo "p3 payload fixture failed" >&2; exit 1; }
+SEED11="$T/p3-seed11.tar.gz"; p3_seed_tar "$SEED11" seed-p11.nupkg || exit 1
+SEED11_SHA="$(sha256sum "$SEED11" | cut -d' ' -f1)"
+SDK11="$T/p3-sdk-payload"; p3_sdk_fixture "$SDK11" "$SEED11_SHA" colon || exit 1
+ASP_FAM="Microsoft.AspNetCore.App.Runtime.openharmony-arm64"
+ASP_VER="11.0.0-rc.1.26451.112"
+ASP_SENT="$ASP_FAM/$ASP_VER/runtimes/openharmony-arm64/lib/net11.0/Microsoft.AspNetCore.Components.Web.dll"
+
+# p3payload_target <scratch> <fixture-ow> <sentinel-rel>: a fresh-worktree
+# stand-in - a copy of the fixture ow without .git and without the payload
+# sentinel (the committed-stub state a fresh worktree starts from).
+p3payload_target() {
+    mkdir -p "$1" || return 1
+    cp -R "$2" "$1/ow" || return 1
+    rm -rf "$1/ow/.git"
+    rm -f "$1/ow/packs/$3"
+}
+
+# T11a: the dry run prints the materialization plan and writes nothing
+S11A="$T/scratch-p11-dry"; OUT11A="$T/t11a.out"
+sh "$CUT" --kit 99 --phase P3 --dry-run --scratch "$S11A" \
+    --ow-repo "$F11/ow" --maui-repo "$F11/maui" --runtime-repo "$F11/runtime" --docs-dir "$F11/docs" \
+    --sdk-repo "$SDK11" --seed-bundle "$SEED11" --no-push > "$OUT11A" 2>&1
+check_rc "T11a P3 dry-run rc=0" "$?" 0
+assert_contains "T11a prints the payload plan" "$OUT11A" 'materialize known pack payloads'
+[ ! -e "$S11A" ]; check "T11a dry-run created no scratch" $?
+
+# T11b: execute materializes the payload from the main checkout into the worktree
+S11B="$T/scratch-p11-main"; OUT11B="$T/t11b.out"
+p3payload_target "$S11B" "$F11/ow" "$ASP_SENT" || exit 1
+[ ! -f "$S11B/ow/packs/$ASP_SENT" ]; check "T11b target starts as the stub (no payload)" $?
+sh "$CUT" --kit 99 --phase P3 --execute --scratch "$S11B" \
+    --ow-repo "$F11/ow" --maui-repo "$F11/maui" --runtime-repo "$F11/runtime" --docs-dir "$F11/docs" \
+    --sdk-repo "$SDK11" --seed-bundle "$SEED11" --dotnet "$F11/installroot/dotnet" --no-push > "$OUT11B" 2>&1
+check_rc "T11b P3 execute rc=0" "$?" 0
+assert_contains "T11b logs the main-checkout materialization" "$OUT11B" "materialize $ASP_FAM $ASP_VER payload: $F11/ow"
+[ -f "$S11B/ow/packs/$ASP_SENT" ]; check "T11b payload sentinel landed in the worktree" $?
+cmp -s "$F11/ow/packs/$ASP_SENT" "$S11B/ow/packs/$ASP_SENT"; check "T11b payload bytes match the main checkout" $?
+
+# T11c: without a main-checkout payload the installed pack is the fallback
+F11C="$T/fixture-p11-install"; p3_ow_fixture "$F11C" || exit 1
+rm -f "$F11C/ow/packs/$ASP_SENT"
+S11C="$T/scratch-p11-install"; OUT11C="$T/t11c.out"
+p3payload_target "$S11C" "$F11C/ow" "$ASP_SENT" || exit 1
+sh "$CUT" --kit 99 --phase P3 --execute --scratch "$S11C" \
+    --ow-repo "$F11C/ow" --maui-repo "$F11C/maui" --runtime-repo "$F11C/runtime" --docs-dir "$F11C/docs" \
+    --sdk-repo "$SDK11" --seed-bundle "$SEED11" --dotnet "$F11C/installroot/dotnet" --no-push > "$OUT11C" 2>&1
+check_rc "T11c P3 execute rc=0" "$?" 0
+assert_contains "T11c materializes from the installed pack" "$OUT11C" "payload: $F11C/installroot"
+cmp -s "$F11C/installroot/packs/$ASP_SENT" "$S11C/ow/packs/$ASP_SENT"; check "T11c payload bytes match the installed pack" $?
+
+# T11d: missing in every source fails closed (rc 4) before any pack step
+F11D="$T/fixture-p11-missing"; p3_ow_fixture "$F11D" || exit 1
+rm -f "$F11D/ow/packs/$ASP_SENT" "$F11D/installroot/packs/$ASP_SENT"
+S11D="$T/scratch-p11-missing"; OUT11D="$T/t11d.out"
+mkdir -p "$T/p11-empty-mirror"
+CUT_KIT_PAYLOAD_RELEASE_BASE="file://$T/p11-empty-mirror" sh "$CUT" --kit 99 --phase P3 --execute --scratch "$S11D" \
+    --ow-repo "$F11D/ow" --maui-repo "$F11D/maui" --runtime-repo "$F11D/runtime" --docs-dir "$F11D/docs" \
+    --sdk-repo "$SDK11" --seed-bundle "$SEED11" --dotnet "$F11D/installroot/dotnet" --no-push > "$OUT11D" 2>&1
+check_rc "T11d missing payload rc=4" "$?" 4
+assert_contains "T11d names the missing family/version" "$OUT11D" "known payload missing: $ASP_FAM $ASP_VER"
+assert_contains "T11d names the release source" "$OUT11D" 'release mirror: springmin/aspnetcore-ohos v11.0.0-rc.2.26451.112-openharmony'
+assert_contains "T11d points at the fix" "$OUT11D" 'known_payload_release_tag/sha256'
+[ ! -e "$S11D/ow/.p3-calls" ]; check "T11d no pack script ran" $?
+[ ! -e "$S11D/sdk-anchor-wt" ]; check "T11d no sdk anchor worktree" $?
+
+# T11e: the release source materializes a payload the dir sources lack; a
+# file:// mirror + a fixture pin row exercise download/verify/extract offline
+F11E="$T/fixture-p11-release"; p3_ow_fixture "$F11E" || exit 1
+VER11E="11.0.0-rc.1.77777.777"
+ASP_PACK_REL="packs/$ASP_FAM"
+mv "$F11E/ow/$ASP_PACK_REL/$ASP_VER" "$F11E/ow/$ASP_PACK_REL/$VER11E"
+for _band in 11.0.100-rc.1 11.0.100; do
+    sed -i "s/11\.0\.0-rc\.1\.26451\.112/$VER11E/" \
+        "$F11E/ow/manifests/$_band/microsoft.net.sdk.openharmony/WorkloadManifest.json"
+done
+rm -rf "$F11E/installroot/packs/$ASP_FAM"
+ASP_SENT_E="$ASP_FAM/$VER11E/runtimes/openharmony-arm64/lib/net11.0/Microsoft.AspNetCore.Components.Web.dll"
+rm -f "$F11E/ow/packs/$ASP_SENT_E"
+MIRROR11="$T/p11-mirror/springmin/aspnetcore-ohos/releases/download/fixture-tag"
+mkdir -p "$MIRROR11"
+python3 - "$MIRROR11/$ASP_FAM.$VER11E.nupkg" "runtimes/openharmony-arm64/lib/net11.0" <<'PY'
+import sys, zipfile
+nupkg, base = sys.argv[1:3]
+with zipfile.ZipFile(nupkg, "w", zipfile.ZIP_DEFLATED) as z:
+    z.writestr(base + "/Microsoft.AspNetCore.Components.Web.dll", "fixture release payload\n")
+    z.writestr(base + "/Microsoft.AspNetCore.App.Runtime.openharmony-arm64.dll", "fixture dll\n")
+PY
+E_SHA="$(sha256sum "$MIRROR11/$ASP_FAM.$VER11E.nupkg" | cut -d' ' -f1)"
+printf '%s|%s|fixture-tag|%s\n' "$ASP_FAM" "$VER11E" "$E_SHA" > "$T/p11-pins.tsv"
+S11E="$T/scratch-p11-release"; OUT11E="$T/t11e.out"
+p3payload_target "$S11E" "$F11E/ow" "$ASP_SENT_E" || exit 1
+CUT_KIT_PAYLOAD_PINS="$T/p11-pins.tsv" CUT_KIT_PAYLOAD_RELEASE_BASE="file://$T/p11-mirror" \
+sh "$CUT" --kit 99 --phase P3 --execute --scratch "$S11E" \
+    --ow-repo "$F11E/ow" --maui-repo "$F11E/maui" --runtime-repo "$F11E/runtime" --docs-dir "$F11E/docs" \
+    --sdk-repo "$SDK11" --seed-bundle "$SEED11" --dotnet "$F11E/installroot/dotnet" --no-push > "$OUT11E" 2>&1
+check_rc "T11e P3 execute rc=0" "$?" 0
+assert_contains "T11e materializes from the release" "$OUT11E" 'payload: release fixture-tag'
+[ -f "$S11E/ow/packs/$ASP_SENT_E" ]; check "T11e sentinel extracted from the release" $?
+[ -f "$S11E/ow/$ASP_PACK_REL/$VER11E/runtimes/openharmony-arm64/lib/net11.0/Microsoft.AspNetCore.App.Runtime.openharmony-arm64.dll" ]
+check "T11e the second payload file was copied too" $?
 
 # ------------------------------------------------------------------ summary
 section "summary"
