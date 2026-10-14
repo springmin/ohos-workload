@@ -112,3 +112,28 @@ RID `openharmony-arm64`；workload `openharmony 1.0.0-preview.28/11.0.100-rc.2`�
 - **rc.2 官方包监测（2026-10-04）**：`docs/rc2-official-watch.md` + `scripts/rc2-official-watch.sh`
   （CI 每周一 + 手动；2026-10-04 复核 nuget 仅 rc.1 → **WAIT**；官方 rc.2 一到，退出码 10 触发
   `2026-09-30-rc2-mainline-adoption.md` §8 换 pin 批次）。
+
+## rc.2 官方包落地 + 换 pin（2026-10-13，RC2-ALIGN）
+
+- **触发**：官方四包 Controls / Core / Graphics / AspNetCore.Components.WebView.Maui =
+  `11.0.0-rc.2.26505.5`（nuget.org；rc2-watch trigger=yes，GitHub release 页滞后未作依据）；
+  dnceng `dotnet11` daily `11.0.0-rc.2.26478.12` 正式退役。
+- **maui 切片**：pin 提交 `1c5ff3cbeb`（`feature/openharmony`；四包引用 + docs/注释共 14 处 /
+  8 文件）；切片编译门禁 **0 error / 0 IL**（Release，IsAotCompatible + EnableTrimAnalyzer +
+  `warnaserror:IL2026,IL3050`；白名单告警 CS0618/CA2255/CS8604/CS8766/CS8613 + 官方包卫星资源
+  的 NETSDK1188 提示）。
+- **本仓 pin**：9 个工程（8 个 test + `src/Microsoft.OpenHarmony.Maui.Graphics`）→ `26505.5`；
+  三 workflow（`interaction-regression` / `pixel-regression` / `host-export-contract`）的
+  `MAUI_OHOS_REF` 与 dispatch 默认值 → `1c5ff3cbeb`；interaction/pixel 删 dnceng feed step。
+- **Blazor 配方**：`test/hello-blazorwasm` flight → 官方 `11.0.0-rc.2.26504.105`（csproj 默认 +
+  注释、`Directory.Build.targets`、`NuGet.config` 仅 nuget.org、`run-smoke.sh` 提示、README）；
+  本地 publish 冒烟通过（642 文件 / 52 MB / 204 wasm payloads；assets 全部 `26504.105`，
+  0 个旧 `26459.117`）。`blazor-recipe.yml` 头注随动。
+- **rc2-watch**：排程停用（保留手动 dispatch 与脚本作记录）；状态页 `docs/rc2-official-watch.md`
+  记触发与落地。
+- **本地门禁**（worktree 对切片 `1c5ff3cbeb`）：交互套件 **810/813 floor 793 assert=True**
+  （frame + a11y perf 全 within）、像素 **PIXEL ASSERTIONS PASSED**、宿主导出 **164/164**
+  （`--cross-check`）、§2.2 packs **no-op**（ui `620908 / c473b7be…`、headless `24324 /
+  798b2477…`，`--check-pack-abc` provenance gate passed）。
+  **注**：TOUCH-PASTE 合并后壳 abc/套件数值随其值（636,892/`f43552e7…`、814/817 floor 797），
+  本文件该节记的是本切（未并其值）的复核基线。

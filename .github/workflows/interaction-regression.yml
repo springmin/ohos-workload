@@ -40,7 +40,7 @@ on:
         description: 'maui-ohos commit SHA to compile (defaults to the pinned feature/openharmony tip)'
         required: false
         type: string
-        default: '5cfb1b89916d17d2bb65406a4dae2f66cf773b33'
+        default: '1c5ff3cbeb51173c893f9d9f0b9f2761b524fd5a'
   push:
     branches: [ master ]
   pull_request:
@@ -280,10 +280,13 @@ permissions:
 # frame/alert partition and the pinch routing (child-tagged only; main/unknown/empty ids rejected),
 # plus the four-pack shell source pins) and the full run
 # is green at this compiled tree (local verification: 814/817, floor 797, both perf lines within
-# budget); advance the pin deliberately and refresh this comment when the harness pins or the
-# tip move (workflow_dispatch can compile any commit).
+# budget; the current pin 1c5ff3cbeb is the RC2-ALIGN commit: the four Microsoft.Maui.* references
+# move from the dnceng daily 11.0.0-rc.2.26478.12 to the official nuget.org 11.0.0-rc.2.26505.5,
+# so the restore runs against nuget.org alone and the dnceng feed step is gone; the slice sources
+# and the harness are unchanged); advance the pin deliberately and refresh this comment when the
+# harness pins or the tip move (workflow_dispatch can compile any commit).
 env:
-  MAUI_OHOS_REF: ${{ github.event.inputs.maui_ohos_ref || '5cfb1b89916d17d2bb65406a4dae2f66cf773b33' }}
+  MAUI_OHOS_REF: ${{ github.event.inputs.maui_ohos_ref || '1c5ff3cbeb51173c893f9d9f0b9f2761b524fd5a' }}
   # setup-dotnet installs the requested 11.0.x preview into DOTNET_INSTALL_DIR; on Linux that
   # defaults to /usr/share/dotnet, which a per-user cache cannot persist. Point it at ~/.dotnet
   # (the action resolves the ~ prefix against $HOME) so the cache step below actually avoids the
@@ -325,11 +328,6 @@ jobs:
           dotnet-quality: 'preview'
       - name: Reject machine-specific absolute paths in build inputs
         run: sh scripts/check-no-absolute-paths.sh
-      - name: Add the dnceng dotnet11 feed (MAUI rc.2 daily packages)
-        # The pinned slice carries Microsoft.Maui.* 11.0.0-rc.2.26478.12, a dnceng dotnet11
-        # daily that is not on nuget.org yet (see docs/rc2-line-notes.md). Drop this step
-        # when the official rc.2 packages ship and the slice pins move to nuget.org versions.
-        run: dotnet nuget add source https://pkgs.dev.azure.com/dnceng/public/_packaging/dotnet11/nuget/v3/index.json --name dnceng-dotnet11
       - name: Build the hosting assemblies the slice gate references
         run: |
           set -euo pipefail

@@ -16,10 +16,9 @@ pattern the in-product HybridWebView/BlazorWebView bridge uses. See `arkts-host/
 
 ## Why the recipe is needed
 
-- The workload's runtime line is `11.0.0-rc.1.26451.109`; the fork's rc.1 Blazor/WebAssembly
-  packages are **not** on nuget.org, while the dnceng public `dotnet11` feed carries the rc.2
-  flights. `NuGet.config` adds the feed and the project pins the flight
-  (`BlazorFlightVersion`, default `11.0.0-rc.2.26459.117`).
+- The workload's forked SDK band is not the official Blazor/WebAssembly flight. The project
+  pins the official rc.2 flight from nuget.org (`BlazorFlightVersion`, default
+  `11.0.0-rc.2.26504.105`); `NuGet.config` keeps nuget.org as the only source.
 - `Directory.Build.targets` moves the `Microsoft.NET.Sdk.WebAssembly.Pack` and
   `Microsoft.AspNetCore.App.Internal.Assets` known-pack versions to that flight;
   `RuntimeFrameworkVersion` follows in the csproj (a command-line `-p:` still wins).
@@ -45,8 +44,8 @@ test/hello-blazorwasm/run-smoke.sh --skip-publish    # verify an existing out/pu
 Without `--require`, a publish blocked at restore (feed or pack unavailable) prints `SKIP` and
 exits 0, mirroring `test/aot-smoke/run-smoke.sh`.
 
-`--trim` runs ILLink as `Microsoft.NETCore.App 11.0.0-rc.2.26459.117`; a device carrying only
-the rc.1 runtime directory needs that rc.2 runtime installed (or the temporary directory copy
+`--trim` runs ILLink as `Microsoft.NETCore.App 11.0.0-rc.2.26504.105`; a device carrying only
+an older runtime directory needs that rc.2 runtime installed (or the temporary directory copy
 from runtime-ohos `docs/plans/2026-09-28-blazor-wasm-on-device-feasibility.md`).
 
 ## Host hap
@@ -129,7 +128,7 @@ feed/version drift shows up without a device.
 hello-blazorwasm.csproj      flight pin + RuntimeFrameworkVersion (see the csproj comments)
 Directory.Build.targets     known-pack version overrides + conditional task-host override import
 taskhost-overrides.targets  in-process UsingTask registrations (only with OhosTaskHostOverride)
-NuGet.config                nuget.org + dnceng public dotnet11 feed
+NuGet.config                nuget.org only (the pinned official rc.2 flight)
 run-smoke.sh                publish + verify driver (SKIP/--require/--slim semantics)
 arkts-host/                 ArkTS host project + pack-host.sh (see its README)
 ```

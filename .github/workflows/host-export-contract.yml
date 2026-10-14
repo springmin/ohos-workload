@@ -22,7 +22,7 @@ on:
         description: 'maui-ohos commit SHA to cross-check (defaults to the pinned slice tip)'
         required: false
         type: string
-        default: '5cfb1b89916d17d2bb65406a4dae2f66cf773b33'
+        default: '1c5ff3cbeb51173c893f9d9f0b9f2761b524fd5a'
   push:
     branches: [ master ]
   pull_request:
@@ -187,9 +187,12 @@ permissions:
 # new DllImport) keep the contract at 150/150 until L6 adds `ohos_host_screenshot_format` (the
 # screenshot sink's format/quality request) as the 151st entry, so the host export contract is
 # 151/151).
-# Advance the pin deliberately, in lockstep with the interaction/pixel gates.
+# Advance the pin deliberately, in lockstep with the interaction/pixel gates. The current pin
+# 1c5ff3cbeb is the RC2-ALIGN commit (the four Microsoft.Maui.* references move to the official
+# nuget.org rc.2 11.0.0-rc.2.26505.5); it is a package-reference bump only, so the host export
+# contract is unchanged.
 env:
-  MAUI_OHOS_REF: ${{ github.event.inputs.maui_ohos_ref || '5cfb1b89916d17d2bb65406a4dae2f66cf773b33' }}
+  MAUI_OHOS_REF: ${{ github.event.inputs.maui_ohos_ref || '1c5ff3cbeb51173c893f9d9f0b9f2761b524fd5a' }}
 
 jobs:
   contract:

@@ -88,7 +88,7 @@ else
         if grep -qhE 'NU1101|NU1102|NU1103|NU1301|NU1302|Unable to load the service index|Unable to find package' \
                 "$OUT"/publish-plain.log "$OUT"/publish-override.log 2>/dev/null; then
             echo "SKIP: the Blazor/WebAssembly flight could not be restored (feed or pack unavailable)."
-            echo "      Check NuGet.config (dnceng-dotnet11) and network access; see README.md 'Recipe'."
+            echo "      Check NuGet.config (nuget.org) and network access; see README.md 'Recipe'."
             [ "$REQUIRE" = 1 ] && exit 1
             exit 0
         fi

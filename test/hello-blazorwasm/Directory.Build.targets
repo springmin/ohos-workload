@@ -1,10 +1,10 @@
 <Project>
 
-  <!-- Version alignment for the OpenHarmony SDK smoke (README.md §2): the workload's runtime
-       line cannot restore the fork's rc.1 Blazor/WebAssembly packages, and the dnceng public
-       dotnet11 feed only carries the rc.2 flights. Pin the WebAssembly SDK pack and the Blazor
-       assets pack to the flight the app restores (BlazorFlightVersion, defined in the csproj).
-       The <RuntimeFrameworkVersion> default in the csproj follows the same flight. -->
+  <!-- Version alignment for the OpenHarmony SDK smoke (README.md §2): the workload's forked
+       SDK carries its own Blazor/WebAssembly band, so the app pins the official rc.2 flight
+       (nuget.org, BlazorFlightVersion in the csproj). Pin the WebAssembly SDK pack and the
+       Blazor assets pack to the flight the app restores. The <RuntimeFrameworkVersion>
+       default in the csproj follows the same flight. -->
   <ItemGroup>
     <KnownWebAssemblySdkPack Update="Microsoft.NET.Sdk.WebAssembly.Pack"
                              WebAssemblySdkPackVersion="$(BlazorFlightVersion)" />

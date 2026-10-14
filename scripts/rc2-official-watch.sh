@@ -1,11 +1,13 @@
 #!/bin/sh
 # rc2-official-watch.sh - poll nuget.org / GitHub for the official MAUI rc.2+ packages (RC2-WATCH).
 #
-# Why: the pinned maui-ohos slice still carries Microsoft.Maui.* 11.0.0-rc.2.26478.12, a
-# dnceng dotnet11 daily (docs/rc2-line-notes.md), and the interaction/pixel workflows still add
-# the dnceng feed. The pin-switch batch in
-# runtime-ohos/docs/plans/2026-09-30-rc2-mainline-adoption.md section 8 is unblocked only when
-# an official rc.2 - or any later version - of the slice's packages is on nuget.org.
+# Why: this watch tracked the dnceng-daily-to-official rc.2 transition of the slice's
+# Microsoft.Maui.* packages. It fired on 2026-10-13 (official 11.0.0-rc.2.26505.5 on nuget.org)
+# and the pin-switch batch in runtime-ohos
+# docs/plans/2026-09-30-rc2-mainline-adoption.md section 8 landed the same day: the slice pin and
+# the interaction/pixel/host-export references moved to the new maui tip and the dnceng feed step
+# is gone. The script stays for the record and for a manual poll; re-baseline it before watching
+# the next milestone.
 #
 # Sources (both are queried on every run):
 #   1. the nuget.org flat-container index of every package the slice references;

@@ -56,9 +56,9 @@
          so keep the hand-built fixtures out of the publish set. -->
     <Content Remove="module.json" />
     <Content Remove="resources/**" />
-    <PackageReference Include="Microsoft.Maui.Controls" Version="11.0.0-rc.2.26478.12" />
-    <PackageReference Include="Microsoft.Maui.Graphics" Version="11.0.0-rc.2.26478.12" />
-    <PackageReference Include="Microsoft.AspNetCore.Components.WebView.Maui" Version="11.0.0-rc.2.26478.12" />
+    <PackageReference Include="Microsoft.Maui.Controls" Version="11.0.0-rc.2.26505.5" />
+    <PackageReference Include="Microsoft.Maui.Graphics" Version="11.0.0-rc.2.26505.5" />
+    <PackageReference Include="Microsoft.AspNetCore.Components.WebView.Maui" Version="11.0.0-rc.2.26505.5" />
     <Reference Include="Microsoft.OpenHarmony.Hosting">
       <HintPath>$(OpenHarmonyHostingDir)/Microsoft.OpenHarmony.Hosting/bin/Release/net11.0/Microsoft.OpenHarmony.Hosting.dll</HintPath>
       <Private>false</Private>
