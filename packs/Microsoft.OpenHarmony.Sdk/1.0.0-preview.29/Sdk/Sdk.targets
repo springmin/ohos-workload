@@ -1,0 +1,61 @@
+<Project>
+  <!-- Single-source import guard: the SDK resolver imports this file once, but an explicit
+       <Import> (or a future manifest change) must not duplicate the platform symbols, items or
+       the Hap.targets import. The marker is captured before it is set, so the first import
+       applies and any later one is a no-op (audit V3/V10 regression). -->
+  <PropertyGroup Condition=" '$(TargetPlatformIdentifier)' == 'openharmony' ">
+    <_OpenHarmonySdkTargetsAlreadyImported Condition=" '$(MicrosoftOpenHarmonySdkTargetsImported)' == 'true' ">true</_OpenHarmonySdkTargetsAlreadyImported>
+    <MicrosoftOpenHarmonySdkTargetsImported>true</MicrosoftOpenHarmonySdkTargetsImported>
+    <!-- The pack root for the Hap.targets asset lookups. Sdk.props carries the same value for
+         consumers that import it explicitly, but the workload manifest imports only Sdk.targets
+         (the resolver imports an SDK's props only for a project-level Sdk attribute), so the
+         property must be live here or every hap packaging build loses the templates/hosts. -->
+    <_OpenHarmonySdkPackDir>$([MSBuild]::NormalizeDirectory('$(MSBuildThisFileDirectory)', '..'))</_OpenHarmonySdkPackDir>
+  </PropertyGroup>
+  <PropertyGroup Condition=" '$(TargetPlatformIdentifier)' == 'openharmony' and '$(_OpenHarmonySdkTargetsAlreadyImported)' != 'true' ">
+    <TargetPlatformSupported>true</TargetPlatformSupported>
+    <TargetPlatformDisplayName>OpenHarmony</TargetPlatformDisplayName>
+    <!-- Platform symbols, matching the convention of the other platform SDKs (ANDROID, ...). -->
+    <DefineConstants Condition=" '$(DisableImplicitFrameworkDefines)' != 'true' ">$(DefineConstants);OPENHARMONY;__OPENHARMONY__</DefineConstants>
+    <SupportedOSPlatformVersion Condition=" '$(SupportedOSPlatformVersion)' == '' ">20.0</SupportedOSPlatformVersion>
+    <SupportedOSPlatformVersion Condition=" '$(SupportedOSPlatformVersion)' != '' and !$(SupportedOSPlatformVersion.Contains('.')) ">$(SupportedOSPlatformVersion).0</SupportedOSPlatformVersion>
+    <!-- Host model: the .hap host, not a classic apphost. -->
+    <UseAppHost Condition=" '$(UseAppHost)' == '' ">false</UseAppHost>
+    <!-- No openharmony apphost pack exists; the .hap host loads hostfxr. ResolveAppHosts still
+         emitted apphost PackageDownloads for every RID in RuntimeIdentifiers (e.g. a restore
+         with -r, where the SDK maps openharmony-arm64 to the linux-musl apphost pack at an
+         unpublished SDK-band version -> NU1102). Disable the download by default; a project
+         that sets EnableAppHostPackDownload explicitly keeps the SDK behavior. -->
+    <EnableAppHostPackDownload Condition=" '$(EnableAppHostPackDownload)' == '' ">false</EnableAppHostPackDownload>
+    <SelfContained Condition=" '$(SelfContained)' == '' ">true</SelfContained>
+    <AllowSelfContainedWithoutRuntimeIdentifier Condition=" '$(AllowSelfContainedWithoutRuntimeIdentifier)' == '' ">true</AllowSelfContainedWithoutRuntimeIdentifier>
+    <!-- Device-first default RID. With SelfContained=true the SDK inference
+         (Microsoft.NET.RuntimeIdentifierInference.targets, imported after this file) otherwise
+         falls back to the SDK host RID (NETCoreSdkPortableRuntimeIdentifier = ohos-arm64), which
+         the workload RID graph does not carry: framework-reference processing then failed
+         NETSDK1083 before any runtime pack could resolve. Setting the device RID here keeps
+         restore/build/publish on one RID; an explicit -r / RuntimeIdentifier still wins. -->
+    <RuntimeIdentifier Condition=" '$(RuntimeIdentifier)' == '' and '$(IsRidAgnostic)' != 'true' and ( '$(OutputType)' == 'Exe' or '$(OutputType)' == 'WinExe' ) ">openharmony-arm64</RuntimeIdentifier>
+    <GenerateDependencyFile Condition=" '$(GenerateDependencyFile)' == '' ">false</GenerateDependencyFile>
+    <CopyLocalLockFileAssemblies Condition=" '$(CopyLocalLockFileAssemblies)' == '' ">true</CopyLocalLockFileAssemblies>
+    <!-- No classic apphost: the .hap host (NAPI) loads hostfxr. The SDK's built-in
+         apphost-less RID list does not know openharmony yet. -->
+    <_RuntimeIdentifierUsesAppHost Condition=" '$(RuntimeIdentifier)' != '' and $(RuntimeIdentifier.StartsWith('openharmony')) ">false</_RuntimeIdentifierUsesAppHost>
+    <!-- The openharmony RIDs are not in the SDK's bundled RID graph yet; the workload carries
+         one. The legacy branch honors UseRidGraph=true (the SDK's own legacy graph has no
+         openharmony entries); the portable branch (the default for net8+) is the graph that is
+         byte-synced with sdk-ohos/eng/PortableRuntimeIdentifierGraph.openharmony.json by
+         scripts/sync-ridgraph.sh. -->
+    <RuntimeIdentifierGraphPath Condition=" '$(RuntimeIdentifierGraphPath)' == '' and '$(UseRidGraph)' == 'true' ">$(MSBuildThisFileDirectory)../ridgraph/RuntimeIdentifierGraph.openharmony.json</RuntimeIdentifierGraphPath>
+    <RuntimeIdentifierGraphPath Condition=" '$(RuntimeIdentifierGraphPath)' == '' ">$(MSBuildThisFileDirectory)../ridgraph/PortableRuntimeIdentifierGraph.openharmony.json</RuntimeIdentifierGraphPath>
+  </PropertyGroup>
+
+
+  <Import Project="$(MSBuildThisFileDirectory)../targets/OpenHarmony.Hap.targets"
+          Condition=" '$(TargetPlatformIdentifier)' == 'openharmony' and '$(_OpenHarmonySdkTargetsAlreadyImported)' != 'true' " />
+
+  <!-- Platform items (single source; guarded by the import marker so a second import through a
+       different path cannot duplicate them). -->
+  <Import Project="$(MSBuildThisFileDirectory)../targets/OpenHarmony.PlatformItems.targets"
+          Condition=" '$(TargetPlatformIdentifier)' == 'openharmony' and '$(_OpenHarmonySdkTargetsAlreadyImported)' != 'true' " />
+</Project>

@@ -1,5 +1,14 @@
 # rc.2 线交接说明（2026-09-29）
 
+> **2026-10-14 更新（官方 rc.2 重切 ✗）**：三仓推进到**官方 rc.2（`.105`）**并重发 ✗——
+> SDK `11.0.100-rc.2.26504.105`、runtime/aspnetcore `11.0.0-rc.2.26504.105`（`-ohos`＋`-openharmony`
+> 线均齐 ✗）；**workload bundle 重打为 `1.0.0-preview.29`**（packs 随动 `.105` ✗：BCL/Aspnet 均
+> `.105` ✗；`.28` 保留历史 ✗）——**kit/测试方请把引用从 `preview.28` 更新到 `preview.29`** ✗。
+> 锚：SDK `0f668e89…`／runtime `a228fa81…`／bundle `21e2d128…`（selfsign `a403a1b4…` 不变 ✓）。
+> 设备实测 ✓：install rc=0；`dotnet --info`＝`.105`／`OS Platform: Linux`／workload `.29`；
+> hello publish＋真机运行 rc=0 ✓。发布面：`workload-1.0.0-preview.29`✗／rolling `workload-latest`✗／
+> SDK `.105` `-ohos` 附挂＋合并 SUMS✗／镜像 `-openharmony` 同步 ✓（kit 套件本轮未动 ✗，待窗口重出 ✗）。
+
 > 面向 kit/测试方与后续维护者。当前产品线 = **rc.2**（SDK `11.0.100-rc.2.26451.112`，
 > workload `1.0.0-preview.28`），与上游 rc.2 flight（`.112`）对齐。
 > rc.1 线（`11.0.100-rc.2.26451.109` / workload `preview.24`）仍在设备 `~/.dotnet` 保留作回滚。

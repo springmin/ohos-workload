@@ -1,0 +1,18 @@
+<!--
+***********************************************************************************************
+AutoImport.props
+
+Imported for every project using Microsoft.NET.Sdk when the platform workload is installed.
+Per the workload design rules this file must stay side-effect free for other platforms, so
+it only marks the pack (used by consumers such as .NET MAUI to detect the workload).
+***********************************************************************************************
+-->
+<Project>
+  <PropertyGroup>
+    <MicrosoftOpenHarmonySdkPackImported>true</MicrosoftOpenHarmonySdkPackImported>
+  </PropertyGroup>
+
+  <ItemGroup Condition=" '$(TargetFramework)' != '' and $(TargetFramework.Contains('-openharmony')) ">
+    <!-- Default items for OpenHarmony projects belong in the platform SDK targets, not here. -->
+  </ItemGroup>
+</Project>

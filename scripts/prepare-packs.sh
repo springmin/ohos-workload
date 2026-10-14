@@ -20,19 +20,19 @@
 # -openharmony release and verified against the expected digest.
 set -e
 W="$(cd "$(dirname "$0")/.." && pwd)"
-VER=1.0.0-preview.28
+VER=1.0.0-preview.29
 DOTNET="${DOTNET:-$HOME/.dotnet/dotnet}"
 # Shared, overridable dotnet environment (MSBuild server/node reuse off, a TMPDIR that can host
 # the server socket) for the builds below; see "Known environment quirks" in
 # docs/openharmony-hap-packaging.md.
 . "$W/scripts/lib-dotnet-env.sh" "$W"
-RTV=11.0.0-rc.2.26451.112
-# sha256 (64 hex chars) of Microsoft.NETCore.App.Runtime.openharmony-arm64.11.0.0-rc.2.26451.112.nupkg
-# on the v11.0.0-rc.2.26451.112-openharmony release; cross-check with
-#   gh api repos/springmin/runtime-ohos/releases/tags/v11.0.0-rc.2.26451.112-openharmony \
+RTV=11.0.0-rc.2.26504.105
+# sha256 (64 hex chars) of Microsoft.NETCore.App.Runtime.openharmony-arm64.11.0.0-rc.2.26504.105.nupkg
+# on the v11.0.0-rc.2.26504.105-openharmony release; cross-check with
+#   gh api repos/springmin/runtime-ohos/releases/tags/v11.0.0-rc.2.26504.105-openharmony \
 #     --jq '.assets[] | select(.name=="Microsoft.NETCore.App.Runtime.openharmony-arm64.'$RTV'.nupkg") | .digest'
-SHA=bd71b62af9f07c3031115a9cc461c37aa540356bb68d714d842375cfaeb1450b
-URL="https://github.com/springmin/runtime-ohos/releases/download/v11.0.0-rc.2.26451.112-openharmony/Microsoft.NETCore.App.Runtime.openharmony-arm64.$RTV.nupkg"
+SHA=5c06a274150c9e17ccca47e7ccc351817cd931ef93b7d8c56282104383e95d57
+URL="https://github.com/springmin/runtime-ohos/releases/download/v11.0.0-rc.2.26504.105-openharmony/Microsoft.NETCore.App.Runtime.openharmony-arm64.$RTV.nupkg"
 BCL="$W/packs/Microsoft.NETCore.App.Runtime.openharmony-arm64/$RTV"
 
 # Expected digest of whatever artifact gets unpacked. EXPECT_SHA_SRC records where it came

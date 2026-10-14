@@ -1,0 +1,35 @@
+{
+  "compiler": {
+    "abcVersion": "13.0.1.0",
+    "compatibleSdkVersion": "18",
+    "flavor": "openharmony",
+    "hvigor": "6.26.4",
+    "modelVersion": "6.0.2",
+    "script": "scripts/build-arkts-shell.sh"
+  },
+  "schema": 1,
+  "variants": {
+    "headless": {
+      "abcVersion": "13.0.1.0",
+      "bytes": 24324,
+      "dist": "modules.headless.abc",
+      "file": "modules.abc",
+      "sha256": "798b2477151b7a273343cb0874ecc0c462da2d986563a411ae77ca802f90a3e7",
+      "sources": {
+        "entryability/EntryAbility.ets": "55f7d7da953fa89e81f062230d507e7a075be8669f7334d5a3baae8cab4b1335"
+      }
+    },
+    "ui": {
+      "abcVersion": "13.0.1.0",
+      "bytes": 637224,
+      "dist": "modules.abc",
+      "file": "modules.ui.abc",
+      "sha256": "8503a3c2a917ca518b4d3baada52b3e8a921ac15ea86fae9429729b136d59fb3",
+      "sources": {
+        "entryability/EntryAbility.ui.ets": "eff19968215fecca3a3800165cabf4ec85c519500c2fb8d7e524aca9d206f565",
+        "pages/Index.ets": "ee6fbc3f9cd88e4324a04bf503803e66670385128622a58de8728c83e0345b49",
+        "pages/SubWindow.ets": "4a584ba10f71b09cbc21f948eb5aa99867f7d7f2189de36efb54ce3cf2624ca9"
+      }
+    }
+  }
+}

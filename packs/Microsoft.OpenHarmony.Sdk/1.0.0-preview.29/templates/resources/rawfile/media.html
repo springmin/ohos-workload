@@ -1,0 +1,573 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,user-scalable=no">
+<title>OpenHarmony media page</title>
+<style>
+  html, body { margin: 0; padding: 0; width: 100%; height: 100%; background: #000; overflow: hidden; }
+  video { display: block; width: 100%; height: 100%; background: #000; object-fit: contain; }
+</style>
+</head>
+<body>
+<video id="ohMedia" playsinline webkit-playsinline preload="metadata"></video>
+<script>
+// ---------------------------------------------------------------------------------------------
+// MEDIA-ELEMENT (A-M1) + HLS (B-M1): the shell-served media page. The shell loads this document
+// on the element's overlay slot (https://media.local/?s=<slot>) and injects window.__ohMediaSlot
+// / window.__ohMediaId at page end; the query parameter is the early source of the slot.
+//
+// JS API (all calls answer a JSON object; every asynchronous outcome is pushed as an event):
+//   load(url, {aspect, volume, muted, loop})  set the source (does not start playback)
+//   play() pause() stop() seek(seconds)       transport
+//   setVolume(0..1) setMuted(bool)            audio
+//   setAspect('fit'|'fill')                   video sizing (object-fit)
+//   snapshot() size() state() hlsState()      synchronous state read
+//
+// HLS (B-M1): the platform ArkWeb cannot play an .m3u8 natively (MEDIA-Q1), so a path ending in
+// .m3u8 is played through MSE with the hls.js runtime the shell serves under this same origin
+// (rawfile "hls.min.js", hls.js 1.7.3, Apache-2.0; see hls.LICENSE.txt). The runtime is loaded
+// lazily on the first HLS source; when hls.js or MediaSource is unavailable the page falls back
+// to the native video src and lets the platform answer (its error maps to the managed Failed
+// path). A fatal HLS error after the bounded recoveries is reported as an error event.
+// MEDIA-RESIDUALS (hlsrange): a same-origin fragment fetch that carries a non-zero byte-range
+// offset is served by fetching the whole file once and slicing locally (see LocalSliceLoader).
+// ArkWeb's intercepted ArrayBuffer responses cannot skip bytes for CEF (NWebResourceHandler::Skip
+// offsets only file/resource responses), so the shell's correct 206 answer for a non-zero range
+// offset dies in the CEF input stream with net::ERR_REQUEST_RANGE_NOT_SATISFIABLE (-328) and
+// surfaces as fragLoadError; the local slice carries exactly the bytes a used 206 would have.
+// MEDIA-MICRO: a registered rawfile/file playlist is served under /__src__ and stamped with
+// window.__ohMediaHls, so it enters the same hls.js path even though the URL has no extension;
+// the shell serves the playlist's sibling variant/segment/media files from the playlist's own
+// directory and answers their Range requests (single range -> 206).
+//
+// Events (window.dotnetHost.postMessage("__OHMEDIA|s<slot>|<kind>|<json>"), consumed by
+// OpenHarmonyMediaElementSurface):
+//   ready {slot} | opened {duration,width,height} | duration {duration} | size {width,height}
+//   position {position,duration,ended} | playing {} | paused {} | stopped {} | seeked {position}
+//   ended {} | error {code,message,videoCode} | playfailed {name,message}
+//   hls {event,...} diagnostics only (manifest-parsed/fallback-native/error)
+// ---------------------------------------------------------------------------------------------
+(function () {
+  var video = document.getElementById('ohMedia');
+  var slot = -1;
+  try {
+    var match = /[?&]s=(\d+)/.exec(window.location.search || '');
+    if (match) { slot = parseInt(match[1], 10); }
+  } catch (parseError) {
+    slot = -1;
+  }
+  if (slot < 0 && typeof window.__ohMediaSlot === 'number') { slot = window.__ohMediaSlot; }
+  // MEDIA-MICRO: the shell marks a registered playlist in the page query (hls=1) and stamps
+  // window.__ohMediaHls; either signal routes the extension-less /__src__ source through hls.js
+  // (the query is available from the first script run, the stamp needs the page-end injection).
+  var hlsFromQuery = false;
+  try {
+    hlsFromQuery = /[?&]hls=1(?:&|$)/.test(window.location.search || '');
+  } catch (hlsQueryError) {
+    hlsFromQuery = false;
+  }
+  var lastPositionPost = 0;
+
+  // -------------------------------------------------------------------------------------------
+  // HLS (B-M1): the lazy hls.js runtime + the MSE playback branch.
+  // -------------------------------------------------------------------------------------------
+  var HLS_RUNTIME = 'hls.min.js';
+  var HLS_FATAL_RETRIES = 2;
+  var HLS_SCRIPT_IDLE = 0;
+  var HLS_SCRIPT_LOADING = 1;
+  var HLS_SCRIPT_READY = 2;
+  var HLS_SCRIPT_FAILED = 3;
+  var hls = null;
+  var hlsScriptState = HLS_SCRIPT_IDLE;
+  var hlsScriptWaiters = [];
+  var hlsPendingPlay = false;
+  var hlsManifestReady = false;
+  var pendingHlsUrl = '';
+  var hlsRetries = 0;
+  var loadSeq = 0;
+  // MEDIA-RESIDUALS (hlsrange): the whole-file payload of the current same-origin fragment
+  // source. A registered playlist can name one file through many byte ranges; fetching it once
+  // and slicing per fragment avoids both the platform skip failure and a refetch per fragment.
+  // destroyHls() drops it, so it never spans two sources.
+  var localSliceCache = { url: '', data: null };
+
+  function post(kind, detail) {
+    try {
+      var payload = '__OHMEDIA|s' + slot + '|' + kind + '|' + JSON.stringify(detail || {});
+      var proxy = window.dotnetHost || window.__ohosDotNet;
+      if (proxy && typeof proxy.postMessage === 'function') {
+        proxy.postMessage(payload);
+      }
+    } catch (postError) {
+      // The bridge is best effort; the page keeps playing without it.
+    }
+  }
+
+  function num(value, fallback) {
+    return typeof value === 'number' && isFinite(value) ? value : fallback;
+  }
+
+  function stateName() {
+    if (video.error) { return 'failed'; }
+    if (video.ended) { return 'ended'; }
+    if (video.paused) { return video.readyState > 0 ? (video.currentTime > 0 ? 'paused' : 'opened') : 'idle'; }
+    return 'playing';
+  }
+
+  function snapshot() {
+    var duration = num(video.duration, 0);
+    var position = num(video.currentTime, 0);
+    return {
+      state: stateName(),
+      position: position,
+      duration: duration,
+      paused: video.paused === true,
+      ended: video.ended === true,
+      muted: video.muted === true,
+      volume: num(video.volume, 1),
+      width: num(video.videoWidth, 0),
+      height: num(video.videoHeight, 0),
+      error: video.error ? video.error.code : 0
+    };
+  }
+
+  function ack() {
+    return JSON.stringify({ ok: true, state: stateName() });
+  }
+
+  function fail(what, extra) {
+    var detail = { message: what };
+    if (extra) {
+      for (var key in extra) { if (Object.prototype.hasOwnProperty.call(extra, key)) { detail[key] = extra[key]; } }
+    }
+    post('error', detail);
+    return JSON.stringify({ ok: false, message: what });
+  }
+
+  // True for a source path ending in .m3u8 (scheme/authority, query and fragment stripped).
+  // MEDIA-MICRO: a registered rawfile/file playlist is served under the extension-less source
+  // path (/__src__); the shell's hls=1 query flag (or the page-end window.__ohMediaHls stamp)
+  // routes it through hls.js although the served URL carries no .m3u8 suffix.
+  function isHlsUrl(url) {
+    try {
+      var path = String(url);
+      var scheme = path.indexOf('://');
+      if (scheme >= 0) {
+        var slash = path.indexOf('/', scheme + 3);
+        path = slash >= 0 ? path.substring(slash) : '/';
+      }
+      var query = path.indexOf('?');
+      if (query >= 0) { path = path.substring(0, query); }
+      var fragment = path.indexOf('#');
+      if (fragment >= 0) { path = path.substring(0, fragment); }
+      if (/\.m3u8$/i.test(path)) { return true; }
+      return (hlsFromQuery || window.__ohMediaHls === true) && path === '/__src__';
+    } catch (isHlsError) {
+      return false;
+    }
+  }
+
+  // A URL safe for a diagnostic event (query and fragment are dropped: they may carry tokens).
+  function logUrl(url) {
+    var text = String(url);
+    var query = text.indexOf('?');
+    if (query >= 0) { text = text.substring(0, query); }
+    var fragment = text.indexOf('#');
+    if (fragment >= 0) { text = text.substring(0, fragment); }
+    return text.length > 200 ? text.substring(0, 197) + '...' : text;
+  }
+
+  // -------------------------------------------------------------------------------------------
+  // MEDIA-RESIDUALS (hlsrange): the same-origin fragment loader.
+  //
+  // hls.js asks for the fragments of a #EXT-X-BYTERANGE playlist with a Range header. For a
+  // same-origin URL that Range reaches the shell's intercepted response, and CEF then tries to
+  // skip to the range's first offset before it even reads the headers: NWebResourceHandler::Skip
+  // understands only the file/resource response types, an ArrayBuffer (the shell's sliced 206)
+  // falls through to the refusing base implementation, and the request dies with
+  // net::ERR_REQUEST_RANGE_NOT_SATISFIABLE (-328) -> hls.js fragLoadError. The fix lives on the
+  // page because the platform behaviour is below the app: fetch the source once WITHOUT a Range
+  // header (the shell answers the whole file with 200), keep it in localSliceCache, and hand
+  // hls.js the exact byte slice the range named. Remote origins keep the stock loader and its
+  // real range requests - this loader only short-circuits a same-origin arraybuffer range.
+  // -------------------------------------------------------------------------------------------
+  function LocalSliceLoader(config) {
+    this.inner = new window.Hls.DefaultConfig.loader(config);
+    this.stats = this.inner.stats;
+  }
+
+  LocalSliceLoader.prototype.load = function (context, config, callbacks) {
+    var ranged = !!context && context.responseType === 'arraybuffer'
+      && context.rangeEnd > 0 && context.rangeEnd > context.rangeStart;
+    var sameOrigin = false;
+    if (ranged) {
+      try {
+        sameOrigin = new URL(String(context.url), window.location.href).origin === window.location.origin;
+      } catch (originError) {
+        sameOrigin = false;
+      }
+    }
+    if (!sameOrigin) {
+      this.inner.load(context, config, callbacks);
+      return;
+    }
+    var url = String(context.url);
+    var start = context.rangeStart > 0 ? context.rangeStart : 0;
+    var end = context.rangeEnd;
+    if (localSliceCache.data !== null && localSliceCache.url === url) {
+      this.emitSlice(callbacks, context, start, end, null, this.stats, null);
+      return;
+    }
+    var self = this;
+    var whole = {};
+    for (var key in context) {
+      if (Object.prototype.hasOwnProperty.call(context, key)) { whole[key] = context[key]; }
+    }
+    whole.rangeStart = 0;
+    whole.rangeEnd = 0;
+    var slicedCallbacks = {
+      onSuccess: function (response, stats, innerContext, networkDetails) {
+        if (response && response.data !== null && response.data !== undefined) {
+          localSliceCache.url = url;
+          localSliceCache.data = response.data;
+        }
+        self.emitSlice(callbacks, context, start, end, response, stats, networkDetails);
+      },
+      onError: function (response, innerContext, networkDetails, stats) {
+        callbacks.onError(response, context, networkDetails, stats);
+      },
+      onTimeout: function (stats, innerContext, networkDetails) {
+        callbacks.onTimeout(stats, context, networkDetails);
+      },
+      onAbort: function (stats, innerContext, networkDetails) {
+        callbacks.onAbort(stats, context, networkDetails);
+      }
+    };
+    if (typeof callbacks.onProgress === 'function') {
+      slicedCallbacks.onProgress = callbacks.onProgress;
+    }
+    self.inner.load(whole, config, slicedCallbacks);
+  };
+
+  // Answers one fragment from the cached whole-file payload with the exact range slice. The
+  // stats mirror the local slice (length, timings), so hls.js sees a completed load of the
+  // range length rather than the whole file.
+  LocalSliceLoader.prototype.emitSlice = function (callbacks, context, start, end, response, stats, networkDetails) {
+    var data = localSliceCache.data;
+    var total = data && typeof data.byteLength === 'number' ? data.byteLength : 0;
+    var sliced = data && typeof data.slice === 'function' ? data.slice(start, Math.min(end, total)) : null;
+    var now = window.performance && window.performance.now ? window.performance.now() : Date.now();
+    var target = stats || this.stats;
+    if (target && target.loading) {
+      if (!target.loading.start) { target.loading.start = now; }
+      target.loading.first = target.loading.first || now;
+      target.loading.end = now;
+      target.loaded = sliced ? sliced.byteLength : 0;
+      target.total = sliced ? sliced.byteLength : 0;
+      target.aborted = false;
+    }
+    if (!sliced) {
+      callbacks.onError(
+        { code: response && response.code ? response.code : 0, text: 'local slice source unavailable' },
+        context, networkDetails || null, target);
+      return;
+    }
+    callbacks.onSuccess(
+      { url: (response && response.url) || context.url, data: sliced, code: (response && response.code) || 206 },
+      target, context, networkDetails || null);
+    try {
+      post('hls', { event: 'local-slice', url: logUrl(context.url), start: start, end: end, bytes: sliced.byteLength });
+    } catch (sliceLogError) {
+      // Diagnostics only.
+    }
+  };
+
+  LocalSliceLoader.prototype.abort = function () {
+    this.inner.abort();
+  };
+
+  LocalSliceLoader.prototype.destroy = function () {
+    this.inner.destroy();
+  };
+
+  function destroyHls() {
+    if (hls) {
+      try { hls.destroy(); } catch (destroyError) { }
+      hls = null;
+    }
+    hlsPendingPlay = false;
+    hlsManifestReady = false;
+    localSliceCache.url = '';
+    localSliceCache.data = null;
+  }
+
+  function hlsUsable(runtime) {
+    return !!runtime && typeof runtime.isSupported === 'function' && runtime.isSupported();
+  }
+
+  function flushHlsWaiters(runtime) {
+    var waiters = hlsScriptWaiters;
+    hlsScriptWaiters = [];
+    for (var i = 0; i < waiters.length; i++) {
+      try { waiters[i](runtime); } catch (waiterError) { }
+    }
+  }
+
+  // Loads the hls.js runtime from this page's own origin once; concurrent callers queue.
+  function loadHlsRuntime(callback) {
+    if (hlsUsable(window.Hls)) { callback(window.Hls); return; }
+    if (hlsScriptState === HLS_SCRIPT_FAILED) { callback(null); return; }
+    hlsScriptWaiters.push(callback);
+    if (hlsScriptState === HLS_SCRIPT_LOADING) { return; }
+    hlsScriptState = HLS_SCRIPT_LOADING;
+    var script = document.createElement('script');
+    script.src = HLS_RUNTIME;
+    script.onload = function () {
+      hlsScriptState = hlsUsable(window.Hls) ? HLS_SCRIPT_READY : HLS_SCRIPT_FAILED;
+      flushHlsWaiters(hlsScriptState === HLS_SCRIPT_READY ? window.Hls : null);
+    };
+    script.onerror = function () {
+      hlsScriptState = HLS_SCRIPT_FAILED;
+      flushHlsWaiters(null);
+    };
+    try {
+      (document.head || document.documentElement).appendChild(script);
+    } catch (appendError) {
+      hlsScriptState = HLS_SCRIPT_FAILED;
+      flushHlsWaiters(null);
+    }
+  }
+
+  // Starts the MSE playback of one HLS source; false when hls.js/MSE cannot take it.
+  function tryStartHls(url) {
+    if (!hlsUsable(window.Hls)) { return false; }
+    var instance = null;
+    try {
+      instance = new window.Hls({ enableWorker: false, fLoader: LocalSliceLoader });
+    } catch (createError) {
+      return false;
+    }
+    hls = instance;
+    hlsRetries = 0;
+    instance.on(window.Hls.Events.MANIFEST_PARSED, function (eventName, data) {
+      if (hls !== instance) { return; }
+      hlsManifestReady = true;
+      post('hls', {
+        event: 'manifest-parsed',
+        url: logUrl(url),
+        levels: data && data.levels ? data.levels.length : 0
+      });
+      if (hlsPendingPlay) {
+        hlsPendingPlay = false;
+        requestPlay();
+      }
+    });
+    instance.on(window.Hls.Events.ERROR, function (eventName, data) {
+      if (hls !== instance || !data) { return; }
+      if (data.fatal !== true) {
+        post('hls', { event: 'error', details: data.details || '', fatal: false });
+        return;
+      }
+      if (data.type === 'networkError' && hlsRetries < HLS_FATAL_RETRIES) {
+        hlsRetries++;
+        post('hls', { event: 'recover-network', details: data.details || '' });
+        try { instance.startLoad(); } catch (recoverError) { }
+        return;
+      }
+      if (data.type === 'mediaError' && hlsRetries < HLS_FATAL_RETRIES) {
+        hlsRetries++;
+        post('hls', { event: 'recover-media', details: data.details || '' });
+        try { instance.recoverMediaError(); } catch (recoverError) { }
+        return;
+      }
+      destroyHls();
+      post('error', {
+        code: 4,
+        message: 'hls fatal: ' + String(data.details || data.type || 'unknown'),
+        videoCode: video.error ? video.error.code : 0
+      });
+    });
+    try {
+      instance.attachMedia(video);
+      instance.loadSource(url);
+      return true;
+    } catch (attachError) {
+      destroyHls();
+      return false;
+    }
+  }
+
+  function nativeLoad(url) {
+    try {
+      video.pause();
+      video.removeAttribute('src');
+      video.load();
+      video.src = url;
+      video.load();
+      return ack();
+    } catch (loadError) {
+      return fail('load failed: ' + String(loadError && loadError.message ? loadError.message : loadError));
+    }
+  }
+
+  function requestPlay() {
+    try {
+      var promise = video.play();
+      if (promise && typeof promise.then === 'function') {
+        promise.then(function () { post('playing', snapshot()); }, function (playError) {
+          post('playfailed', {
+            name: playError && playError.name ? String(playError.name) : 'Error',
+            message: playError && playError.message ? String(playError.message) : 'play rejected'
+          });
+        });
+      }
+      return ack();
+    } catch (playException) {
+      return fail('play failed: ' + String(playException && playException.message ? playException.message : playException));
+    }
+  }
+
+  video.addEventListener('loadedmetadata', function () {
+    post('opened', { duration: num(video.duration, 0), width: num(video.videoWidth, 0), height: num(video.videoHeight, 0) });
+    post('size', { width: num(video.videoWidth, 0), height: num(video.videoHeight, 0) });
+  });
+  video.addEventListener('durationchange', function () {
+    post('duration', { duration: num(video.duration, 0) });
+  });
+  video.addEventListener('resize', function () {
+    post('size', { width: num(video.videoWidth, 0), height: num(video.videoHeight, 0) });
+  });
+  video.addEventListener('timeupdate', function () {
+    var now = Date.now();
+    if (now - lastPositionPost < 250) { return; }
+    lastPositionPost = now;
+    post('position', { position: num(video.currentTime, 0), duration: num(video.duration, 0), ended: video.ended === true });
+  });
+  video.addEventListener('playing', function () { post('playing', snapshot()); });
+  video.addEventListener('pause', function () { post('paused', snapshot()); });
+  video.addEventListener('seeked', function () { post('seeked', { position: num(video.currentTime, 0) }); });
+  video.addEventListener('ended', function () { post('ended', snapshot()); });
+  video.addEventListener('error', function () {
+    var mediaError = video.error;
+    post('error', {
+      code: mediaError ? mediaError.code : 0,
+      message: mediaError && mediaError.message ? String(mediaError.message) : 'media element error',
+      videoCode: mediaError ? mediaError.code : 0
+    });
+  });
+
+  window.__ohMedia = {
+    load: function (url, options) {
+      if (typeof url !== 'string' || url.length === 0) { return fail('empty media source'); }
+      var opts = options || {};
+      if (opts.aspect === 'fill') { video.style.objectFit = 'cover'; } else { video.style.objectFit = 'contain'; }
+      video.loop = opts.loop === true;
+      video.muted = opts.muted === true;
+      video.volume = Math.max(0, Math.min(1, num(opts.volume, 1)));
+      destroyHls();
+      pendingHlsUrl = '';
+      loadSeq++;
+      var token = loadSeq;
+      try {
+        video.pause();
+      } catch (pauseError) {
+        // Resetting the superseded source is best effort.
+      }
+      if (!isHlsUrl(url)) {
+        return nativeLoad(url);
+      }
+      pendingHlsUrl = url;
+      try {
+        video.removeAttribute('src');
+        video.load();
+      } catch (resetError) {
+        // A stream without seekable ranges may refuse the reset; the source assignment below wins.
+      }
+      loadHlsRuntime(function (runtime) {
+        if (token !== loadSeq || pendingHlsUrl !== url) { return; }
+        if (hlsUsable(runtime) && tryStartHls(url)) { return; }
+        pendingHlsUrl = '';
+        post('hls', { event: 'fallback-native', url: logUrl(url) });
+        nativeLoad(url);
+      });
+      return ack();
+    },
+    play: function () {
+      if (pendingHlsUrl.length > 0 && !hlsManifestReady) {
+        // The runtime/manifest is not up yet: play on MANIFEST_PARSED instead of rejecting on
+        // an empty MSE element.
+        hlsPendingPlay = true;
+        return ack();
+      }
+      return requestPlay();
+    },
+    pause: function () {
+      try {
+        video.pause();
+        return ack();
+      } catch (pauseError) {
+        return fail('pause failed');
+      }
+    },
+    stop: function () {
+      try {
+        video.pause();
+        try { video.currentTime = 0; } catch (seekError) { /* a stream without seekable ranges */ }
+        destroyHls();
+        pendingHlsUrl = '';
+        loadSeq++;
+        video.removeAttribute('src');
+        video.load();
+        post('stopped', snapshot());
+        return ack();
+      } catch (stopError) {
+        return fail('stop failed');
+      }
+    },
+    seek: function (seconds) {
+      var target = num(seconds, -1);
+      if (target < 0) { return fail('negative seek'); }
+      try {
+        video.currentTime = target;
+        return ack();
+      } catch (seekException) {
+        return fail('seek failed: ' + String(seekException && seekException.message ? seekException.message : seekException));
+      }
+    },
+    setVolume: function (value) {
+      video.volume = Math.max(0, Math.min(1, num(value, 1)));
+      return ack();
+    },
+    setMuted: function (muted) {
+      video.muted = muted === true;
+      return ack();
+    },
+    setAspect: function (aspect) {
+      video.style.objectFit = aspect === 'fill' ? 'cover' : 'contain';
+      return ack();
+    },
+    snapshot: function () {
+      return JSON.stringify(snapshot());
+    },
+    size: function () {
+      return JSON.stringify({ width: num(video.videoWidth, 0), height: num(video.videoHeight, 0) });
+    },
+    state: function () {
+      return JSON.stringify(snapshot());
+    },
+    hlsState: function () {
+      return JSON.stringify({
+        active: hls !== null,
+        runtime: hlsScriptState,
+        pending: pendingHlsUrl.length > 0,
+        retries: hlsRetries
+      });
+    }
+  };
+
+  post('ready', { slot: slot });
+})();
+</script>
+</body>
+</html>
