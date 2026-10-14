@@ -6,6 +6,7 @@
 #   T0 syntax      `sh -n` on device-round.sh and this selftest
 #   T1 usage       missing --kit, unknown flag, bad --mode/--capture/--soak-min -> exit 2
 #   T2 dry-run     plan printed, kit verified locally, stub hdc/device never touched
+#   T2b fallback   stock hdc answering [Empty] -> OHOS_HDC_PATCHED takes the round over
 #   T3 full round  --suite --soak-min 1: lock acquire/release, signing (main + 2 Blazor
 #                  variants), tester-run core/blazor/a11y/dry-run probes, hilog 16M->restore,
 #                  step summary, and the evidence tar.gz (summary/steps/log/screenshots)
@@ -346,6 +347,27 @@ run_dr "$WORK/o6" --kit "$KIT" --suite --dry-run; check "dry-run -> 0" 0 $?
 check_grep "dry-run plan printed" "dry-run 完成" "$WORK/o6.log"
 check_true "no device command in dry-run" "0" "$(grep -c . "$STATE/device-shell.log" 2>/dev/null || true)"
 [ -d "$WORK/o6/verify" ]; check "dry-run wrote verify log" 0 $?
+
+# ---- T2b hdc fallback ----------------------------------------------------------------
+section "T2b hdc fallback (stock hdc answers [Empty])"
+# A stock hdc that cannot see the sandbox's device answers [Empty]; the patched candidate
+# (OHOS_HDC_PATCHED) must take over and say so in the log.
+cat > "$BIN/hdc-empty" <<'EOF_EMPTY'
+#!/bin/sh
+# stub hdc with no device for selftest-device-round.sh (fallback case). Not a real tool.
+case "${1:-}" in
+  list) [ "${2:-}" = targets ] && { echo "[Empty]"; exit 0; }; exit 1 ;;
+esac
+exit 1
+EOF_EMPTY
+chmod +x "$BIN/hdc-empty"
+: > "$STATE/device-shell.log"
+env HDC="$BIN/hdc-empty" OHOS_HDC_PATCHED="$HDC" HOME="$WORK/home" \
+    sh "$DR" --kit "$KIT" --capture 1 --soak-min 0 --out "$WORK/o6b" > "$WORK/o6b.log" 2>&1
+check "fallback round -> 0" 0 $?
+check_grep "fallback announced (not read as device offline)" "hdc: 回退" "$WORK/o6b.log"
+check_grep "fallback names the patched hdc" "$HDC" "$WORK/o6b.log"
+check_grep "fallback round reached the core step" "step_install_start=ok" "$WORK/o6b/summary.txt"
 
 # ---- T3 full round -------------------------------------------------------------------
 section "T3 full round (suite)"

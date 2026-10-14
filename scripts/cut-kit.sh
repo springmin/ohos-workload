@@ -824,7 +824,7 @@ p0_selftests() {
     _src="$(src_ow)"
     _list="selftest-verify-kit.sh selftest-make-device-test-kit.sh"
     if [ "$FULL_SELFTESTS" = 1 ]; then
-        _list="selftest-ridgraph.sh selftest-packs.sh selftest-hap-targets.sh selftest-tasks.sh selftest-repo-hygiene.sh selftest-host-registry.sh selftest-host-window-bridge.sh selftest-host-a11y-table.sh selftest-verify-kit.sh selftest-make-device-test-kit.sh"
+        _list="selftest-ridgraph.sh selftest-packs.sh selftest-hap-targets.sh selftest-tasks.sh selftest-repo-hygiene.sh selftest-host-registry.sh selftest-host-window-bridge.sh selftest-host-a11y-table.sh selftest-host-status.sh selftest-verify-kit.sh selftest-make-device-test-kit.sh"
     fi
     _f=0; _ok=0
     for _s in $_list; do

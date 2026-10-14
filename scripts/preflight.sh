@@ -134,7 +134,7 @@ fi
 log "== step 1/5: repository gates (RID graph, pack lint, hap module.json, task unit tests, host window registry + bridge + clipboard NDK read, absolute paths) =="
 PACK_GATE_DETAIL=""
 PACK_GATE_FAILED=0
-for gate in selftest-ridgraph.sh selftest-packs.sh selftest-hap-targets.sh selftest-tasks.sh selftest-repo-hygiene.sh selftest-host-registry.sh selftest-host-window-bridge.sh selftest-host-a11y-table.sh selftest-host-clipboard.sh selftest-cut-kit.sh selftest-csc-watchdog.sh; do
+for gate in selftest-ridgraph.sh selftest-packs.sh selftest-hap-targets.sh selftest-tasks.sh selftest-repo-hygiene.sh selftest-host-registry.sh selftest-host-window-bridge.sh selftest-host-a11y-table.sh selftest-host-clipboard.sh selftest-host-status.sh selftest-cut-kit.sh selftest-csc-watchdog.sh; do
     if [ ! -f "$W/scripts/$gate" ]; then
         warn "missing scripts/$gate"
         PACK_GATE_FAILED=1

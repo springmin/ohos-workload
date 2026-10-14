@@ -73,6 +73,9 @@
 #                  re-sign hint is printed
 #   S21c blazor no pid FAKE_HDC_PIDOF_ALIVE_CALLS=0: no pid to bind, the markers still pass on
 #                  the host format + announced nonce; blazor_marker_pid=unknown is recorded
+#   S22 fallback   stock hdc with an empty target list -> OHOS_HDC_PATCHED / the default
+#                  $HOME/.ohos-tools/hdcp4 is picked up and logged; NO_FALLBACK=1 and a
+#                  double-empty pair keep the exit-3 refusal
 # Stub hdc surface (every subcommand tester-run.sh invokes): list targets | install -r <hap> |
 #   uninstall <bundle> | shell aa start -a EntryAbility -b <b> | shell aa force-stop <b> |
 #   shell pidof <b> | shell ps -ef
@@ -852,6 +855,25 @@ BOOT_EOF
 esac
 STUB_HDC_EOF
 chmod 755 "$STUB"
+mkdir -p "$WORK/home"
+
+# A second stub with NO device: `list targets` answers [Empty] (models the sandbox's stock hdc
+# gate that the patched fallback works around). Every other subcommand is unhandled on purpose.
+cat > "$WORK/bin/hdc-empty" <<'STUB_HDC_EMPTY_EOF'
+#!/bin/sh
+# Stub hdc without a device for selftest-tester-run.sh (fallback cases). Not a real tool.
+case "${1:-}" in
+    list)
+        if [ "${2:-}" = targets ]; then printf '[Empty]\n'; exit 0; fi
+        printf 'stub hdc-empty: UNHANDLED list %s\n' "$*" >&2; exit 1 ;;
+esac
+printf 'stub hdc-empty: UNHANDLED %s\n' "$*" >&2
+exit 1
+STUB_HDC_EMPTY_EOF
+chmod 755 "$WORK/bin/hdc-empty"
+# A second distinct copy for the double-empty case (candidate != primary, both answer [Empty]).
+cp "$WORK/bin/hdc-empty" "$WORK/bin/hdc-empty2"
+chmod 755 "$WORK/bin/hdc-empty2"
 
 # ---- stub binary-sign-tool ------------------------------------------------------------
 BINTOOL="$WORK/bin/binary-sign-tool"
@@ -995,7 +1017,9 @@ run_tester() {
     # $_extra is intentionally unquoted: it carries zero or more `VAR=value` assignments.
     # exec keeps $TESTER_JOB pointing at tester-run.sh itself, so an interrupt can stop it
     # (cleanup kills it and waits) instead of leaving a tester grandchild behind.
-    ( cd "$CWD" && exec env HDC="$STUB" TMPDIR="$TMPD" FAKE_HDC_STATE="$STATE_DIR/$_tag" \
+    # HOME points into the work dir so the patched-hdc fallback default
+    # ($HOME/.ohos-tools/hdcp4) can never pick up the developer's real device.
+    ( cd "$CWD" && exec env HDC="$STUB" TMPDIR="$TMPD" HOME="$WORK/home" FAKE_HDC_STATE="$STATE_DIR/$_tag" \
         FAKE_HDC_DEVICE="$STUB_DEVICE" PATH="$WORK/bin:$PATH" $_extra sh "$TESTER" "$@" ) > "$_log" 2>&1 &
     TESTER_JOB=$!
     wait "$TESTER_JOB" || RC=$?
@@ -2140,6 +2164,34 @@ else
     bad "S20 report archive could not be extracted ($ARCHIVE_S20)"
 fi
 assert_scenario_sandbox "S20"
+
+# ---- S22: patched-hdc fallback ---------------------------------------------------------
+# The sandbox's stock hdc answers [Empty]; the fallback (OHOS_HDC_PATCHED, or the default
+# $HOME/.ohos-tools/hdcp4) must pick up the stub device and say so in the log, instead of the
+# empty answer being read as "device offline".
+section "S22 hdc fallback (stock hdc sees no targets, patched hdc sees the device)"
+run_tester S22 "HDC=$WORK/bin/hdc-empty OHOS_HDC_PATCHED=$STUB" --kit-dir "$KIT" --uninstall --capture 1 --out "$WORK/out-fallback"
+assert_eq "S22 exit code 0 (log: $LOGS/S22.log)" "0" "$RC"
+assert_contains "S22 the log names the fallback" "hdc 回退" "$LOGS/S22.log"
+assert_contains "S22 the log names the patched binary" "$STUB" "$LOGS/S22.log"
+assert_contains "S22 the patched stub served the uninstall" "uninstall com.example.hellomauiapp" "$STATE_DIR/S22/calls.log"
+assert_scenario_sandbox "S22"
+
+mkdir -p "$WORK/home/.ohos-tools"
+cp "$STUB" "$WORK/home/.ohos-tools/hdcp4"
+chmod 755 "$WORK/home/.ohos-tools/hdcp4"
+run_tester S22b "HDC=$WORK/bin/hdc-empty" --kit-dir "$KIT" --uninstall --capture 1 --out "$WORK/out-fallback2"
+assert_eq "S22b the default persistent path works (exit 0)" "0" "$RC"
+assert_contains "S22b the log names the default path" ".ohos-tools/hdcp4" "$LOGS/S22b.log"
+assert_contains "S22b the default-path stub served the uninstall" "uninstall com.example.hellomauiapp" "$STATE_DIR/S22b/calls.log"
+
+run_tester S22c "HDC=$WORK/bin/hdc-empty OHOS_HDC_NO_FALLBACK=1" --kit-dir "$KIT" --install
+assert_eq "S22c NO_FALLBACK=1 keeps the refusal (exit 3)" "3" "$RC"
+assert_contains "S22c message still names the empty target list" "未连接设备" "$LOGS/S22c.log"
+
+run_tester S22d "HDC=$WORK/bin/hdc-empty OHOS_HDC_PATCHED=$WORK/bin/hdc-empty2" --kit-dir "$KIT" --install
+assert_eq "S22d both hdcs empty -> exit 3" "3" "$RC"
+assert_contains "S22d message names the patched candidate that was also empty" "补丁 hdc" "$LOGS/S22d.log"
 
 # The normal flow reaches the final checks here; finalize_selftest prints the global checks and
 # the summary and exits. The SELFTEST_SKIP_A11Y fast subset calls the same function after S17b.

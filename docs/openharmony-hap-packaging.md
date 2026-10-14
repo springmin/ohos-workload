@@ -179,8 +179,20 @@ default. The host logs the decision on every launch path:
 ```
 
 so a device-side interpreter round only needs the file in the app sandbox - no host or launch
-path change. The managed `dotnet-status.txt` line is not duplicated for this switch; the hilog
-and stderr forms above are the evidence.
+path change. The decision is also mirrored into `<filesDir>/dotnet-status.txt` as one
+`OHOS_HOST mode` line (DEVICE-ROUND-57: on the HAD-W32 image libhilog_ndk is absent, so the
+host's hilog/stderr lines are invisible and the shell's status-file mirror is the only readable
+evidence of the route):
+
+```text
+OHOS_HOST mode caller=start_app interp=3 source=manifest runtime-mode=interp source=manifest xwe=0 source=default r2r=off wbcopy=off
+```
+
+The `interp=`/`runtime-mode=`/`xwe=` token shapes match the hilog lines above, so the existing
+`scripts/tester-run.sh` exec-mem readers match a shell-mirrored line; `r2r=`/`wbcopy=off` state
+the interp=3 switches (ReadyToRun and the mutable GC write-barrier copy). The line is written
+once per process per (directory, content): the pending-context re-apply does not duplicate an
+identical line, while a changed decision or a different status directory still appends.
 
 Probe - on the first launch path the host maps one page with each strategy the runtime could
 use and emits one line (hilog tag `OHOS_DOTNET`, also appended to `<filesDir>/dotnet-status.txt`
@@ -1792,7 +1804,7 @@ debug channel (`hdc install` / `aa start` / `hilog` still work, the IDE's attach
 The working replacement is an incremental deploy loop - one command publishes the app, re-signs
 the hap when the device is not bound to the SDK's profile, installs it, starts `EntryAbility`
 and tails the filtered hilog. `scripts/devloop.sh` is that loop; `scripts/selftest-devloop.sh`
-drives it against stub `hdc`/`dotnet`/signer binaries with no device (86 checks).
+drives it against stub `hdc`/`dotnet`/signer binaries with no device (119 checks).
 
 ```sh
 # one round: publish -> install the newest signed hap -> start -> 5 s filtered hilog
@@ -1924,6 +1936,34 @@ stays in-process, so restore does not enter the wait (an offline `dotnet restore
 `TMPDIR=/tmp` with the opt-outs completes in ~3 s and prints no server line; the MSBuild server
 defaults on and off, `DOTNET_CLI_DO_NOT_USE_MSBUILD_SERVER=1` alone does not stop this SDK's
 11.0.100-rc.1 from attempting it).
+
+### Device scripts: hdc resolution and the patched-hdc fallback
+
+`scripts/tester-run.sh`, `scripts/device-round.sh` and `scripts/devloop.sh` resolve the hdc
+binary in this order: `HDC` (environment/flag) -> `hdc` on `PATH` -> the byte-patched fallback
+`OHOS_HDC_PATCHED` (default `$HOME/.ohos-tools/hdcp4`). The fallback engages only when the
+primary is missing or `list targets` answers an empty list, and the switch is logged - a round
+must not read the sandbox gate as "device offline"; `OHOS_HDC_NO_FALLBACK=1` disables it.
+
+Why a patched copy: on this sandbox the stock hdc (e.g.
+`~/ohos-clt/sdk/default/openharmony/toolchains/hdc`, sha256 `4fcd78bf…`) cannot bind or connect
+its default UDS server path (`/data/hdc/hdc_debug/hdc_server`), so it reports no targets while
+the device is attached (`127.0.0.1:36823`). The patched copy points at the sandbox's server
+socket and disables the report/fileguard switches (three equal-length byte substitutions; the
+scratch recipe is `/data/storage/el2/base/tmp/opencode/hdcpatched/patch-all.js` in the sandbox):
+patched sha256 `1e0ff920bb255f5636ff77de92753cf3c6bc40e3e30f4c78ecaa44c0a4dcf344` (3,975,488 B).
+It is an environment-specific binary and deliberately NOT in this repository; to refresh it,
+copy the patched file to `~/.ohos-tools/hdcp4` (or point `OHOS_HDC_PATCHED` at any equivalent
+copy):
+
+```sh
+mkdir -p ~/.ohos-tools
+cp /data/storage/el2/base/tmp/opencode/hdcpatched/hdcp4 ~/.ohos-tools/hdcp4
+chmod 755 ~/.ohos-tools/hdcp4
+```
+
+`scripts/selftest-devloop.sh` (S12), `scripts/selftest-tester-run.sh` (S22) and
+`scripts/selftest-device-round.sh` (T2b) pin the resolution against empty-target stubs.
 
 ## Known follow-ups (scheduled)
 

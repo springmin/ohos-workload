@@ -542,7 +542,46 @@ hdc_cmd() {
 }
 
 hdc_show() {
-    if [ -n "$DEVICE" ]; then printf 'hdc -t %s' "$DEVICE"; else printf 'hdc'; fi
+    if [ -n "$DEVICE" ]; then printf '%s -t %s' "$HDC" "$DEVICE"; else printf '%s' "$HDC"; fi
+}
+
+# --- hdc resolution with the patched-hdc fallback --------------------------------------
+# The sandbox refuses the stock hdc its default UDS server path, so `list targets` answers empty
+# even though the device is attached; a byte-patched copy that points at the sandbox's server
+# sees it. Resolution: $HDC (env/flag) first, then the patched copy when the primary is missing
+# or answers no targets. OHOS_HDC_PATCHED overrides the candidate path; the default is
+# $HOME/.ohos-tools/hdcp4 (see docs/openharmony-hap-packaging.md, "Device scripts"). The switch
+# is logged so an empty answer is never misread as "device offline"; OHOS_HDC_NO_FALLBACK=1
+# disables the fallback.
+hdc_answers() { # <hdc> -> 0 when `list targets` names at least one target (result: HDC_TARGETS)
+    case "$1" in
+        */*) [ -x "$1" ] || return 1 ;;
+        *) command -v "$1" >/dev/null 2>&1 || return 1 ;;
+    esac
+    HDC_TARGETS="$("$1" list targets 2>/dev/null | tr -d '\r' | grep -v -e '^[[:space:]]*$' -e '^\[Empty\]$' || true)"
+    [ -n "$HDC_TARGETS" ]
+}
+
+# The filtered target list of the last successful hdc_answers probe; the device gate below
+# reuses it so a healthy primary is still probed exactly once per run.
+HDC_TARGETS=""
+
+hdc_patched_candidate() {
+    if [ -n "${OHOS_HDC_PATCHED:-}" ]; then printf '%s\n' "$OHOS_HDC_PATCHED"; return 0; fi
+    if [ -n "${HOME:-}" ] && [ -x "$HOME/.ohos-tools/hdcp4" ]; then printf '%s\n' "$HOME/.ohos-tools/hdcp4"; return 0; fi
+    return 1
+}
+
+resolve_hdc_fallback() {
+    [ "${OHOS_HDC_NO_FALLBACK:-0}" = 1 ] && return 0
+    hdc_answers "$HDC" && return 0
+    HDC_TARGETS=""
+    _hf="$(hdc_patched_candidate)" || return 0
+    if [ "$_hf" = "$HDC" ]; then return 0; fi
+    if hdc_answers "$_hf"; then
+        log "hdc 回退：$HDC 看不到设备，改用补丁 hdc $_hf（OHOS_HDC_PATCHED/默认 $HOME/.ohos-tools/hdcp4）"
+        HDC="$_hf"
+    fi
 }
 
 line_count() {
@@ -618,13 +657,25 @@ derived_interp_mode() {
 # ---- device gate ---------------------------------------------------------------------
 REASON=""
 TARGETS=""
+resolve_hdc_fallback
 if ! command -v "$HDC" >/dev/null 2>&1; then
     REASON="未找到 hdc（HDC=$HDC）"
 else
-    TARGETS="$("$HDC" list targets 2>&1 || true)"
-    LIST="$(printf '%s\n' "$TARGETS" | sed 's/\r$//' | grep -v -e '^[[:space:]]*$' -e '^\[Empty\]$' || true)"
+    if [ -n "$HDC_TARGETS" ]; then
+        # resolve_hdc_fallback already probed the effective binary; reuse its answer.
+        TARGETS="$HDC_TARGETS"
+        LIST="$HDC_TARGETS"
+    else
+        TARGETS="$("$HDC" list targets 2>&1 || true)"
+        LIST="$(printf '%s\n' "$TARGETS" | sed 's/\r$//' | grep -v -e '^[[:space:]]*$' -e '^\[Empty\]$' || true)"
+    fi
     if [ -z "$LIST" ]; then
-        REASON="hdc list targets 为空（未连接设备）"
+        _dg_fb="$(hdc_patched_candidate 2>/dev/null)"
+        if [ -n "$_dg_fb" ] && [ "$_dg_fb" != "$HDC" ]; then
+            REASON="hdc list targets 为空（未连接设备；补丁 hdc $_dg_fb 也为空）"
+        else
+            REASON="hdc list targets 为空（未连接设备）"
+        fi
     elif [ -n "$DEVICE" ]; then
         if ! printf '%s\n' "$LIST" | grep -Fxq -e "$DEVICE"; then
             REASON="--device $DEVICE 不在 hdc list targets 中"

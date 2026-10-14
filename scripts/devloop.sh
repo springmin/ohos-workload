@@ -248,7 +248,41 @@ hdc_cmd() {
 }
 
 hdc_show() {
-    if [ -n "$DEVICE" ]; then printf 'hdc -t %s' "$DEVICE"; else printf 'hdc'; fi
+    if [ -n "$DEVICE" ]; then printf '%s -t %s' "$HDC" "$DEVICE"; else printf '%s' "$HDC"; fi
+}
+
+# --- hdc resolution with the patched-hdc fallback --------------------------------------
+# The sandbox refuses the stock hdc its default UDS server path, so `list targets` answers empty
+# even though the device is attached; a byte-patched copy that points at the sandbox's server
+# sees it. Resolution: $HDC (env/flag) first, then the patched copy when the primary is missing
+# or answers no targets. OHOS_HDC_PATCHED overrides the candidate path; the default is
+# $HOME/.ohos-tools/hdcp4 (see docs/openharmony-hap-packaging.md, "Device scripts"). The switch
+# is logged so an empty answer is never misread as "device offline"; OHOS_HDC_NO_FALLBACK=1
+# disables the fallback.
+hdc_answers() { # <hdc> -> 0 when `list targets` names at least one target
+    case "$1" in
+        */*) [ -x "$1" ] || return 1 ;;
+        *) command -v "$1" >/dev/null 2>&1 || return 1 ;;
+    esac
+    _ha_t="$("$1" list targets 2>/dev/null | tr -d '\r' | grep -v -e '^[[:space:]]*$' -e '^\[Empty\]$' || true)"
+    [ -n "$_ha_t" ]
+}
+
+hdc_fallback_candidate() {
+    if [ -n "${OHOS_HDC_PATCHED:-}" ]; then printf '%s\n' "$OHOS_HDC_PATCHED"; return 0; fi
+    if [ -n "${HOME:-}" ] && [ -x "$HOME/.ohos-tools/hdcp4" ]; then printf '%s\n' "$HOME/.ohos-tools/hdcp4"; return 0; fi
+    return 1
+}
+
+resolve_hdc_fallback() {
+    [ "${OHOS_HDC_NO_FALLBACK:-0}" = 1 ] && return 0
+    hdc_answers "$HDC" && return 0
+    _hf="$(hdc_fallback_candidate)" || return 0
+    if [ "$_hf" = "$HDC" ]; then return 0; fi
+    if hdc_answers "$_hf"; then
+        log "hdc 回退：$HDC 看不到设备，改用补丁 hdc $_hf（OHOS_HDC_PATCHED/默认 $HOME/.ohos-tools/hdcp4）"
+        HDC="$_hf"
+    fi
 }
 
 require_dotnet() {
@@ -265,9 +299,11 @@ die_no_device() {
 }
 
 # Refuse device steps without a device, mirroring tester-run.sh: hdc list targets must answer
-# and contain --device (when given). --dry-run never needs a device.
+# and contain --device (when given). --dry-run never needs a device. The primary hdc is retried
+# through the patched fallback first, so the sandbox's UDS gate is not reported as "offline".
 require_device() {
     [ "$DRY" = 1 ] && return 0
+    resolve_hdc_fallback
     require_hdc
     _rd_targets="$("$HDC" list targets 2>&1 || true)"
     _rd_list="$(printf '%s\n' "$_rd_targets" | sed 's/\r$//' | grep -v -e '^[[:space:]]*$' -e '^\[Empty\]$' || true)"

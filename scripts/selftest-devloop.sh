@@ -25,8 +25,12 @@
 #   S9 watch       --watch --interval 1 reruns the chain once after a source touch
 #   S10 spaces     project dir and --hap paths with spaces survive build/install
 #   S11 no hdc     missing hdc -> exit 3 with a readable message; --dry-run still plans
+#   S12 fallback   stock hdc with an empty target list -> OHOS_HDC_PATCHED / the default
+#                  $HOME/.ohos-tools/hdcp4 is picked up and logged; NO_FALLBACK=1 and a
+#                  double-empty pair keep the refusal
 # Stub surface: hdc (list targets | install -r <hap> | shell aa start ... | shell bm get -u |
-#   shell hilog), dotnet (prints ARG| lines), sign-for-device.sh stub (copies --unsigned to --out).
+#   shell hilog), hdc-empty ([Empty] list targets), dotnet (prints ARG| lines),
+#   sign-for-device.sh stub (copies --unsigned to --out).
 # Env: SELFTEST_TMPDIR=<dir> work dir base (default: the approved opencode tmp dir),
 #      SELFTEST_KEEP=1 keep the work dir even when all checks pass,
 #      SELFTEST_DEVLOOP=<path> devloop.sh under test (default: next to this script).
@@ -273,6 +277,22 @@ printf 'stub hdc: UNHANDLED %s\n' "$*" >&2
 exit 1
 STUB_HDC_EOF
 chmod +x "$STUB"
+mkdir -p "$WORK/home"
+
+# A second stub with NO device: `list targets` answers [Empty] (models the sandbox's stock hdc
+# gate that the patched fallback works around). Every other subcommand is unhandled on purpose.
+cat > "$WORK/bin/hdc-empty" <<'STUB_HDC_EMPTY_EOF'
+#!/bin/sh
+# Stub hdc without a device for selftest-devloop.sh (fallback cases). Not a real tool.
+case "${1:-}" in
+    list)
+        if [ "${2:-}" = targets ]; then printf '[Empty]\n'; exit 0; fi
+        printf 'stub hdc-empty: UNHANDLED list %s\n' "$*" >&2; exit 1 ;;
+esac
+printf 'stub hdc-empty: UNHANDLED %s\n' "$*" >&2
+exit 1
+STUB_HDC_EMPTY_EOF
+chmod +x "$WORK/bin/hdc-empty"
 
 cat > "$STUB_DOTNET" <<'STUB_DOTNET_EOF'
 #!/bin/sh
@@ -351,8 +371,10 @@ run_devloop() {
     # $_extra is intentionally unquoted: it carries zero or more `VAR=value` assignments.
     # TMP/TEMP are passed empty so the lib has to default them to the caller's TMPDIR (the
     # assertion that it does is part of S2), independent of the developer's own environment.
+    # HOME points into the work dir so the patched-hdc fallback default
+    # ($HOME/.ohos-tools/hdcp4) can never pick up the developer's real device.
     ( cd "$CWD" && exec env TMP= TEMP= TMPDIR="$TMPD" PATH="$WORK/bin:$PATH" \
-        HDC="$STUB" DOTNET="$STUB_DOTNET" DEVLOOP_SIGN_TOOL="$SIGN_STUB" \
+        HOME="$WORK/home" HDC="$STUB" DOTNET="$STUB_DOTNET" DEVLOOP_SIGN_TOOL="$SIGN_STUB" \
         FAKE_HDC_STATE="$STATE_DIR/$_tag" FAKE_DOTNET_STATE="$STATE_DIR/$_tag" \
         FAKE_HDC_UDID="$FAKE_UDID" $_extra sh "$DEVLOOP" "$@" ) > "$_log" 2>&1
     RC=$?
@@ -641,7 +663,7 @@ assert_contains "S8c follow streams the filter" "[maui]" "$LOGS/S8c.log"
 section "S9 --watch (one change -> one rerun)"
 rm -rf "$STATE_DIR/S9"
 : > "$LOGS/S9.log"
-( cd "$CWD" && exec env TMPDIR="$TMPD" PATH="$WORK/bin:$PATH" HDC="$STUB" DOTNET="$STUB_DOTNET" \
+( cd "$CWD" && exec env TMPDIR="$TMPD" PATH="$WORK/bin:$PATH" HOME="$WORK/home" HDC="$STUB" DOTNET="$STUB_DOTNET" \
     DEVLOOP_SIGN_TOOL="$SIGN_STUB" FAKE_HDC_STATE="$STATE_DIR/S9" FAKE_DOTNET_STATE="$STATE_DIR/S9" \
     FAKE_HDC_UDID="$FAKE_UDID" sh "$DEVLOOP" --watch --interval 1 all --project "$PROJ" --log-seconds 1 $BUNDLE_FALLBACK ) \
     >> "$LOGS/S9.log" 2>&1 &
@@ -687,6 +709,31 @@ assert_contains "S11 message names the missing hdc" "未找到 hdc" "$LOGS/S11.l
 run_devloop S11b "HDC=$WORK/bin/definitely-missing-hdc" --dry-run install --project "$PROJ" --hap "$OUT/hello-maui-app.hap"
 assert_eq "S11b --dry-run without hdc still plans (exit 0)" "0" "$RC"
 assert_contains "S11b plan still shows the command" "install -r" "$LOGS/S11b.log"
+
+# ---- S12 patched-hdc fallback --------------------------------------------------------
+# The sandbox's stock hdc answers [Empty]; the fallback (OHOS_HDC_PATCHED, or the default
+# $HOME/.ohos-tools/hdcp4) must pick up the stub device and say so in the log.
+section "S12 hdc fallback (stock hdc sees no targets)"
+run_devloop S12 "HDC=$WORK/bin/hdc-empty OHOS_HDC_PATCHED=$STUB" install --project "$PROJ" --hap "$OUT/hello-maui-app.hap"
+assert_eq "S12 fallback install succeeds (exit 0, log: $LOGS/S12.log)" "0" "$RC"
+assert_contains "S12 the log names the fallback" "hdc 回退" "$LOGS/S12.log"
+assert_contains "S12 the log names the patched binary" "$STUB" "$LOGS/S12.log"
+assert_contains "S12 the patched stub handled the install" "install -r $OUT/hello-maui-app.hap" "$(state_file S12 calls.log)"
+
+mkdir -p "$WORK/home/.ohos-tools"
+cp "$STUB" "$WORK/home/.ohos-tools/hdcp4"
+chmod +x "$WORK/home/.ohos-tools/hdcp4"
+run_devloop S12b "HDC=$WORK/bin/hdc-empty" install --project "$PROJ" --hap "$OUT/hello-maui-app.hap"
+assert_eq "S12b the default persistent path works (exit 0)" "0" "$RC"
+assert_contains "S12b the log names the default path" ".ohos-tools/hdcp4" "$LOGS/S12b.log"
+
+run_devloop S12c "HDC=$WORK/bin/hdc-empty OHOS_HDC_NO_FALLBACK=1" install --project "$PROJ" --hap "$OUT/hello-maui-app.hap"
+assert_eq "S12c OHOS_HDC_NO_FALLBACK=1 keeps the refusal (exit 3)" "3" "$RC"
+assert_contains "S12c message still names the empty target list" "未连接设备" "$LOGS/S12c.log"
+
+run_devloop S12d "HDC=$WORK/bin/hdc-empty OHOS_HDC_PATCHED=$WORK/bin/hdc-empty" install --project "$PROJ" --hap "$OUT/hello-maui-app.hap"
+assert_eq "S12d both hdcs empty -> exit 3" "3" "$RC"
+assert_contains "S12d message still names the empty target list" "未连接设备" "$LOGS/S12d.log"
 
 # ---- global --------------------------------------------------------------------------
 section "global: no state outside the work dir"

@@ -10,6 +10,7 @@
 // Native HUKS engine for the SecureStorage bridge (P2a-HUKS); answers keystore requests
 // in-process when the device ships libhuks_ndk.z.so (see openharmony_host.c below).
 #include "host_keystore.h"
+#include "host_status.h"  // DEVICE-ROUND-57: the launch mode decision lands in dotnet-status.txt
 #include "host_window_registry.h"  // MULTIWINDOW-L M3: per-window draw targets resolve the surface
 
 #include <sensors/vibrator.h>
@@ -490,40 +491,14 @@ static void* OhosHostOpenHostfxr(const char* caller, const char* app_dir, char* 
 // The probe itself runs once per process, on the first launch path that reaches this block, and
 // is best effort: it maps a page with each strategy the runtime could use and records OK or the
 // errno of the failing call. One device round then says which strategies the sandbox allows.
-#define OHOS_STATUS_LINE_MAX 600
-
-// Appends one flattened, capped status line to <dir>/dotnet-status.txt. Mirrors the managed
-// style (OpenHarmonyApp.FlattenCallbackMessage): control characters become spaces, the line is
-// capped at OHOS_STATUS_LINE_MAX characters with a trailing "...", one line per message. Never
-// fails the caller; the probe runs once per process, so no dedup state is needed here.
+// Appends one flattened, capped status line to <dir>/dotnet-status.txt through the shipped
+// helper (host_status.c) so the append semantics are unit-tested off-device. Mirrors the
+// managed style (OpenHarmonyApp.FlattenCallbackMessage): control characters become spaces, the
+// line is capped at OHOS_HOST_STATUS_LINE_MAX characters with a trailing "...", one line per
+// message. Never fails the caller; the probe runs once per process, so no dedup state is
+// needed here.
 static void OhosHostAppendStatusLine(const char* dir, const char* message) {
-    if (dir == NULL || dir[0] == '\0' || message == NULL) {
-        return;
-    }
-    char path[4096];
-    if (path_join(path, sizeof(path), dir, "dotnet-status.txt") != 0) {
-        return;
-    }
-    char flat[OHOS_STATUS_LINE_MAX + 4];
-    size_t length = strlen(message);
-    size_t keep = length < OHOS_STATUS_LINE_MAX ? length : OHOS_STATUS_LINE_MAX;
-    for (size_t i = 0; i < keep; i++) {
-        unsigned char c = (unsigned char)message[i];
-        flat[i] = (c < 0x20 || c == 0x7f) ? ' ' : (char)c;
-    }
-    if (length > keep) {
-        flat[keep++] = '.';
-        flat[keep++] = '.';
-        flat[keep++] = '.';
-    }
-    flat[keep] = '\0';
-    int fd = open(path, O_WRONLY | O_CREAT | O_APPEND, 0600);
-    if (fd < 0) {
-        return;
-    }
-    (void)!write(fd, flat, keep);
-    (void)!write(fd, "\n", 1);
-    close(fd);
+    (void)OhosHostStatusAppendLine(dir, message);
 }
 
 // Minimal extraction of one string value from the compact context JSON the shells send
@@ -1070,6 +1045,17 @@ static void OhosHostApplyGlobalizationPolicy(const char* caller, const char* sta
 // default (JIT) stays in effect. The packaging's libs/<abi>/runtime-mode.txt (jit|aot|interp) is
 // read here too: interp selects the same DOTNET_InterpMode=3 by default, while a device-side
 // interp.txt overrides it (see the runtime mode switch comment above).
+//
+// The decision is also mirrored into <filesDir>/dotnet-status.txt as one "OHOS_HOST mode" line
+// (DEVICE-ROUND-57): on the HAD-W32 image libhilog_ndk is absent, so the host's own hilog/stderr
+// lines are invisible and the shell's status-file mirror is the only readable evidence of the
+// route. The last-written (directory, line) pair is remembered so the pending-context re-apply
+// does not duplicate an identical line, while a changed decision or a different status
+// directory still appends.
+static int g_mode_status_written = 0;
+static char g_mode_status_dir[4096];
+static char g_mode_status_line[OHOS_HOST_STATUS_LINE_MAX + 4];
+
 static void OhosHostApplyExecMemoryPolicy(const char* caller, const char* app_dir, const char* context_json) {
     char dir[4096];
     int have_dir = OhosHostWritableDir(app_dir, context_json, dir, sizeof(dir));
@@ -1106,6 +1092,9 @@ static void OhosHostApplyExecMemoryPolicy(const char* caller, const char* app_di
         have_interp = 1;
         interp_from_manifest = 1;
     }
+    // Pure interpreter mode (3): the two switch lines below and the status mode line ride on
+    // this one decision.
+    int pure_interp = have_interp && strcmp(interp, "3") == 0;
     if (have_interp) {
         setenv("DOTNET_InterpMode", interp, 1);
         // Pure interpreter mode (3) never uses the mutable GC write-barrier copy: that copy
@@ -1118,7 +1107,7 @@ static void OhosHostApplyExecMemoryPolicy(const char* caller, const char* app_di
         // states the intent at the same decision point as the other mode-3 switches, and a
         // runtime without that implicit rule would otherwise map and relocate code the
         // interpreter cannot use. JIT and mixed modes (1/2) keep the runtime default.
-        if (strcmp(interp, "3") == 0) {
+        if (pure_interp) {
             setenv("DOTNET_UseGCWriteBarrierCopy", "0", 1);
             setenv("DOTNET_ReadyToRun", "0", 1);
         }
@@ -1138,6 +1127,28 @@ static void OhosHostApplyExecMemoryPolicy(const char* caller, const char* app_di
     OH_LOG_INFO(LOG_APP, "[openharmony-host] %{public}s: runtime-mode=%{public}s source=%{public}s",
                 name, effective_mode, mode_source);
     fprintf(stderr, "[openharmony-host] %s: runtime-mode=%s source=%s\n", name, effective_mode, mode_source);
+
+    // Mirror the whole decision into dotnet-status.txt (see the block comment above): the
+    // interp/runtime-mode/xwe token shapes match the host's hilog lines so the existing
+    // tester-run.sh exec-mem readers match a shell-mirrored line; r2r/wbcopy state the
+    // interp=3 switches. Best effort: a missing directory only costs the line.
+    if (have_dir) {
+        char mode_line[OHOS_HOST_STATUS_LINE_MAX + 4];
+        if (OhosHostStatusFormatModeLine(mode_line, sizeof(mode_line), name, interp_value,
+                                         interp_source, effective_mode, mode_source,
+                                         enabled ? "1" : "0", source,
+                                         pure_interp ? "off" : "default",
+                                         pure_interp ? "off" : "default")) {
+            if (!g_mode_status_written || strcmp(g_mode_status_dir, dir) != 0 ||
+                strcmp(g_mode_status_line, mode_line) != 0) {
+                if (OhosHostStatusAppendLine(dir, mode_line)) {
+                    snprintf(g_mode_status_dir, sizeof(g_mode_status_dir), "%s", dir);
+                    snprintf(g_mode_status_line, sizeof(g_mode_status_line), "%s", mode_line);
+                    g_mode_status_written = 1;
+                }
+            }
+        }
+    }
 
     // JITFORT unlock (WX-HOST-PRCTL): before coreclr can initialize and before the probe below,
     // so the probe line witnesses the unlocked sandbox (1/2 = OK). An explicit aot marker keeps
