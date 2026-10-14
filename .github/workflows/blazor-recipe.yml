@@ -1,8 +1,8 @@
 name: blazor-recipe
 
 # Recipe regression for test/hello-blazorwasm on a stock x64 runner. The Blazor WebAssembly
-# publish depends on the dnceng dotnet11 flight and on the SDK pack version pins in
-# Directory.Build.targets - the fork's rc.1 Blazor packages never reach nuget.org, so a
+# publish pins the official rc.2 Blazor/WebAssembly flight (nuget.org) and the SDK pack
+# versions in Directory.Build.targets - the fork's SDK band is not the official flight, so a
 # flight moving or disappearing would silently break the recipe until someone publishes on a
 # device. This job publishes the smoke twice (the default recipe and the slim kit variant)
 # and fails on restore/publish regressions. The OpenHarmony-specific parts of the recipe -

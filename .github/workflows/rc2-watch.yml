@@ -10,10 +10,13 @@ name: rc2-watch
 #   exit 1  -> every poll source failed (network): red, no trigger
 #
 # Record and run instructions: docs/rc2-official-watch.md
-# (2026-10-04: nuget.org rc.1 only, keep waiting).
+# (2026-10-13: the watch fired - the official rc.2 11.0.0-rc.2.26505.5 shipped on nuget.org and
+# the pin-switch batch landed the same day. The weekly schedule is disabled so the completed
+# watch cannot keep failing master; workflow_dispatch still runs the poll for the record.
+# Re-baseline the script before watching the next milestone.)
 on:
-  schedule:
-    - cron: '17 3 * * 1' # Mondays 03:17 UTC
+  # schedule:
+  #   - cron: '17 3 * * 1' # Mondays 03:17 UTC
   workflow_dispatch:
 
 permissions:

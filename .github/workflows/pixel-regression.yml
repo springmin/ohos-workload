@@ -42,7 +42,7 @@ on:
         description: 'maui-ohos commit SHA to compile (defaults to the pinned feature/openharmony tip)'
         required: false
         type: string
-        default: '5cfb1b89916d17d2bb65406a4dae2f66cf773b33'
+        default: '1c5ff3cbeb51173c893f9d9f0b9f2761b524fd5a'
 
 # Least privilege: the job only reads this repository and the public springmin/maui-ohos fork;
 # no step pushes anywhere.
@@ -217,9 +217,11 @@ permissions:
 # P1b-LIST and P1a-ANIM batches).
 # The interaction harness pins 810 checks / total 813 / floor 793; advance the pin in lockstep
 # with the interaction gate and change it deliberately (workflow_dispatch can compile any other
-# commit SHA).
+# commit SHA). The current pin 1c5ff3cbeb is the RC2-ALIGN commit: the four Microsoft.Maui.*
+# references move to the official nuget.org rc.2 (11.0.0-rc.2.26505.5), the dnceng feed step is
+# gone, and the harness/slice sources are unchanged.
 env:
-  MAUI_OHOS_REF: ${{ github.event.inputs.maui_ohos_ref || '5cfb1b89916d17d2bb65406a4dae2f66cf773b33' }}
+  MAUI_OHOS_REF: ${{ github.event.inputs.maui_ohos_ref || '1c5ff3cbeb51173c893f9d9f0b9f2761b524fd5a' }}
   # Same as the interaction gate: keep the setup-dotnet preview SDK in a cacheable per-user path
   # instead of the runner's /usr/share/dotnet; a newer 11.0.x preview is still downloaded (the
   # action re-resolves the channel), the cache only skips the ~200 MB download when it moved.
@@ -254,11 +256,6 @@ jobs:
         with:
           dotnet-version: '11.0.x'
           dotnet-quality: 'preview'
-      - name: Add the dnceng dotnet11 feed (MAUI rc.2 daily packages)
-        # The pinned slice carries Microsoft.Maui.* 11.0.0-rc.2.26478.12, a dnceng dotnet11
-        # daily that is not on nuget.org yet (see docs/rc2-line-notes.md). Drop this step
-        # when the official rc.2 packages ship and the slice pins move to nuget.org versions.
-        run: dotnet nuget add source https://pkgs.dev.azure.com/dnceng/public/_packaging/dotnet11/nuget/v3/index.json --name dnceng-dotnet11
       - name: Reject machine-specific absolute paths in build inputs
         run: sh scripts/check-no-absolute-paths.sh
       # One run only: the previous workflow ran the suite twice (once for the exit code, once for
