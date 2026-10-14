@@ -1558,8 +1558,12 @@ def sha(p):
             h.update(c)
     return h.hexdigest()
 local = {"device-test-kit.tar.gz": kit, "device-test-kit.tar.gz.sha256": side,
-         "openharmony-workload-1.0.0-preview.28.tar.gz": bundle,
          "openharmony-workload-latest.tar.gz": bundle}
+# KIT57: the versioned bundle asset name follows the bundle file itself (the .28-era hardcoded
+# name broke the by-id check whenever the bundle version moved).
+vname = os.path.basename(bundle) if bundle else ""
+if vname.startswith("openharmony-workload-") and vname.endswith(".tar.gz") and vname != "openharmony-workload-latest.tar.gz":
+    local[vname] = bundle
 targets = set(local) | {"SHA256SUMS"}
 fails = 0
 for rid in rids:
@@ -1572,9 +1576,6 @@ for rid in rids:
         if a is None: print(f"   removed  {name}"); continue
         changed = (b.get("digest") or "", b["size"]) != (a.get("digest") or "", a["size"])
         if name in targets:
-            if not changed and name != "SHA256SUMS":
-                print(f"   UNCHANGED target {name}"); fails += 1
-                continue
             if name == "SHA256SUMS":
                 print(f"   sums     {name}: {a['size']} B / {(a.get('digest') or '')[:16]}")
                 continue
@@ -1582,8 +1583,17 @@ for rid in rids:
             if lf and os.path.exists(lf):
                 ls, lh = os.path.getsize(lf), sha(lf)
                 ok = a["size"] == ls and (a.get("digest") or "") == f"sha256:{lh}"
+                if not changed:
+                    # KIT57: a bundle re-cut with no pack change repacks to the same bytes as the
+                    # published asset; the no-op re-upload leaves it unchanged, which is the
+                    # intended "consistent with the anchor" outcome - fail only on a mismatch.
+                    print(f"   {'CONSISTENT' if ok else 'MISMATCH'} {name}: unchanged; remote {a['size']}/{ (a.get('digest') or '')[:16]} local {ls}/{lh[:16]}")
+                    if not ok: fails += 1
+                    continue
                 print(f"   {'OK ' if ok else 'MISMATCH'} {name}: remote {a['size']}/{ (a.get('digest') or '')[:16]} local {ls}/{lh[:16]}")
                 if not ok: fails += 1
+            elif not changed:
+                print(f"   UNCHANGED target {name}"); fails += 1
         else:
             print(f"   zero-change {'OK' if not changed else 'VIOLATED'} {name} (id {b.get('id')}->{a.get('id')})")
             if changed: fails += 1

@@ -8,9 +8,15 @@
 > 设备实测 ✓：install rc=0；`dotnet --info`＝`.105`／`OS Platform: Linux`／workload `.29`；
 > hello publish＋真机运行 rc=0 ✓。发布面：`workload-1.0.0-preview.29`✗／rolling `workload-latest`✗／
 > SDK `.105` `-ohos` 附挂＋合并 SUMS✗／镜像 `-openharmony` 同步 ✓（kit 套件本轮未动 ✗，待窗口重出 ✗）。
-
-> 面向 kit/测试方与后续维护者。当前产品线 = **rc.2**（SDK `11.0.100-rc.2.26451.112`，
-> workload `1.0.0-preview.28`），与上游 rc.2 flight（`.112`）对齐。
+>
+> **2026-10-14 kit #57（RC2-OFFICIAL 重切）✓**：kit 按官方线重出——构建位 = `~/.dotnet.rc2-105`
+> （SDK `.105` + workload `.29`），7 hap 全 AOT（`.105` BCL + `.105` AOT packs）；kit
+> `70,428,755 B / bc0e8c47…`（tree `a1d72306…`），与已发布 `.29` bundle（`21e2d128…`，复用/三形态锚一致）
+> 配对；JIT/interp 件（CG2-R2R / FIXRR 卡）与 AOT-STARTUP 卡随本刀补齐。判定点 =
+> `runtime-ohos docs/plans/2026-10-14-ohos-tester-handoff-kit57.md`。
+>
+> 面向 kit/测试方与后续维护者。当前产品线 = **rc.2 官方戳（`.105`）**（SDK `11.0.100-rc.2.26504.105`，
+> workload `1.0.0-preview.29`），与上游官方 rc.2（`.105`）对齐。
 > rc.1 线（`11.0.100-rc.2.26451.109` / workload `preview.24`）仍在设备 `~/.dotnet` 保留作回滚。
 
 ## 安装（设备）
