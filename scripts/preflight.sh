@@ -3,10 +3,11 @@
 # summary at the end.
 #   1. repository gates, scripts/selftest-ridgraph.sh + scripts/selftest-packs.sh +
 #      scripts/selftest-repo-hygiene.sh + scripts/selftest-tasks.sh +
-#      scripts/selftest-host-registry.sh + scripts/selftest-host-window-bridge.sh +
-#      scripts/selftest-host-a11y-table.sh + scripts/selftest-host-clipboard.sh +
-#      scripts/selftest-cut-kit.sh +
-#      scripts/selftest-csc-watchdog.sh: the pack RID
+#      scripts/selftest-hap-targets.sh + scripts/selftest-host-registry.sh +
+#      scripts/selftest-host-window-bridge.sh + scripts/selftest-host-a11y-table.sh +
+#      scripts/selftest-host-clipboard.sh + scripts/selftest-host-status.sh +
+#      scripts/selftest-cut-kit.sh + scripts/selftest-csc-watchdog.sh +
+#      scripts/selftest-run-upstream-tests.sh: the pack RID
 #      graph copies
 #      must match sdk-ohos/eng/PortableRuntimeIdentifierGraph.openharmony.json (byte-level when
 #      the sibling checkout is present, digest-level otherwise), the packed UseRidGraph branch
@@ -15,10 +16,13 @@
 #      task must reproduce its documented bytes and reject broken input, the compiled packaging
 #      tasks must pass their unit tests and the packs must ship the built assembly, the build
 #      inputs must carry no machine-specific absolute paths (test/Directory.Build.props relative
-#      roots), the host window registry's + per-window bridge's off-device unit tests must
-#      pass (MULTIWINDOW-L M1/M2), the kit-cutting automation's fixture selftest (cut-kit.sh
-#      P0 pass/fail, stale-docs fail-closed, resume, F4 confirmation gate) must pass, and the
-#      csc-watchdog wrapper's fixture selftest must pass
+#      roots), the host window registry's + bridge's + a11y table's + clipboard NDK read's +
+#      status file's off-device unit tests must pass (MULTIWINDOW-L M1/M2, PASTEBOARD-FIX,
+#      TOOL-HARDEN-B), the hap-targets feature/permission contract must hold (T5), the
+#      kit-cutting automation's fixture selftest (cut-kit.sh
+#      P0 pass/fail, stale-docs fail-closed, resume, F4 confirmation gate) must pass, the
+#      csc-watchdog wrapper's fixture selftest must pass, and the offline upstream-tests runner
+#      selftest (stub dotnet/maui/xunit, timebox + red controls) must pass
 #   2. sh -n over scripts/*.sh
 #   3. markdownlint-cli2@0.23.3 (skipped when npx is missing)
 #   4. interaction suite, test/maui-platform-verify: rebuilt from this tree before it runs; its
@@ -134,7 +138,7 @@ fi
 log "== step 1/5: repository gates (RID graph, pack lint, hap module.json, task unit tests, host window registry + bridge + clipboard NDK read, absolute paths) =="
 PACK_GATE_DETAIL=""
 PACK_GATE_FAILED=0
-for gate in selftest-ridgraph.sh selftest-packs.sh selftest-hap-targets.sh selftest-tasks.sh selftest-repo-hygiene.sh selftest-host-registry.sh selftest-host-window-bridge.sh selftest-host-a11y-table.sh selftest-host-clipboard.sh selftest-host-status.sh selftest-cut-kit.sh selftest-csc-watchdog.sh; do
+for gate in selftest-ridgraph.sh selftest-packs.sh selftest-hap-targets.sh selftest-tasks.sh selftest-repo-hygiene.sh selftest-host-registry.sh selftest-host-window-bridge.sh selftest-host-a11y-table.sh selftest-host-clipboard.sh selftest-host-status.sh selftest-cut-kit.sh selftest-csc-watchdog.sh selftest-run-upstream-tests.sh; do
     if [ ! -f "$W/scripts/$gate" ]; then
         warn "missing scripts/$gate"
         PACK_GATE_FAILED=1
