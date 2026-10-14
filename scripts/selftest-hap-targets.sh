@@ -18,10 +18,12 @@
 #   T5 features    the feature -> permission matrix resolves to module.json entries with
 #                  reason/usedScene, an unknown feature id and the strict request-point mode fail,
 #                  'all' emits the eight non-ACL permissions (the webview-media camera/microphone
-#                  pair joined in 7cb1f31; READ_PASTEBOARD left the matrix in PASTEBOARD-FIX and
-#                  READ_CONTACTS is the Acl-marked entry 'all' skips - both are system_basic and
-#                  would fail the install), an explicitly named ACL feature still declares with a
-#                  warning, the removed clipboard id is no feature any more, and the raw
+#                  pair joined in 7cb1f31; the ACL-marked clipboard/READ_PASTEBOARD and
+#                  contacts/READ_CONTACTS entries are skipped - both are system_basic and would
+#                  fail the install), an explicitly named ACL feature still declares with a
+#                  warning (the clipboard feature declares READ_PASTEBOARD only when named
+#                  explicitly; the default set and 'all' never carry it), an Acl-stripped scratch
+#                  copy shows 'all' would then declare it (mutation red control), and the raw
 #                  extra-permission path keeps its minimal form plus the raw-permission warning
 #                  (the default feature set is 'network' - INTERNET - and
 #                  -p:OpenHarmonyFeatures=none restores the declare-nothing behaviour)
@@ -365,7 +367,7 @@ else
     PERMFIX="$WORK/permfix"
     mkdir -p "$PERMFIX"
     python3 - "$PERMFIX" "$W" "$REF" "$TPL" <<'PY'
-import os, sys
+import os, shutil, sys
 fix, root, targets, template = sys.argv[1:5]
 pack_dir = os.path.dirname(os.path.dirname(targets)) + '/'
 values = {
@@ -396,6 +398,37 @@ proj = f'''<Project>
 </Project>
 '''
 open(os.path.join(fix, 'perm.proj'), 'w').write(proj)
+
+# ACL red control fixture: the same targets with the clipboard entry's Acl mark stripped, so
+# 'all' must then declare READ_PASTEBOARD - the primary assertions are load-bearing.
+redpack = os.path.join(fix, 'redpack')
+os.makedirs(os.path.join(redpack, 'targets'), exist_ok=True)
+os.makedirs(os.path.join(redpack, 'tools'), exist_ok=True)
+text = open(targets).read()
+anchor = text.find('ohos.permission.READ_PASTEBOARD')
+mark = text.find('<Acl>true</Acl>', anchor)
+end = text.find('</_OpenHarmonyFeaturePermission>', anchor)
+assert anchor > 0 and 0 < mark < end, 'clipboard Acl anchor not found in the targets'
+open(os.path.join(redpack, 'targets', 'OpenHarmony.Hap.targets'), 'w').write(
+    text[:mark] + text[mark + len('<Acl>true</Acl>'):])
+shutil.copy(os.path.join(pack_dir, 'tools', 'Microsoft.OpenHarmony.Tasks.dll'),
+            os.path.join(redpack, 'tools', 'Microsoft.OpenHarmony.Tasks.dll'))
+proj_red = f'''<Project>
+  <PropertyGroup>
+    <MicrosoftNETBuildTasksAssembly>$(MSBuildToolsPath)/Microsoft.Build.Tasks.Core.dll</MicrosoftNETBuildTasksAssembly>
+    <_OpenHarmonySdkPackDir>{redpack}/</_OpenHarmonySdkPackDir>
+  </PropertyGroup>
+  <Import Project="{redpack}/targets/OpenHarmony.Hap.targets" />
+  <ItemGroup>
+{items}
+  </ItemGroup>
+  <Target Name="Emit" DependsOnTargets="_OpenHarmonyResolvePermissions">
+    <OpenHarmonyGenerateModuleJson TemplateFile="$(Tpl)" OutputFile="out-red.json" Replacements="@(_R)"
+                                   ExtraPermissions="@(_OpenHarmonyModuleJsonPermission)" />
+  </Target>
+</Project>
+'''
+open(os.path.join(fix, 'perm-red.proj'), 'w').write(proj_red)
 PY
     run_perm() { # <args...>
         ( cd "$PERMFIX" && "$DOTNET" msbuild perm.proj -t:Emit -nologo -v:m -p:Tpl="$TPL" \
@@ -419,10 +452,11 @@ PY
         || fail_ "T5 does not name the unknown feature"
     run_perm
     assert_rc 0 $? "T5 no -p keeps the default feature set working"
-    python3 - "$PERMFIX/out.json" <<'PY' && pass_ "T5 the default set declares INTERNET (network; LAUNCHER-IDENTITY / A)" || fail_ "T5 the default module.json does not declare INTERNET"
+    python3 - "$PERMFIX/out.json" <<'PY' && pass_ "T5 the default set declares INTERNET only, never the ACL clipboard permission (network; LAUNCHER-IDENTITY / A)" || fail_ "T5 the default module.json does not declare INTERNET"
 import json, sys
 perms = json.load(open(sys.argv[1]))['module']['requestPermissions']
 assert [p['name'] for p in perms] == ['ohos.permission.INTERNET'], perms
+assert not any(p['name'] == 'ohos.permission.READ_PASTEBOARD' for p in perms), perms
 entry = perms[0]
 assert entry['reason'] == '$string:permission_reason_internet', entry
 assert entry['usedScene'] == {'abilities': ['EntryAbility'], 'when': 'inuse'}, entry
@@ -450,10 +484,11 @@ for want in ('ohos.permission.ACCESS_BLUETOOTH', 'ohos.permission.APPROXIMATELY_
 assert 'ohos.permission.READ_PASTEBOARD' not in names, names
 assert 'ohos.permission.READ_CONTACTS' not in names, names
 PY
-    # PASTEBOARD-FIX / ACL subset: ACL-level permissions must not ride 'all'; an explicitly
-    # named ACL feature still declares its permission (with the warning pinned below).
-    grep -qF "skips the ACL-level feature(s) contacts" "$WORK/T5-case.log" && pass_ "T5 'all' names the skipped ACL feature" \
-        || fail_ "T5 'all' does not name the skipped ACL feature"
+    # ACL subset: ACL-level permissions must not ride 'all'; an explicitly named ACL feature
+    # still declares its permission (with the warning pinned below). The Acl-marked clipboard
+    # entry is named next to contacts (ordinal order), so 'all' skips both.
+    grep -qF "skips the ACL-level feature(s) clipboard;contacts" "$WORK/T5-case.log" && pass_ "T5 'all' names both skipped ACL features" \
+        || fail_ "T5 'all' does not name the skipped ACL features"
     run_perm -p:OpenHarmonyFeatures=contacts
     assert_rc 0 $? "T5 an explicitly named ACL feature resolves"
     python3 - "$PERMFIX/out.json" <<'PY' && pass_ "T5 the explicit contacts feature declares READ_CONTACTS" || fail_ "T5 the explicit contacts declaration is wrong"
@@ -466,12 +501,21 @@ PY
     grep -qF "feature 'contacts' declares the ACL-level permission 'ohos.permission.READ_CONTACTS'" "$WORK/T5-case.log" \
         && pass_ "T5 the explicit ACL feature warns about the install hazard" \
         || fail_ "T5 the explicit ACL feature does not warn"
-    # PASTEBOARD-FIX: READ_PASTEBOARD is ACL-level (an install failure) and the clipboard read
-    # needs no permission (host pasteboard NDK); the removed 'clipboard' id must not resolve.
+    # ACL-PROFILE: the clipboard feature is back, but ACL-gated - an explicit selection declares
+    # READ_PASTEBOARD with reason/usedScene and warns about the install hazard; the default set
+    # (asserted above) and 'all' (asserted above) never carry it.
     run_perm -p:OpenHarmonyFeatures=clipboard
-    assert_rc 1 $? "T5 the removed clipboard feature id fails"
-    grep -qF 'unknown feature id' "$WORK/T5-case.log" && pass_ "T5 the clipboard id is no feature any more" \
-        || fail_ "T5 the clipboard id still resolves"
+    assert_rc 0 $? "T5 an explicitly named ACL clipboard feature resolves"
+    python3 - "$PERMFIX/out.json" <<'PY' && pass_ "T5 the explicit clipboard feature declares READ_PASTEBOARD with reason/usedScene" || fail_ "T5 the explicit clipboard declaration is wrong"
+import json, sys
+perms = json.load(open(sys.argv[1]))['module']['requestPermissions']
+assert [p['name'] for p in perms] == ['ohos.permission.READ_PASTEBOARD'], perms
+assert perms[0]['reason'] == '$string:permission_reason_clipboard', perms
+assert perms[0]['usedScene'] == {'abilities': ['EntryAbility'], 'when': 'inuse'}, perms
+PY
+    grep -qF "feature 'clipboard' declares the ACL-level permission 'ohos.permission.READ_PASTEBOARD'" "$WORK/T5-case.log" \
+        && pass_ "T5 the explicit clipboard feature warns about the install hazard" \
+        || fail_ "T5 the explicit clipboard feature does not warn"
     run_perm -p:OpenHarmonyFeatures=bluetooth -p:OpenHarmonyRequireDeclaredRequestPoints=true
     assert_rc 1 $? "T5 the strict request-point mode fails on an undeclared point"
     grep -qF 'does not declare' "$WORK/T5-case.log" && pass_ "T5 strict mode names the undeclared points" \
@@ -488,6 +532,19 @@ assert perms == [
      'usedScene': {'abilities': ['EntryAbility'], 'when': 'inuse'}},
     {'name': 'ohos.permission.VIBRATE'},
 ], perms
+PY
+    # ACL red control: the scratch copy (PERMFIX/redpack) dropped the clipboard entry's
+    # <Acl>true</Acl>; 'all' must then declare READ_PASTEBOARD next to the eight non-ACL
+    # permissions (nine names) - the 'all'/default exclusions above are load-bearing.
+    ( cd "$PERMFIX" && "$DOTNET" msbuild perm-red.proj -t:Emit -nologo -v:m -p:Tpl="$TPL" \
+        -p:TargetPlatformIdentifier=openharmony -p:OpenHarmonyHapPackage=true -p:OpenHarmonyFeatures=all ) > "$WORK/T5-red.log" 2>&1
+    assert_rc 0 $? "T5 the Acl-stripped red control resolves"
+    python3 - "$PERMFIX/out-red.json" <<'PY' && pass_ "T5 the red control: without the Acl mark 'all' declares READ_PASTEBOARD" || fail_ "T5 the red control did not flip the 'all' set (see $WORK/T5-red.log)"
+import json, sys
+names = [p['name'] for p in json.load(open(sys.argv[1]))['module']['requestPermissions']]
+assert len(names) == len(set(names)) == 9, names
+assert 'ohos.permission.READ_PASTEBOARD' in names, names
+assert 'ohos.permission.READ_CONTACTS' not in names, names
 PY
 fi
 

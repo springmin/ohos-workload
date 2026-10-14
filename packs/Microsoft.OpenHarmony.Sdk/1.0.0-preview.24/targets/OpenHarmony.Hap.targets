@@ -460,14 +460,22 @@
         <Reason>$string:permission_reason_location</Reason>
         <UsedSceneWhen>inuse</UsedSceneWhen>
       </_OpenHarmonyFeaturePermission>
-      <!-- READ_PASTEBOARD is deliberately NOT in the matrix (PASTEBOARD-FIX): it is
-           ACL-level (availableLevel system_basic), so an app bundle that declares it is
-           rejected by the installer ("grant request permissions failed") and the permission
-           cannot be granted to an ordinary bundle at runtime. The clipboard read is attempted
-           through the pasteboard NDK in the host (no ArkTS request point); the service still
-           enforces the ACL for the read, so an unauthorized read keeps the managed
-           null/empty shape. Never map a feature to it; OpenHarmonyFeatures=all must not
-           declare it either. -->
+      <!-- clipboard: READ_PASTEBOARD is ACL-level (availableLevel system_basic) - a bundle
+           that declares it on a normal certificate is rejected by the installer ("grant
+           request permissions failed"/9568289), so the entry is Acl-marked:
+           OpenHarmonyFeatures=all skips it and the default feature set never selects it.
+           Only an explicit -p:OpenHarmonyFeatures=clipboard declares it (with the
+           install-hazard warning), for a bundle signed against an ACL profile granted in
+           AGC (project settings > ACL permissions; see "Clipboard ACL profile" in the
+           packaging doc). Without the profile the read path stays the host pasteboard NDK
+           plus the user-mediated paste window (Ctrl+V / the shell PasteButton). -->
+      <_OpenHarmonyFeaturePermission Include="ohos.permission.READ_PASTEBOARD">
+        <Feature>clipboard</Feature>
+        <GrantMode>user_grant</GrantMode>
+        <Acl>true</Acl>
+        <Reason>$string:permission_reason_clipboard</Reason>
+        <UsedSceneWhen>inuse</UsedSceneWhen>
+      </_OpenHarmonyFeaturePermission>
       <!-- contacts: READ_CONTACTS is ACL-level (system_basic) as well, so the entry is
            marked Acl - OpenHarmonyFeatures=all skips it (an ordinary bundle fails the install
            with it) while an explicit -p:OpenHarmonyFeatures=contacts still declares it and
