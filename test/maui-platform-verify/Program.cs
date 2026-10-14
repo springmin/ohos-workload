@@ -12516,20 +12516,23 @@ if (!pg2InterpOk)
 // host states the R2R opt-out with the same mode test. The runtime already forces ReadyToRun off
 // for InterpMode >= 2 (eeconfig.cpp); the explicit setenv keeps the intent at the mode-3 decision
 // point (and covers a runtime without that implicit rule). The JIT and the mixed modes (1/2) keep
-// the runtime default. The pin keeps the setenv inside the mode-3 block, after the write-barrier
-// opt-out, exactly once.
-int cg2R2rInterpAt = cSource?.IndexOf("if (strcmp(interp, \"3\") == 0) {", StringComparison.Ordinal) ?? -1;
+// the runtime default. DEVICE-ROUND-57 follow-up: the mode-3 decision is factored into
+// `pure_interp` (shared by the switches and the dotnet-status mode line), so the pin anchors on
+// that predicate and its computation; the setenv stays inside the pure-interp block, after the
+// write-barrier opt-out, exactly once.
+bool cg2R2rMode3Ok = cSource?.Contains("int pure_interp = have_interp && strcmp(interp, \"3\") == 0;") == true;
+int cg2R2rInterpAt = cSource?.IndexOf("if (pure_interp) {", StringComparison.Ordinal) ?? -1;
 int cg2R2rWriteBarrierAt = cg2R2rInterpAt > 0
     ? cSource!.IndexOf("setenv(\"DOTNET_UseGCWriteBarrierCopy\", \"0\", 1);", cg2R2rInterpAt, StringComparison.Ordinal)
     : -1;
-bool cg2R2rHostOk = cg2R2rInterpAt > 0 && cg2R2rWriteBarrierAt > cg2R2rInterpAt &&
+bool cg2R2rHostOk = cg2R2rMode3Ok && cg2R2rInterpAt > 0 && cg2R2rWriteBarrierAt > cg2R2rInterpAt &&
     cSource!.IndexOf("setenv(\"DOTNET_ReadyToRun\", \"0\", 1);", cg2R2rWriteBarrierAt, StringComparison.Ordinal) > cg2R2rWriteBarrierAt &&
     CountOccurrences(cSource, "setenv(\"DOTNET_ReadyToRun\"") == 1;
 Console.WriteLine($"[verify] cg2-r2r host interp r2r=0 setenv={cg2R2rHostOk} source='{cSourcePath ?? "<missing>"}' assert={cg2R2rHostOk}");
 if (!cg2R2rHostOk)
 {
     throw new InvalidOperationException(
-        $"the CG2-R2R interp R2R opt-out (DOTNET_ReadyToRun=0 inside the mode-3 block) drifted: " +
+        $"the CG2-R2R interp R2R opt-out (DOTNET_ReadyToRun=0 inside the pure-interp block) drifted: " +
         $"setenv={cg2R2rHostOk} source={cSourcePath ?? "<missing>"}");
 }
 
