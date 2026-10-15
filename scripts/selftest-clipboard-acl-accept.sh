@@ -353,8 +353,10 @@ else
     bad "selftest-clipboard-acl-accept.sh fails sh -n (see $LOGS/selftest-syntax.log)"
 fi
 
+GIT_OK=0
 GIT_BEFORE=""
 if command -v git >/dev/null 2>&1 && git -C "$ROOT_DIR" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+    GIT_OK=1
     GIT_BEFORE="$(git -C "$ROOT_DIR" status --porcelain 2>/dev/null || true)"
 fi
 
@@ -620,7 +622,7 @@ section "global: cleanup and repo safety"
 assert_eq "global sandbox cwd untouched" "" "$(ls -A "$CWD" 2>/dev/null)"
 LEFTOVER_TMP="$(find "$TMPD" -mindepth 1 -print 2>/dev/null)"
 assert_eq "global the script's temp files are cleaned up" "" "$LEFTOVER_TMP"
-if [ -n "${GIT_BEFORE:-}" ]; then
+if [ "$GIT_OK" = 1 ]; then
     GIT_AFTER="$(git -C "$ROOT_DIR" status --porcelain 2>/dev/null || true)"
     if [ "$GIT_BEFORE" = "$GIT_AFTER" ]; then
         ok "global the repo working tree is unchanged by the selftest"
