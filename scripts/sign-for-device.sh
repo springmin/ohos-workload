@@ -16,6 +16,17 @@
 #     sign-app is called with an explicit -signCode 1 (the SDK sign-hap.sh/device path does the
 #     same), so the output carries the HAP code-signing block (SoInfoSegment over libs/<abi>/**)
 #     instead of relying on hap-sign-tool's built-in default.
+#   --release: sign with AGC release material (Huawei-issued release certificate + UDID-free
+#     release profile): --profile <p7b> --key <p12> --cert <cer> [--key-alias <alias>]
+#     [--key-pwd-file <file>|--pwd-input-mode]. Material defaults to the drop directory
+#     OHOS_RELEASE_DIR (~/Documents/ohos/release): the single *.p7b/*.p12/*.cer there is picked
+#     automatically; --profile/--key/--cert or OHOS_RELEASE_{P7B,P12,CER,ALIAS,PWD_FILE}
+#     override it (missing material fails closed and the error names the file/flag). Preflight
+#     is fail-closed: the profile must verify as type=release with no debug-info.device-ids,
+#     every hap's bundleName must equal bundle-info.bundle-name, and the app cert chain must
+#     contain the profile's distribution-certificate - all before the first sign-app. The key
+#     alias defaults to releaseKey (override when the p12 uses another alias). Output default:
+#     <hap>-release.hap; every output is verify-app checked (-outCertChain/-outProfile) first.
 # Usage (usage() carries the full surface):
 #   sign-for-device.sh <udid[,udid...]> [--version <packVer>] [--bundle <name>]
 #     [--unsigned <hap>] [--out <hap>]
@@ -24,11 +35,18 @@
 #   sign-for-device.sh --external --profile <p7b> --key <p12> --key-alias <alias>
 #     --expect-udid <UDID> [--cert <cer>] [--pwd-input-mode] [--key-pwd-file <file>]
 #     [--unsigned <hap>]... [--out <hap>] [--out-dir <dir>]
+#   sign-for-device.sh --release [--profile <p7b>] [--key <p12>] [--cert <cer>]
+#     [--key-alias <alias>] [--key-pwd-file <file>] [--pwd-input-mode]
+#     [--unsigned <hap>]... [--out <hap>] [--out-dir <dir>]
 #   sign-for-device.sh --show-profile-devices [<p7b>|--config <dir>] [--huawei [configDir]]
 # Env: OHOS_SDK_ROOT (default: the harmonybrew 26.0.0.18_2 install);
 #   OHOS_ENC_PWD - Studio-encrypted password for --huawei (preferred over the positional
 #     encryptedPassword: argv is world-readable), forwarded to sign-huawei.sh via the env;
-#   OHOS_PWD_INPUT_MODE - same as --pwd-input-mode (1 = prompt; 0 = argv, default).
+#   OHOS_PWD_INPUT_MODE - same as --pwd-input-mode (1 = prompt; 0 = argv, default);
+#   OHOS_RELEASE_DIR - release material drop directory (default ~/Documents/ohos/release);
+#   OHOS_RELEASE_P7B/OHOS_RELEASE_P12/OHOS_RELEASE_CER - release material paths (--profile/
+#     --key/--cert win); OHOS_RELEASE_ALIAS - p12 key alias (default releaseKey);
+#   OHOS_RELEASE_PWD_FILE - p12 password file (--key-pwd-file wins).
 # --pwd-input-mode (--huawei: forwarded to sign-huawei.sh; --external: hap-sign-tool reads
 #   keystorePwd/keyPwd from the terminal, -pwdInputMode 1, no -keyPwd/-keystorePwd). Without a
 #   tty, script(1) supplies a pty (feed the two prompts on stdin; --key-pwd-file is fed twice)
@@ -75,6 +93,7 @@ while [ $# -gt 0 ]; do
   case "$1" in
     --huawei) MODE=huawei; shift ;;
     --external) MODE=external; shift ;;
+    --release) MODE=release; shift ;;
     --pwd-input-mode) PWD_INTERACTIVE=1; shift ;;
     --show-profile-devices) SHOW=1; shift ;;
     --config)   CFG="$2";  shift 2 ;;
@@ -125,20 +144,20 @@ $2"
 done
 
 # --pwd-input-mode selects hap-sign-tool's interactive prompt, which --huawei and
-# --external drive.
-if [ "$PWD_INTERACTIVE" = 1 ] && [ "$MODE" != huawei ] && [ "$MODE" != external ]; then
-  die "--pwd-input-mode / OHOS_PWD_INPUT_MODE=1 is only available with --huawei or --external"
+# --external/--release drive.
+if [ "$PWD_INTERACTIVE" = 1 ] && [ "$MODE" != huawei ] && [ "$MODE" != external ] && [ "$MODE" != release ]; then
+  die "--pwd-input-mode / OHOS_PWD_INPUT_MODE=1 is only available with --huawei, --external or --release"
 fi
 
-# Options that only make sense for --external.
-if [ "$MODE" != external ]; then
-  [ -z "$KEY" ]     || die "--key is only available with --external"
-  [ -z "$ALIAS" ]   || die "--key-alias is only available with --external"
-  [ -z "$EXPECT" ]  || die "--expect-udid is only available with --external"
-  [ -z "$CERT" ]    || die "--cert is only available with --external"
-  [ -z "$OUT_DIR" ] || die "--out-dir is only available with --external"
-  [ -z "$PWD_FILE" ] || die "--key-pwd-file is only available with --external"
+# Options that only make sense for --external/--release (or --external alone).
+if [ "$MODE" != external ] && [ "$MODE" != release ]; then
+  [ -z "$KEY" ]     || die "--key is only available with --external or --release"
+  [ -z "$ALIAS" ]   || die "--key-alias is only available with --external or --release"
+  [ -z "$CERT" ]    || die "--cert is only available with --external or --release"
+  [ -z "$OUT_DIR" ] || die "--out-dir is only available with --external or --release"
+  [ -z "$PWD_FILE" ] || die "--key-pwd-file is only available with --external or --release"
 fi
+[ "$MODE" = external ] || [ -z "$EXPECT" ] || die "--expect-udid is only available with --external"
 
 SDK="${OHOS_SDK_ROOT:-$HOME/.harmonybrew/Cellar/ohos-sdk/26.0.0.18_2}"
 TOOLCHAIN="$SDK/toolchains/lib"
@@ -223,21 +242,27 @@ for i in ids:
 PY
 }
 
-# Print bundle-info.development-certificate (PEM) from a verify-profile JSON.
+# Print bundle-info.<field> (PEM) from a verify-profile JSON.
 # Exit 3 when it is missing.
-profile_dev_cert() {
-  python3 - "$1" <<'PY'
+profile_cert() { # <json> <field>
+  python3 - "$1" "$2" <<'PY'
 import json, sys
 try:
     d = json.load(open(sys.argv[1]))
 except Exception:
     sys.exit(3)
-c = (d.get('bundle-info') or {}).get('development-certificate') or ''
+c = (d.get('bundle-info') or {}).get(sys.argv[2]) or ''
 if 'BEGIN CERTIFICATE' not in c:
     sys.exit(3)
 sys.stdout.write(c if c.endswith('\n') else c + '\n')
 PY
 }
+
+# The debug profile carries bundle-info.development-certificate.
+profile_dev_cert() { profile_cert "$1" development-certificate; }
+
+# The release profile carries bundle-info.distribution-certificate.
+profile_dist_cert() { profile_cert "$1" distribution-certificate; }
 
 # 0 when the single certificate in <pem-with-one-cert> is also in <pem-bundle>
 # (base64/DER comparison, so line wrapping and line endings do not matter).
@@ -517,8 +542,188 @@ if [ "$MODE" = external ]; then
   exit 0
 fi
 
+# --release: sign with AGC release material (Huawei-issued release certificate + UDID-free
+# release profile). Fail-closed preflight: the profile must verify as type=release with no
+# debug-info.device-ids, every hap's bundleName must equal the profile's, and the app cert
+# chain must contain the profile's distribution-certificate - all before the first sign-app.
+# Missing material names the file/flag/drop directory; an unsigned release requires explicit
+# material, so this mode never falls back to the SDK test keys.
+if [ "$MODE" = release ]; then
+  [ "$BUNDLE_SET" = 0 ] || die "--bundle is not available in --release mode; the profile's bundle-name decides the app identity (rebuild the hap with -p:OpenHarmonyBundleName=<name>)"
+  [ "$VER_SET" = 0 ] || warn "--version is ignored in --release mode (the SDK comes from OHOS_SDK_ROOT)"
+  REL_DIR="${OHOS_RELEASE_DIR:-$HOME/Documents/ohos/release}"
+  [ -n "$P7B" ]   || P7B="${OHOS_RELEASE_P7B:-}"
+  [ -n "$KEY" ]   || KEY="${OHOS_RELEASE_P12:-}"
+  [ -n "$CERT" ]  || CERT="${OHOS_RELEASE_CER:-}"
+  [ -n "$ALIAS" ] || ALIAS="${OHOS_RELEASE_ALIAS:-}"
+  [ -n "$PWD_FILE" ] || PWD_FILE="${OHOS_RELEASE_PWD_FILE:-}"
+
+  # Pick the single material file of one kind from the drop directory. Never guesses between
+  # several candidates; the error names the flag and the environment variable that choose one.
+  rel_pick() { # <ext> <what> <flag> <env>; sets REL_PICK
+    _matches="$(ls "$REL_DIR"/*."$1" 2>/dev/null || true)"
+    _n="$(printf '%s' "$_matches" | grep -c . || true)"
+    if [ "$_n" -eq 0 ]; then
+      die "release $2 missing: no *.$1 under $REL_DIR - drop the AGC material there, or pass $3, or set $4"
+    fi
+    if [ "$_n" -gt 1 ]; then
+      printf '%s\n' "$_matches" | sed 's/^/    /' >&2
+      die "$_n *.$1 files under $REL_DIR; pass $3 (or set $4) to choose one"
+    fi
+    REL_PICK="$_matches"
+  }
+
+  [ -n "$P7B" ]  || { rel_pick p7b "profile" "--profile <p7b>" "OHOS_RELEASE_P7B"; P7B="$REL_PICK"; }
+  [ -n "$KEY" ]  || { rel_pick p12 "keystore" "--key <p12>" "OHOS_RELEASE_P12"; KEY="$REL_PICK"; }
+  [ -n "$CERT" ] || { rel_pick cer "app cert chain" "--cert <cer>" "OHOS_RELEASE_CER"; CERT="$REL_PICK"; }
+  [ -n "$ALIAS" ] || ALIAS=releaseKey
+
+  [ -f "$P7B" ]  || die "release profile not found: $P7B (--profile <p7b> / OHOS_RELEASE_P7B)"
+  [ -f "$KEY" ]  || die "release keystore not found: $KEY (--key <p12> / OHOS_RELEASE_P12)"
+  [ -f "$CERT" ] || die "release app cert chain not found: $CERT (--cert <cer> / OHOS_RELEASE_CER)"
+  [ -x "$TOOLCHAIN/hap-sign-tool" ] || die "hap-sign-tool not found in $TOOLCHAIN (set OHOS_SDK_ROOT)"
+  if [ -n "$OUT" ] && [ -n "$OUT_DIR" ]; then die "--out and --out-dir are mutually exclusive"; fi
+  log "release material: profile $P7B, key $KEY, cert chain $CERT, alias $ALIAS"
+  if [ "$ALIAS" = releaseKey ] && [ -z "${OHOS_RELEASE_ALIAS:-}" ]; then
+    log "key alias 'releaseKey' is the default; pass --key-alias or set OHOS_RELEASE_ALIAS if the p12 uses another alias"
+  fi
+
+  IN_LIST="${UNSIGNED_LIST:-$UNSIGNED}"
+  NIN="$(printf '%s\n' "$IN_LIST" | grep -c . || true)"
+  if [ -n "$OUT" ] && [ "$NIN" -ne 1 ]; then
+    die "--out only works with a single --unsigned hap; use --out-dir <dir> for several"
+  fi
+  [ -z "$OUT_DIR" ] || mkdir -p "$OUT_DIR"
+
+  WORK=$(umask 077; mktemp -d "${TMPDIR:-/tmp}/ohos-rel.XXXXXX") || die "cannot create a private temp dir"
+  TMP_OUT=""
+  cleanup() {
+    if [ -n "$TMP_OUT" ]; then rm -f "$TMP_OUT"; fi
+    if [ -n "$WORK" ]; then rm -rf "$WORK"; fi
+  }
+  trap cleanup 0
+  trap 'cleanup; exit 130' INT
+  trap 'cleanup; exit 143' TERM
+  trap 'cleanup; exit 129' HUP
+
+  # Authoritative extraction of the signed profile; everything below trusts this JSON, not the
+  # raw p7b text.
+  if ! "$TOOLCHAIN/hap-sign-tool" verify-profile -inFile "$P7B" -outFile "$WORK/profile.json" > "$WORK/verify-profile.log" 2>&1; then
+    sed 's/^/    /' "$WORK/verify-profile.log" >&2
+    die "cannot extract/verify the signed profile from $P7B (hap-sign-tool verify-profile failed; is this the AGC release p7b?)"
+  fi
+  PT="$(profile_field "$WORK/profile.json" type)" || PT=""
+  [ "$PT" = release ] || die "profile type is '${PT:-unknown}', not release: $P7B is not a release profile (debug material belongs to the device path or --external)"
+  if IDS="$(profile_device_ids "$WORK/profile.json")"; then
+    die "release profile $P7B carries debug-info.device-ids ($(printf '%s\n' "$IDS" | tr '\n' ' ')): a release profile must be UDID-free"
+  fi
+  PB="$(profile_field "$WORK/profile.json" bundle-info.bundle-name)" || die "no bundle-info.bundle-name in $P7B"
+  log "release profile check OK: type $PT, bundle-name $PB, no device-ids"
+
+  # App cert chain: same discipline as --external, but the leaf comes from
+  # bundle-info.distribution-certificate (the release profiles carry that field).
+  profile_dist_cert "$WORK/profile.json" > "$WORK/leaf.pem" 2>/dev/null || rm -f "$WORK/leaf.pem"
+  [ -f "$WORK/leaf.pem" ] || warn "profile has no bundle-info.distribution-certificate; the cert chain cannot be leaf-checked"
+  command -v openssl >/dev/null 2>&1 || die "openssl not found (needed to normalize the app cert chain)"
+  openssl crl2pkcs7 -nocrl -certfile "$CERT" 2>/dev/null | openssl pkcs7 -print_certs -out "$WORK/chain.pem" 2>/dev/null \
+    || die "cannot convert the app cert chain with openssl: $CERT"
+  NC="$(grep -c 'BEGIN CERTIFICATE' "$WORK/chain.pem" || true)"
+  [ "$NC" -ge 2 ] || die "app cert chain $CERT has only $NC certificate(s); hap-sign-tool needs the full chain (root/sub CA/leaf) - pass --cert with the AGC release *.cer"
+  [ "$NC" -le 3 ] || warn "app cert chain $CERT has $NC certificates (expected 3)"
+  if [ -f "$WORK/leaf.pem" ]; then
+    cert_contains_pem "$WORK/leaf.pem" "$WORK/chain.pem" 2>/dev/null \
+      || die "the app cert chain $CERT does not contain the profile's distribution-certificate (wrong *.cer for this p7b?)"
+  fi
+  log "app cert chain OK: $CERT ($NC certificates)"
+
+  # Every hap must exist and match the profile before the first sign-app.
+  _old_ifs=$IFS
+  IFS='
+'
+  for IN in $IN_LIST; do
+    [ -f "$IN" ] || die "unsigned hap not found: $IN"
+    HB="$(hap_bundle_name "$IN")" || die "cannot read app.bundleName from module.json in $IN"
+    [ "$HB" = "$PB" ] || die "bundle-name mismatch: $IN is '$HB' but the release profile $P7B is bound to '$PB'. Rebuild the hap with -p:OpenHarmonyBundleName=$PB (or pass --unsigned with a matching hap), then re-run"
+  done
+  IFS=$_old_ifs
+
+  # Password handling follows --external: --pwd-input-mode prompts (script(1) pty when stdin
+  # is not a tty; --key-pwd-file feeds the file twice), the default mode needs --key-pwd-file
+  # and passes the password to hap-sign-tool on argv for the duration of the call. Never logged.
+  PTY=0
+  if [ "$PWD_INTERACTIVE" = 1 ]; then
+    if [ -n "$PWD_FILE" ]; then
+      [ -f "$PWD_FILE" ] || die "password file not found: $PWD_FILE"
+      [ -s "$PWD_FILE" ] || die "password file is empty: $PWD_FILE"
+      command -v script >/dev/null 2>&1 \
+        || die "--key-pwd-file with --pwd-input-mode needs script(1) to feed the password through a pty; install util-linux (or busybox) script"
+      PTY=1
+      warn_if_group_other_readable "$PWD_FILE"
+      log "interactive password mode: password file fed through script(1); no password in argv"
+    elif ! [ -t 0 ]; then
+      command -v script >/dev/null 2>&1 \
+        || die "interactive password mode requested but stdin is not a tty and script(1) is not available to provide a pty; install util-linux (or busybox) script, or run in a terminal"
+      PTY=1
+      log "interactive password mode: no tty, running hap-sign-tool under script(1); feed keystorePwd and keyPwd (two lines) on stdin"
+    else
+      log "interactive password mode: hap-sign-tool will prompt for keystorePwd/keyPwd on the terminal"
+    fi
+    set -- -pwdInputMode 1
+  else
+    [ -n "$PWD_FILE" ] || die "--release needs the p12 password: use --pwd-input-mode (or set OHOS_RELEASE_PWD_FILE), or --key-pwd-file <file>"
+    [ -f "$PWD_FILE" ] || die "password file not found: $PWD_FILE"
+    PWS="$(cat "$PWD_FILE")" || die "cannot read password file: $PWD_FILE"
+    [ -n "$PWS" ] || die "password file is empty: $PWD_FILE"
+    warn_if_group_other_readable "$PWD_FILE"
+    set -- -keyPwd "$PWS" -keystorePwd "$PWS"
+  fi
+
+  _n=0
+  _old_ifs=$IFS
+  IFS='
+'
+  for IN in $IN_LIST; do
+    _n=$((_n + 1))
+    if [ -n "$OUT_DIR" ]; then
+      _out="$OUT_DIR/$(basename "$IN")"
+    elif [ -n "$OUT" ]; then
+      _out="$OUT"
+    else
+      _out="$(dirname "$IN")/$(basename "$IN" .hap)-release.hap"
+    fi
+    TMP_OUT="$_out.tmp.$$.hap"
+    SIG_LOG="$WORK/sign-$_n.log"
+    log "release sign: $(basename "$IN") -> $(basename "$_out") (alias $ALIAS)"
+    if ! run_external_tool sign-app -keyAlias "$ALIAS" -signAlg SHA256withECDSA -mode localSign \
+      -signCode 1 -appCertFile "$WORK/chain.pem" -profileFile "$P7B" -inFile "$IN" -outFile "$TMP_OUT" \
+      -keystoreFile "$KEY" "$@"; then
+      if [ "$PTY" = 0 ]; then sed 's/^/    /' "$SIG_LOG" >&2; fi
+      die "hap-sign-tool sign-app failed for $IN (wrong p12 password, or the p12 does not match the release profile/alias $ALIAS)"
+    fi
+    VRC=0
+    "$TOOLCHAIN/hap-sign-tool" verify-app -inFile "$TMP_OUT" -outCertChain "$WORK/vc-$_n.cer" \
+      -outProfile "$WORK/vp-$_n.p7b" > "$WORK/verify-app-$_n.log" 2>&1 || VRC=$?
+    if [ "$VRC" -ne 0 ] || ! grep -q "verify-app success" "$WORK/verify-app-$_n.log"; then
+      sed 's/^/    /' "$WORK/verify-app-$_n.log" >&2
+      die "verify-app failed for $_out (not keeping an unverified hap)"
+    fi
+    # The embedded profile must still be this release profile for this bundle.
+    VP_TYPE="$(p7b_field "$WORK/vp-$_n.p7b" type || true)"
+    VP_BUNDLE="$(p7b_field "$WORK/vp-$_n.p7b" bundle-name || true)"
+    [ "$VP_TYPE" = release ] || warn "verify-app's -outProfile carries profile type '${VP_TYPE:-unknown}' (expected release)"
+    [ "$VP_BUNDLE" = "$PB" ] || warn "verify-app's -outProfile carries bundle-name '${VP_BUNDLE:-unknown}' (expected $PB)"
+    mv -f "$TMP_OUT" "$_out"
+    TMP_OUT=""
+    log "verify-app OK: $(basename "$_out")"
+    sha256sum "$_out"
+  done
+  IFS=$_old_ifs
+  log "release-signed $_n hap(s) with profile $P7B (alias $ALIAS)"
+  exit 0
+fi
+
 # Device mode: build an SDK debug profile with the requested UDID(s).
-[ -n "$UDID" ] || { warn "usage: sign-for-device.sh <udid[,udid...]> [options] | --huawei [configDir] [encryptedPassword] [--unsigned <hap>] [--out <hap>] | --show-profile-devices [<p7b>]"; exit 2; }
+[ -n "$UDID" ] || { warn "usage: sign-for-device.sh <udid[,udid...]> [options] | --huawei [configDir] [encryptedPassword] [--unsigned <hap>] [--out <hap>] | --release [--profile <p7b>] [--key <p12>] [--cert <cer>] | --show-profile-devices [<p7b>]"; exit 2; }
 [ -x "$TOOLCHAIN/hap-sign-tool" ] || { warn "hap-sign-tool not found in $TOOLCHAIN (set OHOS_SDK_ROOT)"; exit 1; }
 [ -f "$UNSIGNED" ] || { warn "unsigned hap not found: $UNSIGNED"; exit 1; }
 [ -f "$SIGN" ] || { warn "sign-hap.sh not found: $SIGN (wrong --version?)"; exit 1; }

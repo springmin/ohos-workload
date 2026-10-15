@@ -37,9 +37,20 @@
 #                  profile without device-ids fails
 #   T14 source     pins: the UDID check and the password setup sit before the sign-app call,
 #                  sign-app before verify-app, the script never logs $PWS and has no set -x
+#   T15 release    --release with the stub tool: missing material (empty/ambiguous drop dir,
+#                  flags, env) fails closed naming the file; a debug profile, a release profile
+#                  with device-ids and a bundle mismatch are refused before sign-app; the happy
+#                  path signs to <hap>-release.hap with the full sign-app argv and
+#                  verify-app -outCertChain/-outProfile; sign/verify failures keep no output
+#   T16 release-rt SDK-gated (needs the real hap-sign-tool + test keystore): a synthetic
+#                  release profile is signed with the SDK release keys, --release signs a real
+#                  hap end-to-end, the script's verify-app passes, an independent verify-app +
+#                  verify-profile re-check agree, and a real debug profile is refused
 # Env: SELFTEST_TMPDIR=<dir> work dir base (default: the approved opencode tmp dir),
 #      SELFTEST_KEEP=1 keep the work dir even when all checks pass,
-#      SELFTEST_SIGN=<path> sign-for-device.sh under test (default: next to this script).
+#      SELFTEST_SIGN=<path> sign-for-device.sh under test (default: next to this script),
+#      SELFTEST_REAL_SDK=<dir> SDK for T16 (default: OHOS_SDK_ROOT, else the harmonybrew
+#      install); T16 is skipped when the tool/keys/templates are missing.
 # Exit: 0 = all checks passed; 1 = at least one check failed (work dir kept for triage).
 set -u
 
@@ -57,7 +68,7 @@ if [ ! -f "$SIGN" ]; then
     printf 'FATAL: sign-for-device.sh not found: %s\n' "$SIGN" >&2
     exit 1
 fi
-for _t in python3 awk grep sed cut tr sha256sum mktemp head tail cat wc basename dirname find; do
+for _t in python3 awk grep sed cut tr sha256sum mktemp head tail cat wc basename dirname find cp; do
     if ! command -v "$_t" >/dev/null 2>&1; then
         printf 'FATAL: required command not found: %s\n' "$_t" >&2
         exit 1
@@ -105,8 +116,8 @@ PROF_DIR="$WORK/profiles"
 MAT_DIR="$WORK/material"
 PW_DIR="$WORK/pw"
 mkdir -p "$CWD" "$TMPD" "$LOGS" "$STATE_DIR" "$STUB_BIN" "$STUB_TOOLCHAIN" \
-    "$IN_DIR/main" "$IN_DIR/multi" "$IN_DIR/wrong" "$IN_DIR/device" "$IN_DIR/idem" \
-    "$PROF_DIR/main" "$PROF_DIR/nocertmatch" "$PROF_DIR/sib" "$PROF_DIR/noleaf" "$MAT_DIR" "$PW_DIR"
+    "$IN_DIR/main" "$IN_DIR/multi" "$IN_DIR/wrong" "$IN_DIR/device" "$IN_DIR/idem" "$IN_DIR/rel" \
+    "$PROF_DIR/main" "$PROF_DIR/nocertmatch" "$PROF_DIR/sib" "$PROF_DIR/noleaf" "$PROF_DIR/release" "$MAT_DIR" "$PW_DIR"
 
 HAVE_SCRIPT=0
 command -v script >/dev/null 2>&1 && HAVE_SCRIPT=1
@@ -164,6 +175,27 @@ make_p7b() { # <out> <bundle> <udids-comma-separated|NONE>
     fi
 }
 
+make_release_profile_json() { # <out> <bundle> <udids-comma-separated|NONE> <dist-b64|NONE>
+    python3 - "$1" "$2" "$3" "$4" <<'PY'
+import json, sys
+out, bundle, udids, dist = sys.argv[1:5]
+def pem(b64):
+    return "-----BEGIN CERTIFICATE-----\n%s\n-----END CERTIFICATE-----\n" % b64
+prof = {"version-name": "2.0.0", "type": "release",
+        "bundle-info": {"bundle-name": bundle},
+        "acls": {"allowed-acls": []}}
+if udids != "NONE":
+    prof["debug-info"] = {"device-ids": [u for u in udids.split(",") if u], "device-id-type": "udid"}
+if dist != "NONE":
+    prof["bundle-info"]["distribution-certificate"] = pem(dist)
+json.dump(prof, open(out, "w"), indent=1)
+PY
+}
+
+make_release_p7b() { # <out> <bundle>
+    printf '{"type":"release","bundle-info":{"bundle-name":"%s"},"acls":{"allowed-acls":[]},"validity":{"not-after":1}}\n' "$2" > "$1"
+}
+
 make_cer() { # <out> <b64> [<b64>...]
     _out="$1"; shift
     : > "$_out"
@@ -203,6 +235,21 @@ PROFILE_NOLEAF_P7B="$PROF_DIR/noleaf/selftest.p7b"
 make_profile_json "$PROFILE_NOLEAF_JSON" "$BUNDLE" "$UDID_A" NONE
 make_p7b "$PROFILE_NOLEAF_P7B" "$BUNDLE" "$UDID_A"
 make_cer "$PROF_DIR/noleaf/only.cer" "$OTHER_B64" "$ROOT_B64"
+# Release material for --release: a UDID-free type=release profile (distribution-certificate =
+# the same synthetic leaf as the debug fixtures), a release profile that wrongly carries
+# device-ids, and a release-without-leaf variant.
+REL_HAP="$IN_DIR/rel/hello-selftest-release-unsigned.hap"
+make_hap "$REL_HAP" "$BUNDLE"
+PROFILE_REL_JSON="$PROF_DIR/release/profile.json"
+PROFILE_REL_P7B="$PROF_DIR/release/ohos-release.p7b"
+make_release_profile_json "$PROFILE_REL_JSON" "$BUNDLE" NONE "$LEAF_B64"
+make_release_p7b "$PROFILE_REL_P7B" "$BUNDLE"
+PROFILE_RELIDS_JSON="$PROF_DIR/release/profile-ids.json"
+PROFILE_RELIDS_P7B="$PROF_DIR/release/ohos-release-ids.p7b"
+make_release_profile_json "$PROFILE_RELIDS_JSON" "$BUNDLE" "$UDID_A" "$LEAF_B64"
+make_release_p7b "$PROFILE_RELIDS_P7B" "$BUNDLE"
+PROFILE_RELNOLEAF_JSON="$PROF_DIR/release/profile-noleaf.json"
+make_release_profile_json "$PROFILE_RELNOLEAF_JSON" "$BUNDLE" NONE NONE
 KEY_P12="$MAT_DIR/selftest.p12"
 CERT_CHAIN="$MAT_DIR/selftest-chain.cer"
 CERT_MISSING="$MAT_DIR/does-not-exist.cer"
@@ -274,6 +321,15 @@ case "$CMD" in
         printf 'signed-by-stub\n' >> "$OUT"
         ;;
     verify-app)
+        # The real tool writes the extracted chain/profile when asked; the release path reads
+        # -outProfile back (p7b text) for its embedded-profile sanity warn, so the stub writes
+        # the same files (the fixture JSON stands in for a real signed profile's payload).
+        _cp="$(arg_of -outCertChain "$@" || true)"
+        _pp="$(arg_of -outProfile "$@" || true)"
+        [ -z "$_cp" ] || printf 'stub-verify-cert\n' > "$_cp"
+        if [ -n "$_pp" ] && [ -n "${FAKE_SIGN_PROFILE_JSON:-}" ]; then
+            cp "${FAKE_SIGN_VERIFY_PROFILE:-$FAKE_SIGN_PROFILE_JSON}" "$_pp"
+        fi
         printf 'verify-app success\n'
         ;;
 esac
@@ -452,6 +508,17 @@ run_sign_stdin() { # <tag> <extra-env> <stdin-file> [args...]
     LOG="$LOGS/$_tag.log"
 }
 
+# Runs sign-for-device.sh against the real SDK (no stubs, no stub PATH shadowing openssl).
+# Only T16 uses this; it needs $REAL_SDK from the environment section of T16.
+run_sign_real() { # <tag> <extra-env> [args...]
+    _tag="$1"; _extra="$2"; shift 2
+    RC=0
+    ( cd "$CWD" && env OHOS_SDK_ROOT="$REAL_SDK" TMPDIR="$TMPD" $_extra \
+        sh "$SIGN" "$@" ) < /dev/null > "$LOGS/$_tag.log" 2>&1 || RC=$?
+    AV=""
+    LOG="$LOGS/$_tag.log"
+}
+
 # ---- environment ---------------------------------------------------------------------
 section "environment (selftest $SELFTEST_VERSION)"
 log "script: $SIGN"
@@ -576,9 +643,9 @@ assert_log_contains "T1 mode-only --key is named" "--key is only available with 
 assert_no_tool_call "T1 --key outside --external never reaches the tool" "$STATE_DIR/T1-keymode"
 
 run_sign T1-pwdmode "" --pwd-input-mode
-assert_rc 1 "T1 --pwd-input-mode outside --huawei/--external"
-assert_log_contains "T1 --pwd-input-mode restriction is named" "only available with --huawei or --external"
-assert_no_tool_call "T1 --pwd-input-mode outside --huawei/--external never reaches the tool" "$STATE_DIR/T1-pwdmode"
+assert_rc 1 "T1 --pwd-input-mode outside --huawei/--external/--release"
+assert_log_contains "T1 --pwd-input-mode restriction is named" "only available with --huawei, --external or --release"
+assert_no_tool_call "T1 --pwd-input-mode outside --huawei/--external/--release never reaches the tool" "$STATE_DIR/T1-pwdmode"
 
 run_sign T1-pwdfile "" --key-pwd-file "$PWD_FILE"
 assert_rc 1 "T1 --key-pwd-file outside --external"
@@ -970,6 +1037,393 @@ if grep -n 'PWS' "$SIGN" | grep -qE 'log |warn |printf'; then
     bad "T14 no log/printf line may reference \$PWS"
 else
     ok "T14 no log/printf line references \$PWS (password never logged)"
+fi
+
+# ---- T15: --release fail-closed preflight and signing (stub) -------------------------
+section "T15 --release: material resolution, fail-closed preflight, signing, red controls"
+rm -rf "$WORK/rel-empty" "$WORK/rel-drop" "$WORK/rel-amb" "$WORK/rel-out"
+mkdir -p "$WORK/rel-empty" "$WORK/rel-drop" "$WORK/rel-amb"
+cp "$PROFILE_REL_P7B" "$WORK/rel-drop/ohos-release.p7b"
+cp "$KEY_P12" "$WORK/rel-drop/release.p12"
+cp "$CERT_CHAIN" "$WORK/rel-drop/release.cer"
+cp "$PROFILE_REL_P7B" "$WORK/rel-amb/a.p7b"
+cp "$PROFILE_REL_P7B" "$WORK/rel-amb/b.p7b"
+T15_OUT="$IN_DIR/rel/hello-selftest-release-unsigned-release.hap"
+rm -f "$T15_OUT"
+
+# T15a: no material at all (empty drop dir) names the profile and both ways to give it.
+run_sign T15a "OHOS_RELEASE_DIR=$WORK/rel-empty" --release --unsigned "$REL_HAP"
+assert_rc 1 "T15a an empty release drop dir fails closed"
+assert_log_contains "T15a names the missing profile" "release profile missing"
+assert_log_contains "T15a names the drop dir" "$WORK/rel-empty"
+assert_log_contains "T15a names --profile" "--profile <p7b>"
+assert_log_contains "T15a names OHOS_RELEASE_P7B" "OHOS_RELEASE_P7B"
+assert_no_tool_call "T15a the missing profile never reaches the tool" "$STATE_DIR/T15a"
+
+run_sign T15a2 "OHOS_RELEASE_DIR=$WORK/rel-empty" --release --profile "$PROFILE_REL_P7B" --unsigned "$REL_HAP"
+assert_rc 1 "T15a2 the missing keystore fails closed"
+assert_log_contains "T15a2 names OHOS_RELEASE_P12" "OHOS_RELEASE_P12"
+assert_no_tool_call "T15a2 the missing keystore never reaches the tool" "$STATE_DIR/T15a2"
+
+run_sign T15a3 "OHOS_RELEASE_DIR=$WORK/rel-empty" --release --profile "$PROFILE_REL_P7B" --key "$KEY_P12" --unsigned "$REL_HAP"
+assert_rc 1 "T15a3 the missing cert chain fails closed"
+assert_log_contains "T15a3 names OHOS_RELEASE_CER" "OHOS_RELEASE_CER"
+assert_no_tool_call "T15a3 the missing cert chain never reaches the tool" "$STATE_DIR/T15a3"
+
+# Explicit paths that do not exist name the file and the flag.
+run_sign T15a4 "" --release --profile "$WORK/nope.p7b" --key "$KEY_P12" --cert "$CERT_CHAIN" --unsigned "$REL_HAP"
+assert_rc 1 "T15a4 a nonexistent --profile is refused"
+assert_log_contains "T15a4 names the missing profile file" "release profile not found: $WORK/nope.p7b"
+assert_no_tool_call "T15a4 a nonexistent profile never reaches the tool" "$STATE_DIR/T15a4"
+
+run_sign T15a5 "" --release --profile "$PROFILE_REL_P7B" --key "$WORK/nope.p12" --cert "$CERT_CHAIN" --unsigned "$REL_HAP"
+assert_rc 1 "T15a5 a nonexistent --key is refused"
+assert_log_contains "T15a5 names the missing keystore file" "release keystore not found: $WORK/nope.p12"
+
+run_sign T15a6 "" --release --profile "$PROFILE_REL_P7B" --key "$KEY_P12" --cert "$WORK/nope.cer" --unsigned "$REL_HAP"
+assert_rc 1 "T15a6 a nonexistent --cert is refused"
+assert_log_contains "T15a6 names the missing chain file" "release app cert chain not found: $WORK/nope.cer"
+
+# Mode-only option contracts.
+run_sign T15a7 "" --release --profile "$PROFILE_REL_P7B" --key "$KEY_P12" --cert "$CERT_CHAIN" \
+    --expect-udid "$UDID_A" --key-pwd-file "$PWD_FILE" --unsigned "$REL_HAP"
+assert_rc 1 "T15a7 --expect-udid is refused with --release"
+assert_log_contains "T15a7 names the restriction" "--expect-udid is only available with --external"
+assert_no_tool_call "T15a7 never reaches the tool" "$STATE_DIR/T15a7"
+
+run_sign T15a8 "" --release --bundle "$BUNDLE" --profile "$PROFILE_REL_P7B" --key "$KEY_P12" \
+    --cert "$CERT_CHAIN" --key-pwd-file "$PWD_FILE" --unsigned "$REL_HAP"
+assert_rc 1 "T15a8 --bundle is refused with --release"
+assert_log_contains "T15a8 tells the user to rebuild" "profile's bundle-name decides the app identity"
+assert_no_tool_call "T15a8 never reaches the tool" "$STATE_DIR/T15a8"
+
+run_sign T15a9 "FAKE_SIGN_PROFILE_JSON=$PROFILE_REL_JSON" --release --profile "$PROFILE_REL_P7B" \
+    --key "$KEY_P12" --cert "$CERT_CHAIN" --unsigned "$REL_HAP"
+assert_rc 1 "T15a9 a missing p12 password fails closed"
+assert_log_contains "T15a9 names both password paths" "needs the p12 password"
+assert_log_contains "T15a9 names --key-pwd-file" "--key-pwd-file <file>"
+assert_cmd_count "T15a9 verify-profile ran (read-only preflight)" verify-profile 1
+assert_cmd_count "T15a9 sign-app never ran" sign-app 0
+
+# Fail-closed preflight: debug profile, release profile with device-ids, bundle mismatch.
+run_sign T15b "FAKE_SIGN_PROFILE_JSON=$PROFILE_MAIN_JSON" --release --profile "$PROFILE_MAIN_P7B" \
+    --key "$KEY_P12" --cert "$CERT_CHAIN" --key-pwd-file "$PWD_FILE" --unsigned "$REL_HAP"
+assert_rc 1 "T15b a debug profile is refused by --release"
+assert_log_contains "T15b names the wrong type" "is not a release profile"
+assert_log_contains "T15b points at --external for debug material" "--external"
+assert_cmd_count "T15b sign-app never ran" sign-app 0
+assert_cmd_count "T15b verify-app never ran" verify-app 0
+assert_not_exists "T15b no output hap" "$T15_OUT"
+
+run_sign T15c "FAKE_SIGN_PROFILE_JSON=$PROFILE_RELIDS_JSON" --release --profile "$PROFILE_RELIDS_P7B" \
+    --key "$KEY_P12" --cert "$CERT_CHAIN" --key-pwd-file "$PWD_FILE" --unsigned "$REL_HAP"
+assert_rc 1 "T15c a release profile with device-ids is refused"
+assert_log_contains "T15c names the UDID-free rule" "must be UDID-free"
+assert_log_contains "T15c shows the offending UDID" "$UDID_A"
+assert_cmd_count "T15c sign-app never ran" sign-app 0
+
+run_sign T15d "FAKE_SIGN_PROFILE_JSON=$PROFILE_REL_JSON" --release --profile "$PROFILE_REL_P7B" \
+    --key "$KEY_P12" --cert "$CERT_CHAIN" --key-pwd-file "$PWD_FILE" --unsigned "$WRONG_HAP"
+assert_rc 1 "T15d a bundle mismatch is refused before signing"
+assert_log_contains "T15d names the mismatch" "bundle-name mismatch"
+assert_log_contains "T15d names the release profile bundle" "release profile $PROFILE_REL_P7B is bound to '$BUNDLE'"
+assert_cmd_count "T15d sign-app never ran" sign-app 0
+assert_not_exists "T15d no output for the wrong hap" "$IN_DIR/wrong/hello-selftest-other-release.hap"
+
+run_sign T15d2 "FAKE_SIGN_PROFILE_JSON=$PROFILE_REL_JSON" --release --profile "$PROFILE_REL_P7B" \
+    --key "$KEY_P12" --cert "$CERT_CHAIN" --key-pwd-file "$PWD_FILE" --unsigned "$WORK/nope.hap"
+assert_rc 1 "T15d2 a nonexistent unsigned hap is refused"
+assert_log_contains "T15d2 names the hap" "unsigned hap not found: $WORK/nope.hap"
+assert_cmd_count "T15d2 sign-app never ran" sign-app 0
+
+# T15e: the happy path (stub) - full sign-app argv, verify-app with -outCertChain/-outProfile.
+run_sign T15e "FAKE_SIGN_PROFILE_JSON=$PROFILE_REL_JSON" --release --profile "$PROFILE_REL_P7B" \
+    --key "$KEY_P12" --key-alias "$ALIAS" --cert "$CERT_CHAIN" --key-pwd-file "$PWD_FILE" \
+    --unsigned "$REL_HAP"
+assert_rc 0 "T15e release sign succeeds"
+assert_cmd_count "T15e one verify-profile call" verify-profile 1
+assert_cmd_count "T15e one sign-app call" sign-app 1
+assert_cmd_count "T15e one verify-app call" verify-app 1
+assert_argv_pair "T15e sign-app key alias" -keyAlias "$ALIAS"
+assert_argv_pair "T15e sign-app algorithm" -signAlg SHA256withECDSA
+assert_argv_pair "T15e sign-app mode" -mode localSign
+assert_argv_pair "T15e sign-app requests the code-signing block" -signCode 1
+assert_argv_pair "T15e sign-app keystore" -keystoreFile "$KEY_P12"
+assert_argv_pair "T15e sign-app profile" -profileFile "$PROFILE_REL_P7B"
+assert_argv_pair "T15e sign-app input hap" -inFile "$REL_HAP"
+assert_argv_pair "T15e sign-app key password comes from --key-pwd-file" -keyPwd "$PW_VALUE"
+T15E_CHAIN="$(argv_cmd_value "$AV" sign-app -appCertFile)"
+assert_path_under "T15e the release chain lives in the private temp dir" "$T15E_CHAIN" "$TMPD"
+case "$T15E_CHAIN" in
+    "$TMPD"/ohos-rel.*/chain.pem) ok "T15e the release chain is the temp-dir chain.pem" ;;
+    *) bad "T15e the release chain is the temp-dir chain.pem (got '$T15E_CHAIN')" ;;
+esac
+T15E_SIGNOUT="$(argv_cmd_value "$AV" sign-app -outFile)"
+T15E_VERIFYIN="$(argv_cmd_value "$AV" verify-app -inFile)"
+assert_eq "T15e verify-app checks the file sign-app wrote" "$T15E_SIGNOUT" "$T15E_VERIFYIN"
+assert_path_under "T15e verify-app -outCertChain stays in temp" "$(argv_cmd_value "$AV" verify-app -outCertChain)" "$TMPD"
+assert_path_under "T15e verify-app -outProfile stays in temp" "$(argv_cmd_value "$AV" verify-app -outProfile)" "$TMPD"
+assert_log_contains "T15e release preflight logged" "release profile check OK: type release"
+assert_log_contains "T15e cert chain logged" "app cert chain OK"
+assert_log_contains "T15e verify-app success logged" "verify-app OK"
+assert_log_contains "T15e final summary logged" "release-signed 1 hap(s)"
+assert_log_contains "T15e the explicit alias is used" "alias $ALIAS"
+assert_log_not_contains "T15e password never reaches the log" "$PW_VALUE"
+assert_log_not_contains "T15e the embedded profile check stays quiet" "verify-app's -outProfile carries"
+assert_file "T15e output hap at <hap>-release.hap" "$T15_OUT"
+assert_log_contains "T15e output hap sha256 is logged" "$(sha256sum "$T15_OUT" | cut -d' ' -f1)  $T15_OUT"
+if file_contains "$T15_OUT" 'signed-by-stub'; then
+    ok "T15e output hap carries the stub signature marker"
+else
+    bad "T15e output hap carries the stub signature marker"
+fi
+
+# T15f: the embedded-profile sanity warn fires when verify-app's -outProfile disagrees.
+run_sign T15f "FAKE_SIGN_PROFILE_JSON=$PROFILE_REL_JSON FAKE_SIGN_VERIFY_PROFILE=$PROFILE_MAIN_JSON" \
+    --release --profile "$PROFILE_REL_P7B" --key "$KEY_P12" --key-alias "$ALIAS" --cert "$CERT_CHAIN" \
+    --key-pwd-file "$PWD_FILE" --unsigned "$REL_HAP"
+assert_rc 0 "T15f an embedded-profile type surprise is a warning, not fatal"
+assert_log_contains "T15f the warning names the embedded type" "verify-app's -outProfile carries profile type 'debug'"
+
+# T15g/T15h: sign-app and verify-app failures keep no output (red controls).
+T15G_OUT="$T15_OUT"
+rm -f "$T15G_OUT"
+run_sign T15g "FAKE_SIGN_PROFILE_JSON=$PROFILE_REL_JSON FAKE_SIGN_FAIL_ON=sign-app" \
+    --release --profile "$PROFILE_REL_P7B" --key "$KEY_P12" --cert "$CERT_CHAIN" \
+    --key-pwd-file "$PWD_FILE" --unsigned "$REL_HAP"
+assert_rc 1 "T15g a sign-app failure fails the whole script"
+assert_log_contains "T15g names the failing step" "hap-sign-tool sign-app failed"
+assert_log_contains "T15g mentions the release alias on failure" "release profile/alias"
+assert_cmd_count "T15g verify-app never ran" verify-app 0
+assert_not_exists "T15g no output hap is kept" "$T15G_OUT"
+assert_no_glob_match "T15g staged output was cleaned up" "$IN_DIR/rel" '*.tmp.*.hap'
+
+run_sign T15h "FAKE_SIGN_PROFILE_JSON=$PROFILE_REL_JSON FAKE_SIGN_FAIL_ON=verify-app" \
+    --release --profile "$PROFILE_REL_P7B" --key "$KEY_P12" --cert "$CERT_CHAIN" \
+    --key-pwd-file "$PWD_FILE" --unsigned "$REL_HAP"
+assert_rc 1 "T15h a verify-app failure fails the whole script"
+assert_log_contains "T15h never keeps an unverified hap" "not keeping an unverified hap"
+assert_not_exists "T15h no output hap is kept" "$T15_OUT"
+assert_no_glob_match "T15h no staged hap left behind" "$IN_DIR/rel" '*.tmp.*.hap'
+
+# T15i: drop-dir auto-pick (one file per kind, default alias releaseKey).
+run_sign T15i "OHOS_RELEASE_DIR=$WORK/rel-drop FAKE_SIGN_PROFILE_JSON=$PROFILE_REL_JSON" \
+    --release --key-pwd-file "$PWD_FILE" --unsigned "$REL_HAP"
+assert_rc 0 "T15i the single dropped material is picked automatically"
+assert_argv_pair "T15i sign-app uses the dropped p7b" -profileFile "$WORK/rel-drop/ohos-release.p7b"
+assert_argv_pair "T15i sign-app uses the dropped p12" -keystoreFile "$WORK/rel-drop/release.p12"
+assert_argv_pair "T15i the alias defaults to releaseKey" -keyAlias releaseKey
+assert_log_contains "T15i the default alias is spelled out" "key alias 'releaseKey' is the default"
+
+# T15j: two p7b candidates are ambiguous; env material wins over the drop dir.
+run_sign T15j "OHOS_RELEASE_DIR=$WORK/rel-amb" --release --key "$KEY_P12" --cert "$CERT_CHAIN" \
+    --key-pwd-file "$PWD_FILE" --unsigned "$REL_HAP"
+assert_rc 1 "T15j two p7b candidates are refused"
+assert_log_contains "T15j counts the candidates" "2 *.p7b files"
+assert_log_contains "T15j points at --profile" "to choose one"
+assert_no_tool_call "T15j never reaches the tool" "$STATE_DIR/T15j"
+
+run_sign T15k "OHOS_RELEASE_DIR=$WORK/rel-empty OHOS_RELEASE_P7B=$PROFILE_REL_P7B OHOS_RELEASE_P12=$KEY_P12 OHOS_RELEASE_CER=$CERT_CHAIN OHOS_RELEASE_ALIAS=$ALIAS FAKE_SIGN_PROFILE_JSON=$PROFILE_REL_JSON" \
+    --release --key-pwd-file "$PWD_FILE" --unsigned "$REL_HAP"
+assert_rc 0 "T15k OHOS_RELEASE_* material signs without flags"
+assert_argv_pair "T15k the env p7b is used" -profileFile "$PROFILE_REL_P7B"
+assert_argv_pair "T15k the env alias is used" -keyAlias "$ALIAS"
+
+# T15n: a release profile without a distribution-certificate warns and still verifies the chain.
+run_sign T15n "FAKE_SIGN_PROFILE_JSON=$PROFILE_RELNOLEAF_JSON" --release --profile "$PROFILE_REL_P7B" \
+    --key "$KEY_P12" --cert "$CERT_CHAIN" --key-pwd-file "$PWD_FILE" --unsigned "$REL_HAP"
+assert_rc 0 "T15n a release profile without a leaf still signs"
+assert_log_contains "T15n warns that the leaf check is skipped" "the cert chain cannot be leaf-checked"
+assert_cmd_count "T15n sign-app ran" sign-app 1
+
+# T15l: several haps through --out-dir; --out with two haps is refused.
+run_sign T15l "FAKE_SIGN_PROFILE_JSON=$PROFILE_REL_JSON" --release --profile "$PROFILE_REL_P7B" \
+    --key "$KEY_P12" --cert "$CERT_CHAIN" --key-pwd-file "$PWD_FILE" \
+    --out-dir "$WORK/rel-out" --unsigned "$REL_HAP" --unsigned "$TWO_HAP"
+assert_rc 0 "T15l two haps sign in one release run"
+assert_file "T15l first hap in --out-dir" "$WORK/rel-out/hello-selftest-release-unsigned.hap"
+assert_file "T15l second hap in --out-dir" "$WORK/rel-out/hello-selftest-two.hap"
+assert_cmd_count "T15l sign-app ran twice" sign-app 2
+assert_log_contains "T15l summary counts both haps" "release-signed 2 hap(s)"
+
+run_sign T15m "FAKE_SIGN_PROFILE_JSON=$PROFILE_REL_JSON" --release --profile "$PROFILE_REL_P7B" \
+    --key "$KEY_P12" --cert "$CERT_CHAIN" --key-pwd-file "$PWD_FILE" \
+    --out "$WORK/rel-one.hap" --unsigned "$REL_HAP" --unsigned "$TWO_HAP"
+assert_rc 1 "T15m --out with two haps is refused"
+assert_log_contains "T15m points at --out-dir" "use --out-dir <dir> for several"
+assert_no_tool_call "T15m fails before any tool call" "$STATE_DIR/T15m"
+
+# T15p: source pins for the release branch (refusals before sign-app; verify after sign).
+grep_line_last() { grep -nF -- "$2" "$1" 2>/dev/null | tail -1 | cut -d: -f1; }
+REL_TYPE_LINE="$(grep_line "$SIGN" 'is not a release profile')"
+REL_IDS_LINE="$(grep_line "$SIGN" 'must be UDID-free')"
+REL_BUNDLE_LINE="$(grep_line "$SIGN" 'release profile $P7B is bound to')"
+REL_SIGN_LINE="$(grep_line "$SIGN" 'does not match the release profile/alias')"
+REL_VERIFY_LINE="$(grep_line_last "$SIGN" 'not keeping an unverified hap')"
+REL_SIGNCODE_LINE="$(grep_line_last "$SIGN" '-signCode 1 -appCertFile')"
+REL_SIGNAPP_LINE="$(grep_line_last "$SIGN" 'run_external_tool sign-app')"
+if [ -n "$REL_TYPE_LINE" ] && [ -n "$REL_SIGN_LINE" ] && [ "$REL_TYPE_LINE" -lt "$REL_SIGN_LINE" ]; then
+    ok "T15p the release type check ($REL_TYPE_LINE) runs before the release sign-app ($REL_SIGN_LINE)"
+else
+    bad "T15p ordering: release type check='$REL_TYPE_LINE' sign-app='$REL_SIGN_LINE'"
+fi
+if [ -n "$REL_IDS_LINE" ] && [ -n "$REL_SIGN_LINE" ] && [ "$REL_IDS_LINE" -lt "$REL_SIGN_LINE" ]; then
+    ok "T15p the device-ids refusal ($REL_IDS_LINE) runs before the release sign-app ($REL_SIGN_LINE)"
+else
+    bad "T15p ordering: device-ids refusal='$REL_IDS_LINE' sign-app='$REL_SIGN_LINE'"
+fi
+if [ -n "$REL_BUNDLE_LINE" ] && [ -n "$REL_SIGN_LINE" ] && [ "$REL_BUNDLE_LINE" -lt "$REL_SIGN_LINE" ]; then
+    ok "T15p the bundle check ($REL_BUNDLE_LINE) runs before the release sign-app ($REL_SIGN_LINE)"
+else
+    bad "T15p ordering: bundle check='$REL_BUNDLE_LINE' sign-app='$REL_SIGN_LINE'"
+fi
+if [ -n "$REL_SIGN_LINE" ] && [ -n "$REL_VERIFY_LINE" ] && [ "$REL_SIGN_LINE" -lt "$REL_VERIFY_LINE" ]; then
+    ok "T15p the release sign-app ($REL_SIGN_LINE) runs before its verify-app ($REL_VERIFY_LINE)"
+else
+    bad "T15p ordering: release sign-app='$REL_SIGN_LINE' verify-app='$REL_VERIFY_LINE'"
+fi
+if [ -n "$REL_SIGNAPP_LINE" ] && [ -n "$REL_SIGNCODE_LINE" ] \
+   && [ "$REL_SIGNAPP_LINE" -lt "$REL_SIGNCODE_LINE" ] && [ "$REL_SIGNCODE_LINE" -lt "$((REL_SIGNAPP_LINE + 6))" ]; then
+    ok "T15p -signCode 1 ($REL_SIGNCODE_LINE) belongs to the release sign-app call ($REL_SIGNAPP_LINE)"
+else
+    bad "T15p -signCode line: release sign-app='$REL_SIGNAPP_LINE' signCode='$REL_SIGNCODE_LINE'"
+fi
+
+# ---- T16: --release against the real SDK (synthetic release profile) -----------------
+section "T16 --release with the real hap-sign-tool (SDK-gated)"
+REAL_SDK="${SELFTEST_REAL_SDK:-${OHOS_SDK_ROOT:-$HOME/.harmonybrew/Cellar/ohos-sdk/26.0.0.18_2}}"
+RT="$REAL_SDK/toolchains/lib"
+REAL_OK=1
+for _f in hap-sign-tool UnsgnedReleasedProfileTemplate.json UnsgnedDebugProfileTemplate.json \
+          OpenHarmony.p12 OpenHarmonyApplication.pem OpenHarmonyProfileRelease.pem OpenHarmonyProfileDebug.pem; do
+    [ -f "$RT/$_f" ] || REAL_OK=0
+done
+[ -x "$RT/hap-sign-tool" ] || REAL_OK=0
+command -v openssl >/dev/null 2>&1 || REAL_OK=0
+if [ "$REAL_OK" != 1 ]; then
+    skip "T16 the real SDK material is incomplete at $REAL_SDK (set SELFTEST_REAL_SDK/OHOS_SDK_ROOT); the synthetic-release happy path is skipped"
+else
+    RELW="$WORK/release-real"
+    mkdir -p "$RELW"
+    REAL_PW="$PW_DIR/real.pwd"
+    printf '123456\n' > "$REAL_PW"
+    chmod 600 "$REAL_PW"
+    REAL_HAP="$RELW/hello-selftest-real-unsigned.hap"
+    make_hap "$REAL_HAP" "$BUNDLE"
+    REAL_HAP2="$RELW/hello-selftest-real2-unsigned.hap"
+    make_hap "$REAL_HAP2" "$BUNDLE"
+    REAL_HAP3="$RELW/hello-selftest-real3-unsigned.hap"
+    make_hap "$REAL_HAP3" "$BUNDLE"
+
+    # Synthetic UDID-free release profile out of the SDK template (bundle-name rewritten),
+    # signed with the public SDK release profile key. Nothing leaves the temp dir.
+    python3 - "$RT/UnsgnedReleasedProfileTemplate.json" "$RELW/profile.json" "$BUNDLE" <<'PY'
+import json, sys, time
+src, dst, bundle = sys.argv[1:4]
+d = json.load(open(src))
+now = int(time.time())
+d["validity"] = {"not-before": now - 3600, "not-after": now + 10 * 365 * 24 * 3600}
+d["bundle-info"]["bundle-name"] = bundle
+json.dump(d, open(dst, "w"), indent=1)
+PY
+    RC=0
+    "$RT/hap-sign-tool" sign-profile -keyAlias "openharmony application profile release" \
+        -signAlg SHA256withECDSA -mode localSign -profileCertFile "$RT/OpenHarmonyProfileRelease.pem" \
+        -inFile "$RELW/profile.json" -keystoreFile "$RT/OpenHarmony.p12" -outFile "$RELW/release.p7b" \
+        -keyPwd 123456 -keystorePwd 123456 > "$LOGS/T16-sign-profile.log" 2>&1 || RC=$?
+    assert_rc 0 "T16 the SDK test keys sign the synthetic release profile"
+
+    run_sign_real T16a "" --release --profile "$RELW/release.p7b" --key "$RT/OpenHarmony.p12" \
+        --cert "$RT/OpenHarmonyApplication.pem" --key-alias "openharmony application release" \
+        --key-pwd-file "$REAL_PW" --unsigned "$REAL_HAP"
+    assert_rc 0 "T16a --release signs a real hap end-to-end"
+    T16_OUT="$RELW/hello-selftest-real-unsigned-release.hap"
+    assert_file "T16a output hap produced" "$T16_OUT"
+    assert_log_contains "T16a release preflight passes" "release profile check OK: type release"
+    assert_log_contains "T16a the script's verify-app passes" "verify-app OK"
+    assert_log_contains "T16a summary" "release-signed 1 hap(s)"
+    assert_log_contains "T16a sha printed" "$(sha256sum "$T16_OUT" | cut -d' ' -f1)  $T16_OUT"
+    assert_log_not_contains "T16a the password never reaches the log" "123456"
+    # Independent re-check with the real tool, outside the script.
+    RC=0
+    "$RT/hap-sign-tool" verify-app -inFile "$T16_OUT" -outCertChain "$RELW/check.cer" \
+        -outProfile "$RELW/check.p7b" > "$LOGS/T16-verify.log" 2>&1 || RC=$?
+    assert_rc 0 "T16a an independent verify-app accepts the signed hap"
+    LOG="$LOGS/T16-verify.log"
+    assert_log_contains "T16a independent verify-app success marker" "verify-app success"
+    RC=0
+    "$RT/hap-sign-tool" verify-profile -inFile "$RELW/check.p7b" -outFile "$RELW/check.json" \
+        > "$LOGS/T16-checkprofile.log" 2>&1 || RC=$?
+    assert_rc 0 "T16a the embedded profile re-verifies"
+    if python3 - "$RELW/check.json" "$BUNDLE" <<'PY'
+import json, sys
+d = json.load(open(sys.argv[1]))
+assert d.get('type') == 'release', d.get('type')
+assert 'debug-info' not in d, d.get('debug-info')
+assert d['bundle-info']['bundle-name'] == sys.argv[2], d['bundle-info']
+PY
+    then
+        ok "T16a the embedded profile is UDID-free, type=release and bound to the hap bundle"
+    else
+        bad "T16a the embedded profile is not a UDID-free release profile for $BUNDLE"
+    fi
+
+    # One-click variant: the same material in a drop dir, no material flags.
+    mkdir -p "$RELW/drop"
+    cp "$RELW/release.p7b" "$RELW/drop/ohos-release.p7b"
+    cp "$RT/OpenHarmony.p12" "$RELW/drop/release.p12"
+    cp "$RT/OpenHarmonyApplication.pem" "$RELW/drop/release.cer"
+    run_sign_real T16b "OHOS_RELEASE_DIR=$RELW/drop" --release --key-alias "openharmony application release" \
+        --key-pwd-file "$REAL_PW" --unsigned "$REAL_HAP2"
+    assert_rc 0 "T16b the drop-dir material signs without flags"
+    assert_file "T16b drop-dir output produced" "$RELW/hello-selftest-real2-unsigned-release.hap"
+
+    # Real red control: a genuine debug profile (device-ids included) is refused.
+    python3 - "$RT/UnsgnedDebugProfileTemplate.json" "$RELW/debug-profile.json" "$BUNDLE" <<'PY'
+import json, sys, time
+src, dst, bundle = sys.argv[1:4]
+d = json.load(open(src))
+now = int(time.time())
+d["validity"] = {"not-before": now - 3600, "not-after": now + 10 * 365 * 24 * 3600}
+d["bundle-info"]["bundle-name"] = bundle
+json.dump(d, open(dst, "w"), indent=1)
+PY
+    RC=0
+    "$RT/hap-sign-tool" sign-profile -keyAlias "openharmony application profile debug" \
+        -signAlg SHA256withECDSA -mode localSign -profileCertFile "$RT/OpenHarmonyProfileDebug.pem" \
+        -inFile "$RELW/debug-profile.json" -keystoreFile "$RT/OpenHarmony.p12" -outFile "$RELW/debug.p7b" \
+        -keyPwd 123456 -keystorePwd 123456 > "$LOGS/T16-sign-debug.log" 2>&1 || RC=$?
+    assert_rc 0 "T16 the SDK test keys sign the debug control profile"
+    run_sign_real T16c "" --release --profile "$RELW/debug.p7b" --key "$RT/OpenHarmony.p12" \
+        --cert "$RT/OpenHarmonyApplication.pem" --key-alias "openharmony application release" \
+        --key-pwd-file "$REAL_PW" --unsigned "$REAL_HAP3"
+    assert_rc 1 "T16c a real debug profile is refused by --release"
+    assert_log_contains "T16c names the wrong type" "is not a release profile"
+    assert_not_exists "T16c no output hap" "$RELW/hello-selftest-real3-unsigned-release.hap"
+
+    # Real red control: a release profile that wrongly carries device-ids is refused.
+    python3 - "$RT/UnsgnedReleasedProfileTemplate.json" "$RELW/ids-profile.json" "$BUNDLE" "$UDID_A" <<'PY'
+import json, sys, time
+src, dst, bundle, udid = sys.argv[1:5]
+d = json.load(open(src))
+now = int(time.time())
+d["validity"] = {"not-before": now - 3600, "not-after": now + 10 * 365 * 24 * 3600}
+d["bundle-info"]["bundle-name"] = bundle
+d["debug-info"] = {"device-ids": [udid], "device-id-type": "udid"}
+json.dump(d, open(dst, "w"), indent=1)
+PY
+    RC=0
+    "$RT/hap-sign-tool" sign-profile -keyAlias "openharmony application profile release" \
+        -signAlg SHA256withECDSA -mode localSign -profileCertFile "$RT/OpenHarmonyProfileRelease.pem" \
+        -inFile "$RELW/ids-profile.json" -keystoreFile "$RT/OpenHarmony.p12" -outFile "$RELW/ids.p7b" \
+        -keyPwd 123456 -keystorePwd 123456 > "$LOGS/T16-sign-ids.log" 2>&1 || RC=$?
+    assert_rc 0 "T16 the SDK test keys sign the device-ids control profile"
+    run_sign_real T16d "" --release --profile "$RELW/ids.p7b" --key "$RT/OpenHarmony.p12" \
+        --cert "$RT/OpenHarmonyApplication.pem" --key-alias "openharmony application release" \
+        --key-pwd-file "$REAL_PW" --unsigned "$REAL_HAP3"
+    assert_rc 1 "T16d a real release profile with device-ids is refused"
+    assert_log_contains "T16d names the UDID-free rule" "must be UDID-free"
+    assert_not_exists "T16d no output hap" "$RELW/hello-selftest-real3-unsigned-release.hap"
 fi
 
 # ---- global: sandbox and cleanliness -------------------------------------------------
