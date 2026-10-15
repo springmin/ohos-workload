@@ -188,9 +188,18 @@ public sealed class App : Application
         }
 #endif
 #if TOUCH_PASTE_PROBE
-        // TOUCH-PASTE device probe (see TouchPasteProbe.cs): focus/clear/report for the round's
-        // target Entry; the paste itself arrives through the shell's normal text wire.
+        // TOUCH-PASTE device probe (see TouchPasteProbe.cs): focus/clear/report and the
+        // optout/optin marker ops for the round's target Entry; the paste itself arrives through
+        // the shell's normal text wire.
         if (TouchPasteProbe.TryHandle(uri))
+        {
+            return;
+        }
+#endif
+#if SECURE_STORAGE_PROBE
+        // SECURE-STORAGE-ASSET device probe (see SecureStorageProbe.cs): the set/get/remove
+        // round trip through the Asset Store backend and the backend state report.
+        if (SecureStorageProbe.TryHandle(uri))
         {
             return;
         }

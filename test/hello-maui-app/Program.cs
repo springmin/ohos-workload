@@ -25,9 +25,14 @@ public static class Program
         StartupProbe.Install();
 #endif
 #if TOUCH_PASTE_PROBE
-        // TOUCH-PASTE: opt the shell's long-press paste entry point in before the host starts
-        // (the shell reads OHOS_TOUCH_PASTE lazily on the first surface touch).
+        // TOUCH-PASTE: report the opt-out marker state before the host starts (the shell's
+        // long-press paste entry point is on by default and latches on the first surface touch).
         TouchPasteProbe.Install();
+#endif
+#if SECURE_STORAGE_PROBE
+        // SECURE-STORAGE-ASSET: report the SecureStorage backend state (fail-closed default +
+        // device-bound backend availability) before the host starts.
+        SecureStorageProbe.Install();
 #endif
         var builder = MauiApp.CreateBuilder();
         builder.UseOpenHarmony();
