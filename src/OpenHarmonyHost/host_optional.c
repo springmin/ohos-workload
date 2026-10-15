@@ -343,6 +343,26 @@ static void OhosHostOptionalLoad(void) {
         }
     }
 
+    // Asset Store (SECURE-STORAGE-ASSET): the managed SecureStorage's preferred credential
+    // backend. Absent on a reduced image; the managed layer then keeps its documented strong
+    // chain (HUKS) and refuses the weak per-install file key unless the app opted out.
+    {
+        static const char *const sonames[] = {"libasset_ndk.z.so"};
+        OhosHostOptionalLibSet libs = {sonames, 1, {NULL, NULL}, 0};
+        OhosHostOptionalOpen(&libs);
+        missing = false;
+        OHOS_HOST_OPTIONAL_RESOLVE(asset.api, Add, "OH_Asset_Add");
+        OHOS_HOST_OPTIONAL_RESOLVE(asset.api, Remove, "OH_Asset_Remove");
+        OHOS_HOST_OPTIONAL_RESOLVE(asset.api, Query, "OH_Asset_Query");
+        OHOS_HOST_OPTIONAL_RESOLVE(asset.api, ParseAttr, "OH_Asset_ParseAttr");
+        OHOS_HOST_OPTIONAL_RESOLVE(asset.api, FreeResultSet, "OH_Asset_FreeResultSet");
+        g_ohos_host_optional.asset.available = !missing;
+        if (missing) {
+            OhosHostOptionalAppendMissing(missing_names, sizeof(missing_names), &missing_used,
+                                          "asset");
+        }
+    }
+
     // hilog: resolved last so the single diagnostic line below reports it as well.
     {
         static const char *const sonames[] = {"libhilog_ndk.z.so"};

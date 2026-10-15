@@ -587,6 +587,15 @@ void ohos_host_keystore_register_result(void* callback);
 void ohos_host_keystore_request(int request_id, const char* op, const char* alias, const char* data_base64);
 void ohos_host_keystore_complete(int request_id, int rc, const char* data_base64);
 
+/// Asset Store bridge (SECURE-STORAGE-ASSET): SecureStorage's preferred credential backend.
+/// Ops: 0 put, 1 get, 2 remove; the registered result callback receives (request_id, rc,
+/// data_base64) with rc 0 success / 1 not found / -1 unavailable-or-failed. The value travels
+/// base64 (put payload, get answer) and never appears in a log; ohos_host_asset_available()
+/// reports the resolved libasset_ndk.z.so (0/1) for the managed backend status.
+int ohos_host_asset_available(void);
+void ohos_host_asset_register_result(void* callback);
+void ohos_host_asset_request(int request_id, int op, const char* alias, const char* data_base64);
+
 /// Text input: the user pressed the keyboard's submit/return key.
 void ohos_host_notify_text_submitted(void);
 

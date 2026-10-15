@@ -47,6 +47,7 @@
 #include <sensors/vibrator.h>
 
 #include "host_clipboard.h"
+#include "host_asset.h"
 #include "host_optional_log.h"
 
 #ifdef __cplusplus
@@ -213,6 +214,15 @@ typedef struct {
     bool available;
 } OhosHostOptionalPasteboardApi;
 
+// Asset Store (SECURE-STORAGE-ASSET): libasset_ndk.z.so provides the credential backend the
+// managed SecureStorage prefers (OH_Asset_Add/Remove/Query/ParseAttr/FreeResultSet; the pure-C
+// table of host_asset.h). A reduced image without the library leaves the pointers NULL and
+// ohos_host_asset_* answers the documented UNAVAILABLE failure.
+typedef struct {
+    ohos_host_asset_api api;
+    bool available;
+} OhosHostOptionalAssetApi;
+
 
 typedef struct {
     OhosHostOptionalImeApi ime;
@@ -225,6 +235,7 @@ typedef struct {
     OhosHostOptionalImageApi image;
     OhosHostOptionalHuksApi huks;
     OhosHostOptionalPasteboardApi pasteboard;
+    OhosHostOptionalAssetApi asset;
 } OhosHostOptionalApis;
 
 extern OhosHostOptionalApis g_ohos_host_optional;
@@ -268,6 +279,10 @@ static inline bool ohos_host_optional_image_available(void) {
 static inline bool ohos_host_optional_huks_available(void) {
     ohos_host_optional_ensure();
     return g_ohos_host_optional.huks.available;
+}
+static inline bool ohos_host_optional_asset_available(void) {
+    ohos_host_optional_ensure();
+    return g_ohos_host_optional.asset.available;
 }
 
 // ---------------------------------------------------------------------------

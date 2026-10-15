@@ -49,7 +49,7 @@ mkdir -p "$OUT"
     -o "$OUT/libopenharmonyhost.so" \
     "$SRC/host_napi.cpp" "$SRC/openharmony_host.c" "$SRC/host_optional.c" "$SRC/host_keystore.c" \
     "$SRC/host_window_registry.c" "$SRC/host_window_bridge.c" "$SRC/host_a11y_table.c" \
-    "$SRC/host_clipboard.c" "$SRC/host_status.c" \
+    "$SRC/host_clipboard.c" "$SRC/host_asset.c" "$SRC/host_status.c" \
     -lace_napi.z -lace_ndk.z -lnative_drawing -ldl
 ls -l "$OUT/libopenharmonyhost.so"
 

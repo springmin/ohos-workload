@@ -1515,6 +1515,7 @@ struct OhosHostAppHandle {
     void (*bridge_text_composition)(const char*, int);
     void (*bridge_text_submitted)(void);
     void (*bridge_keystore_result)(int request_id, int rc, const char* data_base64);
+    void (*bridge_asset_result)(int request_id, int rc, const char* data_base64);
     void (*bridge_picker_result)(int request_id, int rc, const char* name, const char* data_base64);
     void (*bridge_web_event)(const char* state, const char* url);
     void (*bridge_permission_result)(int request_id, int granted);
@@ -3609,6 +3610,55 @@ void ohos_host_keystore_complete(int request_id, int rc, const char* data_base64
     if (g_app != NULL && g_app->bridge_keystore_result != NULL) {
         g_app->bridge_keystore_result(request_id, rc, data_base64);
     }
+}
+
+// ---------------------------------------------------------------------------
+// Asset Store (SECURE-STORAGE-ASSET). The managed SecureStorage prefers this credential
+// backend: OH_Asset_* keeps each value encrypted under a device-bound key in the platform
+// Asset Store (host_asset.c; libasset_ndk.z.so resolved at runtime by host_optional.c). Ops:
+// 0 put, 1 get, 2 remove; the completion carries 0 success / 1 not found / -1
+// unavailable-or-failed, and the raw OH_Asset_* status only reaches the diagnostic log (the
+// credential itself never does). There is no ArkTS sink: when the NDK library is absent the
+// managed layer answers its documented strong-chain/refusal shapes.
+// ---------------------------------------------------------------------------
+
+void ohos_host_asset_register_result(void* callback) {
+    if (g_app != NULL) {
+        g_app->bridge_asset_result = (void (*)(int, int, const char*))callback;
+    }
+}
+
+int ohos_host_asset_available(void) {
+    return ohos_host_optional_asset_available() ? 1 : 0;
+}
+
+static void ohos_host_asset_complete(int request_id, int rc, const char* data_base64) {
+    if (g_app != NULL && g_app->bridge_asset_result != NULL) {
+        g_app->bridge_asset_result(request_id, rc, data_base64 != NULL ? data_base64 : "");
+    }
+}
+
+void ohos_host_asset_request(int request_id, int op, const char* alias, const char* data_base64) {
+    ohos_host_optional_ensure();
+    const char* op_name = op == 0 ? "put" : op == 1 ? "get" : op == 2 ? "remove" : NULL;
+    if (op_name == NULL || alias == NULL || alias[0] == '\0') {
+        ohos_host_asset_complete(request_id, -1, "");
+        return;
+    }
+    char* result = NULL;
+    int32_t status = 0;
+    int rc = ohos_host_asset_execute(&g_ohos_host_optional.asset.api, op_name, alias,
+                                     data_base64 != NULL ? data_base64 : "", &result, &status);
+    if (rc < 0) {
+        // The status (or 0 when the library is missing) is the only diagnostic; the alias and
+        // the value are never logged.
+        OH_LOG_WARN(LOG_APP,
+                    "[openharmony-host] asset %{public}s unavailable/failed (status "
+                    "%{public}d); answering the managed refusal shapes",
+                    op_name, (int)status);
+    }
+    ohos_host_asset_complete(request_id, rc, result);
+    free(result);
 }
 
 void ohos_host_notify_text_submitted(void) {
