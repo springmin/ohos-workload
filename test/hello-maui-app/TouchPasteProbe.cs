@@ -1,12 +1,19 @@
-// TOUCH-PASTE device probe (opt-in: build with -p:TouchPasteProbe=true, which defines
-// TOUCH_PASTE_PROBE): the shell's touch paste entry point is gated on the process environment
-// variable OHOS_TOUCH_PASTE=1 (see the shell's TOUCH_PASTE_ENV). This probe sets it at startup
-// and gives the device round a deterministic target and report channel:
+// TOUCH-PASTE device probe (build with -p:TouchPasteProbe=true, which defines
+// TOUCH_PASTE_PROBE): the shell's touch paste entry point is ON by default. An app opts out by
+// writing its own sandbox marker (<filesDir>/touch-paste.disabled) at startup, a channel the
+// device round measured to be reliable (a process environment variable set here after the
+// ArkTS page loaded is not visible through the ArkTS process API; OHOS_TOUCH_PASTE=0 stays the
+// secondary source). This probe gives the device round a deterministic target and report
+// channel:
 //
 //   aa start ... -U "app://touchpaste/focus"   -> focus the page's Entry (drives the shell's
 //                                                 text-input sink, so the paste lands there)
 //   aa start ... -U "app://touchpaste/clear"   -> clear the Entry text
 //   aa start ... -U "app://touchpaste/report"  -> report the current Entry text
+//   aa start ... -U "app://touchpaste/optout"  -> write the touch-paste.disabled marker (the
+//                                                 shell latches on the first surface touch, so
+//                                                 force-stop + relaunch to observe it)
+//   aa start ... -U "app://touchpaste/optin"   -> delete the marker again (the shipped default)
 //
 // The text the Entry receives after a paste is reported through the window title (hilog logs
 // every title application) and dotnet-status.txt, so the round does not depend on scrolling the
@@ -21,27 +28,42 @@ internal static class TouchPasteProbe
 {
     private static Entry? s_entry;
 
-    /// <summary>Sets the shell opt-in (idempotent) and reports the switch once.</summary>
+    /// <summary>Reports the opt-out marker state once at startup (the shipped default: absent).</summary>
     public static void Install()
     {
-        // The shell's reliable opt-in channel is the app's own sandbox marker
-        // (<filesDir>/touch-paste.enabled): the device round measured that a process environment
-        // variable set here (after the ArkTS page loaded) is not visible through the ArkTS
-        // process API. Both are written; the shell reads the marker first.
-        Environment.SetEnvironmentVariable("OHOS_TOUCH_PASTE", "1");
-        WriteMarker();
-        OpenHarmonyBridge.WriteStatus("[touch-paste-probe] OHOS_TOUCH_PASTE=1 + touch-paste.enabled marker written");
+        ReportMarkerState();
     }
 
-    /// <summary>Writes the sandbox marker again once the app context is certainly available.</summary>
+    /// <summary>The shell's opt-out marker in the app's own sandbox.</summary>
+    private static string MarkerPath()
+    {
+        string? filesDir = OpenHarmonyBridge.Context?.FilesDir;
+        return string.IsNullOrEmpty(filesDir) ? string.Empty : Path.Combine(filesDir, "touch-paste.disabled");
+    }
+
+    private static void ReportMarkerState()
+    {
+        try
+        {
+            string path = MarkerPath();
+            bool disabled = path.Length > 0 && File.Exists(path);
+            OpenHarmonyBridge.WriteStatus($"[touch-paste-probe] default-on; optout marker present={disabled}");
+        }
+        catch (Exception ex)
+        {
+            OpenHarmonyBridge.WriteStatus($"[touch-paste-probe] marker state read failed: {ex.Message}");
+        }
+    }
+
+    /// <summary>Writes the shell's opt-out marker (idempotent; effective on the next launch).</summary>
     private static void WriteMarker()
     {
         try
         {
-            string? filesDir = OpenHarmonyBridge.Context?.FilesDir;
-            if (!string.IsNullOrEmpty(filesDir))
+            string path = MarkerPath();
+            if (path.Length > 0)
             {
-                File.WriteAllText(Path.Combine(filesDir, "touch-paste.enabled"), "1\n");
+                File.WriteAllText(path, "1\n");
             }
         }
         catch (Exception ex)
@@ -50,12 +72,26 @@ internal static class TouchPasteProbe
         }
     }
 
+    /// <summary>Deletes the shell's opt-out marker again (the shipped default).</summary>
+    private static void ClearMarker()
+    {
+        try
+        {
+            string path = MarkerPath();
+            if (path.Length > 0 && File.Exists(path))
+            {
+                File.Delete(path);
+            }
+        }
+        catch (Exception ex)
+        {
+            OpenHarmonyBridge.WriteStatus($"[touch-paste-probe] marker delete failed: {ex.Message}");
+        }
+    }
+
     /// <summary>The page hands the round's target Entry over (probe builds only).</summary>
     public static void Attach(Entry entry)
     {
-        // By now the app context is certainly attached: make sure the marker exists even when
-        // Install() ran before it was available.
-        WriteMarker();
         s_entry = entry;
         entry.TextChanged += (_, e) => SetTitle($"touchpaste: text='{e.NewTextValue}'");
     }
@@ -83,6 +119,14 @@ internal static class TouchPasteProbe
                 break;
             case "report":
                 SetTitle($"touchpaste: report text='{s_entry?.Text}'");
+                break;
+            case "optout":
+                WriteMarker();
+                SetTitle("touchpaste: optout (relaunch to observe)");
+                break;
+            case "optin":
+                ClearMarker();
+                SetTitle("touchpaste: optin (relaunch to observe)");
                 break;
             default:
                 SetTitle($"touchpaste: unknown op '{op}'");

@@ -802,17 +802,22 @@ check_subwindow_capacity_contract() { # <templates-dir>
     return 0
 }
 
-# TOUCH-PASTE source contract: the opt-in touch paste entry point is a shell-side security
-# surface, so the shipped sources must keep every part of the contract - the opt-in latch, the
-# long-press observer gated on the shell being the live text sink, the floating PasteButton
-# security control, the grant-gated read inside the click callback and the delivery through the
-# existing notifyTextInput wire. The selftest drives each marker's removal as a red control.
+# TOUCH-PASTE source contract: the default-on touch paste entry point is a shell-side security
+# surface, so the shipped sources must keep every part of the contract - the default-on latch
+# with the explicit opt-out (sandbox marker + environment variable), the long-press observer
+# gated on the shell being the live text sink, the floating PasteButton security control, the
+# grant-gated read inside the click callback and the delivery through the existing
+# notifyTextInput wire. The selftest drives each marker's removal as a red control, and the
+# pre-flip opt-in marker may not come back: a shell that requires an opt-in file would silently
+# stay dark for every app that never wrote it.
 check_touch_paste_contract() { # <templates-dir>
     _index="$1/ets/pages/Index.ets"
     _missing=""
     for _marker in "const TOUCH_PASTE_ENV: string = 'OHOS_TOUCH_PASTE';" \
-                   "const TOUCH_PASTE_MARKER: string = 'touch-paste.enabled';" \
-                   "const markerPath: string = \`\${this.hostContext().filesDir}/\${TOUCH_PASTE_MARKER}\`;" \
+                   "const TOUCH_PASTE_DISABLED_MARKER: string = 'touch-paste.disabled';" \
+                   "const markerPath: string = \`\${this.hostContext().filesDir}/\${TOUCH_PASTE_DISABLED_MARKER}\`;" \
+                   "this.pasteEnabled = 1;" \
+                   "value.trim() === '0'" \
                    "const TOUCH_PASTE_LONG_PRESS_MS: number = 550;" \
                    "private touchPasteEnabled(): boolean {" \
                    "private handleSurfaceTouch(event: TouchEvent): void {" \
@@ -836,6 +841,13 @@ check_touch_paste_contract() { # <templates-dir>
     done
     if [ -n "$_missing" ]; then
         printf 'ERROR: the TOUCH-PASTE contract is missing from %s:%s\n' "$_index" "$_missing" >&2
+        return 1
+    fi
+    # Red control: the pre-flip opt-in marker may not come back. The feature ships default on and
+    # only the .disabled marker / OHOS_TOUCH_PASTE=0 opts out; a shell that reads an opt-in file
+    # again would silently stay dark for every app that never wrote one.
+    if grep -Fq -- 'touch-paste.enabled' "$_index" 2>/dev/null; then
+        printf 'ERROR: %s reads the pre-flip opt-in marker touch-paste.enabled; TOUCH-PASTE defaults on and the touch-paste.disabled marker / OHOS_TOUCH_PASTE=0 are the only opt-out signals\n' "$_index" >&2
         return 1
     fi
     # Red control: exactly one pasteboard read, inside the security control's click path. A
@@ -1004,7 +1016,7 @@ check_sources_contract() { # [<templates-dir>]
             return 1
         fi
     done
-    printf '    shell sources clean (no @ohos import, getContext(), decodeWithStream() or focusControl, no READ_PASTEBOARD request point), AOT-STARTUP mount gate, E4-CAPACITY8 derived-slot-table/switch, C5 loadData-encoding, SEC7-F ask-rate/pending, N-SUBWINDOW capacity-switch, L7-M2 deferred-create-replay and TOUCH-PASTE opt-in paste-entry contracts present, and byte-identical across preview.22/23/24 (sources %s)\n' "$_hash"
+    printf '    shell sources clean (no @ohos import, getContext(), decodeWithStream() or focusControl, no READ_PASTEBOARD request point), AOT-STARTUP mount gate, E4-CAPACITY8 derived-slot-table/switch, C5 loadData-encoding, SEC7-F ask-rate/pending, N-SUBWINDOW capacity-switch, L7-M2 deferred-create-replay and TOUCH-PASTE default-on paste-entry contracts present, and byte-identical across preview.22/23/24 (sources %s)\n' "$_hash"
 }
 
 # pack_abc_provenance_json <dist-dir>: prints the provenance document for the two dist

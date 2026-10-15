@@ -150,5 +150,6 @@ RID `openharmony-arm64`；workload `openharmony 1.0.0-preview.28/11.0.100-rc.2`�
   （frame + a11y perf 全 within）、像素 **PIXEL ASSERTIONS PASSED**、宿主导出 **164/164**
   （`--cross-check`）、§2.2 packs **no-op**（ui `620908 / c473b7be…`、headless `24324 /
   798b2477…`，`--check-pack-abc` provenance gate passed）。
-  **注**：TOUCH-PASTE 合并后壳 abc/套件数值随其值（**637,224/`8503a3c2…`**、814/817 floor 797；kit #56 `verify-kit` EXPECT 637224），
+  **注**：TOUCH-PASTE 合并后壳 abc/套件数值随其值（**637,224/`8503a3c2…`**、814/817 floor 797；kit #56 `verify-kit` EXPECT 637224）；
+  **2026-10-15 TOUCH-PASTE-DEFAULT（默认翻 ON + opt-out）**再锚为 **637,256/`ab02cc20…`**、816/819 floor 799（`verify-kit` EXPECT 637256），
   本文件该节记的是本切（未并其值）的复核基线。

@@ -65,7 +65,8 @@
 #                    libhostfxr.so (resolved through the dlopen handle, never at load time), and
 #                    the dynamic undefined symbols (nm -D -u equivalent) must not match the
 #                    [undefined] denylist (IME/NativeWindow/Vibrator/Sensor/Location/NetConn/AT/
-#                    ImageSource/Pixelmap/OH_LOG_). A direct reference means the dlopen/dlsym
+#                    ImageSource/Pixelmap/OH_LOG_/OH_Pasteboard_/OH_Udmf/OH_Asset_). A direct
+#                    reference means the dlopen/dlsym
 #                    degradation in host_optional.c was bypassed and a reduced device image
 #                    refuses to load the module. The DT_NEEDED/nm parsing is done in the same
 #                    python3 pass as the zip reads, so testers need no binutils.
@@ -197,13 +198,20 @@ OH_LOG_
 OH_Pasteboard_
 OH_Udmf
 OH_UdsPlainText_
+# Asset Store (asset/asset_api.h; host_asset.c): libasset_ndk.z.so is resolved on demand, and
+# a missing library disables the SecureStorage credential backend (the managed layer then
+# keeps the HUKS strong path and refuses the weak file key unless the app opted out).
+OH_Asset_
 HOST_DEPS_EOF
 )"
 
-# Current abc size expectations: the ui/shell ArkTS shell (637224 B, the TOUCH-PASTE shell:
-# the opt-in (OHOS_TOUCH_PASTE=1) long-press paste entry point - the floating ArkUI PasteButton
-# security control, the selection-replacing pasteboard insertion and the delivery through the
-# existing notifyTextInput wire; the long-press entry point uses an XComponent LongPressGesture recognizer plus a raw onTouch fallback; +16,316 B from the PASTEBOARD-FIX 620908 B tree, which had
+# Current abc size expectations: the ui/shell ArkTS shell (637256 B, the TOUCH-PASTE default-on
+# shell: the long-press paste entry point - the floating ArkUI PasteButton security control, the
+# selection-replacing pasteboard insertion and the delivery through the existing notifyTextInput
+# wire - is on without any marker; an app opts out through the filesDir/touch-paste.disabled
+# marker or OHOS_TOUCH_PASTE=0, and a disable signal always wins). The long-press entry point
+# uses an XComponent LongPressGesture recognizer plus a raw onTouch fallback; +32 B from the
+# 637224 B opt-in shell, which was +16,316 B from the PASTEBOARD-FIX 620908 B tree, which had
 # dropped the ACL-level READ_PASTEBOARD request point and its grant cache/read helpers - the
 # clipboard read runs in the host through the pasteboard NDK, the shell keeps the write op and
 # the 'update' observer; earlier shells were 623784 B (FINAL-BATCH: MEDIA-MICRO +
@@ -214,7 +222,7 @@ HOST_DEPS_EOF
 # and the headless shell (24324 B, unchanged). --expected-abc <bytes[,bytes]> / KIT_EXPECTED_ABC replaces
 # the set and turns a mismatch from a historical-kit WARN into a FAIL (the kit builder uses that
 # strict form).
-EXPECT_ABC="${KIT_EXPECTED_ABC:-637224,24324}"
+EXPECT_ABC="${KIT_EXPECTED_ABC:-637256,24324}"
 EXPECT_ABC_PINNED="${KIT_EXPECTED_ABC:+1}"
 HOST_DEPS_FILE="${KIT_HOST_DEPS:-}"
 

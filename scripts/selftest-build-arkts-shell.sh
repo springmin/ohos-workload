@@ -515,14 +515,30 @@ assert_rc 1 "$_rc" "T15 the gate rejects a hardcoded subwindow capacity (N-SUBWI
 assert_contains "T15 the rejection names the hardcoded capacity" "hardcodes the subwindow capacity" "$WORK/T15-nsub-hardcoded.log"
 cp "$REAL_SOURCE" "$SRC_FAKE/ets/pages/Index.ets"
 
-# TOUCH-PASTE: the opt-in paste entry point's contract (the opt-in gate, the sink-active
-# long-press gate, the security control, the grant-gated read and the delivery through the
-# existing notifyTextInput wire). Red controls: a stripped opt-in constant, a stripped delivery
-# call, a stripped grant check and a second pasteboard read are all rejected.
+# TOUCH-PASTE: the default-on paste entry point's contract (the default-on latch with the
+# explicit opt-out, the sink-active long-press gate, the security control, the grant-gated read
+# and the delivery through the existing notifyTextInput wire). Red controls: a stripped opt-out
+# environment comparison, a reintroduced pre-flip opt-in marker and a stripped env constant, a
+# stripped delivery call, a stripped grant check, a stripped long-press recognizer and a second
+# pasteboard read are all rejected.
 grep -v "const TOUCH_PASTE_ENV: string" "$REAL_SOURCE" > "$SRC_FAKE/ets/pages/Index.ets"
 sh "$BUILD_SCRIPT" --check-sources "$SRC_FAKE" > "$WORK/T15-tp-nogate.log" 2>&1 && _rc=0 || _rc=$?
-assert_rc 1 "$_rc" "T15 the gate rejects a stripped TOUCH-PASTE opt-in gate"
-assert_contains "T15 the rejection names the opt-in gate" "const TOUCH_PASTE_ENV" "$WORK/T15-tp-nogate.log"
+assert_rc 1 "$_rc" "T15 the gate rejects a stripped TOUCH-PASTE env constant"
+assert_contains "T15 the rejection names the env constant" "const TOUCH_PASTE_ENV" "$WORK/T15-tp-nogate.log"
+cp "$REAL_SOURCE" "$SRC_FAKE/ets/pages/Index.ets"
+# The opt-out semantics: the environment half decides with '=' '0'; flipping it back to the
+# pre-flip enable comparison would silently keep every deployment pasted in.
+sed "s/value.trim() === '0'/value.trim() === '1'/" "$REAL_SOURCE" > "$SRC_FAKE/ets/pages/Index.ets"
+sh "$BUILD_SCRIPT" --check-sources "$SRC_FAKE" > "$WORK/T15-tp-nooptout.log" 2>&1 && _rc=0 || _rc=$?
+assert_rc 1 "$_rc" "T15 the gate rejects a reverted opt-out environment comparison"
+assert_contains "T15 the rejection names the opt-out comparison" "value.trim() === '0'" "$WORK/T15-tp-nooptout.log"
+cp "$REAL_SOURCE" "$SRC_FAKE/ets/pages/Index.ets"
+# Default-on semantics: the pre-flip opt-in marker must not come back (a shell gated on an
+# opt-in file would stay dark for every app that never wrote it).
+printf '\nconst tpLegacyOptIn: string = "touch-paste.enabled";\n' >> "$SRC_FAKE/ets/pages/Index.ets"
+sh "$BUILD_SCRIPT" --check-sources "$SRC_FAKE" > "$WORK/T15-tp-legacyoptin.log" 2>&1 && _rc=0 || _rc=$?
+assert_rc 1 "$_rc" "T15 the gate rejects a reintroduced pre-flip opt-in marker (default-off red control)"
+assert_contains "T15 the rejection names the pre-flip marker" "reads the pre-flip opt-in marker touch-paste.enabled" "$WORK/T15-tp-legacyoptin.log"
 cp "$REAL_SOURCE" "$SRC_FAKE/ets/pages/Index.ets"
 grep -v "host.notifyTextInput(updated);" "$REAL_SOURCE" > "$SRC_FAKE/ets/pages/Index.ets"
 sh "$BUILD_SCRIPT" --check-sources "$SRC_FAKE" > "$WORK/T15-tp-nodelivery.log" 2>&1 && _rc=0 || _rc=$?

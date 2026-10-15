@@ -778,23 +778,24 @@ const WEB_SLOT_MAX_RAWFILE: string = 'ohos-overlay-max.txt';
 // Bound on the per-slot deferral queue (see pendingWebOps).
 const WEB_SLOT_PENDING_MAX: number = 32;
 
-// TOUCH-PASTE (opt-in): the shell-side touch paste entry point. The managed app opts in by
-// setting the process environment variable OHOS_TOUCH_PASTE=1 in its own startup before the
-// user interacts (the hello-maui-app sample does this behind -p:TouchPasteProbe=true); without
-// it the whole feature is inert and the shipped shell behaviour is unchanged. When enabled, a
-// long press on the managed surface opens a floating ArkUI PasteButton (security control): the
+// TOUCH-PASTE (default on; explicit opt-out): the shell-side touch paste entry point. A long
+// press on the managed surface opens a floating ArkUI PasteButton (security control): the
 // system grants a temporary pasteboard read on the user's tap, the shell inserts the plain text
 // at the input's selection and delivers the full text through the existing notifyTextInput
-// wire - the same path the input method's typing uses. The feature is gated on the shell input
-// being the live text sink (the input-method fallback path), because only there does the input
-// content mirror the focused managed Entry; on images with the API 12+ input-method NDK entry
-// points the read would target the wrong buffer, so the bubble stays absent.
+// wire - the same path the input method's typing uses. The feature ships ON: an app opts OUT by
+// writing the sandbox marker filesDir/'touch-paste.disabled' at startup (the reliable channel)
+// or, where it propagates, by setting the process environment variable OHOS_TOUCH_PASTE=0; a
+// disable signal always wins and a missing marker/env leaves the feature enabled. It stays
+// gated on the shell input being the live text sink (the input-method fallback path), because
+// only there does the input content mirror the focused managed Entry; on images with the API
+// 12+ input-method NDK entry points the read would target the wrong buffer, so the bubble stays
+// absent.
 const TOUCH_PASTE_ENV: string = 'OHOS_TOUCH_PASTE';
-// The opt-in marker the managed app writes into its own files dir (filesDir/'touch-paste.enabled'):
+// The opt-out marker the managed app writes into its own files dir (filesDir/'touch-paste.disabled'):
 // the device round measured that a variable set by the managed runtime AFTER this page loaded is
 // not visible through the ArkTS process API, so the sandbox marker is the reliable channel (the
 // env read stays as a secondary source).
-const TOUCH_PASTE_MARKER: string = 'touch-paste.enabled';
+const TOUCH_PASTE_DISABLED_MARKER: string = 'touch-paste.disabled';
 const TOUCH_PASTE_LONG_PRESS_MS: number = 550;
 const TOUCH_PASTE_MOVE_SLOP_VP: number = 24;
 // MEDIA-ELEMENT (A-M1): the ArkWeb HTML5 media page. A MediaElement-shaped control claims an
@@ -967,15 +968,16 @@ struct Index {
   private content: NodeContent = new NodeContent();
 
   @State inputText: string = '';
-  // TOUCH-PASTE state (see TOUCH_PASTE_ENV): the opt-in is read lazily on the first surface
-  // touch (the managed app sets the variable at startup, after this page loads); pasteSinkActive
+  // TOUCH-PASTE state (see TOUCH_PASTE_DISABLED_MARKER): the opt-out latch, read lazily on the
+  // first surface touch (the managed app writes the marker at startup, after this page loads;
+  // the feature is on by default and the latch only turns it off); pasteSinkActive
   // is true only while the shell input is the live text sink (the input-method fallback path),
   // which is when the input content mirrors the focused managed Entry; the overlay position is
   // the long-press point clamped into the window.
   @State pasteOverlayVisible: boolean = false;
   @State pasteOverlayX: number = 0;
   @State pasteOverlayY: number = 0;
-  private pasteOptIn: number = -1;
+  private pasteEnabled: number = -1;
   private pasteSinkActive: boolean = false;
   private pasteDiagCount: number = 0;
   private pasteTouchTimer: number = -1;
@@ -8652,47 +8654,49 @@ struct Index {
     return previewText !== undefined ? previewText.offset : 0;
   }
 
-  // TOUCH-PASTE (opt-in, see TOUCH_PASTE_ENV): the opt-in latch, the surface long-press
-  // observation, the floating paste bubble and the delivery helper.
+  // TOUCH-PASTE (default on, explicit opt-out; see TOUCH_PASTE_DISABLED_MARKER): the opt-out
+  // latch, the surface long-press observation, the floating paste bubble and the delivery
+  // helper.
   //
-  // The latch: read once on the first surface touch (the managed app sets the variable in its
-  // own startup, after this page loads) and cached; a missing variable or an environment API
-  // failure keeps the feature off for the process.
+  // The latch: on by default, read once on the first surface touch and cached. An explicit
+  // opt-out - the app's own sandbox marker (filesDir/'touch-paste.disabled') first, the
+  // OHOS_TOUCH_PASTE=0 environment variable second where it propagates - turns the feature off
+  // for the process; a disable signal always wins over the default.
   private touchPasteEnabled(): boolean {
-    if (this.pasteOptIn >= 0) {
-      return this.pasteOptIn === 1;
+    if (this.pasteEnabled >= 0) {
+      return this.pasteEnabled === 1;
     }
-    this.pasteOptIn = 0;
+    this.pasteEnabled = 1;
     // Primary source: the app's own sandbox marker (the managed side writes
-    // <filesDir>/touch-paste.enabled at startup). Measured on device: a process environment
+    // <filesDir>/touch-paste.disabled at startup). Measured on device: a process environment
     // variable set by the managed runtime after this page loaded is not visible through
     // process.ProcessManager, so the marker is the reliable channel; the environment read stays
-    // as a secondary source where it does propagate. Either way the feature is app opt-in only.
+    // as a secondary source where it does propagate.
     try {
-      const markerPath: string = `${this.hostContext().filesDir}/${TOUCH_PASTE_MARKER}`;
+      const markerPath: string = `${this.hostContext().filesDir}/${TOUCH_PASTE_DISABLED_MARKER}`;
       const markerStat = fs.statSync(markerPath);
       if (markerStat !== undefined && markerStat.size > 0) {
-        this.pasteOptIn = 1;
+        this.pasteEnabled = 0;
       }
     } catch (pasteMarkerError) {
-      // No marker is the shipped default.
+      // No marker is the shipped default (enabled).
     }
-    if (this.pasteOptIn === 0) {
+    if (this.pasteEnabled === 1) {
       try {
         const value: string | undefined = new process.ProcessManager().getEnvironmentVar(TOUCH_PASTE_ENV);
-        if (value !== undefined && value !== null && value.trim() === '1') {
-          this.pasteOptIn = 1;
+        if (value !== undefined && value !== null && value.trim() === '0') {
+          this.pasteEnabled = 0;
         }
       } catch (pasteEnvError) {
         // Environment API unavailable: the marker remains the only source.
       }
     }
-    if (this.pasteOptIn === 1) {
-      this.logInfo('[maui] touch paste: enabled (sandbox marker / OHOS_TOUCH_PASTE=1)');
+    if (this.pasteEnabled === 1) {
+      this.logInfo('[maui] touch paste: enabled (default; no opt-out)');
     } else {
-      this.logInfo('[maui] touch paste: opt-in unset');
+      this.logInfo('[maui] touch paste: disabled (sandbox marker / OHOS_TOUCH_PASTE=0)');
     }
-    return this.pasteOptIn === 1;
+    return this.pasteEnabled === 1;
   }
 
   // Long-press detection on the managed surface. Two observers feed the same entry point:
@@ -8750,14 +8754,15 @@ struct Index {
     this.showPasteOverlay(fingers[0].localX, fingers[0].localY);
   }
 
-  // Diagnostics for the opt-in path: the first few surface events log the latch and sink state,
-  // so a device round can tell "the touch never reached the page" from "the opt-in is unset".
+  // Diagnostics for the default-on path: the first few surface events log the latch and sink
+  // state, so a device round can tell "the touch never reached the page" from "the app opted
+  // out".
   private notePasteEvent(stage: string): void {
     if (this.pasteDiagCount >= 3) {
       return;
     }
     this.pasteDiagCount++;
-    this.logInfo(`[maui] touch paste: ${stage} optin=${this.pasteOptIn} sink=${this.pasteSinkActive}`);
+    this.logInfo(`[maui] touch paste: ${stage} enabled=${this.pasteEnabled} sink=${this.pasteSinkActive}`);
   }
 
   private clearPasteTouchTimer(): void {
@@ -8893,8 +8898,8 @@ struct Index {
         .onTouch((event: TouchEvent): void => {
           // TOUCH-PASTE: observe the surface's touches for the long-press paste entry point.
           // The listener never consumes the event and clears its timer on move/up, so taps,
-          // drags and flings reach the native host exactly as before (the feature is inert
-          // unless the managed app opted in through OHOS_TOUCH_PASTE).
+          // drags and flings reach the native host exactly as before (the feature only opens
+          // the bubble while a text input is focused and the app did not opt out).
           this.handleSurfaceTouch(event);
         })
         .gesture(
@@ -8958,7 +8963,8 @@ struct Index {
           .height('100%')
       }
 
-      // TOUCH-PASTE (opt-in, see TOUCH_PASTE_ENV): the floating paste bubble. It holds the
+      // TOUCH-PASTE (default on, see TOUCH_PASTE_DISABLED_MARKER): the floating paste bubble.
+      // It holds the
       // ArkUI security control, so the user's tap is the gesture the system grants a temporary
       // pasteboard read for. It composites above the managed surface and every web overlay
       // (the a11y button's rule, +2), sits at the long-press point, and disappears after the
