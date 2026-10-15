@@ -16,7 +16,7 @@ using Microsoft.OpenHarmony.Hosting;
 // after the fuzz tail) instead of letting every caller repeat its own threshold constant.
 VerifyLineCountingWriter verifyStdout = new(Console.Out);
 Console.SetOut(verifyStdout);
-const int verifyCheckTotal = 819;                     // +2 TOUCH-PASTE-DEFAULT: the default flip (the shell latch defaults on, only touch-paste.disabled / OHOS_TOUCH_PASTE=0 opt out, the pre-flip opt-in marker is gone; and the probe's opt-out marker ops) // +4 TOUCH-PASTE: the opt-in shell touch paste entry point (the four-pack shell source pins with byte identity and exactly one pasteboard read inside the PasteButton click callback, the security-control click/grant/delivery contract, the sample's TouchPasteProbe wiring, and the verify-kit/selftest abc re-anchor, now 637256 B) // +5 SECURE-STORAGE-FAILCLOSED: the FailClosed SecureStorage switch (the source and public-API pins, the default-ON flip now pinned, the off-device refusal with no value on disk and the opt-out fallback round trip, the sealed-read refusal vs the malformed shape staying absent, the HUKS-present-but-rejecting refusal, and the working-keystore positive control) // +4 WEBAUTH-LOOPBACK: the http://127.0.0.1 loopback redirect route (the source/wiring pins, the real socket flow with the foreign-path 404 + pending guard and the parsed query/success page, cancel releasing the port with an immediate same-port retry, and the invalid routes - https loopback, foreign host, default/privileged port - rejecting while a localhost route completes) // +3 SUBWIN-COMPLETED: the child-window submit contract beyond the routed flag (Completed args = EventArgs.Empty + ReturnCommand once) with its unknown-surface red control, plus the four-pack shell onSubmit/SUB_EVENT_TEXT_SUBMITTED source pins and the sample's child Entry Completed observable (the 2026-10-12 keyboard round: Enter reached the child Entry but the probe had no Completed handler, so a completion was unobservable; no product-code change - the platform route is the pinned one) // +2 MEDIA-RESIDUALS: the same-origin hlsrange slice loader (the page fetches whole and slices; ArkWeb's intercepted ArrayBuffer responses cannot CEF-skip a non-zero range offset -> ERR_REQUEST_RANGE_NOT_SATISFIABLE -328 -> fragLoadError) and the bounded cold-start page-ready wait before the first play ack (the four-pack page pins + identity and the slice source pins) // +2 SUBWINDOW-DEFAULT4: the managed subwindow default flips 2->4 (the shell SUB_WINDOW_DEFAULT_MAX, the slice DefaultMaxManagedSubWindows/MinManagedSubWindows and the sample default pinned; the switch may lower to the floor as well as raise, and the third/fourth deferred opens are served while the fifth declines) // +1 MODAL-OVERLAY: the drawer's overlay suspension is lifted while a modal is on top of it (the modal page's own overlay must show) and re-armed on the pop, with a fully silent modal transition when no drawer is presented // +5 MEDIA-MICRO: the /__src__ single-range answers + playlist-sibling serving + the popup media gesture opt-out + the rawfile playlist HLS stamp + the device probes // +3 L7-M2: the deferred-create replay (pending table, defer/replay methods and the dispatch/resume/supersede/close/teardown wiring pinned in all four packs) plus the duplicate-Created idempotency on the session table (a replay racing a managed re-send must not double the session) // +8 WEB-AUTH: the real WebAuthenticator flow (source + manifest-injection pins, query and fragment completion with the non-matching guard, caller cancel, caller timeout via the token, one-at-a-time + duplicate drop, option validation, launch failure, platform-less degrade) // +5 MULTIWINDOW-L3 B6: the child navigation veto (the ask/approval wire route with the one-shot started suppression, the cancelled decision with no approval, the fail-closed shapes incl. the primary window tag/bad slot/H-C2 spellings, window isolation with the approval to the asking window only, and the shell/slice source pins) // +8 MULTIWINDOW-L3 M4: the per-window child web pools (the window-tagged wire + tag validation, the window-index mirror, two windows' independent claims/capacity/pending/release, the hybrid window codec, the window-filtered hybrid dispatch with the fail-closed wrong window, and the shell/host/transport source pins) // +7 MULTIWINDOW-L3 M3: per-window IME/overlay/Back isolation with two concurrent secondaries (two shadow frames + release isolation, action ownership, two coexisting alerts + per-surface geometry + per-window modal frames + Hide one/all, tagged-text prompt ownership + submit completion, the production child prompt with the op-6 focus wire and its own-state completion, Back modal consumption + window Back routing, and the four-pack shell + slice + partition-cap source pins) // +15 MULTIWINDOW-L3 M2: the per-window identity handshake (an out-of-order claim buffered then acked by its Created, duplicate ready without a second ack, an unknown id closed fail-closed, a retired generation declined, reopen with a fresh generation, churn x20) and the two-window lifecycle closure (suspend/resume exactly once per child, focus isolation, focus ignored while stopped, targeted close, late events after close) plus the four-pack shell and slice source pins // +3 MULTIWINDOW-L3: the child hybrid-invoke codec (flag encode/decode, primary decode unchanged), the child-window dispatch (real invoke round trip on the owning handler) and the fail-closed unclaimed slot // +11 MULTIWINDOW-L3 M1: two managed subwindow sessions coexist (the second deferred OpenWindow on the free sub-2, per-window input/frame isolation, the shell-Closed and app-close targeted to one session, the capacity bound rejecting a third, and the shell/slice source pins) // +2 SEC-SCAN-6 C: the window close hook drops the child pool state and the a11y shadow frame + first-publish marker // +1 A11Y-SELFCHECK: a provider attached after the window's last frame repaints once on the next frame tick (the publish gate reads the export call directly; the shell 3s self-check must see nodes>0) // +7 MULTIWINDOW-L2 a W1: per-window a11y frame lookup/view ownership, window-routed actions (sub vs primary vs unknown), the per-instance listener thunk, the provider-gate local degrade, the subwindow password pin, the per-window modal gate and the host/shell/slice source pins // +18 MULTIWINDOW-L2 b: the child capacity wire (state-carried and URL-carried count shapes), the subwindow ArkWeb second host (the window-scoped OpenHarmonyChildWeb pool + transport + ready gate, a real child-window WebView routed through it, the primary pool/transport isolation, and the four-pack shell/host/slice source pins) and the SEC-SCAN-6 primary-window-tag rejection pin // +2 MULTIWINDOW-L M4-04: the per-window pinch channel (a child-tagged stream reaches the child renderer only; main/unknown/empty ids never do) // +16 MULTIWINDOW-L M4 first wave: the per-window focus/suspend-resume state machine (Activated/Deactivated/Stopped/Resumed, idempotent, primary untouched, the shell-Closed session belt), the per-window keyboard/IME wire (child Entry focus -> op 6 surface-tagged payload, text/composition/submit routed to the child only, window-tagged keys, per-window Back, text ports, the primary-to-child global-text isolation pin (SEC-SCAN-5c)) and the per-window accessibility frame + alert ownership partition, plus the four-pack shell/slice source pins // +14 MULTIWINDOW-L M3 shell subwindow XComponent + production consumption: the app host consumes the tagged channel itself, a deferred OpenWindow asks the shell for the subwindow surface and RouteSurface binds/first-frames/adopts it, its input/frame/close/reopen are window-id routed with no main-window interference, plus the four-pack shell source pins (XComponent id = surface id, register/unregister lifecycle, drawn fallback) and the host/slice per-window draw-target pins // +22 MULTIWINDOW-L M2 per-window renderer: the dual-window headless pin (the mw-l/m2 scratch assertions, driven through the hosting bridge's window-id tagged thunks and the slice's RouteSurface/RouteTouch/RouteFrame adapters, with one CanvasFactory recording canvas per window) plus the bridge id and late-subscriber replay contract // +6 MULTIWINDOW-M in-app subwindow: the create/move/resize/show/close command set and its JSON payloads, the lifecycle/geometry state machine, the routed touch event, malformed/unknown payload robustness, the off-device degradation, and the shell/host/slice source+pack-identity contract // +1 SEC-SCAN-4 a11y password masking (plaintext must not be published to the shadow tree; bullets mirror the drawn text) // +1 SEC-SCAN-4 off-surface cull boundary (zero-size frame draws, shadow extent rescues, off-surface Image keeps the decode pipeline) // +1 CG2-R2R host interp R2R opt-out pin (DOTNET_ReadyToRun=0 inside the mode-3 block; the runtime already forces it for InterpMode>=2, the host makes it explicit and the device retest holds IL parity) // +1 AOT-STARTUP first-use ArkWeb overlay mount gate (state flag + ensureWebSlot flip/log + build gate order) protects the -262 ms AOT startup fix + host identical-context replay skip pin // +2 MULTIWINDOW-S surface resize: the Created/Changed arrange gate (Destroyed/0x0 rejected) + the Changed replay re-arranging the window frame while Destroyed keeps it (A0 form adaptation)                     // +2 WASM-MIME .wasm -> application/wasm mapping in every pack shell + the standalone rawfile host / the host's `wasm mime:` + `wasm fallback:` instrumentation and the pack-host.sh --bad-mime negative control                     // +2 FIX-A11YFLYOUT a11y walk FlyoutPage Detail/presented-Flyout subtree pins (device nodeCount=1 root cause)                     // +1 FIX-A11YBUTTON shell self-check absolute position + z-order-above-overlays pin (button reachable with/without a live web control)                     // +3 AUTODISCONNECT layout-removal detach (dynamic slot destroy + claim release + handler kept) / re-add rebuild (ensure + registration replay on the reclaimed slot) / slice watcher-and-owner wiring pins                     // +6 SLOTS-DYNAMIC dynamic slot growth (ensure/destroy commands), capacity downgrade/event, configurable 2/4 limits, shell lazy/defer pins, 3rd-overlay sample                     // documented full [verify] line count (+3 FIX-SLICERACE concurrent connect/host storm/ pins, +5 L6 screenshot Jpeg format/quality capture/fallback/helper + title heartbeat behavior/source, +6 LEGACY toolbar primary/overflow/icon/events/shell/source, +3 SAMPLE-FIX hybrid bootstrap pack staging / read-only payload handler / stock-script demo, +4 MULTI-OVERLAY-FULL LRU pool/invoke slot codec/per-slot hybrid shell/slice owner wiring, +4 MULTI-OVL slot pool/wire codec/two-overlay shell/slice wiring, +4 FIX-BACKSIZE Back-press forwarding/drawer drill/ shell drawer/BlazorWebView desired size, +4 FIX-WVP overlay px->vp/degenerate-frame/hybrid-overlay arbitration/suspend-restore (shell+slice), +2 FIX-DISMISS flyout drawer dismiss under the device display conditions, +4 FIX-HOME home page arrange/draw (NavigationPage-in-TabbedPage descent), +4 MS-MODE runtime mode switch, +10 P2c-DEEPLINK, +4 P2b-IMG, +16 P1b-LIST, +10 P1a-ANIM, +2 SEC3 storage/deep-link pins, +5 W-series WebView wiring, +3 T1 InputView mapping, +4 T2 WebView gaps, +4 T3 GraphicsView interaction, +7 T10 modal accessibility, +4 T4 Label formatted text, +4 T5 layout semantics, +6 T7 DatePicker calendar/min-max, +4 T9 window title bar, +4 T11 diagnostics overlay, +1 N2 empty ContentPage arrangement, +6 T8 TableView, +5 T8 uneven rows, +7 T6 RTL flow direction, +5 T22 MainThread bridge, +2 FIX-TABBED tabbed CurrentPage, +4 T13 group footer view/N3 picker IsOpen, +5 T21 system font scale, +3 T21 font scale source wiring, +2 A11Y-TABBED tabbed accessibility, +3 N1 host multi-pointer, +5 T12 CarouselView group slides, +7 T14 rich shell flyout, +10 T14 flyout leftovers (MenuItemTemplate/FlyoutContent/AsMultipleItems), +2 FIX-SHELL shell CurrentPage, +2 A11Y-SHELL shell accessibility, +7 T15 rich Shell.TitleView, +8 T16 structured menus, +3 N4 TitleBar accessibility row, +3 T18 Essentials Map, +4 N5 overlay passthrough suppression, +5 N6 window decorations, +4 T20 media bridge, +3 B2 wasm site in a MAUI WebView, +2 W10 NativeAOT managed entry (host libs-dir resolution + shell AOT payload probe), +1 FIX-JSCALL Blazor IPC enum/struct AOT roots (JSCallResultType/JSCallType/NavigationOptions in the slice context + handler static-ctor touch + stub click-probe removed), +3 INTERP-DRAW2 draw-cost seam kinds / off-surface cull / translated-node rescue)) // +1 E4-CAPACITY8: every per-slot table derives from WEB_SLOT_MAX (hardcoded 4s forbidden), the served capacity keeps the shipped 8-slot default and the OHOS_OVERLAY_MAX env/rawfile switch can lower it (E4 root-cause fix) // +2 C5-L3 + SEC7-F-L4: the data op encodes '#'->'%23' on both the primary and the child path (helper + loadData wiring pinned per pack) and the child navigation asks gain the per-slot burst/window cap with the fail-closed drop and the bounded pending table kept // +7 SEC-SCAN-5c E/F: the pinch finiteness/bounds guards (non-finite centre/scale dropped before the walk and the dispatch; a finite extreme running scale clamped into [1e-3, 1e3]; normal reports unchanged) and the secondary a11y shadow-frame bounds (the frame table capped with the released slot reusable, a secondary walk truncated at the node cap into a well-formed prefix, and an empty/unknown frame publishing nothing - no baseline, no provider probe, no counters - while a null-root refresh keeps the last frame) // +1 N-SUBWINDOW: the subwindow cap is served from the explicit OHOS_SUBWINDOW_MAX/rawfile switch (default 2, ceiling 8; the host reads the same name) with the four-pack shell + host + sample source pins // +1 DEEPLINK-REGRESSION: a navigation request marks the compositor layout gate (a pushed page is arranged and its handlers connect on the next frame without an unrelated window/layout event) // +6 L8: the popup subwindow path (onWindowNew -> synchronous controller bind through ShellPopupBridge -> dedicated subwindow; close/name-reuse callbacks; capacity/URL null rejects; kind=popup isolation) with the four-pack shell source pins // +1 MODAL-DEEPLINK: a modal push/pop marks the compositor layout gate and requests a redraw (the modal page is arranged and its handlers connect on the next frame without an unrelated window/layout event) // +1 L8-REMAINDER: the windowopenseq popup writer substitutes the popup name through the __L8N__ placeholder (no bare `n` in the written script; the title read-back and the PONG flow stay pinned) // +8 MEDIAELEMENT-ARKWEB A-M1: the ArkWeb HTML5 media element around the missing Media Kit (the four-pack shell media service/page/gesture opt-out + the pack rawfile staging + the slice surface/handler/registration + source normalization + effective URL/ack + off-device degrade/slot release + the trusted event route) // +12 MEDIA-SUBWIN+HLS (B-M1): the child window media service (the four-pack SubWindow.ets child "media" op + page/HLS/source serving + document-id bridge + gesture opt-out + slot reset pins, the slice's window-resolved claim/close-hook pins and the real secondary-window drill: child-pool claim, child-wire registration/frame, trusted event route, close release+destroy, primary transport untouched) and the HLS path (the media page's isHlsUrl/lazy hls.js/MSE branch/fatal recovery/native fallback + the vendored hls.js 1.7.3 runtime identity across the four packs + the primary/child rawfile serving wiring)
+const int verifyCheckTotal = 828;                     // +9 SECURE-STORAGE-ASSET: the Asset Store backend chain (the source pins for the managed bridge + host wiring, the working-store round trip whose data file keeps only the a1: index marker, the legacy-value read while the store is up, the unavailable-store refusal with nothing on disk plus the indexed-read throw, the write-rejected store falling to the HUKS keystore as the second strong tier, the opt-out weak fallback round trip, remove dropping the index and the store row, and RemoveAll enumerating the index) // +2 TOUCH-PASTE-DEFAULT: the default flip (the shell latch defaults on, only touch-paste.disabled / OHOS_TOUCH_PASTE=0 opt out, the pre-flip opt-in marker is gone; and the probe's opt-out marker ops) // +4 TOUCH-PASTE: the opt-in shell touch paste entry point (the four-pack shell source pins with byte identity and exactly one pasteboard read inside the PasteButton click callback, the security-control click/grant/delivery contract, the sample's TouchPasteProbe wiring, and the verify-kit/selftest abc re-anchor, now 637256 B) // +5 SECURE-STORAGE-FAILCLOSED: the FailClosed SecureStorage switch (the source and public-API pins, the default-ON flip now pinned, the off-device refusal with no value on disk and the opt-out fallback round trip, the sealed-read refusal vs the malformed shape staying absent, the HUKS-present-but-rejecting refusal, and the working-keystore positive control) // +4 WEBAUTH-LOOPBACK: the http://127.0.0.1 loopback redirect route (the source/wiring pins, the real socket flow with the foreign-path 404 + pending guard and the parsed query/success page, cancel releasing the port with an immediate same-port retry, and the invalid routes - https loopback, foreign host, default/privileged port - rejecting while a localhost route completes) // +3 SUBWIN-COMPLETED: the child-window submit contract beyond the routed flag (Completed args = EventArgs.Empty + ReturnCommand once) with its unknown-surface red control, plus the four-pack shell onSubmit/SUB_EVENT_TEXT_SUBMITTED source pins and the sample's child Entry Completed observable (the 2026-10-12 keyboard round: Enter reached the child Entry but the probe had no Completed handler, so a completion was unobservable; no product-code change - the platform route is the pinned one) // +2 MEDIA-RESIDUALS: the same-origin hlsrange slice loader (the page fetches whole and slices; ArkWeb's intercepted ArrayBuffer responses cannot CEF-skip a non-zero range offset -> ERR_REQUEST_RANGE_NOT_SATISFIABLE -328 -> fragLoadError) and the bounded cold-start page-ready wait before the first play ack (the four-pack page pins + identity and the slice source pins) // +2 SUBWINDOW-DEFAULT4: the managed subwindow default flips 2->4 (the shell SUB_WINDOW_DEFAULT_MAX, the slice DefaultMaxManagedSubWindows/MinManagedSubWindows and the sample default pinned; the switch may lower to the floor as well as raise, and the third/fourth deferred opens are served while the fifth declines) // +1 MODAL-OVERLAY: the drawer's overlay suspension is lifted while a modal is on top of it (the modal page's own overlay must show) and re-armed on the pop, with a fully silent modal transition when no drawer is presented // +5 MEDIA-MICRO: the /__src__ single-range answers + playlist-sibling serving + the popup media gesture opt-out + the rawfile playlist HLS stamp + the device probes // +3 L7-M2: the deferred-create replay (pending table, defer/replay methods and the dispatch/resume/supersede/close/teardown wiring pinned in all four packs) plus the duplicate-Created idempotency on the session table (a replay racing a managed re-send must not double the session) // +8 WEB-AUTH: the real WebAuthenticator flow (source + manifest-injection pins, query and fragment completion with the non-matching guard, caller cancel, caller timeout via the token, one-at-a-time + duplicate drop, option validation, launch failure, platform-less degrade) // +5 MULTIWINDOW-L3 B6: the child navigation veto (the ask/approval wire route with the one-shot started suppression, the cancelled decision with no approval, the fail-closed shapes incl. the primary window tag/bad slot/H-C2 spellings, window isolation with the approval to the asking window only, and the shell/slice source pins) // +8 MULTIWINDOW-L3 M4: the per-window child web pools (the window-tagged wire + tag validation, the window-index mirror, two windows' independent claims/capacity/pending/release, the hybrid window codec, the window-filtered hybrid dispatch with the fail-closed wrong window, and the shell/host/transport source pins) // +7 MULTIWINDOW-L3 M3: per-window IME/overlay/Back isolation with two concurrent secondaries (two shadow frames + release isolation, action ownership, two coexisting alerts + per-surface geometry + per-window modal frames + Hide one/all, tagged-text prompt ownership + submit completion, the production child prompt with the op-6 focus wire and its own-state completion, Back modal consumption + window Back routing, and the four-pack shell + slice + partition-cap source pins) // +15 MULTIWINDOW-L3 M2: the per-window identity handshake (an out-of-order claim buffered then acked by its Created, duplicate ready without a second ack, an unknown id closed fail-closed, a retired generation declined, reopen with a fresh generation, churn x20) and the two-window lifecycle closure (suspend/resume exactly once per child, focus isolation, focus ignored while stopped, targeted close, late events after close) plus the four-pack shell and slice source pins // +3 MULTIWINDOW-L3: the child hybrid-invoke codec (flag encode/decode, primary decode unchanged), the child-window dispatch (real invoke round trip on the owning handler) and the fail-closed unclaimed slot // +11 MULTIWINDOW-L3 M1: two managed subwindow sessions coexist (the second deferred OpenWindow on the free sub-2, per-window input/frame isolation, the shell-Closed and app-close targeted to one session, the capacity bound rejecting a third, and the shell/slice source pins) // +2 SEC-SCAN-6 C: the window close hook drops the child pool state and the a11y shadow frame + first-publish marker // +1 A11Y-SELFCHECK: a provider attached after the window's last frame repaints once on the next frame tick (the publish gate reads the export call directly; the shell 3s self-check must see nodes>0) // +7 MULTIWINDOW-L2 a W1: per-window a11y frame lookup/view ownership, window-routed actions (sub vs primary vs unknown), the per-instance listener thunk, the provider-gate local degrade, the subwindow password pin, the per-window modal gate and the host/shell/slice source pins // +18 MULTIWINDOW-L2 b: the child capacity wire (state-carried and URL-carried count shapes), the subwindow ArkWeb second host (the window-scoped OpenHarmonyChildWeb pool + transport + ready gate, a real child-window WebView routed through it, the primary pool/transport isolation, and the four-pack shell/host/slice source pins) and the SEC-SCAN-6 primary-window-tag rejection pin // +2 MULTIWINDOW-L M4-04: the per-window pinch channel (a child-tagged stream reaches the child renderer only; main/unknown/empty ids never do) // +16 MULTIWINDOW-L M4 first wave: the per-window focus/suspend-resume state machine (Activated/Deactivated/Stopped/Resumed, idempotent, primary untouched, the shell-Closed session belt), the per-window keyboard/IME wire (child Entry focus -> op 6 surface-tagged payload, text/composition/submit routed to the child only, window-tagged keys, per-window Back, text ports, the primary-to-child global-text isolation pin (SEC-SCAN-5c)) and the per-window accessibility frame + alert ownership partition, plus the four-pack shell/slice source pins // +14 MULTIWINDOW-L M3 shell subwindow XComponent + production consumption: the app host consumes the tagged channel itself, a deferred OpenWindow asks the shell for the subwindow surface and RouteSurface binds/first-frames/adopts it, its input/frame/close/reopen are window-id routed with no main-window interference, plus the four-pack shell source pins (XComponent id = surface id, register/unregister lifecycle, drawn fallback) and the host/slice per-window draw-target pins // +22 MULTIWINDOW-L M2 per-window renderer: the dual-window headless pin (the mw-l/m2 scratch assertions, driven through the hosting bridge's window-id tagged thunks and the slice's RouteSurface/RouteTouch/RouteFrame adapters, with one CanvasFactory recording canvas per window) plus the bridge id and late-subscriber replay contract // +6 MULTIWINDOW-M in-app subwindow: the create/move/resize/show/close command set and its JSON payloads, the lifecycle/geometry state machine, the routed touch event, malformed/unknown payload robustness, the off-device degradation, and the shell/host/slice source+pack-identity contract // +1 SEC-SCAN-4 a11y password masking (plaintext must not be published to the shadow tree; bullets mirror the drawn text) // +1 SEC-SCAN-4 off-surface cull boundary (zero-size frame draws, shadow extent rescues, off-surface Image keeps the decode pipeline) // +1 CG2-R2R host interp R2R opt-out pin (DOTNET_ReadyToRun=0 inside the mode-3 block; the runtime already forces it for InterpMode>=2, the host makes it explicit and the device retest holds IL parity) // +1 AOT-STARTUP first-use ArkWeb overlay mount gate (state flag + ensureWebSlot flip/log + build gate order) protects the -262 ms AOT startup fix + host identical-context replay skip pin // +2 MULTIWINDOW-S surface resize: the Created/Changed arrange gate (Destroyed/0x0 rejected) + the Changed replay re-arranging the window frame while Destroyed keeps it (A0 form adaptation)                     // +2 WASM-MIME .wasm -> application/wasm mapping in every pack shell + the standalone rawfile host / the host's `wasm mime:` + `wasm fallback:` instrumentation and the pack-host.sh --bad-mime negative control                     // +2 FIX-A11YFLYOUT a11y walk FlyoutPage Detail/presented-Flyout subtree pins (device nodeCount=1 root cause)                     // +1 FIX-A11YBUTTON shell self-check absolute position + z-order-above-overlays pin (button reachable with/without a live web control)                     // +3 AUTODISCONNECT layout-removal detach (dynamic slot destroy + claim release + handler kept) / re-add rebuild (ensure + registration replay on the reclaimed slot) / slice watcher-and-owner wiring pins                     // +6 SLOTS-DYNAMIC dynamic slot growth (ensure/destroy commands), capacity downgrade/event, configurable 2/4 limits, shell lazy/defer pins, 3rd-overlay sample                     // documented full [verify] line count (+3 FIX-SLICERACE concurrent connect/host storm/ pins, +5 L6 screenshot Jpeg format/quality capture/fallback/helper + title heartbeat behavior/source, +6 LEGACY toolbar primary/overflow/icon/events/shell/source, +3 SAMPLE-FIX hybrid bootstrap pack staging / read-only payload handler / stock-script demo, +4 MULTI-OVERLAY-FULL LRU pool/invoke slot codec/per-slot hybrid shell/slice owner wiring, +4 MULTI-OVL slot pool/wire codec/two-overlay shell/slice wiring, +4 FIX-BACKSIZE Back-press forwarding/drawer drill/ shell drawer/BlazorWebView desired size, +4 FIX-WVP overlay px->vp/degenerate-frame/hybrid-overlay arbitration/suspend-restore (shell+slice), +2 FIX-DISMISS flyout drawer dismiss under the device display conditions, +4 FIX-HOME home page arrange/draw (NavigationPage-in-TabbedPage descent), +4 MS-MODE runtime mode switch, +10 P2c-DEEPLINK, +4 P2b-IMG, +16 P1b-LIST, +10 P1a-ANIM, +2 SEC3 storage/deep-link pins, +5 W-series WebView wiring, +3 T1 InputView mapping, +4 T2 WebView gaps, +4 T3 GraphicsView interaction, +7 T10 modal accessibility, +4 T4 Label formatted text, +4 T5 layout semantics, +6 T7 DatePicker calendar/min-max, +4 T9 window title bar, +4 T11 diagnostics overlay, +1 N2 empty ContentPage arrangement, +6 T8 TableView, +5 T8 uneven rows, +7 T6 RTL flow direction, +5 T22 MainThread bridge, +2 FIX-TABBED tabbed CurrentPage, +4 T13 group footer view/N3 picker IsOpen, +5 T21 system font scale, +3 T21 font scale source wiring, +2 A11Y-TABBED tabbed accessibility, +3 N1 host multi-pointer, +5 T12 CarouselView group slides, +7 T14 rich shell flyout, +10 T14 flyout leftovers (MenuItemTemplate/FlyoutContent/AsMultipleItems), +2 FIX-SHELL shell CurrentPage, +2 A11Y-SHELL shell accessibility, +7 T15 rich Shell.TitleView, +8 T16 structured menus, +3 N4 TitleBar accessibility row, +3 T18 Essentials Map, +4 N5 overlay passthrough suppression, +5 N6 window decorations, +4 T20 media bridge, +3 B2 wasm site in a MAUI WebView, +2 W10 NativeAOT managed entry (host libs-dir resolution + shell AOT payload probe), +1 FIX-JSCALL Blazor IPC enum/struct AOT roots (JSCallResultType/JSCallType/NavigationOptions in the slice context + handler static-ctor touch + stub click-probe removed), +3 INTERP-DRAW2 draw-cost seam kinds / off-surface cull / translated-node rescue)) // +1 E4-CAPACITY8: every per-slot table derives from WEB_SLOT_MAX (hardcoded 4s forbidden), the served capacity keeps the shipped 8-slot default and the OHOS_OVERLAY_MAX env/rawfile switch can lower it (E4 root-cause fix) // +2 C5-L3 + SEC7-F-L4: the data op encodes '#'->'%23' on both the primary and the child path (helper + loadData wiring pinned per pack) and the child navigation asks gain the per-slot burst/window cap with the fail-closed drop and the bounded pending table kept // +7 SEC-SCAN-5c E/F: the pinch finiteness/bounds guards (non-finite centre/scale dropped before the walk and the dispatch; a finite extreme running scale clamped into [1e-3, 1e3]; normal reports unchanged) and the secondary a11y shadow-frame bounds (the frame table capped with the released slot reusable, a secondary walk truncated at the node cap into a well-formed prefix, and an empty/unknown frame publishing nothing - no baseline, no provider probe, no counters - while a null-root refresh keeps the last frame) // +1 N-SUBWINDOW: the subwindow cap is served from the explicit OHOS_SUBWINDOW_MAX/rawfile switch (default 2, ceiling 8; the host reads the same name) with the four-pack shell + host + sample source pins // +1 DEEPLINK-REGRESSION: a navigation request marks the compositor layout gate (a pushed page is arranged and its handlers connect on the next frame without an unrelated window/layout event) // +6 L8: the popup subwindow path (onWindowNew -> synchronous controller bind through ShellPopupBridge -> dedicated subwindow; close/name-reuse callbacks; capacity/URL null rejects; kind=popup isolation) with the four-pack shell source pins // +1 MODAL-DEEPLINK: a modal push/pop marks the compositor layout gate and requests a redraw (the modal page is arranged and its handlers connect on the next frame without an unrelated window/layout event) // +1 L8-REMAINDER: the windowopenseq popup writer substitutes the popup name through the __L8N__ placeholder (no bare `n` in the written script; the title read-back and the PONG flow stay pinned) // +8 MEDIAELEMENT-ARKWEB A-M1: the ArkWeb HTML5 media element around the missing Media Kit (the four-pack shell media service/page/gesture opt-out + the pack rawfile staging + the slice surface/handler/registration + source normalization + effective URL/ack + off-device degrade/slot release + the trusted event route) // +12 MEDIA-SUBWIN+HLS (B-M1): the child window media service (the four-pack SubWindow.ets child "media" op + page/HLS/source serving + document-id bridge + gesture opt-out + slot reset pins, the slice's window-resolved claim/close-hook pins and the real secondary-window drill: child-pool claim, child-wire registration/frame, trusted event route, close release+destroy, primary transport untouched) and the HLS path (the media page's isHlsUrl/lazy hls.js/MSE branch/fatal recovery/native fallback + the vendored hls.js 1.7.3 runtime identity across the four packs + the primary/child rawfile serving wiring)
 const int verifyCheckFloor = verifyCheckTotal - 20;   // documented floor convention (total - 20)
 
 // A small image file for the Image handler.
@@ -1407,11 +1407,15 @@ if (gridCtl?.Handler?.PlatformView is OpenHarmonyView gridPlatform)
     Console.WriteLine($"[verify] grid cells={gridCells.Count} span=3 first4=[{string.Join(" ", frames.Select(f => $"{f.X:0},{f.Y:0},{f.Width:0}x{f.Height:0}"))}]");
 }
 
-// W22-14: SecureStorage / AppInfo / DeviceInfo / VersionTracking.
+// W22-14: SecureStorage / AppInfo / DeviceInfo / VersionTracking. The dev-loop suite has no
+// device-bound backend, so this probe opts out of the fail-closed default (the W22-14 point is
+// the Essentials surface, not the policy - the FAILCLOSED/ASSET blocks below pin the policy).
+OpenHarmonySecureStorage.FailClosed = false;
 await SecureStorage.Default.SetAsync("verify.secret", "s3cr3t");
 Console.WriteLine($"[verify] secure storage read='{await SecureStorage.Default.GetAsync("verify.secret")}'");
 SecureStorage.Default.Remove("verify.secret");
 Console.WriteLine($"[verify] secure storage after remove='{await SecureStorage.Default.GetAsync("verify.secret") ?? "<null>"}'");
+OpenHarmonySecureStorage.FailClosed = true;
 Console.WriteLine($"[verify] appinfo package='{AppInfo.Current.PackageName}' version='{AppInfo.Current.VersionString}' device='{DeviceInfo.Current.Platform}/{DeviceInfo.Current.Idiom}'");
 VersionTracking.Default.Track();
 Console.WriteLine($"[verify] version tracking firstEver={VersionTracking.Default.IsFirstLaunchEver} previous='{VersionTracking.Default.PreviousVersion}' launches ok");
@@ -8613,12 +8617,13 @@ bool kit14Managed = kit14KeystoreCs.Contains("EntryPoint = \"ohos_host_keystore_
     kit14KeystoreCs.Contains("public static async Task<bool> DeleteKeyAsync") &&
     kit14KeystoreCs.Contains("public static bool IsAvailable") &&
     kit14StorageCs.Contains("\"maui.ohos.securestorage.v1.\"") &&
+    kit14StorageCs.Contains("\"maui.ohos.securestorage.asset.v1.\"") &&
     kit14StorageCs.Contains("PathHash") &&
     kit14StorageCs.Contains("private const string KeystorePrefix = \"k1:\";") &&
     kit14StorageCs.Contains("catch (FormatException)") &&
-    kit14StorageCs.Contains("public static bool IsHardwareBacked => OpenHarmonyKeystore.IsAvailable;") &&
+    kit14StorageCs.Contains("public static bool IsHardwareBacked => OpenHarmonyAssetStore.IsAvailable || OpenHarmonyKeystore.IsAvailable;") &&
     kit14StorageCs.Contains("OpenHarmonyKeystore.DeleteKeyAsync(_alias)") &&
-    kit14StorageCs.Contains("the HUKS-backed key path failed") &&
+    kit14StorageCs.Contains("neither the Asset Store nor the HUKS-backed key path is available") &&
     kitPublicApi.Contains("Microsoft.Maui.Platform.OpenHarmonySecureStorage.IsHardwareBacked.get -> bool");
 Console.WriteLine($"[verify] kit14 managed bridge keystore={kit14KeystoreCsPath is not null} alias={kit14StorageCs.Contains("\"maui.ohos.securestorage.v1.\"")} isHardwareBacked={kit14StorageCs.Contains("IsHardwareBacked")} publicApi={kitPublicApi.Contains("OpenHarmonySecureStorage.IsHardwareBacked")} assert={kit14Managed}");
 if (!kit14Managed)
@@ -8628,6 +8633,10 @@ if (!kit14Managed)
 
 // KIT14 degradation: off-device (no host library) the status is honest, the fallback keeps the
 // read/write/remove semantics, a malformed k1: payload reads as absent and RemoveAll never throws.
+// The weak file-key fallback is the explicit opt-out path now (FailClosed defaults on): this
+// block opts out, pins that the documented fallback still round-trips, and restores the default.
+bool kit14DefaultFailClosed = OpenHarmonySecureStorage.FailClosed;
+OpenHarmonySecureStorage.FailClosed = false;
 string kit14StorePath = Path.Combine(Path.GetTempPath(), $"maui-kit14-{Guid.NewGuid():N}.dat");
 var kit14Store = new OpenHarmonySecureStorage(kit14StorePath);
 await kit14Store.SetAsync("kit14", "value");
@@ -8650,8 +8659,9 @@ File.WriteAllText(kit14StorePath, kit14Encode("broken") + "|" + kit14Encode("k1:
 string? kit14Malformed = await new OpenHarmonySecureStorage(kit14StorePath).GetAsync("broken");
 bool kit14OffDevice = !OpenHarmonySecureStorage.IsHardwareBacked;
 kit14Store.RemoveAll();
-bool kit14DegradeOk = kit14OffDevice && kit14Read == "value" && kit14Removed && kit14AfterRemove is null &&
-    kit14Malformed is null;
+OpenHarmonySecureStorage.FailClosed = kit14DefaultFailClosed;
+bool kit14DegradeOk = kit14DefaultFailClosed && kit14OffDevice && kit14Read == "value" && kit14Removed &&
+    kit14AfterRemove is null && kit14Malformed is null;
 Console.WriteLine($"[verify] kit14 degradation hardwareBacked={OpenHarmonySecureStorage.IsHardwareBacked} read='{kit14Read}' remove={kit14Removed} afterRemove={kit14AfterRemove ?? "<null>"} malformedK1={kit14Malformed ?? "<null>"} assert={kit14DegradeOk}");
 if (!kit14DegradeOk)
 {
@@ -8662,6 +8672,9 @@ if (!kit14DegradeOk)
 // (a) A zero-length per-install key file must be recovered, not divided by: the XOR encoder
 // used to throw DivideByZeroException on the first save of a store whose key file a crash had
 // truncated. (b) The truncated key is replaced (a wrong-length key silently garbles values).
+// The keys exercised here are the weak file-key ones: opt out for the block, restore the
+// fail-closed default after (c).
+OpenHarmonySecureStorage.FailClosed = false;
 string sec3StorePath = Path.Combine(Path.GetTempPath(), $"maui-sec3-{Guid.NewGuid():N}.dat");
 File.WriteAllBytes(sec3StorePath + ".key", Array.Empty<byte>());
 bool sec3EmptyKeyOk;
@@ -8731,6 +8744,7 @@ catch
 {
     sec3ConcurrentOk = false;
 }
+OpenHarmonySecureStorage.FailClosed = true;
 // (d) The app-extendable https allow-list is a lock-synchronized collection and want-derived
 // status text is flattened; both are source-pinned because the race/log races are timing
 // dependent (the behavioral half is the empty-key recovery above).
@@ -8747,13 +8761,14 @@ if (!sec3Ok)
     throw new InvalidOperationException("the SEC3 SecureStorage/deep-link hardening contract drifted");
 }
 
-// FAILCLOSED (2026-10-13): the SecureStorage fail-closed switch (MAIL-LESSONS B). The store's
-// default stays the documented per-install file-key fallback; with OpenHarmonySecureStorage
-// .FailClosed set a value is only written through the HUKS-backed keystore - a missing keystore
-// or a rejected operation throws and nothing reaches the data file, and a sealed k1: value
-// whose decrypt fails throws instead of reading as absent. The keystore test modes (the slice
-// harness seam) give the two shapes a device cannot be asked for on demand: HUKS present but
-// rejecting every operation, and a working HUKS.
+// FAILCLOSED (2026-10-13; recalibrated 2026-10-15 for the default flip): the SecureStorage
+// fail-closed policy. The default is now ON: a Set that can use neither the Asset Store (the
+// preferred backend, see the ASSET block below) nor the HUKS keystore throws and nothing
+// reaches the data file, and an indexed value whose backend read fails throws instead of
+// reading as absent. FailClosed = false is the explicit opt-out that keeps the documented
+// per-install file-key fallback. The keystore test modes (the slice harness seam) give the
+// shapes a device cannot be asked for on demand: HUKS present but rejecting every operation,
+// and a working HUKS.
 int fcFailures = 0;
 void FcCheck(string name, bool ok)
 {
@@ -8765,9 +8780,14 @@ void FcCheck(string name, bool ok)
 }
 
 // The value a store actually persisted for a key, decoded through the store's own file codec
-// (used to tell the keystore format apart from the fallback format on disk).
+// (used to tell the keystore format apart from the fallback format on disk). A missing data
+// file or key answers null, so a regression asserts instead of throwing.
 string? fcStoredValue(string dataPath, string keyPath, string keyName)
 {
+    if (!File.Exists(dataPath) || !File.Exists(keyPath))
+    {
+        return null;
+    }
     byte[] key = File.ReadAllBytes(keyPath);
     string fcDecode(string text)
     {
@@ -8789,19 +8809,19 @@ string? fcStoredValue(string dataPath, string keyPath, string keyName)
     return null;
 }
 
-// Source + baseline contract: the switch, its public API entries, the keystore test seam and
-// the kept fallback warning. The behavioral half follows.
-bool fcSource = kit14StorageCs.Contains("public static bool FailClosed { get; set; }") &&
+// Source + baseline contract: the switch (default ON), its public API entries, the keystore
+// test seam and the opt-out fallback warning. The behavioral half follows.
+bool fcSource = kit14StorageCs.Contains("public static bool FailClosed { get; set; } = true;") &&
     kit14KeystoreCs.Contains("internal static KeystoreTestMode TestMode") &&
     kit14StorageCs.Contains("OpenHarmonyStatus.Once(\"securestorage.filekey\",") &&
     kitPublicApi.Contains("Microsoft.Maui.Platform.OpenHarmonySecureStorage.FailClosed.get -> bool") &&
     kitPublicApi.Contains("Microsoft.Maui.Platform.OpenHarmonySecureStorage.FailClosed.set -> void");
 FcCheck("source", fcSource);
 
-// Off-device (no keystore at all): the fail-closed write is refused and nothing lands under
-// the data path; the same store with the switch back off keeps the documented fallback round
-// trip and reads back.
-bool fcDefaultOff = !OpenHarmonySecureStorage.FailClosed;
+// Off-device (no asset store, no keystore): the default is on and the fail-closed write is
+// refused with nothing landing under the data path; the same store opted out keeps the
+// documented file-key fallback round trip and reads back.
+bool fcDefaultOn = OpenHarmonySecureStorage.FailClosed;
 string fcColdPath = Path.Combine(Path.GetTempPath(), $"maui-fc-cold-{Guid.NewGuid():N}.dat");
 OpenHarmonySecureStorage.FailClosed = true;
 var fcColdStore = new OpenHarmonySecureStorage(fcColdPath);
@@ -8818,7 +8838,8 @@ bool fcColdNoData = !File.Exists(fcColdPath);
 OpenHarmonySecureStorage.FailClosed = false;
 await fcColdStore.SetAsync("fc-cold", "secret");
 string? fcColdRead = await fcColdStore.GetAsync("fc-cold");
-FcCheck("refused off-device", fcDefaultOff && fcColdThrew && fcColdNoData && fcColdRead == "secret");
+OpenHarmonySecureStorage.FailClosed = true;
+FcCheck("refused off-device", fcDefaultOn && fcColdThrew && fcColdNoData && fcColdRead == "secret");
 
 // A sealed k1: entry cannot be decrypted without the keystore: fail-closed throws instead of
 // answering null, while the malformed-base64 shape keeps the documented absent answer.
@@ -8847,7 +8868,7 @@ catch (InvalidOperationException)
     fcSealedThrew = true;
 }
 string? fcBrokenRead = await fcColdStore.GetAsync("fc-broken");
-OpenHarmonySecureStorage.FailClosed = false;
+OpenHarmonySecureStorage.FailClosed = true;
 FcCheck("sealed read refused", fcSealedThrew && fcBrokenRead is null);
 
 // HUKS present but every operation rejected: the capability probe reports true while the
@@ -8870,6 +8891,7 @@ bool fcOpRefused = fcOpThrew && !File.Exists(fcOpPath) && OpenHarmonySecureStora
 OpenHarmonySecureStorage.FailClosed = false;
 await fcOpStore.SetAsync("fc-op", "secret");
 string? fcOpRead = await fcOpStore.GetAsync("fc-op");
+OpenHarmonySecureStorage.FailClosed = true;
 FcCheck("op-failure refused", fcOpRefused && fcOpRead == "secret");
 
 // A working keystore: the switch does not interfere - the value is sealed through the
@@ -8894,13 +8916,181 @@ catch
     fcWorkOk = false;
 }
 OpenHarmonyKeystore.TestMode = OpenHarmonyKeystore.KeystoreTestMode.Off;
-OpenHarmonySecureStorage.FailClosed = false;
+OpenHarmonySecureStorage.FailClosed = true;
 FcCheck("working keystore", fcWorkOk);
 
 if (fcFailures > 0)
 {
     throw new InvalidOperationException(
         $"{fcFailures} FAILCLOSED assertion(s) failed (the fail-closed SecureStorage contract regressed: the switch, the refusal paths or the working keystore)");
+}
+
+// ASSET (2026-10-15, SECURE-STORAGE-ASSET): the Asset Store backend (OH_Asset_*,
+// DEVICE_FIRST_UNLOCKED; host_asset.c) is the preferred layer of the SecureStorage chain: a Set
+// writes it first, the HUKS keystore is the second strong tier, and the data file's index
+// records the backend (a1: = lives in the store, k1: = HUKS-sealed, plain = the legacy file
+// key). Old data parses unchanged, and fail-closed (the default) refuses the weak tier whichever
+// strong tier failed. The AssetTestMode seam gives the working store, the missing store and the
+// read-only store (writes rejected) shapes; the matrix below pins each against the chain.
+int assetFailures = 0;
+void AssetCheck(string name, bool ok)
+{
+    Console.WriteLine($"[verify] asset {name} assert={ok}");
+    if (!ok)
+    {
+        assetFailures++;
+    }
+}
+
+// Source: the managed bridge (the three EntryPoints and the test seam), the storage chain (the
+// a1: index marker, the asset alias scheme, the asset-first write) and the host half (the
+// denylist entry, the resolved library and entry points, the build wiring and the export).
+string? assetStorePath = FindHostSource("OpenHarmonyAssetStore.cs");
+string assetStoreCs = assetStorePath is null ? string.Empty : File.ReadAllText(assetStorePath);
+bool assetSource = assetStorePath is not null &&
+    assetStoreCs.Contains("EntryPoint = \"ohos_host_asset_request\"") &&
+    assetStoreCs.Contains("EntryPoint = \"ohos_host_asset_register_result\"") &&
+    assetStoreCs.Contains("EntryPoint = \"ohos_host_asset_available\"") &&
+    assetStoreCs.Contains("internal enum AssetTestMode") &&
+    assetStoreCs.Contains("WriteRejected") &&
+    kit14StorageCs.Contains("private const string AssetMarker = \"a1:\";") &&
+    kit14StorageCs.Contains("\"maui.ohos.securestorage.asset.v1.\"") &&
+    kit14StorageCs.Contains("OpenHarmonyAssetStore.PutAsync(AssetAlias(key)") &&
+    kit14Deps.Contains("OH_Asset_") &&
+    kit14Optional.Contains("libasset_ndk.z.so") &&
+    kit14Optional.Contains("\"OH_Asset_Add\"") &&
+    kit14Cmake.Contains("host_asset.c") &&
+    kit14BuildHost.Contains("$SRC/host_asset.c") &&
+    kitHeader.Contains("int ohos_host_asset_available(void);") &&
+    kit14Exports.Contains("ohos_host_asset_request");
+AssetCheck("source", assetSource);
+
+// Working: a Set lands in the store (the file keeps only the a1: index marker, never the value)
+// and reads back through it.
+OpenHarmonyAssetStore.TestMode = OpenHarmonyAssetStore.AssetTestMode.Working;
+OpenHarmonySecureStorage.FailClosed = true;
+string assetWorkPath = Path.Combine(Path.GetTempPath(), $"maui-asset-work-{Guid.NewGuid():N}.dat");
+var assetWorkStore = new OpenHarmonySecureStorage(assetWorkPath);
+await assetWorkStore.SetAsync("asset-work", "asset-secret");
+string? assetWorkRead = await assetWorkStore.GetAsync("asset-work");
+string? assetWorkStored = fcStoredValue(assetWorkPath, assetWorkPath + ".key", "asset-work");
+AssetCheck("working round trip", assetWorkRead == "asset-secret" && assetWorkStored == "a1:" &&
+    OpenHarmonySecureStorage.IsHardwareBacked);
+
+// Old data stays readable: a plain value written by an opted-out build (the store was down)
+// parses from the file even while the store is back up - the index, not the store, decides.
+OpenHarmonyAssetStore.TestMode = OpenHarmonyAssetStore.AssetTestMode.Unavailable;
+OpenHarmonySecureStorage.FailClosed = false;
+string assetLegacyPath = Path.Combine(Path.GetTempPath(), $"maui-asset-legacy-{Guid.NewGuid():N}.dat");
+var assetLegacyStore = new OpenHarmonySecureStorage(assetLegacyPath);
+await assetLegacyStore.SetAsync("asset-legacy", "legacy-value");
+OpenHarmonyAssetStore.TestMode = OpenHarmonyAssetStore.AssetTestMode.Working;
+OpenHarmonySecureStorage.FailClosed = true;
+string? assetLegacyRead = await assetLegacyStore.GetAsync("asset-legacy");
+AssetCheck("legacy read", assetLegacyRead == "legacy-value");
+
+// Unavailable + fail-closed: the write is refused with nothing on disk, and a value the index
+// says is store-backed throws on read instead of answering absent.
+OpenHarmonyAssetStore.TestMode = OpenHarmonyAssetStore.AssetTestMode.Unavailable;
+OpenHarmonySecureStorage.FailClosed = true;
+string assetDownPath = Path.Combine(Path.GetTempPath(), $"maui-asset-down-{Guid.NewGuid():N}.dat");
+var assetDownStore = new OpenHarmonySecureStorage(assetDownPath);
+bool assetDownThrew = false;
+try
+{
+    await assetDownStore.SetAsync("asset-down", "secret");
+}
+catch (InvalidOperationException)
+{
+    assetDownThrew = true;
+}
+bool assetDownNoData = !File.Exists(assetDownPath);
+OpenHarmonyAssetStore.TestMode = OpenHarmonyAssetStore.AssetTestMode.Working;
+await assetDownStore.SetAsync("asset-down", "secret");
+OpenHarmonyAssetStore.TestMode = OpenHarmonyAssetStore.AssetTestMode.Unavailable;
+bool assetDownReadThrew = false;
+try
+{
+    _ = await assetDownStore.GetAsync("asset-down");
+}
+catch (InvalidOperationException)
+{
+    assetDownReadThrew = true;
+}
+AssetCheck("unavailable refused", assetDownThrew && assetDownNoData && assetDownReadThrew);
+
+// WriteRejected + fail-closed: the read-only store cannot take new values; with no keystore
+// either the write throws, and with a working keystore the same write lands in the second
+// strong tier (k1:) - a rejected resource is not a licence to write the weak file key.
+OpenHarmonyAssetStore.TestMode = OpenHarmonyAssetStore.AssetTestMode.WriteRejected;
+OpenHarmonySecureStorage.FailClosed = true;
+string assetRejPath = Path.Combine(Path.GetTempPath(), $"maui-asset-rej-{Guid.NewGuid():N}.dat");
+var assetRejStore = new OpenHarmonySecureStorage(assetRejPath);
+bool assetRejThrew = false;
+try
+{
+    await assetRejStore.SetAsync("asset-rej", "secret");
+}
+catch (InvalidOperationException)
+{
+    assetRejThrew = true;
+}
+bool assetRejNoData = !File.Exists(assetRejPath);
+OpenHarmonyKeystore.TestMode = OpenHarmonyKeystore.KeystoreTestMode.Working;
+await assetRejStore.SetAsync("asset-rej", "secret");
+string? assetRejStored = fcStoredValue(assetRejPath, assetRejPath + ".key", "asset-rej");
+OpenHarmonyKeystore.TestMode = OpenHarmonyKeystore.KeystoreTestMode.Off;
+AssetCheck("write-rejected", assetRejThrew && assetRejNoData && assetRejStored is not null &&
+    assetRejStored.StartsWith("k1:", StringComparison.Ordinal));
+
+// Opt-out fallback: with the switch off the same rejected store keeps the documented weak round
+// trip (the value lands in the file, obfuscated by the per-install key).
+OpenHarmonyAssetStore.TestMode = OpenHarmonyAssetStore.AssetTestMode.WriteRejected;
+OpenHarmonySecureStorage.FailClosed = false;
+string assetOptPath = Path.Combine(Path.GetTempPath(), $"maui-asset-opt-{Guid.NewGuid():N}.dat");
+var assetOptStore = new OpenHarmonySecureStorage(assetOptPath);
+await assetOptStore.SetAsync("asset-opt", "fallback-secret");
+string? assetOptRead = await assetOptStore.GetAsync("asset-opt");
+string? assetOptStored = fcStoredValue(assetOptPath, assetOptPath + ".key", "asset-opt");
+OpenHarmonySecureStorage.FailClosed = true;
+AssetCheck("opt-out fallback", assetOptRead == "fallback-secret" && assetOptStored == "fallback-secret");
+
+// Remove drops the index entry and the store row (the harness counts the simulated rows), and a
+// second Remove answers false.
+OpenHarmonyAssetStore.TestMode = OpenHarmonyAssetStore.AssetTestMode.Working;
+string assetRemPath = Path.Combine(Path.GetTempPath(), $"maui-asset-rem-{Guid.NewGuid():N}.dat");
+var assetRemStore = new OpenHarmonySecureStorage(assetRemPath);
+await assetRemStore.SetAsync("asset-rem", "to-remove");
+bool assetRemoved = assetRemStore.Remove("asset-rem");
+string? assetAfterRemove = await assetRemStore.GetAsync("asset-rem");
+bool assetRemovedAgain = assetRemStore.Remove("asset-rem");
+AssetCheck("remove", assetRemoved && assetAfterRemove is null && !assetRemovedAgain);
+
+// RemoveAll enumerates the index and drops every store row it names.
+int assetSimBefore = OpenHarmonyAssetStore.SimulatedEntryCount;
+string assetAllPath = Path.Combine(Path.GetTempPath(), $"maui-asset-all-{Guid.NewGuid():N}.dat");
+var assetAllStore = new OpenHarmonySecureStorage(assetAllPath);
+await assetAllStore.SetAsync("asset-all-1", "one");
+await assetAllStore.SetAsync("asset-all-2", "two");
+int assetSimSeeded = OpenHarmonyAssetStore.SimulatedEntryCount;
+assetAllStore.RemoveAll();
+bool assetAllOk = assetSimSeeded == assetSimBefore + 2 &&
+    OpenHarmonyAssetStore.SimulatedEntryCount == assetSimBefore &&
+    await assetAllStore.GetAsync("asset-all-1") is null &&
+    await assetAllStore.GetAsync("asset-all-2") is null;
+AssetCheck("remove all", assetAllOk);
+
+// Restore the process-wide seams for the following blocks (off-device the store is unavailable
+// again and the fail-closed default is back on).
+OpenHarmonyAssetStore.TestMode = OpenHarmonyAssetStore.AssetTestMode.Off;
+OpenHarmonyKeystore.TestMode = OpenHarmonyKeystore.KeystoreTestMode.Off;
+OpenHarmonySecureStorage.FailClosed = true;
+AssetCheck("restore", OpenHarmonySecureStorage.FailClosed && !OpenHarmonyAssetStore.IsAvailable);
+
+if (assetFailures > 0)
+{
+    throw new InvalidOperationException(
+        $"{assetFailures} ASSET assertion(s) failed (the Asset Store SecureStorage contract regressed: the source pins, the working/legacy/unavailable/write-rejected matrix, remove or remove-all)");
 }
 
 // KIT5: the host and managed halves of the second batch: the C ABI declarations, the NAPI
@@ -12039,12 +12229,12 @@ if (!n22ShadowOk)
         $"the PI1 shadow contract drifted: draw={n22DrawShadowOk} mapper={n22MapperOk} renderer={n22RendererOk}");
 }
 
-// PI1-5: the SecureStorage file-key fallback note (reported once when the keystore path fails);
-// P2a-HUKS keeps the honest note wording while the HUKS-first engine owns the fast path.
+// PI1-5: the SecureStorage file-key fallback note (reported once when no strong backend
+// answers); P2a-HUKS/ASSET keep the honest note wording while the strong chain owns the fast path.
 string? n23StoragePath = FindHostSource("OpenHarmonySecureStorage.cs");
 string n23Storage = n23StoragePath is null ? string.Empty : File.ReadAllText(n23StoragePath);
 bool n23StorageOk = n23Storage.Contains("OpenHarmonyStatus.Once(\"securestorage.filekey\",") &&
-    n23Storage.Contains("\"secure storage is using the per-install file key: the HUKS-backed key path failed, values are obfuscated but not hardware-backed\");");
+    n23Storage.Contains("\"secure storage is using the per-install file key: no device-bound backend answered, values are obfuscated but not hardware-backed\");");
 Console.WriteLine($"[verify] pi1 securestorage fallbackNote={n23StorageOk} source='{n23StoragePath ?? "<missing>"}' assert={n23StorageOk}");
 if (!n23StorageOk)
 {

@@ -40,7 +40,7 @@ on:
         description: 'maui-ohos commit SHA to compile (defaults to the pinned feature/openharmony tip)'
         required: false
         type: string
-        default: '1c5ff3cbeb51173c893f9d9f0b9f2761b524fd5a'
+        default: '44da5f74f5b2609011f1eec7b754cbbeebaae765'
   push:
     branches: [ master ]
   pull_request:
@@ -289,7 +289,14 @@ permissions:
 # and the harness are unchanged); advance the pin deliberately and refresh this comment when the
 # harness pins or the tip move (workflow_dispatch can compile any commit).
 env:
-  MAUI_OHOS_REF: ${{ github.event.inputs.maui_ohos_ref || '1c5ff3cbeb51173c893f9d9f0b9f2761b524fd5a' }}
+  MAUI_OHOS_REF: ${{ github.event.inputs.maui_ohos_ref || '44da5f74f5b2609011f1eec7b754cbbeebaae765' }}
+  # The current tip is the SECURE-STORAGE-ASSET merge (44da5f74f5): the Asset Store credential
+  # backend (OH_Asset_* via the host bridge; the data file keeps only the a1: index marker) and
+  # the FailClosed default flip (a Set that can use neither the store nor HUKS throws and writes
+  # nothing; FailClosed=false is the opt-out). Managed-only, so the rasterizer output does not
+  # move; the host export set moves to 167/167 with the three ohos_host_asset_* EntryPoints and
+  # the suite moves to 825/828 floor 808 (+9 ASSET pins; the FAILCLOSED block recalibrated to
+  # the default-ON semantics).
   # setup-dotnet installs the requested 11.0.x preview into DOTNET_INSTALL_DIR; on Linux that
   # defaults to /usr/share/dotnet, which a per-user cache cannot persist. Point it at ~/.dotnet
   # (the action resolves the ~ prefix against $HOME) so the cache step below actually avoids the
