@@ -17,8 +17,9 @@
 //   app://subwindow/openweb  app://subwindow/openweb/b6/deny  .../b6/ok  .../b6/veto
 //   app://subwindow/openblazor  app://subwindow/open  app://subwindow/close
 //
-// Bundle note: the hap keeps com.example.hellomauiapp because the pack's prebuilt UI-shell abc
-// carries that bundle name (the device resolves <bundle>/<module>/ets/entryability/EntryAbility
+// Bundle note: the hap keeps the demo bundle mauidemo.dotnet.springmin.com (BUNDLE-SWITCH)
+// because the pack's prebuilt UI-shell abc carries that bundle name (the device resolves
+// <bundle>/<module>/ets/entryability/EntryAbility
 // against the abc records); see README.md "Bundle name".
 using Microsoft.AspNetCore.Components.WebView.Maui;
 using Microsoft.Maui;

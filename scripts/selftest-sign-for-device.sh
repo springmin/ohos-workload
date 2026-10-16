@@ -212,7 +212,7 @@ IDEM_HAP="$IN_DIR/idem/hello-idem-unsigned.hap"
 make_hap "$MAIN_HAP" "$BUNDLE"
 make_hap "$TWO_HAP" "$BUNDLE"
 make_hap "$WRONG_HAP" "com.example.other"
-make_hap "$DEV_HAP" "com.example.hellomauiapp"
+make_hap "$DEV_HAP" "mauidemo.dotnet.springmin.com"
 make_hap "$IDEM_HAP" "$BUNDLE"
 
 PROFILE_MAIN_JSON="$PROF_DIR/main/profile.json"

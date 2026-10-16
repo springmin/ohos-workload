@@ -805,7 +805,7 @@ assert_contains "T18 the refusal names the missing import anchor" "the @kit.ArkT
 python3 - "$WORK/T18-overlay-ok.abc" "$WORK/T18-overlay-nosym.abc" "$WORK/T18-overlay-norecord.abc" <<'PY'
 import sys
 header = b'PANDA' + b'\0' * 7 + b'\x0d\x00\x01\x00'
-record = b'com.example.hellomauiapp/entry/ets/map/MapOverlay'
+record = b'mauidemo.dotnet.springmin.com/entry/ets/map/MapOverlay'
 open(sys.argv[1], 'wb').write(header + record + b' mapOverlayView markerClick cameraIdle')
 open(sys.argv[2], 'wb').write(header + record + b' mapOverlayView')
 open(sys.argv[3], 'wb').write(header + b' nothing here')

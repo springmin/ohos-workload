@@ -405,8 +405,8 @@ make_synthetic_kit() {
     _k="${1:-$WORK/kit-synth}"
     rm -rf "$_k"
     mkdir -p "$_k"
-    make_hap "$_k/hello-maui-app.hap" "com.example.hellomauiapp" "entry"
-    make_hap "$_k/hello-maui-app-api20.hap" "com.example.hellomauiapp" "entry"
+    make_hap "$_k/hello-maui-app.hap" "mauidemo.dotnet.springmin.com" "entry"
+    make_hap "$_k/hello-maui-app-api20.hap" "mauidemo.dotnet.springmin.com" "entry"
     cat > "$_k/verify-kit.sh" <<'VK_EOF'
 #!/bin/sh
 # Minimal verify-kit.sh for the synthetic selftest kit; same tree-digest algorithm as the
@@ -442,7 +442,7 @@ make_runtime_mode_kit() {
     _rmk="$1"
     _rmk_mode="$2"
     make_synthetic_kit "$_rmk"
-    make_hap "$_rmk/hello-maui-app.hap" "com.example.hellomauiapp" "entry" 1 "$_rmk_mode"
+    make_hap "$_rmk/hello-maui-app.hap" "mauidemo.dotnet.springmin.com" "entry" 1 "$_rmk_mode"
     ( cd "$_rmk" && sha256sum hello-maui-app.hap hello-maui-app-api20.hap verify-kit.sh > SHA256SUMS )
 }
 
@@ -617,7 +617,7 @@ case "$cmd" in
                 ;;
             "hilog -t kmsg")
                 cat <<'KMSG_EOF'
-09-22 10:00:01.000 0 0 I [xpm]: /data/app/el1/bundle/public/com.example.hellomauiapp/libs/arm64-v8a/libopenharmonyhost.so is not protected by dmverity
+09-22 10:00:01.000 0 0 I [xpm]: /data/app/el1/bundle/public/mauidemo.dotnet.springmin.com/libs/arm64-v8a/libopenharmonyhost.so is not protected by dmverity
 09-22 10:00:01.100 0 0 I [xpm]: xpm get signature info failed, etype: 1
 09-22 10:00:01.200 0 0 I [xpm]: {"event_type":"unsigned file","filename":"libopenharmonyhost.so"}
 09-22 10:00:01.300 0 0 I [fs_security_verity]: lib_no_signed event waken: -9(E_HM_PERM)
@@ -790,7 +790,7 @@ BLAZOR_EOF
 09-22 10:00:00.560 12345 12345 I A00000/IMPORTPROBE_A: A PAGE_ABOUT_TO_APPEAR
 09-22 10:00:00.600 12345 12345 I A00000/AppKilledReporter: app killed reporter selftest line
 09-22 10:00:00.700 12345 12345 I A00000/unrelated: must be filtered out
-09-22 10:00:00.800 12345 12345 I A00000/ets_runtime: SetAppLibPath appLibPathKey: com.example.hellomauiapp/entry, lib path: /data/storage/el1/bundle/libs/arm64
+09-22 10:00:00.800 12345 12345 I A00000/ets_runtime: SetAppLibPath appLibPathKey: mauidemo.dotnet.springmin.com/entry, lib path: /data/storage/el1/bundle/libs/arm64
 09-22 10:00:00.810 12345 12345 I A00000/NAPI: dlopen libopenharmonyhost.so from /data/storage/el1/bundle/libs/arm64
 HILOG_EOF
         # Runtime route lines mirror the stub's tracked device state: the xwe.txt/interp.txt
@@ -897,21 +897,21 @@ chmod 755 "$BINTOOL"
 
 # ---- fixtures ------------------------------------------------------------------------
 FAIL_HAP="$WORK/haps/hello-maui-app-fail.hap"
-make_hap "$FAIL_HAP" "com.example.hellomauiapp" "entry"
+make_hap "$FAIL_HAP" "mauidemo.dotnet.springmin.com" "entry"
 _i=1
 while [ "$_i" -le 4 ]; do
-    make_hap "$WORK/probes/hello-mauiapp-probe$_i-unsigned.hap" "com.example.hellomauiapp.probe$_i" "entry"
+    make_hap "$WORK/probes/hello-mauiapp-probe$_i-unsigned.hap" "mauidemo.dotnet.springmin.com.probe$_i" "entry"
     _i=$((_i + 1))
 done
 # extra probes (--extra-probes): the shipping importprobe-a hap plus one whose install fails
 EXTRA_PROBE_DIR="$WORK/extra-probes"
 EXTRA_PROBE_HAP="$EXTRA_PROBE_DIR/hello-mauiapp-importprobe-a-unsigned.hap"
 mkdir -p "$EXTRA_PROBE_DIR"
-make_hap "$EXTRA_PROBE_HAP" "com.example.hellomauiapp.importprobea" "entry"
+make_hap "$EXTRA_PROBE_HAP" "mauidemo.dotnet.springmin.com.importprobea" "entry"
 EXTRA_FAIL_DIR="$WORK/extra-probes-fail"
 EXTRA_FAIL_HAP="$EXTRA_FAIL_DIR/hello-mauiapp-importprobe-fail-unsigned.hap"
 mkdir -p "$EXTRA_FAIL_DIR"
-make_hap "$EXTRA_FAIL_HAP" "com.example.hellomauiapp.importprobefail" "entry"
+make_hap "$EXTRA_FAIL_HAP" "mauidemo.dotnet.springmin.com.importprobefail" "entry"
 COMPARE_LIB="$WORK/compare/cc-switch-lib.so"
 mkdir -p "$(dirname "$COMPARE_LIB")"
 printf 'stub third-party lib for --compare-lib (not a real ELF)\n' > "$COMPARE_LIB"
@@ -996,8 +996,8 @@ chmod 755 "$OVL_STUB"
 AOT_PACK_DIR="$AOT_ASSETS/aot-haps"
 rm -rf "$AOT_PACK_DIR"
 mkdir -p "$AOT_PACK_DIR"
-make_hap "$AOT_PACK_DIR/hello-maui-app-aot.hap" "com.example.hellomauiapp" "entry"
-make_hap "$AOT_PACK_DIR/hello-maui-app-aot-unsigned.hap" "com.example.hellomauiapp" "entry"
+make_hap "$AOT_PACK_DIR/hello-maui-app-aot.hap" "mauidemo.dotnet.springmin.com" "entry"
+make_hap "$AOT_PACK_DIR/hello-maui-app-aot-unsigned.hap" "mauidemo.dotnet.springmin.com" "entry"
 ( cd "$AOT_PACK_DIR" && sha256sum ./*.hap > SHA256SUMS )
 AOT_PACK_TAR="$AOT_ASSETS/aot-haps.tar.gz"
 rm -f "$AOT_PACK_TAR" "$AOT_PACK_TAR.sha256"
@@ -1082,8 +1082,8 @@ FAKE_HDC_STATE="$STATE_DIR/contract-install-fail" "$STUB" install -r "$FAIL_HAP"
 assert_eq "stub: *fail* hap install rc=1" "1" "$STUB_RC"
 assert_contains "stub: *fail* code:9568297 on stderr" "code:9568297" "$LOGS/stub-install-fail.err"
 
-P1="$(FAKE_HDC_STATE="$STATE_DIR/contract-pidof" "$STUB" shell pidof com.example.hellomauiapp)"
-P2="$(FAKE_HDC_STATE="$STATE_DIR/contract-pidof" "$STUB" shell pidof com.example.hellomauiapp)"
+P1="$(FAKE_HDC_STATE="$STATE_DIR/contract-pidof" "$STUB" shell pidof mauidemo.dotnet.springmin.com)"
+P2="$(FAKE_HDC_STATE="$STATE_DIR/contract-pidof" "$STUB" shell pidof mauidemo.dotnet.springmin.com)"
 assert_eq "stub: pidof alive on 1st call" "$FAKE_PID" "$P1"
 assert_eq "stub: pidof dead on 2nd call" "" "$P2"
 
@@ -1094,7 +1094,7 @@ assert_contains "stub: hilog streams PROBE4|libc.so|ok" "PROBE4|libc.so|ok" "$HI
 assert_contains "stub: hilog streams IMPORTPROBE ability line" "IMPORTPROBE: ABILITY_ON_CREATE" "$HILOG_OUT"
 assert_contains "stub: hilog streams IMPORTPROBE_A page line" "IMPORTPROBE_A: A PAGE_ABOUT_TO_APPEAR" "$HILOG_OUT"
 assert_contains "stub: hilog streams AppKilledReporter" "AppKilledReporter" "$HILOG_OUT"
-assert_contains "stub: hilog streams appLibPathKey" "appLibPathKey: com.example.hellomauiapp/entry" "$HILOG_OUT"
+assert_contains "stub: hilog streams appLibPathKey" "appLibPathKey: mauidemo.dotnet.springmin.com/entry" "$HILOG_OUT"
 assert_contains "stub: hilog streams appLibPathKey lib path" "lib path: /data/storage/el1/bundle/libs/arm64" "$HILOG_OUT"
 assert_contains "stub: hilog streams dlopen host line" "dlopen libopenharmonyhost.so" "$HILOG_OUT"
 
@@ -1177,7 +1177,7 @@ if prepare_report "$ARCHIVE_S2" "$WORK/x-success" out-success; then
     assert_eq "S2 summary main_hap_sha256 = kit hash" "$MAIN_HAP_SHA" "$(sum_val "$S" main_hap_sha256)"
     assert_eq "S2 summary kit_source=dir" "dir" "$(sum_val "$S" kit_source)"
     assert_eq "S2 summary kit_dir" "$KIT" "$(sum_val "$S" kit_dir)"
-    assert_eq "S2 summary bundle" "com.example.hellomauiapp" "$(sum_val "$S" bundle)"
+    assert_eq "S2 summary bundle" "mauidemo.dotnet.springmin.com" "$(sum_val "$S" bundle)"
     assert_eq "S2 summary main_install_result=ok" "ok" "$(sum_val "$S" main_install_result)"
     assert_eq "S2 summary uninstall_main=ok" "ok" "$(sum_val "$S" uninstall_main)"
     assert_eq "S2 summary start_result=ok" "ok" "$(sum_val "$S" start_result)"
@@ -1205,7 +1205,7 @@ if prepare_report "$ARCHIVE_S2" "$WORK/x-success" out-success; then
 
     # app-lib path evidence (RM1, research doc §8.4)
     assert_file "S2 hilog applib filtered in archive" "$REPORT/hilog/hilog-applib.txt"
-    assert_contains "S2 applib filtered has appLibPathKey" "appLibPathKey: com.example.hellomauiapp/entry" "$REPORT/hilog/hilog-applib.txt"
+    assert_contains "S2 applib filtered has appLibPathKey" "appLibPathKey: mauidemo.dotnet.springmin.com/entry" "$REPORT/hilog/hilog-applib.txt"
     assert_contains "S2 applib filtered has the lib path" "lib path: /data/storage/el1/bundle/libs/arm64" "$REPORT/hilog/hilog-applib.txt"
     assert_file "S2 hilog dlopen filtered in archive" "$REPORT/hilog/hilog-dlopen.txt"
     assert_contains "S2 dlopen filtered has the host load" "dlopen libopenharmonyhost.so" "$REPORT/hilog/hilog-dlopen.txt"
@@ -1277,7 +1277,7 @@ if prepare_report "$ARCHIVE_S2" "$WORK/x-success" out-success; then
     assert_not_contains "S2 filtered hilog drops unmatched line" "A00000/unrelated:" "$REPORT/hilog/hilog-filtered.txt"
 
     assert_file "S2 meta/module.json in archive" "$REPORT/meta/module.json"
-    assert_contains "S2 meta/module.json has bundleName" "com.example.hellomauiapp" "$REPORT/meta/module.json"
+    assert_contains "S2 meta/module.json has bundleName" "mauidemo.dotnet.springmin.com" "$REPORT/meta/module.json"
     assert_file "S2 meta/SHA256SUMS in archive" "$REPORT/meta/SHA256SUMS"
     assert_file "S2 meta/kit-hap-sha256.txt in archive" "$REPORT/meta/kit-hap-sha256.txt"
     assert_file "S2 meta/verify-kit.log in archive" "$REPORT/meta/verify-kit.log"
@@ -1305,11 +1305,11 @@ fi
 
 CALLS_S2="$STATE_DIR/S2/calls.log"
 assert_contains "S2 stub called -t device" "-t $STUB_DEVICE" "$CALLS_S2"
-assert_contains "S2 stub called uninstall" "uninstall com.example.hellomauiapp" "$CALLS_S2"
+assert_contains "S2 stub called uninstall" "uninstall mauidemo.dotnet.springmin.com" "$CALLS_S2"
 assert_contains "S2 stub called install" "install -r $MAIN_HAP" "$CALLS_S2"
-assert_contains "S2 stub called aa start" "shell aa start -a EntryAbility -b com.example.hellomauiapp" "$CALLS_S2"
-assert_contains "S2 stub called pidof" "shell pidof com.example.hellomauiapp" "$CALLS_S2"
-assert_contains "S2 stub joined device command for aa start" "aa start -a EntryAbility -b com.example.hellomauiapp" "$STATE_DIR/S2/device-shell.log"
+assert_contains "S2 stub called aa start" "shell aa start -a EntryAbility -b mauidemo.dotnet.springmin.com" "$CALLS_S2"
+assert_contains "S2 stub called pidof" "shell pidof mauidemo.dotnet.springmin.com" "$CALLS_S2"
+assert_contains "S2 stub joined device command for aa start" "aa start -a EntryAbility -b mauidemo.dotnet.springmin.com" "$STATE_DIR/S2/device-shell.log"
 assert_contains "S2 stub called hilog -r" "shell hilog -r" "$CALLS_S2"
 assert_contains "S2 stub called param get" "shell param get const.product.model" "$CALLS_S2"
 assert_contains "S2 stub called bm get -u" "shell bm get -u" "$CALLS_S2"
@@ -1336,7 +1336,7 @@ if prepare_report "$ARCHIVE_S3" "$WORK/x-fail" out-fail; then
     assert_eq "S3 summary main_install_result=code:9568297" "code:9568297" "$(sum_val "$S" main_install_result)"
     assert_gt "S3 summary failures >= 1" 0 "$(sum_val "$S" failures)"
     assert_eq "S3 summary main_hap_sha256 = fail hap hash" "$FAIL_HAP_SHA" "$(sum_val "$S" main_hap_sha256)"
-    assert_eq "S3 summary bundle read from fail hap" "com.example.hellomauiapp" "$(sum_val "$S" bundle)"
+    assert_eq "S3 summary bundle read from fail hap" "mauidemo.dotnet.springmin.com" "$(sum_val "$S" bundle)"
     assert_file "S3 install log in archive" "$REPORT/install/hello-maui-app-fail.hap.log"
     assert_contains "S3 install log has code:9568297" "code:9568297" "$REPORT/install/hello-maui-app-fail.hap.log"
     assert_file "S3 archive still has hilog capture" "$REPORT/hilog/hilog-full.txt"
@@ -1454,10 +1454,10 @@ ARCHIVE_S7="$(report_archive out-extra)"
 assert_file "S7 report archive produced" "$ARCHIVE_S7"
 if prepare_report "$ARCHIVE_S7" "$WORK/x-extra" out-extra; then
     S="$REPORT/summary.txt"
-    assert_eq "S7 summary main bundle unchanged" "com.example.hellomauiapp" "$(sum_val "$S" bundle)"
+    assert_eq "S7 summary main bundle unchanged" "mauidemo.dotnet.springmin.com" "$(sum_val "$S" bundle)"
     assert_eq "S7 summary extra_probes_dirs deduped" "$EXTRA_PROBE_DIR" "$(sum_val "$S" extra_probes_dirs)"
     assert_eq "S7 summary uninstall_extraprobe_importprobe-a=ok" "ok" "$(sum_val "$S" uninstall_extraprobe_importprobe-a)"
-    assert_eq "S7 summary extraprobe bundle" "com.example.hellomauiapp.importprobea" "$(sum_val "$S" extraprobe_importprobe-a_bundle)"
+    assert_eq "S7 summary extraprobe bundle" "mauidemo.dotnet.springmin.com.importprobea" "$(sum_val "$S" extraprobe_importprobe-a_bundle)"
     assert_eq "S7 summary extraprobe install=ok" "ok" "$(sum_val "$S" extraprobe_importprobe-a_install)"
     assert_eq "S7 summary extraprobe alive=yes" "yes" "$(sum_val "$S" extraprobe_importprobe-a_alive)"
     assert_eq "S7 summary extraprobe match=marker" "marker" "$(sum_val "$S" extraprobe_importprobe-a_match)"
@@ -1482,8 +1482,8 @@ else
     bad "S7 report archive could not be extracted ($ARCHIVE_S7)"
 fi
 assert_eq "S7 extra-probe dir deduped to one install" "1" "$(grep -c -F "install -r $EXTRA_PROBE_HAP" "$STATE_DIR/S7/calls.log" | tr -d ' ')"
-assert_contains "S7 stub called extra probe aa start" "shell aa start -a EntryAbility -b com.example.hellomauiapp.importprobea" "$STATE_DIR/S7/calls.log"
-assert_contains "S7 stub called extra probe uninstall" "uninstall com.example.hellomauiapp.importprobea" "$STATE_DIR/S7/calls.log"
+assert_contains "S7 stub called extra probe aa start" "shell aa start -a EntryAbility -b mauidemo.dotnet.springmin.com.importprobea" "$STATE_DIR/S7/calls.log"
+assert_contains "S7 stub called extra probe uninstall" "uninstall mauidemo.dotnet.springmin.com.importprobea" "$STATE_DIR/S7/calls.log"
 assert_scenario_sandbox "S7"
 
 # ---- S8: extra probe install failure -------------------------------------------------
@@ -1503,7 +1503,7 @@ if prepare_report "$ARCHIVE_S8" "$WORK/x-extra-fail" out-extra-fail; then
     assert_file "S8 extra probe install log in archive" "$REPORT/probes/extra-importprobe-fail-install.txt"
     assert_contains "S8 extra probe install log has code" "code:9568297" "$REPORT/probes/extra-importprobe-fail-install.txt"
     assert_not_exists "S8 no hilog capture for failed extra probe" "$REPORT/probes/extra-importprobe-fail-hilog.txt"
-    assert_eq "S8 main bundle unchanged" "com.example.hellomauiapp" "$(sum_val "$S" bundle)"
+    assert_eq "S8 main bundle unchanged" "mauidemo.dotnet.springmin.com" "$(sum_val "$S" bundle)"
 else
     bad "S8 report archive could not be extracted ($ARCHIVE_S8)"
 fi
@@ -1679,7 +1679,7 @@ assert_scenario_sandbox "S12"
 # device round without a hilog window (bootstrap counts become <unavailable>, not a fake 0).
 section "S13 kit without resources.index -> kit_index_ok=no; no capture -> counts <unavailable>"
 make_synthetic_kit "$WORK/kit-noindex"
-make_hap "$WORK/kit-noindex/hello-maui-app.hap" "com.example.hellomauiapp" "entry" 0
+make_hap "$WORK/kit-noindex/hello-maui-app.hap" "mauidemo.dotnet.springmin.com" "entry" 0
 ( cd "$WORK/kit-noindex" && sha256sum hello-maui-app.hap hello-maui-app-api20.hap verify-kit.sh > SHA256SUMS )
 run_tester S13 "" --kit-dir "$WORK/kit-noindex" --install --out "$WORK/out-noindex"
 assert_eq "S13 exit code 0 (log: $LOGS/S13.log)" "0" "$RC"
@@ -1894,7 +1894,7 @@ else
 fi
 assert_contains "S16 stub saw the xwe write" "shell echo 1 > /data/storage/el2/base/haps/entry/files/xwe.txt" "$STATE_DIR/S16/calls.log"
 assert_contains "S16 stub saw the xwe cleanup" "shell rm -f /data/storage/el2/base/haps/entry/files/xwe.txt" "$STATE_DIR/S16/calls.log"
-assert_contains "S16 stub saw the force-stop" "shell aa force-stop com.example.hellomauiapp" "$STATE_DIR/S16/calls.log"
+assert_contains "S16 stub saw the force-stop" "shell aa force-stop mauidemo.dotnet.springmin.com" "$STATE_DIR/S16/calls.log"
 assert_eq "S16 no switch file left on the device" "" "$(ls "$STATE_DIR/S16" 2>/dev/null | grep -E '^switch-(xwe|interp)$' || true)"
 assert_not_exists "S16 C never ran (no run-c dir)" "$WORK/out-matrix-ab/run-c"
 assert_not_exists "S16 D never ran (no run-d dir)" "$WORK/out-matrix-ab/run-d"
@@ -2174,7 +2174,7 @@ run_tester S22 "HDC=$WORK/bin/hdc-empty OHOS_HDC_PATCHED=$STUB" --kit-dir "$KIT"
 assert_eq "S22 exit code 0 (log: $LOGS/S22.log)" "0" "$RC"
 assert_contains "S22 the log names the fallback" "hdc 回退" "$LOGS/S22.log"
 assert_contains "S22 the log names the patched binary" "$STUB" "$LOGS/S22.log"
-assert_contains "S22 the patched stub served the uninstall" "uninstall com.example.hellomauiapp" "$STATE_DIR/S22/calls.log"
+assert_contains "S22 the patched stub served the uninstall" "uninstall mauidemo.dotnet.springmin.com" "$STATE_DIR/S22/calls.log"
 assert_scenario_sandbox "S22"
 
 mkdir -p "$WORK/home/.ohos-tools"
@@ -2183,7 +2183,7 @@ chmod 755 "$WORK/home/.ohos-tools/hdcp4"
 run_tester S22b "HDC=$WORK/bin/hdc-empty" --kit-dir "$KIT" --uninstall --capture 1 --out "$WORK/out-fallback2"
 assert_eq "S22b the default persistent path works (exit 0)" "0" "$RC"
 assert_contains "S22b the log names the default path" ".ohos-tools/hdcp4" "$LOGS/S22b.log"
-assert_contains "S22b the default-path stub served the uninstall" "uninstall com.example.hellomauiapp" "$STATE_DIR/S22b/calls.log"
+assert_contains "S22b the default-path stub served the uninstall" "uninstall mauidemo.dotnet.springmin.com" "$STATE_DIR/S22b/calls.log"
 
 run_tester S22c "HDC=$WORK/bin/hdc-empty OHOS_HDC_NO_FALLBACK=1" --kit-dir "$KIT" --install
 assert_eq "S22c NO_FALLBACK=1 keeps the refusal (exit 3)" "3" "$RC"

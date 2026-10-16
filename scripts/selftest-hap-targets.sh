@@ -194,7 +194,7 @@ import json, os, sys
 fix, template, targets = sys.argv[1:4]
 tpl = open(template).read()
 values = {
-    'BUNDLE_NAME': 'com.example.hellomauiapp',
+    'BUNDLE_NAME': 'mauidemo.dotnet.springmin.com',
     'VENDOR': 'openharmony',
     'VERSION_CODE': '1',
     'VERSION_NAME': '1.0.0',
@@ -225,9 +225,9 @@ open(os.path.join(fix, 'expected-A.json'), 'w').write(fill(base) + '\n')
 open(os.path.join(fix, 'expected-B.json'), 'w').write(with_perms(with_compile_sdk(fill(base))) + '\n')
 
 # multi-line variant: the JSON pretty-printed with the bundle-name placeholder still in place
-pretty = json.dumps(json.loads(fill(base)), indent=2).replace('com.example.hellomauiapp', '@BUNDLE_NAME@')
+pretty = json.dumps(json.loads(fill(base)), indent=2).replace('mauidemo.dotnet.springmin.com', '@BUNDLE_NAME@')
 open(os.path.join(fix, 'multi-line.template'), 'w').write(pretty + '\n')
-open(os.path.join(fix, 'expected-C.json'), 'w').write(pretty.replace('@BUNDLE_NAME@', 'com.example.hellomauiapp') + '\n')
+open(os.path.join(fix, 'expected-C.json'), 'w').write(pretty.replace('@BUNDLE_NAME@', 'mauidemo.dotnet.springmin.com') + '\n')
 
 # malformed template: a string value without its closing quote (must fail JSON validation)
 bad = fill(base).replace('"vendor":"openharmony"', '"vendor""openharmony"')

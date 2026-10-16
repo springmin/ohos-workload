@@ -29,12 +29,13 @@
     <OpenHarmonyMauiPlatformDir Condition=" '$(OpenHarmonyMauiPlatformDir)' == '' ">$(MSBuildThisFileDirectory)../../../maui-ohos/src/Core/src/Platform/OpenHarmony</OpenHarmonyMauiPlatformDir>
     <OpenHarmonyHostingDir Condition=" '$(OpenHarmonyHostingDir)' == '' ">$(MSBuildThisFileDirectory)../../src</OpenHarmonyHostingDir>
     <!-- HarmonyOS bundle names accept only letters, digits, '_' and '.' (a hyphen is rejected
-         at install with bm 9568344). The sample deliberately keeps the demo's bundle name:
-         the pack's prebuilt UI-shell abc is built for com.example.hellomauiapp and the device
+         at install with bm 9568344). The sample deliberately keeps the demo's bundle name
+         (BUNDLE-SWITCH): the pack's prebuilt UI-shell abc is built for
+         mauidemo.dotnet.springmin.com and the device
          resolves <bundle>/<module>/ets/entryability/EntryAbility against the abc records, so a
          different bundle would need ARKTS_SHELL_BUNDLE_NAME + a full ArkTS shell rebuild. The
          install therefore replaces the demo on the device; restore the kit hap afterwards. -->
-    <OpenHarmonyBundleName Condition=" '$(OpenHarmonyBundleName)' == '' ">com.example.hellomauiapp</OpenHarmonyBundleName>
+    <OpenHarmonyBundleName Condition=" '$(OpenHarmonyBundleName)' == '' ">mauidemo.dotnet.springmin.com</OpenHarmonyBundleName>
     <!-- NativeAOT variant (AOT-MAUI): the marker is inferred from PublishAot so the documented
          `dotnet publish -p:PublishAot=true` needs no extra property; the variant compiles the
          app to a native shared library (NativeLib=Shared) with its own openharmony_app_main

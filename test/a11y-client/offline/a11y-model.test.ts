@@ -88,7 +88,7 @@ check('summary aggregates roles, focus and the target window', () => {
     node({ id: 2, parentId: 0, depth: 1, windowId: 11, role: 'Button', text: 'B', clickable: true }),
     node({ id: 3, parentId: 0, depth: 1, windowId: 10, role: 'Text', text: 'C', a11yFocused: true }),
   ];
-  const summary = summarize(nodes, [10], 'com.example.hellomauiapp@10,other@11');
+  const summary = summarize(nodes, [10], 'mauidemo.dotnet.springmin.com@10,other@11');
   assert.equal(summary.nodes, 4);
   assert.equal(summary.targetNodes, 3);
   assert.equal(summary.clickable, 2);
@@ -100,7 +100,7 @@ check('summary aggregates roles, focus and the target window', () => {
 });
 
 check('dump document round-trips through JSON with schema and reason', () => {
-  const dump = makeDump('onConnect', 'com.example.hellomauiapp', 1234, false, [node({ id: 0 })]);
+  const dump = makeDump('onConnect', 'mauidemo.dotnet.springmin.com', 1234, false, [node({ id: 0 })]);
   const parsed = JSON.parse(dumpToJson(dump)) as { schema: number; reason: string; nodes: A11yNodeView[] };
   assert.equal(parsed.schema, 1);
   assert.equal(parsed.reason, 'onConnect');

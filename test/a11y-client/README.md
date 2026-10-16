@@ -1,7 +1,7 @@
 # a11y-client — minimal accessibility client for local read-screen verification
 
 An ArkTS hap with an `AccessibilityExtensionAbility` (`A11yExtAbility`) that connects to the
-accessibility pipeline, walks the shadow tree of the target app (`com.example.hellomauiapp`),
+accessibility pipeline, walks the shadow tree of the target app (`mauidemo.dotnet.springmin.com`),
 writes the dump to its files dir and emits per-node hilog lines. A UI-less companion
 `EntryAbility` runs a public-API probe on `aa start` so the client artifact can be exercised
 even where the extension cannot be enabled.

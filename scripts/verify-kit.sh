@@ -5,7 +5,7 @@
 #   sh verify-kit.sh <kit-dir>       # or point it at the extracted kit
 # Steps: (1) verify every file against SHA256SUMS (sha256sum -c); (2) summarize the five haps
 # from their module.json (bundleName, min/target API, requestPermissions) and fail unless all
-# carry the expected bundle name (KIT_BUNDLE_NAME, default com.example.hellomauiapp); (2b) assert
+# carry the expected bundle name (KIT_BUNDLE_NAME, default mauidemo.dotnet.springmin.com); (2b) assert
 # the payload facts that failed on a real device before (each one per hap, see below); (2c) when
 # the optional Blazor WASM component hap is present (hello-blazorwasm-host-unsigned.hap, built
 # with --with-blazor), assert its embedded ArkWeb site (index.html, _framework wasm + boot
@@ -34,7 +34,7 @@
 #                    expectation).
 #   abc header       ets/modules.abc must be a PANDA file whose 4-byte version field at 0x0c is
 #                    13.0.1.0 (FAIL otherwise), and its size must be one of the current
-#                    expectations - 620908 for the ui/shell shell, 24324 for the headless shell
+#                    expectations - 637300 for the ui/shell shell, 24340 for the headless shell
 #                    (--expected-abc <bytes[,bytes]> / KIT_EXPECTED_ABC pins the set; a size
 #                    outside it then FAILs instead of warning, so a historical kit's old abc
 #                    does not kill the run).
@@ -205,12 +205,13 @@ OH_Asset_
 HOST_DEPS_EOF
 )"
 
-# Current abc size expectations: the ui/shell ArkTS shell (637256 B, the TOUCH-PASTE default-on
-# shell: the long-press paste entry point - the floating ArkUI PasteButton security control, the
-# selection-replacing pasteboard insertion and the delivery through the existing notifyTextInput
-# wire - is on without any marker; an app opts out through the filesDir/touch-paste.disabled
-# marker or OHOS_TOUCH_PASTE=0, and a disable signal always wins). The long-press entry point
-# uses an XComponent LongPressGesture recognizer plus a raw onTouch fallback; +32 B from the
+# Current abc size expectations: the ui/shell ArkTS shell (637300 B, the BUNDLE-SWITCH shell:
+# identical sources to the TOUCH-PASTE default-on shell - the long-press paste entry point with
+# the floating ArkUI PasteButton security control, the selection-replacing pasteboard insertion
+# and the delivery through the existing notifyTextInput wire, on without any marker with the
+# filesDir/touch-paste.disabled / OHOS_TOUCH_PASTE=0 opt-out - rebuilt with the
+# mauidemo.dotnet.springmin.com bundle name baked into the record names; +44 B from the
+# 637256 B TOUCH-PASTE shell it replaces, which was +32 B from the
 # 637224 B opt-in shell, which was +16,316 B from the PASTEBOARD-FIX 620908 B tree, which had
 # dropped the ACL-level READ_PASTEBOARD request point and its grant cache/read helpers - the
 # clipboard read runs in the host through the pasteboard NDK, the shell keeps the write op and
@@ -219,10 +220,11 @@ HOST_DEPS_EOF
 # itself
 # is E4-CAPACITY8 + C5/SEC7-F + WEB-AUTH Want fix + N-SUBWINDOW + the shipped 8-slot overlay
 # default + L8-POPUP + HARMONY-FLAVOR free-window probe)
-# and the headless shell (24324 B, unchanged). --expected-abc <bytes[,bytes]> / KIT_EXPECTED_ABC replaces
+# and the headless shell (24340 B, the same bundle rename: +16 B from 24324 B).
+# --expected-abc <bytes[,bytes]> / KIT_EXPECTED_ABC replaces
 # the set and turns a mismatch from a historical-kit WARN into a FAIL (the kit builder uses that
 # strict form).
-EXPECT_ABC="${KIT_EXPECTED_ABC:-637256,24324}"
+EXPECT_ABC="${KIT_EXPECTED_ABC:-637300,24340}"
 EXPECT_ABC_PINNED="${KIT_EXPECTED_ABC:+1}"
 HOST_DEPS_FILE="${KIT_HOST_DEPS:-}"
 
@@ -321,7 +323,7 @@ Without an argument the current directory is used (it must contain SHA256SUMS).
                         fail unless the extracted tree matches this digest (the value comes
                         with the delivery, e.g. the release notes)
   --expected-abc <bytes[,bytes]>
-                        abc size expectation (default: 620908,24324 = the ui/shell and the
+                        abc size expectation (default: 637300,24340 = the ui/shell and the
                         headless ArkTS shell); a size outside the set warns by default and
                         fails when this option pins the set
   --host-deps <path>    read the host dependency policy from this file instead of the
@@ -352,10 +354,11 @@ ANCHOR="${KIT_ANCHOR:-}"
 ANCHOR_FILE="${KIT_ANCHOR_FILE:-}"
 TREE_MODE=0
 TREE_EXPECT="${KIT_TREE_DIGEST:-}"
-# Expected bundle name of the five haps. Pinned to the demo default (ohos-workload bbfa03c:
-# hyphens are illegal in app.bundleName; kits built before it carry the hyphenated demo name
-# and must be repacked). Override for a kit built with -p:OpenHarmonyBundleName=<other>.
-BUNDLE_EXPECT="${KIT_BUNDLE_NAME:-com.example.hellomauiapp}"
+# Expected bundle name of the five haps. Pinned to the demo default (BUNDLE-SWITCH: the demo,
+# the AGC app and the release profile share mauidemo.dotnet.springmin.com; kits built before the
+# switch carry com.example.hellomauiapp and must be repacked). Override for a kit built with
+# -p:OpenHarmonyBundleName=<other>.
+BUNDLE_EXPECT="${KIT_BUNDLE_NAME:-mauidemo.dotnet.springmin.com}"
 # Optional Blazor WASM component hap (make-device-test-kit.sh --with-blazor). Asserted only
 # when the hap is present in the kit root; KIT_BLAZOR_HAP / KIT_BLAZOR_BUNDLE override the
 # packed name/bundle. Its abc version expectation mirrors the 2b ABC_VERSION below.
@@ -390,7 +393,7 @@ while [ $# -gt 0 ]; do
             ;;
         --expected-abc)
             shift
-            [ $# -gt 0 ] || { warn "--expected-abc 需要逗号分隔的字节数（如 620908,24324）"; usage >&2; exit 2; }
+            [ $# -gt 0 ] || { warn "--expected-abc 需要逗号分隔的字节数（如 637300,24340）"; usage >&2; exit 2; }
             EXPECT_ABC="$1"
             EXPECT_ABC_PINNED=1
             ;;
@@ -433,7 +436,7 @@ KIT="$(cd "$KIT" && pwd)"
 EXPECT_ABC="$(printf '%s' "$EXPECT_ABC" | tr ',' ' ')"
 for _abc in $EXPECT_ABC; do
     case "$_abc" in
-        ''|*[!0-9]*) warn "--expected-abc 需要逗号/空格分隔的字节数（如 620908,24324），得到: $EXPECT_ABC"; usage >&2; exit 2 ;;
+        ''|*[!0-9]*) warn "--expected-abc 需要逗号/空格分隔的字节数（如 637300,24340），得到: $EXPECT_ABC"; usage >&2; exit 2 ;;
     esac
 done
 [ -n "$EXPECT_ABC" ] || { warn "--expected-abc 不能为空"; usage >&2; exit 2; }

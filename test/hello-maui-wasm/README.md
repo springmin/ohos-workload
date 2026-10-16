@@ -27,7 +27,7 @@ Blazor **WebAssembly** (the site runs its own runtime inside ArkWeb), not Blazor
 # 1) site (once)
 DOTNET=$HOME/.dotnet.rc2-fix/dotnet sh test/hello-blazorwasm/run-smoke.sh --out /data/storage/el2/base/tmp/opencode/w9a/site
 # 2) ArkTS shell abc for THIS bundle name (the pack's prebuilt abc carries
-#    com.example.hellomauiapp; the device resolves the ability entry against the abc records)
+#    mauidemo.dotnet.springmin.com; the device resolves the ability entry against the abc records)
 ARKTS_SHELL_BUNDLE_NAME=com.example.hellomauiwasm sh scripts/build-arkts-shell.sh
 #    -> dist/ets/modules.abc (ignore the provenance-drift exit; do NOT --install-packs)
 # 3) AOT hap (UI shell + staged site)

@@ -115,7 +115,7 @@ PY
 }
 
 # ---- fixtures --------------------------------------------------------------------------------
-BUNDLE="com.example.hellomauiapp"
+BUNDLE="mauidemo.dotnet.springmin.com"
 UDID_A="0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF"
 MARKER="ACLFIX-77"
 
@@ -141,7 +141,7 @@ import json, sys
 out, want = sys.argv[1], sys.argv[2] == '1'
 acl = ["ohos.permission.READ_PASTEBOARD"] if want else []
 prof = {"type": "release", "version-name": "2.0.0",
-        "bundle-info": {"bundle-name": "com.example.hellomauiapp"},
+        "bundle-info": {"bundle-name": "mauidemo.dotnet.springmin.com"},
         "acls": {"allowed-acls": acl}}
 if want:
     prof["permissions"] = {"restricted-permissions": ["ohos.permission.READ_PASTEBOARD"]}
@@ -164,13 +164,13 @@ make_profile_json "$PROFILE_NOACL_JSON" 0
 python3 - "$PROFILE_RESTRICTED_JSON" <<'PY'
 import json, sys
 prof = {"type": "release", "version-name": "2.0.0",
-        "bundle-info": {"bundle-name": "com.example.hellomauiapp"},
+        "bundle-info": {"bundle-name": "mauidemo.dotnet.springmin.com"},
         "permissions": {"restricted-permissions": ["ohos.permission.READ_PASTEBOARD"]}}
 json.dump(prof, open(sys.argv[1], "w"), indent=1)
 PY
-printf '{"type":"release","bundle-info":{"bundle-name":"com.example.hellomauiapp"}}\n' > "$PROFILE_ACL"
-printf '{"type":"release","bundle-info":{"bundle-name":"com.example.hellomauiapp"}}\n' > "$PROFILE_NOACL"
-printf '{"type":"release","bundle-info":{"bundle-name":"com.example.hellomauiapp"}}\n' > "$PROFILE_RESTRICTED"
+printf '{"type":"release","bundle-info":{"bundle-name":"mauidemo.dotnet.springmin.com"}}\n' > "$PROFILE_ACL"
+printf '{"type":"release","bundle-info":{"bundle-name":"mauidemo.dotnet.springmin.com"}}\n' > "$PROFILE_NOACL"
+printf '{"type":"release","bundle-info":{"bundle-name":"mauidemo.dotnet.springmin.com"}}\n' > "$PROFILE_RESTRICTED"
 KEY="$FIX/selftest.p12"
 CERT="$FIX/selftest.cer"
 printf 'stub p12\n' > "$KEY"
@@ -258,7 +258,7 @@ case "${1:-}" in
         python3 - "${FAKE_DOTNET_HAPDIR}/hello-selftest-acl-unsigned.hap" "${FAKE_DOTNET_PERMS:-1}" <<'PY'
 import json, sys, zipfile
 dst, want = sys.argv[1], sys.argv[2] == '1'
-mod = {"app": {"bundleName": "com.example.hellomauiapp", "versionName": "1.0.0"},
+mod = {"app": {"bundleName": "mauidemo.dotnet.springmin.com", "versionName": "1.0.0"},
        "module": {"name": "entry", "type": "entry",
                   "requestPermissions": ([{"name": "ohos.permission.READ_PASTEBOARD"}] if want else [])}}
 with zipfile.ZipFile(dst, "w", zipfile.ZIP_DEFLATED) as z:

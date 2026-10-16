@@ -20,7 +20,7 @@
 #   WASM_ABC       ArkTS shell abc for this app's bundle name. The device resolves the ability
 #                  entry as <bundleName>/entry/ets/entryability/EntryAbility against the abc
 #                  record names, and the pack's prebuilt modules.ui.abc carries
-#                  com.example.hellomauiapp; an app with another bundle must compile the shell
+#                  mauidemo.dotnet.springmin.com; an app with another bundle must compile the shell
 #                  with ARKTS_SHELL_BUNDLE_NAME=<bundle> (scripts/build-arkts-shell.sh) and pass
 #                  that abc here (OpenHarmonyArktsModulesAbc). Unset -> the pack's prebuilt abc.
 #   HOSTING_DLL / OPENHARMONY_GRAPHICS_DLL  pinned first-party assemblies (else ProjectReference)
@@ -112,7 +112,7 @@ PINNED=""
 [ -n "${HOSTING_DLL:-}" ] && PINNED="$PINNED -p:HostingDll=$HOSTING_DLL"
 [ -n "${OPENHARMONY_GRAPHICS_DLL:-}" ] && PINNED="$PINNED -p:OpenHarmonyGraphicsDll=$OPENHARMONY_GRAPHICS_DLL"
 # Bundle-specific ArkTS shell abc (see the header); the pack's prebuilt abc matches
-# com.example.hellomauiapp only.
+# mauidemo.dotnet.springmin.com only.
 [ -n "${WASM_ABC:-}" ] && PINNED="$PINNED -p:OpenHarmonyArktsModulesAbc=$WASM_ABC"
 
 log "== publish (NativeAOT, UI shell, wasm site) =="

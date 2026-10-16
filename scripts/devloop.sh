@@ -70,7 +70,7 @@ usage() {
 
 示例:
   sh devloop.sh                                     # build -> install -> start -> 录 5s hilog
-  sh devloop.sh build -p:OpenHarmonyBundleName=com.example.hellomauiapp
+  sh devloop.sh build -p:OpenHarmonyBundleName=mauidemo.dotnet.springmin.com
   sh devloop.sh install --hap ./out/app.hap --device 1234ABCD
   sh devloop.sh all --sign --sign-profile p.p7b --sign-key k.p12 --sign-alias key0 \
       --sign-cert chain.cer --sign-pwd-file ~/.ohos/pwd --expect-udid <UDID>

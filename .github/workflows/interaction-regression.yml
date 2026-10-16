@@ -62,7 +62,9 @@ permissions:
 # ArkUI PasteButton security control, the system grants a temporary pasteboard read on the tap
 # and the shell inserts the text at the input's selection, delivering through the existing
 # notifyTextInput wire; an app opts out through the filesDir/touch-paste.disabled marker or
-# OHOS_TOUCH_PASTE=0) - 637,256 (ab02cc20), previously 637,224 (8503a3c2) at the TOUCH-PASTE
+# OHOS_TOUCH_PASTE=0) - 637,300 (4070204a) the BUNDLE-SWITCH shell (the same sources with the
+# mauidemo.dotnet.springmin.com bundle baked into the abc records; headless 24,340), previously
+# 637,256 (ab02cc20) at the TOUCH-PASTE-DEFAULT wave / 637,224 (8503a3c2) at the TOUCH-PASTE
 # wave / 620,908 (c473b7be) the kit #55 shell; the suite below
 # moves to 816/819 floor 799 - the TOUCH-PASTE-DEFAULT +2 on top of the TOUCH-PASTE +4, the
 # SECURE-STORAGE-FAILCLOSED +5 and the
@@ -296,7 +298,10 @@ env:
   # nothing; FailClosed=false is the opt-out). Managed-only, so the rasterizer output does not
   # move; the host export set moves to 167/167 with the three ohos_host_asset_* EntryPoints and
   # the suite moves to 825/828 floor 808 (+9 ASSET pins; the FAILCLOSED block recalibrated to
-  # the default-ON semantics).
+  # the default-ON semantics), +1 more for the BUNDLE-SWITCH bundle-defaults pin -> 826/829
+  # floor 809 (the workload-side wave also re-anchors the shell abc 637,256 -> 637,300 /
+  # 4070204a, the same sources rebuilt with mauidemo.dotnet.springmin.com in the abc records;
+  # headless 24,340).
   # setup-dotnet installs the requested 11.0.x preview into DOTNET_INSTALL_DIR; on Linux that
   # defaults to /usr/share/dotnet, which a per-user cache cannot persist. Point it at ~/.dotnet
   # (the action resolves the ~ prefix against $HOME) so the cache step below actually avoids the

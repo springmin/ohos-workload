@@ -115,8 +115,8 @@ make_hap() { # <path> <bundle> <mode> [extra-so]
     (cd "$_d" && zip -q -r "$_p" .)
     rm -rf "$_d"
 }
-make_hap "$KIT/hello-maui-app.hap" com.example.hellomauiapp aot libhello-maui-app.so
-make_hap "$KIT/hello-maui-app-unsigned.hap" com.example.hellomauiapp aot libhello-maui-app.so
+make_hap "$KIT/hello-maui-app.hap" mauidemo.dotnet.springmin.com aot libhello-maui-app.so
+make_hap "$KIT/hello-maui-app-unsigned.hap" mauidemo.dotnet.springmin.com aot libhello-maui-app.so
 make_hap "$KIT/hello-blazorwasm-host-unsigned.hap" com.example.opendotnet aot
 make_hap "$KIT/hello-blazorwasm-host-nocsp-unsigned.hap" com.example.opendotnet aot
 printf 'aot\n' > "$KIT/runtime-mode.txt"
@@ -273,7 +273,7 @@ case "$CMD" in
         echo "10-05 09:00:00.300  4242  4242 I A00002 [host] web slot destroy: 2"
         echo "10-05 09:00:00.400  4242  4242 I A00002 [host] [maui-capacity] preempted: slot 0" ;;
       "pidof"*) echo "4242" ;;
-      "ps -ef"*) echo "root 4242 1 com.example.hellomauiapp" ;;
+      "ps -ef"*) echo "root 4242 1 mauidemo.dotnet.springmin.com" ;;
       "cat /proc/4242/status"*)
         printf 'Name:\tstub\nVmRSS:\t100000 kB\nThreads:\t42\n' ;;
       "ls /proc/4242/fd"*) printf '0\n1\n2\n' ;;

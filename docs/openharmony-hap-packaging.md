@@ -1821,7 +1821,7 @@ drives it against stub `hdc`/`dotnet`/signer binaries with no device (119 checks
 sh scripts/devloop.sh
 
 # incremental publish only, with extra MSBuild properties passed through verbatim
-sh scripts/devloop.sh build -p:OpenHarmonyBundleName=com.example.hellomauiapp
+sh scripts/devloop.sh build -p:OpenHarmonyBundleName=mauidemo.dotnet.springmin.com
 
 # re-sign the -unsigned.hap with external material and deploy the signed hap
 sh scripts/devloop.sh all --sign --sign-profile dev.p7b --sign-key dev.p12 \

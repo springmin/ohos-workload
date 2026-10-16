@@ -16,7 +16,9 @@
 # useNormalizedOHMUrl stays false: the device resolves the ability entry as
 # <bundleName>/<moduleName>/ets/entryability/EntryAbility against the abc record names, so the
 # non-normalized build carries the HAP's bundle name (ARKTS_SHELL_BUNDLE_NAME / KIT_BUNDLE_NAME;
-# default com.example.hellomauiapp). The normalized records need pkgContextInfo.json, which the
+# default mauidemo.dotnet.springmin.com, the demo/release-profile bundle - BUNDLE-SWITCH; a
+# different OpenHarmonyBundleName needs a rebuild with ARKTS_SHELL_BUNDLE_NAME set to match).
+# The normalized records need pkgContextInfo.json, which the
 # HAP does not ship yet (RH1, 2026-09-23); the scaffold note below has the full story.
 #
 # abc version: the SDK 26 default 24.0.0.0 is rejected by the device runtime; compatibleSdkVersion
@@ -102,7 +104,7 @@ NODE_BIN="${NODE:-$(command -v node)}"
 OUT_DIR="${OUT_DIR:-$W/dist/ets}"
 # Bundle name of the generated shell app; see the useNormalizedOHMUrl note above. Keep it in
 # sync with the HAP's OpenHarmonyBundleName (default com.example.<assembly minus hyphens>).
-BUNDLE_NAME="${ARKTS_SHELL_BUNDLE_NAME:-${KIT_BUNDLE_NAME:-com.example.hellomauiapp}}"
+BUNDLE_NAME="${ARKTS_SHELL_BUNDLE_NAME:-${KIT_BUNDLE_NAME:-mauidemo.dotnet.springmin.com}}"
 # compatibleSdkVersion of the generated hvigor project depends on the flavor (see below):
 # openharmony 18 is the lowest API level whose es2abc output is 13.0.1.0, the newest abc the
 # device runtime accepts (see the abc note in the header); harmony 6.1.0(23) is the value the

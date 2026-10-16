@@ -264,10 +264,10 @@ case "${1:-}" in
                 printf 'UDID: %s\n' "${FAKE_HDC_UDID:?}"; exit 0 ;;
             *"hilog"*)
                 cat <<'HILOG_EOF'
-09-27 10:00:00.000 1 1 I A00000/com.example.hellomauiapp/MainAbility: [maui] managed host started
-09-27 10:00:00.100 1 1 I A00000/com.example.hellomauiapp/MainAbility: appLibPathKey: com.example.hellomauiapp/entry
+09-27 10:00:00.000 1 1 I A00000/mauidemo.dotnet.springmin.com/MainAbility: [maui] managed host started
+09-27 10:00:00.100 1 1 I A00000/mauidemo.dotnet.springmin.com/MainAbility: appLibPathKey: mauidemo.dotnet.springmin.com/entry
 09-27 10:00:00.200 1 1 I A00000/com.example.other/MainAbility: [noise] unrelated device chatter
-09-27 10:00:00.300 1 1 E A00000/com.example.hellomauiapp/MainAbility: JsError: boom
+09-27 10:00:00.300 1 1 E A00000/mauidemo.dotnet.springmin.com/MainAbility: JsError: boom
 HILOG_EOF
                 exit 0 ;;
         esac
@@ -348,14 +348,14 @@ chmod +x "$SIGN_STUB"
 # When the host can make a real zip (python3/zip), module.json inside the hap drives the start
 # bundle name. Without one, every run that starts the app passes --bundle explicitly.
 BUNDLE_FALLBACK=""
-[ "$HAVE_ZIPTOOL" = 0 ] && BUNDLE_FALLBACK="--bundle com.example.hellomauiapp"
+[ "$HAVE_ZIPTOOL" = 0 ] && BUNDLE_FALLBACK="--bundle mauidemo.dotnet.springmin.com"
 printf 'class App { }\n' > "$PROJ/App.cs"
 mkdir -p "$PROJ/obj/Release"
 printf 'build junk that must not retrigger watch\n' > "$PROJ/obj/Release/junk.txt"
-make_hap "$OUT/hello-maui-app.hap" "com.example.hellomauiapp"
-make_hap "$OUT/hello-maui-app-unsigned.hap" "com.example.hellomauiapp"
+make_hap "$OUT/hello-maui-app.hap" "mauidemo.dotnet.springmin.com"
+make_hap "$OUT/hello-maui-app-unsigned.hap" "mauidemo.dotnet.springmin.com"
 make_hap "$HAPS_EXTRA/evil.hap" "com.example.bad;rm -rf /"
-make_hap "$HAPS_EXTRA/hello-maui-app-fail.hap" "com.example.hellomauiapp"
+make_hap "$HAPS_EXTRA/hello-maui-app-fail.hap" "mauidemo.dotnet.springmin.com"
 printf '%s\n' "$SECRET" > "$WORK/pwd.txt"
 printf 'dummy profile\n' > "$WORK/dev.p7b"
 printf 'dummy keystore\n' > "$WORK/dev.p12"
@@ -597,7 +597,7 @@ assert_contains "S4 installs the newest signed hap" "install -r $OUT/hello-maui-
 if [ "$HAVE_ZIPTOOL" = 0 ]; then
     skip "S4 bundle from module.json (no python3/zip on this host)"
 else
-    assert_contains "S4 starts the bundle from module.json" "shell aa start -a EntryAbility -b com.example.hellomauiapp" "$C4"
+    assert_contains "S4 starts the bundle from module.json" "shell aa start -a EntryAbility -b mauidemo.dotnet.springmin.com" "$C4"
 fi
 assert_contains "S4 streams hilog" "shell hilog" "$C4"
 assert_not_exists "S4 sign stub not called without --sign" "$(state_file S4 sign.log)"
@@ -693,7 +693,7 @@ SPACED="$WORK/my project/hello-maui-app"
 SPACED_OUT="$SPACED/bin/Release/net11.0-openharmony26.0/openharmony-arm64"
 mkdir -p "$SPACED_OUT" 2>/dev/null || true
 printf 'class App { }\n' > "$SPACED/App.cs"
-make_hap "$SPACED_OUT/hello-maui-app.hap" "com.example.hellomauiapp"
+make_hap "$SPACED_OUT/hello-maui-app.hap" "mauidemo.dotnet.springmin.com"
 run_devloop S10 "" build --project "$SPACED"
 assert_eq "S10 build exit code 0 (log: $LOGS/S10.log)" "0" "$RC"
 assert_contains "S10 publish got the spaced project path as one argument" "ARG|$SPACED" "$(state_file S10 dotnet.log)"

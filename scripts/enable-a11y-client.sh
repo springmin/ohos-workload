@@ -65,6 +65,6 @@ phone/tablet image with the installed-services page):
   1. scripts/build-a11y-client.sh --install   (or: hdc install -r dist/a11y-client/a11y-client-signed.hap)
   2. Settings > Accessibility/辅助功能 > installed services/已安装的服务 -> A11y client (dump) -> on
      (accept the risk dialog after the countdown) - or run the debug CLI from gate 1.
-  3. scripts/run-a11y-client.sh --capture 30  while driving com.example.hellomauiapp, then
+  3. scripts/run-a11y-client.sh --capture 30  while driving mauidemo.dotnet.springmin.com, then
      grep the capture for: A11YCLIENT dump / A11YCLIENT NODE / A11YCLIENT ACTION.
 EOF

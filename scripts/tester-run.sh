@@ -231,11 +231,11 @@ INTERP_HAP=""
 INTERP_OVERLAY=""
 DRY_RUN=0
 MATRIX_CURRENT_CHILD=""
-FALLBACK_BUNDLE="${KIT_BUNDLE_NAME:-com.example.hellomauiapp}"
+FALLBACK_BUNDLE="${KIT_BUNDLE_NAME:-mauidemo.dotnet.springmin.com}"
 BUNDLE=""
 BUNDLE_UNSAFE=0
-FILTER_RE='hellomaui|maui|dotnet|openharmonyhost|AppKilledReporter|JsError|appspawn|PROBE'
-FILTER_KMSG_RE='xpm|unsigned file|fs_security_verity|libopenharmonyhost|hellomauiapp'
+FILTER_RE='mauidemo|maui|dotnet|openharmonyhost|AppKilledReporter|JsError|appspawn|PROBE'
+FILTER_KMSG_RE='xpm|unsigned file|fs_security_verity|libopenharmonyhost|mauidemo'
 FILTER_APPLIB_RE='SetAppLibPath|appLibPathKey|NativeLibPath|lib path'
 FILTER_DLOPEN_RE='dlopen|cannot find library|openharmonyhost'
 # Host executable-memory policy/probe + runtime-route switch (FIX-XWE / R2-SHELL-EXT): the W^X
@@ -1842,7 +1842,7 @@ if [ "$UNINSTALL" = 1 ]; then
         if [ -n "$PROBES_DIR" ]; then
             _i=1
             while [ "$_i" -le 4 ]; do
-                uninstall_one "com.example.hellomauiapp.probe$_i" "uninstall_probe$_i"
+                uninstall_one "mauidemo.dotnet.springmin.com.probe$_i" "uninstall_probe$_i"
                 _i=$((_i + 1))
             done
         fi
@@ -2386,7 +2386,7 @@ else
     : > "$OUT/probes/probe-all-lines.txt"
     _i=1
     while [ "$_i" -le 4 ]; do
-        _pb="com.example.hellomauiapp.probe$_i"
+        _pb="mauidemo.dotnet.springmin.com.probe$_i"
         _ph=""
         for _c in "$PROBES_DIR/hello-mauiapp-probe$_i-unsigned.hap" "$PROBES_DIR"/*probe"$_i"*.hap; do
             if [ -f "$_c" ]; then _ph="$_c"; break; fi

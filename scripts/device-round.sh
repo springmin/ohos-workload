@@ -104,7 +104,7 @@ KIT_TAR_SHA=""
 KIT_SIDECAR=""
 USE_ANCHOR=0
 TREE_DIGEST=""
-BUNDLE="com.example.hellomauiapp"
+BUNDLE="mauidemo.dotnet.springmin.com"
 MAIN_HAP=""
 MAIN_HAP_SHA=""
 MAIN_HAP_SIGNED="no"
@@ -1004,7 +1004,7 @@ soak_step() {
     mkdir -p "$OUT/soak"
     _pid0="$(dev_pid)"
     printf '%s\n' "$_pid0" > "$OUT/soak/pid-start.txt"
-    hd "hidumper -e --list $BUNDLE" 2>/dev/null | grep -aE 'hellomauiapp|CppCrash|AppInputBlock|AppFreeze|JSCRASH' | sort > "$OUT/soak/fault-before.txt" 2>/dev/null || true
+    hd "hidumper -e --list $BUNDLE" 2>/dev/null | grep -aE 'mauidemo|CppCrash|AppInputBlock|AppFreeze|JSCRASH' | sort > "$OUT/soak/fault-before.txt" 2>/dev/null || true
     _ut0="$(hdr "bm dump -n $BUNDLE" | sed -n 's/.*"updateTime": *\([0-9]*\).*/\1/p' | head -n1)"
     printf 'minute,wall,pid,vmrss_kb,threads,fd,state,power\n' > "$OUT/soak/samples.csv"
     _lost=0
@@ -1036,7 +1036,7 @@ soak_step() {
         hd "hidumper --mem-smaps $_pidE" > "$OUT/soak/smaps-end.txt" 2>&1 || true
         grep -a 'entry/libs/arm64/lib' "$OUT/soak/smaps-end.txt" > "$OUT/soak/maps-applibs.txt" 2>/dev/null || true
     fi
-    hd "hidumper -e --list $BUNDLE" 2>/dev/null | grep -aE 'hellomauiapp|CppCrash|AppInputBlock|AppFreeze|JSCRASH' | sort > "$OUT/soak/fault-after.txt" 2>/dev/null || true
+    hd "hidumper -e --list $BUNDLE" 2>/dev/null | grep -aE 'mauidemo|CppCrash|AppInputBlock|AppFreeze|JSCRASH' | sort > "$OUT/soak/fault-after.txt" 2>/dev/null || true
     comm -13 "$OUT/soak/fault-before.txt" "$OUT/soak/fault-after.txt" > "$OUT/soak/fault-new.txt" 2>/dev/null || true
     _new="$(count_marker "$OUT/soak/fault-new.txt" '')"
     _ut1="$(hdr "bm dump -n $BUNDLE" | sed -n 's/.*"updateTime": *\([0-9]*\).*/\1/p' | head -n1)"

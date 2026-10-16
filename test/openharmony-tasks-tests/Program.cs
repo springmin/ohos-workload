@@ -516,13 +516,13 @@ internal static class Program
         string output = Path.Combine(outDir, "nested", "module.json");
         var replacements = new[]
         {
-            Harness.Item("BUNDLE_NAME", ("Value", "com.example.hellomauiapp")),
+            Harness.Item("BUNDLE_NAME", ("Value", "mauidemo.dotnet.springmin.com")),
             Harness.Item("VERSION_CODE", ("Value", "1")),
         };
         var golden = Generator(templatePath, output, replacements);
         var (goldenOk, _) = Harness.Run(golden);
         Check("module.json substitution succeeds", goldenOk);
-        CheckEqual("module.json output bytes", "{\"app\":{\"bundleName\":\"com.example.hellomauiapp\",\"versionCode\":1},\"module\":{\"name\":\"entry\"}}\n", File.ReadAllText(output));
+        CheckEqual("module.json output bytes", "{\"app\":{\"bundleName\":\"mauidemo.dotnet.springmin.com\",\"versionCode\":1},\"module\":{\"name\":\"entry\"}}\n", File.ReadAllText(output));
         Check("module.json reports changed on the first write", golden.Changed);
         var rerun = Generator(templatePath, output, replacements);
         var (rerunOk, _) = Harness.Run(rerun);

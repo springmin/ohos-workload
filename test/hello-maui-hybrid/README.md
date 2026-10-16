@@ -51,11 +51,11 @@ From a git worktree outside the standard sibling layout pass
 ## Device run
 
 ```sh
-hdc install -r <signed.hap>                    # replaces com.example.hellomauiapp (see Bundle note)
-hdc shell "aa start -b com.example.hellomauiapp -a EntryAbility"
-hdc shell "aa start -b com.example.hellomauiapp -a EntryAbility -U app://subwindow/openweb"
-hdc shell "aa start -b com.example.hellomauiapp -a EntryAbility -U app://subwindow/openblazor"
-hdc shell "aa start -b com.example.hellomauiapp -a EntryAbility -U app://subwindow/close"
+hdc install -r <signed.hap>                    # replaces mauidemo.dotnet.springmin.com (see Bundle note)
+hdc shell "aa start -b mauidemo.dotnet.springmin.com -a EntryAbility"
+hdc shell "aa start -b mauidemo.dotnet.springmin.com -a EntryAbility -U app://subwindow/openweb"
+hdc shell "aa start -b mauidemo.dotnet.springmin.com -a EntryAbility -U app://subwindow/openblazor"
+hdc shell "aa start -b mauidemo.dotnet.springmin.com -a EntryAbility -U app://subwindow/close"
 ```
 
 Triggers: `app://subwindow/openweb` · `openweb/b6/deny` · `openweb/b6/ok` · `openweb/b6/veto` ·
@@ -78,8 +78,9 @@ Expected markers (tag prefixes `OHOS_MAUI`/`OHOS_MAUI_SUB` in hilog, mirrored fr
 
 ## Bundle name
 
-The hap keeps `com.example.hellomauiapp`: the pack's prebuilt UI-shell abc is built for that bundle
-(the device resolves `<bundle>/<module>/ets/entryability/EntryAbility` against the abc records), so
+The hap keeps `mauidemo.dotnet.springmin.com` (BUNDLE-SWITCH): the pack's prebuilt UI-shell abc is
+built for that bundle (the device resolves `<bundle>/<module>/ets/entryability/EntryAbility` against
+the abc records), so
 a different bundle requires `ARKTS_SHELL_BUNDLE_NAME` + a full ArkTS shell rebuild. Installing this
 sample therefore **replaces the demo on the device**; restore the kit hap (or the pre-round hap)
 after the round.

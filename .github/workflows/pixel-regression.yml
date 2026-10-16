@@ -61,7 +61,10 @@ permissions:
 # floating ArkUI PasteButton security control, the tap grants a temporary pasteboard read and
 # the shell inserts the text at the input's selection through the existing notifyTextInput wire;
 # an app opts out through the filesDir/touch-paste.disabled marker or OHOS_TOUCH_PASTE=0) -
-# 637,256 (ab02cc20), previously 637,224 (8503a3c2) at the TOUCH-PASTE wave / 620,908
+# 637,300 (4070204a) the BUNDLE-SWITCH shell (the same sources with the
+# mauidemo.dotnet.springmin.com bundle baked into the abc records; headless 24,340), previously
+# 637,256 (ab02cc20) at the TOUCH-PASTE-DEFAULT wave / 637,224 (8503a3c2) at the TOUCH-PASTE
+# wave / 620,908
 # (c473b7be) the kit #55 shell; the interaction harness moves to 816/819 floor 799 - the
 # TOUCH-PASTE-DEFAULT +2 on top of the TOUCH-PASTE +4, the SECURE-STORAGE-FAILCLOSED +5 and the
 # WEBAUTH-LOOPBACK +4 on top of the MEDIA-RESIDUALS 801;
@@ -230,6 +233,9 @@ env:
   MAUI_OHOS_REF: ${{ github.event.inputs.maui_ohos_ref || '44da5f74f5b2609011f1eec7b754cbbeebaae765' }}
   # The current tip is the SECURE-STORAGE-ASSET merge (44da5f74f5): slice-managed-only, so the
   # rasterizer output does not move and the pixel assertions stay on their existing budgets.
+  # The BUNDLE-SWITCH wave (workload-side, same slice tip) only re-anchors the demo bundle and
+  # the shell abc (637,300/4070204a; headless 24,340) - the rasterizer output and the pixel
+  # budgets do not move either.
   # Same as the interaction gate: keep the setup-dotnet preview SDK in a cacheable per-user path
   # instead of the runner's /usr/share/dotnet; a newer 11.0.x preview is still downloaded (the
   # action re-resolves the channel), the cache only skips the ~200 MB download when it moved.

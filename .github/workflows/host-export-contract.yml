@@ -41,8 +41,11 @@ permissions:
 # long press opens the floating ArkUI PasteButton security control, the system grants a
 # temporary pasteboard read on the tap and the shell inserts the text at the input's selection,
 # delivering through the existing notifyTextInput wire; an app opts out through the
-# filesDir/touch-paste.disabled marker or OHOS_TOUCH_PASTE=0) - 637,256 (ab02cc20), previously
-# 637,224 (8503a3c2) at the TOUCH-PASTE wave / 620,908 (c473b7be) the kit #55 shell; suite
+# filesDir/touch-paste.disabled marker or OHOS_TOUCH_PASTE=0) - 637,300 (4070204a) the
+# BUNDLE-SWITCH shell (the same sources with the mauidemo.dotnet.springmin.com bundle baked into
+# the abc records; headless 24,340), previously
+# 637,256 (ab02cc20) at the TOUCH-PASTE-DEFAULT wave / 637,224 (8503a3c2) at the TOUCH-PASTE
+# wave / 620,908 (c473b7be) the kit #55 shell; suite
 # 816/819 floor 799 - the TOUCH-PASTE-DEFAULT +2) on
 # 44dcef8d15 (MEDIA-RESIDUALS: the slice's cold-start PlayAsync waits bounded
 # (1.5 s) for an already-registered media page so the first play ack is the page's own answer
@@ -199,6 +202,9 @@ env:
   # OpenHarmonyAssetStore bridge (ohos_host_asset_request / _register_result / _available), so
   # the export contract moves 164 -> 167/167; the slice sources stay C-linkage clean (the names
   # are declared in openharmony_host.h and defined in openharmony_host.c).
+  # The BUNDLE-SWITCH wave (workload-side, same slice tip) re-anchors the demo bundle / shell
+  # abc (637,256 -> 637,300, 4070204a; headless 24,340) and adds the suite's bundle-defaults pin
+  # (826/829 floor 809); the export contract stays 167/167.
 
 jobs:
   contract:

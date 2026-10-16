@@ -29,7 +29,7 @@ import {
 
 const DOMAIN: number = 0x3200;
 const TAG: string = 'A11yClient';
-const TARGET_BUNDLE: string = 'com.example.hellomauiapp';
+const TARGET_BUNDLE: string = 'mauidemo.dotnet.springmin.com';
 const DUMP_FILE: string = 'a11y-dump.json';
 const MAX_NODES: number = 600;
 const MAX_DEPTH: number = 40;

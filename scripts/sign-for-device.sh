@@ -2,7 +2,7 @@
 # Re-signs a hap for specific device(s). Modes:
 #   device (default): debug profile from the SDK's UnsgnedDebugProfileTemplate.json (device-ids
 #     = the given UDID(s)), signed with the SDK test keystore; bundle-name from --bundle
-#     (default com.example.hellomauiapp).
+#     (default mauidemo.dotnet.springmin.com, the demo/release-profile bundle).
 #   --huawei: delegate to scripts/sign-huawei.sh (DevEco auto-signing p12/cer/p7b under
 #     <configDir>, Studio-encrypted password via the hvigor plugin); the hap's module.json
 #     bundleName must already match the p7b's (rebuild with -p:OpenHarmonyBundleName=<name>),
@@ -62,10 +62,11 @@ die() { printf '[%s] ERROR: %s\n' "$(date '+%H:%M:%S')" "$*" >&2; exit 1; }
 W="$(cd "$(dirname "$0")/.." && pwd)"
 VER="$(ls "$W/packs/Microsoft.OpenHarmony.Sdk" | tail -1)"
 UNSIGNED="$W/test/hello-maui-app/bin/Release/net11.0-openharmony26.0/openharmony-arm64/hello-maui-app-unsigned.hap"
-# Demo default; hyphens are illegal in app.bundleName (ohos-workload bbfa03c). Override with
-# --bundle <name> (device mode), or rebuild with -p:OpenHarmonyBundleName=<name> when a profile
-# fixes another identity. Device mode warns when the hap's module.json disagrees.
-BUNDLE="com.example.hellomauiapp"
+# Demo default = the AGC app / release-profile bundle (BUNDLE-SWITCH; the demo and the release
+# channel share it, so a stock publish signs through --release with no UDID registration).
+# Override with --bundle <name> (device mode), or rebuild with -p:OpenHarmonyBundleName=<name>
+# when a profile fixes another identity. Device mode warns when the hap's module.json disagrees.
+BUNDLE="mauidemo.dotnet.springmin.com"
 OUT=""
 MODE=device
 UDID=""
