@@ -42,7 +42,7 @@ on:
         description: 'maui-ohos commit SHA to compile (defaults to the pinned feature/openharmony tip)'
         required: false
         type: string
-        default: '44da5f74f5b2609011f1eec7b754cbbeebaae765'
+        default: '868d3c8727b172e4293b891306d5b38acd5141e6'
 
 # Least privilege: the job only reads this repository and the public springmin/maui-ohos fork;
 # no step pushes anywhere.
@@ -230,8 +230,9 @@ permissions:
 # references move to the official nuget.org rc.2 (11.0.0-rc.2.26505.5), the dnceng feed step is
 # gone, and the harness/slice sources are unchanged.
 env:
-  MAUI_OHOS_REF: ${{ github.event.inputs.maui_ohos_ref || '44da5f74f5b2609011f1eec7b754cbbeebaae765' }}
-  # The current tip is the SECURE-STORAGE-ASSET merge (44da5f74f5): slice-managed-only, so the
+  MAUI_OHOS_REF: ${{ github.event.inputs.maui_ohos_ref || '868d3c8727b172e4293b891306d5b38acd5141e6' }}
+  # The current tip is the 11.0 rc.2 release-branch sync (868d3c8727b, 2026-10-19) on top of the
+  # SECURE-STORAGE-ASSET merge (44da5f74f5): slice-managed-only, so the
   # rasterizer output does not move and the pixel assertions stay on their existing budgets.
   # The BUNDLE-SWITCH wave (workload-side, same slice tip) only re-anchors the demo bundle and
   # the shell abc (637,300/4070204a; headless 24,340) - the rasterizer output and the pixel

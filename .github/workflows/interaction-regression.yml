@@ -40,7 +40,7 @@ on:
         description: 'maui-ohos commit SHA to compile (defaults to the pinned feature/openharmony tip)'
         required: false
         type: string
-        default: '44da5f74f5b2609011f1eec7b754cbbeebaae765'
+        default: '868d3c8727b172e4293b891306d5b38acd5141e6'
   push:
     branches: [ master ]
   pull_request:
@@ -291,8 +291,9 @@ permissions:
 # and the harness are unchanged); advance the pin deliberately and refresh this comment when the
 # harness pins or the tip move (workflow_dispatch can compile any commit).
 env:
-  MAUI_OHOS_REF: ${{ github.event.inputs.maui_ohos_ref || '44da5f74f5b2609011f1eec7b754cbbeebaae765' }}
-  # The current tip is the SECURE-STORAGE-ASSET merge (44da5f74f5): the Asset Store credential
+  MAUI_OHOS_REF: ${{ github.event.inputs.maui_ohos_ref || '868d3c8727b172e4293b891306d5b38acd5141e6' }}
+  # The current tip is the 11.0 rc.2 release-branch sync (868d3c8727b, 2026-10-19) on top of the
+  # SECURE-STORAGE-ASSET merge (44da5f74f5): the Asset Store credential
   # backend (OH_Asset_* via the host bridge; the data file keeps only the a1: index marker) and
   # the FailClosed default flip (a Set that can use neither the store nor HUKS throws and writes
   # nothing; FailClosed=false is the opt-out). Managed-only, so the rasterizer output does not
