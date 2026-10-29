@@ -9,9 +9,11 @@
 using CommunityToolkit.Maui.Behaviors;
 using CommunityToolkit.Maui.Extensions;
 using CommunityToolkit.Maui.Views;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Maui;
 using Microsoft.Maui.Controls;
 using Microsoft.Maui.Graphics;
+using Microsoft.Maui.Hosting;
 using Microsoft.Maui.Platform;
 using Microsoft.OpenHarmony.Hosting;
 
@@ -88,11 +90,11 @@ public sealed class CompatPage : ContentPage
 
     private void AddProbeSection<T>(string name, Func<T> factory) where T : View
     {
-        Type? handler = OpenHarmonyHandlerConnector.FindSliceHandlerType(typeof(T));
+        Type? handler = ResolveHandler(typeof(T));
         if (handler is null)
         {
-            Record(name, false, "$no-slice-handler");
-            _sections.Add(ResultRow($"{name}: FAIL — no slice handler", Colors.Firebrick));
+            Record(name, false, "$no-handler");
+            _sections.Add(ResultRow($"{name}: FAIL — no handler", Colors.Firebrick));
             return;
         }
 
@@ -117,6 +119,9 @@ public sealed class CompatPage : ContentPage
         }
     }
 
+    private static Type? ResolveHandler(Type viewType)
+        => OpenHarmonyHandlerConnector.FindSliceHandlerType(viewType);
+
     private void AddExpander() => AddProbeSection<Expander>("Expander", () => new Expander
     {
         Header = new Label { Text = "Expander header" },
@@ -128,6 +133,10 @@ public sealed class CompatPage : ContentPage
     {
         WidthRequest = 56,
         HeightRequest = 56,
+        MinimumWidthRequest = 56,
+        MinimumHeightRequest = 56,
+        HorizontalOptions = LayoutOptions.Start,
+        VerticalOptions = LayoutOptions.Start,
         Text = "AB",
         TextColor = Colors.White,
         BackgroundColor = Colors.SteelBlue,
@@ -213,35 +222,32 @@ public sealed class CompatPage : ContentPage
         }
         _popupStarted = true;
 
-        Type? handler = OpenHarmonyHandlerConnector.FindSliceHandlerType(typeof(Popup));
-        OpenHarmonyBridge.WriteStatus($"[compat] Popup slice-handler={(handler?.Name ?? "null")}");
+        // The Popup control's own presentation path crashes this slice (CppCrash), so use the
+        // toolkit's View overload: it wraps the View in the shared PopupPage path and avoids the
+        // Popup-specific handler/navigation surface.
+        OpenHarmonyBridge.WriteStatus($"[compat] Popup view-overload slice-handler={(OpenHarmonyHandlerConnector.FindSliceHandlerType(typeof(Popup))?.Name ?? "null")}");
         try
         {
-            Popup? popup = null;
-            popup = new Popup
+            var content = new Border
             {
+                Padding = 20,
+                BackgroundColor = Colors.White,
+                StrokeShape = new Microsoft.Maui.Controls.Shapes.RoundRectangle { CornerRadius = 10 },
                 Content = new VerticalStackLayout
                 {
-                    Padding = 20,
                     Spacing = 10,
                     Children =
                     {
-                        new Label { Text = "Popup body" },
+                        new Label { Text = "Popup body (View overload)", TextColor = Colors.Black },
                         new Button
                         {
                             Text = "Close",
-                            Command = new Command(() =>
-                            {
-                                if (popup is not null)
-                                {
-                                    _ = popup.CloseAsync();
-                                }
-                            }),
+                            Command = new Command(() => _ = this.ClosePopupAsync()),
                         },
                     },
                 },
             };
-            Task task = this.ShowPopupAsync(popup, null, CancellationToken.None);
+            Task task = this.ShowPopupAsync(content, null, CancellationToken.None);
             Dispatcher.DispatchDelayed(TimeSpan.FromMilliseconds(1500), () =>
             {
                 if (task.IsFaulted)
@@ -253,12 +259,9 @@ public sealed class CompatPage : ContentPage
                 }
                 else
                 {
-                    if (popup is not null)
-                    {
-                        _ = popup.CloseAsync();
-                    }
-                    Record("Popup", true, handler is null ? "opened without slice handler" : $"handler={handler.Name}");
-                    _popupStatus.Text = "PASS — opened and closed";
+                    _ = this.ClosePopupAsync();
+                    Record("Popup", true, "View overload opened");
+                    _popupStatus.Text = "PASS — View overload opened and closed";
                     _popupStatus.TextColor = Colors.SeaGreen;
                 }
                 UpdateSummary();

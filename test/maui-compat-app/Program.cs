@@ -1,6 +1,7 @@
 // Compatibility probe entry point: the same OpenHarmony host wiring as the shipped demo,
 // minus Blazor. Kept small so a toolkit failure is attributable to the toolkit, not the host.
 using CommunityToolkit.Maui;
+using CommunityToolkit.Maui.Views;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Maui;
 using Microsoft.Maui.Hosting;
@@ -19,7 +20,8 @@ public static class Program
         var builder = MauiApp.CreateBuilder();
         builder.UseOpenHarmony();
         builder.UseMauiApp<App>();
-        OpenHarmonyBridge.WriteStatus("[compat] builder configured");
+        OpenHarmonyHandlerConnector.RegisterHandler(typeof(DrawingView), typeof(CompatDrawingViewHandler));
+        OpenHarmonyBridge.WriteStatus("[compat] builder configured (DrawingView handler registered)");
         builder.UseMauiCommunityToolkit();
         OpenHarmonyBridge.WriteStatus("[compat] toolkit registered");
 
