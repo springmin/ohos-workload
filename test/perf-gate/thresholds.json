@@ -1,0 +1,8 @@
+{
+  "max_first_frame_ms": 600,
+  "max_cold_start_ms": 3500,
+  "min_scroll_fps": 55.0,
+  "max_rss_mb": 400,
+  "max_kit_tar_bytes": 78643200,
+  "min_suite_pass": 809
+}

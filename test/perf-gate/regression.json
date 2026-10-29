@@ -1,0 +1,14 @@
+{
+  "kit": 58,
+  "date": "2026-10-16",
+  "note": "Negative fixture: scroll_fps and rss_mb are deliberately out of bounds; perf-gate.sh must exit 1.",
+  "metrics": {
+    "first_frame_ms": 534,
+    "cold_start_ms": 3200,
+    "scroll_fps": 40.0,
+    "rss_mb": 450,
+    "kit_tar_bytes": 70449999,
+    "suite_pass": 826,
+    "suite_total": 829
+  }
+}

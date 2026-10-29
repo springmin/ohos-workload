@@ -1,0 +1,14 @@
+{
+  "kit": 58,
+  "date": "2026-10-16",
+  "note": "Baseline from kit #58 (AOT path); see docs/plans/2026-10-05-ohos-aot-startup.md and the kit #58 release Integrity block.",
+  "metrics": {
+    "first_frame_ms": 534,
+    "cold_start_ms": 3200,
+    "scroll_fps": 60.0,
+    "rss_mb": 363,
+    "kit_tar_bytes": 70449999,
+    "suite_pass": 826,
+    "suite_total": 829
+  }
+}
