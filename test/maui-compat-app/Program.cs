@@ -17,6 +17,27 @@ public static class Program
     public static int Run(string[] args)
     {
         OpenHarmonyBridge.WriteStatus("[compat] enter Run");
+        AppDomain.CurrentDomain.UnhandledException += (_, e) =>
+            OpenHarmonyBridge.WriteStatus($"[compat] UNHANDLED {e.ExceptionObject.GetType().Name}: {e.ExceptionObject}");
+        AppDomain.CurrentDomain.FirstChanceException += (_, e) =>
+        {
+            Exception ex = e.Exception;
+            if (ex is NotImplementedException or InvalidOperationException or NullReferenceException
+                or ArgumentException or MissingMethodException or TypeInitializationException)
+            {
+                string stack = (ex.StackTrace ?? string.Empty).Replace('\n', '|');
+                if (stack.Length > 400)
+                {
+                    stack = stack.Substring(0, 400);
+                }
+                string site = ex.TargetSite is { } target
+                    ? $"{target.DeclaringType?.FullName}.{target.Name}"
+                    : "?";
+                OpenHarmonyBridge.WriteStatus($"[compat] EX {ex.GetType().Name}: {ex.Message} site={site} stack={stack}");
+            }
+        };
+        OpenHarmonyBridge.LifecycleChanged += e =>
+            OpenHarmonyBridge.WriteStatus($"[compat] lifecycle {e}");
         var builder = MauiApp.CreateBuilder();
         builder.UseOpenHarmony();
         builder.UseMauiApp<App>();

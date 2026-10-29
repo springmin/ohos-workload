@@ -72,6 +72,8 @@ public sealed class CompatPage : ContentPage
         AddDrawing();
 #elif COMPAT_TOUCH
         AddTouchSection();
+#elif COMPAT_BORDER
+        AddTouchSection(attachBehavior: false);
 #elif COMPAT_POPUP
         AddPopupSection();
 #else
@@ -151,7 +153,7 @@ public sealed class CompatPage : ContentPage
         LineWidth = 4,
     });
 
-    private void AddTouchSection()
+    private void AddTouchSection(bool attachBehavior = true)
     {
         var label = new Label { Text = "touch target", FontSize = 16 };
         var border = new Border
@@ -161,38 +163,71 @@ public sealed class CompatPage : ContentPage
             StrokeShape = new Microsoft.Maui.Controls.Shapes.RoundRectangle { CornerRadius = 8 },
             Content = label,
         };
+
         TouchBehavior? behavior = null;
-        try
+        Label? behaviorStatus = null;
+        if (attachBehavior)
         {
+            var command = new Command(() =>
+            {
+                label.Text = "TouchBehavior command fired";
+                Record("TouchBehavior.tap", true, "command");
+                UpdateSummary();
+            });
+
+            // The toolkit behavior's shared/platform-neutral path dereferences the element's
+            // handler during OnAttachedTo. Attaching it in the constructor (before the handler is
+            // connected) throws NRE and closes the page; defer until Loaded, then attach and
+            // report. A TapGestureRecognizer is the always-available fallback for the command.
             behavior = new TouchBehavior
             {
-                Command = new Command(() =>
-                {
-                    label.Text = "TouchBehavior command fired";
-                    Record("TouchBehavior.tap", true, "command");
-                    UpdateSummary();
-                }),
+                ShouldMakeChildrenInputTransparent = false,
+                Command = command,
             };
-            border.Behaviors.Add(behavior);
-            Record("TouchBehavior", true, "attached to Border");
-        }
-        catch (Exception ex)
-        {
-            Record("TouchBehavior", false, $"{ex.GetType().Name}: {ex.Message}");
-            _sections.Add(ResultRow($"TouchBehavior: FAIL — {ex.GetType().Name}", Colors.Firebrick));
-            return;
+            border.GestureRecognizers.Add(new TapGestureRecognizer { Command = command });
+            behaviorStatus = new Label { Text = "attaching after Loaded...", TextColor = Colors.DimGray };
+            TouchBehavior deferred = behavior;
+            border.Loaded += (_, _) =>
+            {
+                if (border.Behaviors.Contains(deferred))
+                {
+                    return;
+                }
+                try
+                {
+                    border.Behaviors.Add(deferred);
+                    Record("TouchBehavior", true, "attached after Loaded");
+                    behaviorStatus.Text = "PASS — behavior attached after Loaded";
+                    behaviorStatus.TextColor = Colors.SeaGreen;
+                }
+                catch (Exception ex)
+                {
+                    Record("TouchBehavior", false, $"{ex.GetType().Name}: {ex.Message}");
+                    behaviorStatus.Text = $"FAIL — {ex.GetType().Name} (tap fallback active)";
+                    behaviorStatus.TextColor = Colors.Firebrick;
+                }
+                UpdateSummary();
+            };
         }
 
-        var fire = new Button { Text = "Fire TouchBehavior command" };
-        TouchBehavior attached = behavior;
-        fire.Clicked += (_, _) => attached.Command?.Execute(null);
+        var fire = new Button { Text = attachBehavior ? "Fire TouchBehavior command" : "Border only (no behavior)" };
+        if (behavior is not null)
+        {
+            TouchBehavior attached = behavior;
+            fire.Clicked += (_, _) => attached.Command?.Execute(null);
+        }
         _sections.Add(new VerticalStackLayout
         {
             Spacing = 4,
             Children =
             {
-                new Label { Text = "TouchBehavior (attached)", FontAttributes = FontAttributes.Bold },
+                new Label
+                {
+                    Text = attachBehavior ? "TouchBehavior (deferred attach)" : "Border only (no behavior)",
+                    FontAttributes = FontAttributes.Bold,
+                },
                 border,
+                behaviorStatus ?? new Label { IsVisible = false },
                 fire,
             },
         });
