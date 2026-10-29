@@ -1,0 +1,50 @@
+<Project Sdk="Microsoft.NET.Sdk.Razor">
+  <PropertyGroup>
+    <!-- Compatibility probe app: CommunityToolkit.Maui on the OpenHarmony platform slice.
+         Code-only UI (no XAML) so a toolkit API mismatch is a compile error, not a XAML
+         resource failure. The slice sources are compiled into this project the same way
+         test/hello-maui-app does it. -->
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <TargetFrameworks>net11.0-openharmony26.0</TargetFrameworks>
+    <OutputType>Exe</OutputType>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <DefineConstants>$(DefineConstants);OPENHARMONY_BLAZOR_WEBVIEW</DefineConstants>
+    <OpenHarmonyMauiPlatformDir Condition=" '$(OpenHarmonyMauiPlatformDir)' == '' ">$(MSBuildThisFileDirectory)../../../maui-ohos/src/Core/src/Platform/OpenHarmony</OpenHarmonyMauiPlatformDir>
+    <OpenHarmonyHostingDir Condition=" '$(OpenHarmonyHostingDir)' == '' ">$(MSBuildThisFileDirectory)../../src</OpenHarmonyHostingDir>
+    <!-- The precompiled UI shell (templates/ets/modules.abc) keys every module by bundle name
+         (mauidemo.dotnet.springmin.com/entry/ets/entryability/EntryAbility). A different bundle
+         installs but the ArkTS runtime cannot resolve the entry point ("Cannot find module
+         'ets/entryability/EntryAbility'"), so the probe reuses the product bundle until the
+         shell is compiled for a new one. -->
+    <OpenHarmonyBundleName Condition=" '$(OpenHarmonyBundleName)' == '' ">mauidemo.dotnet.springmin.com</OpenHarmonyBundleName>
+    <OpenHarmonyAotApp Condition=" '$(OpenHarmonyAotApp)' == '' and '$(PublishAot)' == 'true' ">true</OpenHarmonyAotApp>
+    <PublishAot Condition=" '$(OpenHarmonyAotApp)' == 'true' ">true</PublishAot>
+    <NativeLib Condition=" '$(OpenHarmonyAotApp)' == 'true' and '$(NativeLib)' == '' ">Shared</NativeLib>
+    <!-- Per-control isolation: -p:CompatCase=expander|avatar|drawing|touch|popup builds a page
+         with just that section, so a native crash is attributable to one control. Empty = all. -->
+    <DefineConstants Condition=" '$(CompatCase)' != '' ">$(DefineConstants);COMPAT_$(CompatCase.ToUpperInvariant())</DefineConstants>
+  </PropertyGroup>
+  <PropertyGroup Condition=" '$(OpenHarmonyAotApp)' == 'true' ">
+    <DefineConstants>$(DefineConstants);OPENHARMONY_AOT</DefineConstants>
+    <OutputType>Library</OutputType>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="Microsoft.Maui.Controls" Version="11.0.0-rc.2.26505.5" />
+    <PackageReference Include="Microsoft.Maui.Graphics" Version="11.0.0-rc.2.26505.5" />
+    <PackageReference Include="Microsoft.AspNetCore.Components.WebView.Maui" Version="11.0.0-rc.2.26505.5" />
+    <!-- Newest toolkit on the feed: 15.0.1 is built for net10.0 / Microsoft.Maui.Controls
+         10.0.90. It is deliberately not bumped beyond the feed; the point of the probe is to
+         record forward compatibility against MAUI 11 rc.2. -->
+    <PackageReference Include="CommunityToolkit.Maui" Version="15.0.1" />
+    <Reference Include="Microsoft.OpenHarmony.Hosting">
+      <HintPath>$(OpenHarmonyHostingDir)/Microsoft.OpenHarmony.Hosting/bin/Release/net11.0/Microsoft.OpenHarmony.Hosting.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="Microsoft.OpenHarmony.Maui.Graphics">
+      <HintPath>$(OpenHarmonyHostingDir)/Microsoft.OpenHarmony.Maui.Graphics/bin/Release/net11.0/Microsoft.OpenHarmony.Maui.Graphics.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Compile Include="$(OpenHarmonyMauiPlatformDir)/*.cs" />
+  </ItemGroup>
+</Project>
