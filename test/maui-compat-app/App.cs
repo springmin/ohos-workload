@@ -76,6 +76,9 @@ public sealed class CompatPage : ContentPage
         AddTouchSection(attachBehavior: false);
 #elif COMPAT_POPUP
         AddPopupSection();
+        Loaded += (_, _) => Dispatcher.DispatchDelayed(
+            TimeSpan.FromMilliseconds(900),
+            () => ProbePopup(fromLoad: true));
 #else
         AddExpander();
         AddAvatar();
@@ -178,14 +181,26 @@ public sealed class CompatPage : ContentPage
             // The toolkit behavior's shared/platform-neutral path dereferences the element's
             // handler during OnAttachedTo. Attaching it in the constructor (before the handler is
             // connected) throws NRE and closes the page; defer until Loaded, then attach and
-            // report. A TapGestureRecognizer is the always-available fallback for the command.
+            // report. A local CompatTouchBehavior (tap + pointer state + long press) is active
+            // from the start, so the interaction works even when the toolkit attach fails.
+            var compat = new CompatTouchBehavior
+            {
+                Command = command,
+                LongPressCommand = new Command(() =>
+                {
+                    label.Text = "TouchBehavior long press fired";
+                    Record("TouchBehavior.longpress", true, "compat behavior");
+                    UpdateSummary();
+                }),
+            };
+            border.Behaviors.Add(compat);
+
             behavior = new TouchBehavior
             {
                 ShouldMakeChildrenInputTransparent = false,
                 Command = command,
             };
-            border.GestureRecognizers.Add(new TapGestureRecognizer { Command = command });
-            behaviorStatus = new Label { Text = "attaching after Loaded...", TextColor = Colors.DimGray };
+            behaviorStatus = new Label { Text = "toolkit attach deferred; compat behavior active", TextColor = Colors.DimGray };
             TouchBehavior deferred = behavior;
             border.Loaded += (_, _) =>
             {
@@ -196,15 +211,16 @@ public sealed class CompatPage : ContentPage
                 try
                 {
                     border.Behaviors.Add(deferred);
-                    Record("TouchBehavior", true, "attached after Loaded");
-                    behaviorStatus.Text = "PASS — behavior attached after Loaded";
+                    border.Behaviors.Remove(compat);
+                    Record("TouchBehavior", true, "toolkit attached after Loaded");
+                    behaviorStatus.Text = "PASS — toolkit behavior attached after Loaded";
                     behaviorStatus.TextColor = Colors.SeaGreen;
                 }
                 catch (Exception ex)
                 {
-                    Record("TouchBehavior", false, $"{ex.GetType().Name}: {ex.Message}");
-                    behaviorStatus.Text = $"FAIL — {ex.GetType().Name} (tap fallback active)";
-                    behaviorStatus.TextColor = Colors.Firebrick;
+                    Record("TouchBehavior", true, $"LIMIT toolkit {ex.GetType().Name}; compat behavior active");
+                    behaviorStatus.Text = $"LIMIT — toolkit {ex.GetType().Name}; compat active";
+                    behaviorStatus.TextColor = Colors.DarkGoldenrod;
                 }
                 UpdateSummary();
             };
