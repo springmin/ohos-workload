@@ -25,6 +25,7 @@ public static class Program
 
         var mauiApp = builder.Build();
         OpenHarmonyBridge.WriteStatus("[ref] app built");
+        FrameProbe.Install();
         var host = mauiApp.Services.GetRequiredService<OpenHarmonyMauiAppHost>();
         host.Run(mauiApp.Services.GetRequiredService<IApplication>());
 

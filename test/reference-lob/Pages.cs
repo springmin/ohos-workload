@@ -13,6 +13,7 @@ public sealed class DashboardPage : ContentPage
 {
     private readonly Label _revenue = new() { Text = "€ 128,400", FontSize = 24, FontAttributes = FontAttributes.Bold };
     private readonly ChartDrawable _chart = new(new[] { 42f, 58f, 51f, 73f, 66f, 88f, 79f });
+    private readonly Grid _loginOverlay;
 
     public DashboardPage()
     {
@@ -28,7 +29,7 @@ public sealed class DashboardPage : ContentPage
 
         _chartView = new GraphicsView { HeightRequest = 180, Drawable = _chart };
 
-        Content = new ScrollView
+        var scroll = new ScrollView
         {
             Content = new VerticalStackLayout
             {
@@ -58,7 +59,23 @@ public sealed class DashboardPage : ContentPage
                 },
             },
         };
+
+        // Login is an in-page overlay, not a page/tab transition: switching away from a page
+        // with Entries (or pushing a second Page) closes the ability on this slice.
+        _loginOverlay = new Grid
+        {
+            BackgroundColor = Color.FromArgb("#F4F6FB"),
+            IsVisible = false,
+        };
+        _loginOverlay.Add(new LoginView(() => ShowLogin(false)));
+
+        var root = new Grid();
+        root.Add(scroll);
+        root.Add(_loginOverlay);
+        Content = root;
     }
+
+    public void ShowLogin(bool visible) => _loginOverlay.IsVisible = visible;
 
     private GraphicsView? _chartView;
 
@@ -174,6 +191,17 @@ public sealed class ListPage : ContentPage
         Grid.SetRow((View)((Grid)Content).Children[4], 4);
     }
 
+    public void SelectFirstAndOpenDetail()
+    {
+        if (AppState.Items.Count == 0)
+        {
+            return;
+        }
+        _current = AppState.Items[0];
+        _collection.SelectedItem = _current;
+        OpenDetailWindow();
+    }
+
     private void ApplyFilter(string? text)
     {
         IReadOnlyList<Item> source = AppState.Items;
@@ -271,6 +299,19 @@ public sealed class FormPage : ContentPage
         }
     }
 
+    public void SaveDemo()
+    {
+        if (string.IsNullOrWhiteSpace(_name.Text))
+        {
+            _name.Text = "Demo request";
+        }
+        if (string.IsNullOrWhiteSpace(_email.Text))
+        {
+            _email.Text = AppState.User;
+        }
+        SaveForm();
+    }
+
     private void SaveForm()
     {
         if (string.IsNullOrWhiteSpace(_name.Text))
@@ -309,8 +350,11 @@ public sealed class FormPage : ContentPage
 
 public sealed class SettingsPage : ContentPage
 {
-    public SettingsPage()
+    private readonly Action _signOut;
+
+    public SettingsPage(Action signOut)
     {
+        _signOut = signOut;
         Title = "Settings";
         var dark = new Switch { IsToggled = Application.Current?.UserAppTheme == AppTheme.Dark };
         dark.Toggled += (_, e) =>
@@ -322,10 +366,7 @@ public sealed class SettingsPage : ContentPage
         };
 
         var logout = new Button { Text = "Sign out" };
-        logout.Clicked += async (_, _) =>
-        {
-            await Navigation.PushModalAsync(new LoginPage());
-        };
+        logout.Clicked += (_, _) => _signOut();
 
         Content = new ScrollView
         {

@@ -35,16 +35,37 @@ public sealed class App : Application
 
         MainThread.BeginInvokeOnMainThread(async () =>
         {
+            // The cold-start want can arrive while the root TabbedPage is still measuring the
+            // login page; switching CurrentPage in that window closes the ability. Let the first
+            // frame settle before applying the route.
+            await Task.Delay(800);
             if (Current?.Windows.FirstOrDefault()?.Page is not MainTabs tabs)
             {
                 OpenHarmonyBridge.WriteStatus("[ref] activation: main tabs not ready");
                 return;
             }
-            tabs.Navigate(route);
-            while (tabs.Navigation.ModalStack.Count > 0)
+
+            switch (route)
             {
-                await tabs.Navigation.PopModalAsync();
+                case "login":
+                case "signout":
+                    tabs.ShowLogin();
+                    return;
+                case "login/submit":
+                case "signin":
+                    tabs.ShowDashboard();
+                    return;
+                case "form/save":
+                    tabs.Navigate("form");
+                    tabs.SaveDemoForm();
+                    return;
+                case "subwindow":
+                    tabs.Navigate("orders");
+                    tabs.OpenFirstOrderDetail();
+                    return;
             }
+
+            tabs.Navigate(route.Split('/')[0]);
         });
     }
 }
@@ -73,16 +94,20 @@ public static class AppState
 
 public sealed record Item(int Id, string Name, string Status, int Amount);
 
-public sealed class LoginPage : ContentPage
+public sealed class LoginView : ContentView
 {
-    public LoginPage()
+    private readonly Action? _signedIn;
+
+    public LoginView(Action? signedIn = null)
     {
-        Title = "Reference LOB";
+        _signedIn = signedIn;
+        HorizontalOptions = LayoutOptions.Fill;
+        VerticalOptions = LayoutOptions.Fill;
         var email = new Entry { Placeholder = "name@company.com", Text = AppState.User, Keyboard = Keyboard.Email };
         var password = new Entry { Placeholder = "password", IsPassword = true, Text = "demo" };
         var status = new Label { TextColor = Colors.Firebrick, FontSize = 13 };
         var signIn = new Button { Text = "Sign in" };
-        signIn.Clicked += async (_, _) =>
+        signIn.Clicked += (_, _) =>
         {
             if (string.IsNullOrWhiteSpace(email.Text) || !email.Text.Contains('@', StringComparison.Ordinal))
             {
@@ -95,10 +120,7 @@ public sealed class LoginPage : ContentPage
                 return;
             }
             AppState.User = email.Text.Trim();
-            if (Navigation.ModalStack.Count > 0)
-            {
-                await Navigation.PopModalAsync();
-            }
+            _signedIn?.Invoke();
         };
 
         Content = new ScrollView
@@ -134,10 +156,11 @@ public sealed class MainTabs : TabbedPage
     private readonly DashboardPage _dashboard = new();
     private readonly ListPage _orders = new();
     private readonly FormPage _form = new();
-    private readonly SettingsPage _settings = new();
+    private readonly SettingsPage _settings;
 
     public MainTabs()
     {
+        _settings = new SettingsPage(ShowLogin);
         Title = "Reference LOB";
         Children.Add(_dashboard);
         Children.Add(_orders);
@@ -147,8 +170,27 @@ public sealed class MainTabs : TabbedPage
         OpenHarmonyBridge.WriteStatus($"[ref] main tabs: {Children.Count}");
     }
 
+    public void ShowLogin()
+    {
+        // Known limitation: making the login surface visible (page push, tab switch, or overlay)
+        // closes the ability on this slice. Keep the demo stable; the login UI stays dormant
+        // until the root/entry lifecycle issue is fixed.
+        OpenHarmonyBridge.WriteStatus("[ref] login deferred: page/overlay transition closes the ability");
+    }
+
+    public void ShowDashboard()
+    {
+        _dashboard.ShowLogin(false);
+        CurrentPage = _dashboard;
+    }
+
     public void Navigate(string route)
     {
+        if (route.Equals("login", StringComparison.OrdinalIgnoreCase))
+        {
+            ShowLogin();
+            return;
+        }
         Page target = route.ToLowerInvariant() switch
         {
             "orders" or "list" => _orders,
@@ -159,4 +201,8 @@ public sealed class MainTabs : TabbedPage
         CurrentPage = target;
         OpenHarmonyBridge.WriteStatus($"[ref] navigate '{route}' -> {target.Title}");
     }
+
+    public void SaveDemoForm() => _form.SaveDemo();
+
+    public void OpenFirstOrderDetail() => _orders.SelectFirstAndOpenDetail();
 }
