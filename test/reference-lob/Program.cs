@@ -16,7 +16,7 @@ public static class Program
 
     public static int Run(string[] args)
     {
-        OpenHarmonyBridge.WriteStatus("[ref] enter Run");
+        OpenHarmonyBridge.WriteStatus($"[ref] enter Run tick={Environment.TickCount64}");
         OpenHarmonyBridge.Activation += App.HandleActivation;
 
         var builder = MauiApp.CreateBuilder();
