@@ -58,6 +58,7 @@ login = {
     "supportWindowModes": a.get("supportWindowModes", ["fullscreen", "split", "floating"]),
     "exported": True,
     "launchType": "multiton",
+    "process": "login",
 }
 abilities.append(login)
 json.dump(d, open(p, "w"), ensure_ascii=False, separators=(",", ":"))
