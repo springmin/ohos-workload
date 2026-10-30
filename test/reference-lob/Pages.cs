@@ -13,7 +13,8 @@ public sealed class DashboardPage : ContentPage
 {
     private readonly Label _revenue = new() { Text = "€ 128,400", FontSize = 24, FontAttributes = FontAttributes.Bold };
     private readonly ChartDrawable _chart = new(new[] { 42f, 58f, 51f, 73f, 66f, 88f, 79f });
-    private readonly Grid _loginOverlay;
+    private readonly ContentView _host = new() { HorizontalOptions = LayoutOptions.Fill, VerticalOptions = LayoutOptions.Fill };
+    private readonly View _mainContent;
 
     public DashboardPage()
     {
@@ -60,22 +61,20 @@ public sealed class DashboardPage : ContentPage
             },
         };
 
-        // Login is an in-page overlay, not a page/tab transition: switching away from a page
-        // with Entries (or pushing a second Page) closes the ability on this slice.
-        _loginOverlay = new Grid
-        {
-            BackgroundColor = Color.FromArgb("#F4F6FB"),
-            IsVisible = false,
-        };
-        _loginOverlay.Add(new LoginView(() => ShowLogin(false)));
-
-        var root = new Grid();
-        root.Add(scroll);
-        root.Add(_loginOverlay);
-        Content = root;
+        // Login is a content swap inside this page, not a page/tab/modal transition. The
+        // login-probe app verified that swapping a ContentView between a main view and a
+        // login view with two Entries is stable; page/tab/modal transitions are not.
+        _mainContent = scroll;
+        _host.Content = _mainContent;
+        Content = _host;
     }
 
-    public void ShowLogin(bool visible) => _loginOverlay.IsVisible = visible;
+    public void ShowLogin(bool visible)
+    {
+        _host.Content = visible
+            ? new LoginView(() => ShowLogin(false))
+            : _mainContent;
+    }
 
     private GraphicsView? _chartView;
 

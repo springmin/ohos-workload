@@ -107,7 +107,7 @@ public sealed class LoginView : ContentView
         var password = new Entry { Placeholder = "password", IsPassword = true, Text = "demo" };
         var status = new Label { TextColor = Colors.Firebrick, FontSize = 13 };
         var signIn = new Button { Text = "Sign in" };
-        signIn.Clicked += (_, _) =>
+        void SignIn()
         {
             if (string.IsNullOrWhiteSpace(email.Text) || !email.Text.Contains('@', StringComparison.Ordinal))
             {
@@ -121,7 +121,19 @@ public sealed class LoginView : ContentView
             }
             AppState.User = email.Text.Trim();
             _signedIn?.Invoke();
+        }
+        signIn.Clicked += (_, _) => SignIn();
+
+        // Canvas buttons do not always receive uitest taps; a Border with a TapGestureRecognizer
+        // is the reliable hit surface on this slice, so both routes run the same SignIn action.
+        var signInArea = new Border
+        {
+            StrokeThickness = 0,
+            Content = signIn,
         };
+        var tap = new TapGestureRecognizer();
+        tap.Tapped += (_, _) => SignIn();
+        signInArea.GestureRecognizers.Add(tap);
 
         Content = new ScrollView
         {
@@ -138,7 +150,7 @@ public sealed class LoginView : ContentView
                     new Label { Text = "Password", FontAttributes = FontAttributes.Bold },
                     password,
                     status,
-                    signIn,
+                    signInArea,
                     new Label
                     {
                         Text = "Mock sign-in: any valid email + non-empty password.",
@@ -167,15 +179,14 @@ public sealed class MainTabs : TabbedPage
         Children.Add(_form);
         Children.Add(_settings);
         CurrentPage = _dashboard;
+        _dashboard.ShowLogin(true);
         OpenHarmonyBridge.WriteStatus($"[ref] main tabs: {Children.Count}");
     }
 
     public void ShowLogin()
     {
-        // Known limitation: making the login surface visible (page push, tab switch, or overlay)
-        // closes the ability on this slice. Keep the demo stable; the login UI stays dormant
-        // until the root/entry lifecycle issue is fixed.
-        OpenHarmonyBridge.WriteStatus("[ref] login deferred: page/overlay transition closes the ability");
+        _dashboard.ShowLogin(true);
+        CurrentPage = _dashboard;
     }
 
     public void ShowDashboard()
