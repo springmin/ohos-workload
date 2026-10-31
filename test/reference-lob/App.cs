@@ -17,6 +17,9 @@ public sealed class App : Application
     protected override Window CreateWindow(IActivationState? activationState)
         => new(new MainTabs());
 
+    private static readonly object s_pendingSync = new();
+    private static string s_pendingRoute = string.Empty;
+
     public static void HandleActivation(OpenHarmonyActivationEventArgs e)
     {
         string uri = e.Uri ?? string.Empty;
@@ -32,41 +35,54 @@ public sealed class App : Application
         {
             route = "dashboard";
         }
-
-        MainThread.BeginInvokeOnMainThread(async () =>
+        lock (s_pendingSync)
         {
-            // The cold-start want can arrive while the root TabbedPage is still measuring the
-            // login page; switching CurrentPage in that window closes the ability. Let the first
-            // frame settle before applying the route.
-            await Task.Delay(800);
-            if (Current?.Windows.FirstOrDefault()?.Page is not MainTabs tabs)
-            {
-                OpenHarmonyBridge.WriteStatus("[ref] activation: main tabs not ready");
-                return;
-            }
+            s_pendingRoute = route;
+        }
+        OpenHarmonyBridge.WriteStatus($"[ref] pending route='{route}'");
 
-            switch (route)
-            {
-                case "login":
-                case "signout":
-                    tabs.ShowLogin();
-                    return;
-                case "login/submit":
-                case "signin":
-                    tabs.ShowDashboard();
-                    return;
-                case "form/save":
-                    tabs.Navigate("form");
-                    tabs.SaveDemoForm();
-                    return;
-                case "subwindow":
-                    tabs.Navigate("orders");
-                    tabs.OpenFirstOrderDetail();
-                    return;
-            }
+        // The cold-start want can arrive before the dispatcher/root page exists. Calling
+        // MainThread in that window closes the ability (measured); only a loaded MainTabs is
+        // allowed to dispatch, otherwise Loaded consumes the pending route.
+        if (Current is App app
+            && app.Windows.FirstOrDefault()?.Page is MainTabs tabs
+            && tabs.IsLoaded)
+        {
+            OpenHarmonyBridge.WriteStatus("[ref] dispatching pending route (already loaded)");
+            tabs.Dispatcher.DispatchDelayed(TimeSpan.FromMilliseconds(50), ConsumePendingRoute);
+        }
+        else
+        {
+            OpenHarmonyBridge.WriteStatus("[ref] pending route deferred to Loaded");
+        }
+    }
 
-            tabs.Navigate(route.Split('/')[0]);
-        });
+    public static void ConsumePendingRoute()
+    {
+        string route;
+        lock (s_pendingSync)
+        {
+            route = s_pendingRoute;
+            s_pendingRoute = string.Empty;
+        }
+        if (route.Length == 0)
+        {
+            return;
+        }
+
+        if (Current?.Windows.FirstOrDefault()?.Page is MainTabs tabs && tabs.IsLoaded)
+        {
+            OpenHarmonyBridge.WriteStatus($"[ref] consume route='{route}'");
+            tabs.ApplyRoute(route);
+        }
+        else
+        {
+            OpenHarmonyBridge.WriteStatus($"[ref] consume deferred (not ready) route='{route}'");
+            lock (s_pendingSync)
+            {
+                s_pendingRoute = route;
+            }
+        }
     }
 }
 
@@ -170,6 +186,8 @@ public sealed class MainTabs : TabbedPage
     private readonly FormPage _form = new();
     private readonly SettingsPage _settings;
 
+    public bool IsLoaded { get; private set; }
+
     public MainTabs()
     {
         _settings = new SettingsPage(ShowLogin);
@@ -180,6 +198,12 @@ public sealed class MainTabs : TabbedPage
         Children.Add(_settings);
         CurrentPage = _dashboard;
         _dashboard.ShowLogin(true);
+        Loaded += (_, _) =>
+        {
+            IsLoaded = true;
+            OpenHarmonyBridge.WriteStatus("[ref] main tabs loaded");
+            Dispatcher.DispatchDelayed(TimeSpan.FromMilliseconds(200), App.ConsumePendingRoute);
+        };
         OpenHarmonyBridge.WriteStatus($"[ref] main tabs: {Children.Count}");
     }
 
@@ -202,6 +226,12 @@ public sealed class MainTabs : TabbedPage
             ShowLogin();
             return;
         }
+
+        // Leaving a tab whose content holds Entry controls closes the ability on this slice.
+        // Swap the Dashboard back to its main content before switching tabs (deep links and
+        // programmatic navigation both pass through here).
+        _dashboard.ShowLogin(false);
+
         Page target = route.ToLowerInvariant() switch
         {
             "orders" or "list" => _orders,
@@ -211,6 +241,32 @@ public sealed class MainTabs : TabbedPage
         };
         CurrentPage = target;
         OpenHarmonyBridge.WriteStatus($"[ref] navigate '{route}' -> {target.Title}");
+    }
+
+    public void ApplyRoute(string route)
+    {
+        OpenHarmonyBridge.WriteStatus($"[ref] apply route='{route}'");
+        switch (route)
+        {
+            case "login":
+            case "signout":
+                ShowLogin();
+                return;
+            case "login/submit":
+            case "signin":
+                ShowDashboard();
+                return;
+            case "form/save":
+                Navigate("form");
+                SaveDemoForm();
+                return;
+            case "subwindow":
+                Navigate("orders");
+                OpenFirstOrderDetail();
+                return;
+        }
+
+        Navigate(route.Split('/')[0]);
     }
 
     public void SaveDemoForm() => _form.SaveDemo();
