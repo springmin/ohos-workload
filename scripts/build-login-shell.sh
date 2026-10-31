@@ -6,8 +6,14 @@
 # scripts/loginability sources and emits a modules.abc that also contains
 #   <bundle>/entry/ets/loginability/LoginAbility  and  <bundle>/entry/ets/pages/Login
 #
-# Usage: scripts/build-login-shell.sh [--out <modules.abc>] [--keep-work]
+# Usage: scripts/build-login-shell.sh [--out <modules.abc>] [--keep-work] [--fresh]
 # Env: ARKTS_BUNDLE_NAME (default mauidemo.dotnet.springmin.com)
+#
+# Known toolchain issue: hvigor's V8 sometimes aborts with `Signal 5` /
+# `Check failed: 12 == (*__errno_location())` on a cold build on this box. The work project is
+# kept between attempts and a later (warm) run has been observed to finish; the script retries
+# 3x with a 30 s pause and prints the project path on failure. The generated abc is verified by
+# string search (loginability/LoginAbility + pages/Login) before it is copied out.
 # Requires: the hvigor packages under .arkts-build/hvigor (run scripts/build-arkts-shell.sh once
 # or let the kit install them) and the OpenHarmony SDK (default harmonybrew 26.0.0.18_2).
 set -u
@@ -17,10 +23,12 @@ VER="${ARKTS_PACK_VERSION:-1.0.0-preview.29}"
 TPL="$W/packs/Microsoft.OpenHarmony.Sdk/$VER/templates"
 OUT="$W/dist/ets/modules.login.abc"
 KEEP=0
+FRESH=0
 while [ $# -gt 0 ]; do
     case "$1" in
         --out) OUT=$2; shift 2 ;;
         --keep-work) KEEP=1; shift ;;
+        --fresh) FRESH=1; shift ;;
         -h|--help) sed -n '2,18p' "$0"; exit 0 ;;
         *) echo "build-login-shell: unknown argument: $1" >&2; exit 2 ;;
     esac
@@ -35,9 +43,11 @@ JAVA_HOME="${JAVA_HOME:-$HOME/.harmonybrew/opt/openjdk@17}"
 SDK="${OHOS_SDK_ROOT:-$HOME/.harmonybrew/opt/ohos-sdk}"
 
 WORK="${LOGIN_SHELL_WORK:-/data/storage/el2/base/tmp/opencode/login-shell}"
-rm -rf "$WORK"
-mkdir -p "$WORK"
 P="$WORK/project"
+if [ "$FRESH" = 1 ] || [ ! -d "$P" ]; then
+    rm -rf "$WORK"
+fi
+mkdir -p "$WORK"
 
 echo "==> scaffold ($VER)"
 ARKTS_SHELL_VARIANT=ui bash "$W/scripts/build-arkts-shell.sh" --scaffold-only "$P" >/dev/null || exit 1
@@ -96,6 +106,14 @@ fi
 echo "==> hvigor assembleHap"
 LOG="$WORK/hvigor.log"
 ABC="$P/entry/build/default/intermediates/loader_out/default/ets/modules.abc"
+# This box runs the ArkTS toolchain beside other builds; V8 aborts with "Check failed:
+# 12 == errno" when memory is tight. Wait for 2 GB available (up to 10 minutes).
+i=0
+while [ "$(awk '/MemAvailable/{print $2}' /proc/meminfo)" -lt 2097152 ]; do
+    i=$((i + 1))
+    [ "$i" -le 20 ] || { echo "build-login-shell: MemAvailable below 2 GB" >&2; exit 1; }
+    echo "waiting for memory (${i}/20)"; sleep 30
+done
 attempt=1
 while :; do
     ( cd "$P" && \
@@ -108,12 +126,14 @@ while :; do
     if [ -f "$ABC" ] && grep -q 'Finished :entry:default@CompileArkTS' "$LOG"; then
         break
     fi
-    if [ "$attempt" -lt 3 ] && grep -qE 'Signal 5|Fatal error in' "$LOG"; then
-        echo "hvigor crashed (attempt $attempt); retrying" >&2
+    if [ "$attempt" -lt 5 ] && grep -qE 'Signal 5|Fatal error in' "$LOG"; then
+        echo "hvigor crashed (attempt $attempt); retrying after a 30 s pause" >&2
         attempt=$((attempt + 1))
+        sleep 30
         continue
     fi
     echo "hvigor failed (rc=$RC); log: $LOG" >&2
+    echo "The work project was kept at $P; rerun without --fresh for a warm build." >&2
     tail -20 "$LOG" >&2
     exit 1
 done
