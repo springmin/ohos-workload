@@ -49,7 +49,7 @@ if any(a.get("name") == "LoginAbility" for a in abilities):
 a = abilities[0]
 login = {
     "name": "LoginAbility",
-    "srcEntry": a["srcEntry"],
+    "srcEntry": "./ets/loginability/LoginAbility.ets",
     "description": a["description"],
     "icon": a["icon"],
     "label": a["label"],
@@ -58,11 +58,20 @@ login = {
     "supportWindowModes": a.get("supportWindowModes", ["fullscreen", "split", "floating"]),
     "exported": True,
     "launchType": "multiton",
-    "process": "login",
+    "process": ":login",
 }
 abilities.append(login)
 json.dump(d, open(p, "w"), ensure_ascii=False, separators=(",", ":"))
 print("abilities:", [x["name"] for x in abilities])
+
+import os
+mp = os.path.join(os.path.dirname(p), "resources/base/profile/main_pages.json")
+if os.path.exists(mp):
+    pages = json.load(open(mp))
+    if "pages/Login" not in pages.get("src", []):
+        pages.setdefault("src", []).append("pages/Login")
+    json.dump(pages, open(mp, "w"), separators=(",", ":"))
+    print("pages:", pages["src"])
 PY
 
 ( cd "$WORK/unpacked" && find . -type f | zip -q -X "$WORK/patched-unsigned.hap" -@ )

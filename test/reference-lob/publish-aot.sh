@@ -111,6 +111,7 @@ log "== publish (NativeAOT, UI shell) =="
     -p:InvariantGlobalization=true \
     -p:OpenHarmonyHapPackage=true -p:OpenHarmonySdkRoot="$OHOS_SDK" \
     -p:OpenHarmonyUIPage=pages/Index \
+    -p:OpenHarmonyArktsModulesAbc="${ARKTS_MODULES_ABC:-}" \
     -p:OpenHarmonyRuntimeMode=aot \
     -p:OpenHarmonyMauiPlatformDir="$SLICE" \
     -p:CompatCase="${COMPAT_CASE:-}" \
