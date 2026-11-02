@@ -98,6 +98,8 @@ export DOTNET_CLI_USE_MSBUILD_SERVER=0
 . "$W/scripts/lib-dotnet-env.sh" "$W"
 
 log "== publish (NativeAOT, UI shell) =="
+ARKTS_ABC_ARG=
+if [ -n "${ARKTS_MODULES_ABC:-}" ]; then ARKTS_ABC_ARG="-p:OpenHarmonyArktsModulesAbc=$ARKTS_MODULES_ABC"; fi
 # InvariantGlobalization: this image's AOT runtime cannot resolve an ICU provider
 # ("Couldn't find a valid ICU package installed on the system" -> FailFast) and the first
 # culture-sensitive call during startup is the P/Invoke library-name search in the hosting
@@ -111,7 +113,7 @@ log "== publish (NativeAOT, UI shell) =="
     -p:InvariantGlobalization=true \
     -p:OpenHarmonyHapPackage=true -p:OpenHarmonySdkRoot="$OHOS_SDK" \
     -p:OpenHarmonyUIPage=pages/Index \
-    -p:OpenHarmonyArktsModulesAbc="${ARKTS_MODULES_ABC:-}" \
+    $ARKTS_ABC_ARG \
     -p:OpenHarmonyRuntimeMode=aot \
     -p:OpenHarmonyMauiPlatformDir="$SLICE" \
     -p:CompatCase="${COMPAT_CASE:-}" \
