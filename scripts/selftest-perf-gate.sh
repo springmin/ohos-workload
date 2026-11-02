@@ -28,7 +28,15 @@ log() { printf '[%s] %s\n' "$(date '+%H:%M:%S')" "$*"; }
 W="$(cd "$(dirname "$0")/.." && pwd)"
 GATE="$W/scripts/perf-gate.sh"
 FIX="$W/test/perf-gate"
-BASE="${SELFTEST_TMPDIR:-/data/storage/el2/base/tmp/opencode}"
+if [ -n "${SELFTEST_TMPDIR:-}" ]; then
+    BASE="$SELFTEST_TMPDIR"
+elif [ -d /data/storage/el2/base/tmp/opencode ]; then
+    BASE=/data/storage/el2/base/tmp/opencode
+elif [ -n "${TMPDIR:-}" ]; then
+    BASE="$TMPDIR"
+else
+    BASE=/tmp
+fi
 T="$BASE/selftest-perf-gate.$$"
 mkdir -p "$T" || { echo "cannot create $T" >&2; exit 1; }
 
