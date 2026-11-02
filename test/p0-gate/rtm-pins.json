@@ -1,0 +1,13 @@
+{
+  "note": "Pre-RTM pins for the #59 cutover dry-run. Update this file together with the five repos, manifests/packs and CI refs when the RTM artifacts land; scripts/rtm-cutover.sh only reads.",
+  "sdk": "11.0.100-rc.2.26504.105",
+  "workload": "1.0.0-preview.29",
+  "maui": "11.0.0-rc.2.26505.5",
+  "repos": {
+    "runtime-ohos": { "path": "../runtime-ohos", "branch": "feature/openharmony" },
+    "sdk-ohos": { "path": "../sdk-ohos", "branch": "feature/openharmony" },
+    "aspnetcore-ohos": { "path": "../aspnetcore-ohos", "branch": "feature/openharmony" },
+    "maui-ohos": { "path": "../maui-ohos", "branch": "feature/openharmony" },
+    "ohos-workload": { "path": ".", "branch": "master" }
+  }
+}
