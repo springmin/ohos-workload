@@ -207,6 +207,8 @@ check("form save path", "form saved" in pages)
 check("subwindow path", "subwindow create=" in pages)
 check("1k list path", "new List<Item>(1000)" in app and "i <= 1000" in app)
 check("AOT publish script present", (ref / "publish-aot.sh").is_file())
+check("device smoke script present", (w / "test" / "reference-lob" / "smoke.sh").is_file())
+check("reference thresholds present", (w / "test" / "perf-gate" / "reference-thresholds.json").is_file())
 check("second-ability shell sources", (w / "scripts" / "loginability" / "LoginAbility.ets").is_file())
 check("second-ability packer", (w / "scripts" / "add-login-ability.sh").is_file())
 
