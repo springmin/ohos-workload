@@ -1,26 +1,30 @@
 #!/bin/sh
-# rc2-official-watch.sh - poll nuget.org / GitHub for the official MAUI rc.2+ packages (RC2-WATCH).
+# rc2-official-watch.sh - poll nuget.org / GitHub for MAUI packages newer than a baseline (RC2-WATCH).
 #
 # Why: this watch tracked the dnceng-daily-to-official rc.2 transition of the slice's
 # Microsoft.Maui.* packages. It fired on 2026-10-13 (official 11.0.0-rc.2.26505.5 on nuget.org)
 # and the pin-switch batch in runtime-ohos
 # docs/plans/2026-09-30-rc2-mainline-adoption.md section 8 landed the same day: the slice pin and
 # the interaction/pixel/host-export references moved to the new maui tip and the dnceng feed step
-# is gone. The script stays for the record and for a manual poll; re-baseline it before watching
-# the next milestone.
+# is gone. Re-baselined on 2026-11-02 to the current official line
+# (nuget 11.0.0-rc.2.26505.5 / github 11.0.100-rc.2.26513.2); update the baselines when adopting
+# a line so "equal to the current build" does not fire.
 #
 # Sources (both are queried on every run):
 #   1. the nuget.org flat-container index of every package the slice references;
 #   2. the dotnet/maui releases API (official release tags).
-# A version triggers when it compares >= the watch baseline on its line (nuget: 11.0.0-rc.2,
-# GitHub: 11.0.100-rc.2), so a later rc and a stable 11.x release trigger too.
+# A version triggers only when it is strictly newer than the recorded baseline
+# (nuget: 11.0.0-rc.2.26505.5, GitHub: 11.0.100-rc.2.26513.2); a later rc and a stable 11.x
+# release still trigger.
 #
 # Usage: scripts/rc2-official-watch.sh [-h|--help]
 # Env: RC2_WATCH_TIMEOUT=<seconds>       per-request curl timeout (default 30)
 #      RC2_WATCH_NUGET_API=<base-url>    default https://api.nuget.org/v3-flatcontainer
 #      RC2_WATCH_GITHUB_API=<base-url>   default https://api.github.com
 #      RC2_WATCH_ADOPTION_DOC=<path>     override the section-8 doc path in the trigger block
-# Exit: 0 = no official rc.2+ yet (keep waiting); 10 = official rc.2+ found (run the pin batch);
+#      RC2_WATCH_NUGET_BASELINE=<ver>    override the nuget baseline (default 11.0.0-rc.2.26505.5)
+#      RC2_WATCH_GITHUB_BASELINE=<ver>   override the github baseline (default 11.0.100-rc.2.26513.2)
+# Exit: 0 = nothing newer than the baseline; 10 = newer version found (run the pin batch);
 #       1 = every source failed; 2 = usage error.
 set -u
 
@@ -31,10 +35,11 @@ usage() {
     cat <<'EOF'
 usage: scripts/rc2-official-watch.sh
 
-Polls nuget.org and the dotnet/maui releases for official rc.2+ MAUI packages. Exit 0 = no
-rc.2+ yet (keep waiting), 10 = rc.2+ found (run the pin-switch batch in
+Polls nuget.org and the dotnet/maui releases for MAUI versions newer than the recorded
+baselines. Exit 0 = nothing newer, 10 = newer version found (run the pin-switch batch in
 runtime-ohos/docs/plans/2026-09-30-rc2-mainline-adoption.md section 8), 1 = every source
-failed, 2 = usage error.
+failed, 2 = usage error. Override the baselines with RC2_WATCH_NUGET_BASELINE /
+RC2_WATCH_GITHUB_BASELINE.
 EOF
 }
 
@@ -53,8 +58,8 @@ ADOPTION_DOC="${RC2_WATCH_ADOPTION_DOC:-$W/../runtime-ohos/docs/plans/2026-09-30
 # The four packages the slice's standalone compile vehicle references (see the maui-ohos
 # slice csproj); they ship in lockstep, so any of them reaching rc.2 is the signal.
 PACKAGES="microsoft.maui.controls microsoft.maui.core microsoft.maui.graphics microsoft.aspnetcore.components.webview.maui"
-NUGET_BASELINE="11.0.0-rc.2"
-GITHUB_BASELINE="11.0.100-rc.2"
+NUGET_BASELINE="${RC2_WATCH_NUGET_BASELINE:-11.0.0-rc.2.26505.5}"
+GITHUB_BASELINE="${RC2_WATCH_GITHUB_BASELINE:-11.0.100-rc.2.26513.2}"
 
 for _t in curl awk grep sed tr mktemp; do
     command -v "$_t" >/dev/null 2>&1 || { warn "required command not found: $_t"; exit 1; }
@@ -65,8 +70,9 @@ TMP="$(mktemp -d 2>/dev/null || true)"
 [ -n "$TMP" ] || { warn "cannot create a temp dir"; exit 1; }
 trap 'rm -rf "$TMP"' 0 1 2 3 15
 
-# Version comparator: major.minor.patch then stage (preview < rc < stable) then stage number.
-# 11.0.0-rc.2.26478.12 >= 11.0.0-rc.2, 11.0.0-rc.1.26451.6 < 11.0.0-rc.2, 11.0.100 = stable.
+# Version comparator: major.minor.patch then stage (preview < rc < stable) then stage number,
+# then the build/revision components (26505.5 vs 26513.2). Example: 11.0.0-rc.2.26478.12 >=
+# 11.0.0-rc.2.26505.5? No (26478 < 26505); 11.0.100 = stable is newer than 11.0.1xx-rc.2.
 cat > "$TMP/vcmp.awk" <<'AWK'
 function vcmp(a, b,   A, B, i, ra, rb, na, nb) {
     split(a, A, /[.-]/); split(b, B, /[.-]/)
@@ -80,9 +86,15 @@ function vcmp(a, b,   A, B, i, ra, rb, na, nb) {
     na = (A[5] == "") ? 0 : A[5] + 0
     nb = (B[5] == "") ? 0 : B[5] + 0
     if (na != nb) return (na > nb) ? 1 : -1
+    # Compare the build/revision components (e.g. 26505.5 vs 26513.2); missing = 0.
+    for (i = 6; i <= 10; i++) {
+        na = (A[i] == "") ? 0 : A[i] + 0
+        nb = (B[i] == "") ? 0 : B[i] + 0
+        if (na != nb) return (na > nb) ? 1 : -1
+    }
     return 0
 }
-mode == "ge" && NR == 1 { print (vcmp($1, base) >= 0) ? "yes" : "no"; exit }
+(mode == "ge" || mode == "gt") && NR == 1 { r = vcmp($1, base); print (mode == "gt" ? (r > 0) : (r >= 0)) ? "yes" : "no"; exit }
 mode == "max" && $1 != "" { if (!seen || vcmp($1, max) > 0) { max = $1; seen = 1 } }
 END { if (mode == "max" && seen) print max }
 AWK
@@ -91,7 +103,7 @@ fetch() { # <url> <outfile>
     curl -fsSL --retry 2 --retry-delay 2 --connect-timeout "$TIMEOUT" -m "$TIMEOUT" "$1" -o "$2" 2>/dev/null
 }
 max_ver()  { awk -f "$TMP/vcmp.awk" -v mode=max; }
-triggers() { printf '%s\n' "$1" | awk -f "$TMP/vcmp.awk" -v mode=ge -v base="$2"; }
+triggers() { printf '%s\n' "$1" | awk -f "$TMP/vcmp.awk" -v mode=gt -v base="$2"; }
 
 FOUND=0
 NUGET_OK=0
@@ -137,7 +149,7 @@ if [ "$FOUND" = 1 ]; then
     cat <<EOF
 
 ********************************************************************************
-RC2-WATCH TRIGGER: an official MAUI rc.2+ version is published.
+RC2-WATCH TRIGGER: a MAUI version newer than the recorded baseline is published.
 ********************************************************************************
 Run the pin-switch batch (section 8 of the adoption record):
   $ADOPTION_DOC
@@ -157,5 +169,5 @@ if [ "$NUGET_OK" = 0 ] && [ "$GITHUB_OK" = 0 ]; then
     exit 1
 fi
 
-log "status: WAIT - no official rc.2+ yet (nuget rc.1 only); keep waiting"
+log "status: WAIT - nothing newer than the baseline (nuget $NUGET_BASELINE / github $GITHUB_BASELINE)"
 exit 0

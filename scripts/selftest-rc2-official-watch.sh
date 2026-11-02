@@ -3,9 +3,12 @@
 #
 #   T1 usage    an unknown argument -> exit 2, no poll
 #   T2 wait     rc.1-only nuget + GitHub fixtures -> exit 0, "status: WAIT"
-#   T3 trigger  one nuget package at rc.2 -> exit 10, TRIGGER block with the adoption doc path
-#   T4 stable   a stable 11.0.0 nuget version -> exit 10 (later than rc.2 also triggers)
+#   T3 trigger  a nuget build newer than the baseline -> exit 10, TRIGGER block with the doc path
+#   T4 stable   a stable 11.0.0 nuget version -> exit 10 (stable is newer than rc.2)
 #   T5 fail     every source down (missing fixture base) -> exit 1
+#   T6 equal    exactly the recorded baselines -> exit 0, "trigger=no" (strictly-newer contract)
+#   T7 gh       a newer GitHub release only -> exit 10
+#   T8 future   a nuget baseline above the fixture -> exit 0
 #
 # The script under test is pointed at file:// fixture indexes with RC2_WATCH_* env vars, so the
 # selftest never touches the network.
@@ -16,7 +19,7 @@
 # Exit: 0 = all checks passed; 1 = at least one check failed (work dir kept for triage).
 set -u
 
-SELFTEST_VERSION="1 (2026-10-04)"
+SELFTEST_VERSION="2 (2026-11-02; strict > baselines .26505.5/.26513.2)"
 
 log()     { printf '[%s] %s\n' "$(date '+%H:%M:%S')" "$*"; }
 section() { printf '\n=== %s ===\n' "$*"; }
@@ -101,15 +104,15 @@ assert_contains "T2 reports trigger=no for nuget" "trigger=no" "$WORK/T2.log"
 
 # ---- T3: nuget rc.2 -> trigger ---------------------------------------------------------
 section "T3 nuget rc.2"
-seed_nuget "$WORK/nuget-checks" '{"versions":["11.0.0-rc.1.26451.6","11.0.0-rc.2.26478.12"]}'
+seed_nuget "$WORK/nuget-checks" '{"versions":["11.0.0-rc.1.26451.6","11.0.0-rc.2.26505.6"]}'
 run "$WORK/T3.log" "file://$WORK/nuget-checks" "file://$WORK/gh"
-assert_rc 10 $? "T3 rc.2 exits 10"
+assert_rc 10 $? "T3 newer rc.2 build exits 10"
 assert_contains "T3 prints the trigger banner" "RC2-WATCH TRIGGER" "$WORK/T3.log"
 assert_contains "T3 names the adoption record" "adoption.md" "$WORK/T3.log"
 
 # ---- T4: stable 11.0.0 -> trigger (later than rc.2) ------------------------------------
 section "T4 stable 11.0.0"
-seed_nuget "$WORK/nuget-stable" '{"versions":["11.0.0-rc.2.26478.12","11.0.0"]}'
+seed_nuget "$WORK/nuget-stable" '{"versions":["11.0.0-rc.2.26505.5","11.0.0"]}'
 run "$WORK/T4.log" "file://$WORK/nuget-stable" "file://$WORK/gh"
 assert_rc 10 $? "T4 stable 11.0.0 exits 10"
 assert_contains "T4 prints the trigger banner" "RC2-WATCH TRIGGER" "$WORK/T4.log"
@@ -119,6 +122,32 @@ section "T5 every source down"
 run "$WORK/T5.log" "file://$WORK/no-such-nuget" "file://$WORK/no-such-gh"
 assert_rc 1 $? "T5 all-failed exits 1"
 assert_contains "T5 says the result is unknown" "every poll source failed" "$WORK/T5.log"
+
+# ---- T6: exactly the baselines -> wait (strictly newer) ---------------------------------
+section "T6 equal baselines"
+seed_nuget "$WORK/nuget-equal" '{"versions":["11.0.0-rc.2.26505.5"]}'
+seed_gh "$WORK/gh-equal" '{"tag_name": "11.0.100-rc.2.26513.2"}'
+run "$WORK/T6.log" "file://$WORK/nuget-equal" "file://$WORK/gh-equal"
+assert_rc 0 $? "T6 equal baselines exit 0"
+assert_contains "T6 reports trigger=no" "trigger=no" "$WORK/T6.log"
+assert_contains "T6 reports the wait status" "status: WAIT" "$WORK/T6.log"
+
+# ---- T7: newer GitHub release only -> trigger -------------------------------------------
+section "T7 newer GitHub release"
+seed_nuget "$WORK/nuget-equal2" '{"versions":["11.0.0-rc.2.26505.5"]}'
+seed_gh "$WORK/gh-newer" '{"tag_name": "11.0.100-rc.2.26513.3"}'
+run "$WORK/T7.log" "file://$WORK/nuget-equal2" "file://$WORK/gh-newer"
+assert_rc 10 $? "T7 newer GitHub release exits 10"
+assert_contains "T7 prints the trigger banner" "RC2-WATCH TRIGGER" "$WORK/T7.log"
+
+# ---- T8: a futuristic nuget baseline -> wait ---------------------------------------------
+section "T8 future nuget baseline"
+RC2_WATCH_NUGET_BASELINE=11.0.0-rc.2.26505.6 \
+RC2_WATCH_NUGET_API="file://$WORK/nuget-equal" RC2_WATCH_GITHUB_API="file://$WORK/gh-equal" \
+RC2_WATCH_ADOPTION_DOC="$WORK/adoption.md" RC2_WATCH_TIMEOUT=5 \
+    sh "$SCRIPT" > "$WORK/T8.log" 2>&1
+assert_rc 0 $? "T8 future baseline exits 0"
+assert_contains "T8 reports the wait status" "status: WAIT" "$WORK/T8.log"
 
 # ---- summary ---------------------------------------------------------------------------
 log "== summary =="

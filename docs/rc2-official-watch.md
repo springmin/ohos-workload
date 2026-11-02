@@ -1,5 +1,10 @@
 # rc.2 官方包监测（RC2-WATCH）
 
+> **2026-11-02 重锚**：基线改为 nuget `11.0.0-rc.2.26505.5` / GitHub `11.0.100-rc.2.26513.2`，
+> 触发条件改为**严格新于**基线（等于不再触发）。当前 nuget 四包仍是 `.26505.5`；
+> GitHub release `.26513.2` 只是 tag，不作为包线依据。脚本新增
+> `RC2_WATCH_NUGET_BASELINE` / `RC2_WATCH_GITHUB_BASELINE` 覆盖；离线自测 18 checks。
+>
 > **2026-10-13 已触发并落地（完成）**：官方四包 `11.0.0-rc.2.26505.5` 上了 nuget.org，
 > pin 切换批次同日执行 —— maui 切片 `1c5ff3cbeb`（四包引用 `26478.12 → 26505.5`；14 处 /
 > 8 文件；切片门禁 0 error / 0 IL）、本仓 9 个 test/src 工程同步、三 workflow `MAUI_OHOS_REF`
@@ -18,6 +23,8 @@
 | 2026-10-04 | nuget.org / GitHub | `11.0.0-rc.1.26451.6` / `11.0.100-rc.1.26458.5` | WAIT（exit 0） |
 | 2026-10-13 | nuget.org（切片四包 Controls / Core / Graphics / AspNetCore.Components.WebView.Maui） | `11.0.0-rc.2.26505.5` | **trigger=yes（exit 10）→ 换 pin 批次执行** |
 | 2026-10-13 | GitHub `dotnet/maui` releases | 页面滞后（未作触发依据；以 nuget flat-container 为准） | — |
+| 2026-11-02 | nuget.org（四包） | `11.0.0-rc.2.26505.5`（等于基线） | WAIT（exit 0） |
+| 2026-11-02 | GitHub `dotnet/maui` releases | `11.0.100-rc.2.26513.2`（等于基线） | WAIT（exit 0） |
 
 **结论：已完成**；pin 已切至官方 rc.2，dnceng feed step 已删。历史 pin `11.0.0-rc.2.26478.12`
 （dnceng `dotnet11` daily）正式退役。
@@ -29,8 +36,9 @@ sh scripts/rc2-official-watch.sh            # 只读轮询，不加参数
 sh scripts/selftest-rc2-official-watch.sh   # 离线夹具（file://），不触网
 ```
 
-- 退出码：`0` = 未出现（继续等）；`10` = 出现（执行换 pin 批次）；`1` = 所有源都取不到（结果未知）；`2` = 用法错误。
-  （触发记录见上；再次运行仍会报 exit 10，因为基线以下已落地——重新启用排程/看下一里程碑前先重锚基线。）
+- 退出码：`0` = 没有比基线更新的版本（继续等）；`10` = 出现更新版本（执行换 pin 批次）；
+  `1` = 所有源都取不到（结果未知）；`2` = 用法错误。
+  （2026-11-02 起基线 = 当前已落地版本，等于基线不触发；下次触发即真的有新包。）
 - 触发输出引用 `runtime-ohos/docs/plans/2026-09-30-rc2-mainline-adoption.md` §8：换 `MAUI_OHOS_REF`
   （`interaction-regression.yml` / `pixel-regression.yml` / `host-export-contract.yml`）→ 删 dnceng `dotnet11`
   feed step → 门禁 5/5 + 本地套件 → 记录。
@@ -39,7 +47,9 @@ sh scripts/selftest-rc2-official-watch.sh   # 离线夹具（file://），不触
 
 ## 备注
 
-- 版本比较基线：nuget `11.0.0-rc.2`、GitHub `11.0.100-rc.2`；比基线新（后续 rc / GA / 更高版本）一律触发。
+- 版本比较基线：nuget `11.0.0-rc.2.26505.5`、GitHub `11.0.100-rc.2.26513.2`；仅严格更新
+  （后续 rc / GA / 更高 revision）触发。比较器覆盖 `major.minor.patch`、stage、stage number
+  与 build/revision 组件；可用 `RC2_WATCH_*_BASELINE` 临时覆盖。
 - 网络：脚本用 `curl -L`（本机 api.nuget.org 会重定向到 nuget.azure.cn；GitHub 直连不稳时按源降级，
   仅当两源全失败才判未知）。
 - 换 pin 时同步更新本页状态与 `docs/rc2-line-notes.md`（2026-10-13 已按此更新两处）。
