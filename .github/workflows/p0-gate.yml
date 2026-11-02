@@ -1,0 +1,30 @@
+name: p0-gate
+
+# Host-side MAUI P0 regression gate. The quick mode needs no SDK/workload and no device:
+#   * perf-gate comparator fixture (baseline PASS / regression FAIL / report-only / usage)
+#   * compat source pins (CommunityToolkit.Maui 15.0.1, five probe cases, handler hook)
+#   * reference-app source pins (MainTabs, pending deep links, form save, subwindow, shell)
+#
+# The upstream-delta drift check needs the sibling maui-ohos checkout with full history, so it
+# is skipped here and runs locally / in the release runbook (scripts/p0-gate.sh --quick). The
+# NativeAOT stage (--full) needs the OpenHarmony workload and lives in the release runbook too.
+#
+# Least privilege: read-only checkout, no secrets, nothing pushed or published.
+on:
+  workflow_dispatch:
+  push:
+    branches: [ master ]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  quick:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: P0 quick gate (perf comparator + compat/reference source pins)
+        run: sh scripts/p0-gate.sh --quick --skip-delta

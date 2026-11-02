@@ -30,10 +30,9 @@ public static class Program
                 {
                     stack = stack.Substring(0, 400);
                 }
-                string site = ex.TargetSite is { } target
-                    ? $"{target.DeclaringType?.FullName}.{target.Name}"
-                    : "?";
-                OpenHarmonyBridge.WriteStatus($"[compat] EX {ex.GetType().Name}: {ex.Message} site={site} stack={stack}");
+                // No Exception.TargetSite here: it is RequiresUnreferencedCode (IL2026) and the
+                // stack already carries the failing frame in the AOT log.
+                OpenHarmonyBridge.WriteStatus($"[compat] EX {ex.GetType().Name}: {ex.Message} stack={stack}");
             }
         };
         OpenHarmonyBridge.LifecycleChanged += e =>

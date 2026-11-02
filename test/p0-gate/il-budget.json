@@ -1,0 +1,15 @@
+{
+  "note": "Known trim budgets for the P0 AOT gate. reference-lob must stay at zero. The compat probe keeps the CommunityToolkit Expander RequiresUnreferencedCode warning visible; the warning and its trim-analysis duplicate currently report as 2. Any budget overrun fails scripts/p0-gate.sh --full.",
+  "budgets": {
+    "compat": {
+      "IL2026": 2,
+      "IL3050": 0,
+      "IL3051": 0
+    },
+    "reference": {
+      "IL2026": 0,
+      "IL3050": 0,
+      "IL3051": 0
+    }
+  }
+}

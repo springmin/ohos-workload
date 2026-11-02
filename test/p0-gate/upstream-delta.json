@@ -1,0 +1,30 @@
+{
+  "baseline_commit": "d32b7992870",
+  "note": "Upstream base for the OpenHarmony slice (maui-ohos). Re-measured 2026-11-02: +50,788 insertions vs the 2026-10-28 doc (+50,766); the +22 lines are the T2 OpenHarmonyHandlerConnector.RegisterHandler work. Intrusive files are still +77/-3.",
+  "intrusive_files": [
+    "Directory.Build.props",
+    "src/Core/src/Core.csproj",
+    "src/MultiTargeting.targets",
+    "src/Workload/Microsoft.NET.Sdk.Maui.Manifest/WorkloadManifest.in.json"
+  ],
+  "expected": {
+    "files": 152,
+    "insertions": 50788,
+    "deletions": 3,
+    "added": 148,
+    "modified": 4,
+    "slice_files": 143,
+    "intrusive_insertions": 77,
+    "intrusive_deletions": 3
+  },
+  "tolerance": {
+    "files": 4,
+    "insertions": 200,
+    "deletions": 2,
+    "added": 4,
+    "modified": 2,
+    "slice_files": 4,
+    "intrusive_insertions": 20,
+    "intrusive_deletions": 2
+  }
+}
