@@ -1,0 +1,6 @@
+{
+  "max_first_frame_ms": 1500,
+  "max_cold_start_ms": 2500,
+  "min_scroll_fps": 50.0,
+  "max_rss_mb": 300
+}

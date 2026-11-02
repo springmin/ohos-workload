@@ -16,6 +16,7 @@
 #   T7 default    no thresholds argument, run from another cwd -> the repo default is used
 #   T8 skip       a threshold key missing from the thresholds file -> SKIP, rc 0
 #   T9 custom     a caller-supplied thresholds file is honoured -> rc 0
+#   T10 negative  a negative max metric -> rc 1 (a bad measurement cannot pass)
 #
 # Env: SELFTEST_TMPDIR=<dir>  work dir base (default: the approved opencode tmp dir)
 #      SELFTEST_KEEP=1       keep the work dir even when all checks pass
@@ -130,6 +131,17 @@ PY
 sh "$GATE" "$T/regression.json" "$T/loose-thresholds.json" > "$T/t9.out" 2>&1
 assert_rc "T9 custom thresholds: loosened gate passes" "$?" 0
 assert_contains "T9 custom thresholds: PASS summary" "perf-gate: PASS" "$T/t9.out"
+
+# ---------------------------------------------------------------- T10 negative
+python3 - "$T/baseline.json" "$T/negative.json" <<'PYNEG'
+import json, sys
+doc = json.load(open(sys.argv[1]))
+doc["metrics"]["first_frame_ms"] = -1
+json.dump(doc, open(sys.argv[2], "w"))
+PYNEG
+sh "$GATE" "$T/negative.json" > "$T/t10.out" 2>&1
+assert_rc "T10 negative metric: exits 1" "$?" 1
+assert_contains "T10 negative metric: FAIL first_frame_ms" "FAIL first_frame_ms" "$T/t10.out"
 
 # ---------------------------------------------------------------- summary
 printf '\n'

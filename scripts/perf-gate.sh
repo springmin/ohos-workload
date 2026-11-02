@@ -63,7 +63,8 @@ for key, limit_key, mode, unit in checks:
         continue
     actual = metrics[key]
     limit = thresholds[limit_key]
-    ok = actual <= limit if mode == "max" else actual >= limit
+    # A negative time/size is never a valid measurement; do not let it pass a max bound.
+    ok = (0 <= actual <= limit) if mode == "max" else (actual >= limit)
     status = "PASS" if ok else "FAIL"
     if not ok:
         failed += 1
