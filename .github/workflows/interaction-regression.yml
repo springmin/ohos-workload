@@ -40,7 +40,7 @@ on:
         description: 'maui-ohos commit SHA to compile (defaults to the pinned feature/openharmony tip)'
         required: false
         type: string
-        default: 'efe5b823c8e02658db629205079a62caf2af9c7e'
+        default: '95a3d320f6ea8a1491ac1369a1681fe84bc26ecb'
   push:
     branches: [ master ]
   pull_request:
@@ -291,10 +291,10 @@ permissions:
 # and the harness are unchanged); advance the pin deliberately and refresh this comment when the
 # harness pins or the tip move (workflow_dispatch can compile any commit).
 env:
-  MAUI_OHOS_REF: ${{ github.event.inputs.maui_ohos_ref || 'efe5b823c8e02658db629205079a62caf2af9c7e' }}
-  # The current tip is efe5b823c8e0 (2026-10-31): the rc.2 slice plus the CommunityToolkit
-  # handler-connector registration (T2) and the reference-app/T3 work. The previous tip
-  # was the 11.0 rc.2 release-branch sync (868d3c8727b, 2026-10-19) on top of the
+  MAUI_OHOS_REF: ${{ github.event.inputs.maui_ohos_ref || '95a3d320f6ea8a1491ac1369a1681fe84bc26ecb' }}
+  # The current tip is 95a3d320f6e (2026-11-02): IL2070 is suppressed on FindSliceHandler
+  # (the slice analyzer gate caught the misplaced attribute). Previous: efe5b823c8e0
+  # (2026-10-31) with the T2 handler connector and reference-app/T3 work, on top of the
   # SECURE-STORAGE-ASSET merge (44da5f74f5): the Asset Store credential
   # backend (OH_Asset_* via the host bridge; the data file keeps only the a1: index marker) and
   # the FailClosed default flip (a Set that can use neither the store nor HUKS throws and writes

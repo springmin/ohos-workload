@@ -129,5 +129,5 @@ echo "== publish so =="
 stat -c '%s %n' "$PUB"/*.so 2>/dev/null
 sha256sum "$PUB/libreference-lob.so" 2>/dev/null
 echo "== IL gate lines =="
-for w in IL2026 IL3050 IL3051; do printf '%s %s\n' "$w" "$(grep -c "$w" "$LOG" || true)"; done
+for w in IL2026 IL3050 IL3051 IL2070; do printf '%s %s\n' "$w" "$(grep -c "$w" "$LOG" || true)"; done
 date

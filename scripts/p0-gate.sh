@@ -11,7 +11,7 @@
 # Full (--full):
 #   * everything above
 #   * NativeAOT publish of test/maui-compat-app, then test/reference-lob, with the IL gate
-#     (IL2026/IL3050/IL3051 checked against test/p0-gate/il-budget.json) and a hap check
+#     (IL2026/IL3050/IL3051/IL2070 checked against test/p0-gate/il-budget.json) and a hap check
 #   The publishes are host-only but heavy; when MemAvailable is below 2 GB they are SKIPped
 #   (the publish scripts would refuse to start anyway). A device round is still manual:
 #   see runtime-ohos docs/plans/2026-10-30-ohos-maui-reference-app.md.
@@ -24,6 +24,8 @@ set -u
 
 log()  { printf '[%s] %s\n' "$(date '+%H:%M:%S')" "$*"; }
 warn() { printf '[%s] WARN: %s\n' "$(date '+%H:%M:%S')" "$*" >&2; }
+pass_() { printf '  [PASS] %s\n' "$*"; }
+fail_() { printf '  [FAIL] %s\n' "$*" >&2; }
 
 W="$(cd "$(dirname "$0")/.." && pwd)"
 MODE=quick
@@ -62,7 +64,12 @@ while [ $# -gt 0 ]; do
     esac
 done
 
-LOG_DIR="${P0_GATE_LOG_DIR:-/data/storage/el2/base/tmp/opencode/p0-gate-$(date '+%Y%m%d-%H%M%S')}"
+if [ -n "${P0_GATE_LOG_DIR:-}" ]; then
+    LOG_DIR="$P0_GATE_LOG_DIR"
+else
+    LOG_DIR="$(mktemp -d "${TMPDIR:-/tmp}/p0-gate.XXXXXX" 2>/dev/null || true)"
+    [ -n "$LOG_DIR" ] || LOG_DIR="${TMPDIR:-/tmp}/p0-gate-$$"
+fi
 mkdir -p "$LOG_DIR" || { warn "cannot create log dir: $LOG_DIR"; exit 1; }
 
 # The rc.2 line is the supported build for this tree; keep an explicit DOTNET override.
@@ -76,6 +83,7 @@ ST_DELTA="SKIP"
 ST_COMPAT="SKIP"
 ST_REFERENCE="SKIP"
 ST_METRICS="SKIP"
+ST_SLICE="SKIP"
 FAILED=0
 
 log "P0 gate ($MODE)"
@@ -230,6 +238,54 @@ set_aot_status() { # <name> <value>
     esac
 }
 
+run_slice_analyzer() {
+    _slice="${MAUI_SLICE_DIR:-$W/../maui-ohos/src/Core/src/Platform/OpenHarmony}"
+    _proj="$_slice/Microsoft.Maui.Platform.OpenHarmony.csproj"
+    _host="$W/src/Microsoft.OpenHarmony.Hosting/bin/Release/net11.0/Microsoft.OpenHarmony.Hosting.dll"
+    _gfx="$W/src/Microsoft.OpenHarmony.Maui.Graphics/bin/Release/net11.0/Microsoft.OpenHarmony.Maui.Graphics.dll"
+    if [ ! -f "$_proj" ]; then
+        ST_SLICE="SKIP (no maui slice)"
+        return
+    fi
+    if [ -z "${DOTNET:-}" ]; then
+        ST_SLICE="SKIP (no dotnet)"
+        return
+    fi
+    log "== slice trim/AOT analyzer =="
+    if [ ! -f "$_host" ] || [ ! -f "$_gfx" ]; then
+        "$DOTNET" build "$W/src/Microsoft.OpenHarmony.Hosting/Microsoft.OpenHarmony.Hosting.csproj"             -c Release -m:1 -v:q > "$LOG_DIR/hosting-build.log" 2>&1 || {
+                tail -10 "$LOG_DIR/hosting-build.log" >&2
+                ST_SLICE="FAIL (hosting build)"
+                FAILED=$((FAILED + 1))
+                return
+            }
+        "$DOTNET" build "$W/src/Microsoft.OpenHarmony.Maui.Graphics/Microsoft.OpenHarmony.Maui.Graphics.csproj"             -c Release -m:1 -v:q > "$LOG_DIR/graphics-build.log" 2>&1 || {
+                tail -10 "$LOG_DIR/graphics-build.log" >&2
+                ST_SLICE="FAIL (graphics build)"
+                FAILED=$((FAILED + 1))
+                return
+            }
+    fi
+    "$DOTNET" build "$_proj" -c Release -m:1 -v:m         -p:IsAotCompatible=true -p:EnableTrimAnalyzer=true -p:EnableAotAnalyzer=true         -warnaserror:IL2026,IL3050         -p:OpenHarmonyHostingAssembly="$_host" -p:OpenHarmonyGraphicsAssembly="$_gfx"         > "$LOG_DIR/slice-analyzer.log" 2>&1
+    _rc=$?
+    _ok=1
+    [ "$_rc" -eq 0 ] || _ok=0
+    grep -q 'Build succeeded' "$LOG_DIR/slice-analyzer.log" || _ok=0
+    if grep -qE 'warning IL[0-9]+|error IL[0-9]+' "$LOG_DIR/slice-analyzer.log"; then
+        grep -E 'warning IL[0-9]+|error IL[0-9]+' "$LOG_DIR/slice-analyzer.log" | head -10 >&2
+        _ok=0
+    fi
+    if [ "$_ok" -eq 1 ]; then
+        ST_SLICE="PASS (no IL warnings)"
+        pass_ "slice trim/AOT analyzer"
+    else
+        tail -12 "$LOG_DIR/slice-analyzer.log" >&2
+        ST_SLICE="FAIL (IL analyzer)"
+        FAILED=$((FAILED + 1))
+        fail_ "slice trim/AOT analyzer"
+    fi
+}
+
 run_aot() { # <name> <project-dir> <budget-key>
     name=$1
     dir=$2
@@ -253,8 +309,21 @@ run_aot() { # <name> <project-dir> <budget-key>
         return
     fi
     log "== $name NativeAOT publish =="
-    AOT_WORKDIR="$LOG_DIR/$name-aot" sh "$script" > "$LOG_DIR/$name-aot.out" 2>&1
-    rc=$?
+    # Incremental AOT can skip the warning-emitting compile and report 0 IL2026; force a
+    # clean app build so the IL budget is measured on emitted diagnostics. The host compiler
+    # occasionally dies with csc 139 under load; one clean retry keeps a transient crash from
+    # turning the gate red.
+    _attempt=1
+    while :; do
+        rm -rf "$W/test/$dir/bin" "$W/test/$dir/obj"
+        AOT_WORKDIR="$LOG_DIR/$name-aot" sh "$script" > "$LOG_DIR/$name-aot.out" 2>&1
+        rc=$?
+        [ "$rc" -eq 0 ] && break
+        [ "$_attempt" -ge 2 ] && break
+        warn "$name: AOT publish rc=$rc; retrying once after a clean"
+        _attempt=$((_attempt + 1))
+        sleep 2
+    done
     plog="$LOG_DIR/$name-aot/publish-aot.log"
     ok=1
     [ "$rc" -eq 0 ] || ok=0
@@ -264,12 +333,12 @@ run_aot() { # <name> <project-dir> <budget-key>
         budget=$(python3 - "$W/test/p0-gate/il-budget.json" "$budget_key" <<'PYBUDGET'
 import json, sys
 print(" ".join(str(json.load(open(sys.argv[1]))["budgets"][sys.argv[2]][w])
-                 for w in ("IL2026", "IL3050", "IL3051")))
+                 for w in ("IL2026", "IL3050", "IL3051", "IL2070")))
 PYBUDGET
 )
         set -- $budget
-        l26=${1:-missing}; l50=${2:-missing}; l51=${3:-missing}
-        for pair in "IL2026 $l26" "IL3050 $l50" "IL3051 $l51"; do
+        l26=${1:-missing}; l50=${2:-missing}; l51=${3:-missing}; l70=${4:-missing}
+        for pair in "IL2026 $l26" "IL3050 $l50" "IL3051 $l51" "IL2070 $l70"; do
             w=${pair% *}
             lim=${pair#* }
             act=$(grep -E "^$w [0-9]+$" "$plog" | tail -1 | awk '{print $2}')
@@ -295,6 +364,10 @@ PYBUDGET
     fi
 }
 
+if [ "$MODE" = full ]; then
+    run_slice_analyzer
+fi
+
 if [ "$AOT_COMPAT" = 1 ] && [ "$SKIP_COMPAT" = 0 ]; then
     run_aot compat maui-compat-app compat
 fi
@@ -310,6 +383,7 @@ summary_line "perf-gate fixture" "$ST_PERF"
 summary_line "upstream delta" "$ST_DELTA"
 summary_line "compat pins" "$ST_COMPAT"
 summary_line "reference pins" "$ST_REFERENCE"
+[ "$MODE" = full ] && summary_line "slice analyzer" "$ST_SLICE"
 [ "$AOT_COMPAT" = 1 ] && summary_line "compat AOT" "$ST_COMPAT_AOT"
 [ "$AOT_REFERENCE" = 1 ] && summary_line "reference AOT" "$ST_REFERENCE_AOT"
 log "   logs: $LOG_DIR"
