@@ -1529,12 +1529,13 @@ run_hvigor() {
           ${JAVA_HOME:+JAVA_HOME="$JAVA_HOME"} \
           OHOS_BASE_SDK_HOME="$SDK" DEVECO_SDK_HOME="$SDK" \
           externalApiPaths="$EXTERNAL_API_PATHS" \
-          "$NODE_BIN" "$HVIGOR_JS" \
+          "$NODE_BIN" ${HVIGOR_NODE_FLAGS:-} "$HVIGOR_JS" \
             assembleHap -m module -p module=entry@default -p product=default -p buildMode=debug \
             > "$LOG" 2>&1 )
 }
 # The toolchain occasionally aborts with a V8 fatal ("Signal 5") on this device; retry.
 ABC_INTERMEDIATE="$PROJ/entry/build/default/intermediates/loader_out/default/ets/modules.abc"
+HVIGOR_NODE_FLAGS="${HVIGOR_NODE_FLAGS:---jitless}"
 attempt=1
 while :; do
     if run_hvigor; then break; fi
@@ -1546,7 +1547,10 @@ while :; do
         break
     fi
     if grep -qE 'Signal 5|Fatal error in' "$LOG" && [ "$attempt" -lt 3 ]; then
-        info "hvigor crashed (attempt $attempt) - retrying"
+        # V8 Signal 5 (Check failed: 12 == errno) is reproducible on cold builds on this box;
+        # --jitless avoids the executable-memory/JIT path and compiles the same abc (verified).
+        HVIGOR_NODE_FLAGS=--jitless
+        info "hvigor crashed (attempt $attempt) - retrying with --jitless"
         attempt=$((attempt + 1))
         continue
     fi

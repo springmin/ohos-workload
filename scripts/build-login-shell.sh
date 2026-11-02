@@ -115,21 +115,23 @@ while [ "$(awk '/MemAvailable/{print $2}' /proc/meminfo)" -lt 2097152 ]; do
     echo "waiting for memory (${i}/20)"; sleep 30
 done
 attempt=1
+NODE_FLAGS="${HVIGOR_NODE_FLAGS:---jitless}"
 while :; do
     ( cd "$P" && \
       env -i PATH="$(dirname "$NODE_BIN"):/usr/bin:/bin" HOME="$HOME" \
           JAVA_HOME="$JAVA_HOME" OHOS_BASE_SDK_HOME="$SDK" DEVECO_SDK_HOME="$SDK" \
           externalApiPaths="$SDK/ets/api:$SDK/ets/kits:$SDK/ets/arkts" \
-          "$NODE_BIN" "$HVIGOR_JS" assembleHap -m module -p module=entry@default \
+          "$NODE_BIN" $NODE_FLAGS "$HVIGOR_JS" assembleHap -m module -p module=entry@default \
             -p product=default -p buildMode=debug > "$LOG" 2>&1 )
     RC=$?
     if [ -f "$ABC" ] && grep -q 'Finished :entry:default@CompileArkTS' "$LOG"; then
         break
     fi
     if [ "$attempt" -lt 5 ] && grep -qE 'Signal 5|Fatal error in' "$LOG"; then
-        echo "hvigor crashed (attempt $attempt); retrying after a 30 s pause" >&2
+        echo "hvigor crashed (attempt $attempt); retrying with --jitless after a pause" >&2
+        NODE_FLAGS=--jitless
         attempt=$((attempt + 1))
-        sleep 30
+        sleep 5
         continue
     fi
     echo "hvigor failed (rc=$RC); log: $LOG" >&2
