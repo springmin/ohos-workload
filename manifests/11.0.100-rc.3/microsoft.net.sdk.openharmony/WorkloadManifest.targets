@@ -1,0 +1,8 @@
+<Project>
+  <!-- Import the platform SDK pack unconditionally; the pack gates itself on the
+       target platform once the target framework has been inferred (deferred SDK
+       targets import). This mirrors how platform manifests import their packs. -->
+  <ImportGroup>
+    <Import Project="Sdk.targets" Sdk="Microsoft.OpenHarmony.Sdk" />
+  </ImportGroup>
+</Project>
