@@ -118,6 +118,18 @@
          the ArkUI pages), and set OpenHarmonyUIPage to the page record (e.g. pages/Index).
          The headless shell (this pack's template) is used when the property is empty. -->
     <OpenHarmonyUIPage Condition=" '$(OpenHarmonyUIPage)' == '' "></OpenHarmonyUIPage>
+    <!-- OpenSSL trust-store policy (see docs/openharmony-hap-packaging.md "CA trust"): the
+         packaging writes trust.json + trust-ca.pem into the payload, and the native host applies
+         them before hostfxr/coreclr starts.
+           system: SSL_CERT_FILE unset, SSL_CERT_DIR=<system dir>
+           app:    SSL_CERT_FILE=<ca file>, SSL_CERT_DIR="" (no system fallback)
+           both:   SSL_CERT_FILE=<ca file> + SSL_CERT_DIR=<system dir>
+         "both" without OpenHarmonyCaBundle is system-only and remains the backwards-compatible
+         default; "app" requires a bundle. The system directory is a device path, so it cannot be
+         checked at build time. -->
+    <OpenHarmonyTrustMode Condition=" '$(OpenHarmonyTrustMode)' == '' ">both</OpenHarmonyTrustMode>
+    <OpenHarmonyCaBundle Condition=" '$(OpenHarmonyCaBundle)' == '' "></OpenHarmonyCaBundle>
+    <OpenHarmonySystemCaDir Condition=" '$(OpenHarmonySystemCaDir)' == '' ">/etc/ssl/certs</OpenHarmonySystemCaDir>
     <!-- Deep links / app links (see "Deep links / activation" in the packaging doc):
          OpenHarmonyAppLinkHosts is the ';'-separated https host allow-list (for example
          "example.com;www.example.com"). One property feeds both declaration sides of the P2c
@@ -196,6 +208,46 @@
            Text="The bundled ArkTS UI shell was compiled for bundle '$(OpenHarmonyBundledArktsShellBundle)', but OpenHarmonyBundleName is '$(OpenHarmonyBundleName)'. Its ability and ArkUI page records embed the build-time bundle name, so the HAP would install and then fail at launch (ReferenceError: Cannot find module, or Load Page Failed). Build the shell for this bundle from the workload source checkout:&#xA;  ARKTS_SHELL_BUNDLE_NAME='$(OpenHarmonyBundleName)' scripts/build-arkts-shell.sh&#xA;then pass -p:OpenHarmonyArktsModulesAbc=&lt;output&gt; ($(_OpenHarmonyArktsShellFile)). Alternatively pass an already-built shell for this bundle. To keep the bundled shell, use -p:OpenHarmonyBundleName=$(OpenHarmonyBundledArktsShellBundle) and a matching signing profile." />
     <Error Condition=" '$(_OpenHarmonyArktsShellVariant)' != 'ui' "
            Text="The bundled ArkTS headless shell was compiled for bundle '$(OpenHarmonyBundledArktsShellBundle)', but OpenHarmonyBundleName is '$(OpenHarmonyBundleName)'. Its EntryAbility record embeds the build-time bundle name, so the HAP would install and then fail at launch (ReferenceError: Cannot find module '$(OpenHarmonyBundleName)/entry/ets/entryability/EntryAbility'). Build the headless shell for this bundle from the workload source checkout:&#xA;  ARKTS_SHELL_BUNDLE_NAME='$(OpenHarmonyBundleName)' ARKTS_SHELL_VARIANT=headless scripts/build-arkts-shell.sh&#xA;then pass -p:OpenHarmonyArktsModulesAbc=&lt;output&gt; ($(_OpenHarmonyArktsShellFile)). Alternatively pass an already-built shell for this bundle. To keep the bundled shell, use -p:OpenHarmonyBundleName=$(OpenHarmonyBundledArktsShellBundle) and a matching signing profile." />
+  </Target>
+
+  <!-- Trust bundle staging: trust.json and the optional PEM are copied into PublishDir before
+       the deterministic zip and the payload-in-libs staging, so both launch shapes (staged
+       libs/<abi>/ and extracted dotnet.zip) carry the same trust files. The host reads
+       trust.json next to the effective app_dir and sets SSL_CERT_FILE/SSL_CERT_DIR before
+       hostfxr/coreclr. Paths in the JSON are relative to that directory; the CA file is fixed
+       to trust-ca.pem so the payload cannot point the runtime at an arbitrary path. -->
+  <Target Name="_OpenHarmonyStageTrust"
+          BeforeTargets="_OpenHarmonyStageHap"
+          Condition=" '$(OpenHarmonyHapPackage)' == 'true' and '$(TargetPlatformIdentifier)' == 'openharmony' ">
+    <PropertyGroup>
+      <_OpenHarmonyTrustModeValid>$([System.Text.RegularExpressions.Regex]::IsMatch('$(OpenHarmonyTrustMode)', '^(system|app|both)$'))</_OpenHarmonyTrustModeValid>
+      <_OpenHarmonyTrustSystemDirValid>$([System.Text.RegularExpressions.Regex]::IsMatch('$(OpenHarmonySystemCaDir)', '^/[A-Za-z0-9._/-]*$'))</_OpenHarmonyTrustSystemDirValid>
+      <_OpenHarmonyTrustPublishDir>$([MSBuild]::NormalizeDirectory('$(MSBuildProjectDirectory)', '$(PublishDir)'))</_OpenHarmonyTrustPublishDir>
+      <_OpenHarmonyTrustCaSource Condition=" '$(OpenHarmonyCaBundle)' != '' ">$([MSBuild]::NormalizePath('$(MSBuildProjectDirectory)', '$(OpenHarmonyCaBundle)'))</_OpenHarmonyTrustCaSource>
+    </PropertyGroup>
+    <Error Condition=" '$(_OpenHarmonyTrustModeValid)' != 'true' "
+           Text="OpenHarmonyTrustMode '$(OpenHarmonyTrustMode)' is invalid; use system, app or both." />
+    <Error Condition=" '$(_OpenHarmonyTrustSystemDirValid)' != 'true' "
+           Text="OpenHarmonySystemCaDir '$(OpenHarmonySystemCaDir)' must be one absolute device directory (letters, digits, dot, underscore, slash, hyphen)." />
+    <Error Condition=" '$(OpenHarmonyTrustMode)' == 'app' and '$(OpenHarmonyCaBundle)' == '' "
+           Text="OpenHarmonyTrustMode=app requires OpenHarmonyCaBundle=&lt;PEM file&gt;." />
+    <Error Condition=" '$(OpenHarmonyTrustMode)' == 'system' and '$(OpenHarmonyCaBundle)' != '' "
+           Text="OpenHarmonyTrustMode=system cannot use OpenHarmonyCaBundle; use both or app, or clear the bundle." />
+    <Error Condition=" '$(OpenHarmonyCaBundle)' != '' and !Exists('$(_OpenHarmonyTrustCaSource)') "
+           Text="OpenHarmonyCaBundle does not exist: $(_OpenHarmonyTrustCaSource)" />
+    <MakeDir Directories="$(_OpenHarmonyTrustPublishDir)" />
+    <PropertyGroup>
+      <_OpenHarmonyTrustJson>{&quot;mode&quot;:&quot;$(OpenHarmonyTrustMode)&quot;,&quot;systemCaDir&quot;:&quot;$(OpenHarmonySystemCaDir)&quot;</_OpenHarmonyTrustJson>
+      <_OpenHarmonyTrustJson Condition=" '$(OpenHarmonyCaBundle)' != '' ">{&quot;mode&quot;:&quot;$(OpenHarmonyTrustMode)&quot;,&quot;caFile&quot;:&quot;trust-ca.pem&quot;,&quot;systemCaDir&quot;:&quot;$(OpenHarmonySystemCaDir)&quot;</_OpenHarmonyTrustJson>
+      <_OpenHarmonyTrustJson>$(_OpenHarmonyTrustJson)}</_OpenHarmonyTrustJson>
+    </PropertyGroup>
+    <WriteLinesToFile File="$(_OpenHarmonyTrustPublishDir)trust.json" Lines="$(_OpenHarmonyTrustJson)" Overwrite="true" />
+    <!-- Do not let a removed bundle survive in a reused publish directory. -->
+    <Delete Files="$(_OpenHarmonyTrustPublishDir)trust-ca.pem" Condition=" '$(OpenHarmonyCaBundle)' == '' " />
+    <Copy Condition=" '$(OpenHarmonyCaBundle)' != '' "
+          SourceFiles="$(_OpenHarmonyTrustCaSource)"
+          DestinationFiles="$(_OpenHarmonyTrustPublishDir)trust-ca.pem" />
+    <Message Importance="high" Text="OpenHarmony: staged trust.json (mode=$(OpenHarmonyTrustMode), ca=$(OpenHarmonyCaBundle), system=$(OpenHarmonySystemCaDir)) into $(_OpenHarmonyTrustPublishDir)" />
   </Target>
 
   <!-- Deterministic payload zip: ordinal entry sort and a fixed entry timestamp, so identical

@@ -15,7 +15,7 @@
 # never become a DT_NEEDED entry).
 set -e
 W="$(cd "$(dirname "$0")/.." && pwd)"
-VER=1.0.0-preview.24
+VER="${HOST_PACK_VERSION:-1.0.0-preview.24}"
 NATIVE="${OHOS_NDK:-}"
 if [ -z "$NATIVE" ]; then
     ROOT="${OHOS_SDK:-$HOME/.harmonybrew/Cellar/ohos-sdk/26.0.0.18_2}"
@@ -49,7 +49,7 @@ mkdir -p "$OUT"
     -o "$OUT/libopenharmonyhost.so" \
     "$SRC/host_napi.cpp" "$SRC/openharmony_host.c" "$SRC/host_optional.c" "$SRC/host_keystore.c" \
     "$SRC/host_window_registry.c" "$SRC/host_window_bridge.c" "$SRC/host_a11y_table.c" \
-    "$SRC/host_clipboard.c" "$SRC/host_asset.c" "$SRC/host_status.c" \
+    "$SRC/host_clipboard.c" "$SRC/host_asset.c" "$SRC/host_status.c" "$SRC/host_trust.c" \
     -lace_napi.z -lace_ndk.z -lnative_drawing -ldl
 ls -l "$OUT/libopenharmonyhost.so"
 

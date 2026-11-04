@@ -11,6 +11,7 @@
 // in-process when the device ships libhuks_ndk.z.so (see openharmony_host.c below).
 #include "host_keystore.h"
 #include "host_status.h"  // DEVICE-ROUND-57: the launch mode decision lands in dotnet-status.txt
+#include "host_trust.h"   // OpenSSL trust mode from the payload's trust.json
 #include "host_window_registry.h"  // MULTIWINDOW-L M3: per-window draw targets resolve the surface
 
 #include <sensors/vibrator.h>
@@ -590,6 +591,63 @@ static void OhosHostAppendStatusFor(const char* app_dir, const char* context_jso
     }
 }
 
+// The packaging stages trust.json next to the payload (libs/<abi>/ for payload-in-libs, or the
+// extracted payload directory for the dotnet.zip fallback). The file is small and flat:
+//
+//   {"mode":"both","caFile":"trust-ca.pem","systemCaDir":"/etc/ssl/certs"}
+//
+// Apply it before hostfxr/coreclr starts. An absent file keeps the previous environment exactly
+// (older HAPs and apps that do not opt in); a malformed file only costs the trust line because a
+// TLS failure must remain diagnosable instead of turning into a launch failure.
+static void OhosHostApplyTrustPolicyFromPayload(const char* caller, const char* app_dir,
+                                                const char* context_json) {
+    if (app_dir == NULL || app_dir[0] == '\0') {
+        return;
+    }
+    char path[4096];
+    if (path_join(path, sizeof(path), app_dir, "trust.json") != 0) {
+        return;
+    }
+    FILE* file = fopen(path, "rb");
+    if (file == NULL) {
+        return;
+    }
+    char json[4096];
+    size_t used = fread(json, 1, sizeof(json) - 1, file);
+    fclose(file);
+    json[used] = '\0';
+
+    char mode[16];
+    if (!OhosHostJsonString(json, "mode", mode, sizeof(mode))) {
+        return;
+    }
+    char ca_relative[4096];
+    int have_ca = OhosHostJsonString(json, "caFile", ca_relative, sizeof(ca_relative));
+    char ca_path[4096];
+    ca_path[0] = '\0';
+    if (have_ca && ca_relative[0] != '\0') {
+        if (ca_relative[0] == '/') {
+            snprintf(ca_path, sizeof(ca_path), "%s", ca_relative);
+        } else if (path_join(ca_path, sizeof(ca_path), app_dir, ca_relative) != 0) {
+            ca_path[0] = '\0';
+        }
+    }
+    char system_dir[4096];
+    if (!OhosHostJsonString(json, "systemCaDir", system_dir, sizeof(system_dir))) {
+        snprintf(system_dir, sizeof(system_dir), "%s", OHOS_HOST_TRUST_DEFAULT_SYSTEM_DIR);
+    }
+
+    char status[OHOS_HOST_TRUST_STATUS_MAX];
+    int rc = OhosHostApplyTrustPolicy(mode, ca_path, system_dir, status, sizeof(status));
+    const char* name = caller != NULL ? caller : "(null)";
+    OH_LOG_INFO(LOG_APP, "[openharmony-host] %{public}s: %{public}s", name, status);
+    fprintf(stderr, "[openharmony-host] %s: %s\n", name, status);
+    OhosHostAppendStatusFor(app_dir, context_json, status);
+    if (rc != 0) {
+        OH_LOG_WARN(LOG_APP, "[openharmony-host] %{public}s: trust policy was not applied", name);
+    }
+}
+
 // W10 observability: append the process stderr to <dir>/dotnet-status.txt by redirecting fd 2.
 // The platform runtime (NativeAOT/CoreCLR) writes unhandled-exception text and FailFast
 // diagnostics to stderr only, and this image does not route an app process's stderr to hilog,
@@ -1067,6 +1125,10 @@ static void OhosHostApplyExecMemoryPolicy(const char* caller, const char* app_di
     OH_LOG_INFO(LOG_APP, "[openharmony-host] %{public}s: xwe=%{public}d source=%{public}s",
                 name, enabled, source);
     fprintf(stderr, "[openharmony-host] %s: xwe=%d source=%s\n", name, enabled, source);
+
+    // OpenSSL trust policy from the staged payload. Must run before hostfxr/coreclr so the
+    // process environment is in place when the runtime creates its first X509 store.
+    OhosHostApplyTrustPolicyFromPayload(name, app_dir, context_json);
 
     // Runtime mode switch (MS-MODE): the packaging marker, read from the effective app_dir (the
     // staged libs/<abi>/ directory) or this library's own directory when the payload was

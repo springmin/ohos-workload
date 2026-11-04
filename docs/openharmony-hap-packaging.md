@@ -583,6 +583,36 @@ HAD-W24: the kit #34 JIT hap with both rewrites (rename + pad) installs, and the
 installs as well. The full evidence and the device-side probe recipe are recorded in the
 runtime-ohos plan `docs/plans/2026-09-30-ohos-jit-payload-install-policy.md`.
 
+## CA trust (OpenSSL)
+
+`OpenHarmonyTrustMode` selects how the managed OpenSSL runtime builds its trust store:
+
+| mode | `SSL_CERT_FILE` | `SSL_CERT_DIR` | result |
+|---|---|---|---|
+| `system` | unset | `<OpenHarmonySystemCaDir>` | system CA only |
+| `app` | `<payload>/trust-ca.pem` | empty | HAP CA only, no system fallback |
+| `both` | `<payload>/trust-ca.pem` (when supplied) | `<OpenHarmonySystemCaDir>` | HAP CA + system CA |
+
+- `OpenHarmonyTrustMode` defaults to `both`; without `OpenHarmonyCaBundle` this is system-only.
+- `OpenHarmonyCaBundle` is a PEM file. It is copied to the publish payload as `trust-ca.pem`
+  (and therefore appears in both `libs/<abi>/` and `dotnet.zip`); `app` mode requires it.
+- `OpenHarmonySystemCaDir` defaults to `/etc/ssl/certs`. It is a device path, so the build cannot
+  validate its existence; the host checks it at launch and falls back to app-only when it is
+  missing and a bundle is present.
+- The target writes `trust.json` next to the payload before the deterministic zip and libs
+  staging. The host reads `<effective app_dir>/trust.json` and applies the environment **before
+  hostfxr/coreclr starts**, so the runtime's first X509 store consistently uses the policy.
+  The host logs one `trust: mode=... app=... system=...` line (also mirrored to
+  `dotnet-status.txt`).
+- `app` mode sets `SSL_CERT_DIR=""` deliberately. The .NET root-store provider and OpenSSL then
+  do not fall back to the system directory. A self-signed/untrusted test endpoint must fail in
+  this mode; that is the negative control for the trust boundary.
+
+Device evidence (HAD-W24, OpenSSL 3.5.9): `both` produced
+`trust: mode=both ... app=1 system=1` with `SSL_CERT_FILE=<bundle>/trust-ca.pem` and
+`SSL_CERT_DIR=/etc/ssl/certs`; the public HTTPS probe passed. `app` produced `app=1 system=0`
+and the public HTTPS probe failed as expected, proving the system store was suppressed.
+
 ## Payload determinism
 
 `resources/rawfile/dotnet.zip` is written with a fixed entry order (ordinal path sort) and a fixed

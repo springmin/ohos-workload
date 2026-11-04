@@ -1197,6 +1197,53 @@ else
 fi
 
 
+# ---- T13: trust payload staging --------------------------------------------------------
+# The target writes trust.json + trust-ca.pem into PublishDir before the payload zip/staging;
+# the host consumes the same files from app_dir. This is the packaging half of the CA policy.
+section "T13 trust payload staging"
+if ! command -v "$DOTNET" >/dev/null 2>&1 || [ -z "${FIX:-}" ]; then
+    skip_ "T13 needs the T2/T3 dotnet fixture"
+else
+    printf '%s
+' '-----BEGIN CERTIFICATE-----' 'TEST-CA' '-----END CERTIFICATE-----' > "$FIX/trust-ca.pem"
+    run_trust() { # <log> <extra msbuild args...>
+        _log="$1"; shift
+        ( cd "$FIX" && "$DOTNET" msbuild fixture.proj -t:_OpenHarmonyStageTrust -nologo -v:m             -p:TargetPlatformIdentifier=openharmony -p:OpenHarmonyHapPackage=true             -p:PublishDir=trust-publish/ "$@" ) > "$WORK/$_log.log" 2>&1
+    }
+    run_trust T13-both -p:OpenHarmonyTrustMode=both -p:OpenHarmonyCaBundle=trust-ca.pem; rc=$?
+    assert_rc 0 $rc "T13 both mode stages the trust payload"
+    python3 - "$FIX/trust-publish/trust.json" "$FIX/trust-publish/trust-ca.pem" "$FIX/trust-ca.pem" <<'PY' && pass_ "T13 trust.json and trust-ca.pem match the selected policy" || fail_ "T13 trust payload contents are wrong"
+import json, sys
+doc = json.load(open(sys.argv[1]))
+assert doc == {'mode': 'both', 'caFile': 'trust-ca.pem', 'systemCaDir': '/etc/ssl/certs'}, doc
+assert open(sys.argv[2], 'rb').read() == open(sys.argv[3], 'rb').read()
+PY
+
+    run_trust T13-system-no-ca -p:OpenHarmonyTrustMode=both; rc=$?
+    assert_rc 0 $rc "T13 both without a bundle degrades to system-only"
+    python3 - "$FIX/trust-publish/trust.json" <<'PY' && pass_ "T13 the system-only trust.json omits caFile" || fail_ "T13 the system-only trust.json is wrong"
+import json, sys
+doc = json.load(open(sys.argv[1]))
+assert doc == {'mode': 'both', 'systemCaDir': '/etc/ssl/certs'}, doc
+PY
+
+    run_trust T13-app-no-ca -p:OpenHarmonyTrustMode=app; rc=$?
+    assert_rc 1 $rc "T13 app mode without a bundle fails"
+    grep -qF 'requires OpenHarmonyCaBundle' "$WORK/T13-app-no-ca.log"         && pass_ "T13 app mode names the missing bundle"         || fail_ "T13 app mode does not name the missing bundle"
+
+    run_trust T13-system-ca -p:OpenHarmonyTrustMode=system -p:OpenHarmonyCaBundle=trust-ca.pem; rc=$?
+    assert_rc 1 $rc "T13 system mode rejects an unused bundle"
+    grep -qF 'cannot use OpenHarmonyCaBundle' "$WORK/T13-system-ca.log"         && pass_ "T13 system mode names the conflict"         || fail_ "T13 system mode does not name the conflict"
+
+    run_trust T13-missing-ca -p:OpenHarmonyTrustMode=app -p:OpenHarmonyCaBundle=does-not-exist.pem; rc=$?
+    assert_rc 1 $rc "T13 a missing bundle fails"
+    grep -qF 'OpenHarmonyCaBundle does not exist' "$WORK/T13-missing-ca.log"         && pass_ "T13 names the missing bundle path"         || fail_ "T13 does not name the missing bundle path"
+
+    run_trust T13-invalid-mode -p:OpenHarmonyTrustMode=invalid; rc=$?
+    assert_rc 1 $rc "T13 an invalid trust mode fails"
+fi
+
+
 log "checks: $CHECKS, failed: $FAILED, skipped: $SKIP"
 if [ "$FAILED" -gt 0 ]; then
     log "SELFTEST FAILED - work dir kept: $WORK"
