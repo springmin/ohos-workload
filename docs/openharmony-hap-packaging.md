@@ -613,6 +613,14 @@ Device evidence (HAD-W24, OpenSSL 3.5.9): `both` produced
 `SSL_CERT_DIR=/etc/ssl/certs`; the public HTTPS probe passed. `app` produced `app=1 system=0`
 and the public HTTPS probe failed as expected, proving the system store was suppressed.
 
+The same probe validates the negative cases with local certificates: a self-signed server is
+rejected, a custom-root chain is accepted, an expired certificate is rejected, and a certificate
+with the wrong host name is rejected. `SslStream` to a public host also succeeds in `both` mode.
+The device exposes `/etc/ssl/certs` as a single `cacert.pem` and
+`/system/etc/security/certificates` as 125 hashed `*.0` files; both paths are readable by the app.
+The default `OpenHarmonySystemCaDir=/etc/ssl/certs` is the one the current images use; an image
+with a different store can override it.
+
 ## Payload determinism
 
 `resources/rawfile/dotnet.zip` is written with a fixed entry order (ordinal path sort) and a fixed
