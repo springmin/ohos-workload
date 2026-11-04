@@ -180,6 +180,36 @@ else
     fail_ "T1 the app-link hosts/domainVerify contract is missing from the targets"
 fi
 
+# The prebuilt shells are bundle-bound. Each pack's OpenHarmonyBundledArktsShellBundle must
+# name the bundle actually compiled into both abc templates, or the HAP gate would reject the
+# matching bundle and accept a mismatching one.
+if python3 - "$W" <<'PY'
+import pathlib, re, sys
+w = pathlib.Path(sys.argv[1])
+ok = True
+for n in range(22, 32):
+    pack = w / 'packs' / 'Microsoft.OpenHarmony.Sdk' / f'1.0.0-preview.{n}'
+    target = pack / 'targets' / 'OpenHarmony.Hap.targets'
+    text = target.read_text()
+    m = re.search(r'<OpenHarmonyBundledArktsShellBundle[^>]*>([^<]+)<', text)
+    if not m:
+        print(f'preview.{n}: OpenHarmonyBundledArktsShellBundle is missing', file=sys.stderr)
+        ok = False
+        continue
+    bundle = m.group(1).strip()
+    for name in ('modules.abc', 'modules.ui.abc'):
+        data = (pack / 'templates' / 'ets' / name).read_bytes()
+        if bundle.encode() not in data:
+            print(f'preview.{n}: {name} does not contain {bundle!r}', file=sys.stderr)
+            ok = False
+sys.exit(0 if ok else 1)
+PY
+then
+    pass_ "T1 every pack's bundled shell matches OpenHarmonyBundledArktsShellBundle"
+else
+    fail_ "T1 a pack's bundled shell and OpenHarmonyBundledArktsShellBundle disagree"
+fi
+
 # ---- T2/T3: the functional fixture -------------------------------------------------------
 section "T2/T3 module.json fixture"
 if ! command -v "$DOTNET" >/dev/null 2>&1; then
@@ -881,13 +911,16 @@ proj = f'''<Project>
     <TargetPlatformIdentifier>openharmony</TargetPlatformIdentifier>
     <OpenHarmonyHapSigning>false</OpenHarmonyHapSigning>
     <OpenHarmonyBundleName>com.example.linkprobe</OpenHarmonyBundleName>
+    <!-- T9 checks packaging, not launchability: use the bundled headless shell explicitly.
+         The shell is compiled for mauidemo.dotnet.springmin.com; a real app bundle needs a
+         shell rebuilt for that bundle (see the T12 bundle gate and the packaging doc). -->
+    <OpenHarmonyArktsModulesAbc>{packdir}/templates/ets/modules.abc</OpenHarmonyArktsModulesAbc>
     <OpenHarmonyHapStageDir>stage/</OpenHarmonyHapStageDir>
     <_OpenHarmonySdkPackDir>{packdir}</_OpenHarmonySdkPackDir>
   </PropertyGroup>
   <Import Project="{targets}" />
-  <!-- T9 fixture-only: the Microsoft.Maui.dll embedded-resource staging is unrelated to app
-       links and would need a MAUI reference; replace it with an empty target. -->
-  <Target Name="_OpenHarmonyStageHybridWebViewScript" />
+  <!-- T9 keeps the real hybrid staging target: a project without Microsoft.Maui.dll must
+       make the empty batching a no-op instead of failing with MSB4044. -->
   <!-- Optional host Exec workaround (see the probe below); absent on healthy hosts. -->
   <Import Project="$(ExecHook)" Condition=" '$(ExecHook)' != '' and Exists('$(ExecHook)') " />
 </Project>
@@ -1076,13 +1109,14 @@ proj = f'''<Project>
     <OpenHarmonyHapSigning>false</OpenHarmonyHapSigning>
     <OpenHarmonyBundleName>com.example.idprobe</OpenHarmonyBundleName>
     <OpenHarmonyAppName>IdentityProbe</OpenHarmonyAppName>
+    <!-- T11 checks launcher identity, not launchability: explicit bundled headless shell. -->
+    <OpenHarmonyArktsModulesAbc>{packdir}/templates/ets/modules.abc</OpenHarmonyArktsModulesAbc>
     <OpenHarmonyHapStageDir>stage/</OpenHarmonyHapStageDir>
     <_OpenHarmonySdkPackDir>{packdir}</_OpenHarmonySdkPackDir>
   </PropertyGroup>
   <Import Project="{targets}" />
-  <!-- T11 fixture-only: the Microsoft.Maui.dll embedded-resource staging needs a MAUI
-       reference; replace it with an empty target like T9. -->
-  <Target Name="_OpenHarmonyStageHybridWebViewScript" />
+  <!-- T11 keeps the real hybrid staging target: no Microsoft.Maui.dll means empty batching
+       must be a no-op, not MSB4044. -->
   <!-- Optional host Exec workaround (see T9); absent on healthy hosts. -->
   <Import Project="$(ExecHook)" Condition=" '$(ExecHook)' != '' and Exists('$(ExecHook)') " />
 </Project>
@@ -1128,6 +1162,38 @@ assert module == json.load(open(staged)), 'packed module.json differs from the s
 PY
         fi
     fi
+fi
+
+
+# ---- T12: ArkTS shell bundle gate ------------------------------------------------------
+# The bundled shell embeds the bundle name in its ability/page records. A HAP with a
+# different OpenHarmonyBundleName must either pass an explicitly built abc (the T9/T11
+# escape hatch) or fail before staging; otherwise the install succeeds and launch fails.
+section "T12 ArkTS shell bundle gate"
+if ! command -v "$DOTNET" >/dev/null 2>&1 || [ -z "${FIX:-}" ]; then
+    skip_ "T12 needs the T2/T3 dotnet fixture"
+else
+    run_shell_gate() { # <log> <bundle> <ui-page|-> <explicit-abc>
+        _log="$1"; _bundle="$2"; _page="$3"; _abc="$4"
+        _args="-p:TargetPlatformIdentifier=openharmony -p:OpenHarmonyHapPackage=true -p:OpenHarmonyBundleName=$_bundle"
+        [ "$_page" = "-" ] || _args="$_args -p:OpenHarmonyUIPage=$_page"
+        [ -z "$_abc" ] || _args="$_args -p:OpenHarmonyArktsModulesAbc=$_abc"
+        ( cd "$FIX" && "$DOTNET" msbuild fixture.proj -t:_OpenHarmonyValidateArktsShellBundle -nologo -v:m $_args ) > "$WORK/$_log.log" 2>&1
+    }
+    run_shell_gate T12-ui com.example.other pages/Index ""; rc=$?
+    assert_rc 1 $rc "T12 a custom UI bundle without an explicit shell fails"
+    grep -qF 'bundled ArkTS UI shell was compiled for bundle' "$WORK/T12-ui.log"         && pass_ "T12 the UI failure names the bundled shell bundle"         || fail_ "T12 the UI failure does not name the bundled shell bundle"
+    grep -qF "ARKTS_SHELL_BUNDLE_NAME='com.example.other'" "$WORK/T12-ui.log"         && pass_ "T12 the UI failure prints the per-bundle rebuild command"         || fail_ "T12 the UI failure does not print the rebuild command"
+
+    run_shell_gate T12-headless com.example.other - ""; rc=$?
+    assert_rc 1 $rc "T12 a custom headless bundle without an explicit shell fails"
+    grep -qF 'bundled ArkTS headless shell was compiled for bundle' "$WORK/T12-headless.log"         && pass_ "T12 the headless failure names the bundled shell bundle"         || fail_ "T12 the headless failure does not name the bundled shell bundle"
+    grep -qF "ARKTS_SHELL_VARIANT=headless" "$WORK/T12-headless.log"         && pass_ "T12 the headless failure prints the headless rebuild command"         || fail_ "T12 the headless failure does not print the headless rebuild command"
+
+    run_shell_gate T12-default mauidemo.dotnet.springmin.com pages/Index ""; rc=$?
+    assert_rc 0 $rc "T12 the bundled shell bundle stays accepted"
+    run_shell_gate T12-explicit com.example.other pages/Index "$W/packs/Microsoft.OpenHarmony.Sdk/1.0.0-preview.24/templates/ets/modules.ui.abc"; rc=$?
+    assert_rc 0 $rc "T12 an explicit OpenHarmonyArktsModulesAbc bypasses the bundle gate"
 fi
 
 

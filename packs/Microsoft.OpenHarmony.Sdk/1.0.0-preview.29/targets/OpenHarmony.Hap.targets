@@ -19,6 +19,12 @@
     <OpenHarmonyAppName Condition=" '$(OpenHarmonyAppName)' == '' ">$(AssemblyName)</OpenHarmonyAppName>
     <OpenHarmonyVendor Condition=" '$(OpenHarmonyVendor)' == '' ">openharmony</OpenHarmonyVendor>
     <OpenHarmonyAbilityName Condition=" '$(OpenHarmonyAbilityName)' == '' ">EntryAbility</OpenHarmonyAbilityName>
+    <!-- The prebuilt ArkTS shells (templates/ets/modules.abc and modules.ui.abc) carry this
+         bundle name in their ability/page records. A HAP built with another
+         OpenHarmonyBundleName must pass -p:OpenHarmonyArktsModulesAbc=<shell built for that
+         bundle>; _OpenHarmonyValidateArktsShellBundle enforces that before staging. Pack
+         maintainers updating the prebuilt shells update this value. -->
+    <OpenHarmonyBundledArktsShellBundle Condition=" '$(OpenHarmonyBundledArktsShellBundle)' == '' ">mauidemo.dotnet.springmin.com</OpenHarmonyBundledArktsShellBundle>
     <OpenHarmonyVersionName Condition=" '$(OpenHarmonyVersionName)' == '' ">$(Version)</OpenHarmonyVersionName>
     <OpenHarmonyVersionName Condition=" '$(OpenHarmonyVersionName)' == '' ">1.0.0</OpenHarmonyVersionName>
     <OpenHarmonyVersionCode Condition=" '$(OpenHarmonyVersionCode)' == '' ">1</OpenHarmonyVersionCode>
@@ -135,7 +141,11 @@
          unchanged. -->
     <OpenHarmonyWebAuthenticatorCallbackUrls Condition=" '$(OpenHarmonyWebAuthenticatorCallbackUrls)' == '' "></OpenHarmonyWebAuthenticatorCallbackUrls>
     <!-- Default ArkTS shell: the prebuilt UI shell (official toolchain, ability + page) when a
-         page is requested, otherwise the headless shell compiled from the same sources. -->
+         page is requested, otherwise the headless shell compiled from the same sources. Both
+         defaults are compiled for OpenHarmonyBundledArktsShellBundle; an explicit
+         OpenHarmonyArktsModulesAbc bypasses the bundle check in
+         _OpenHarmonyValidateArktsShellBundle. -->
+    <_OpenHarmonyArktsModulesAbcExplicit Condition=" '$(OpenHarmonyArktsModulesAbc)' != '' ">true</_OpenHarmonyArktsModulesAbcExplicit>
     <OpenHarmonyArktsModulesAbc Condition=" '$(OpenHarmonyArktsModulesAbc)' == '' and '$(OpenHarmonyUIPage)' != '' ">$(MSBuildThisFileDirectory)../templates/ets/modules.ui.abc</OpenHarmonyArktsModulesAbc>
     <OpenHarmonyArktsModulesAbc Condition=" '$(OpenHarmonyArktsModulesAbc)' == '' ">$(MSBuildThisFileDirectory)../templates/ets/modules.abc</OpenHarmonyArktsModulesAbc>
     <!-- Toolchain: the OpenHarmony SDK's toolchains/lib (packing + signing tools). -->
@@ -161,6 +171,31 @@
     </PropertyGroup>
     <Error Condition=" '$(_OpenHarmonyBundleNameValid)' != 'true' "
            Text="OpenHarmonyBundleName '$(OpenHarmonyBundleName)' is not a legal OpenHarmony bundle name: use only letters, digits, '_' and '.', starting with a letter (a hyphen is rejected at install time with bm 9568344). Pass a legal name with -p:OpenHarmonyBundleName=&lt;name&gt;." />
+  </Target>
+
+  <!-- The prebuilt ArkTS shell is not bundle-neutral: the ability entry and the ArkUI page
+       metadata embed the bundle name the shell was compiled with. Packing it into a HAP whose
+       OpenHarmonyBundleName differs installs fine but fails at launch with "Cannot find module
+       '<bundle>/entry/ets/entryability/EntryAbility'" (headless) or "Load Page Failed"
+       (UI). The normalized-shell experiment (preview.31, 2026-11-04) confirmed that
+       pkgContextInfo.json fixes the ability record, but ArkUI page metadata still carries the
+       build-time bundle, so a single generic shell is not viable. Fail before staging and name
+       the exact rebuild command; an explicit OpenHarmonyArktsModulesAbc is the escape hatch
+       for callers that already built a shell for this bundle. -->
+  <Target Name="_OpenHarmonyValidateArktsShellBundle"
+          BeforeTargets="_OpenHarmonyStageHap;_OpenHarmonyPackHap"
+          DependsOnTargets="_OpenHarmonyValidateBundleName"
+          Condition=" '$(TargetPlatformIdentifier)' == 'openharmony' and '$(OpenHarmonyHapPackage)' == 'true' and '$(_OpenHarmonyArktsModulesAbcExplicit)' != 'true' and '$(OpenHarmonyBundleName)' != '$(OpenHarmonyBundledArktsShellBundle)' ">
+    <PropertyGroup>
+      <_OpenHarmonyArktsShellVariant Condition=" '$(OpenHarmonyUIPage)' != '' ">ui</_OpenHarmonyArktsShellVariant>
+      <_OpenHarmonyArktsShellVariant Condition=" '$(OpenHarmonyUIPage)' == '' ">headless</_OpenHarmonyArktsShellVariant>
+      <_OpenHarmonyArktsShellFile Condition=" '$(_OpenHarmonyArktsShellVariant)' == 'ui' ">dist/ets/modules.abc</_OpenHarmonyArktsShellFile>
+      <_OpenHarmonyArktsShellFile Condition=" '$(_OpenHarmonyArktsShellVariant)' == 'headless' ">dist/ets/modules.headless.abc</_OpenHarmonyArktsShellFile>
+    </PropertyGroup>
+    <Error Condition=" '$(_OpenHarmonyArktsShellVariant)' == 'ui' "
+           Text="The bundled ArkTS UI shell was compiled for bundle '$(OpenHarmonyBundledArktsShellBundle)', but OpenHarmonyBundleName is '$(OpenHarmonyBundleName)'. Its ability and ArkUI page records embed the build-time bundle name, so the HAP would install and then fail at launch (ReferenceError: Cannot find module, or Load Page Failed). Build the shell for this bundle from the workload source checkout:&#xA;  ARKTS_SHELL_BUNDLE_NAME='$(OpenHarmonyBundleName)' scripts/build-arkts-shell.sh&#xA;then pass -p:OpenHarmonyArktsModulesAbc=&lt;output&gt; ($(_OpenHarmonyArktsShellFile)). Alternatively pass an already-built shell for this bundle. To keep the bundled shell, use -p:OpenHarmonyBundleName=$(OpenHarmonyBundledArktsShellBundle) and a matching signing profile." />
+    <Error Condition=" '$(_OpenHarmonyArktsShellVariant)' != 'ui' "
+           Text="The bundled ArkTS headless shell was compiled for bundle '$(OpenHarmonyBundledArktsShellBundle)', but OpenHarmonyBundleName is '$(OpenHarmonyBundleName)'. Its EntryAbility record embeds the build-time bundle name, so the HAP would install and then fail at launch (ReferenceError: Cannot find module '$(OpenHarmonyBundleName)/entry/ets/entryability/EntryAbility'). Build the headless shell for this bundle from the workload source checkout:&#xA;  ARKTS_SHELL_BUNDLE_NAME='$(OpenHarmonyBundleName)' ARKTS_SHELL_VARIANT=headless scripts/build-arkts-shell.sh&#xA;then pass -p:OpenHarmonyArktsModulesAbc=&lt;output&gt; ($(_OpenHarmonyArktsShellFile)). Alternatively pass an already-built shell for this bundle. To keep the bundled shell, use -p:OpenHarmonyBundleName=$(OpenHarmonyBundledArktsShellBundle) and a matching signing profile." />
   </Target>
 
   <!-- Deterministic payload zip: ordinal entry sort and a fixed entry timestamp, so identical
@@ -379,9 +414,10 @@
     <!-- Batching by FullPath keeps the scalar AssemblyPath parameter valid: the same Microsoft.Maui.dll
          is present in more than one of the candidate item lists (reference, copy-local, runtime
          copy-local), and @(Item) in a string attribute would join the duplicates with ';'. All
-         duplicates share one FullPath, so this executes once; an empty list executes zero batches
-         (a project without Microsoft.Maui.dll skips the staging). -->
+         duplicates share one FullPath, so this executes once; an empty list skips the
+         task (a project without Microsoft.Maui.dll must be a no-op). -->
     <OpenHarmonyExtractEmbeddedResource
+        Condition=" '@(_OpenHarmonyHybridMauiReference)' != '' "
         AssemblyPath="%(_OpenHarmonyHybridMauiReference.FullPath)"
         ResourceName="_framework/hybridwebview.js"
         DestinationFile="$(_OpenHarmonyHybridScriptPublishDir)_framework/hybridwebview.js">

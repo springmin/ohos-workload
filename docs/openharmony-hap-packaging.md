@@ -1295,6 +1295,24 @@ for UI builds (`OpenHarmonyUIPage` set) and `templates/ets/modules.abc` (headles
 explicit `-p:OpenHarmonyArktsModulesAbc=<file>` overrides both. The former
 `modules.shell.abc` duplicate is gone (it was always byte-identical to `modules.ui.abc`).
 
+The prebuilt shells are bundle-bound: the bundle name is part of the EntryAbility record and the
+ArkUI page metadata. `OpenHarmonyBundledArktsShellBundle` records the value per pack
+(`mauidemo.dotnet.springmin.com` for preview.22-24 and 28-31, `com.example.hellomauiapp` for
+preview.25-27; check the abc when swapping a pack's templates). A build with a different
+`OpenHarmonyBundleName` must pass an abc built for that bundle. The
+`_OpenHarmonyValidateArktsShellBundle` target fails before staging when it is missing and prints:
+
+```sh
+ARKTS_SHELL_BUNDLE_NAME=<bundle> scripts/build-arkts-shell.sh                         # UI
+ARKTS_SHELL_BUNDLE_NAME=<bundle> ARKTS_SHELL_VARIANT=headless scripts/build-arkts-shell.sh
+```
+
+then pass the resulting `dist/ets/modules.abc` (UI) or `dist/ets/modules.headless.abc`
+(headless) with `-p:OpenHarmonyArktsModulesAbc=<file>`. The single-generic-shell alternative is
+not viable on current devices: a normalized abc plus `pkgContextInfo.json` fixes the ability
+record only if module.json carries `packageName`, but ArkUI page metadata still embeds the
+build-time bundle and fails with `Load Page Failed` after the bundle changes.
+
 - **Source change (default flavor)**: rebuild both variants, install, then verify:
 
   ```sh
