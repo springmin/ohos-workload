@@ -24,14 +24,21 @@ extern "C" {
 #define OHOS_HOST_TRUST_MODE_SYSTEM "system"
 #define OHOS_HOST_TRUST_MODE_APP "app"
 #define OHOS_HOST_TRUST_MODE_BOTH "both"
-#define OHOS_HOST_TRUST_DEFAULT_SYSTEM_DIR "/etc/ssl/certs"
+// security_certificate_manager installs its 125 preloaded OpenSSL-hashed CAs into
+// /system/etc/security/certificates (config/BUILD.gn relative_install_dir
+// "security/certificates"). /etc/ssl/certs is not part of that part and is only a
+// compatibility fallback for images that ship a curl/ca-certificates bundle there.
+#define OHOS_HOST_TRUST_DEFAULT_SYSTEM_DIR "/system/etc/security/certificates"
+#define OHOS_HOST_TRUST_FALLBACK_SYSTEM_DIR "/etc/ssl/certs"
 #define OHOS_HOST_TRUST_STATUS_MAX 512
 
 // Applies the requested trust policy to this process.
 //
 // mode          "system", "app", "both" (NULL/empty means leave the environment unchanged)
 // ca_file       PEM bundle for app/both; ignored for system
-// system_ca_dir system certificate directory; NULL/empty uses /etc/ssl/certs
+// system_ca_dir system certificate directory; NULL/empty or the default path uses
+//               /system/etc/security/certificates, falling back to /etc/ssl/certs when the
+//               system part is absent
 // status_line   receives one human-readable status line (always NUL-terminated when size > 0)
 //
 // Returns 0 when the policy was applied or intentionally left unchanged, -1 for an invalid

@@ -1,0 +1,22 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!-- Standalone OpenHarmony ELF signer. The signing algorithm is shared with the workload's
+       OpenHarmonyCodesign MSBuild task by compiling the same ElfSigner.cs source; the workload
+       no longer copies it from an OpenHarmony-patched dotnet SDK checkout. -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net11.0</TargetFramework>
+    <AssemblyName>selfsign</AssemblyName>
+    <RootNamespace>Microsoft.OpenHarmony.SelfSign</RootNamespace>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <InvariantGlobalization>true</InvariantGlobalization>
+    <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
+    <Deterministic>true</Deterministic>
+    <IncludeSourceRevisionInInformationalVersion>false</IncludeSourceRevisionInInformationalVersion>
+    <DebugType>none</DebugType>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="Program.cs" />
+    <Compile Include="../Microsoft.OpenHarmony.Tasks/ElfSigner.cs" Link="ElfSigner.cs" />
+  </ItemGroup>
+</Project>

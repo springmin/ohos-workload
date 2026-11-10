@@ -2,7 +2,7 @@
 # selftest-tasks.sh - unit tests and pack-distribution gate for the compiled hap-packaging tasks
 # (task-assembly migration, audit V8 / RELEASE-25).
 #
-#   S1 static   every OpenHarmony.Hap.targets loads the seven tasks from
+#   S1 static   every OpenHarmony.Hap.targets loads the eight tasks from
 #               tools/Microsoft.OpenHarmony.Tasks.dll (no RoslynCodeTaskFactory inline code left),
 #               every one of the three SDK packs ships the assembly and the three copies are
 #               byte-identical
@@ -29,7 +29,7 @@ TASKS_PROJECT="src/Microsoft.OpenHarmony.Tasks/Microsoft.OpenHarmony.Tasks.cspro
 TASKS_DLL_REL="tools/Microsoft.OpenHarmony.Tasks.dll"
 TASKS_TESTS_PROJECT="test/openharmony-tasks-tests/openharmony-tasks-tests.csproj"
 TASKS_TESTS_DLL="test/openharmony-tasks-tests/bin/Release/net11.0/openharmony-tasks-tests.dll"
-CHECK_FLOOR=95
+CHECK_FLOOR=180
 PACK_VERSIONS="1.0.0-preview.22 1.0.0-preview.23 1.0.0-preview.24"
 
 log()     { printf '[%s] %s\n' "$(date '+%H:%M:%S')" "$*"; }
@@ -73,10 +73,10 @@ TASKS_TARGET='AssemblyFile="$(MSBuildThisFileDirectory)../tools/Microsoft.OpenHa
 missing_using=0
 for task in OpenHarmonyDeterministicZip OpenHarmonyStageRuntimeLibs OpenHarmonyStagePayloadLibs \
             OpenHarmonyWritePayloadMarker OpenHarmonyResolvePermissions OpenHarmonyGenerateModuleJson \
-            OpenHarmonyExtractEmbeddedResource; do
+            OpenHarmonyExtractEmbeddedResource OpenHarmonyCodesign; do
     grep -qF "<UsingTask TaskName=\"$task\" $TASKS_TARGET />" "$REF" || { missing_using=1; echo "    missing UsingTask: $task" >&2; }
 done
-[ "$missing_using" -eq 0 ] && pass_ "S1 all seven UsingTask entries load the pack task assembly" \
+[ "$missing_using" -eq 0 ] && pass_ "S1 all eight UsingTask entries load the pack task assembly" \
                              || fail_ "S1 a UsingTask entry does not point at the pack task assembly"
 if grep -qF 'TaskFactory="RoslynCodeTaskFactory"' "$REF" || grep -qF '<Code Type=' "$REF"; then
     fail_ "S1 the targets still carry inline task code"

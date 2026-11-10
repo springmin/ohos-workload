@@ -3,7 +3,7 @@
 # can run without a device, the OpenHarmony SDK or a full publish:
 #
 #   T1 static      the three packs stay byte-identical; the tasks are loaded from the pack's
-#                  tools/Microsoft.OpenHarmony.Tasks.dll (six UsingTask AssemblyFile entries, no
+#                  tools/Microsoft.OpenHarmony.Tasks.dll (eight UsingTask AssemblyFile entries, no
 #                  RoslynCodeTaskFactory inline code, the DLL shipped byte-identically in all
 #                  three packs) and the ReadLinesFromFile template read stays gone
 #   T2 golden      the task reproduces the documented module.json bytes for the API 20 band, the
@@ -129,7 +129,8 @@ TASKS_DLL_REL="tools/Microsoft.OpenHarmony.Tasks.dll"
 TASKS_TARGET='AssemblyFile="$(MSBuildThisFileDirectory)../tools/Microsoft.OpenHarmony.Tasks.dll"'
 tasks_ok=1
 for task in OpenHarmonyDeterministicZip OpenHarmonyStageRuntimeLibs OpenHarmonyStagePayloadLibs \
-            OpenHarmonyWritePayloadMarker OpenHarmonyResolvePermissions OpenHarmonyGenerateModuleJson; do
+            OpenHarmonyWritePayloadMarker OpenHarmonyResolvePermissions OpenHarmonyGenerateModuleJson \
+            OpenHarmonyExtractEmbeddedResource OpenHarmonyCodesign; do
     grep -qF "<UsingTask TaskName=\"$task\" $TASKS_TARGET />" "$REF" || { tasks_ok=0; echo "    missing UsingTask: $task" >&2; }
 done
 if grep -qF 'TaskFactory="RoslynCodeTaskFactory"' "$REF"; then
@@ -138,7 +139,7 @@ fi
 if grep -qF '<Code Type=' "$REF"; then
     tasks_ok=0; echo "    inline <Code> block remains" >&2
 fi
-[ "$tasks_ok" -eq 1 ] && pass_ "T1 the six tasks load $TASKS_DLL_REL and no inline code remains" \
+[ "$tasks_ok" -eq 1 ] && pass_ "T1 the eight tasks load $TASKS_DLL_REL and no inline code remains" \
                       || fail_ "T1 the task-assembly UsingTask contract drifted"
 if grep -qF 'class OpenHarmonyGenerateModuleJson' "$REF"; then
     fail_ "T1 the inline module.json class body is still in the targets"
@@ -1243,6 +1244,90 @@ PY
     assert_rc 1 $rc "T13 an invalid trust mode fails"
 fi
 
+
+# ---- T14: NativeAOT static OpenSSL linker rewrite ------------------------------------
+# The target must replace the runtime pack's dlopen-shim crypto archive with the direct
+# archive + static libssl/libcrypto arguments. This is an evaluation/target-level test (it
+# does not need a native AOT toolchain): a fake LinkerArg list is dumped after the target.
+section "T14 NativeAOT static OpenSSL target"
+PACK31="$W/packs/Microsoft.OpenHarmony.Sdk/1.0.0-preview.31"
+if ! command -v "$DOTNET" >/dev/null 2>&1; then
+    skip_ "T14 needs dotnet"
+elif [ ! -f "$PACK31/targets/OpenHarmony.Hap.targets" ]; then
+    skip_ "T14 needs the preview.31 pack targets"
+else
+    T14="$WORK/T14"
+    mkdir -p "$T14/framework" "$T14/static"
+    : > "$T14/framework/libSystem.Security.Cryptography.Native.OpenSsl.a"
+    : > "$T14/static/libSystem.Security.Cryptography.Native.OpenSsl.a"
+    : > "$T14/static/libssl.a"
+    : > "$T14/static/libcrypto.a"
+    cat > "$T14/fixture.proj" <<EOF
+<Project>
+  <PropertyGroup>
+    <TargetPlatformIdentifier>openharmony</TargetPlatformIdentifier>
+    <PublishAot>true</PublishAot>
+    <OpenHarmonyStaticOpenSsl>true</OpenHarmonyStaticOpenSsl>
+    <OpenHarmonyStaticOpenSslDir>$T14/static</OpenHarmonyStaticOpenSslDir>
+    <IlcFrameworkNativePath>$T14/framework/</IlcFrameworkNativePath>
+    <!-- The HAP targets load packaging tasks through this SDK property. T14 calls only the
+         linker-argument target, but MSBuild still evaluates every UsingTask import. -->
+    <MicrosoftNETBuildTasksAssembly>$PACK31/tools/Microsoft.OpenHarmony.Tasks.dll</MicrosoftNETBuildTasksAssembly>
+  </PropertyGroup>
+  <ItemGroup>
+    <LinkerArg Include="\$(IlcFrameworkNativePath)libSystem.Security.Cryptography.Native.OpenSsl.a" />
+    <LinkerArg Include="-existing" />
+  </ItemGroup>
+  <Import Project="$PACK31/targets/OpenHarmony.Hap.targets" />
+  <Target Name="Dump" DependsOnTargets="_OpenHarmonyPrepareStaticOpenSsl">
+    <WriteLinesToFile File="\$(MSBuildProjectDirectory)/args.txt" Lines="@(LinkerArg)" Overwrite="true" />
+  </Target>
+</Project>
+EOF
+    ( cd "$T14" && "$DOTNET" msbuild fixture.proj -t:Dump -nologo -v:m ) > "$T14/ok.log" 2>&1
+    rc=$?
+    assert_rc 0 $rc "T14 the static linker target evaluates"
+    if [ -f "$T14/args.txt" ]; then
+        grep -qF "$T14/static/libSystem.Security.Cryptography.Native.OpenSsl.a" "$T14/args.txt" &&
+            pass_ "T14 uses the direct crypto archive" ||
+            fail_ "T14 does not use the direct crypto archive"
+        if grep -qF "$T14/framework/libSystem.Security.Cryptography.Native.OpenSsl.a" "$T14/args.txt"; then
+            fail_ "T14 left the runtime pack shim archive in LinkerArg"
+        else
+            pass_ "T14 removed the runtime pack shim archive from LinkerArg"
+        fi
+        grep -qF -- "-L$T14/static" "$T14/args.txt" && grep -qF -- "-Wl,-Bstatic" "$T14/args.txt" &&
+            grep -qF -- "-lssl" "$T14/args.txt" && grep -qF -- "-lcrypto" "$T14/args.txt" &&
+            grep -qF -- "-Wl,-Bdynamic" "$T14/args.txt" &&
+            pass_ "T14 appends the static OpenSSL link arguments" ||
+            fail_ "T14 misses the static OpenSSL link arguments (see $T14/args.txt)"
+        grep -qF -- "-existing" "$T14/args.txt" &&
+            pass_ "T14 keeps unrelated linker arguments" ||
+            fail_ "T14 dropped unrelated linker arguments"
+    else
+        fail_ "T14 did not write args.txt (see $T14/ok.log)"
+    fi
+
+    rm -f "$T14/static/libSystem.Security.Cryptography.Native.OpenSsl.a"
+    ( cd "$T14" && "$DOTNET" msbuild fixture.proj -t:Dump -nologo -v:m ) > "$T14/missing.log" 2>&1
+    rc=$?
+    assert_rc 1 $rc "T14 a missing direct archive fails"
+    grep -qF 'direct NativeAOT crypto archive was not found' "$T14/missing.log" &&
+        pass_ "T14 the missing archive error names the direct archive" ||
+        fail_ "T14 the missing archive error is not actionable"
+
+    # The active preview.31 target must stamp the certificate_manager store (the preview.24
+    # fixture in T13 keeps its historical default because that pack is frozen).
+    ( cd "$T14" && "$DOTNET" msbuild fixture.proj -t:_OpenHarmonyStageTrust -nologo -v:m \
+        -p:OpenHarmonyHapPackage=true -p:PublishDir=trust-publish/ ) > "$T14/trust.log" 2>&1
+    rc=$?
+    assert_rc 0 $rc "T14 preview.31 stages the default trust payload"
+    python3 - "$T14/trust-publish/trust.json" <<'PY' && pass_ "T14 preview.31 defaults to /system/etc/security/certificates" || fail_ "T14 preview.31 trust.json has the wrong system directory"
+import json, sys
+doc = json.load(open(sys.argv[1]))
+assert doc == {'mode': 'both', 'systemCaDir': '/system/etc/security/certificates'}, doc
+PY
+fi
 
 log "checks: $CHECKS, failed: $FAILED, skipped: $SKIP"
 if [ "$FAILED" -gt 0 ]; then

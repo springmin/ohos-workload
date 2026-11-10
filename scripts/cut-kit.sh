@@ -1253,6 +1253,7 @@ known_payload_release_tag() { # <family> <version> -> release tag ("" = unpinned
     case "$1/$2" in
         Microsoft.AspNetCore.App.Runtime.openharmony-arm64/11.0.0-rc.1.26504.105) printf '%s' "v11.0.0-rc.2.26504.105-openharmony" ;;
         Microsoft.AspNetCore.App.Runtime.openharmony-arm64/11.0.0-rc.1.26451.112) printf '%s' "v11.0.0-rc.2.26451.112-openharmony" ;;
+        Microsoft.AspNetCore.App.Runtime.openharmony-arm64/11.0.0-rc.3.26522.148) printf '%s' "v11.0.0-rc.3.26522.148-openharmony" ;;
         *) printf '%s' "" ;;
     esac
 }
@@ -1261,6 +1262,7 @@ known_payload_release_sha256() { # <family> <version> -> nupkg sha256 ("" = unpi
     case "$1/$2" in
         Microsoft.AspNetCore.App.Runtime.openharmony-arm64/11.0.0-rc.1.26504.105) printf '%s' "e6af31609d77b7e1d1d8af3988238577f70d8aefd35e31ba55f0dd2abd1d3e10" ;;
         Microsoft.AspNetCore.App.Runtime.openharmony-arm64/11.0.0-rc.1.26451.112) printf '%s' "4f0d9b61d954047bb6ecb82c929af970de13489768d77d7bc687bc94536d6c5d" ;;
+        Microsoft.AspNetCore.App.Runtime.openharmony-arm64/11.0.0-rc.3.26522.148) printf '%s' "1104f0704709e2ae5f09a653088455510b03d1ad814d0c33a97b2c43d9f99a3a" ;;
         *) printf '%s' "" ;;
     esac
 }

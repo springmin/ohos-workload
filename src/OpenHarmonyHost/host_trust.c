@@ -74,6 +74,16 @@ int OhosHostApplyTrustPolicy(const char* mode, const char* ca_file, const char* 
         (system_ca_dir != NULL && system_ca_dir[0] != '\0') ? system_ca_dir
                                                             : OHOS_HOST_TRUST_DEFAULT_SYSTEM_DIR;
     int have_system = IsDirectory(system_dir);
+    // Keep the compatibility path for images where the certificate_manager part is absent but
+    // a curl/ca-certificates bundle exists. Only fall back when the caller left the default
+    // (or the HAP wrote the default explicitly), not for a custom path.
+    if (!have_system &&
+        ((system_ca_dir == NULL || system_ca_dir[0] == '\0') ||
+         strcmp(system_dir, OHOS_HOST_TRUST_DEFAULT_SYSTEM_DIR) == 0) &&
+        IsDirectory(OHOS_HOST_TRUST_FALLBACK_SYSTEM_DIR)) {
+        system_dir = OHOS_HOST_TRUST_FALLBACK_SYSTEM_DIR;
+        have_system = 1;
+    }
     int have_ca = IsReadableFile(ca_file);
 
     if (strcmp(mode, OHOS_HOST_TRUST_MODE_SYSTEM) == 0) {

@@ -594,7 +594,7 @@ static void OhosHostAppendStatusFor(const char* app_dir, const char* context_jso
 // The packaging stages trust.json next to the payload (libs/<abi>/ for payload-in-libs, or the
 // extracted payload directory for the dotnet.zip fallback). The file is small and flat:
 //
-//   {"mode":"both","caFile":"trust-ca.pem","systemCaDir":"/etc/ssl/certs"}
+//   {"mode":"both","caFile":"trust-ca.pem","systemCaDir":"/system/etc/security/certificates"}
 //
 // Apply it before hostfxr/coreclr starts. An absent file keeps the previous environment exactly
 // (older HAPs and apps that do not opt in); a malformed file only costs the trust line because a

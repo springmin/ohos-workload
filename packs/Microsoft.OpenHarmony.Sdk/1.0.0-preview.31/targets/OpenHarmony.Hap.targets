@@ -125,11 +125,24 @@
            app:    SSL_CERT_FILE=<ca file>, SSL_CERT_DIR="" (no system fallback)
            both:   SSL_CERT_FILE=<ca file> + SSL_CERT_DIR=<system dir>
          "both" without OpenHarmonyCaBundle is system-only and remains the backwards-compatible
-         default; "app" requires a bundle. The system directory is a device path, so it cannot be
-         checked at build time. -->
+         default; "app" requires a bundle. The default system directory is the
+         security_certificate_manager preloaded store (/system/etc/security/certificates); the
+         native host falls back to /etc/ssl/certs only when that directory is absent. The path
+         is a device path, so it cannot be checked at build time. -->
     <OpenHarmonyTrustMode Condition=" '$(OpenHarmonyTrustMode)' == '' ">both</OpenHarmonyTrustMode>
     <OpenHarmonyCaBundle Condition=" '$(OpenHarmonyCaBundle)' == '' "></OpenHarmonyCaBundle>
-    <OpenHarmonySystemCaDir Condition=" '$(OpenHarmonySystemCaDir)' == '' ">/etc/ssl/certs</OpenHarmonySystemCaDir>
+    <OpenHarmonySystemCaDir Condition=" '$(OpenHarmonySystemCaDir)' == '' ">/system/etc/security/certificates</OpenHarmonySystemCaDir>
+    <!-- NativeAOT static OpenSSL (see docs/openharmony-hap-packaging.md "NativeAOT
+         static OpenSSL"): the runtime pack's crypto archive is the dlopen shim, so a
+         NativeAOT app that wants no libssl.so/libcrypto.so must link a direct archive
+         (built with build-native.sh -aotstaticopenssl) and the matching static libssl.a /
+         libcrypto.a with -Bstatic. OpenHarmonyStaticOpenSslDir is the directory containing
+         all three archives; OpenHarmonyStaticCryptoArchive optionally overrides the crypto
+         archive path. The target below replaces the pack archive in the linker argument
+         list and removes the shared crypto files from the publish payload. -->
+    <OpenHarmonyStaticOpenSsl Condition=" '$(OpenHarmonyStaticOpenSsl)' == '' ">false</OpenHarmonyStaticOpenSsl>
+    <OpenHarmonyStaticOpenSslDir Condition=" '$(OpenHarmonyStaticOpenSslDir)' == '' "></OpenHarmonyStaticOpenSslDir>
+    <OpenHarmonyStaticCryptoArchive Condition=" '$(OpenHarmonyStaticCryptoArchive)' == '' "></OpenHarmonyStaticCryptoArchive>
     <!-- Deep links / app links (see "Deep links / activation" in the packaging doc):
          OpenHarmonyAppLinkHosts is the ';'-separated https host allow-list (for example
          "example.com;www.example.com"). One property feeds both declaration sides of the P2c
@@ -208,6 +221,64 @@
            Text="The bundled ArkTS UI shell was compiled for bundle '$(OpenHarmonyBundledArktsShellBundle)', but OpenHarmonyBundleName is '$(OpenHarmonyBundleName)'. Its ability and ArkUI page records embed the build-time bundle name, so the HAP would install and then fail at launch (ReferenceError: Cannot find module, or Load Page Failed). Build the shell for this bundle from the workload source checkout:&#xA;  ARKTS_SHELL_BUNDLE_NAME='$(OpenHarmonyBundleName)' scripts/build-arkts-shell.sh&#xA;then pass -p:OpenHarmonyArktsModulesAbc=&lt;output&gt; ($(_OpenHarmonyArktsShellFile)). Alternatively pass an already-built shell for this bundle. To keep the bundled shell, use -p:OpenHarmonyBundleName=$(OpenHarmonyBundledArktsShellBundle) and a matching signing profile." />
     <Error Condition=" '$(_OpenHarmonyArktsShellVariant)' != 'ui' "
            Text="The bundled ArkTS headless shell was compiled for bundle '$(OpenHarmonyBundledArktsShellBundle)', but OpenHarmonyBundleName is '$(OpenHarmonyBundleName)'. Its EntryAbility record embeds the build-time bundle name, so the HAP would install and then fail at launch (ReferenceError: Cannot find module '$(OpenHarmonyBundleName)/entry/ets/entryability/EntryAbility'). Build the headless shell for this bundle from the workload source checkout:&#xA;  ARKTS_SHELL_BUNDLE_NAME='$(OpenHarmonyBundleName)' ARKTS_SHELL_VARIANT=headless scripts/build-arkts-shell.sh&#xA;then pass -p:OpenHarmonyArktsModulesAbc=&lt;output&gt; ($(_OpenHarmonyArktsShellFile)). Alternatively pass an already-built shell for this bundle. To keep the bundled shell, use -p:OpenHarmonyBundleName=$(OpenHarmonyBundledArktsShellBundle) and a matching signing profile." />
+  </Target>
+
+  <!-- NativeAOT static OpenSSL: run before the NativeAOT link target builds its final
+       linker argument list. The runtime pack ships a dlopen-shim crypto archive for normal
+       AOT; when the app links static OpenSSL it must use a direct archive instead, otherwise
+       the shim is pulled in and still calls dlopen at runtime. Remove the pack archive from
+       LinkerArg and append the direct archive followed by the static OpenSSL libraries. -->
+  <Target Name="_OpenHarmonyPrepareStaticOpenSsl"
+          BeforeTargets="IlcCompile"
+          Condition=" '$(OpenHarmonyStaticOpenSsl)' == 'true' and '$(TargetPlatformIdentifier)' == 'openharmony' and '$(PublishAot)' == 'true' ">
+    <PropertyGroup>
+      <_OpenHarmonyStaticOpenSslDirNormalized Condition=" '$(OpenHarmonyStaticOpenSslDir)' != '' ">$([MSBuild]::NormalizeDirectory('$(MSBuildProjectDirectory)', '$(OpenHarmonyStaticOpenSslDir)'))</_OpenHarmonyStaticOpenSslDirNormalized>
+      <_OpenHarmonyStaticOpenSslDirTrimmed>$([System.String]::Copy('$(_OpenHarmonyStaticOpenSslDirNormalized)').TrimEnd('/'))</_OpenHarmonyStaticOpenSslDirTrimmed>
+      <_OpenHarmonyStaticCryptoArchivePath Condition=" '$(OpenHarmonyStaticCryptoArchive)' != '' ">$([MSBuild]::NormalizePath('$(MSBuildProjectDirectory)', '$(OpenHarmonyStaticCryptoArchive)'))</_OpenHarmonyStaticCryptoArchivePath>
+      <_OpenHarmonyStaticCryptoArchivePath Condition=" '$(OpenHarmonyStaticCryptoArchive)' == '' and '$(OpenHarmonyStaticOpenSslDir)' != '' ">$(_OpenHarmonyStaticOpenSslDirNormalized)libSystem.Security.Cryptography.Native.OpenSsl.a</_OpenHarmonyStaticCryptoArchivePath>
+    </PropertyGroup>
+    <Error Condition=" '$(StaticOpenSslLinking)' == 'true' "
+           Text="OpenHarmonyStaticOpenSsl=true uses a prebuilt direct crypto archive; do not combine it with StaticOpenSslLinking=true (that property runs the Linux-only build-local.sh path). Set StaticOpenSslLinking=false." />
+    <Error Condition=" '$(OpenHarmonyStaticOpenSslDir)' == '' "
+           Text="OpenHarmonyStaticOpenSsl=true requires OpenHarmonyStaticOpenSslDir=&lt;directory&gt; containing libssl.a, libcrypto.a and the direct libSystem.Security.Cryptography.Native.OpenSsl.a. Build the layout with runtime-ohos/scripts/build-ohos-aot-static-openssl.sh." />
+    <Error Condition=" '$(_OpenHarmonyStaticOpenSslDirNormalized)' == '' or !Exists('$(_OpenHarmonyStaticOpenSslDirNormalized)libssl.a') or !Exists('$(_OpenHarmonyStaticOpenSslDirNormalized)libcrypto.a') "
+           Text="OpenHarmonyStaticOpenSslDir '$(_OpenHarmonyStaticOpenSslDirNormalized)' must contain libssl.a and libcrypto.a." />
+    <Error Condition=" '$(_OpenHarmonyStaticCryptoArchivePath)' == '' or !Exists('$(_OpenHarmonyStaticCryptoArchivePath)') "
+           Text="The direct NativeAOT crypto archive was not found at '$(_OpenHarmonyStaticCryptoArchivePath)'. Build it with runtime-ohos/scripts/build-ohos-aot-static-openssl.sh or pass OpenHarmonyStaticCryptoArchive=&lt;path&gt;." />
+    <ItemGroup>
+      <!-- The pack archive is a NativeLibrary item expanded into LinkerArg by the Unix
+           target. Match the OpenSsl archive only; the other runtime archives stay. -->
+      <_OpenHarmonyShimCryptoLinkerArg Include="@(LinkerArg)"
+                                        Condition="$([System.String]::Copy('%(Identity)').EndsWith('libSystem.Security.Cryptography.Native.OpenSsl.a'))" />
+      <LinkerArg Remove="@(_OpenHarmonyShimCryptoLinkerArg)" />
+      <LinkerArg Include="$(_OpenHarmonyStaticCryptoArchivePath)" />
+      <LinkerArg Include="-L$(_OpenHarmonyStaticOpenSslDirTrimmed)" />
+      <LinkerArg Include="-Wl,-Bstatic" />
+      <LinkerArg Include="-lssl" />
+      <LinkerArg Include="-lcrypto" />
+      <LinkerArg Include="-Wl,-Bdynamic" />
+    </ItemGroup>
+    <Message Importance="high" Text="OpenHarmony: NativeAOT static OpenSSL: replaced the pack crypto shim with $(_OpenHarmonyStaticCryptoArchivePath); static libssl.a/libcrypto.a from $(_OpenHarmonyStaticOpenSslDirNormalized)" />
+  </Target>
+
+  <!-- Remove the shared crypto natives from the publish directory before the HAP staging
+       enumerates its *.so files. A NativeAOT link may have copied libSystem.Security.
+       Cryptography.Native.OpenSsl.so from the runtime pack even though the static archive was
+       linked; libssl.so.3/libcrypto.so.3 can also be explicit publish items. Leaving any of
+       them in the payload would make the HAP look static while the app could still load a
+       shared OpenSSL at runtime. -->
+  <Target Name="_OpenHarmonyRemoveSharedCrypto"
+          AfterTargets="Publish"
+          BeforeTargets="_OpenHarmonyStageHap"
+          Condition=" '$(OpenHarmonyStaticOpenSsl)' == 'true' and '$(PublishAot)' == 'true' and '$(TargetPlatformIdentifier)' == 'openharmony' and '$(OpenHarmonyHapPackage)' == 'true' ">
+    <PropertyGroup>
+      <_OpenHarmonyStaticPublishDir>$([MSBuild]::NormalizeDirectory('$(MSBuildProjectDirectory)', '$(PublishDir)'))</_OpenHarmonyStaticPublishDir>
+    </PropertyGroup>
+    <ItemGroup>
+      <_OpenHarmonySharedCryptoFile Include="$(_OpenHarmonyStaticPublishDir)libSystem.Security.Cryptography.Native.OpenSsl.so;$(_OpenHarmonyStaticPublishDir)libssl.so;$(_OpenHarmonyStaticPublishDir)libssl.so.3;$(_OpenHarmonyStaticPublishDir)libcrypto.so;$(_OpenHarmonyStaticPublishDir)libcrypto.so.3" />
+    </ItemGroup>
+    <Delete Files="@(_OpenHarmonySharedCryptoFile)" />
+    <Message Importance="high" Condition=" '@(_OpenHarmonySharedCryptoFile)' != '' " Text="OpenHarmony: static OpenSSL: removed any shared crypto natives from $(_OpenHarmonyStaticPublishDir) before HAP staging" />
   </Target>
 
   <!-- Trust bundle staging: trust.json and the optional PEM are copied into PublishDir before
@@ -509,13 +580,11 @@
              Text="OpenHarmony: staged the Blazor WebAssembly site from $(_OpenHarmonyWasmSiteDir) into $(PublishDir)$(_OpenHarmonyWasmSiteRoot) (@(_OpenHarmonyWasmSiteAsset->Count()) files); an app loads it from OpenHarmonyWebViewHandler.WasmSiteOrigin after RegisterWasmSite" />
   </Target>
 
-  <!-- Shared ElfSigner task (sdk-ohos Microsoft.NET.Build.Tasks). Re-signs an ELF64 file in
-       place when its .codesign is missing or does not verify (non-ELF files are skipped).
-       MicrosoftNETBuildTasksAssembly is defined by Microsoft.NET.Sdk.Common.targets, which is
-       imported after this file; UsingTask attributes are evaluated after all imports, so the
-       path is resolved by then. Using the task (rather than the selfsign CLI in scripts/) keeps
-       the pack self-contained: consumers only need the OpenHarmony-enabled .NET SDK. -->
-  <UsingTask TaskName="OpenHarmonyCodesign" AssemblyFile="$(MicrosoftNETBuildTasksAssembly)" />
+  <!-- ELF signer task shipped with the workload. Re-signs an ELF64 file in place when its
+       .codesign is missing or does not verify (non-ELF files are skipped). The task lives in
+       tools/Microsoft.OpenHarmony.Tasks.dll, so the pack is self-contained and does not need an
+       OpenHarmony-patched .NET SDK. -->
+  <UsingTask TaskName="OpenHarmonyCodesign" AssemblyFile="$(MSBuildThisFileDirectory)../tools/Microsoft.OpenHarmony.Tasks.dll" />
 
   <!-- Feature permissions (see "Feature permissions" in the packaging doc): the single feature
        -> permission matrix, the request-point scan over the shell sources and the validation.
@@ -845,8 +914,8 @@
          rewrites any file whose .codesign is missing or does not verify and skips already-valid
          signatures, so a hap can never carry a non-ElfSigner ELF. A signing failure (or a missing
          task) fails the build before packing. -->
-    <Error Condition=" !Exists('$(MicrosoftNETBuildTasksAssembly)') "
-           Text="OpenHarmony: the ElfSigner task assembly '$(MicrosoftNETBuildTasksAssembly)' was not found, so $(_OpenHarmonyHapStageDir)libs/$(OpenHarmonyAbi)/ cannot be re-signed; build with an OpenHarmony-enabled .NET SDK." />
+    <Error Condition=" !Exists('$(MSBuildThisFileDirectory)../tools/Microsoft.OpenHarmony.Tasks.dll') "
+           Text="OpenHarmony: the workload task assembly '$(MSBuildThisFileDirectory)../tools/Microsoft.OpenHarmony.Tasks.dll' was not found, so $(_OpenHarmonyHapStageDir)libs/$(OpenHarmonyAbi)/ cannot be re-signed; reinstall the microsoft.net.sdk.openharmony workload." />
     <OpenHarmonyCodesign Directories="$(_OpenHarmonyHapStageDir)libs" />
 
     <!-- app name substitution + the app descriptor read by the ArkTS shell -->

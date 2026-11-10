@@ -50,6 +50,13 @@
     <RuntimeIdentifierGraphPath Condition=" '$(RuntimeIdentifierGraphPath)' == '' ">$(MSBuildThisFileDirectory)../ridgraph/PortableRuntimeIdentifierGraph.openharmony.json</RuntimeIdentifierGraphPath>
   </PropertyGroup>
 
+  <!-- The platform-compatibility analyzer (CA1418) does not ship a built-in knowledge of the
+       OpenHarmony platform yet. Declaring it here makes the generated assembly-level
+       [SupportedOSPlatform("openharmony<api>")] resolvable for every OpenHarmony project; this
+       is the documented SupportedPlatform item, not a suppression. -->
+  <ItemGroup Condition=" '$(TargetPlatformIdentifier)' == 'openharmony' ">
+    <SupportedPlatform Include="openharmony" />
+  </ItemGroup>
 
   <Import Project="$(MSBuildThisFileDirectory)../targets/OpenHarmony.Hap.targets"
           Condition=" '$(TargetPlatformIdentifier)' == 'openharmony' and '$(_OpenHarmonySdkTargetsAlreadyImported)' != 'true' " />

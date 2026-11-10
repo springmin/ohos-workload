@@ -3,7 +3,8 @@
 # summary at the end.
 #   1. repository gates, scripts/selftest-ridgraph.sh + scripts/selftest-packs.sh +
 #      scripts/selftest-repo-hygiene.sh + scripts/selftest-tasks.sh +
-#      scripts/selftest-hap-targets.sh + scripts/selftest-host-registry.sh +
+#      scripts/selftest-hap-targets.sh + scripts/selftest-selfsign.sh +
+#      scripts/selftest-sdk-defaults.sh + scripts/selftest-host-registry.sh +
 #      scripts/selftest-host-window-bridge.sh + scripts/selftest-host-a11y-table.sh +
 #      scripts/selftest-host-clipboard.sh + scripts/selftest-host-asset.sh +
 #      scripts/selftest-host-status.sh selftest-host-trust.sh +
@@ -15,8 +16,10 @@
 #      must hold, every pack props/targets file must have an importer or be an entry point, a
 #      double import of Sdk.targets must not duplicate the platform items, the shipped module.json
 #      task must reproduce its documented bytes and reject broken input, the compiled packaging
-#      tasks must pass their unit tests and the packs must ship the built assembly, the build
-#      inputs must carry no machine-specific absolute paths (test/Directory.Build.props relative
+#      tasks must pass their unit tests and the packs must ship the built assembly, the ELF
+#      self-signer must build/sign/re-sign and refuse bad input, the shipped SDK defaults
+#      (apphost/self-contained/RID/dependency-file) must hold and no Crossgen2 pack may be
+#      declared while R2R is off, the build inputs must carry no machine-specific absolute paths (test/Directory.Build.props relative
 #      roots), the host window registry's + bridge's + a11y table's + clipboard NDK read's +
 #      status file's off-device unit tests must pass (MULTIWINDOW-L M1/M2, PASTEBOARD-FIX,
 #      TOOL-HARDEN-B), the hap-targets feature/permission contract must hold (T5), the
@@ -140,7 +143,7 @@ fi
 log "== step 1/5: repository gates (RID graph, pack lint, hap module.json, task unit tests, host window registry + bridge + clipboard NDK read + asset store, absolute paths, P0 perf-gate fixture) =="
 PACK_GATE_DETAIL=""
 PACK_GATE_FAILED=0
-for gate in selftest-ridgraph.sh selftest-packs.sh selftest-hap-targets.sh selftest-tasks.sh selftest-repo-hygiene.sh selftest-host-registry.sh selftest-host-window-bridge.sh selftest-host-a11y-table.sh selftest-host-clipboard.sh selftest-host-asset.sh selftest-host-status.sh selftest-host-trust.sh selftest-cut-kit.sh selftest-csc-watchdog.sh selftest-run-upstream-tests.sh selftest-perf-gate.sh; do
+for gate in selftest-ridgraph.sh selftest-packs.sh selftest-hap-targets.sh selftest-tasks.sh selftest-selfsign.sh selftest-sdk-defaults.sh selftest-repo-hygiene.sh selftest-host-registry.sh selftest-host-window-bridge.sh selftest-host-a11y-table.sh selftest-host-clipboard.sh selftest-host-asset.sh selftest-host-status.sh selftest-host-trust.sh selftest-cut-kit.sh selftest-csc-watchdog.sh selftest-run-upstream-tests.sh selftest-perf-gate.sh; do
     if [ ! -f "$W/scripts/$gate" ]; then
         warn "missing scripts/$gate"
         PACK_GATE_FAILED=1

@@ -128,6 +128,7 @@ for API in 20.0 26.0; do
 <FileList TargetFrameworkIdentifier=".NETCoreApp" TargetFrameworkVersion="11.0" FrameworkName="Microsoft.OpenHarmony" Name="Microsoft OpenHarmony">
   <File Type="Managed" Path="ref/net11.0/Microsoft.OpenHarmony.dll" AssemblyName="Microsoft.OpenHarmony" PublicKeyToken="" AssemblyVersion="1.0.0.0" FileVersion="1.0.0.0" />
   <File Type="Managed" Path="ref/net11.0/Microsoft.OpenHarmony.Hosting.dll" AssemblyName="Microsoft.OpenHarmony.Hosting" PublicKeyToken="" AssemblyVersion="1.0.0.0" FileVersion="1.0.0.0" />
+  <File Type="Managed" Path="ref/net11.0/Microsoft.OpenHarmony.Maui.Graphics.dll" AssemblyName="Microsoft.OpenHarmony.Maui.Graphics" PublicKeyToken="" AssemblyVersion="1.0.0.0" FileVersion="1.0.0.0" />
 </FileList>
 XML
   mkdir -p "$P/data"
@@ -147,6 +148,8 @@ for API in 20.0 26.0; do
   P="$W/packs/Microsoft.OpenHarmony.Runtime.$API.openharmony-arm64/$VER"
   mkdir -p "$P/runtimes/openharmony-arm64/lib/net11.0"
   cp "$MAUI_GFX" "$P/runtimes/openharmony-arm64/lib/net11.0/"
+  mkdir -p "$W/packs/Microsoft.OpenHarmony.Ref.$API/$VER/ref/net11.0"
+  cp "$MAUI_GFX" "$W/packs/Microsoft.OpenHarmony.Ref.$API/$VER/ref/net11.0/"
   mkdir -p "$P/data"
   cat > "$P/data/RuntimeList.xml" <<'XML'
 <FileList TargetFrameworkIdentifier=".NETCoreApp" TargetFrameworkVersion="11.0" FrameworkName="Microsoft.OpenHarmony" Name="Microsoft OpenHarmony">

@@ -71,6 +71,11 @@ int main(void) {
 
     char status[OHOS_HOST_TRUST_STATUS_MAX];
 
+    Check(strcmp(OHOS_HOST_TRUST_DEFAULT_SYSTEM_DIR, "/system/etc/security/certificates") == 0,
+          "default system directory is the certificate_manager preloaded store");
+    Check(strcmp(OHOS_HOST_TRUST_FALLBACK_SYSTEM_DIR, "/etc/ssl/certs") == 0,
+          "compatibility fallback is /etc/ssl/certs");
+
     ResetEnv();
     Check(OhosHostApplyTrustPolicy(NULL, ca_file, system_dir, status, sizeof(status)) == 0 &&
               strstr(status, "unchanged") != NULL,

@@ -619,7 +619,7 @@ string? t8MatPath = FindHostSource("OpenHarmonyItemListMaterializer.cs");
 string t8Mat = t8MatPath is null ? string.Empty : File.ReadAllText(t8MatPath);
 string? t8ExtPath = FindHostSource("MauiOpenHarmonyExtensions.cs");
 string t8Ext = t8ExtPath is null ? string.Empty : File.ReadAllText(t8ExtPath);
-string? t8ApiPath = FindHostSource("src/Core/src/PublicAPI/net-openharmony/PublicAPI.Unshipped.txt");
+string? t8ApiPath = FindHostSource("src/Controls/src/Core/PublicAPI/net-openharmony/PublicAPI.Unshipped.txt");
 string t8Api = t8ApiPath is null ? string.Empty : File.ReadAllText(t8ApiPath);
 bool t8PinHandler = t8Handler.Contains("ITableViewController") &&
     t8Handler.Contains("((ITableViewController)table).Model") &&
@@ -2517,10 +2517,11 @@ if (!t22FifoOk)
 // serving the original metrics again after the reset), the entry caret metrics, and the scaled
 // size the draw pass hands the canvas through a recording canvas (the CanvasFactory test hook).
 
-string? t21ApiPath = FindHostSource("src/Core/src/PublicAPI/net-openharmony/PublicAPI.Unshipped.txt");
+string? t21ApiPath = FindHostSource("OpenHarmonyFontManager.cs");
 string t21ApiText = t21ApiPath is null ? string.Empty : File.ReadAllText(t21ApiPath);
-bool t21ApiPin = t21ApiText.Contains("OpenHarmonyFontManager.SetSystemFontScale(float scale) -> void") &&
-    t21ApiText.Contains("OpenHarmonyFontManager.SystemFontScale.get -> float");
+bool t21ApiPin = t21ApiText.Contains("internal sealed class OpenHarmonyFontManager") &&
+    t21ApiText.Contains("public static void SetSystemFontScale(float scale)") &&
+    t21ApiText.Contains("public static float SystemFontScale");
 float t21Default = OpenHarmonyFontManager.SystemFontScale;
 OpenHarmonyFontManager.SetSystemFontScale(99f);
 float t21ClampHigh = OpenHarmonyFontManager.SystemFontScale;
@@ -3035,9 +3036,9 @@ var n6Renderer = app.Services.GetRequiredService<OpenHarmonyWindowRenderer>();
 var n6Page = n6Window.Page;
 n6Renderer.Render(n6Page, 300, 200);
 var n6Row = ((OpenHarmonyWindowHandler)n6Window.Handler!).TitleBar!;
-bool n6GatedOff = !n6Row.ShowsSystemButtons && n6Row.HitSystemButton(277, 28) is null;
+bool n6GatedOff = !OpenHarmonyTitleBarRow.ShowsSystemButtons && n6Row.HitSystemButton(277, 28) is null;
 OpenHarmonyWindowDecoration.AvailabilityOverride = true;
-bool n6GatedOn = n6Row.ShowsSystemButtons &&
+bool n6GatedOn = OpenHarmonyTitleBarRow.ShowsSystemButtons &&
     n6Row.HitSystemButton(277, 28) == OpenHarmonyWindowDecorCommand.Close &&
     n6Row.HitSystemButton(231, 28) == OpenHarmonyWindowDecorCommand.ToggleMaximize &&
     n6Row.HitSystemButton(185, 28) == OpenHarmonyWindowDecorCommand.Minimize;
@@ -8214,10 +8215,10 @@ string? kitNapiPath = FindHostSource("src/OpenHarmonyHost/host_napi.cpp");
 string kitNapi = kitNapiPath is null ? string.Empty : File.ReadAllText(kitNapiPath);
 string? kitManagedPath = FindHostSource("OpenHarmonyHmsKits.cs");
 string kitManaged = kitManagedPath is null ? string.Empty : File.ReadAllText(kitManagedPath);
+string? kitPublicApiPath = FindHostSource("src/Controls/src/Core/PublicAPI/net-openharmony/PublicAPI.Unshipped.txt");
+string kitPublicApi = kitPublicApiPath is null ? string.Empty : File.ReadAllText(kitPublicApiPath);
 string? kitLauncherPath = FindHostSource("OpenHarmonyAppLauncher.cs");
 string kitLauncher = kitLauncherPath is null ? string.Empty : File.ReadAllText(kitLauncherPath);
-string? kitPublicApiPath = FindHostSource("src/Core/src/PublicAPI/net-openharmony/PublicAPI.Unshipped.txt");
-string kitPublicApi = kitPublicApiPath is null ? string.Empty : File.ReadAllText(kitPublicApiPath);
 bool kitHostHeader = kitHeader.Contains("int ohos_host_share_kit_share(const char* uris, const char* title);") &&
     kitHeader.Contains("int ohos_host_scan_available(void);") &&
     kitHeader.Contains("int ohos_host_scan_request(int request_id);") &&
@@ -8238,7 +8239,8 @@ bool kitManagedOk = kitManaged.Contains("EntryPoint = \"ohos_host_share_kit_shar
     kitManaged.Contains("public static async Task<string?> ScanAsync") &&
     kitManaged.Contains("public static bool IsSupported") &&
     kitLauncher.Contains("OpenHarmonyShareKitBridge.TryShare(uris, request!.Title)") &&
-    kitPublicApi.Contains("Microsoft.Maui.Platform.OpenHarmonyScan.ScanAsync(");
+    kitManaged.Contains("internal partial class OpenHarmonyScan") &&
+    kitManaged.Contains("public static async Task<string?> ScanAsync");
 bool kitPinsOk = kitHostHeader && kitHostNapi && kitManagedOk;
 Console.WriteLine($"[verify] kit2 bridge pins header={kitHostHeader} napi={kitHostNapi} managed={kitManagedOk} assert={kitPinsOk}");
 if (!kitPinsOk)
@@ -10833,13 +10835,13 @@ if (!n2FontOk)
 string? n3ListPath = FindHostSource("OpenHarmonyListViewHandler.cs");
 string n3List = n3ListPath is null ? string.Empty : File.ReadAllText(n3ListPath);
 bool n3SwitchOk = n3List.Contains("SwitchCell switchCell => CreateSwitchCell(switchCell),") &&
-    n3List.Contains("private static View CreateSwitchCell(SwitchCell cell)") &&
+    n3List.Contains("private static Grid CreateSwitchCell(SwitchCell cell)") &&
     n3List.Contains("toggle.Toggled += (_, e) => cell.On = e.Value;");
 bool n3EntryOk = n3List.Contains("EntryCell entryCell => CreateEntryCell(entryCell),") &&
-    n3List.Contains("private static View CreateEntryCell(EntryCell cell)") &&
+    n3List.Contains("private static Grid CreateEntryCell(EntryCell cell)") &&
     n3List.Contains("entry.TextChanged += (_, e) => cell.Text = e.NewTextValue;") &&
     n3List.Contains("entry.Completed += (_, _) => cell.SendCompleted();");
-bool n3CellsOk = n3SwitchOk && n3EntryOk && n3List.Contains("private static View CreateCellRow(View content, View trailing)");
+bool n3CellsOk = n3SwitchOk && n3EntryOk && n3List.Contains("private static Grid CreateCellRow(View content, View trailing)");
 Console.WriteLine($"[verify] audit listcells switch={n3SwitchOk} entry={n3EntryOk} row={n3List.Contains("CreateCellRow")} source='{n3ListPath ?? "<missing>"}' assert={n3CellsOk}");
 if (!n3CellsOk)
 {
@@ -11504,7 +11506,7 @@ string? n14WebAuthPath = FindHostSource("OpenHarmonyWebAuthenticator.cs");
 string n14WebAuth = n14WebAuthPath is null ? string.Empty : File.ReadAllText(n14WebAuthPath);
 string? n14ExtensionsPath = FindHostSource("MauiOpenHarmonyExtensions.cs");
 string n14Extensions = n14ExtensionsPath is null ? string.Empty : File.ReadAllText(n14ExtensionsPath);
-bool n14TypeOk = n14WebAuth.Contains("public sealed class OpenHarmonyWebAuthenticator : IWebAuthenticator") &&
+bool n14TypeOk = n14WebAuth.Contains("internal sealed class OpenHarmonyWebAuthenticator : IWebAuthenticator") &&
     n14WebAuth.Contains("public static readonly OpenHarmonyWebAuthenticator Instance = new();") &&
     n14WebAuth.Contains("OpenHarmonyBridge.Activation += s_onActivation;") &&
     n14WebAuth.Contains("OpenHarmonyAbilityBridge.TryOpenUri(url.AbsoluteUri)") &&
@@ -12179,8 +12181,6 @@ string? n21RendererPath = FindHostSource("OpenHarmonyWindowRenderer.cs");
 string n21Renderer = n21RendererPath is null ? string.Empty : File.ReadAllText(n21RendererPath);
 string? n21GroupViewPath = FindHostSource("OpenHarmonyCarouselView.cs");
 string n21GroupView = n21GroupViewPath is null ? string.Empty : File.ReadAllText(n21GroupViewPath);
-string? n21ApiPath = FindHostSource("src/Core/src/PublicAPI/net-openharmony/PublicAPI.Unshipped.txt");
-string n21Api = n21ApiPath is null ? string.Empty : File.ReadAllText(n21ApiPath);
 bool n21SlidesOk = n21Carousel.Contains("internal static List<CarouselSlide> MaterializeSlides(ItemsView itemsView)") &&
     n21Carousel.Contains("if (items.Count == 0 || !items.All(IsGroup))") &&
     n21Carousel.Contains("OpenHarmonyStatus.Once(\"carousel.grouped\",") &&
@@ -12192,14 +12192,11 @@ bool n21SlidesOk = n21Carousel.Contains("internal static List<CarouselSlide> Mat
     n21Carousel.Contains("OpenHarmonyCarouselView.GetGroupHeaderTemplate(carousel)") &&
     n21Carousel.Contains("OpenHarmonyCarouselView.GetGroupFooterTemplate(carousel)");
 bool n21IndicatorOk = n21Renderer.Contains("int count = OpenHarmonyCarouselViewHandler.MaterializeSlides(view).Count;");
-bool n21GroupApiOk = n21GroupView.Contains("public static class OpenHarmonyCarouselView") &&
+bool n21GroupApiOk = n21GroupView.Contains("internal static class OpenHarmonyCarouselView") &&
     n21GroupView.Contains("GroupHeaderTemplateProperty = BindableProperty.CreateAttached(") &&
     n21GroupView.Contains("GroupFooterTemplateProperty = BindableProperty.CreateAttached(") &&
     n21GroupView.Contains("public static void SetGroupHeaderTemplate(BindableObject target, DataTemplate? value)") &&
-    n21GroupView.Contains("handler.RebuildFromGroupTemplates();") &&
-    n21Api.Contains("Microsoft.Maui.Platform.OpenHarmonyCarouselView") &&
-    n21Api.Contains("OpenHarmonyCarouselView.GroupHeaderTemplateProperty -> Microsoft.Maui.Controls.BindableProperty!") &&
-    n21Api.Contains("OpenHarmonyCarouselView.SetGroupFooterTemplate(");
+    n21GroupView.Contains("handler.RebuildFromGroupTemplates();");
 bool n21CarouselOk = n21SlidesOk && n21IndicatorOk && n21GroupApiOk;
 Console.WriteLine($"[verify] pi1 carousel slides={n21SlidesOk} indicator={n21IndicatorOk} groupapi={n21GroupApiOk} source='{n21CarouselPath ?? "<missing>"}' assert={n21CarouselOk}");
 if (!n21CarouselOk)
@@ -12248,7 +12245,7 @@ string? n24ApplicationPath = FindHostSource("OpenHarmonyMauiApplication.cs");
 string n24Application = n24ApplicationPath is null ? string.Empty : File.ReadAllText(n24ApplicationPath);
 bool n24InstallOk = n14Extensions.Contains("builder.Services.AddSingleton<OpenHarmonyMauiApplication>();") &&
     n14Extensions.Contains("builder.Services.AddSingleton<Microsoft.Maui.Hosting.IMauiInitializeService, OpenHarmonyMauiApplicationInitializer>();");
-bool n24ApplicationOk = n24Application.Contains("public sealed class OpenHarmonyMauiApplication : IPlatformApplication") &&
+bool n24ApplicationOk = n24Application.Contains("internal sealed class OpenHarmonyMauiApplication : IPlatformApplication") &&
     n24Application.Contains("IPlatformApplication.Current = this;") &&
     n24Application.Contains("public static OpenHarmonyMauiApplication? Instance { get; private set; }") &&
     n24Application.Contains("internal sealed class OpenHarmonyMauiApplicationInitializer : IMauiInitializeService") &&
@@ -12267,7 +12264,7 @@ if (!n24AppObjectOk)
 // OpenHarmonyWindowOverlay registers/unregisters through Initialize/Deinitialize.
 string? n25OverlayPath = FindHostSource("OpenHarmonyWindowOverlay.cs");
 string n25Overlay = n25OverlayPath is null ? string.Empty : File.ReadAllText(n25OverlayPath);
-bool n25OverlayClassOk = n25Overlay.Contains("public class OpenHarmonyWindowOverlay : IWindowOverlay") &&
+bool n25OverlayClassOk = n25Overlay.Contains("internal class OpenHarmonyWindowOverlay : IWindowOverlay") &&
     n25Overlay.Contains("OpenHarmonyWindowOverlayHost.Register(this);") &&
     n25Overlay.Contains("OpenHarmonyWindowOverlayHost.Unregister(this);");
 bool n25ChainOk = n25Overlay.Contains("internal static class OpenHarmonyWindowOverlayHost") &&
@@ -12285,8 +12282,8 @@ if (!n25OverlayOk)
 }
 
 // RB-1: the OpenHarmony TFM gating. MultiTargeting.targets removes the slice for every
-// non-OpenHarmony TFM and defines OPENHARMONY for the OpenHarmony TFM; Core.csproj wires the
-// graphics-backend reference the ref pack does not carry inside the OpenHarmony-only block.
+// non-OpenHarmony TFM and defines OPENHARMONY for the OpenHarmony TFM; Core stays platform-neutral
+// and Controls links the slice for the OpenHarmony TFM.
 string? n26MultiPath = FindHostSource("src/MultiTargeting.targets");
 string n26Multi = n26MultiPath is null ? string.Empty : File.ReadAllText(n26MultiPath);
 string? n26CorePath = FindHostSource("src/Core/src/Core.csproj");
@@ -12296,27 +12293,31 @@ bool n26RemoveOk = n26Multi.Contains("<ItemGroup Condition=\" '$(_MauiTargetPlat
     n26Multi.Contains("<None Include=\"**\\OpenHarmony\\**\\*.cs\" Exclude=\"$(DefaultItemExcludes);$(DefaultExcludesInProjectFolder)\" />");
 bool n26DefineOk = n26Multi.Contains("<PropertyGroup Condition=\" '$(_MauiTargetPlatformIsOpenHarmony)' == 'True' \">") &&
     n26Multi.Contains("<DefineConstants>$(DefineConstants);OPENHARMONY</DefineConstants>");
-bool n26CoreOk = n26Core.Contains("<PropertyGroup Condition=\"$(TargetFramework.Contains('-openharmony'))\">") &&
-    n26Core.Contains("<OpenHarmonyGraphicsAssembly Condition=\" '$(OpenHarmonyGraphicsAssembly)' == '' \">") &&
-    n26Core.Contains("<Reference Include=\"Microsoft.OpenHarmony.Maui.Graphics\">");
-bool n26TfmOk = n26RemoveOk && n26DefineOk && n26CoreOk;
-Console.WriteLine($"[verify] rb tfm remove={n26RemoveOk} define={n26DefineOk} core={n26CoreOk} source='{n26MultiPath ?? "<missing>"}' assert={n26TfmOk}");
+bool n26CoreOk = n26Core.Contains("<Compile Remove=\"Platform/OpenHarmony/**/*.cs\" />");
+string? n26ControlsPath = FindHostSource("src/Controls/src/Core/Controls.Core.csproj");
+string n26Controls = n26ControlsPath is null ? string.Empty : File.ReadAllText(n26ControlsPath);
+bool n26ControlsOk = n26Controls.Contains("Core\\src\\Platform\\OpenHarmony\\**\\*.cs") &&
+    n26Controls.Contains("Link=\"Platform\\OpenHarmony\\");
+bool n26TfmOk = n26RemoveOk && n26DefineOk && n26CoreOk && n26ControlsOk;
+Console.WriteLine($"[verify] rb tfm remove={n26RemoveOk} define={n26DefineOk} core={n26CoreOk} controls={n26ControlsOk} source='{n26MultiPath ?? "<missing>"}' assert={n26TfmOk}");
 if (!n26TfmOk)
 {
     throw new InvalidOperationException(
-        $"the RB TFM-gating contract drifted: remove={n26RemoveOk} define={n26DefineOk} core={n26CoreOk}");
+        $"the RB TFM-gating contract drifted: remove={n26RemoveOk} define={n26DefineOk} core={n26CoreOk} controls={n26ControlsOk}");
 }
 
-// RB-2: the net-openharmony public API baseline exists with its header and carries the PI2 types.
-string? n27ShippedPath = FindHostSource("src/Core/src/PublicAPI/net-openharmony/PublicAPI.Shipped.txt");
-string? n27UnshippedPath = FindHostSource("src/Core/src/PublicAPI/net-openharmony/PublicAPI.Unshipped.txt");
+// RB-2: the net-openharmony public API baseline lives with the slice's real assembly
+// (Microsoft.Maui.Controls) and carries the public entry points after the Phase 2/3
+// internalization.
+string? n27ShippedPath = FindHostSource("src/Controls/src/Core/PublicAPI/net-openharmony/PublicAPI.Shipped.txt");
+string? n27UnshippedPath = FindHostSource("src/Controls/src/Core/PublicAPI/net-openharmony/PublicAPI.Unshipped.txt");
 string n27Shipped = n27ShippedPath is null ? string.Empty : File.ReadAllText(n27ShippedPath);
 string n27Unshipped = n27UnshippedPath is null ? string.Empty : File.ReadAllText(n27UnshippedPath);
 bool n27ExistsOk = n27ShippedPath is not null && n27UnshippedPath is not null &&
     n27Shipped.StartsWith("#nullable enable", StringComparison.Ordinal) &&
     n27Unshipped.StartsWith("#nullable enable", StringComparison.Ordinal);
-bool n27SurfaceOk = n27Unshipped.Contains("Microsoft.Maui.Platform.OpenHarmonyMauiApplication") &&
-    n27Unshipped.Contains("Microsoft.Maui.Platform.OpenHarmonyWindowOverlay");
+bool n27SurfaceOk = n27Unshipped.Contains("Microsoft.Maui.Platform.OpenHarmonyMauiAppHost") &&
+    n27Unshipped.Contains("Microsoft.Maui.Platform.OpenHarmonyView");
 bool n27ApiOk = n27ExistsOk && n27SurfaceOk;
 Console.WriteLine($"[verify] rb publicapi exists={n27ExistsOk} surface={n27SurfaceOk} source='{n27UnshippedPath ?? "<missing>"}' assert={n27ApiOk}");
 if (!n27ApiOk)
@@ -12456,7 +12457,7 @@ foreach (string pg2Version in pg2PackVersions)
         pg2Text.Contains("OpenHarmony: staged libc++_shared.so from @(_OpenHarmonyLibCxxShared->'%(Identity)', '; ')");
     pg2ResignOk &= pg2Text.Contains("<OpenHarmonyCodesign Directories=\"$(_OpenHarmonyHapStageDir)libs\" />") &&
         pg2Text.Contains("a vendor .codesign that is not the ElfSigner format") &&
-        pg2Text.Contains("the ElfSigner task assembly '$(MicrosoftNETBuildTasksAssembly)' was not found");
+        pg2Text.Contains("the workload task assembly '$(MSBuildThisFileDirectory)../tools/Microsoft.OpenHarmony.Tasks.dll' was not found");
 }
 bool pg2LibcxxOk = pg2LibcxxLookupOk && pg2LibcxxErrorsOk && pg2LibcxxCopyOk && pg2ResignOk;
 Console.WriteLine($"[verify] pg2 pack libcxx staging lookup={pg2LibcxxLookupOk} errors={pg2LibcxxErrorsOk} copy={pg2LibcxxCopyOk} resign={pg2ResignOk} packs=22,23,24 source='{pg2LibcxxPath ?? "<missing>"}' assert={pg2LibcxxOk}");
@@ -14461,7 +14462,7 @@ string? p1bAnimPath = FindHostSource("OpenHarmonyScrollAnimation.cs");
 string p1bAnim = p1bAnimPath is null ? string.Empty : File.ReadAllText(p1bAnimPath);
 string? p1bExtPath = FindHostSource("OpenHarmonyCollectionViewExtensions.cs");
 string p1bExt = p1bExtPath is null ? string.Empty : File.ReadAllText(p1bExtPath);
-string? p1bApiPath = FindHostSource("src/Core/src/PublicAPI/net-openharmony/PublicAPI.Unshipped.txt");
+string? p1bApiPath = FindHostSource("src/Controls/src/Core/PublicAPI/net-openharmony/PublicAPI.Unshipped.txt");
 string p1bApi = p1bApiPath is null ? string.Empty : File.ReadAllText(p1bApiPath);
 bool p1bPinThreshold = p1bHandler.Contains("_thresholdArmed = false;") &&
     p1bHandler.Contains("if (!_thresholdArmed || _thresholdFiring)");

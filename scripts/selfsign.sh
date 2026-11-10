@@ -1,10 +1,9 @@
 #!/bin/sh
-# Signs OpenHarmony ELF files with the SDK's own signing algorithm (ElfSigner, shared
-# with the OpenHarmonyCodesign MSBuild task and the `dotnet selfsign` command).
+# Signs OpenHarmony ELF files with the workload's own signing algorithm (ElfSigner, shared
+# with the OpenHarmonyCodesign MSBuild task and the selfsign CLI).
 # Preference order:
 #   1. `selfsign` on PATH (or next to the dotnet muxer / in DOTNET_ROOT)
-#   2. `dotnet <selfsign.dll>` built from a sdk-ohos checkout (SDK_REPO, default
-#      ~/springsources/sdk-ohos) into .signing/
+#   2. `dotnet src/selfsign/bin/Release/net11.0/selfsign.dll` built from this workload
 #   3. `binary-sign-tool ... -selfSign 1` (last resort; older toolchains only)
 # Usage: selfsign.sh <file> [file...]
 set -e
@@ -20,37 +19,10 @@ find_selfsign_bin() {
 }
 
 ensure_selfsign_dll() {
-    WORK="$W/.signing/selfsign"
-    DLL="$WORK/bin/Release/net11.0/selfsign.dll"
+    DLL="$W/src/selfsign/bin/Release/net11.0/selfsign.dll"
     [ -f "$DLL" ] && { printf '%s\n' "$DLL"; return 0; }
-    REPO="${SDK_REPO:-$HOME/springsources/sdk-ohos}"
-    SRC="$REPO/eng/ohos-install/selfsign.cs"
-    SIGNER="$REPO/src/Tasks/Microsoft.NET.Build.Tasks/ElfSigner.cs"
-    [ -f "$SRC" ] && [ -f "$SIGNER" ] || return 1
-    mkdir -p "$WORK"
-    cp "$SRC" "$WORK/selfsign.cs"
-    cp "$SIGNER" "$WORK/ElfSigner.cs"
-    cat > "$WORK/selfsign.csproj" <<'PROJ'
-<Project Sdk="Microsoft.NET.Sdk">
-  <PropertyGroup>
-    <OutputType>Exe</OutputType>
-    <TargetFramework>net11.0</TargetFramework>
-    <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
-    <Nullable>disable</Nullable>
-    <AssemblyName>selfsign</AssemblyName>
-    <InvariantGlobalization>true</InvariantGlobalization>
-    <EnforceCodeStyleInBuild>false</EnforceCodeStyleInBuild>
-    <BaseOutputPath>bin/</BaseOutputPath>
-    <BaseIntermediateOutputPath>obj/</BaseIntermediateOutputPath>
-    <RestoreOutputPath>obj/</RestoreOutputPath>
-  </PropertyGroup>
-  <ItemGroup>
-    <Compile Include="selfsign.cs" />
-    <Compile Include="ElfSigner.cs" />
-  </ItemGroup>
-</Project>
-PROJ
-    "$DOTNET" build "$WORK/selfsign.csproj" -c Release -v:q --nologo >/dev/null 2>&1 || return 1
+    [ -f "$W/src/selfsign/SelfSign.csproj" ] || return 1
+    "$DOTNET" build "$W/src/selfsign/SelfSign.csproj" -c Release -v:q --nologo >/dev/null 2>&1 || return 1
     [ -f "$DLL" ] && printf '%s\n' "$DLL"
 }
 
@@ -72,7 +44,7 @@ for file in "$@"; do
                 -profileSigned 1 -selfSign 1
             cat "$file.signed" > "$file"
         else
-            echo "selfsign: no signer available (set SDK_REPO or install selfsign/binary-sign-tool)" >&2
+            echo "selfsign: no signer available (build src/selfsign or install selfsign/binary-sign-tool)" >&2
             exit 1
         fi
     fi

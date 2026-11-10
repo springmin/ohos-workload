@@ -309,6 +309,60 @@ layouts, pack errors); the interaction suite pins the host parser/precedence/fal
 contract (`ms-mode` checks); `test/aot-smoke/run-local-smoke.sh` exercises the host branches on a
 device host (default/aot/interp markers, the aot fallback and the `interp.txt` override).
 
+## NativeAOT static OpenSSL
+
+`-p:OpenHarmonyStaticOpenSsl=true` links OpenSSL into a NativeAOT application instead of
+shipping `libssl.so.3`/`libcrypto.so.3` (and the crypto shim) in the HAP. It is the OpenHarmony
+packaging path for the runtime's documented static-OpenSSL idea; do not set the Linux-only
+`StaticOpenSslLinking` property at the same time (that target runs `build-local.sh`, which cannot
+cross-compile for OpenHarmony and expects a host OpenSSL installation).
+
+The runtime pack's `libSystem.Security.Cryptography.Native.OpenSsl.a` is the **dlopen shim**
+archive: it stays the default so ordinary NativeAOT apps can load a shared OpenSSL from the
+payload. A static app must use a **direct** archive (no `opensslshim.c.o`, direct `SSL_*`/
+`X509_*`/`EVP_*` calls) and link the matching static OpenSSL libraries. Build that archive and
+stage the three files with:
+
+```sh
+runtime-ohos/scripts/build-ohos-aot-static-openssl.sh \
+    --openssl-dir /path/to/openssl-static \
+    --icu-dir /path/to/ohos-icu \
+    --out-dir /path/to/ohos-aot-static-openssl
+```
+
+`--openssl-dir` is an OpenSSL install prefix (`include/` + `lib/libssl.a` + `lib/libcrypto.a`)
+or a build tree with `include/` and both archives at its root; the archives must be
+OpenHarmony arm64 static libraries built with `-fPIC`. The output directory contains
+`libSystem.Security.Cryptography.Native.OpenSsl.a`, `libssl.a`, `libcrypto.a`, `SHA256SUMS`,
+`build-info.txt` and the OpenSSL license. Pass it to the HAP target:
+
+```sh
+dotnet publish MyApp.csproj -c Release -r openharmony-arm64 \
+    -p:PublishAot=true -p:PublishAotUsingRuntimePack=true -p:NativeLib=Shared \
+    -p:OpenHarmonyRuntimeMode=aot -p:OpenHarmonyHapPackage=true \
+    -p:OpenHarmonyStaticOpenSsl=true \
+    -p:OpenHarmonyStaticOpenSslDir=/path/to/ohos-aot-static-openssl
+```
+
+`OpenHarmonyStaticCryptoArchive` overrides only the direct crypto archive path when the three
+archives live separately. The HAP target:
+
+1. runs `_OpenHarmonyPrepareStaticOpenSsl` before `IlcCompile`, removes the runtime pack's
+   `libSystem.Security.Cryptography.Native.OpenSsl.a` from `LinkerArg`, and appends the direct
+   archive followed by `-L<dir> -Wl,-Bstatic -lssl -lcrypto -Wl,-Bdynamic`;
+2. runs `_OpenHarmonyRemoveSharedCrypto` after `Publish` and before `_OpenHarmonyStageHap`, so
+   `libSystem.Security.Cryptography.Native.OpenSsl.so`, `libssl.so*` and `libcrypto.so*` cannot
+   reach `libs/<abi>/` or the payload zip through explicit publish items.
+
+A successful static HAP has only the app ELF in `libs/<abi>/` (plus host/libc++): check
+`readelf -d lib<stem>.so | grep NEEDED` and confirm it lists only `libc.so`, and check
+`ar t libSystem.Security.Cryptography.Native.OpenSsl.a` for the absence of `opensslshim.c.o`.
+The static app still uses the normal `X509Chain`/`SslStream` code; the device evidence
+(2026-11-04, HAD-W24 / OpenHarmony 7.0.0.111) is SHA-256, AES-GCM, RSA, ECDSA, X.509 create/
+expiry/trust-chain, TLS 1.3, public HTTPS and the custom-root/negative controls with
+`failures=0`. The OpenSSL archives are not part of the SDK pack; distributing an app built this
+way carries the OpenSSL license and the provider's own redistribution obligations.
+
 ## Runtime mode kits
 
 `scripts/make-mode-kit.sh` builds the three switch shapes of one project into per-mode
@@ -596,9 +650,13 @@ runtime-ohos plan `docs/plans/2026-09-30-ohos-jit-payload-install-policy.md`.
 - `OpenHarmonyTrustMode` defaults to `both`; without `OpenHarmonyCaBundle` this is system-only.
 - `OpenHarmonyCaBundle` is a PEM file. It is copied to the publish payload as `trust-ca.pem`
   (and therefore appears in both `libs/<abi>/` and `dotnet.zip`); `app` mode requires it.
-- `OpenHarmonySystemCaDir` defaults to `/etc/ssl/certs`. It is a device path, so the build cannot
-  validate its existence; the host checks it at launch and falls back to app-only when it is
-  missing and a bundle is present.
+- `OpenHarmonySystemCaDir` defaults to `/system/etc/security/certificates`, the store installed
+  by `security_certificate_manager@2d9792c` (`config/BUILD.gn`, 125 OpenSSL-hashed CAs, system
+  and updater images). `/etc/ssl/certs` (a single `cacert.pem` on HAD-W24) is a compatibility
+  fallback the native host uses only when the default directory is absent. The path is a device
+  path, so the build cannot validate its existence; the host checks it at launch, falls back to
+  `/etc/ssl/certs` when the default is absent, and falls back to app-only when neither system
+  directory exists and a bundle is present.
 - The target writes `trust.json` next to the payload before the deterministic zip and libs
   staging. The host reads `<effective app_dir>/trust.json` and applies the environment **before
   hostfxr/coreclr starts**, so the runtime's first X509 store consistently uses the policy.
@@ -608,18 +666,19 @@ runtime-ohos plan `docs/plans/2026-09-30-ohos-jit-payload-install-policy.md`.
   do not fall back to the system directory. A self-signed/untrusted test endpoint must fail in
   this mode; that is the negative control for the trust boundary.
 
-Device evidence (HAD-W24, OpenSSL 3.5.9): `both` produced
-`trust: mode=both ... app=1 system=1` with `SSL_CERT_FILE=<bundle>/trust-ca.pem` and
-`SSL_CERT_DIR=/etc/ssl/certs`; the public HTTPS probe passed. `app` produced `app=1 system=0`
-and the public HTTPS probe failed as expected, proving the system store was suppressed.
+Device evidence (HAD-W24, OpenSSL 3.5.9, 2026-11-04): `both` produced
+`trust: mode=both ... dir=/system/etc/security/certificates app=1 system=1` with
+`SSL_CERT_FILE=<bundle>/trust-ca.pem`; the public HTTPS and `SslStream` probes passed. `app`
+produced `app=1 system=0` and the public HTTPS probe failed as expected, proving the system store
+was suppressed.
 
 The same probe validates the negative cases with local certificates: a self-signed server is
 rejected, a custom-root chain is accepted, an expired certificate is rejected, and a certificate
-with the wrong host name is rejected. `SslStream` to a public host also succeeds in `both` mode.
-The device exposes `/etc/ssl/certs` as a single `cacert.pem` and
-`/system/etc/security/certificates` as 125 hashed `*.0` files; both paths are readable by the app.
-The default `OpenHarmonySystemCaDir=/etc/ssl/certs` is the one the current images use; an image
-with a different store can override it.
+with the wrong host name is rejected. The device also exposes `/etc/ssl/certs` as a single
+`cacert.pem`; `security_certificate_manager/config/BUILD.gn` installs the formal 125 hashed
+`*.0` files to `/system/etc/security/certificates` on the system and updater images. An image
+with a different store can override `OpenHarmonySystemCaDir`; the host's `/etc/ssl/certs`
+fallback keeps images that only ship the curl bundle working.
 
 ## Payload determinism
 
@@ -1832,10 +1891,12 @@ dotnet publish test/hello-maui-app/hello-maui-app.csproj \
 The pipeline's MSBuild tasks are compiled into `Microsoft.OpenHarmony.Tasks.dll` instead of being
 defined inline with `RoslynCodeTaskFactory` (task-assembly migration, audit V8):
 
-- **Layout**: `src/Microsoft.OpenHarmony.Tasks/` holds the six task classes
+- **Layout**: `src/Microsoft.OpenHarmony.Tasks/` holds the eight task classes
   (`OpenHarmonyDeterministicZip`, `OpenHarmonyStageRuntimeLibs`, `OpenHarmonyStagePayloadLibs`,
   `OpenHarmonyWritePayloadMarker`, `OpenHarmonyResolvePermissions`,
-  `OpenHarmonyGenerateModuleJson`). Each class body is the former inline code verbatim, so the task
+  `OpenHarmonyGenerateModuleJson`, `OpenHarmonyExtractEmbeddedResource`, `OpenHarmonyCodesign`).
+  Except for the workload-owned `OpenHarmonyCodesign` (the ELF self-signer moved here from the
+  OpenHarmony SDK fork), each class body is the former inline code verbatim, so the task
   parameters, the log/error strings and the produced bytes are unchanged.
 - **Target framework**: `netstandard2.0`, so the same assembly loads under the .NET Framework MSBuild
   host (Visual Studio / `MSBuild.exe`, net472+) and under the .NET MSBuild host (`dotnet build`);
@@ -1844,24 +1905,28 @@ defined inline with `RoslynCodeTaskFactory` (task-assembly migration, audit V8):
   deterministic; no deps.json is shipped. `DebugType=none` keeps a rebuild byte-identical across
   the rc.2 SDK builds (`.109`/`.112`): the portable PDB identity (CodeView GUID, PDB checksum,
   debug-entry timestamp) was the only byte drift, and no PDB is shipped, so the
-  `scripts/selftest-tasks.sh` S3 pack gate compares the sources, not the compiler build.
+  `scripts/selftest-tasks.sh` S3 pack gate rebuilds the assembly and compares its SHA-256 to the
+  committed pack copies.
 - **Distribution**: `scripts/prepare-packs.sh` builds it and copies it into
   `packs/Microsoft.OpenHarmony.Sdk/<version>/tools/`. The pack targets load it with
   `UsingTask AssemblyFile="$(MSBuildThisFileDirectory)../tools/Microsoft.OpenHarmony.Tasks.dll"`.
-  The DLL is committed into all three preview packs (the pack targets must stay byte-identical), and
+  The DLL is committed into every SDK pack (the pack targets must stay byte-identical), and
   `scripts/lint-packs.sh` fails the pack lint when a `UsingTask` reference does not resolve to a file
   the pack actually ships.
-- **Tests**: `test/openharmony-tasks-tests/` runs the six classes with a stub `IBuildEngine` (138
+- **Tests**: `test/openharmony-tasks-tests/` runs the eight classes with a stub `IBuildEngine` (184
   checks: zip determinism/ordinal order/fixed timestamp/skip names, runtime-ELF staging, payload
   staging layout, payload-marker schema + escaping, feature-permission matrix/request-point/strict
   mode, module.json substitution/escaping/insertions/negatives and the app-link skill insertion
   (`OpenHarmonyAppLinkHosts` -> `skills[].uris` + `domainVerify`, invalid/empty host and missing
-  anchor negatives)). `scripts/selftest-tasks.sh` builds
+  anchor negatives), embedded-resource extraction, and ELF self-signing (`.codesign` append,
+  idempotent re-sign, non-ELF skip, missing-directory skip)). `scripts/selftest-tasks.sh` builds
   the assembly and the test host, runs the suite, and fails when the committed pack copies drift from
   the freshly built Release assembly (re-run `scripts/prepare-packs.sh`); it is part of the
   `scripts/preflight.sh` repository gates. `scripts/selftest-hap-targets.sh` T1 additionally pins
-  the six `UsingTask` entries, the app-link parameter wiring and the absence of inline code, and its
-  T2/T3/T5 fixtures run the compiled tasks through the real pack targets.
+  the eight `UsingTask` entries, the app-link parameter wiring and the absence of inline code, and
+  its T2/T3/T5 fixtures run the compiled tasks through the real pack targets. The standalone
+  `src/selfsign` CLI shares the same `ElfSigner` source and is exercised by
+  `scripts/selftest-selfsign.sh`.
 
 ## Development loop: devloop.sh
 

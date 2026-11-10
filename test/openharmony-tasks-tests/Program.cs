@@ -1,14 +1,16 @@
-// Unit tests for the seven compiled hap-packaging tasks. Every check runs the real task class with a
+// Unit tests for the eight compiled hap-packaging tasks. Every check runs the real task class with a
 // stub IBuildEngine, so the assertions are on the shipped behaviour (deterministic zip bytes, skip
 // names, JSON generation, marker fields, permission resolution and the log/error strings), not on
 // a reimplementation. scripts/selftest-tasks.sh runs this; it exits non-zero on the first failure
 // summary and prints the [tasks-tests] contract line the gate greps for.
+using System.Buffers.Binary;
 using System.IO.Compression;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using Microsoft.Build.Framework;
 using Microsoft.Build.Utilities;
+using Microsoft.OpenHarmony.Tasks;
 
 namespace OpenHarmonyTasksTests;
 
@@ -47,6 +49,44 @@ internal static class Program
         return bytes;
     }
 
+    private static byte[] MinimalElf64()
+    {
+        // A minimal ELF64 with a null section and a .shstrtab section. ElfSigner needs a usable
+        // section-header table before it can append the .codesign section.
+        byte[] shstr = Encoding.ASCII.GetBytes("\0.shstrtab\0");
+        const int sectionHeaderOffset = 64;
+        const int sectionCount = 2;
+        const int shstrtabIndex = 1;
+        int shstrtabOffset = sectionHeaderOffset + sectionCount * 64;
+        var bytes = new byte[shstrtabOffset + shstr.Length];
+
+        bytes[0] = 0x7F;
+        bytes[1] = (byte)'E';
+        bytes[2] = (byte)'L';
+        bytes[3] = (byte)'F';
+        bytes[4] = 2; // ELFCLASS64
+        bytes[5] = 1; // ELFDATA2LSB
+        bytes[6] = 1; // EV_CURRENT
+
+        BinaryPrimitives.WriteUInt16LittleEndian(bytes.AsSpan(16), 2); // ET_EXEC
+        BinaryPrimitives.WriteUInt16LittleEndian(bytes.AsSpan(18), 183); // EM_AARCH64
+        BinaryPrimitives.WriteUInt32LittleEndian(bytes.AsSpan(20), 1); // EV_CURRENT
+        BinaryPrimitives.WriteUInt64LittleEndian(bytes.AsSpan(40), sectionHeaderOffset);
+        BinaryPrimitives.WriteUInt16LittleEndian(bytes.AsSpan(52), 64); // e_ehsize
+        BinaryPrimitives.WriteUInt16LittleEndian(bytes.AsSpan(58), 64); // e_shentsize
+        BinaryPrimitives.WriteUInt16LittleEndian(bytes.AsSpan(60), sectionCount);
+        BinaryPrimitives.WriteUInt16LittleEndian(bytes.AsSpan(62), shstrtabIndex);
+
+        int shstrSection = sectionHeaderOffset + 64;
+        BinaryPrimitives.WriteUInt32LittleEndian(bytes.AsSpan(shstrSection), 1); // sh_name
+        BinaryPrimitives.WriteUInt32LittleEndian(bytes.AsSpan(shstrSection + 4), 3); // SHT_STRTAB
+        BinaryPrimitives.WriteUInt64LittleEndian(bytes.AsSpan(shstrSection + 24), (ulong)shstrtabOffset);
+        BinaryPrimitives.WriteUInt64LittleEndian(bytes.AsSpan(shstrSection + 32), (ulong)shstr.Length);
+        BinaryPrimitives.WriteUInt64LittleEndian(bytes.AsSpan(shstrSection + 48), 1); // sh_addralign
+        shstr.CopyTo(bytes.AsSpan(shstrtabOffset));
+        return bytes;
+    }
+
     private static string Sha256Hex(byte[] bytes)
     {
         return Convert.ToHexString(SHA256.HashData(bytes)).ToLowerInvariant();
@@ -67,6 +107,7 @@ internal static class Program
         ResolvePermissionsTests();
         GenerateModuleJsonTests();
         ExtractEmbeddedResourceTests();
+        CodesignTests();
 
         bool ok = _failed == 0;
         Console.WriteLine($"[tasks-tests] checks={_checks} failed={_failed} assert={(ok ? "True" : "False")}");
@@ -814,5 +855,37 @@ internal static class Program
         var (badImageOk, badImageEngine) = Harness.Run(badImage);
         Check("extract embedded resource fails for a non-assembly file",
             !badImageOk && badImageEngine.HasErrorContaining("cannot read") && !File.Exists(Path.Combine(fixtureDir, "bad.dll")));
+    }
+
+    // ---------------------------------------------------------------- ELF self-signing
+
+    private static void CodesignTests()
+    {
+        string dir = Harness.TempDir("codesign");
+        string elf = Path.Combine(dir, "app");
+        string text = Path.Combine(dir, "readme.txt");
+        Harness.WriteBytes(elf, MinimalElf64());
+        Harness.WriteFile(text, "not an elf");
+
+        string before = Sha256Hex(elf);
+        var task = new OpenHarmonyCodesign { Directories = new[] { dir } };
+        var (ok, engine) = Harness.Run(task);
+        Check("codesign task succeeds", ok && engine.Errors.Count == 0);
+        Check("codesign task changes the ELF", Sha256Hex(elf) != before);
+        Check("codesign adds a .codesign section",
+            Encoding.ASCII.GetString(File.ReadAllBytes(elf)).Contains(".codesign", StringComparison.Ordinal));
+        Check("codesign leaves non-ELF files alone", File.ReadAllText(text) == "not an elf");
+
+        // A second run must be a no-op: the device rejects a rewritten signature only when the
+        // content changed, but keeping the bytes stable is also the determinism contract.
+        string signedHash = Sha256Hex(elf);
+        var rerun = new OpenHarmonyCodesign { Directories = new[] { dir } };
+        var (rerunOk, _) = Harness.Run(rerun);
+        Check("codesign is idempotent", rerunOk && Sha256Hex(elf) == signedHash);
+
+        // A missing publish directory is normal (the target passes optional output roots).
+        var missing = new OpenHarmonyCodesign { Directories = new[] { Path.Combine(dir, "missing") } };
+        var (missingOk, _) = Harness.Run(missing);
+        Check("codesign ignores a missing directory", missingOk);
     }
 }
