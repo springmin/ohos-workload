@@ -6,6 +6,27 @@ short summary and names the section that applies; this document is the long-form
 constraints and decisions behind it. Keep the targets file byte-identical across the
 preview.22/23/24 packs (`test/maui-platform-verify`, PG2).
 
+## Signing ownership
+
+Two signing passes exist and are not duplicates:
+
+- **SDK local-execution pass** (`Microsoft.NET.Sdk.OpenHarmony.targets` in the SDK): triggered by
+  `RuntimeIdentifier`/`AppHostRuntimeIdentifier` starting with `openharmony`; it signs the
+  build/publish output ELF tree with a self-sign `.codesign` section. It covers `dotnet run
+  file.cs` and portable/self-contained builds where no platform TFM (and therefore no HAP
+  targets) is active. This is the OpenHarmony analogue of `_EnableMacOSCodeSign` /
+  `codesign --sign -`.
+- **Workload distribution pass** (`OpenHarmony.Hap.targets` in this pack): imported for
+  `TargetPlatformIdentifier == openharmony` and run during HAP packaging
+  (`OpenHarmonyHapPackage=true`); it re-signs the staged `libs/<abi>` payload with
+  `OpenHarmonyCodesign`, then signs the HAP with `hap-sign-tool` (`_OpenHarmonySignHap`). This is
+  the OpenHarmony analogue of the macOS workload's `_CodesignAppBundle` / `Codesign` with a
+  signing identity, entitlements, and provisioning.
+
+Keep both passes. Removing the SDK pass breaks direct `dotnet run`/portable execution; removing
+the workload pass leaves the HAP payload and package unsigned. The two `ElfSigner`
+implementations must stay algorithmically in sync.
+
 ## Stage layout
 
 Packed by the OpenHarmony SDK's `ohos_packing_tool`:
