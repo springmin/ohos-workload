@@ -619,8 +619,7 @@ string? t8MatPath = FindHostSource("OpenHarmonyItemListMaterializer.cs");
 string t8Mat = t8MatPath is null ? string.Empty : File.ReadAllText(t8MatPath);
 string? t8ExtPath = FindHostSource("MauiOpenHarmonyExtensions.cs");
 string t8Ext = t8ExtPath is null ? string.Empty : File.ReadAllText(t8ExtPath);
-string? t8ApiPath = FindHostSource("src/Controls/src/Core/PublicAPI/net-openharmony/PublicAPI.Unshipped.txt");
-string t8Api = t8ApiPath is null ? string.Empty : File.ReadAllText(t8ApiPath);
+string t8Api = ReadSlicePublicApi("PublicAPI.Unshipped.txt");
 bool t8PinHandler = t8Handler.Contains("ITableViewController") &&
     t8Handler.Contains("((ITableViewController)table).Model") &&
     t8Handler.Contains("model.GetSectionTitle(section)") &&
@@ -1077,9 +1076,9 @@ Console.WriteLine($"[verify] t14 flyout frames header={t14Rows[0].Frame} item0={
 object t14AlphaElement = t14Shell.Items[0].CurrentItem!.CurrentItem!;
 object t14BetaElement = t14Shell.Items[1].CurrentItem!.CurrentItem!;
 bool t14BindingsOk = t14RowsOk && t14RowText(t14Rows[1]) == "Alpha" && t14RowText(t14Rows[2]) == "Beta" &&
-    ReferenceEquals(t14Rows[1].View!.BindingContext, t14AlphaElement) &&
-    ReferenceEquals(t14Rows[2].View!.BindingContext, t14BetaElement);
-Console.WriteLine($"[verify] t14 flyout item template texts=[{t14RowText(t14Rows[1])},{t14RowText(t14Rows[2])}] bound={ReferenceEquals(t14Rows[1].View!.BindingContext, t14AlphaElement)}/{ReferenceEquals(t14Rows[2].View!.BindingContext, t14BetaElement)} ok={t14BindingsOk}");
+    ReferenceEquals(((View)t14Rows[1].View!).BindingContext, t14AlphaElement) &&
+    ReferenceEquals(((View)t14Rows[2].View!).BindingContext, t14BetaElement);
+Console.WriteLine($"[verify] t14 flyout item template texts=[{t14RowText(t14Rows[1])},{t14RowText(t14Rows[2])}] bound={ReferenceEquals(((View)t14Rows[1].View!).BindingContext, t14AlphaElement)}/{ReferenceEquals(((View)t14Rows[2].View!).BindingContext, t14BetaElement)} ok={t14BindingsOk}");
 bool t14TargetsOk = t14RowsOk && ReferenceEquals(t14Rows[1].Target, t14AlphaElement) &&
     ReferenceEquals(t14Rows[2].Target, t14BetaElement) && t14Rows[0].Target is null && t14Rows[3].Target is null;
 Console.WriteLine($"[verify] t14 flyout row targets=[{t14Rows[1].Target?.GetType().Name},{t14Rows[2].Target?.GetType().Name}] section={((ShellContent)t14AlphaElement).Parent?.GetType().Name} ok={t14TargetsOk}");
@@ -1115,7 +1114,7 @@ t14Shell.FlyoutHeaderTemplate = new DataTemplate(() =>
     return label;
 });
 t14Platform.ChromeRefresh?.Invoke();
-View? t14TemplateHeader = t14Platform.FlyoutRows.Count > 0 ? t14Platform.FlyoutRows[0].View : null;
+View? t14TemplateHeader = t14Platform.FlyoutRows.Count > 0 ? t14Platform.FlyoutRows[0].View as View : null;
 bool t14TemplateHeaderOk = (t14TemplateHeader as Label)?.Text == "T14Shell" &&
     ReferenceEquals(t14TemplateHeader?.BindingContext, t14Shell);
 Console.WriteLine($"[verify] t14 flyout template header type={t14TemplateHeader?.GetType().Name} text='{(t14TemplateHeader as Label)?.Text}' ctxShell={ReferenceEquals(t14TemplateHeader?.BindingContext, t14Shell)} ok={t14TemplateHeaderOk}");
@@ -1164,10 +1163,10 @@ bool t14MenuRowsOk = t14MenuRows.Count == 3 &&
     t14RowText(t14MenuRows[0]) == "Home" && t14MenuRows[0].Target is ShellContent && t14MenuRows[0].ItemIndex == 0 &&
     t14MenuRows[1].Target is MenuItem && t14MenuRows[1].ItemIndex == -1 &&
     t14MenuRows[2].Target is MenuItem &&
-    ReferenceEquals(t14MenuRows[1].View?.BindingContext, t14About) &&
-    ReferenceEquals(t14MenuRows[2].View?.BindingContext, t14Logout) &&
+    ReferenceEquals(((View?)t14MenuRows[1].View)?.BindingContext, t14About) &&
+    ReferenceEquals(((View?)t14MenuRows[2].View)?.BindingContext, t14Logout) &&
     t14RowText(t14MenuRows[1]) == "About" && t14RowText(t14MenuRows[2]) == "Logout";
-Console.WriteLine($"[verify] t14 menu item template rows={t14MenuRows.Count} kinds=[{string.Join(",", t14MenuRows.Select(r => r.View?.GetType().Name ?? "text:" + r.Text))}] texts=[{t14RowText(t14MenuRows[1])},{t14RowText(t14MenuRows[2])}] bound={ReferenceEquals(t14MenuRows[1].View?.BindingContext, t14About)}/{ReferenceEquals(t14MenuRows[2].View?.BindingContext, t14Logout)} ok={t14MenuRowsOk}");
+Console.WriteLine($"[verify] t14 menu item template rows={t14MenuRows.Count} kinds=[{string.Join(",", t14MenuRows.Select(r => r.View?.GetType().Name ?? "text:" + r.Text))}] texts=[{t14RowText(t14MenuRows[1])},{t14RowText(t14MenuRows[2])}] bound={ReferenceEquals(((View?)t14MenuRows[1].View)?.BindingContext, t14About)}/{ReferenceEquals(((View?)t14MenuRows[2].View)?.BindingContext, t14Logout)} ok={t14MenuRowsOk}");
 if (!t14MenuRowsOk)
 {
     throw new InvalidOperationException("the T14 Shell.MenuItemTemplate rows are missing or drifted");
@@ -1293,7 +1292,7 @@ t14ContentShell.FlyoutContentTemplate = new DataTemplate(() =>
     return label;
 });
 t14ContentPlatform.ChromeRefresh?.Invoke();
-View? t14TemplateBody = t14ContentPlatform.FlyoutRows.Count > 0 ? t14ContentPlatform.FlyoutRows[0].View : null;
+View? t14TemplateBody = t14ContentPlatform.FlyoutRows.Count > 0 ? t14ContentPlatform.FlyoutRows[0].View as View : null;
 bool t14BodyTemplateOk = t14ContentPlatform.FlyoutRows.Count == 1 && t14ContentPlatform.FlyoutRows[0].IsBody &&
     (t14TemplateBody as Label)?.Text == "T14Content" && ReferenceEquals(t14TemplateBody?.BindingContext, t14ContentShell);
 Console.WriteLine($"[verify] t14 flyout content template type={t14TemplateBody?.GetType().Name} text='{(t14TemplateBody as Label)?.Text}' ctxShell={ReferenceEquals(t14TemplateBody?.BindingContext, t14ContentShell)} ok={t14BodyTemplateOk}");
@@ -7805,6 +7804,27 @@ static string? FindHostSource(string relativePath)
     return null;
 }
 
+// The OpenHarmony slice is split by dependency between Microsoft.Maui.Core and
+// Microsoft.Maui.Controls. A slice type's PublicAPI entry lives with the assembly that contains
+// it, so contract checks read both baselines instead of assuming the pre-split Controls-only file.
+static string ReadSlicePublicApi(string fileName)
+{
+    var combined = new System.Text.StringBuilder();
+    foreach (string relative in new[]
+    {
+        $"src/Core/src/PublicAPI/net-openharmony/{fileName}",
+        $"src/Controls/src/Core/PublicAPI/net-openharmony/{fileName}",
+    })
+    {
+        string? path = FindHostSource(relative);
+        if (path is not null)
+        {
+            combined.Append(File.ReadAllText(path)).Append('\n');
+        }
+    }
+    return combined.ToString();
+}
+
 // Parameter list between the parentheses of "name(", depth-aware because C types may carry
 // parentheses in more general signatures (not in this one, but the locator stays honest).
 static string? ExtractParameterList(string source, string functionName)
@@ -8215,8 +8235,7 @@ string? kitNapiPath = FindHostSource("src/OpenHarmonyHost/host_napi.cpp");
 string kitNapi = kitNapiPath is null ? string.Empty : File.ReadAllText(kitNapiPath);
 string? kitManagedPath = FindHostSource("OpenHarmonyHmsKits.cs");
 string kitManaged = kitManagedPath is null ? string.Empty : File.ReadAllText(kitManagedPath);
-string? kitPublicApiPath = FindHostSource("src/Controls/src/Core/PublicAPI/net-openharmony/PublicAPI.Unshipped.txt");
-string kitPublicApi = kitPublicApiPath is null ? string.Empty : File.ReadAllText(kitPublicApiPath);
+string kitPublicApi = ReadSlicePublicApi("PublicAPI.Unshipped.txt");
 string? kitLauncherPath = FindHostSource("OpenHarmonyAppLauncher.cs");
 string kitLauncher = kitLauncherPath is null ? string.Empty : File.ReadAllText(kitLauncherPath);
 bool kitHostHeader = kitHeader.Contains("int ohos_host_share_kit_share(const char* uris, const char* title);") &&
@@ -12033,6 +12052,9 @@ if (!n16FocusKeysOk)
 // IMenuItemController). The shell handler owns one chrome instance and re-applies it per shell map.
 string? n17ChromePath = FindHostSource("OpenHarmonyShellChrome.cs");
 string n17Chrome = n17ChromePath is null ? string.Empty : File.ReadAllText(n17ChromePath);
+// The row types are shared by the chrome and the flyout, so they live in their own slice file.
+string? n17RowTypesPath = FindHostSource("OpenHarmonyShellRowTypes.cs");
+string n17RowTypes = n17RowTypesPath is null ? string.Empty : File.ReadAllText(n17RowTypesPath);
 string? n17ShellHandlerPath = FindHostSource("OpenHarmonyShellHandler.cs");
 string n17ShellHandler = n17ShellHandlerPath is null ? string.Empty : File.ReadAllText(n17ShellHandlerPath);
 bool n17TitleOk = n17Chrome.Contains("internal sealed class OpenHarmonyShellChrome") &&
@@ -12042,7 +12064,8 @@ bool n17TitleOk = n17Chrome.Contains("internal sealed class OpenHarmonyShellChro
     n17Chrome.Contains("titleView ??= Shell.GetTitleView(shell);") &&
     n17Chrome.Contains("ArrangeTitleView(titleView);") &&
     n17Chrome.Contains("_view.ShellTitleViewRow = _titleViewRow;") &&
-    n17Chrome.Contains("internal sealed class OpenHarmonyShellTitleViewRow");
+    (n17RowTypes.Contains("internal sealed class OpenHarmonyShellTitleViewRow") ||
+        n17Chrome.Contains("internal sealed class OpenHarmonyShellTitleViewRow"));
 bool n17ToolbarOk = n17Chrome.Contains("UpdateToolbar(shell.CurrentPage);") &&
     n17Chrome.Contains("private void UpdateToolbar(Page? page)") &&
     n17Chrome.Contains("OpenHarmonyToolbarMirror.Fill(_view.ToolbarItems, _toolbarPage?.ToolbarItems);") &&
@@ -12311,9 +12334,12 @@ if (!n26TfmOk)
 // internalization.
 string? n27ShippedPath = FindHostSource("src/Controls/src/Core/PublicAPI/net-openharmony/PublicAPI.Shipped.txt");
 string? n27UnshippedPath = FindHostSource("src/Controls/src/Core/PublicAPI/net-openharmony/PublicAPI.Unshipped.txt");
-string n27Shipped = n27ShippedPath is null ? string.Empty : File.ReadAllText(n27ShippedPath);
-string n27Unshipped = n27UnshippedPath is null ? string.Empty : File.ReadAllText(n27UnshippedPath);
+string? n27CoreShippedPath = FindHostSource("src/Core/src/PublicAPI/net-openharmony/PublicAPI.Shipped.txt");
+string? n27CoreUnshippedPath = FindHostSource("src/Core/src/PublicAPI/net-openharmony/PublicAPI.Unshipped.txt");
+string n27Shipped = ReadSlicePublicApi("PublicAPI.Shipped.txt");
+string n27Unshipped = ReadSlicePublicApi("PublicAPI.Unshipped.txt");
 bool n27ExistsOk = n27ShippedPath is not null && n27UnshippedPath is not null &&
+    n27CoreShippedPath is not null && n27CoreUnshippedPath is not null &&
     n27Shipped.StartsWith("#nullable enable", StringComparison.Ordinal) &&
     n27Unshipped.StartsWith("#nullable enable", StringComparison.Ordinal);
 bool n27SurfaceOk = n27Unshipped.Contains("Microsoft.Maui.Platform.OpenHarmonyMauiAppHost") &&
@@ -14462,8 +14488,7 @@ string? p1bAnimPath = FindHostSource("OpenHarmonyScrollAnimation.cs");
 string p1bAnim = p1bAnimPath is null ? string.Empty : File.ReadAllText(p1bAnimPath);
 string? p1bExtPath = FindHostSource("OpenHarmonyCollectionViewExtensions.cs");
 string p1bExt = p1bExtPath is null ? string.Empty : File.ReadAllText(p1bExtPath);
-string? p1bApiPath = FindHostSource("src/Controls/src/Core/PublicAPI/net-openharmony/PublicAPI.Unshipped.txt");
-string p1bApi = p1bApiPath is null ? string.Empty : File.ReadAllText(p1bApiPath);
+string p1bApi = ReadSlicePublicApi("PublicAPI.Unshipped.txt");
 bool p1bPinThreshold = p1bHandler.Contains("_thresholdArmed = false;") &&
     p1bHandler.Contains("if (!_thresholdArmed || _thresholdFiring)");
 bool p1bPinUpdating = p1bHandler.Contains("[nameof(ItemsView.ItemsUpdatingScrollMode)] = MapItemsUpdatingScrollMode,") &&

@@ -52,6 +52,14 @@ dotnet build -v:q
 dotnet bin/Debug/net11.0/verify.dll | grep -c '\[verify\]'   # expect 826 (current anchor; declared total 829, floor 809)
 ```
 
+The suite is split-aware: the OpenHarmony slice compiles part of its platform code into
+`Microsoft.Maui.Core` and the Controls-bound rest into `Microsoft.Maui.Controls`, so the contract
+checks read both `src/Core/src/PublicAPI/net-openharmony` and
+`src/Controls/src/Core/PublicAPI/net-openharmony` baselines. A slice type's baseline entry is
+expected with the assembly that contains it; the row types shared by the shell chrome and flyout
+(`OpenHarmonyShellTitleViewRow`/`OpenHarmonyFlyoutRow`) may live in the chrome/flyout sources or
+in the dedicated `OpenHarmonyShellRowTypes` file.
+
 The `interaction-regression` workflow (`.github/workflows/interaction-regression.yml`) runs the
 suite on a GitHub runner as a real gate (on push to `master`, on pull requests and on
 `workflow_dispatch`): it checks out this repository plus `springmin/maui-ohos`
