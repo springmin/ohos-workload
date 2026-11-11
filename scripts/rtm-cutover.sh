@@ -38,8 +38,8 @@ done
 command -v python3 >/dev/null 2>&1 || { warn "python3 not found"; exit 2; }
 [ -f "$JSON" ] || { warn "pins file not found: $JSON"; exit 2; }
 
-if [ -z "${DOTNET:-}" ] && [ -x "$HOME/.dotnet.rc2-105/dotnet" ]; then
-    DOTNET="$HOME/.dotnet.rc2-105/dotnet"
+if [ -z "${DOTNET:-}" ] && [ -x "$HOME/.dotnet.11.0.100/dotnet" ]; then
+    DOTNET="$HOME/.dotnet.11.0.100/dotnet"
 fi
 [ -n "${DOTNET:-}" ] && export DOTNET
 

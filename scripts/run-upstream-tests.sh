@@ -27,7 +27,7 @@
 #             <UPSTREAM_TESTS_LOG_BASE>/upstream-tests-<timestamp>)
 #
 # Env: MAUI_REPO=<dir>       maui checkout (default: the sibling ../maui-ohos of this repo)
-#      DOTNET=<dotnet>       SDK to use (default: $HOME/.dotnet.rc2-fix/dotnet when present,
+#      DOTNET=<dotnet>       SDK to use (default: $HOME/.dotnet.11.0.100/dotnet when present,
 #                            else `dotnet` from PATH)
 #      UPSTREAM_TESTS_LOG_BASE=<dir>      log base dir (default: the approved opencode tmp dir,
 #                                         else $TMPDIR, else /tmp)
@@ -104,8 +104,8 @@ W="$(cd "$(dirname "$0")/.." && pwd)"
 
 # ---- dotnet SDK --------------------------------------------------------------------------
 if [ -z "${DOTNET:-}" ]; then
-    if [ -x "$HOME/.dotnet.rc2-fix/dotnet" ]; then
-        DOTNET="$HOME/.dotnet.rc2-fix/dotnet"
+    if [ -x "$HOME/.dotnet.11.0.100/dotnet" ]; then
+        DOTNET="$HOME/.dotnet.11.0.100/dotnet"
     else
         DOTNET=dotnet
     fi

@@ -49,7 +49,7 @@ git rev-parse --is-inside-work-tree >/dev/null 2>&1 || die "$W is not a git work
 
 # Default version: manifest -> local workload tag -> none.
 if [ -z "$VERSION" ]; then
-    MANIFEST="$W/manifests/${SDK_BAND:-11.0.100-rc.1}/microsoft.net.sdk.openharmony/WorkloadManifest.json"
+    MANIFEST="$W/manifests/${SDK_BAND:-11.0.100}/microsoft.net.sdk.openharmony/WorkloadManifest.json"
     if [ -f "$MANIFEST" ]; then
         VERSION="$(python3 -c "import json;print(json.load(open('$MANIFEST'))['version'])" 2>/dev/null || true)"
     fi

@@ -13,7 +13,7 @@ warn() { printf '[%s] WARN: %s\n' "$(date '+%H:%M:%S')" "$*" >&2; }
 
 W="$(cd "$(dirname "$0")/.." && pwd)"
 OUT="${1:-$W/dist}"
-BAND="${SDK_BAND:-11.0.100-rc.1}"
+BAND="${SDK_BAND:-11.0.100}"
 VER="$(python3 -c "import json;print(json.load(open('$W/manifests/$BAND/microsoft.net.sdk.openharmony/WorkloadManifest.json'))['version'])")"
 NAME="openharmony-workload-$VER"
 STAGE="$OUT/$NAME"

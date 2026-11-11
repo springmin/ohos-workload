@@ -599,7 +599,7 @@ install_pack_root() { # echo the build-use dotnet root; rc 1 when it cannot be r
         . "$BUILD_ENV" >/dev/null 2>&1
         _d="${DOTNET:-}"
     fi
-    [ -n "$_d" ] || _d="$HOME/.dotnet.rc2-fix/dotnet"
+    [ -n "$_d" ] || _d="$HOME/.dotnet.11.0.100/dotnet"
     case "$_d" in
         /*) _bin="$_d" ;;
         *)
@@ -619,7 +619,7 @@ install_pack_root() { # echo the build-use dotnet root; rc 1 when it cannot be r
 # fixture fallback the install-pack gate has always used (no manifests dir in the selftest).
 sdk_pack_ver() {
     _src="$(src_ow)"
-    _band="${SDK_BAND:-11.0.100-rc.1}"
+    _band="${SDK_BAND:-11.0.100}"
     _mf="$_src/manifests/$_band/microsoft.net.sdk.openharmony/WorkloadManifest.json"
     _ver=""
     [ -f "$_mf" ] && _ver="$(python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); p=d.get("packs",{}).get("Microsoft.OpenHarmony.Sdk",{}); print(p.get("version") or d.get("version",""))' "$_mf" 2>/dev/null)"
@@ -635,7 +635,7 @@ sdk_pack_ver() {
 # checking a guessed version).
 ref_runtime_bcl_matrix() { # <ow-src>
     _src="$1"
-    _band="${SDK_BAND:-11.0.100-rc.1}"
+    _band="${SDK_BAND:-11.0.100}"
     _mf="$_src/manifests/$_band/microsoft.net.sdk.openharmony/WorkloadManifest.json"
     _last="1.0.0-preview.$(printf '%s\n' $PACK_VERSIONS | tail -n 1)"
     python3 - "$_mf" "$_last" <<'PY'
@@ -682,7 +682,7 @@ p0_install_pack() {
     _src="$(src_ow)"
     _root="$(install_pack_root)" || {
         printf '   install pack FAIL: cannot resolve the build-use dotnet pack root (DOTNET=%s; %s)\n' \
-            "${DOTNET:-<default>}" "$HOME/.dotnet.rc2-fix/dotnet" >&2
+            "${DOTNET:-<default>}" "$HOME/.dotnet.11.0.100/dotnet" >&2
         return 1
     }
     _ver="$(sdk_pack_ver)"
@@ -728,7 +728,7 @@ p0_install_pack() {
     # managed DLLs while the repo packs moved on (targets/tasks/abc/rawfile alone never saw it).
     _rrb="$(ref_runtime_bcl_matrix "$_src")" || {
         printf '   install pack FAIL: cannot resolve the Ref/Runtime/BCL pack versions from %s/manifests/%s\n' \
-            "$_src" "${SDK_BAND:-11.0.100-rc.1}" >&2
+            "$_src" "${SDK_BAND:-11.0.100}" >&2
         _f=$((_f + 1))
         return "$_f"
     }
@@ -923,7 +923,7 @@ p1_worktrees() {
 p1_env() {
     [ -f "$BUILD_ENV" ] && . "$BUILD_ENV"
     [ -n "$DOTNET" ] || {
-        if [ -x "$HOME/.dotnet.rc2-fix/dotnet" ]; then DOTNET="$HOME/.dotnet.rc2-fix/dotnet"; else DOTNET=dotnet; fi
+        if [ -x "$HOME/.dotnet.11.0.100/dotnet" ]; then DOTNET="$HOME/.dotnet.11.0.100/dotnet"; else DOTNET=dotnet; fi
     }
     export DOTNET
     export MAUI_SLICE_DIR="$WT_MAUI/src/Core/src/Platform/OpenHarmony"
@@ -1114,7 +1114,7 @@ PY
 }
 
 p3_bundle_version() { # <ow-src> -> the manifest bundle version (seed asset-name fallback)
-    python3 -c "import json;print(json.load(open('$1/manifests/${SDK_BAND:-11.0.100-rc.1}/microsoft.net.sdk.openharmony/WorkloadManifest.json'))['version'])" 2>/dev/null
+    python3 -c "import json;print(json.load(open('$1/manifests/${SDK_BAND:-11.0.100}/microsoft.net.sdk.openharmony/WorkloadManifest.json'))['version'])" 2>/dev/null
 }
 
 seed_verify() { # <file> <sha256>
@@ -1254,6 +1254,7 @@ known_payload_release_tag() { # <family> <version> -> release tag ("" = unpinned
         Microsoft.AspNetCore.App.Runtime.openharmony-arm64/11.0.0-rc.1.26504.105) printf '%s' "v11.0.0-rc.2.26504.105-openharmony" ;;
         Microsoft.AspNetCore.App.Runtime.openharmony-arm64/11.0.0-rc.1.26451.112) printf '%s' "v11.0.0-rc.2.26451.112-openharmony" ;;
         Microsoft.AspNetCore.App.Runtime.openharmony-arm64/11.0.0-rc.3.26522.148) printf '%s' "v11.0.0-rc.3.26522.148-openharmony" ;;
+        Microsoft.AspNetCore.App.Runtime.openharmony-arm64/11.0.0) printf '%s' "v11.0.0-ohos" ;;
         *) printf '%s' "" ;;
     esac
 }
@@ -1263,6 +1264,7 @@ known_payload_release_sha256() { # <family> <version> -> nupkg sha256 ("" = unpi
         Microsoft.AspNetCore.App.Runtime.openharmony-arm64/11.0.0-rc.1.26504.105) printf '%s' "e6af31609d77b7e1d1d8af3988238577f70d8aefd35e31ba55f0dd2abd1d3e10" ;;
         Microsoft.AspNetCore.App.Runtime.openharmony-arm64/11.0.0-rc.1.26451.112) printf '%s' "4f0d9b61d954047bb6ecb82c929af970de13489768d77d7bc687bc94536d6c5d" ;;
         Microsoft.AspNetCore.App.Runtime.openharmony-arm64/11.0.0-rc.3.26522.148) printf '%s' "1104f0704709e2ae5f09a653088455510b03d1ad814d0c33a97b2c43d9f99a3a" ;;
+        Microsoft.AspNetCore.App.Runtime.openharmony-arm64/11.0.0) printf '%s' "a0a2615394637a0ed2b4aa38ae4fc4056e7e06c5511e3e915aed22dc7aaa32b8" ;;
         *) printf '%s' "" ;;
     esac
 }
@@ -1275,7 +1277,7 @@ known_payload_pin_row() { # <family> <version> -> "tag|sha" or ""
 }
 
 manifest_pack_version() { # <ow-src> <family> -> version the target manifest pins
-    _mpv_mf="$1/manifests/${SDK_BAND:-11.0.100-rc.1}/microsoft.net.sdk.openharmony/WorkloadManifest.json"
+    _mpv_mf="$1/manifests/${SDK_BAND:-11.0.100}/microsoft.net.sdk.openharmony/WorkloadManifest.json"
     [ -f "$_mpv_mf" ] || return 1
     python3 -c "import json,sys; print((json.load(open(sys.argv[1])).get('packs',{}).get(sys.argv[2]) or {}).get('version',''))" \
         "$_mpv_mf" "$2" 2>/dev/null
@@ -1407,7 +1409,7 @@ EOF
 
 p3_bundle() {
     _oww="$(src_ow)"
-    _band="${SDK_BAND:-11.0.100-rc.1}"
+    _band="${SDK_BAND:-11.0.100}"
     if [ "$DRY" = 1 ]; then
         printf '   [dry-run] (materialize known pack payloads a fresh worktree lacks: the SDK native host + e.g. AspNetCore DLLs, from the main checkout / the build-use install / the release mirror)\n'
         printf '   [dry-run] (cd %s && sh scripts/prepare-packs.sh)\n' "$_oww"
@@ -1592,7 +1594,7 @@ p4_plan_file() { # prints "<rid>|<asset-name>|<local-file>" lines
     if [ -n "$_bundle" ] && [ -f "$_bundle" ]; then
         _ver_name="$(basename "$_bundle")"
     else
-        _ver_name="openharmony-workload-$(python3 -c "import json;print(json.load(open('$_oww/manifests/${SDK_BAND:-11.0.100-rc.1}/microsoft.net.sdk.openharmony/WorkloadManifest.json'))['version'])" 2>/dev/null || echo '<version>').tar.gz"
+        _ver_name="openharmony-workload-$(python3 -c "import json;print(json.load(open('$_oww/manifests/${SDK_BAND:-11.0.100}/microsoft.net.sdk.openharmony/WorkloadManifest.json'))['version'])" 2>/dev/null || echo '<version>').tar.gz"
     fi
     _sums="$_oww/dist/SHA256SUMS"
     _merged="$SCRATCH/sdkrc2-sums-expected.txt"

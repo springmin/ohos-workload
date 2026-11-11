@@ -31,7 +31,7 @@
 # (no pipelines that could mask it) and aborts with exit 1; bad usage exits 2.
 # Usage: scripts/release-all.sh [--publish] [--skip-preflight] [--sdk-release <tag>]
 #                              [--kit-dir <dir>] [--out <tar.gz>] [--allow-clobber-mismatch] [-h]
-#   --sdk-release default v11.0.100-rc.1.26451.109-openharmony (empty = do not attach);
+#   --sdk-release default v11.0.100-ohos (empty = do not attach);
 #   --kit-dir default $DEVICE_TEST_KIT_DIR or the approved opencode tmp dir.
 # Env: SDK_BAND (default 11.0.100-rc.1), REPO (default springmin/sdk-ohos), DOTNET_ROOT
 #      (default $HOME/.dotnet), DEVICE_TEST_KIT_DIR, GH (default gh),
@@ -43,10 +43,10 @@ warn() { printf '[%s] WARN: %s\n' "$(date '+%H:%M:%S')" "$*" >&2; }
 die()  { warn "$*"; exit 1; }
 
 W="$(cd "$(dirname "$0")/.." && pwd)"
-BAND="${SDK_BAND:-11.0.100-rc.1}"
+BAND="${SDK_BAND:-11.0.100}"
 REPO="${REPO:-springmin/sdk-ohos}"
 DOTNET_ROOT_DIR="${DOTNET_ROOT:-${HOME:-}/.dotnet}"
-DEFAULT_SDK_RELEASE="v11.0.100-rc.1.26451.109-openharmony"
+DEFAULT_SDK_RELEASE="v11.0.100-ohos"
 DEFAULT_KIT_DIR=/data/storage/el2/base/tmp/opencode/device-test-kit
 GH="${GH:-gh}"
 

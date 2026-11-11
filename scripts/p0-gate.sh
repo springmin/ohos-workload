@@ -72,9 +72,9 @@ else
 fi
 mkdir -p "$LOG_DIR" || { warn "cannot create log dir: $LOG_DIR"; exit 1; }
 
-# The rc.2 line is the supported build for this tree; keep an explicit DOTNET override.
-if [ -z "${DOTNET:-}" ] && [ -x "$HOME/.dotnet.rc2-105/dotnet" ]; then
-    DOTNET="$HOME/.dotnet.rc2-105/dotnet"
+# The GA 11.0.100 line is the supported build for this tree; keep an explicit DOTNET override.
+if [ -z "${DOTNET:-}" ] && [ -x "$HOME/.dotnet.11.0.100/dotnet" ]; then
+    DOTNET="$HOME/.dotnet.11.0.100/dotnet"
 fi
 [ -n "${DOTNET:-}" ] && export DOTNET
 

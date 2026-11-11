@@ -755,7 +755,7 @@ fi
 if [ "$PUBLISH" = 1 ]; then
     log "== publishing the kit (scripts/publish-workload-release.sh) =="
     [ -n "$KIT_SHA" ] || KIT_SHA="$(sha256sum "$OUT" | cut -d' ' -f1)"
-    BUNDLE_VER="$(python3 -c "import json;print(json.load(open('$W/manifests/${SDK_BAND:-11.0.100-rc.1}/microsoft.net.sdk.openharmony/WorkloadManifest.json'))['version'])")"
+    BUNDLE_VER="$(python3 -c "import json;print(json.load(open('$W/manifests/${SDK_BAND:-11.0.100}/microsoft.net.sdk.openharmony/WorkloadManifest.json'))['version'])")"
     BUNDLE="$W/dist/openharmony-workload-$BUNDLE_VER.tar.gz"
     [ -f "$BUNDLE" ] || sh "$W/scripts/pack-workload-bundle.sh" >/dev/null
     BUNDLE_SHA="$(sha256sum "$BUNDLE" | cut -d' ' -f1)"

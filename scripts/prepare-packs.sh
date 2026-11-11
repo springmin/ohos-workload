@@ -20,19 +20,19 @@
 # -openharmony release and verified against the expected digest.
 set -e
 W="$(cd "$(dirname "$0")/.." && pwd)"
-VER="${WORKLOAD_VERSION:-1.0.0-preview.30}"
+VER="${WORKLOAD_VERSION:-1.0.0-preview.32}"
 DOTNET="${DOTNET:-$HOME/.dotnet/dotnet}"
 # Shared, overridable dotnet environment (MSBuild server/node reuse off, a TMPDIR that can host
 # the server socket) for the builds below; see "Known environment quirks" in
 # docs/openharmony-hap-packaging.md.
 . "$W/scripts/lib-dotnet-env.sh" "$W"
-RTV="${RUNTIME_VERSION:-11.0.0-rc.3.26522.148}"
-# sha256 (64 hex chars) of Microsoft.NETCore.App.Runtime.openharmony-arm64.11.0.0-rc.3.26522.148.nupkg
-# on the v11.0.0-rc.3.26522.148-openharmony release; cross-check with
-#   gh api repos/springmin/runtime-ohos/releases/tags/v11.0.0-rc.3.26522.148-openharmony \
+RTV="${RUNTIME_VERSION:-11.0.0}"
+# sha256 (64 hex chars) of Microsoft.NETCore.App.Runtime.openharmony-arm64.11.0.0.nupkg
+# on the v11.0.0-ohos release; cross-check with
+#   gh api repos/springmin/runtime-ohos/releases/tags/v11.0.0-ohos \
 #     --jq '.assets[] | select(.name=="Microsoft.NETCore.App.Runtime.openharmony-arm64.'$RTV'.nupkg") | .digest'
-SHA="${WORKLOAD_BCL_SHA256:-6458fcb1413585909cdb6c061eb57f7dda56a35a3a7a7a43adc14debe84082a7}"
-URL="${WORKLOAD_BCL_URL:-https://github.com/springmin/runtime-ohos/releases/download/v11.0.0-rc.3.26522.148-openharmony/Microsoft.NETCore.App.Runtime.openharmony-arm64.$RTV.nupkg}"
+SHA="${WORKLOAD_BCL_SHA256:-608da5f05a77c76a68fc03ed2e81c239fb0125ab9a972c1fd1392d087d5ab028}"
+URL="${WORKLOAD_BCL_URL:-https://github.com/springmin/runtime-ohos/releases/download/v11.0.0-ohos/Microsoft.NETCore.App.Runtime.openharmony-arm64.$RTV.nupkg}"
 BCL="$W/packs/Microsoft.NETCore.App.Runtime.openharmony-arm64/$RTV"
 
 # Expected digest of whatever artifact gets unpacked. EXPECT_SHA_SRC records where it came

@@ -32,7 +32,7 @@ MD
 }
 
 W="$(cd "$(dirname "$0")/.." && pwd)"
-BAND="${SDK_BAND:-11.0.100-rc.1}"
+BAND="${SDK_BAND:-11.0.100}"
 OUT="$W/dist/SHA256SUMS"
 ROLLING=1
 

@@ -46,7 +46,7 @@ warn() { printf '[%s] WARN: %s\n' "$(date '+%H:%M:%S')" "$*" >&2; }
 
 W="$(cd "$(dirname "$0")/.." && pwd)"
 REPO="${REPO:-springmin/sdk-ohos}"
-BAND="${SDK_BAND:-11.0.100-rc.1}"
+BAND="${SDK_BAND:-11.0.100}"
 DRY_RUN=0
 SKIP_VERSIONED=0
 SKIP_LATEST=0

@@ -5,7 +5,7 @@
 set -e
 W="$(cd "$(dirname "$0")/.." && pwd)"
 FEED="${1:-$W/.feed}"
-BAND="${SDK_BAND:-11.0.100-rc.1}"
+BAND="${SDK_BAND:-11.0.100}"
 MANIFEST="$W/manifests/$BAND/microsoft.net.sdk.openharmony/WorkloadManifest.json"
 [ -f "$MANIFEST" ] || { echo "manifest not found: $MANIFEST" >&2; exit 1; }
 
