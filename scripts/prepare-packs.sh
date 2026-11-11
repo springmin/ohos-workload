@@ -21,7 +21,9 @@
 set -e
 W="$(cd "$(dirname "$0")/.." && pwd)"
 VER="${WORKLOAD_VERSION:-1.0.0-preview.32}"
-DOTNET="${DOTNET:-$HOME/.dotnet/dotnet}"
+if [ -z "${DOTNET:-}" ]; then
+    if [ -x "$HOME/.dotnet.11.0.100/dotnet" ]; then DOTNET="$HOME/.dotnet.11.0.100/dotnet"; else DOTNET=dotnet; fi
+fi
 # Shared, overridable dotnet environment (MSBuild server/node reuse off, a TMPDIR that can host
 # the server socket) for the builds below; see "Known environment quirks" in
 # docs/openharmony-hap-packaging.md.

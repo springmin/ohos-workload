@@ -8,7 +8,9 @@
 # Usage: selfsign.sh <file> [file...]
 set -e
 W="$(cd "$(dirname "$0")/.." && pwd)"
-DOTNET="${DOTNET:-$HOME/.dotnet/dotnet}"
+if [ -z "${DOTNET:-}" ]; then
+    if [ -x "$HOME/.dotnet.11.0.100/dotnet" ]; then DOTNET="$HOME/.dotnet.11.0.100/dotnet"; else DOTNET=dotnet; fi
+fi
 DOTNET_ROOT_DIR="$(dirname "$DOTNET")"
 
 find_selfsign_bin() {
