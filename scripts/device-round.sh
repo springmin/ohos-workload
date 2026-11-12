@@ -311,7 +311,20 @@ ensure_app() {
     [ -n "$_p" ] || return 1
     # Bring the kit app to the foreground (hot activation; a no-op when it already is) so
     # uitest/screenshot target its window, not another bundle left in front by an earlier step.
-    aa_start "" >/dev/null 2>&1 || true
+    # A plain aa start is a no-op for an already-running ability on this build, so pass the
+    # current WMS rect; the options force a fresh activation (and keep the geometry unchanged
+    # on stage-mode windows).
+    _r="$(app_rect)"
+    if [ -n "$_r" ]; then
+        set -- $_r
+        if [ "$3" -gt "$1" ] 2>/dev/null && [ "$4" -gt "$2" ] 2>/dev/null; then
+            aa_start "--wl $1 --wt $2 --ww $(( $3 - $1 )) --wh $(( $4 - $2 ))" >/dev/null 2>&1 || true
+        else
+            aa_start "" >/dev/null 2>&1 || true
+        fi
+    else
+        aa_start "" >/dev/null 2>&1 || true
+    fi
     sleep 1
     return 0
 }
@@ -778,8 +791,11 @@ blazor_step() {
 app_rect() { # MAUI window rect from WindowManagerService -> "x1 y1 x2 y2" (empty when absent)
     _label="${BUNDLE##*.}"
     [ -n "$_label" ] || _label="$BUNDLE"
+    # WMS prints "[ x y w h ]"; green_roles expects an inclusive scan box. Convert here:
+    # returning x y w h made the scan stop at x+w/y+h (missing the bottom wide green bar and
+    # the ADD_D/ADD_E row on a 3120x2080 screen).
     hdr "hidumper -s WindowManagerService -a '-a'" | grep -a "$_label" | head -n1 \
-        | awk '{for (i = 1; i <= NF; i++) if ($i == "[") {print $(i+1), $(i+2), $(i+3), $(i+4); exit}}'
+        | awk '{for (i = 1; i <= NF; i++) if ($i == "[") {x=$(i+1); y=$(i+2); w=$(i+3); h=$(i+4); print x, y, x+w, y+h; exit}}'
 }
 green_roles() { # <jpeg> [x1 y1 x2 y2] -> ROLE x y lines (scan may be clipped to the app window)
     [ "$HAVE_PY" = 1 ] || return 1
@@ -841,6 +857,7 @@ print('BOXES %d ROW1 %d WIDE %d' % (len(boxes), len(row1), len(wide)))
 PY
 }
 slots_click_role() { # <dir> <tag> <role> <sleep>
+    ensure_app >/dev/null 2>&1 || true
     shot "$1" "$2"
     _roles="$(green_roles "$1/$2.jpeg" "$(app_rect)")" || { warn "slots: 绿块定位失败（PIL/截图）"; return 1; }
     _xy="$(printf '%s\n' "$_roles" | awk -v r="$3" '$1 == r {print $2 " " $3; exit}')"
