@@ -868,6 +868,22 @@ slots_click_role() { # <dir> <tag> <role> <sleep>
     sleep "$4"
     return 0
 }
+close_app_drawer() { # a persisted MAUI flyout dims the green controls; tap outside to close
+    # The flyout is a native overlay and is not present in the accessibility tree, so a text
+    # probe cannot see it. Tap a neutral point in the lower-right content area (below the
+    # Hybrid A/B cards and right of the subwindow buttons); with no flyout the tap is a no-op
+    # on the empty canvas, and it also brings the app window to the foreground.
+    _r="$(app_rect)"
+    [ -n "$_r" ] || return 0
+    set -- $_r
+    [ "$3" -gt "$1" ] 2>/dev/null && [ "$4" -gt "$2" ] 2>/dev/null || return 0
+    _tx=$(( $1 + ($3 - $1) * 3 / 4 ))
+    _ty=$(( $2 + ($4 - $2) * 3 / 4 ))
+    hd "uitest uiInput click $_tx $_ty" >/dev/null 2>&1 || true
+    sleep 2
+    return 0
+}
+
 slots_step() {
     if [ -n "$SLOTS_CLICKS" ]; then
         _slots_explicit
@@ -878,10 +894,12 @@ slots_step() {
         return 0
     fi
     ensure_app >/dev/null 2>&1 || { step slots skipped "app not running"; return 0; }
+    close_app_drawer
     mkdir -p "$OUT/slots"
     _ui=0; _ui_ok=0
     while [ "$_ui" -lt 3 ]; do
         ensure_app >/dev/null 2>&1 || true
+        close_app_drawer
         sleep 2
         shot "$OUT/slots" "precheck-$_ui"
         _roles="$(green_roles "$OUT/slots/precheck-$_ui.jpeg" "$(app_rect)")" || _roles=""
@@ -972,6 +990,7 @@ slots_explicit() {
 
 a11y_step() {
     ensure_app >/dev/null 2>&1 || { step a11y skipped "app not running"; return 0; }
+    close_app_drawer
     mkdir -p "$OUT/a11y"
     _rc=0
     run_tester --kit-dir "$KIT_DIR" --a11y-probe --out "$OUT/a11y/tester-run" > "$OUT/a11y/tester-run.log" 2>&1 || _rc=$?
