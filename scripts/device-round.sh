@@ -570,6 +570,10 @@ verify_kit_step() {
 sign_one() { # <unsigned> <out> [bundle]
     [ -x "$SIGN_SCRIPT" ] || [ -f "$SIGN_SCRIPT" ] || { warn "找不到签名脚本: $SIGN_SCRIPT"; return 1; }
     [ -n "$UDID" ] || { warn "未取到设备 UDID，无法重签"; return 1; }
+    if [ -z "${3:-}" ]; then
+        _hb="$(hap_info "$1" 2>/dev/null | sed -n 's/^bundle=//p')"
+        [ -z "$_hb" ] || set -- "$1" "$2" "$_hb"
+    fi
     _dir="$(dirname "$2")"; mkdir -p "$_dir"
     _rc=0
     if [ -n "${3:-}" ]; then
