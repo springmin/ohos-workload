@@ -15,7 +15,7 @@
 # 3x with a 30 s pause and prints the project path on failure. The generated abc is verified by
 # string search (loginability/LoginAbility + pages/Login) before it is copied out.
 # Requires: the hvigor packages under .arkts-build/hvigor (run scripts/build-arkts-shell.sh once
-# or let the kit install them) and the OpenHarmony SDK (default harmonybrew 26.0.0.18_2).
+# or let the kit install them) and the OpenHarmony SDK (default harmonybrew opt/ohos-sdk (26.0.0.38)).
 set -u
 
 W="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"

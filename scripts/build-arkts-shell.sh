@@ -149,7 +149,7 @@ if [ "$SDK_FLAVOR" = harmony ]; then
     SDK_ETS_EXTRA="$HARMONY_SDK_BASE/hms/ets"
     COMPATIBLE_SDK_VERSION="${ARKTS_COMPATIBLE_SDK_VERSION:-6.1.0(23)}"
 else
-    SDK="${OHOS_SDK_ROOT:-$HOME/.harmonybrew/Cellar/ohos-sdk/26.0.0.18_2}"
+    SDK="${OHOS_SDK_ROOT:-$HOME/.harmonybrew/opt/ohos-sdk}"
     RUNTIME_OS=OpenHarmony
     SDK_ETS_ROOT="$SDK/ets"
     SDK_ETS_EXTRA=""

@@ -18,7 +18,7 @@ W="$(cd "$(dirname "$0")/.." && pwd)"
 VER="${HOST_PACK_VERSION:-1.0.0-preview.24}"
 NATIVE="${OHOS_NDK:-}"
 if [ -z "$NATIVE" ]; then
-    ROOT="${OHOS_SDK:-$HOME/.harmonybrew/Cellar/ohos-sdk/26.0.0.18_2}"
+    ROOT="${OHOS_SDK:-$HOME/.harmonybrew/opt/ohos-sdk}"
     if [ -x "$ROOT/native/llvm/bin/clang++" ]; then NATIVE="$ROOT/native";
     elif [ -x "$ROOT/llvm/bin/clang++" ]; then NATIVE="$ROOT";
     else NATIVE="$ROOT/native"; fi

@@ -71,7 +71,7 @@ done
 [ -n "$IN" ] && [ -n "$OUT" ] || usage
 CFG="${CFG:-$HOME/Documents/ohos/config}"
 PLUGIN="${ARKTS_PLUGIN_DIR:-$HOME/arkts-build/node_modules/@ohos/hvigor-ohos-plugin}"
-SDK="${OHOS_SDK_ROOT:-$HOME/.harmonybrew/Cellar/ohos-sdk/26.0.0.18_2}"
+SDK="${OHOS_SDK_ROOT:-$HOME/.harmonybrew/opt/ohos-sdk}"
 TOOL="$SDK/toolchains/lib/hap-sign-tool"
 
 # Interactive mode: hap-sign-tool reads the password from the controlling terminal. With a real tty

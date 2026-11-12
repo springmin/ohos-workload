@@ -1291,7 +1291,7 @@ fi
 
 # ---- T16: --release against the real SDK (synthetic release profile) -----------------
 section "T16 --release with the real hap-sign-tool (SDK-gated)"
-REAL_SDK="${SELFTEST_REAL_SDK:-${OHOS_SDK_ROOT:-$HOME/.harmonybrew/Cellar/ohos-sdk/26.0.0.18_2}}"
+REAL_SDK="${SELFTEST_REAL_SDK:-${OHOS_SDK_ROOT:-$HOME/.harmonybrew/opt/ohos-sdk}}"
 RT="$REAL_SDK/toolchains/lib"
 REAL_OK=1
 for _f in hap-sign-tool UnsgnedReleasedProfileTemplate.json UnsgnedDebugProfileTemplate.json \

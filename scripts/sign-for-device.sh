@@ -39,7 +39,7 @@
 #     [--key-alias <alias>] [--key-pwd-file <file>] [--pwd-input-mode]
 #     [--unsigned <hap>]... [--out <hap>] [--out-dir <dir>]
 #   sign-for-device.sh --show-profile-devices [<p7b>|--config <dir>] [--huawei [configDir]]
-# Env: OHOS_SDK_ROOT (default: the harmonybrew 26.0.0.18_2 install);
+# Env: OHOS_SDK_ROOT (default: the harmonybrew opt/ohos-sdk (26.0.0.38) install);
 #   OHOS_ENC_PWD - Studio-encrypted password for --huawei (preferred over the positional
 #     encryptedPassword: argv is world-readable), forwarded to sign-huawei.sh via the env;
 #   OHOS_PWD_INPUT_MODE - same as --pwd-input-mode (1 = prompt; 0 = argv, default);
@@ -160,7 +160,7 @@ if [ "$MODE" != external ] && [ "$MODE" != release ]; then
 fi
 [ "$MODE" = external ] || [ -z "$EXPECT" ] || die "--expect-udid is only available with --external"
 
-SDK="${OHOS_SDK_ROOT:-$HOME/.harmonybrew/Cellar/ohos-sdk/26.0.0.18_2}"
+SDK="${OHOS_SDK_ROOT:-$HOME/.harmonybrew/opt/ohos-sdk}"
 TOOLCHAIN="$SDK/toolchains/lib"
 SIGN="$W/packs/Microsoft.OpenHarmony.Sdk/$VER/templates/scripts/sign-hap.sh"
 

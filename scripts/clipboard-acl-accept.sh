@@ -52,7 +52,7 @@ set -u
 SELF_DIR="$(cd "$(dirname "$0")" && pwd)"
 W="$(cd "$SELF_DIR/.." && pwd)"
 
-SDK="${OHOS_SDK_ROOT:-$HOME/.harmonybrew/Cellar/ohos-sdk/26.0.0.18_2}"
+SDK="${OHOS_SDK_ROOT:-$HOME/.harmonybrew/opt/ohos-sdk}"
 TOOLCHAIN="$SDK/toolchains/lib"
 DOTNET="${DOTNET:-dotnet}"
 HDC="${HDC:-hdc}"
