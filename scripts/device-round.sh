@@ -65,6 +65,7 @@ KIT_ARG=""
 EXPECT_TREE=""
 HAP=""
 MODE="aot"
+MODE_SET=0
 CAPTURE=30
 SOAK_MIN=5
 SLOTS_MAX=3
@@ -174,7 +175,7 @@ while [ $# -gt 0 ]; do
         --kit) need_val $# "--kit"; KIT_ARG="$2"; shift ;;
         --expect-tree-digest) need_val $# "--expect-tree-digest"; EXPECT_TREE="$2"; shift ;;
         --hap) need_val $# "--hap"; HAP="$2"; shift ;;
-        --mode) need_val $# "--mode"; MODE="$2"; shift ;;
+        --mode) need_val $# "--mode"; MODE="$2"; MODE_SET=1; shift ;;
         --capture) need_val $# "--capture"; CAPTURE="$2"; shift ;;
         --soak-min) need_val $# "--soak-min"; SOAK_MIN="$2"; shift ;;
         --slots-max) need_val $# "--slots-max"; SLOTS_MAX="$2"; shift ;;
@@ -683,7 +684,7 @@ run_tester() { # tester-run passthrough with the optional --device
 }
 
 core_step() {
-    mkdir -p "$OUT/core"
+    mkdir -p "$OUT/core" "$OUT/frames"
     _rc=0
     run_tester --kit-dir "$KIT_DIR" $UNINSTALL_FLAG --install --start --capture "$CAPTURE" --hap "$MAIN_HAP" \
         --out "$OUT/core/tester-run" > "$OUT/core/tester-run.log" 2>&1 || _rc=$?
@@ -1181,10 +1182,16 @@ main() {
     log "device-round.sh $SCRIPT_VERSION"
     log "kit:       $KIT_ARG"
     log "out:       $OUT"
-    log "mode:      $MODE  capture: ${CAPTURE}s  soak: ${SOAK_MIN}min  锁: $LOCK_PATH"
     [ "$DO_UNINSTALL" = 1 ] && UNINSTALL_FLAG="--uninstall"
 
     resolve_kit
+    # The kit root carries runtime-mode.txt (make-device-test-kit.sh writes aot|jit). Honour it
+    # unless --mode was explicit, so the summary/selection match the haps instead of the default.
+    if [ "$MODE_SET" = 0 ] && [ -f "$KIT_DIR/runtime-mode.txt" ]; then
+        _km="$(head -n1 "$KIT_DIR/runtime-mode.txt" 2>/dev/null | tr -d ' \r\n')"
+        case "$_km" in aot|jit) MODE="$_km" ;; esac
+    fi
+    log "mode:      $MODE  capture: ${CAPTURE}s  soak: ${SOAK_MIN}min  锁: $LOCK_PATH"
     TESTER_RUN="${TESTER_RUN:-$KIT_DIR/tester-run.sh}"
     [ -f "$TESTER_RUN" ] || TESTER_RUN="$SELF_DIR/tester-run.sh"
     if [ ! -f "$TESTER_RUN" ]; then

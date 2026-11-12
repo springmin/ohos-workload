@@ -25,6 +25,10 @@
 # residual entirely: the password is read at the tty/pty prompt (fed through stdin when there is no
 # tty) and no password argument is passed.
 set -e
+# The host can export OPENSSL_CONF/OPENSSL_MODULES for the .NET runtime or a Homebrew
+# OpenSSL; OpenHarmony's hap-sign-tool then reports KEY_PASSWORD_ERROR instead of
+# decrypting the keystore. Signing must use the device default configuration.
+unset OPENSSL_CONF OPENSSL_MODULES OPENSSL_ENGINES
 log()  { printf '[%s] %s\n' "$(date +%H:%M:%S)" "$*"; }
 die()  { printf '[%s] ERROR: %s\n' "$(date +%H:%M:%S)" "$*" >&2; exit 1; }
 

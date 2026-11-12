@@ -54,6 +54,10 @@
 # --key-pwd-file <file> (--external only): p12 password from the first line; with
 #   --pwd-input-mode it goes through script(1) (still no argv), otherwise on argv for the call.
 set -e
+# The host can export OPENSSL_CONF/OPENSSL_MODULES for the .NET runtime or a Homebrew
+# OpenSSL; OpenHarmony's hap-sign-tool then reports KEY_PASSWORD_ERROR instead of
+# decrypting the keystore. Signing must use the device default configuration.
+unset OPENSSL_CONF OPENSSL_MODULES OPENSSL_ENGINES
 
 log() { printf '[%s] %s\n' "$(date '+%H:%M:%S')" "$*"; }
 warn() { printf '[%s] WARN: %s\n' "$(date '+%H:%M:%S')" "$*" >&2; }

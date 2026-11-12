@@ -2,6 +2,11 @@
 # Signs a packed hap with the SDK's debug profile + OpenHarmony test keystore.
 # Usage: sign-hap.sh <toolchains/lib> <unsigned.hap> <signed.hap> <bundle-name> [udid,udid]
 set -e
+# The host can export OPENSSL_CONF/OPENSSL_MODULES for the .NET runtime or a Homebrew OpenSSL.
+# OpenHarmony's hap-sign-tool links its own libcrypto and reports KEY_PASSWORD_ERROR when it
+# loads a host OpenSSL 3/4 configuration instead of the device default, so signing must not
+# inherit those variables. Keep this ahead of every hap-sign-tool invocation.
+unset OPENSSL_CONF OPENSSL_MODULES OPENSSL_ENGINES
 TOOLCHAIN="$1"; IN="$2"; OUT="$3"; BUNDLE="$4"; UDID="${5:-}"
 WORK="$(dirname "$OUT")/profile-work"
 mkdir -p "$WORK"
