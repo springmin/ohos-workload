@@ -1,5 +1,11 @@
 # rc.2 线交接说明（2026-09-29）
 
+> **2026-11-12 环境注记**：`26.0.0.18_1/18_2` 已从本机移除，当前唯一 SDK 为 38
+> （`~/.harmonybrew/opt/ohos-sdk` -> `Cellar/ohos-sdk/26.0.0.38`）。本文以下出现的
+> `Cellar/ohos-sdk/26.0.0.18_2` 等路径是当时的实测记录，仅作历史证据，不再是当前命令；
+> 当前脚本默认 `opt/ohos-sdk`，签名统一走 `scripts/sign-for-device.sh`（已隔离宿主
+> `OPENSSL_CONF`）。
+
 > **2026-10-14 更新（官方 rc.2 重切 ✗）**：三仓推进到**官方 rc.2（`.105`）**并重发 ✗——
 > SDK `11.0.100-rc.2.26504.105`、runtime/aspnetcore `11.0.0-rc.2.26504.105`（`-ohos`＋`-openharmony`
 > 线均齐 ✗）；**workload bundle 重打为 `1.0.0-preview.29`**（packs 随动 `.105` ✗：BCL/Aspnet 均

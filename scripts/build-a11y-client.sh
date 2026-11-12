@@ -10,9 +10,10 @@
 # a11y-client-signed.hap. --install pushes the signed hap with hdc and verifies the bundle and
 # the A11yExtAbility are visible to bm.
 #
-# Requirements: node (runnable), java, the OpenHarmony SDK (OHOS_SDK_ROOT or the harmonybrew
-# 26.0.0.18_2 install) and a hvigor install at HVIGOR_DIR (default .arkts-build/hvigor, created
-# by scripts/build-arkts-shell.sh). All paths can be overridden by env.
+# Requirements: node (runnable), java, the OpenHarmony SDK (OHOS_SDK_ROOT or the version-agnostic
+# harmonybrew opt/ohos-sdk install) and a hvigor install at HVIGOR_DIR (default
+# .arkts-build/hvigor, created by scripts/build-arkts-shell.sh). All paths can be overridden by
+# env.
 set -e
 W="$(cd "$(dirname "$0")/.." && pwd)"
 SRC="$W/test/a11y-client"
