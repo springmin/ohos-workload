@@ -27,10 +27,46 @@ NEW_INTERNAL_PACK="${NEW_INTERNAL_PACK:-1.0.0}"
 NEW_RUNTIME_VERSION="${NEW_RUNTIME_VERSION:-11.0.1}"
 NEW_ASPNETCORE_REF_VERSION="${NEW_ASPNETCORE_REF_VERSION:-11.0.0}"
 OLD_SDK_PACK="${OLD_SDK_PACK:-1.0.0}"
-OLD_INTERNAL_PACK="${OLD_INTERNAL_PACK:-1.0.0-preview.32}"
+OLD_INTERNAL_PACK="${OLD_INTERNAL_PACK:-1.0.0}"
+OLD_INTERNAL_VERSION="${OLD_INTERNAL_VERSION:-1.0.0-preview.32}"
 
 log() { printf '[%s] %s\n' "$(date '+%H:%M:%S')" "$*"; }
 die() { log "ERROR: $*" >&2; exit 1; }
+
+# The repo's preview.32 Ref/Runtime directories are incomplete (they predate
+# the hosting/graphics assemblies). Pull the GA 1.0.0 bundle feed and extract
+# its Sdk/Ref/Runtime packs as the 1.0.0 content.
+GA_BUNDLE_URL="${GA_BUNDLE_URL:-https://github.com/springmin/sdk-ohos/releases/download/v11.0.100-ohos/openharmony-workload-1.0.0.tar.gz}"
+GA_TAR="$W/.ga-workload-1.0.0.tar.gz"
+GA_DIR="$W/.ga-workload"
+if [ ! -f "$GA_TAR" ]; then
+    log "fetching the GA 1.0.0 workload bundle"
+    curl -fL --retry 3 --connect-timeout 20 -o "$GA_TAR" "$GA_BUNDLE_URL" \
+        || die "failed to download $GA_BUNDLE_URL"
+fi
+rm -rf "$GA_DIR"
+mkdir -p "$GA_DIR"
+tar -xzf "$GA_TAR" -C "$GA_DIR" || die "failed to extract $GA_TAR"
+python3 - "$GA_DIR/openharmony-workload-1.0.0/feed" "$W/packs" <<'PY'
+import pathlib, shutil, sys, zipfile
+feed, packs = pathlib.Path(sys.argv[1]), pathlib.Path(sys.argv[2])
+mapping = {
+    'Microsoft.OpenHarmony.Sdk.1.0.0.nupkg': 'Microsoft.OpenHarmony.Sdk/1.0.0',
+    'Microsoft.OpenHarmony.Ref.20.0.1.0.0-preview.32.nupkg': 'Microsoft.OpenHarmony.Ref.20.0/1.0.0',
+    'Microsoft.OpenHarmony.Ref.26.0.1.0.0-preview.32.nupkg': 'Microsoft.OpenHarmony.Ref.26.0/1.0.0',
+    'Microsoft.OpenHarmony.Runtime.20.0.openharmony-arm64.1.0.0-preview.32.nupkg': 'Microsoft.OpenHarmony.Runtime.20.0.openharmony-arm64/1.0.0',
+    'Microsoft.OpenHarmony.Runtime.26.0.openharmony-arm64.1.0.0-preview.32.nupkg': 'Microsoft.OpenHarmony.Runtime.26.0.openharmony-arm64/1.0.0',
+}
+for name, rel in mapping.items():
+    src = feed / name
+    if not src.is_file():
+        raise SystemExit(f'missing GA pack: {src}')
+    dst = packs / rel
+    shutil.rmtree(dst, ignore_errors=True)
+    dst.mkdir(parents=True)
+    zipfile.ZipFile(src).extractall(dst)
+    print(f'extracted {name} -> {rel}')
+PY
 
 [ -d "$W/packs/Microsoft.OpenHarmony.Sdk/$OLD_SDK_PACK" ] \
     || die "missing source Sdk pack: packs/Microsoft.OpenHarmony.Sdk/$OLD_SDK_PACK"
@@ -46,6 +82,10 @@ rm -rf "$W/packs/Microsoft.OpenHarmony.Sdk/$NEW_SDK_PACK"
 cp -a "$W/packs/Microsoft.OpenHarmony.Sdk/$OLD_SDK_PACK" "$W/packs/Microsoft.OpenHarmony.Sdk/$NEW_SDK_PACK"
 
 for api in 20.0 26.0; do
+    if [ "$OLD_INTERNAL_PACK" = "$NEW_INTERNAL_PACK" ]; then
+        log "keeping extracted Ref/Runtime.$api $NEW_INTERNAL_PACK"
+        continue
+    fi
     log "copying Ref.$api $OLD_INTERNAL_PACK -> $NEW_INTERNAL_PACK"
     rm -rf "$W/packs/Microsoft.OpenHarmony.Ref.$api/$NEW_INTERNAL_PACK"
     cp -a "$W/packs/Microsoft.OpenHarmony.Ref.$api/$OLD_INTERNAL_PACK" \
@@ -79,7 +119,7 @@ fetch_bcl_pack runtime-ohos Microsoft.NETCore.App.Runtime.openharmony-arm64
 fetch_bcl_pack aspnetcore-ohos Microsoft.AspNetCore.App.Runtime.openharmony-arm64
 
 log "patching the Sdk pack framework versions"
-python3 - "$W/packs/Microsoft.OpenHarmony.Sdk/$NEW_SDK_PACK" "$OLD_INTERNAL_PACK" "$NEW_INTERNAL_PACK" "$NEW_RUNTIME_VERSION" "$NEW_ASPNETCORE_REF_VERSION" <<'PY'
+python3 - "$W/packs/Microsoft.OpenHarmony.Sdk/$NEW_SDK_PACK" "$OLD_INTERNAL_VERSION" "$NEW_INTERNAL_PACK" "$NEW_RUNTIME_VERSION" "$NEW_ASPNETCORE_REF_VERSION" <<'PY'
 import pathlib, sys
 root = pathlib.Path(sys.argv[1])
 old_internal, new_internal, new_runtime, new_aspnetcore_ref = sys.argv[2:6]
