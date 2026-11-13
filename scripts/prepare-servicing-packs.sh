@@ -25,6 +25,7 @@ NEW_WORKLOAD_VERSION="${NEW_WORKLOAD_VERSION:-1.0.1}"
 NEW_SDK_PACK="${NEW_SDK_PACK:-1.0.1}"
 NEW_INTERNAL_PACK="${NEW_INTERNAL_PACK:-1.0.0}"
 NEW_RUNTIME_VERSION="${NEW_RUNTIME_VERSION:-11.0.1}"
+NEW_ASPNETCORE_REF_VERSION="${NEW_ASPNETCORE_REF_VERSION:-11.0.0}"
 OLD_SDK_PACK="${OLD_SDK_PACK:-1.0.0}"
 OLD_INTERNAL_PACK="${OLD_INTERNAL_PACK:-1.0.0-preview.32}"
 
@@ -78,17 +79,17 @@ fetch_bcl_pack runtime-ohos Microsoft.NETCore.App.Runtime.openharmony-arm64
 fetch_bcl_pack aspnetcore-ohos Microsoft.AspNetCore.App.Runtime.openharmony-arm64
 
 log "patching the Sdk pack framework versions"
-python3 - "$W/packs/Microsoft.OpenHarmony.Sdk/$NEW_SDK_PACK" "$OLD_INTERNAL_PACK" "$NEW_INTERNAL_PACK" "$NEW_RUNTIME_VERSION" <<'PY'
+python3 - "$W/packs/Microsoft.OpenHarmony.Sdk/$NEW_SDK_PACK" "$OLD_INTERNAL_PACK" "$NEW_INTERNAL_PACK" "$NEW_RUNTIME_VERSION" "$NEW_ASPNETCORE_REF_VERSION" <<'PY'
 import pathlib, sys
 root = pathlib.Path(sys.argv[1])
-old_internal, new_internal, new_runtime = sys.argv[2:5]
+old_internal, new_internal, new_runtime, new_aspnetcore_ref = sys.argv[2:6]
 platform = root / "targets" / "OpenHarmony.PlatformItems.targets"
 text = platform.read_text(encoding="utf-8")
 for old, new in [
     (f'DefaultRuntimeFrameworkVersion="{old_internal}"', f'DefaultRuntimeFrameworkVersion="{new_internal}"'),
     (f'LatestRuntimeFrameworkVersion="{old_internal}"', f'LatestRuntimeFrameworkVersion="{new_internal}"'),
     (f'TargetingPackVersion="{old_internal}"', f'TargetingPackVersion="{new_internal}"'),
-    ('TargetingPackVersion="11.0.0"', f'TargetingPackVersion="{new_runtime}"'),
+    ('TargetingPackVersion="11.0.0"', f'TargetingPackVersion="{new_aspnetcore_ref}"'),
     ('DefaultRuntimeFrameworkVersion="11.0.0"', f'DefaultRuntimeFrameworkVersion="{new_runtime}"'),
     ('LatestRuntimeFrameworkVersion="11.0.0"', f'LatestRuntimeFrameworkVersion="{new_runtime}"'),
 ]:
