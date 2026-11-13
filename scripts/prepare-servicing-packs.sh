@@ -55,6 +55,28 @@ for api in 20.0 26.0; do
           "$W/packs/Microsoft.OpenHarmony.Runtime.$api.openharmony-arm64/$NEW_INTERNAL_PACK"
 done
 
+# The workload manifest also references the BCL runtime packs. The repo only
+# carries the GA 11.0.0 copies, so fetch the matching servicing nupkgs from the
+# runtime/aspnetcore releases and lay them out as packs/<id>/<version>.
+fetch_bcl_pack() { # <repo> <pack-id>
+    repo="$1"; id="$2"
+    url="https://github.com/springmin/$repo/releases/download/v${NEW_RUNTIME_VERSION}-ohos/${id}.${NEW_RUNTIME_VERSION}.nupkg"
+    nupkg="$W/.feed/.$id.$NEW_RUNTIME_VERSION.nupkg"
+    log "fetching $id $NEW_RUNTIME_VERSION from $repo"
+    mkdir -p "$W/.feed"
+    curl -fL --retry 3 --connect-timeout 20 -o "$nupkg" "$url" \
+        || die "failed to download $url"
+    rm -rf "$W/packs/$id/$NEW_RUNTIME_VERSION"
+    mkdir -p "$W/packs/$id/$NEW_RUNTIME_VERSION"
+    python3 - "$nupkg" "$W/packs/$id/$NEW_RUNTIME_VERSION" <<'PY'
+import sys, zipfile
+zipfile.ZipFile(sys.argv[1]).extractall(sys.argv[2])
+PY
+    rm -f "$nupkg"
+}
+fetch_bcl_pack runtime-ohos Microsoft.NETCore.App.Runtime.openharmony-arm64
+fetch_bcl_pack aspnetcore-ohos Microsoft.AspNetCore.App.Runtime.openharmony-arm64
+
 log "patching the Sdk pack framework versions"
 python3 - "$W/packs/Microsoft.OpenHarmony.Sdk/$NEW_SDK_PACK" "$OLD_INTERNAL_PACK" "$NEW_INTERNAL_PACK" "$NEW_RUNTIME_VERSION" <<'PY'
 import pathlib, sys
