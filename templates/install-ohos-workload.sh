@@ -47,6 +47,19 @@ ROOT="$(cd "$(dirname "$REAL_DOTNET")" && pwd)"
 SDK_VERSION="$(basename "$(ls -d "$ROOT"/sdk/*/ 2>/dev/null | sort -V | tail -1)")"
 BAND="$(printf '%s' "$SDK_VERSION" | sed -E 's/^([0-9]+\.[0-9]+\.[0-9]+(-[a-z]+\.[0-9]+)?)(\.[0-9]+)*$/\1/')"
 [ -n "$BAND" ] || { echo "ERROR: could not derive the SDK feature band from $SDK_VERSION" >&2; exit 1; }
+# Stable SDK versions encode the patch in the last two digits of the third
+# component (11.0.101 -> band 11.0.100); preview bands keep their label.
+case "$SDK_VERSION" in
+    *-*) ;;
+    *)
+        band_minor="${BAND%.*}"
+        band_patch="${BAND##*.}"
+        case "$band_patch" in
+            ''|*[!0-9]*) ;;
+            *) BAND="${band_minor}.$((band_patch - band_patch % 100))" ;;
+        esac
+        ;;
+esac
 
 info "dotnet root : $ROOT"
 info "SDK version : $SDK_VERSION (band $BAND)"
