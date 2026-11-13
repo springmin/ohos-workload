@@ -1,0 +1,83 @@
+name: ohos-workload-bundle
+
+# Build the versioned OpenHarmony workload bundle on a Linux runner. The pack
+# layout is prepared from the GA 1.0.0 layout (stable internal packs 1.0.0,
+# Sdk pack/workload 1.0.1, runtime/aspnetcore 11.0.1) and then packed with
+# scripts/pack-workload-bundle.sh. Manual dispatch only; pass a release_tag to
+# publish the tarball + SHA256SUMS to a GitHub release.
+on:
+  workflow_dispatch:
+    inputs:
+      workload_version:
+        description: Workload/manifest version
+        required: true
+        default: '1.0.1'
+      sdk_pack_version:
+        description: Microsoft.OpenHarmony.Sdk pack version
+        required: true
+        default: '1.0.1'
+      internal_pack_version:
+        description: Ref/Runtime pack version
+        required: true
+        default: '1.0.0'
+      runtime_version:
+        description: Microsoft.NETCore.App/AspNetCore runtime version
+        required: true
+        default: '11.0.1'
+      release_tag:
+        description: Release tag to publish to (empty builds an artifact only)
+        required: false
+        default: ''
+
+permissions:
+  contents: write
+
+jobs:
+  bundle:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Check out ohos-workload
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Prepare versioned packs
+        env:
+          NEW_WORKLOAD_VERSION: ${{ inputs.workload_version }}
+          NEW_SDK_PACK: ${{ inputs.sdk_pack_version }}
+          NEW_INTERNAL_PACK: ${{ inputs.internal_pack_version }}
+          NEW_RUNTIME_VERSION: ${{ inputs.runtime_version }}
+        run: sh scripts/prepare-servicing-packs.sh
+
+      - name: Build the workload bundle
+        run: sh scripts/pack-workload-bundle.sh dist
+
+      - name: Write checksums
+        run: |
+          cd dist
+          sha256sum openharmony-workload-*.tar.gz > SHA256SUMS
+          cat SHA256SUMS
+
+      - name: Upload the bundle artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: openharmony-workload-${{ inputs.workload_version }}
+          path: |
+            dist/openharmony-workload-*.tar.gz
+            dist/SHA256SUMS
+          if-no-files-found: error
+
+      - name: Publish the workload release
+        if: inputs.release_tag != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          tag="${{ inputs.release_tag }}"
+          title="OpenHarmony platform workload ${{ inputs.workload_version }}"
+          notes="OpenHarmony workload bundle ${{ inputs.workload_version }}: Sdk pack ${{ inputs.sdk_pack_version }}, Ref/Runtime packs ${{ inputs.internal_pack_version }}, runtime/aspnetcore ${{ inputs.runtime_version }}. Built from ohos-workload ${{ github.sha }} by workflow run ${{ github.run_id }}."
+          gh release view "$tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1 || \
+            gh release create "$tag" --repo "$GITHUB_REPOSITORY" --title "$title" --notes "$notes"
+          gh release upload "$tag" --repo "$GITHUB_REPOSITORY" \
+            dist/openharmony-workload-*.tar.gz dist/SHA256SUMS --clobber
