@@ -666,7 +666,8 @@ resolve_main_hap() {
             *) warn "JIT DeviceCompat 布局检查跳过（缺 python3）" ;;
         esac
     fi
-    log "主 hap: $MAIN_HAP（sha ${MAIN_HAP_SHA:0:12}… mode=$MODE_CHECK bundle=$BUNDLE signed=$MAIN_HAP_SIGNED）"
+    _sha12="$(printf '%s' "$MAIN_HAP_SHA" | cut -c1-12)"
+    log "主 hap: $MAIN_HAP（sha ${_sha12}… mode=$MODE_CHECK bundle=$BUNDLE signed=$MAIN_HAP_SIGNED）"
     return 0
 }
 
