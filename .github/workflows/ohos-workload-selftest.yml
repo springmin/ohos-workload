@@ -29,8 +29,6 @@ jobs:
   selftest:
     runs-on: ubuntu-latest
     timeout-minutes: 15
-    env:
-      TMPDIR: ${{ runner.temp }}
     steps:
       - name: Check out ohos-workload
         uses: actions/checkout@v4
