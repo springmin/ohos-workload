@@ -1,0 +1,66 @@
+name: ohos-workload-selftest
+
+# Offline contract tests for the device-test kit scripts. The suites stub
+# hdc, signing and the kit runtime, so this job needs no device, no
+# OpenHarmony SDK and no network. Keep it that way: a test that needs any of
+# those belongs in a device round, not here.
+on:
+  push:
+    paths:
+      - 'scripts/**'
+      - 'test/**'
+      - '.github/workflows/ohos-workload-selftest.yml'
+  pull_request:
+    paths:
+      - 'scripts/**'
+      - 'test/**'
+      - '.github/workflows/ohos-workload-selftest.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# A newer push supersedes an in-flight run; the suites are seconds long.
+concurrency:
+  group: ohos-workload-selftest-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  selftest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      SELFTEST_TMPDIR: ${{ runner.temp }}/ohos-selftest
+      TMPDIR: ${{ runner.temp }}
+    steps:
+      - name: Check out ohos-workload
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      # Each suite is a separate step so a red run names the failing contract
+      # immediately. `!cancelled()` keeps the remaining suites running to a
+      # verdict even after one fails; any failure still fails the job.
+      - name: device-round contract (lock/sign/Blazor/slots/archive)
+        if: ${{ !cancelled() }}
+        run: sh scripts/selftest-device-round.sh
+
+      - name: verify-kit contract (tree digest/2b/2c)
+        if: ${{ !cancelled() }}
+        run: sh scripts/selftest-verify-kit.sh
+
+      - name: device-test-kit pack contract (aot/jit/interp shapes)
+        if: ${{ !cancelled() }}
+        run: sh scripts/selftest-make-device-test-kit.sh
+
+      - name: perf-gate comparator contract
+        if: ${{ !cancelled() }}
+        run: sh scripts/selftest-perf-gate.sh
+
+      - name: selfsign contract
+        if: ${{ !cancelled() }}
+        run: sh scripts/selftest-selfsign.sh
+
+      - name: repository hygiene (relative build inputs)
+        if: ${{ !cancelled() }}
+        run: sh scripts/selftest-repo-hygiene.sh
