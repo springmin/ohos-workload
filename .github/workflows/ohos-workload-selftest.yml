@@ -35,13 +35,6 @@ jobs:
         with:
           persist-credentials: false
 
-      # The device-round selftest needs the OpenHarmony host's patched hdc;
-      # keep its Blazor-host regression covered here with a cheap contract and
-      # leave the full round to the host.
-      - name: device-round Blazor-host contract
-        if: ${{ !cancelled() }}
-        run: grep -q 'aa force-stop $BLAZOR_BUNDLE' scripts/device-round.sh
-
       # The kits default to the approved OpenHarmony scratch base; create it
       # so the scripts behave exactly as they do on the host.
       - name: Prepare the OpenHarmony scratch base
@@ -49,6 +42,22 @@ jobs:
         run: |
           sudo mkdir -p /data/storage/el2/base/tmp/opencode
           sudo chown -R "$USER":"$(id -gn)" /data/storage/el2/base/tmp/opencode
+
+      - name: device-round contract (full, host hdc stub)
+        if: ${{ !cancelled() }}
+        run: sh scripts/selftest-device-round.sh
+
+      - name: Upload device-round selftest evidence
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: device-round-selftest
+          path: /data/storage/el2/base/tmp/opencode/selftest-device-round.*
+          if-no-files-found: ignore
+
+      - name: device-round Blazor-host contract
+        if: ${{ !cancelled() }}
+        run: grep -q 'aa force-stop $BLAZOR_BUNDLE' scripts/device-round.sh
 
       - name: device-test-kit pack contract (aot/jit/interp shapes)
         if: ${{ !cancelled() }}
