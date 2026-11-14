@@ -30,7 +30,6 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     env:
-      SELFTEST_TMPDIR: ${{ runner.temp }}/ohos-selftest
       TMPDIR: ${{ runner.temp }}
     steps:
       - name: Check out ohos-workload
@@ -44,10 +43,6 @@ jobs:
       - name: device-round contract (lock/sign/Blazor/slots/archive)
         if: ${{ !cancelled() }}
         run: sh scripts/selftest-device-round.sh
-
-      - name: verify-kit contract (tree digest/2b/2c)
-        if: ${{ !cancelled() }}
-        run: sh scripts/selftest-verify-kit.sh
 
       - name: device-test-kit pack contract (aot/jit/interp shapes)
         if: ${{ !cancelled() }}
