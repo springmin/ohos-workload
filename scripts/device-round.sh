@@ -763,20 +763,30 @@ blazor_step() {
         _click="skipped(no-python3)"
         if [ "$HAVE_PY" = 1 ]; then
             _click=failed
+            _clicked=0
             if dump "$_dir" click-home && layout_click_text "$_dir" click-home "Open the interactive counter" contains; then
                 sleep 2
                 dump "$_dir" click-counter || true
                 if layout_click_text "$_dir" click-counter "Click me" contains; then
                     sleep 2
                     dump "$_dir" click-count || true
-                    _cnt="$(grep -o 'Current count: [0-9]*' "$_dir/click-count.json" 2>/dev/null | head -n1)"
-                    case "$_cnt" in
-                        'Current count: '*)
-                            _n="$(printf '%s' "$_cnt" | tr -dc '0-9')"
-                            if [ "${_n:-0}" -ge 1 ] 2>/dev/null; then _click="ok(${_cnt})"; else _click="partial(${_cnt})"; fi ;;
-                        *) _click="partial(no-count)" ;;
-                    esac
+                    _clicked=1
                 fi
+            elif layout_click_text "$_dir" click-home "Click me" contains; then
+                # The default host can restore /counter directly, so the home link is
+                # absent while the counter page (and its button) is already visible.
+                sleep 2
+                dump "$_dir" click-count || true
+                _clicked=1
+            fi
+            if [ "$_clicked" = 1 ]; then
+                _cnt="$(grep -o 'Current count: [0-9]*' "$_dir/click-count.json" 2>/dev/null | head -n1)"
+                case "$_cnt" in
+                    'Current count: '*)
+                        _n="$(printf '%s' "$_cnt" | tr -dc '0-9')"
+                        if [ "${_n:-0}" -ge 1 ] 2>/dev/null; then _click="ok(${_cnt})"; else _click="partial(${_cnt})"; fi ;;
+                    *) _click="partial(no-count)" ;;
+                esac
             fi
             shot "$_dir" final
         fi
@@ -994,6 +1004,13 @@ slots_explicit() {
 }
 
 a11y_step() {
+    # The slots clicks can leave the HiShell desktop in front; a plain aa start is a
+    # no-op for the running ability, so restart it before probing the tree.
+    hd "aa force-stop $BUNDLE" >/dev/null 2>&1
+    aa_start "" >/dev/null 2>&1
+    _i=0
+    while [ -z "$(dev_pid)" ] && [ "$_i" -lt 30 ]; do sleep 1; _i=$((_i + 1)); done
+    sleep 3
     ensure_app >/dev/null 2>&1 || { step a11y skipped "app not running"; return 0; }
     close_app_drawer
     mkdir -p "$OUT/a11y"
