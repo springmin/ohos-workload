@@ -783,6 +783,10 @@ blazor_step() {
         _notes="$_notes $_v=ok:${_click}"
         step blazor ok "$_v boot=yes rendered=yes click=$_click"
     done < "$TMP/blazor-variants.txt"
+    # The Blazor host is a separate bundle and can stay in front (its page has a plain
+    # white body), which hides the kit app from the next steps. Stop it after the A/B so
+    # slots/a11y/deeplink target the MAUI window again.
+    hd "aa force-stop $BLAZOR_BUNDLE" >/dev/null 2>&1 || true
     log "Blazor A/B 完成: total=$_total ok=$_ok$_notes"
     return 0
 }
