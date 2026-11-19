@@ -6,15 +6,15 @@
   "repos": {
     "runtime-ohos": {
       "path": "../runtime-ohos",
-      "branch": "feature/openharmony"
+      "branch": "release/ohos-11.0.1"
     },
     "sdk-ohos": {
       "path": "../sdk-ohos",
-      "branch": "feature/openharmony"
+      "branch": "release/ohos-11.0.101"
     },
     "aspnetcore-ohos": {
       "path": "../aspnetcore-ohos",
-      "branch": "feature/openharmony"
+      "branch": "release/ohos-11.0.1"
     },
     "maui-ohos": {
       "path": "../maui-ohos",
